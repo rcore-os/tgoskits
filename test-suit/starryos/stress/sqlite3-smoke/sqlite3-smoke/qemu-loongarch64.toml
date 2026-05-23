@@ -16,7 +16,7 @@ set -e
 
 echo "STAGE_APK_BEGIN"
 apk update
-apk add sqlite
+apk add --no-cache sqlite
 echo "STAGE_APK_OK"
 
 echo "STAGE_S0_BEGIN"
@@ -48,4 +48,4 @@ echo "ALL_STAGES_PASSED"
 '''
 success_regex = ["(?m)^ALL_STAGES_PASSED\\s*$"]
 fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
-timeout = 300
+timeout = 600

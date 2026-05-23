@@ -14,7 +14,7 @@ set -e
 
 echo "SQLITE_DEEP_ENV_BEGIN"
 apk update
-apk add sqlite
+apk add --no-cache sqlite
 sqlite3 --version
 ls -ld /tmp
 echo "SQLITE_DEEP_ENV_OK"
