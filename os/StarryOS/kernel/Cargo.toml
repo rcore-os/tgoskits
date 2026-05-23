@@ -14,8 +14,9 @@ repository.workspace = true
 license.workspace = true
 
 [features]
-default = ["dynamic_debug"]
+default = ["dynamic_debug", "ebpf"]
 dev-log = []
+ebpf = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 kcov = ["ax-hal/starry-kcov"]

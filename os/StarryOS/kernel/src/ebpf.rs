@@ -759,10 +759,10 @@ impl StackTraceMap {
     fn store_trace(&mut self, ips: &[u64]) -> u32 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        if self.traces.len() >= self.meta.max_entries as usize
-            && let Some(oldest) = self.traces.keys().min().copied()
-        {
-            self.traces.remove(&oldest);
+        if self.traces.len() >= self.meta.max_entries as usize {
+            if let Some(oldest) = self.traces.keys().min().copied() {
+                self.traces.remove(&oldest);
+            }
         }
         self.traces.insert(id, ips.to_vec());
         id
@@ -987,8 +987,7 @@ impl UnifiedMap {
     }
 
     fn detect_cpu_count() -> usize {
-        let id = ax_hal::percpu::this_cpu_id();
-        (id + 1).clamp(2, 256)
+        ax_hal::cpu_num()
     }
 }
 
@@ -1102,6 +1101,13 @@ impl BpfFdTable {
     }
 }
 
+// Lock ordering: BPF_GLOBAL -> BPF_LOOKUP_CACHE -> BPF_TAIL_CALL_TARGET
+// BpfVm::execute() must never be called while BPF_GLOBAL is held.
+// All helpers that acquire BPF_GLOBAL are called from execute(), which
+// runs without any lock. Syscall handlers acquire BPF_GLOBAL independently.
+// run_bpf_prog clones insns under BPF_GLOBAL then drops the lock before
+// calling execute(). The tail-call path in execute() also drops BPF_GLOBAL
+// before recursing into execute().
 static BPF_GLOBAL: SpinNoIrq<BpfFdTable> = SpinNoIrq::new(BpfFdTable::new());
 // SAFETY: This cache stores the value returned by bpf_map_lookup_elem.
 // The returned pointer is valid only until the next call to the same helper.
@@ -1578,27 +1584,24 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
         unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
         return 0;
     }
-    let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, len) };
-    let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, len) };
-    let copied = {
-        let buf = unsafe {
-            core::slice::from_raw_parts_mut(
-                dst_slice.as_mut_ptr() as *mut core::mem::MaybeUninit<u8>,
-                len,
-            )
-        };
-        match starry_vm::vm_read_slice(src as *const u8, buf) {
-            Ok(()) => len,
-            Err(_) => {
+    let buf =
+        unsafe { core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len) };
+    match starry_vm::vm_read_slice(src as *const u8, buf) {
+        Ok(()) => 0,
+        Err(_) => {
+            let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, len) };
+            let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, len) };
+            if (src as usize) >= 0xffff_8000_0000_0000 {
                 unsafe {
                     core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice.as_mut_ptr(), len)
                 };
-                len
+                0
+            } else {
+                unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
+                u64::MAX
             }
         }
-    };
-    let _ = copied;
-    0
+    }
 }
 
 fn helper_probe_read_user(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
@@ -1798,15 +1801,18 @@ fn helper_ringbuf_submit(sample_ptr: u64, flags: u64, _a3: u64, _a4: u64, _a5: u
     }
     let mut guard = BPF_GLOBAL.lock();
     for (_, map) in guard.maps.iter_mut() {
-        if map.meta().map_type == map_type::RINGBUF {
-            let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
-                Some(r) => r,
-                None => continue,
-            };
-            if inner.pending_reserve.is_some() {
-                inner.submit(flags);
-                return 0;
-            }
+        if map.meta().map_type != map_type::RINGBUF {
+            continue;
+        }
+        let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
+            Some(r) => r,
+            None => continue,
+        };
+        let buf_start = inner.buf.as_ptr() as u64;
+        let buf_end = buf_start + inner.buf.len() as u64;
+        if sample_ptr >= buf_start && sample_ptr < buf_end {
+            inner.submit(flags);
+            return 0;
         }
     }
     u64::MAX
@@ -1818,15 +1824,18 @@ fn helper_ringbuf_discard(sample_ptr: u64, flags: u64, _a3: u64, _a4: u64, _a5: 
     }
     let mut guard = BPF_GLOBAL.lock();
     for (_, map) in guard.maps.iter_mut() {
-        if map.meta().map_type == map_type::RINGBUF {
-            let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
-                Some(r) => r,
-                None => continue,
-            };
-            if inner.pending_reserve.is_some() {
-                inner.discard(flags);
-                return 0;
-            }
+        if map.meta().map_type != map_type::RINGBUF {
+            continue;
+        }
+        let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
+            Some(r) => r,
+            None => continue,
+        };
+        let buf_start = inner.buf.as_ptr() as u64;
+        let buf_end = buf_start + inner.buf.len() as u64;
+        if sample_ptr >= buf_start && sample_ptr < buf_end {
+            inner.discard(flags);
+            return 0;
         }
     }
     u64::MAX
@@ -1956,12 +1965,12 @@ impl BpfVm {
 
             if class == bpf_insn::BPF_ALU || class == bpf_insn::BPF_ALU64 {
                 let alu_op = insn.alu_op();
-                if (alu_op == 0x30 || alu_op == 0x40)
+                if (alu_op == 0x30 || alu_op == 0x90)
                     && (insn.code & bpf_insn::BPF_X) == 0
                     && insn.imm == 0
                 {
-                    warn!("bpf verifier: division by zero at pc={pc}");
-                    return Err("division by zero");
+                    warn!("bpf verifier: division/modulo by zero immediate at pc={pc}");
+                    return Err("division/modulo by zero");
                 }
             }
         }
@@ -2278,7 +2287,6 @@ impl BpfVm {
     }
 }
 
-#[allow(dead_code)]
 pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
     let (insns, prog_type) = {
         let guard = BPF_GLOBAL.lock();

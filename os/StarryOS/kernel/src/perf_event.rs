@@ -365,7 +365,6 @@ pub fn perf_event_write(fd: u32, data: &[u8]) -> AxResult<()> {
     Err(AxError::BadFileDescriptor)
 }
 
-#[allow(dead_code)]
 pub fn perf_event_close(fd: u32) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
     let idx = guard.iter().position(|e| e.fd == fd);
@@ -379,7 +378,6 @@ pub fn perf_event_close(fd: u32) -> AxResult<()> {
     }
 }
 
-#[allow(dead_code)]
 pub fn perf_event_fd_exists(fd: u32) -> bool {
     let guard = PERF_EVENTS.lock();
     guard.iter().any(|e| e.fd == fd)
@@ -416,6 +414,29 @@ pub fn perf_event_attach_prog(fd: u32, prog_fd: u32) -> AxResult<()> {
         }
     }
     Err(AxError::BadFileDescriptor)
+}
+
+pub fn perf_event_trigger(fd: u32, ctx: u64) -> AxResult<()> {
+    let prog_fd = {
+        let guard = PERF_EVENTS.lock();
+        let entry = guard.iter().find(|e| e.fd == fd);
+        match entry {
+            Some(e) => {
+                if !e.event.enabled {
+                    return Ok(());
+                }
+                e.event.prog_fd
+            }
+            None => return Err(AxError::BadFileDescriptor),
+        }
+    };
+    if let Some(prog_fd) = prog_fd {
+        #[cfg(feature = "ebpf")]
+        {
+            let _ = crate::ebpf::run_bpf_prog(prog_fd, ctx);
+        }
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]

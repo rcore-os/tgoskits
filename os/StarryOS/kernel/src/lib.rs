@@ -22,6 +22,7 @@ mod file;
 #[cfg(feature = "kcov")]
 mod kcov;
 mod mm;
+mod perf_event;
 mod pseudofs;
 mod stop_machine;
 mod syscall;
@@ -29,3 +30,6 @@ mod task;
 mod time;
 mod tracepoint;
 mod trap;
+
+#[cfg(feature = "ebpf")]
+mod ebpf;
