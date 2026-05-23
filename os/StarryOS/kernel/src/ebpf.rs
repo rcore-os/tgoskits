@@ -25,7 +25,7 @@ use crate::task::AsThread;
 mod ebpf_jit;
 
 #[allow(dead_code)]
-mod bpf_insn {
+pub(crate) mod bpf_insn {
     pub const BPF_LD: u8 = 0x00;
     pub const BPF_LDX: u8 = 0x01;
     pub const BPF_ST: u8 = 0x02;
@@ -529,6 +529,7 @@ impl UnifiedMap {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 struct BpfProg {
     prog_type: u32,
     insns: Vec<bpf_insn::BpfInsn>,
@@ -913,7 +914,7 @@ mod helper_id {
     pub const GET_ATTACHED_FUNC_ARGS: u32 = 186;
 }
 
-type HelperFn = fn(u64, u64, u64, u64, u64) -> u64;
+pub(crate) type HelperFn = fn(u64, u64, u64, u64, u64) -> u64;
 
 fn init_helper_functions() -> alloc::collections::BTreeMap<u32, HelperFn> {
     let mut m: alloc::collections::BTreeMap<u32, HelperFn> = alloc::collections::BTreeMap::new();
@@ -1402,15 +1403,13 @@ pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
     };
     let _ = prog_type;
 
-    if has_jit {
-        if let Some(entry) = jit_entry {
-            let result: u64;
-            unsafe {
-                let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
-                result = jit_fn(ctx);
-            }
-            return Ok(result);
+    if has_jit && let Some(entry) = jit_entry {
+        let result: u64;
+        unsafe {
+            let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
+            result = jit_fn(ctx);
         }
+        return Ok(result);
     }
 
     let vm = BpfVm::new();

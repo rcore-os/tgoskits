@@ -1,15 +1,13 @@
-use alloc::vec::Vec;
-
-use super::JitBackend;
-use super::super::bpf_insn::{
-    BpfInsn, BPF_ADD, BPF_ALU, BPF_ALU64, BPF_AND, BPF_ARSH, BPF_B, BPF_DW, BPF_DIV, BPF_END,
-    BPF_EXIT, BPF_H, BPF_JA, BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JMP, BPF_JMP32,
-    BPF_JNE, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_JSET, BPF_K, BPF_LD, BPF_LDX, BPF_LSH,
-    BPF_MEM, BPF_MOD, BPF_MOV, BPF_MUL, BPF_NEG, BPF_OR, BPF_RSH, BPF_ST, BPF_STX, BPF_SUB,
-    BPF_W, BPF_X, BPF_XOR,
+use super::{
+    BpfInsn, HelperFn, JitBackend, JitBuffer,
+    bpf_insn::{
+        BPF_ADD, BPF_ALU, BPF_ALU64, BPF_AND, BPF_ARSH, BPF_B, BPF_DIV, BPF_DW, BPF_END, BPF_EXIT,
+        BPF_H, BPF_JA, BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JMP, BPF_JMP32, BPF_JNE,
+        BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_LD, BPF_LDX, BPF_LSH, BPF_MEM,
+        BPF_MOD, BPF_MOV, BPF_MUL, BPF_NEG, BPF_OR, BPF_RSH, BPF_ST, BPF_STX, BPF_SUB, BPF_W,
+        BPF_X, BPF_XOR,
+    },
 };
-use super::super::HelperFn;
-use super::JitBuffer;
 
 const RV_ZERO: u32 = 0;
 const RV_RA: u32 = 1;
@@ -54,6 +52,10 @@ fn rv_r(funct7: u32, rs2: u32, rs1: u32, funct3: u32, rd: u32) -> u32 {
     (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x33
 }
 
+fn rv_rw(funct7: u32, rs2: u32, rs1: u32, funct3: u32, rd: u32) -> u32 {
+    rv_r(funct7, rs2, rs1, funct3, rd) | (0x3b ^ 0x33)
+}
+
 fn rv_i(imm: u32, rs1: u32, funct3: u32, rd: u32, opcode: u32) -> u32 {
     (imm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 }
@@ -86,7 +88,7 @@ fn emit_add(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_addw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0, rs2, rs1, 0, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0, rs2, rs1, 0, rd));
 }
 
 fn emit_sub(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -94,7 +96,7 @@ fn emit_sub(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_subw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0x20, rs2, rs1, 0, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0x20, rs2, rs1, 0, rd));
 }
 
 fn emit_addi(buf: &mut JitBuffer, rd: u32, rs1: u32, imm: i32) {
@@ -110,7 +112,7 @@ fn emit_and(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_andw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0, rs2, rs1, 7, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0, rs2, rs1, 7, rd));
 }
 
 fn emit_or(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -118,7 +120,7 @@ fn emit_or(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_orw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0, rs2, rs1, 6, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0, rs2, rs1, 6, rd));
 }
 
 fn emit_xor(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -126,7 +128,7 @@ fn emit_xor(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_xorw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0, rs2, rs1, 4, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0, rs2, rs1, 4, rd));
 }
 
 fn emit_sll(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -134,7 +136,7 @@ fn emit_sll(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_sllw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0, rs2, rs1, 1, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0, rs2, rs1, 1, rd));
 }
 
 fn emit_srl(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -142,7 +144,7 @@ fn emit_srl(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_srlw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0, rs2, rs1, 5, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0, rs2, rs1, 5, rd));
 }
 
 fn emit_sra(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -150,7 +152,7 @@ fn emit_sra(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_sraw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(0x20, rs2, rs1, 5, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(0x20, rs2, rs1, 5, rd));
 }
 
 fn emit_mul(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -158,7 +160,7 @@ fn emit_mul(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_mulw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(1, rs2, rs1, 0, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(1, rs2, rs1, 0, rd));
 }
 
 fn emit_divu(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -166,7 +168,7 @@ fn emit_divu(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_divuw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(1, rs2, rs1, 5, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(1, rs2, rs1, 5, rd));
 }
 
 fn emit_remu(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
@@ -174,7 +176,7 @@ fn emit_remu(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
 }
 
 fn emit_remuw(buf: &mut JitBuffer, rd: u32, rs1: u32, rs2: u32) {
-    buf.emit_u32(rv_r(1, rs2, rs1, 7, rd) | (0x3b ^ 0x33));
+    buf.emit_u32(rv_rw(1, rs2, rs1, 7, rd));
 }
 
 fn emit_andi(buf: &mut JitBuffer, rd: u32, rs1: u32, imm: i32) {
@@ -307,14 +309,19 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
             emit_addi(buf, rd, rd, lo12);
         }
     } else {
-        emit_lui(buf, rd, hi20 & 0xfffff);
-        emit_addi(buf, rd, rd, lo12);
+        let upper_20 = ((hi52 >> 12) & 0xfffff) as u32;
+        let middle_20 = ((hi52 >> 32) & 0xfffff) as u32;
+        let lower_12 = (hi52 & 0xfff) as i32;
+        emit_lui(buf, rd, upper_20);
+        emit_addi(buf, rd, rd, lower_12);
         emit_slli(buf, rd, rd, 12);
-        let mid20 = ((hi52 >> 32) & 0xfffff) as u32;
-        emit_addi(buf, rd, rd, (mid20 & 0xfff) as i32);
+        emit_addi(buf, rd, rd, (middle_20 & 0xfff) as i32);
         emit_slli(buf, rd, rd, 12);
-        emit_addi(buf, rd, rd, ((mid20 >> 12) & 0xfff) as i32);
+        emit_addi(buf, rd, rd, ((middle_20 >> 12) & 0xfff) as i32);
         emit_slli(buf, rd, rd, 8);
+        if lo12 != 0 {
+            emit_addi(buf, rd, rd, lo12);
+        }
     }
 }
 
@@ -413,7 +420,7 @@ impl JitBackend for Riscv64Backend {
                 let skip_off = (after - skip) as i32;
                 unsafe {
                     let ptr = buf.entry().add(skip) as *mut u32;
-                    *ptr = rv_b(skip_off as u32 * 2, RV_ZERO, src, 0);
+                    *ptr = rv_b(skip_off as u32, RV_ZERO, src, 0);
                 }
             }
             BPF_OR => {
@@ -490,7 +497,7 @@ impl JitBackend for Riscv64Backend {
                 let skip_off = (after - skip) as i32;
                 unsafe {
                     let ptr = buf.entry().add(skip) as *mut u32;
-                    *ptr = rv_b(skip_off as u32 * 2, RV_ZERO, src, 0);
+                    *ptr = rv_b(skip_off as u32, RV_ZERO, src, 0);
                 }
             }
             BPF_XOR => {
@@ -552,11 +559,8 @@ impl JitBackend for Riscv64Backend {
         }
 
         if op == BPF_EXIT {
-            let off = buf.offset();
-            let target = offsets[0] as isize;
-            if target == 0 {}
-            emit_load_imm64(buf, RV_T6, 0);
-            emit_jalr(buf, RV_ZERO, RV_T6, 0);
+            let off = buf.offset() as isize - offsets[0] as isize;
+            emit_jalr(buf, RV_ZERO, RV_ZERO, -(off as i32));
             return;
         }
 
@@ -566,7 +570,11 @@ impl JitBackend for Riscv64Backend {
 
         let dst = bpf_to_rv(insn.dst_reg());
         let use_imm = (insn.code & BPF_X) == 0;
-        let src = if use_imm { RV_T1 } else { bpf_to_rv(insn.src_reg()) };
+        let src = if use_imm {
+            RV_T1
+        } else {
+            bpf_to_rv(insn.src_reg())
+        };
 
         if use_imm {
             if is_64 {
@@ -728,8 +736,6 @@ impl JitBackend for Riscv64Backend {
 
         emit_load_imm64(buf, RV_T1, helper_fn as u64);
         emit_jalr(buf, RV_RA, RV_T1, 0);
-
-        emit_mv(buf, RV_A0, RV_A0);
     }
 
     fn insn_size(insn: &BpfInsn) -> usize {
@@ -742,10 +748,10 @@ impl JitBackend for Riscv64Backend {
                 let base = if use_imm {
                     if insn.imm >= -2048 && insn.imm < 2048 {
                         4
-                    } else if insn.imm as i32 >= -2048 && insn.imm as i32 < 2048 {
+                    } else if (insn.imm as i32) >= -2048 && (insn.imm as i32) < 2048 {
                         8
                     } else {
-                        24
+                        28
                     }
                 } else {
                     4
@@ -765,19 +771,17 @@ impl JitBackend for Riscv64Backend {
             BPF_JMP | BPF_JMP32 => {
                 let op = insn.code & 0xf0;
                 if op == BPF_EXIT {
-                    32
+                    4
                 } else if op == 0x80 {
-                    8 + 24 + 4 + 4
-                } else if insn.code == (BPF_JMP | BPF_JA)
-                    || insn.code == (BPF_JMP32 | BPF_JA)
-                {
-                    24
+                    28 + 28 + 4 + 4
+                } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
+                    28
                 } else {
                     let imm_size = if use_imm {
                         if insn.imm >= -2048 && insn.imm < 2048 {
                             8
                         } else {
-                            28
+                            32
                         }
                     } else {
                         0
@@ -796,7 +800,7 @@ impl JitBackend for Riscv64Backend {
                     if insn.imm >= -2048 && insn.imm < 2048 {
                         8
                     } else {
-                        24
+                        28
                     }
                 } else {
                     0
@@ -813,7 +817,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_LD => {
                 if insn.is_ld_dw_imm() {
-                    24
+                    28
                 } else {
                     4
                 }

@@ -1,31 +1,50 @@
-use alloc::alloc::{alloc_zeroed, dealloc, Layout};
-use alloc::collections::BTreeMap;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{
+    alloc::{Layout, alloc_zeroed, dealloc},
+    collections::BTreeMap,
+    vec,
+    vec::Vec,
+};
 
+#[cfg(target_arch = "aarch64")]
 use ax_memory_addr::VirtAddr;
 
-use super::bpf_insn::{BpfInsn, BPF_ALU, BPF_ALU64, BPF_EXIT, BPF_JMP, BPF_JMP32, BPF_LD, BPF_LDX, BPF_ST, BPF_STX};
-use super::HelperFn;
+pub(crate) use super::{
+    HelperFn,
+    bpf_insn::{
+        BPF_ALU, BPF_ALU64, BPF_EXIT, BPF_JMP, BPF_JMP32, BPF_LD, BPF_LDX, BPF_ST, BPF_STX, BpfInsn,
+    },
+};
 
+#[cfg(target_arch = "aarch64")]
+mod jit_aarch64;
 #[cfg(target_arch = "riscv64")]
 mod jit_riscv64;
 #[cfg(target_arch = "x86_64")]
 mod jit_x86_64;
-#[cfg(target_arch = "aarch64")]
-mod jit_aarch64;
 
+#[cfg(target_arch = "aarch64")]
+use jit_aarch64::Aarch64Backend as Backend;
 #[cfg(target_arch = "riscv64")]
 use jit_riscv64::Riscv64Backend as Backend;
 #[cfg(target_arch = "x86_64")]
 use jit_x86_64::X86_64Backend as Backend;
-#[cfg(target_arch = "aarch64")]
-use jit_aarch64::Aarch64Backend as Backend;
 
 pub struct JitBuffer {
     ptr: *mut u8,
     size: usize,
     pos: usize,
+}
+
+unsafe impl Send for JitBuffer {}
+unsafe impl Sync for JitBuffer {}
+
+impl core::fmt::Debug for JitBuffer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("JitBuffer")
+            .field("size", &self.size)
+            .field("pos", &self.pos)
+            .finish()
+    }
 }
 
 impl JitBuffer {
@@ -42,16 +61,7 @@ impl JitBuffer {
         Ok(Self { ptr, size, pos: 0 })
     }
 
-    pub fn emit_u8(&mut self, val: u8) {
-        if self.pos >= self.size {
-            return;
-        }
-        unsafe {
-            *self.ptr.add(self.pos) = val;
-        }
-        self.pos += 1;
-    }
-
+    #[cfg(target_arch = "riscv64")]
     pub fn emit_u32(&mut self, val: u32) {
         if self.pos + 4 > self.size {
             return;
@@ -63,6 +73,7 @@ impl JitBuffer {
         self.pos += 4;
     }
 
+    #[cfg(target_arch = "riscv64")]
     pub fn offset(&self) -> usize {
         self.pos
     }
