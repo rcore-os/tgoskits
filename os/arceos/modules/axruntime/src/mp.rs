@@ -135,13 +135,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(feature = "paging")]
     ax_mm::init_memory_management_secondary();
 
-    ax_hal::init_later_secondary(cpu_id);
-
     #[cfg(feature = "multitask")]
     {
         let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
         ax_task::init_scheduler_secondary(stack_ptr, stack_size);
     }
+
+    ax_hal::init_later_secondary(cpu_id);
 
     #[cfg(feature = "ipi")]
     ax_ipi::init();

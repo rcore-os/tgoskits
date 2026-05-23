@@ -46,9 +46,9 @@ mmio-ranges = [
     [0x0910_0000, 0x1000],      # PL031 RTC
     # GIC region: covers GICv2 (GICD at 0x0800_0000 + GICC at
     # 0x0801_0000, 128 KB total) and GICv3 (GICD 64 KB + GICR at
-    # 0x080A_0000 with 0x20000 per-CPU stride). 1 MB window covers
-    # both layouts plus headroom for redistributors on multi-CPU v3.
-    [0x0800_0000, 0x10_0000],   # GIC (v2: GICD+GICC  |  v3: GICD+GICR)
+    # 0x080A_0000 with 0x20000 per-CPU stride). 2 MB window covers
+    # the redistributor frames needed by the 8-CPU QEMU virt profile.
+    [0x0800_0000, 0x20_0000],   # GIC (v2: GICD+GICC  |  v3: GICD+GICR)
     [0x0a00_0000, 0x4000],      # VirtIO
     [0x1000_0000, 0x2eff_0000],     # PCI memory ranges (ranges 1: 32-bit MMIO space)
     [0x40_1000_0000, 0x1000_0000],  # PCI config space

@@ -519,26 +519,10 @@ impl DistributorReg {
     /// Initialize for two security states configuration (from Secure state)
     /// This handles the case where DS=0 and security extensions are present
     pub fn reset_registers(&self) {
-        // Get the maximum number of interrupts
-        let max_spis = self.max_spi_num();
-
-        // Clear all pending and active interrupts
-        self.pending_clear_all(max_spis);
-        self.active_clear_all(max_spis);
-
-        // Disable all interrupts
-        self.irq_disable_all(max_spis);
-
-        // Set all interrupts to Group 1 by default
-        self.groups_all_to_1(max_spis);
-
-        // Set default priorities
-        self.set_default_priorities(max_spis);
-
-        // Configure all interrupts as level-sensitive
-        self.configure_interrupt_config(max_spis);
-
-        self.set_all_routing_to_current(max_spis);
+        // QEMU's HVF backend can abort on wide GICD MMIO reset loops
+        // before the guest reaches userspace. Keep boot-time setup small
+        // and let per-interrupt setup program the SPIs that are actually
+        // used by the platform.
     }
 
     /// Wait for register write pending to clear

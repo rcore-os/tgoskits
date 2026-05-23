@@ -1,0 +1,16 @@
+args = [
+    # Apple HVF exposes the host CPU model and requires the GICv3
+    # system-register CPU interface. This smoke keeps the rootfs in
+    # snapshot mode and only checks that an 8-CPU kernel reaches
+    # StarryOS userland without panic or QEMU HVF assertion.
+    "-nographic", "-accel", "hvf", "-machine", "virt,gic-version=3", "-cpu", "host", "-smp", "8",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+success_regex = ["(?s)smp = 8.*Welcome to"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL', 'Assertion failed']
+timeout = 30
