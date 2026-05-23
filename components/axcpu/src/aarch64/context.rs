@@ -15,6 +15,11 @@ pub struct TrapFrame {
 
     /// Stack pointer at the time of the exception.
     /// Populated by SAVE_REGS as `sp_before_sub = sp_after_sub + trapframe_size`.
+    ///
+    /// Note: This field is read-only (saved by SAVE_REGS for inspection only).
+    /// The actual SP is restored by RESTORE_REGS via `add sp, sp, #trapframe_size`,
+    /// not from this field. Modifying this value will NOT affect the actual SP
+    /// after exception return.
     pub sp: u64,
 }
 

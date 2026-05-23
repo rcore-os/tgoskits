@@ -22,6 +22,7 @@ pub struct UserContext {
 }
 
 impl UserContext {
+    /// Creates a new user context with the given entry point, stack top, and argument.
     pub fn new(entry: usize, ustack_top: VirtAddr, arg0: usize) -> Self {
         use aarch64_cpu::registers::SPSR_EL1;
         let mut regs = [0; 31];
