@@ -793,8 +793,7 @@ pub fn sys_splice(
     const SPLICE_F_NONBLOCK: u32 = 0x02;
     const SPLICE_F_MORE: u32 = 0x04;
     const SPLICE_F_GIFT: u32 = 0x08;
-    const SPLICE_F_ALL: u32 =
-        SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
+    const SPLICE_F_ALL: u32 =SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
 
     // 1. 先检查明显非法 fd。
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
