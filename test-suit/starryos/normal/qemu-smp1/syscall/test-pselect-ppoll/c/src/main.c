@@ -8,6 +8,8 @@
 #include <signal.h>
 #include <sys/syscall.h>
 
+#define KERNEL_SIGSET_SIZE 8
+
 // Helper to invoke raw pselect6 if available
 static int raw_pselect6(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timespec *timeout, const sigset_t *sigmask) {
 #ifdef SYS_pselect6
@@ -16,7 +18,7 @@ static int raw_pselect6(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exc
     struct {
         const sigset_t *ss;
         size_t ss_len;
-    } data = { sigmask, sizeof(sigset_t) };
+    } data = { sigmask, KERNEL_SIGSET_SIZE };
     return syscall(SYS_pselect6, nfds, readfds, writefds, exceptfds, timeout, &data);
 #else
     return pselect(nfds, readfds, writefds, exceptfds, timeout, sigmask);
@@ -26,7 +28,7 @@ static int raw_pselect6(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exc
 // Helper to invoke raw ppoll if available
 static int raw_ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *tmo_p, const sigset_t *sigmask) {
 #ifdef SYS_ppoll
-    return syscall(SYS_ppoll, fds, nfds, tmo_p, sigmask, sizeof(sigset_t));
+    return syscall(SYS_ppoll, fds, nfds, tmo_p, sigmask, KERNEL_SIGSET_SIZE);
 #else
     return ppoll(fds, nfds, tmo_p, sigmask);
 #endif
