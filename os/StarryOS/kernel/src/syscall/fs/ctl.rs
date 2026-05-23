@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
+use axfs_ng_vfs::{DeviceId, Location, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
     ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
@@ -22,6 +22,56 @@ use crate::{
     task::AsThread,
     time::TimeValueLike,
 };
+
+fn check_dir_search_write_permission(dir: &Location) -> AxResult<()> {
+    let cred = current().as_thread().cred();
+    let metadata = dir.metadata()?;
+    let file_uid = metadata.uid;
+    let file_gid = metadata.gid;
+    let file_mode = metadata.mode.bits() as u32;
+
+    if cred.fsuid == 0 {
+        let any_exec = NodePermission::OWNER_EXEC.bits()
+            | NodePermission::GROUP_EXEC.bits()
+            | NodePermission::OTHER_EXEC.bits();
+        if file_mode as u16 & any_exec == 0 {
+            return Err(AxError::PermissionDenied);
+        }
+        return Ok(());
+    }
+
+    let effective_bits = if cred.fsuid == file_uid {
+        (file_mode >> 6) & 0o7
+    } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
+        (file_mode >> 3) & 0o7
+    } else {
+        file_mode & 0o7
+    };
+
+    if effective_bits & 0o3 != 0o3 {
+        return Err(AxError::PermissionDenied);
+    }
+
+    Ok(())
+}
+
+fn check_sticky_rename_permission(dir: &Location, victim: &Location) -> AxResult<()> {
+    let cred = current().as_thread().cred();
+    let dir_meta = dir.metadata()?;
+    if !dir_meta.mode.contains(NodePermission::STICKY) {
+        return Ok(());
+    }
+    if cred.has_cap_fowner() || cred.fsuid == dir_meta.uid {
+        return Ok(());
+    }
+
+    let victim_meta = victim.metadata()?;
+    if cred.fsuid == victim_meta.uid {
+        return Ok(());
+    }
+
+    Err(AxError::OperationNotPermitted)
+}
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -59,14 +109,48 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
 
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;
+    if entry.node_type() != NodeType::Directory {
+        return Err(AxError::NotADirectory);
+    }
+    check_dir_search_permission(&entry)?;
     fs.set_current_dir(entry)?;
     Ok(0)
+}
+
+fn check_dir_search_permission(dir: &Location) -> AxResult<()> {
+    let meta = dir.metadata()?;
+    let cred = current().as_thread().cred();
+
+    if cred.fsuid == 0 {
+        let any_exec =
+            NodePermission::OWNER_EXEC | NodePermission::GROUP_EXEC | NodePermission::OTHER_EXEC;
+        return if meta.mode.intersects(any_exec) {
+            Ok(())
+        } else {
+            Err(AxError::PermissionDenied)
+        };
+    }
+
+    let has_search = if cred.fsuid == meta.uid {
+        meta.mode.contains(NodePermission::OWNER_EXEC)
+    } else if cred.in_group(meta.gid) {
+        meta.mode.contains(NodePermission::GROUP_EXEC)
+    } else {
+        meta.mode.contains(NodePermission::OTHER_EXEC)
+    };
+
+    if has_search {
+        Ok(())
+    } else {
+        Err(AxError::PermissionDenied)
+    }
 }
 
 pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
-    let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
+    let entry = Directory::from_fd(dirfd)?.inner().clone();
+    check_dir_search_permission(&entry)?;
     FS_CONTEXT.lock().set_current_dir(entry)?;
     Ok(0)
 }
@@ -85,10 +169,24 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_chroot <= path: {path}");
 
+    let cred = current().as_thread().cred();
     let mut fs = FS_CONTEXT.lock();
+    match fs.resolve_parent(Path::new(&path)) {
+        Ok((parent, _)) => check_dir_search_permission(&parent)?,
+        // axfs-ng reports "/" (and only the namespace root) as InvalidInput
+        // because it has no parent; Linux still allows chroot("/") and should
+        // continue with target resolution / privilege checks instead of EINVAL.
+        Err(AxError::InvalidInput) => {}
+        Err(AxError::NotFound) => {}
+        Err(err) => return Err(err),
+    }
     let loc = fs.resolve(path)?;
     if loc.node_type() != NodeType::Directory {
         return Err(AxError::NotADirectory);
+    }
+    check_dir_search_permission(&loc)?;
+    if !cred.has_cap_sys_chroot() {
+        return Err(AxError::OperationNotPermitted);
     }
     *fs = FsContext::new(loc);
     Ok(0)
@@ -136,16 +234,18 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
-
-    with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
-        Ok(_) => Ok(0),
-        // mkdir on an existing path should report EEXIST.
-        // Use no-follow lookup so dangling symlinks are treated as existing
-        // entries, and avoid converting empty-path invalid input.
-        Err(AxError::InvalidInput) if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() => {
-            Err(AxError::AlreadyExists)
+    with_fs(dirfd, |fs| {
+        let cred = current().as_thread().cred();
+        let path = Path::new(&path);
+        if let Ok((dir, _)) = fs.resolve_nonexistent(path) {
+            check_dir_search_write_permission(&dir)?;
         }
-        Err(err) => Err(err),
+        let loc = fs.create_dir(path, mode)?;
+        loc.update_metadata(MetadataUpdate {
+            owner: Some((cred.fsuid, cred.fsgid)),
+            ..Default::default()
+        })?;
+        Ok(0)
     })
 }
 
@@ -304,12 +404,21 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
+    if flags & AT_EMPTY_PATH != 0 && old_path.as_deref() == Some("") {
+        return Err(AxError::NotFound);
+    }
+
     let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
     if old.is_dir() {
         return Err(AxError::OperationNotPermitted);
     }
+    let new_dirfd = if new_path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        new_dirfd
+    };
     let (new_dir, new_name) =
         with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
 
@@ -391,6 +500,10 @@ pub fn sys_symlinkat(
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
     with_fs(new_dirfd, |fs| {
+        let path = Path::new(&linkpath);
+        if let Ok((dir, _)) = fs.resolve_nonexistent(path) {
+            check_dir_search_write_permission(&dir)?;
+        }
         fs.symlink(target, linkpath)?;
         Ok(0)
     })
@@ -416,6 +529,10 @@ pub fn sys_readlinkat(
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
     with_fs(dirfd, |fs| {
+        let path_obj = Path::new(&path);
+        if let Ok((dir, _)) = fs.resolve_nonexistent(path_obj) {
+            check_dir_search_permission(&dir)?;
+        }
         let entry = fs.resolve_no_follow(path)?;
         let link = entry.read_link()?;
         let read = size.min(link.len());
@@ -732,15 +849,24 @@ pub fn sys_renameat2(
     let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
     let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_parent(Path::new(&new_path)))?;
 
+    check_dir_search_write_permission(&old_dir)?;
+    check_dir_search_write_permission(&new_dir)?;
+
+    let old = old_dir.lookup_no_follow(&old_name)?;
+    check_sticky_rename_permission(&old_dir, &old)?;
+
+    let new = match new_dir.lookup_no_follow(&new_name) {
+        Ok(loc) => Some(loc),
+        Err(AxError::NotFound) => None,
+        Err(err) => return Err(err),
+    };
+
     if flags & RENAME_NOREPLACE != 0 {
-        // Linux reports a missing source leaf before checking whether the
-        // no-replace destination already exists.
-        old_dir.lookup_no_follow(&old_name)?;
-        match new_dir.lookup_no_follow(&new_name) {
-            Ok(_) => return Err(AxError::AlreadyExists),
-            Err(AxError::NotFound) => {}
-            Err(err) => return Err(err),
+        if new.is_some() {
+            return Err(AxError::AlreadyExists);
         }
+    } else if let Some(ref dst) = new {
+        check_sticky_rename_permission(&new_dir, dst)?;
     }
 
     old_dir.rename(&old_name, &new_dir, &new_name)?;

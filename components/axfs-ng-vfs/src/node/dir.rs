@@ -315,10 +315,12 @@ impl DirNode {
                 .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut),
         ) {
             if src.node_type() == NodeType::Directory {
-                if let Ok(dir) = dst.as_dir()
-                    && dir.has_children()?
-                {
-                    return Err(VfsError::DirectoryNotEmpty);
+                if let Ok(dir) = dst.as_dir() {
+                    if dir.has_children()? {
+                        return Err(VfsError::DirectoryNotEmpty);
+                    }
+                } else {
+                    return Err(VfsError::NotADirectory);
                 }
             } else if dst.node_type() == NodeType::Directory {
                 return Err(VfsError::IsADirectory);

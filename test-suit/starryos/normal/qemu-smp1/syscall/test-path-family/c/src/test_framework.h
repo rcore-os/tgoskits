@@ -9,8 +9,8 @@
 #include <string.h>
 #include <errno.h>
 
-static int __pass = 0;
-static int __fail = 0;
+extern int __pass;
+extern int __fail;
 
 #define CHECK(cond, msg) do {                                           \
     if (cond) {                                                         \

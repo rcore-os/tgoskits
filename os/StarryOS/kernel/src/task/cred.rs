@@ -66,6 +66,12 @@ impl Cred {
         self.euid == 0
     }
 
+    /// Check whether this credential may call `chroot`
+    /// (equivalent to `CAP_SYS_CHROOT` — approximated as euid == 0).
+    pub fn has_cap_sys_chroot(&self) -> bool {
+        self.euid == 0
+    }
+
     /// Check whether this credential has the privilege to change file
     /// ownership (equivalent to `CAP_CHOWN` — approximated as fsuid == 0,
     /// since this is a filesystem capability).
