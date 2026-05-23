@@ -793,7 +793,7 @@ pub fn sys_splice(
     const SPLICE_F_NONBLOCK: u32 = 0x02;
     const SPLICE_F_MORE: u32 = 0x04;
     const SPLICE_F_GIFT: u32 = 0x08;
-    const SPLICE_F_ALL: u32 =SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
+    const SPLICE_F_ALL: u32 = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
 
     // 1. 先检查明显非法 fd。
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
@@ -816,14 +816,17 @@ pub fn sys_splice(
 
     // 如果不是 pipe，先确认它至少是合法 file_like。
     // 这样 bad fd 会优先返回 EBADF，而不是被下面的 no-pipe 误判成 EINVAL。
-    if in_pipe.is_none() {
-        get_file_like(fd_in).map_err(|_| AxError::BadFileDescriptor)?;
-    }
+    let in_file = if in_pipe.is_none() {
+        Some(get_file_like(fd_in).map_err(|_| AxError::BadFileDescriptor)?)
+    } else {
+        None
+    };
 
-    if out_pipe.is_none() {
-        get_file_like(fd_out).map_err(|_| AxError::BadFileDescriptor)?;
-    }
-
+    let out_file = if out_pipe.is_none() {
+        Some(get_file_like(fd_out).map_err(|_| AxError::BadFileDescriptor)?)
+    } else {
+        None
+    };
     // splice 要求至少一端是 pipe。
     if in_pipe.is_none() && out_pipe.is_none() {
         return Err(AxError::InvalidInput);
@@ -857,8 +860,7 @@ pub fn sys_splice(
         _ => {}
     }
 
-    // 8. 读取 off_in。
-    // 到这里时，如果 off_in 非空，fd_in 一定不是 pipe。
+    // 8. 读取 off_in。到这里时，如果 off_in 非空，fd_in 一定不是 pipe
     let in_pos = if !off_in.is_null() {
         let pos = off_in.vm_read()?;
         if pos < 0 {
@@ -881,8 +883,7 @@ pub fn sys_splice(
         None
     };
 
-    // 10. 输出目标不能是 O_APPEND。
-    // 注意要覆盖 off_out 为 NULL 和非 NULL 两种情况。
+    // 10. 输出目标不能是 O_APPEND。注意要覆盖 off_out 为 NULL 和非 NULL 两种情况。
     match File::from_fd(fd_out) {
         Ok(file) if file.inner().access(FileFlags::APPEND).is_ok() => {
             return Err(AxError::InvalidInput);
@@ -893,20 +894,23 @@ pub fn sys_splice(
     // 11. 构造输入端。
     let src = if let Some(pos) = in_pos {
         SendFile::Offset(File::from_fd(fd_in)?, off_in.cast(), pos)
+    } else if let Some(file) = in_file {
+        SendFile::Direct(file)
     } else {
         SendFile::Direct(get_file_like(fd_in)?)
     };
-
     // 12. 构造输出端。
-    let dst = if out_pos.is_some() {
+    let dst: SendFile = if out_pos.is_some() {
         // Route memfd output through the seal-aware wrapper rather
         // than `File::from_fd`'s auto-unwrap.
         send_offset_out(fd_out, off_out.cast())?
     } else {
-        let f = get_file_like(fd_out)?;
+        let f = if let Some(file) = out_file {
+            file
+        } else {
+            get_file_like(fd_out)?
+        };
 
-        // 暂时保留原来的写权限探测。
-        // 后续最好换成显式 writable/access mode 检查。
         f.write(&mut b"".as_slice())?;
 
         SendFile::Direct(f)
