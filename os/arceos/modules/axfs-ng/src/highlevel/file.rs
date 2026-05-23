@@ -399,6 +399,22 @@ impl CachedFileShared {
     /// first), pops them, notifies all registered evict listeners, and
     /// drops the pages (freeing their backing physical memory).
     /// Returns the number of pages evicted.
+    ///
+    /// # Lock ordering: `page_cache` → `evict_listeners`
+    ///
+    /// This function holds the `page_cache` lock while acquiring
+    /// `evict_listeners`.  Listeners must never acquire `page_cache`
+    /// (or any lock taken before `evict_listeners`), or a deadlock will
+    /// occur.  The current callers (address-space backend page-table
+    /// invalidation) do not touch the file's page cache, so this
+    /// ordering is safe in practice.
+    ///
+    /// # Context
+    ///
+    /// When called from the page-reclaim path, the reclaim callback is
+    /// invoked with interrupts enabled: `try_page_reclaim` releases its
+    /// `SpinNoIrq` guard before invoking the callback, so `might_sleep()`
+    /// in the blocking `evict_listeners.lock()` is safe.
     fn try_evict_clean_pages(&self, max: usize) -> usize {
         let Some(mut cache) = self.page_cache.try_lock() else {
             return 0;
