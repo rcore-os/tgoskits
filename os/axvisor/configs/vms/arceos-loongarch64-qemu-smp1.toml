@@ -38,7 +38,7 @@ kernel_load_addr = 0x0020_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
-  [0x0, 0x400_0000, 0x7, 0], # System RAM 64M MAP_ALLOC
+  [0x0, 0x200_0000, 0x7, 0], # System RAM 32M MAP_ALLOC
 ]
 
 #

@@ -18,10 +18,8 @@ low-memory-base = 0x0                   # uint
 low-memory-size = 0x1000_0000           # uint
 # Base address of the high physical memory.
 high-memory-base = 0x8000_0000          # uint
-# Size of the whole physical memory. (256M, up to first MMIO at 0x10000000)
-# Increased from 128M to 256M so that the TLSF allocator has enough
-# contiguous free memory to back a 64M guest RAM region after kernel init.
-phys-memory-size = 0x1000_0000          # uint
+# Size of the whole physical memory. (128M)
+phys-memory-size = 0x800_0000           # uint
 
 # Linear mapping offset at boot time.
 phys-boot-offset = "0x9000_0000_0000_0000"      # uint
