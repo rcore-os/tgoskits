@@ -6,6 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
+    mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
 };
@@ -16,7 +17,10 @@ use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use lazy_static::lazy_static;
 use linux_raw_sys::{
-    general::{IN_IGNORED, IN_MODIFY},
+    general::{
+        IN_ALL_EVENTS, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_ISDIR,
+        IN_MODIFY,
+    },
     ioctl::FIONREAD,
 };
 use starry_vm::VmMutPtr;
@@ -89,44 +93,91 @@ impl Inotify {
         if state.watches.remove(&wd).is_none() {
             return Err(AxError::InvalidInput);
         }
-        Self::push_event(&mut state.queue, wd, IN_IGNORED);
+        Self::push_event(&mut state.queue, wd, IN_IGNORED, None);
         self.poll_rx.wake();
         Ok(())
     }
 
-    fn notify_modify(&self, path: &str) {
+    fn notify_path(&self, path: &str, exact_mask: u32, parent_mask: u32) {
         let mut state = self.state.lock();
-        let matched_wds = state
+        let parent = parent_and_name(path);
+        let events = state
             .watches
             .iter()
-            .filter_map(|(wd, watch)| {
-                if watch.path == path && watch.mask & IN_MODIFY != 0 {
-                    Some(*wd)
-                } else {
-                    None
+            .filter_map(|(wd, watch)| match parent {
+                _ if exact_mask != 0
+                    && watch.path == path
+                    && watch.mask & (exact_mask & IN_ALL_EVENTS) != 0 =>
+                {
+                    Some((*wd, exact_mask, None))
                 }
+                Some((parent, name))
+                    if parent_mask != 0
+                        && watch.path == parent
+                        && watch.mask & (parent_mask & IN_ALL_EVENTS) != 0 =>
+                {
+                    Some((*wd, parent_mask, Some(String::from(name))))
+                }
+                _ => None,
             })
             .collect::<Vec<_>>();
 
-        if matched_wds.is_empty() {
+        if events.is_empty() {
             return;
         }
-        for wd in matched_wds {
-            Self::push_event(&mut state.queue, wd, IN_MODIFY);
+        for (wd, mask, name) in events {
+            Self::push_event(&mut state.queue, wd, mask, name.as_deref());
         }
         self.poll_rx.wake();
     }
 
-    fn push_event(queue: &mut VecDeque<Vec<u8>>, wd: i32, mask: u32) {
+    fn notify_delete(&self, path: &str, is_dir: bool) {
+        let dir_mask = if is_dir { IN_ISDIR } else { 0 };
+        let mut state = self.state.lock();
+        let parent = parent_and_name(path);
+        let events = state
+            .watches
+            .iter()
+            .filter_map(|(wd, watch)| match parent {
+                _ if watch.path == path && watch.mask & IN_DELETE_SELF != 0 => {
+                    Some((*wd, IN_DELETE_SELF | dir_mask, None))
+                }
+                Some((parent, name)) if watch.path == parent && watch.mask & IN_DELETE != 0 => {
+                    Some((*wd, IN_DELETE | dir_mask, Some(String::from(name))))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        if events.is_empty() {
+            return;
+        }
+        for (wd, mask, name) in events {
+            Self::push_event(&mut state.queue, wd, mask, name.as_deref());
+        }
+        state.watches.retain(|_, watch| watch.path != path);
+        self.poll_rx.wake();
+    }
+
+    fn push_event(queue: &mut VecDeque<Vec<u8>>, wd: i32, mask: u32, name: Option<&str>) {
         if queue.len() >= MAX_QUEUED_EVENTS {
             queue.pop_front();
         }
 
-        let mut event = Vec::with_capacity(INOTIFY_EVENT_SIZE);
+        let name = name.map(str::as_bytes);
+        let name_len = name
+            .map(|name| align_event_name_len(name.len() + 1))
+            .unwrap_or_default();
+
+        let mut event = Vec::with_capacity(INOTIFY_EVENT_SIZE + name_len);
         event.extend_from_slice(&wd.to_ne_bytes());
         event.extend_from_slice(&mask.to_ne_bytes());
         event.extend_from_slice(&0u32.to_ne_bytes());
-        event.extend_from_slice(&0u32.to_ne_bytes());
+        event.extend_from_slice(&(name_len as u32).to_ne_bytes());
+        if let Some(name) = name {
+            event.extend_from_slice(name);
+            event.resize(INOTIFY_EVENT_SIZE + name_len, 0);
+        }
         queue.push_back(event);
     }
 }
@@ -205,7 +256,23 @@ impl Pollable for Inotify {
     }
 }
 
-pub fn notify_modify_path(path: &str) {
+fn parent_and_name(path: &str) -> Option<(&str, &str)> {
+    let (parent, name) = path.rsplit_once('/')?;
+    if name.is_empty() {
+        None
+    } else if parent.is_empty() {
+        Some(("/", name))
+    } else {
+        Some((parent, name))
+    }
+}
+
+fn align_event_name_len(len: usize) -> usize {
+    let align = size_of::<usize>();
+    (len + align - 1) & !(align - 1)
+}
+
+fn notify_instances(path: &str, notify: impl Fn(&Inotify, &str)) {
     if path == "<error>" {
         return;
     }
@@ -213,10 +280,35 @@ pub fn notify_modify_path(path: &str) {
     let mut instances = INOTIFY_INSTANCES.lock();
     instances.retain(|watcher| {
         if let Some(inotify) = watcher.upgrade() {
-            inotify.notify_modify(path);
+            notify(&inotify, path);
             true
         } else {
             false
         }
+    });
+}
+
+pub fn notify_modify_path(path: &str) {
+    notify_instances(path, |inotify, path| {
+        inotify.notify_path(path, IN_MODIFY, IN_MODIFY);
+    });
+}
+
+pub fn notify_close_write_path(path: &str) {
+    notify_instances(path, |inotify, path| {
+        inotify.notify_path(path, IN_CLOSE_WRITE, IN_CLOSE_WRITE);
+    });
+}
+
+pub fn notify_create_path(path: &str, is_dir: bool) {
+    let mask = IN_CREATE | if is_dir { IN_ISDIR } else { 0 };
+    notify_instances(path, |inotify, path| {
+        inotify.notify_path(path, 0, mask);
+    });
+}
+
+pub fn notify_delete_path(path: &str, is_dir: bool) {
+    notify_instances(path, |inotify, path| {
+        inotify.notify_delete(path, is_dir);
     });
 }
