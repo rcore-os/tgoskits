@@ -793,13 +793,8 @@ pub fn sys_splice(
     const SPLICE_F_NONBLOCK: u32 = 0x02;
     const SPLICE_F_MORE: u32 = 0x04;
     const SPLICE_F_GIFT: u32 = 0x08;
-
-    const SPLICE_F_ALL: u32 = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
-
-    #[inline]
-    fn espipe() -> AxError {
-        AxError::from(LinuxError::ESPIPE)
-    }
+    const SPLICE_F_ALL: u32 =
+        SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
 
     // 1. 先检查明显非法 fd。
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
@@ -830,6 +825,7 @@ pub fn sys_splice(
         get_file_like(fd_out).map_err(|_| AxError::BadFileDescriptor)?;
     }
 
+    // splice 要求至少一端是 pipe。
     if in_pipe.is_none() && out_pipe.is_none() {
         return Err(AxError::InvalidInput);
     }
@@ -844,23 +840,22 @@ pub fn sys_splice(
     }
 
     // 6. 检查 pipe 方向。
-    if let Some(pipe) = &in_pipe {
-        if !pipe.is_read() {
-            return Err(AxError::BadFileDescriptor);
-        }
+    match &in_pipe {
+        Some(pipe) if !pipe.is_read() => return Err(AxError::BadFileDescriptor),
+        _ => {}
     }
 
-    if let Some(pipe) = &out_pipe {
-        if !pipe.is_write() {
-            return Err(AxError::BadFileDescriptor);
-        }
+    match &out_pipe {
+        Some(pipe) if !pipe.is_write() => return Err(AxError::BadFileDescriptor),
+        _ => {}
     }
 
     // 7. 同一个 pipe 不能同时作为输入和输出。
-    if let (Some(src), Some(dst)) = (&in_pipe, &out_pipe) {
-        if alloc::sync::Arc::ptr_eq(src, dst) {
+    match (&in_pipe, &out_pipe) {
+        (Some(src), Some(dst)) if alloc::sync::Arc::ptr_eq(src, dst) => {
             return Err(AxError::InvalidInput);
         }
+        _ => {}
     }
 
     // 8. 读取 off_in。
@@ -889,10 +884,11 @@ pub fn sys_splice(
 
     // 10. 输出目标不能是 O_APPEND。
     // 注意要覆盖 off_out 为 NULL 和非 NULL 两种情况。
-    if let Ok(file) = File::from_fd(fd_out) {
-        if file.inner().access(FileFlags::APPEND).is_ok() {
+    match File::from_fd(fd_out) {
+        Ok(file) if file.inner().access(FileFlags::APPEND).is_ok() => {
             return Err(AxError::InvalidInput);
         }
+        _ => {}
     }
 
     // 11. 构造输入端。
