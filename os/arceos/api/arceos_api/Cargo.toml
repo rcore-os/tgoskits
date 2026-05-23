@@ -1,6 +1,6 @@
 [package]
 name = "ax-api"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -25,7 +25,7 @@ display = ["dep:ax-display", "dep:ax-driver", "ax-feat/display"]
 dummy-if-not-enabled = []
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config.workspace = true
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }

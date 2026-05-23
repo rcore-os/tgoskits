@@ -44,6 +44,7 @@ cfg_if::cfg_if! {
         pub use loongarch_vcpu::LoongArchPerCpu as AxVMArchPerCpuImpl;
         pub use loongarch_vcpu::LoongArchVCpu as AxArchVCpuImpl;
         pub use loongarch_vcpu::LoongArchVCpuCreateConfig as AxVCpuCreateConfig;
+        pub use loongarch_vcpu::LoongArchVCpuSetupConfig as AxVCpuSetupConfig;
         pub use loongarch_vcpu::has_hardware_support;
 
         /// LoongArch guests currently use 4-level page tables.

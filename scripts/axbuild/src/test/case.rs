@@ -734,7 +734,7 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     println!("  rootfs: {}", prepared_assets.rootfs_path.display());
 
     let qemu_started = std::time::Instant::now();
-    let result = app.run_qemu(cargo, qemu).await;
+    let result = app.run_qemu(cargo, qemu, None).await;
     println!("  qemu run: {:.2?}", qemu_started.elapsed());
 
     remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());

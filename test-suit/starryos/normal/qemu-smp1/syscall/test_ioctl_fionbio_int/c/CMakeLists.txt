@@ -9,4 +9,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test_ioctl_fionbio_int src/main.c)
 target_compile_options(test_ioctl_fionbio_int PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test_ioctl_fionbio_int RUNTIME DESTINATION usr/bin)
+install(TARGETS test_ioctl_fionbio_int RUNTIME DESTINATION usr/bin/starry-test-suit)

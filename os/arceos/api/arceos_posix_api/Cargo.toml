@@ -1,6 +1,6 @@
 [package]
 name = "ax-posix-api"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -35,7 +35,7 @@ epoll = ["fd"]
 
 [dependencies]
 # ArceOS modules
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config.workspace = true
 ax-feat.workspace = true
 ax-fs = { workspace = true, optional = true }

@@ -248,7 +248,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use ax_memory_addr::{addr_range, AddrRange};
+    /// use ax_memory_addr::{AddrRange, addr_range};
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000);
     /// assert!(!range.contains_range(addr_range!(0x0usize..0xfff)));
@@ -268,7 +268,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use ax_memory_addr::{addr_range, AddrRange};
+    /// use ax_memory_addr::{AddrRange, addr_range};
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000);
     /// assert!(!range.contained_in(addr_range!(0xfffusize..0x1fff)));
@@ -286,7 +286,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use ax_memory_addr::{addr_range, AddrRange};
+    /// use ax_memory_addr::{AddrRange, addr_range};
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000usize);
     /// assert!(!range.overlaps(addr_range!(0xfffusize..0xfff)));
@@ -375,7 +375,7 @@ pub type PhysAddrRange = AddrRange<PhysAddr>;
 /// # Example
 ///
 /// ```
-/// use ax_memory_addr::{addr_range, AddrRange};
+/// use ax_memory_addr::{AddrRange, addr_range};
 ///
 /// let range: AddrRange<usize> = addr_range!(0x1000usize..0x2000);
 /// assert_eq!(range.start, 0x1000usize);

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.6.2...starry-signal-v0.7.0) - 2026-05-22
+
+### Added
+
+- *(starry)* support multi-threaded execve ([#273](https://github.com/rcore-os/tgoskits/pull/273))
+
+### Other
+
+- *(starry)* add signalfd4 test case, fix ssi_pid/ssi_uid ([#683](https://github.com/rcore-os/tgoskits/pull/683))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.6.1...starry-signal-v0.6.2) - 2026-05-19
 
 ### Other

@@ -80,6 +80,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
     // Persist a clean directory inode that points at the newly initialized block.
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;
     let mut inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
+    inode.i_generation = root_gen;
     inode.i_links_count = 2;
     inode.i_size_lo = BLOCK_SIZE as u32;
     inode.i_size_high = 0;
@@ -191,6 +192,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     let (lf_group, _idx) = fs.inode_allocator.global_to_group(lost_ino)?;
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;
     let mut lost_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
+    lost_inode.i_generation = lost_gen;
     lost_inode.i_links_count = 2;
     lost_inode.i_size_lo = BLOCK_SIZE as u32;
     lost_inode.i_size_high = 0;

@@ -27,7 +27,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     ) {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }

@@ -9,4 +9,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-epoll-network src/main.c)
 target_compile_options(test-epoll-network PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-epoll-network RUNTIME DESTINATION usr/bin)
+install(TARGETS test-epoll-network RUNTIME DESTINATION usr/bin/starry-test-suit)

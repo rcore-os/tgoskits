@@ -64,21 +64,42 @@ pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateCon
 
 /// Handle all FDT-related operations for guest architectures that boot with DTB.
 pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateConfig) {
-    let host_fdt_bytes = get_host_fdt();
-    let host_fdt = Fdt::from_bytes(host_fdt_bytes)
-        .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
-        .expect("Failed to parse FDT");
-    set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config);
+    let host_fdt_bytes = try_get_host_fdt();
 
-    if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config) {
-        info!("VM[{}] found DTB , parsing...", vm_config.id());
-        update_provided_fdt(&provided_dtb, host_fdt_bytes, vm_create_config);
+    if let Some(host_fdt_bytes) = host_fdt_bytes {
+        let host_fdt = Fdt::from_bytes(host_fdt_bytes)
+            .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
+            .expect("Failed to parse FDT");
+        set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config);
+
+        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config) {
+            info!("VM[{}] found DTB , parsing...", vm_config.id());
+            update_provided_fdt(&provided_dtb, host_fdt_bytes, vm_create_config);
+        } else {
+            info!(
+                "VM[{}] DTB not found, generating based on the configuration file.",
+                vm_config.id()
+            );
+            setup_guest_fdt_from_vmm(host_fdt_bytes, vm_config, vm_create_config);
+        }
     } else {
-        info!(
-            "VM[{}] DTB not found, generating based on the configuration file.",
-            vm_config.id()
-        );
-        setup_guest_fdt_from_vmm(host_fdt_bytes, vm_config, vm_create_config);
+        #[cfg(target_arch = "loongarch64")]
+        {
+            warn!(
+                "VM[{}] host FDT is unavailable on loongarch64 boot path; skipping host-FDT-dependent guest DTB handling",
+                vm_config.id()
+            );
+        }
+
+        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config) {
+            info!("VM[{}] found DTB , parsing...", vm_config.id());
+            update_provided_fdt(&provided_dtb, &[], vm_create_config);
+        } else {
+            warn!(
+                "VM[{}] no guest DTB provided; continuing without generated DTB",
+                vm_config.id()
+            );
+        }
     }
 
     // Overlay VM config with the given DTB.
