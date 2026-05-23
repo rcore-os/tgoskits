@@ -246,6 +246,11 @@ impl LoongArchVCpu {
     /// By programming the host timer to match, the hardware timer fires at the
     /// guest's requested time, causing an IRQ VM exit. The IRQ handler then
     /// injects the timer interrupt into the guest via `gcsr_estat`.
+    ///
+    /// **Limitation**: This direct passthrough is only correct in the 1:1 vCPU
+    /// model where each vCPU exclusively owns a physical CPU. In SMP or
+    /// shared-CPU scenarios, a software-emulated timer (maintaining per-guest
+    /// virtual TCFG/TVAL) will be needed.
     #[cfg(target_arch = "loongarch64")]
     fn sync_guest_timer_to_host(&self) {
         let guest_tcfg = self.ctx.gcsr_tcfg;
