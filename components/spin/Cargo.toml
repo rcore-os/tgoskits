@@ -21,7 +21,9 @@ portable-atomic = { version = "1.3", optional = true, default-features = false, 
 [features]
 # TGOSKits keeps this crate for `RwLock`, `Once`, and `Lazy` compatibility.
 # Non-sleeping mutex users should use `ax-kspin` instead.
-default = ["lock_api", "rwlock", "once", "lazy"]
+# Note: mutex is enabled here for external crates like buddy-slab-allocator
+# that still depend on spin::Mutex. This feature should not be used in new code.
+default = ["lock_api", "rwlock", "once", "lazy", "mutex"]
 
 # Enables `Mutex`. By default this uses `SpinMutex`; enable `use_ticket_mutex`
 # to make the root `Mutex` alias use `TicketMutex`.

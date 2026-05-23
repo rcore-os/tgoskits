@@ -323,6 +323,7 @@ version = "0.3.1"
 dependencies = [
  "ax-kspin",
  "ax-std",
+ "axfs-ng-vfs",
 ]
 
 [[package]]
@@ -497,13 +498,13 @@ name = "arm-scmi-rs"
 version = "0.1.2"
 dependencies = [
  "aarch64-cpu-ext",
+ "ax-kspin",
  "bitflags 2.11.1",
  "log",
  "mbarrier",
  "nb",
  "num-align",
  "smccc",
- "spin 0.10.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -521,7 +522,7 @@ dependencies = [
  "axvisor_api",
  "log",
  "numeric-enum-macro",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -538,7 +539,7 @@ dependencies = [
  "axvisor_api",
  "bitmaps",
  "log",
- "spin 0.10.0",
+ "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -868,11 +869,11 @@ name = "ax-driver-net"
 version = "0.3.13"
 dependencies = [
  "ax-driver-base",
+ "ax-kspin",
  "bitflags 2.11.1",
  "fxmac_rs",
  "ixgbe-driver",
  "log",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -951,7 +952,7 @@ dependencies = [
  "axfatfs",
  "log",
  "rsext4",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -960,7 +961,7 @@ version = "0.3.11"
 dependencies = [
  "ax-fs-vfs",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -986,7 +987,7 @@ dependencies = [
  "rsext4",
  "scope-local",
  "slab",
- "spin 0.10.0",
+ "spin",
  "starry-fatfs",
 ]
 
@@ -996,7 +997,7 @@ version = "0.3.12"
 dependencies = [
  "ax-fs-vfs",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1029,7 +1030,7 @@ dependencies = [
  "fdt-parser",
  "heapless 0.9.3",
  "log",
- "spin 0.10.0",
+ "spin",
  "toml 1.1.2+spec-1.1.0",
 ]
 
@@ -1205,7 +1206,7 @@ dependencies = [
  "cfg-if",
  "log",
  "smoltcp 0.13.1",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1230,11 +1231,10 @@ dependencies = [
  "enum_dispatch",
  "event-listener",
  "hashbrown 0.16.1",
- "lazy_static",
  "log",
  "ringbuf",
  "smoltcp 0.13.1",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1269,7 +1269,7 @@ dependencies = [
  "ax-kernel-guard",
  "ax-percpu-macros",
  "cfg-if",
- "spin 0.10.0",
+ "spin",
  "x86",
 ]
 
@@ -1325,7 +1325,7 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1465,9 +1465,8 @@ dependencies = [
  "ax-task",
  "bindgen 0.72.1",
  "flatten_objects",
- "lazy_static",
  "scope-local",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1534,7 +1533,7 @@ dependencies = [
  "ax-kspin",
  "ax-lazyinit",
  "lock_api",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1570,7 +1569,7 @@ dependencies = [
  "extern-trait",
  "futures-util",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1592,6 +1591,7 @@ version = "0.5.11"
 dependencies = [
  "assert_matches",
  "ax-errno",
+ "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
@@ -1604,7 +1604,6 @@ dependencies = [
  "lazy_static",
  "log",
  "numeric-enum-macro",
- "spin 0.10.0",
  "x86",
 ]
 
@@ -1618,7 +1617,7 @@ dependencies = [
  "gimli 0.33.0",
  "log",
  "paste",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1671,6 +1670,7 @@ version = "0.4.10"
 dependencies = [
  "arm_vgic",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",
@@ -1679,7 +1679,6 @@ dependencies = [
  "log",
  "range-alloc-arceos",
  "riscv_vplic",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -1707,6 +1706,7 @@ name = "axfs-ng-vfs"
 version = "0.4.2"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "axpoll",
  "bitflags 2.11.1",
  "cfg-if",
@@ -1714,7 +1714,6 @@ dependencies = [
  "inherit-methods-macro",
  "log",
  "smallvec",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -1793,7 +1792,7 @@ dependencies = [
  "sdmmc-protocol",
  "some-serial",
  "somehal",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1844,7 +1843,7 @@ dependencies = [
  "bitflags 2.11.1",
  "futures",
  "linux-raw-sys 0.12.1",
- "spin 0.10.0",
+ "spin",
  "tokio",
 ]
 
@@ -1952,7 +1951,6 @@ dependencies = [
  "extern-trait",
  "fdt-parser",
  "hashbrown 0.14.5",
- "lazy_static",
  "log",
  "prettyplease",
  "quote",
@@ -1960,7 +1958,7 @@ dependencies = [
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
- "spin 0.10.0",
+ "spin",
  "syn 2.0.117",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -2010,7 +2008,7 @@ dependencies = [
  "log",
  "loongarch_vcpu",
  "riscv_vcpu",
- "spin 0.10.0",
+ "spin",
  "x86_vcpu",
 ]
 
@@ -2257,7 +2255,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a844607dec426282e05649372acdc1170b08ba57879be9d3216184ed6dbfd3b"
 dependencies = [
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -2272,7 +2270,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672b945a3e4f4f40bfd4cd5ee07df9e796a42254ce7cd6d2599ad969244c44a"
 dependencies = [
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -2755,7 +2753,7 @@ dependencies = [
  "mbarrier",
  "nb",
  "num_enum",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "trait-ffi",
@@ -3332,11 +3330,11 @@ name = "dma-api"
 version = "0.7.3"
 dependencies = [
  "aarch64-cpu-ext",
+ "ax-kspin",
  "cfg-if",
  "derive_more",
  "log",
  "mbarrier",
- "spin 0.10.0",
  "thiserror 2.0.18",
 ]
 
@@ -4961,9 +4959,6 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-dependencies = [
- "spin 0.9.8",
-]
 
 [[package]]
 name = "leb128fmt"
@@ -5128,6 +5123,7 @@ name = "loongarch_vcpu"
 version = "0.5.3"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-page-table-multiarch",
  "ax-percpu",
@@ -5136,7 +5132,6 @@ dependencies = [
  "axvisor_api",
  "log",
  "loongArch64",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -5576,6 +5571,7 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 name = "nvme-driver"
 version = "0.4.2"
 dependencies = [
+ "ax-kspin",
  "byte-unit",
  "dma-api",
  "fdt-edit",
@@ -5583,7 +5579,6 @@ dependencies = [
  "mmio-api",
  "pcie",
  "rd-block",
- "spin 0.10.0",
  "tock-registers 0.10.1",
 ]
 
@@ -6241,10 +6236,10 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramdisk"
 version = "0.1.1"
 dependencies = [
+ "ax-kspin",
  "dma-api",
  "rd-block",
  "rdif-block",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -6548,11 +6543,11 @@ dependencies = [
 name = "rdif-serial"
 version = "0.7.1"
 dependencies = [
+ "ax-kspin",
  "bitflags 2.11.1",
  "futures",
  "heapless 0.9.3",
  "rdif-base",
- "spin 0.10.0",
  "thiserror 2.0.18",
 ]
 
@@ -6586,7 +6581,7 @@ dependencies = [
  "rdif-intc",
  "rdif-pcie",
  "rdrive-macros",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.18",
 ]
 
@@ -6603,11 +6598,11 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.2.0"
 dependencies = [
+ "ax-kspin",
  "dma-api",
  "log",
  "mmio-api",
  "rdif-eth",
- "spin 0.10.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -6868,13 +6863,13 @@ name = "riscv_vplic"
 version = "0.4.12"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "axaddrspace",
  "axdevice_base",
  "axvisor_api",
  "bitmaps",
  "log",
  "riscv-h",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -6940,7 +6935,7 @@ dependencies = [
  "mbarrier",
  "num-align",
  "rdif-base",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -6967,7 +6962,7 @@ dependencies = [
  "log",
  "mbarrier",
  "num-align",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -6977,8 +6972,8 @@ name = "rsext4"
 version = "0.4.1"
 dependencies = [
  "bitflags 2.11.1",
- "lazy_static",
  "log",
+ "spin",
 ]
 
 [[package]]
@@ -7266,7 +7261,7 @@ version = "0.3.7"
 dependencies = [
  "ax-percpu",
  "ctor 0.6.3",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -7456,9 +7451,9 @@ version = "0.1.2"
 dependencies = [
  "ax-dma",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "log",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -7695,6 +7690,7 @@ dependencies = [
 name = "some-serial"
 version = "0.4.1"
 dependencies = [
+ "ax-kspin",
  "bitflags 2.11.1",
  "enum_dispatch",
  "fdt-edit",
@@ -7703,7 +7699,6 @@ dependencies = [
  "rdif-intc",
  "rdif-serial",
  "rdrive",
- "spin 0.10.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "x86",
@@ -7744,7 +7739,7 @@ dependencies = [
  "smccc",
  "some-serial",
  "somehal-macros",
- "spin 0.10.0",
+ "spin",
  "syn 2.0.117",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
@@ -7768,7 +7763,7 @@ dependencies = [
  "rdrive",
  "someboot",
  "somehal-macros",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -7782,12 +7777,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spin"
@@ -7892,7 +7881,6 @@ dependencies = [
  "inherit-methods-macro",
  "kernel-elf-parser",
  "ktracepoint",
- "lazy_static",
  "linux-raw-sys 0.12.1",
  "lock_api",
  "num_enum",
@@ -7905,7 +7893,7 @@ dependencies = [
  "sg2002-tpu",
  "sg200x-bsp",
  "slab",
- "spin 0.10.0",
+ "spin",
  "starry-process",
  "starry-signal",
  "starry-vm",
@@ -9093,7 +9081,7 @@ dependencies = [
  "futures",
  "log",
  "num_enum",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.18",
 ]
 
@@ -9951,6 +9939,7 @@ version = "0.5.9"
 dependencies = [
  "ax-crate-interface",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-page-table-entry",
  "axaddrspace",
@@ -9965,7 +9954,6 @@ dependencies = [
  "numeric-enum-macro",
  "paste",
  "raw-cpuid 11.6.0",
- "spin 0.10.0",
  "tock-registers 0.10.1",
  "x86",
  "x86_64",
