@@ -22,6 +22,8 @@ use ax_sync::spin::SpinNoIrq;
 
 use crate::task::AsThread;
 
+mod ebpf_jit;
+
 #[allow(dead_code)]
 mod bpf_insn {
     pub const BPF_LD: u8 = 0x00;
@@ -992,13 +994,13 @@ impl UnifiedMap {
     }
 }
 
-#[derive(Debug)]
 #[allow(dead_code)]
 struct BpfProg {
     prog_type: u32,
     insns: Vec<bpf_insn::BpfInsn>,
     meta: BpfProgMeta,
     id: u32,
+    jitted: Option<ebpf_jit::JitBuffer>,
 }
 
 #[derive(Clone, Debug)]
@@ -1316,6 +1318,15 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
     }
     let mut guard = BPF_GLOBAL.lock();
     let id = guard.progs.len() as u32;
+    let jitted = {
+        let helpers = init_helper_functions();
+        ebpf_jit::try_jit_compile(&insns, &helpers)
+    };
+    if jitted.is_some() {
+        info!("bpf: JIT compilation successful for prog_{id}");
+    } else {
+        warn!("bpf: JIT compilation failed, will use interpreter for prog_{id}");
+    }
     let prog = BpfProg {
         prog_type,
         insns,
@@ -1328,6 +1339,7 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
             expected_attach_type: 0,
         },
         id,
+        jitted,
     };
     let fd = guard.insert_prog(prog);
     info!("bpf: loaded prog type={prog_type} insns={insn_cnt} fd={fd}");
@@ -2280,12 +2292,30 @@ impl BpfVm {
 
 #[allow(dead_code)]
 pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
-    let (insns, prog_type) = {
+    let (insns, prog_type, has_jit, jit_entry) = {
         let guard = BPF_GLOBAL.lock();
         let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
-        (prog.insns.clone(), prog.prog_type)
+        let entry = prog.jitted.as_ref().map(|j| j.entry());
+        (
+            prog.insns.clone(),
+            prog.prog_type,
+            prog.jitted.is_some(),
+            entry,
+        )
     };
     let _ = prog_type;
+
+    if has_jit {
+        if let Some(entry) = jit_entry {
+            let result: u64;
+            unsafe {
+                let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
+                result = jit_fn(ctx);
+            }
+            return Ok(result);
+        }
+    }
+
     let vm = BpfVm::new();
     vm.execute(&insns, ctx).map_err(|e| {
         warn!("bpf: program execution failed: {e}");
