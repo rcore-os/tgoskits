@@ -290,7 +290,9 @@ pub fn load_user_app(
         .or_else(|| args.first().map(String::as_str))
         .ok_or(AxError::InvalidInput)?;
 
-    // FIXME: impl `/proc/self/exe` to let busybox retry running
+    // `/proc/self/exe` is available in procfs; busybox can `readlink` it
+    // to re-exec itself as a shell on ENOEXEC, provided the busybox build
+    // includes that fallback (Alpine's prebuilt binary may not).
     if path.ends_with(".sh") {
         let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
             .chain(args.iter().cloned())
@@ -315,12 +317,7 @@ pub fn load_user_app(
                     .collect();
                 return load_user_app(uspace, None, &new_args, envs);
             }
-            // Not an ELF and no shebang: retry via /bin/sh.
-            // This mirrors how Linux user-space handles ENOEXEC.
-            let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
-                .chain(args.iter().cloned())
-                .collect();
-            return load_user_app(uspace, None, &new_args, envs);
+            return Err(AxError::InvalidExecutable);
         }
     };
 

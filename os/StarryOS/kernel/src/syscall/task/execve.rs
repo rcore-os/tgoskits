@@ -3,7 +3,7 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{ffi::c_char, future::poll_fn, task::Poll};
+use core::{ffi::c_char, future::poll_fn, iter, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
@@ -105,8 +105,8 @@ pub fn sys_execve(
 
     // Resolve the path and collect metadata before touching anything.
     let loc = FS_CONTEXT.lock().resolve(&path)?;
-    let new_name = loc.name();
-    let new_exe_path = loc.absolute_path()?.to_string();
+    let mut new_name = loc.name();
+    let mut new_exe_path = loc.absolute_path()?.to_string();
 
     // Build the new address space entirely before committing.
     // Loading into a fresh aspace (rather than clearing the existing one)
@@ -119,7 +119,23 @@ pub fn sys_execve(
     let mut new_aspace = new_user_aspace_empty()?;
     copy_from_kernel(&mut new_aspace)?;
     let (entry_point, user_stack_base) =
-        load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs)?;
+        match load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs) {
+            Ok(result) => result,
+            Err(AxError::InvalidExecutable) => {
+                // binfmt_misc-style fallback: non-ELF non-shebang files are
+                // retried via /bin/sh, mirroring the ENOEXEC handling that
+                // user-space execvp(3) / busybox perform on Linux.
+                let shell_path = "/bin/sh";
+                let shell_loc = FS_CONTEXT.lock().resolve(shell_path)?;
+                new_name = shell_loc.name();
+                new_exe_path = shell_loc.absolute_path()?.to_string();
+                args = iter::once(String::from(shell_path))
+                    .chain(args.iter().cloned())
+                    .collect();
+                load_user_app(&mut new_aspace, None, &args, &envs)?
+            }
+            Err(e) => return Err(e),
+        };
 
     // ----------------------------------------------------------------
     // Sibling teardown (multi-thread only).
