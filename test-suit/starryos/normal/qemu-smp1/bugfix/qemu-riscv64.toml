@@ -41,6 +41,7 @@ test_commands = [
     "/usr/bin/bug-unlinkat-einval",
     "/usr/bin/bug-wait4-invalid-options",
     "/usr/bin/bug-writev-dir-ebadf",
+    "/usr/bin/test-dev-zero-full-transfer",
     "/usr/bin/clone3-badsize",
     "/usr/bin/bug-unaligned-cow-split",
     "/usr/bin/bug-proc-maps-lseek-refresh",
