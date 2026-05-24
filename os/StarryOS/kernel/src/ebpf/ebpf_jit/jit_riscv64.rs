@@ -300,28 +300,32 @@ fn emit_mv(buf: &mut JitBuffer, rd: u32, rs: u32) {
 }
 
 fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
-    let lo12 = (val as i16) as i32;
-    let hi52 = ((val as i64) - lo12 as i64) as u64;
-    let hi20 = (hi52 >> 12) as u32;
-    if hi52 >> 32 == 0 {
+    let val_i = val as i64;
+    if val_i >= -2048 && val_i < 2048 {
+        emit_addi(buf, rd, RV_ZERO, val_i as i32);
+        return;
+    }
+    if (val as u32 as i32) as i64 == val_i {
+        let lo32 = val as u32 as i32;
+        let lo12 = (((lo32 as i64) << 52) >> 52) as i32;
+        let hi20 = ((lo32 as i64 - lo12 as i64 + 0x800) >> 12) as u32;
         emit_lui(buf, rd, hi20);
         if lo12 != 0 {
             emit_addi(buf, rd, rd, lo12);
         }
     } else {
-        let upper_20 = ((hi52 >> 12) & 0xfffff) as u32;
-        let middle_20 = ((hi52 >> 32) & 0xfffff) as u32;
-        let lower_12 = (hi52 & 0xfff) as i32;
-        emit_lui(buf, rd, upper_20);
-        emit_addi(buf, rd, rd, lower_12);
-        emit_slli(buf, rd, rd, 12);
-        emit_addi(buf, rd, rd, (middle_20 & 0xfff) as i32);
-        emit_slli(buf, rd, rd, 12);
-        emit_addi(buf, rd, rd, ((middle_20 >> 12) & 0xfff) as i32);
-        emit_slli(buf, rd, rd, 8);
-        if lo12 != 0 {
-            emit_addi(buf, rd, rd, lo12);
-        }
+        let lo32 = val as u32 as i32;
+        let lo32_hi20 = ((lo32 as i64 + 0x800) >> 12) as u32;
+        let lo32_lo12 = (((lo32 as i64) << 52) >> 52) as i32;
+        emit_lui(buf, rd, lo32_hi20);
+        emit_addiw(buf, rd, rd, lo32_lo12);
+        emit_slli(buf, rd, rd, 32);
+        let hi32 = (val >> 32) as u32 as i32;
+        let hi32_hi20 = ((hi32 as i64 + 0x800) >> 12) as u32;
+        let hi32_lo12 = (((hi32 as i64) << 52) >> 52) as i32;
+        emit_lui(buf, RV_T1, hi32_hi20);
+        emit_addiw(buf, RV_T1, RV_T1, hi32_lo12);
+        emit_add(buf, rd, rd, RV_T1);
     }
 }
 
@@ -408,6 +412,7 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_DIV => {
+                emit_addi(buf, dst, RV_ZERO, 0);
                 let skip = buf.offset();
                 if is_64 {
                     emit_beq(buf, src, RV_ZERO, 0);
@@ -450,8 +455,8 @@ impl JitBackend for Riscv64Backend {
                         emit_slliw(buf, dst, dst, shamt);
                     }
                 } else if is_64 {
-                    emit_sll(buf, dst, dst, src);
-                    emit_andi(buf, src, src, 63);
+                    emit_andi(buf, RV_T2, src, 63);
+                    emit_sll(buf, dst, dst, RV_T2);
                 } else {
                     emit_andi(buf, RV_T2, src, 31);
                     emit_sllw(buf, dst, dst, RV_T2);
@@ -485,6 +490,7 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_MOD => {
+                emit_addi(buf, dst, RV_ZERO, 0);
                 let skip = buf.offset();
                 if is_64 {
                     emit_beq(buf, src, RV_ZERO, 0);
@@ -555,12 +561,6 @@ impl JitBackend for Riscv64Backend {
                     emit_jalr(buf, RV_ZERO, RV_T6, 0);
                 }
             }
-            return;
-        }
-
-        if op == BPF_EXIT {
-            let off = buf.offset() as isize - offsets[0] as isize;
-            emit_jalr(buf, RV_ZERO, RV_ZERO, -(off as i32));
             return;
         }
 
@@ -728,11 +728,11 @@ impl JitBackend for Riscv64Backend {
 
     fn emit_call(buf: &mut JitBuffer, helper_fn: HelperFn) {
         emit_mv(buf, RV_T2, RV_A5);
-        emit_mv(buf, RV_A5, RV_A4);
-        emit_mv(buf, RV_A4, RV_A3);
-        emit_mv(buf, RV_A3, RV_A2);
-        emit_mv(buf, RV_A2, RV_A1);
-        emit_mv(buf, RV_A1, RV_A0);
+        emit_mv(buf, RV_A0, RV_A1);
+        emit_mv(buf, RV_A1, RV_A2);
+        emit_mv(buf, RV_A2, RV_A3);
+        emit_mv(buf, RV_A3, RV_A4);
+        emit_mv(buf, RV_A4, RV_T2);
 
         emit_load_imm64(buf, RV_T1, helper_fn as u64);
         emit_jalr(buf, RV_RA, RV_T1, 0);
@@ -745,19 +745,18 @@ impl JitBackend for Riscv64Backend {
         match class {
             BPF_ALU | BPF_ALU64 => {
                 let alu_op = insn.alu_op();
-                let base = if use_imm {
+                let load_size = if use_imm {
                     if insn.imm >= -2048 && insn.imm < 2048 {
                         4
-                    } else if (insn.imm as i32) >= -2048 && (insn.imm as i32) < 2048 {
-                        8
                     } else {
-                        28
+                        8
                     }
                 } else {
-                    4
+                    0
                 };
-                match alu_op {
-                    BPF_DIV | BPF_MOD => base + 8,
+                let zext_size = if class == BPF_ALU && use_imm { 8 } else { 0 };
+                let op_size = match alu_op {
+                    BPF_DIV | BPF_MOD => 12,
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
                         if use_imm {
                             4
@@ -765,29 +764,30 @@ impl JitBackend for Riscv64Backend {
                             8
                         }
                     }
-                    _ => base,
-                }
+                    _ => 4,
+                };
+                load_size + zext_size + op_size
             }
             BPF_JMP | BPF_JMP32 => {
                 let op = insn.code & 0xf0;
                 if op == BPF_EXIT {
-                    4
+                    28
                 } else if op == 0x80 {
-                    28 + 28 + 4 + 4
+                    24 + 24 + 4 + 4
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
                     28
                 } else {
                     let imm_size = if use_imm {
                         if insn.imm >= -2048 && insn.imm < 2048 {
-                            8
+                            4
                         } else {
-                            32
+                            8
                         }
                     } else {
                         0
                     };
-                    let cmp_size = if class == BPF_JMP32 { 16 } else { 0 };
-                    4 + cmp_size + imm_size + 8
+                    let zext_size = if class == BPF_JMP32 { 16 } else { 0 };
+                    imm_size + zext_size + 8
                 }
             }
             BPF_ST | BPF_STX => {
@@ -798,9 +798,9 @@ impl JitBackend for Riscv64Backend {
                 };
                 let imm_size = if class == BPF_ST {
                     if insn.imm >= -2048 && insn.imm < 2048 {
-                        8
+                        4
                     } else {
-                        28
+                        8
                     }
                 } else {
                     0
@@ -817,7 +817,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_LD => {
                 if insn.is_ld_dw_imm() {
-                    28
+                    24
                 } else {
                     4
                 }
