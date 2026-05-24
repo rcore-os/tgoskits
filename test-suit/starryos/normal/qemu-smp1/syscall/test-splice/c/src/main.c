@@ -288,5 +288,64 @@ int main(void)
         unlink(TEST_SRC);
     }
 
+      {
+        int dst = open(TEST_DST, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        CHECK(dst >= 0, "open destination file for pipe direction test");
+
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "create pipe for direction test");
+
+        ssize_t n = my_splice(pipefd[1], NULL, dst, NULL, 3, 0);
+        CHECK(n == -1, "pipe write end used as input should fail");
+        CHECK(errno == EBADF, "pipe write end used as input should return EBADF");
+
+        int src = reset_file(TEST_SRC, "abc");
+        CHECK(src >= 0, "open source file for pipe direction test");
+
+        n = my_splice(src, NULL, pipefd[0], NULL, 3, 0);
+        CHECK(n == -1, "pipe read end used as output should fail");
+        CHECK(errno == EBADF, "pipe read end used as output should return EBADF");
+
+        if (src >= 0) close(src);
+        if (dst >= 0) close(dst);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        unlink(TEST_SRC);
+        unlink(TEST_DST);
+    }
+     /* same pipe used as both input and output -> EINVAL */
+    {
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "create pipe for same-pipe test");
+
+        CHECK_RET(write(pipefd[1], "abc", 3), 3, "write data for same-pipe test");
+
+        ssize_t n = my_splice(pipefd[0], NULL, pipefd[1], NULL, 3, 0);
+        CHECK(n == -1, "same pipe input and output should fail");
+        CHECK(errno == EINVAL, "same pipe input and output should return EINVAL");
+
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+        /* O_APPEND output -> EINVAL */
+    {
+        int pipefd[2];
+        CHECK(pipe(pipefd) == 0, "create pipe for O_APPEND test");
+
+        CHECK_RET(write(pipefd[1], "abc", 3), 3, "write data for O_APPEND test");
+
+        int dst = open(TEST_DST, O_RDWR | O_CREAT | O_TRUNC | O_APPEND, 0644);
+        CHECK(dst >= 0, "open O_APPEND destination file");
+
+        ssize_t n = my_splice(pipefd[0], NULL, dst, NULL, 3, 0);
+        CHECK(n == -1, "O_APPEND output should fail");
+        CHECK(errno == EINVAL, "O_APPEND output should return EINVAL");
+
+        close(pipefd[0]);
+        close(pipefd[1]);
+        if (dst >= 0) close(dst);
+        unlink(TEST_DST);
+    }
+
     TEST_DONE();
 }

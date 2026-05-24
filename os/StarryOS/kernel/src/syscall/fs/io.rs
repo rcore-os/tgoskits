@@ -682,10 +682,7 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
 
         SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
     } else {
-        // Linux sendfile 要求 in_fd 是支持 mmap-like 操作的文件。
-        // 这里显式用 File::from_fd(in_fd)? 拒绝 pipe。
         let _in_file = File::from_fd(in_fd)?;
-
         SendFile::Direct(get_file_like(in_fd)?)
     };
 

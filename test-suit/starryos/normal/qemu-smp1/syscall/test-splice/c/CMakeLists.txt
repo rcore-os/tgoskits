@@ -10,4 +10,5 @@ add_executable(test-splice src/main.c)
 include_directories(test-splice PRIVATE src)
 target_compile_options(test-splice PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-splice RUNTIME DESTINATION usr/bin)
+install(TARGETS test-splice RUNTIME DESTINATION usr/bin/starry-test-suit)
+
