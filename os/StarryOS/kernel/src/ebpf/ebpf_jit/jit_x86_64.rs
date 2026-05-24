@@ -19,8 +19,8 @@ const X86_RSI: u8 = 6;
 const X86_RDI: u8 = 7;
 const X86_R8: u8 = 8;
 const _X86_R9: u8 = 9;
-const _X86_R10: u8 = 10;
-const _X86_R11: u8 = 11;
+const X86_R10: u8 = 10;
+const X86_R11: u8 = 11;
 const _X86_R12: u8 = 12;
 const X86_R13: u8 = 13;
 const X86_R14: u8 = 14;
@@ -434,9 +434,6 @@ fn emit_load_mem(buf: &mut JitBuffer, dst: u8, base: u8, off: i32, size: u8) {
             emit_rex_if(buf, 0, dst);
             buf.emit_u8(0x8B);
             emit_modrm_disp(buf, dst, base, off);
-            emit_rex_if(buf, 0, dst);
-            buf.emit_u8(0x23);
-            buf.emit_u8(0xC0 | ((dst & 7) << 3) | (dst & 7));
         }
         BPF_DW => {
             emit_rex_w(buf, dst, base);
@@ -454,47 +451,48 @@ fn emit_zext32(buf: &mut JitBuffer, r: u8) {
 }
 
 fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool) {
-    if is_64 {
-        emit_push(buf, X86_RCX);
+    emit_push(buf, X86_RCX);
 
-        emit_mov_reg64(buf, X86_RCX, X86_RAX);
-        emit_mov_reg64(buf, X86_RAX, src);
-        emit_test_reg64(buf, X86_RAX, X86_RAX);
+    if is_64 {
+        emit_mov_reg64(buf, X86_R11, src);
+        emit_mov_reg64(buf, X86_R10, dst);
+        emit_xor_reg64(buf, dst, dst);
+        emit_test_reg64(buf, X86_R11, X86_R11);
         let skip = buf.offset();
         emit_je(buf, 0);
-        emit_mov_reg64(buf, X86_RAX, X86_RCX);
+        emit_mov_reg64(buf, X86_RAX, X86_R10);
         emit_xor_reg64(buf, X86_RDX, X86_RDX);
-        buf.emit_u8(0x48);
+        emit_rex_w(buf, 0, X86_R11);
         buf.emit_u8(0xF7);
-        buf.emit_u8(0xF1);
+        emit_modrm(buf, 3, 6, X86_R11);
+        emit_mov_reg64(buf, dst, if is_div { X86_RAX } else { X86_RDX });
         let after = buf.offset();
         unsafe {
             let ptr = buf.entry().add(skip) as *mut u8;
             let off = (after - skip - 6) as i32;
             core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
         }
-        emit_mov_reg64(buf, dst, if is_div { X86_RAX } else { X86_RDX });
     } else {
-        emit_push(buf, X86_RCX);
-
-        emit_mov_reg32(buf, X86_RCX, X86_RAX);
-        emit_mov_reg32(buf, X86_RAX, src);
-        emit_test_reg64(buf, X86_RAX, X86_RAX);
+        emit_mov_reg32(buf, X86_R11, src);
+        emit_mov_reg32(buf, X86_R10, dst);
+        emit_xor_reg32(buf, dst, dst);
+        emit_test_reg64(buf, X86_R11, X86_R11);
         let skip = buf.offset();
         emit_je(buf, 0);
-        emit_mov_reg32(buf, X86_RAX, X86_RCX);
+        emit_mov_reg32(buf, X86_RAX, X86_R10);
         emit_zext32(buf, X86_RAX);
         emit_xor_reg32(buf, X86_RDX, X86_RDX);
+        emit_rex_if(buf, 0, X86_R11);
         buf.emit_u8(0xF7);
-        buf.emit_u8(0xF1);
+        emit_modrm(buf, 3, 6, X86_R11);
         emit_zext32(buf, if is_div { X86_RAX } else { X86_RDX });
+        emit_mov_reg32(buf, dst, if is_div { X86_RAX } else { X86_RDX });
         let after = buf.offset();
         unsafe {
             let ptr = buf.entry().add(skip) as *mut u8;
             let off = (after - skip - 6) as i32;
             core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
         }
-        emit_mov_reg32(buf, dst, if is_div { X86_RAX } else { X86_RDX });
     }
 
     emit_pop(buf, X86_RCX);
@@ -706,12 +704,6 @@ impl JitBackend for X86_64Backend {
             return;
         }
 
-        if op == BPF_EXIT {
-            let epilogue_offset = 0isize;
-            emit_jmp_rel32(buf, epilogue_offset as i32);
-            return;
-        }
-
         let dst = bpf_to_x86(insn.dst_reg());
         let use_imm = (insn.code & BPF_X) == 0;
         let src = if use_imm {
@@ -825,17 +817,14 @@ impl JitBackend for X86_64Backend {
         match class {
             BPF_ALU | BPF_ALU64 => {
                 let alu_op = insn.alu_op();
-                let imm_size = if use_imm {
-                    if alu_op == BPF_MOV && insn.imm != 0 {
-                        10
-                    } else {
-                        6
-                    }
+                let is_64 = class == BPF_ALU64;
+                let load_size = if use_imm {
+                    if alu_op == BPF_MOV && is_64 { 0 } else { 7 }
                 } else {
-                    3
+                    0
                 };
-                match alu_op {
-                    BPF_DIV | BPF_MOD => imm_size + 40,
+                let op_size = match alu_op {
+                    BPF_DIV | BPF_MOD => 50,
                     BPF_MOV => {
                         if use_imm {
                             10
@@ -843,20 +832,19 @@ impl JitBackend for X86_64Backend {
                             3
                         }
                     }
-                    _ => imm_size + 3,
-                }
+                    _ => 3 + 3,
+                };
+                load_size + op_size
             }
             BPF_JMP | BPF_JMP32 => {
                 let op = insn.code & 0xf0;
-                if op == BPF_EXIT {
-                    5
-                } else if op == 0x80 {
+                if op == BPF_EXIT || op == 0x80 {
                     16
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
                     5
                 } else {
-                    let cmp_size = if use_imm { 10 } else { 3 };
-                    cmp_size + 6
+                    let imm_size = if use_imm { 10 } else { 0 };
+                    imm_size + 4 + 6
                 }
             }
             BPF_ST => {
