@@ -4,14 +4,8 @@ set -euo pipefail
 workspace="${STARRY_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 asset_dir="$workspace/target/deepseek/assets"
 src_dir="$workspace/target/deepseek/build/deepseek-tui"
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/starry-deepseek-assets.XXXXXX")"
 repo="https://github.com/Hmbown/DeepSeek-TUI.git"
 tag="v0.8.18"
-
-cleanup() {
-    rm -rf "$tmp_dir"
-}
-trap cleanup EXIT
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -43,7 +37,7 @@ docker_build() {
     echo "Extracting binaries and shared libraries..."
     docker run --rm deepseek-tui-builder tar -cO /deepseek /deepseek-tui | tar -xv -C "$asset_dir"
     mkdir -p "$asset_dir/lib"
-    docker run --rm deepseek-tui-builder tar -cO /usr/lib/libdbus-1.so.3 /usr/lib/libdbus-1.so.3.38.3 /usr/lib/libgcc_s.so.1 | tar -xv --strip-components=2 -C "$asset_dir/lib/" 2>/dev/null || true
+    docker run --rm deepseek-tui-builder tar -cO /usr/lib/ | tar -xv --strip-components=2 -C "$asset_dir/lib/" 2>/dev/null || true
     echo ""
     file "$asset_dir/deepseek" 2>/dev/null || true
     docker run --rm deepseek-tui-builder /deepseek --version 2>/dev/null || echo "(version check skipped — musl binary needs musl host)"

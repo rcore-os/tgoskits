@@ -33,6 +33,5 @@ FROM alpine:latest AS export
 RUN apk add --no-cache tar
 COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/deepseek /
 COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/deepseek-tui /
-COPY --from=builder /usr/lib/libdbus-1.so.3 /usr/lib/
-COPY --from=builder /usr/lib/libdbus-1.so.3.38.3 /usr/lib/
+COPY --from=builder /usr/lib/libdbus-1.so.3* /usr/lib/
 COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/

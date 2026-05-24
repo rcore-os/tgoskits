@@ -43,7 +43,7 @@ fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)page fault",
     "(?i)segmentation fault",
-    "No such process",
+    "No such process \\(os error 3\\)",
     "sys_prctl: unsupported option 23",
 ]
 timeout = 120

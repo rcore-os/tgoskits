@@ -153,15 +153,18 @@ fi
 install -m 0755 "$deepseek_bin" "$overlay/usr/local/bin/deepseek"
 install -m 0755 "$deepseek_tui_bin" "$overlay/usr/local/bin/deepseek-tui"
 
-# Write env file with DEEPSEEK_API_KEY and optional proxy settings
-{
-    if [[ -n "$api_key" ]]; then
-        quoted_key="$(shell_quote "$api_key")"
-        echo "export DEEPSEEK_API_KEY=$quoted_key"
-    fi
-    if [[ -n "$proxy_url" ]]; then
-        quoted_proxy="$(shell_quote "$proxy_url")"
-        cat <<ENVEOF
+# Write env file with DEEPSEEK_API_KEY, optional proxy settings, or injected env file
+if [[ -n "$env_file" ]]; then
+    install -m 0644 "$env_file" "$overlay/root/.deepseek/starry-online-env"
+else
+    {
+        if [[ -n "$api_key" ]]; then
+            quoted_key="$(shell_quote "$api_key")"
+            echo "export DEEPSEEK_API_KEY=$quoted_key"
+        fi
+        if [[ -n "$proxy_url" ]]; then
+            quoted_proxy="$(shell_quote "$proxy_url")"
+            cat <<ENVEOF
 export HTTP_PROXY=$quoted_proxy
 export HTTPS_PROXY=$quoted_proxy
 export ALL_PROXY=$quoted_proxy
@@ -171,8 +174,9 @@ export all_proxy=$quoted_proxy
 export NO_PROXY='localhost,127.0.0.1,::1'
 export no_proxy='localhost,127.0.0.1,::1'
 ENVEOF
-    fi
-} > "$overlay/root/.deepseek/starry-online-env"
+        fi
+    } > "$overlay/root/.deepseek/starry-online-env"
+fi
 
 if [[ -f "$ca_cert" ]]; then
     mkdir -p "$overlay/etc/ssl/certs"
