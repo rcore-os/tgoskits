@@ -31,6 +31,7 @@ sg2002 = [
     "dep:sg200x-bsp",
     "dep:tock-registers",
 ]
+stack-guard-page = ["ax-feat/stack-guard-page"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [

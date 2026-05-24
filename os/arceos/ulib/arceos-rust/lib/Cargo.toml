@@ -52,6 +52,7 @@ multitask = ["ax-api/multitask", "ax-feat/multitask", "irq"]
 sched-cfs = ["ax-feat/sched-cfs"]
 sched-fifo = ["ax-feat/sched-fifo"]
 sched-rr = ["ax-feat/sched-rr"]
+stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
 fd = ["ax-posix-api/fd"]
