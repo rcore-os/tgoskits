@@ -622,7 +622,7 @@ impl JitBackend for Aarch64Backend {
             BPF_JMP | BPF_JMP32 => {
                 let op = insn.code & 0xf0;
                 if op == BPF_EXIT {
-                    4
+                    20
                 } else if op == 0x80 {
                     8 + 16 + 4
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
