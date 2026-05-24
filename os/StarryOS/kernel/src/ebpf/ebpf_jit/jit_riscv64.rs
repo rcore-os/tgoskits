@@ -291,6 +291,21 @@ fn emit_jalr(buf: &mut JitBuffer, rd: u32, rs1: u32, off: i32) {
     buf.emit_u32(rv_i(off as u32, rs1, 0, rd, 0x67));
 }
 
+fn emit_auipc(buf: &mut JitBuffer, rd: u32, imm: u32) {
+    buf.emit_u32(rv_u(imm, rd, 0x17));
+}
+
+fn emit_jal(buf: &mut JitBuffer, rd: u32, imm: i32) {
+    let imm = imm as u32;
+    let bit20 = (imm >> 20) & 1;
+    let bits10_1 = (imm >> 1) & 0x3ff;
+    let bit11 = (imm >> 11) & 1;
+    let bits19_12 = (imm >> 12) & 0xff;
+    buf.emit_u32(
+        (bit20 << 31) | (bits10_1 << 21) | (bit11 << 20) | (bits19_12 << 12) | (rd << 7) | 0x6f,
+    );
+}
+
 fn emit_ret(buf: &mut JitBuffer) {
     emit_jalr(buf, RV_ZERO, RV_RA, 0);
 }
@@ -552,14 +567,10 @@ impl JitBackend for Riscv64Backend {
             let target_pc = (pc as isize + 1 + insn.off as isize) as usize;
             if target_pc < offsets.len() {
                 let off = offsets[target_pc] as isize - buf.offset() as isize;
-                let off_words = (off / 4) as i32;
-                if off_words >= -1048576 && off_words <= 1048575 {
-                    let jal_off = (off as i32) & !3;
-                    emit_jalr(buf, RV_ZERO, RV_ZERO, jal_off);
-                } else {
-                    emit_load_imm64(buf, RV_T6, off as u64);
-                    emit_jalr(buf, RV_ZERO, RV_T6, 0);
-                }
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             return;
         }
@@ -598,49 +609,82 @@ impl JitBackend for Riscv64Backend {
 
         match op {
             BPF_JEQ => {
-                emit_bne(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bne(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JGT => {
-                emit_bgeu(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bgeu(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JGE => {
-                emit_bltu(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bltu(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JSET => {
                 emit_and(buf, RV_T2, dst, src);
-                emit_beq(buf, RV_T2, RV_ZERO, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_beq(buf, RV_T2, RV_ZERO, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JNE => {
-                emit_beq(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_beq(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JSGT => {
-                emit_bge(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bge(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JSGE => {
-                emit_blt(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_blt(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JLT => {
-                emit_bgeu(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bgeu(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JLE => {
-                emit_bltu(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bltu(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JSLT => {
-                emit_bge(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_bge(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             BPF_JSLE => {
-                emit_blt(buf, dst, src, 8);
-                emit_jalr(buf, RV_ZERO, RV_ZERO, branch_off);
+                emit_blt(buf, dst, src, 28);
+                emit_auipc(buf, RV_T6, 0);
+                emit_load_imm64(buf, RV_T1, branch_off as u64);
+                emit_add(buf, RV_T6, RV_T6, RV_T1);
+                emit_jalr(buf, RV_ZERO, RV_T6, 0);
             }
             _ => {}
         }
@@ -775,7 +819,7 @@ impl JitBackend for Riscv64Backend {
                 } else if op == 0x80 {
                     24 + 24 + 4 + 4
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
-                    28
+                    36
                 } else {
                     let imm_size = if use_imm {
                         if insn.imm >= -2048 && insn.imm < 2048 {
@@ -787,7 +831,7 @@ impl JitBackend for Riscv64Backend {
                         0
                     };
                     let zext_size = if class == BPF_JMP32 { 16 } else { 0 };
-                    imm_size + zext_size + 8
+                    imm_size + zext_size + 40
                 }
             }
             BPF_ST | BPF_STX => {
