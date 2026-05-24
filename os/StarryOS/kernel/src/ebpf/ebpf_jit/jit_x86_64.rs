@@ -542,7 +542,7 @@ impl JitBackend for X86_64Backend {
             bpf_to_x86(insn.src_reg())
         };
 
-        if use_imm {
+        if use_imm && insn.alu_op() != BPF_MOV {
             let imm = insn.imm;
             if is_64 {
                 if (0..256).contains(&imm) {
@@ -818,11 +818,7 @@ impl JitBackend for X86_64Backend {
             BPF_ALU | BPF_ALU64 => {
                 let alu_op = insn.alu_op();
                 let is_64 = class == BPF_ALU64;
-                let load_size = if use_imm {
-                    if alu_op == BPF_MOV && is_64 { 0 } else { 7 }
-                } else {
-                    0
-                };
+                let load_size = if use_imm && alu_op != BPF_MOV { 7 } else { 0 };
                 let op_size = match alu_op {
                     BPF_DIV | BPF_MOD => 50,
                     BPF_MOV => {
