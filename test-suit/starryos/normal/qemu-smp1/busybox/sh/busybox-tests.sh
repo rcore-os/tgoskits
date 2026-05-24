@@ -920,6 +920,9 @@ _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: bl
 _t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox sh -c 'mkdir -p /tmp/bb_rp/d && busybox echo rp_ok > /tmp/bb_rp/d/00t && chmod +x /tmp/bb_rp/d/00t && busybox run-parts /tmp/bb_rp/d' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "rp_ok"; then echo "PASS: busybox_run_parts"; PASS=$((PASS+1)); else echo "FAIL: busybox_run_parts"; FAIL=$((FAIL+1)); fi
+
 # busybox_add_shell — exercise the real /etc/shells rewrite path (NOT --help).
 # add-shell opens /etc/shells O_RDONLY, opens /etc/shells.tmp
 # O_WRONLY|O_CREAT|O_TRUNC, writes the merged list, then rename(2)s
