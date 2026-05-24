@@ -10,7 +10,7 @@
 /*
  * test-open-family —— open / openat 系统调用族「地毯式全覆盖」测例汇总
  *
- * 设计：28 个模块文件按维度切分（15 阶段① 基础+矩阵 / 8 阶段② ERRNO / 4 阶段③ openat / 1 阶段④ stress）；每个模块自管私有 /tmp/topen_<name>/ 目录，
+ * 设计：30 个模块文件按维度切分（16 阶段① 基础+矩阵含 stress / 8 阶段② ERRNO / 4 阶段③ openat / 2 阶段④ 补充：设备节点目标 + fd 偏移/定位 I/O）；每个模块自管私有 /tmp/topen_<name>/ 目录，
  * 自计 __pass/__fail，run() 末尾打印小结并 return __fail。main 按顺序跑、汇总。
  *
  * 模块 → 见 notes/02 §17 + notes/10 §1.2 矩阵设计表。
@@ -52,6 +52,9 @@ int openat_dirfd_run(void);
 int openat_err_run(void);
 int openat_flag_matrix_run(void);
 int openat_creat_run(void);
+/* 阶段④ 补充：未覆盖的 open 目标类型 / fd 偏移语义 */
+int open_dev_null_zero_run(void);
+int open_pread_pwrite_run(void);
 
 /* ── global setup / teardown ──
  * 建立全模块共用的只读基线环境：OF_DIR 子树。 */
@@ -77,7 +80,7 @@ static void global_teardown(void)
 
 int main(void)
 {
-    TEST_START("open family: 地毯式全覆盖（28 模块）");
+    TEST_START("open family: 地毯式全覆盖（30 模块）");
 
     global_setup();
     /* setup_fail：取自 global_setup 的 __fail（来自 CHECK 宏的累计）。
@@ -154,6 +157,9 @@ int main(void)
     COLLECT("openat_err",   openat_err_run());
     COLLECT("openat_flagmat", openat_flag_matrix_run());
     COLLECT("openat_creat", openat_creat_run());
+    /* 阶段④ 补充 */
+    COLLECT("dev_null_zero", open_dev_null_zero_run());
+    COLLECT("pread_pwrite",  open_pread_pwrite_run());
 
     #undef COLLECT
 
