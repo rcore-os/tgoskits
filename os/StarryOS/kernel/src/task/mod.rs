@@ -646,8 +646,8 @@ impl ProcessData {
     }
 
     /// Set the dumpable flag (PR_SET_DUMPABLE).
-    /// Valid values: 0 (SUID_DUMP_DISABLE), 1 (SUID_DUMP_USER),
-    /// 2 (SUID_DUMP_ROOT). Caller must validate before storing.
+    /// Valid userspace values are 0 (SUID_DUMP_DISABLE) and 1
+    /// (SUID_DUMP_USER). Callers must validate before storing.
     pub fn set_dumpable(&self, dumpable: i32) {
         self.dumpable.store(dumpable, Ordering::SeqCst);
     }
