@@ -1100,7 +1100,7 @@ impl BpfFdTable {
     }
 }
 
-// Lock ordering: BPF_GLOBAL -> BPF_LOOKUP_CACHE -> BPF_TAIL_CALL_TARGET
+// Lock ordering: BPF_GLOBAL -> BPF_TAIL_CALL_TARGET
 // BpfVm::execute() must never be called while BPF_GLOBAL is held.
 // All helpers that acquire BPF_GLOBAL are called from execute(), which
 // runs without any lock. Syscall handlers acquire BPF_GLOBAL independently.
@@ -1108,10 +1108,8 @@ impl BpfFdTable {
 // calling execute(). The tail-call path in execute() also drops BPF_GLOBAL
 // before recursing into execute().
 static BPF_GLOBAL: SpinNoIrq<BpfFdTable> = SpinNoIrq::new(BpfFdTable::new());
-// SAFETY: This cache stores the value returned by bpf_map_lookup_elem.
-// The returned pointer is valid only until the next call to the same helper.
-// BPF programs must copy the value before making another map lookup.
-static BPF_LOOKUP_CACHE: SpinNoIrq<alloc::vec::Vec<u8>> = SpinNoIrq::new(alloc::vec::Vec::new());
+#[ax_percpu::def_percpu]
+static BPF_LOOKUP_CACHE: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 static BPF_TAIL_CALL_TARGET: SpinNoIrq<Option<u32>> = SpinNoIrq::new(None);
 
 fn handle_map_create(uattr: usize, size: u32) -> AxResult<isize> {
@@ -1195,9 +1193,21 @@ fn handle_map_update_elem(uattr: usize, size: u32) -> AxResult<isize> {
         (map_fd, key_ptr, value_ptr, flags)
     };
     let mut guard = BPF_GLOBAL.lock();
+    let meta = guard
+        .maps
+        .get(&map_fd)
+        .map(|m| m.meta().clone())
+        .ok_or(AxError::BadFileDescriptor)?;
+    let key_size = meta.key_size as usize;
+    let value_size = meta.value_size as usize;
+    if meta.map_type == map_type::PROG_ARRAY && value_size == 4 {
+        let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
+        let prog_fd = u32::from_ne_bytes([value[0], value[1], value[2], value[3]]);
+        if !guard.progs.contains_key(&prog_fd) {
+            return Err(bpf_error::EINVAL);
+        }
+    }
     let map = guard.get_map(map_fd)?;
-    let key_size = map.meta().key_size as usize;
-    let value_size = map.meta().value_size as usize;
     let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
     let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
     map.update(key, value, flags)?;
@@ -1425,10 +1435,12 @@ fn helper_map_lookup_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u
     let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
     match map.lookup(key) {
         Ok(Some(value)) => {
-            let mut cache = BPF_LOOKUP_CACHE.lock();
-            cache.clear();
-            cache.extend_from_slice(&value);
-            cache.as_ptr() as u64
+            drop(guard);
+            BPF_LOOKUP_CACHE.with_current(|cache| {
+                cache.clear();
+                cache.extend_from_slice(&value);
+                cache.as_ptr() as u64
+            })
         }
         _ => 0,
     }
@@ -1587,19 +1599,7 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
         unsafe { core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len) };
     match starry_vm::vm_read_slice(src as *const u8, buf) {
         Ok(()) => 0,
-        Err(_) => {
-            let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, len) };
-            let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, len) };
-            if (src as usize) >= 0xffff_8000_0000_0000 {
-                unsafe {
-                    core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice.as_mut_ptr(), len)
-                };
-                0
-            } else {
-                unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
-                u64::MAX
-            }
-        }
+        Err(_) => 0,
     }
 }
 
@@ -1727,8 +1727,14 @@ fn helper_get_current_uid_gid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) 
 }
 
 fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    static SEED: AtomicU32 = AtomicU32::new(12345);
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    static SEED: AtomicU32 = AtomicU32::new(0);
+    static INITIALIZED: AtomicBool = AtomicBool::new(false);
+    if !INITIALIZED.load(Ordering::Acquire) {
+        let ts = ax_hal::time::monotonic_time_nanos() as u32;
+        SEED.store(ts.wrapping_add(12345), Ordering::Relaxed);
+        INITIALIZED.store(true, Ordering::Release);
+    }
     let prev = SEED.load(Ordering::Relaxed);
     let next = prev.wrapping_mul(1103515245).wrapping_add(12345);
     SEED.store(next, Ordering::Relaxed);
@@ -1963,6 +1969,9 @@ impl BpfVm {
 
             if class == bpf_insn::BPF_ALU || class == bpf_insn::BPF_ALU64 {
                 let alu_op = insn.alu_op();
+                // Only reject immediate (BPF_K) division/modulo by zero.
+                // Register-based (BPF_X) division-by-zero is allowed: the
+                // interpreter returns 0 at runtime, matching Linux behavior.
                 if (alu_op == 0x30 || alu_op == 0x90)
                     && (insn.code & bpf_insn::BPF_X) == 0
                     && insn.imm == 0
