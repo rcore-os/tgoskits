@@ -24,6 +24,24 @@ pub fn sys_gettid() -> AxResult<isize> {
     Ok(current().as_thread().tid() as _)
 }
 
+/// `getcpu(2)`: report the CPU and NUMA node the caller is running on.
+///
+/// glibc's `sched_getcpu` and NUMA-aware allocators query this. We report the
+/// current CPU id and node 0 (single NUMA node); the obsolete `tcache` arg is
+/// ignored. Either pointer may be NULL.
+pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: usize) -> AxResult<isize> {
+    use ax_hal::percpu::this_cpu_id;
+    use starry_vm::VmMutPtr;
+
+    if !cpu.is_null() {
+        cpu.vm_write(this_cpu_id() as u32)?;
+    }
+    if !node.is_null() {
+        node.vm_write(0)?;
+    }
+    Ok(0)
+}
+
 /// ARCH_PRCTL codes
 ///
 /// It is only avaliable on x86_64, and is not convenient
