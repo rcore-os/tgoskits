@@ -263,7 +263,6 @@ int main(void)
         unlink(TEST_SRC);
     }
 
-    /* bad input fd -> EBADF */
     {
         int pipefd[2];
         CHECK(pipe(pipefd) == 0, "create pipe");

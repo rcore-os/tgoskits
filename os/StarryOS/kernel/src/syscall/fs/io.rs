@@ -689,7 +689,7 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
         SendFile::Direct(get_file_like(in_fd)?)
     };
 
-    let dst: SendFile = SendFile::Direct(get_file_like(out_fd)?);
+    let dst: SendFile = SendFile::Direct(out_file);
 
     do_send(src, dst, len).map(|n: usize| n as _)
 }
