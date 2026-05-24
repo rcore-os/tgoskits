@@ -682,7 +682,7 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
 
         SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
     } else {
-        // 拒绝 pipe 输入：File::from_fd 对 pipe 会失败
+        // 拒绝 pipe 输入：File::from_fd 对 pipe 会失败，但 get_file_like 会成功，后续 read 会返回 EPIPE。Linux sendfile 对 pipe 输入也是 EPIPE。
         let _in_file = File::from_fd(in_fd)?;
         SendFile::Direct(get_file_like(in_fd)?)
     };
