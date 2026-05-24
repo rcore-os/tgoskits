@@ -713,59 +713,76 @@ pub fn sys_copy_file_range(
         return Err(AxError::InvalidInput);
     }
 
+    if len > isize::MAX as usize {
+        return Err(AxError::InvalidInput);
+    }
+
     let remap = |e| match e {
         AxError::BadFileDescriptor | AxError::IsADirectory => e,
         _ => AxError::InvalidInput,
     };
+
     let file_in = File::from_fd(fd_in).map_err(remap)?;
     let file_out = File::from_fd(fd_out).map_err(remap)?;
+
     let meta_in = file_in.inner().location().metadata()?;
     let meta_out = file_out.inner().location().metadata()?;
+
+    if meta_in.node_type == NodeType::Directory || meta_out.node_type == NodeType::Directory {
+        return Err(AxError::IsADirectory);
+    }
 
     if meta_in.node_type != NodeType::RegularFile || meta_out.node_type != NodeType::RegularFile {
         return Err(AxError::InvalidInput);
     }
+
     if file_out.inner().access(FileFlags::APPEND).is_ok() {
         return Err(AxError::BadFileDescriptor);
     }
 
+    let pos_in = if off_in.is_null() {
+        file_in.inner().seek(SeekFrom::Current(0))?
+    } else {
+        off_in.vm_read()?
+    };
+
+    let pos_out = if off_out.is_null() {
+        file_out.inner().seek(SeekFrom::Current(0))?
+    } else {
+        off_out.vm_read()?
+    };
+
     if len > 0 && meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
-        let pos_in = if off_in.is_null() {
-            file_in.inner().seek(SeekFrom::Current(0))?
-        } else {
-            off_in.vm_read()?
-        };
-        let pos_out = if off_out.is_null() {
-            file_out.inner().seek(SeekFrom::Current(0))?
-        } else {
-            off_out.vm_read()?
-        };
-        if let Some(copy_end) = (len as u64).checked_sub(1) {
-            let in_end = pos_in.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
-            let out_end = pos_out.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
-            if in_end >= pos_out && pos_in <= out_end {
-                return Err(AxError::InvalidInput);
-            }
+        let copy_last = (len as u64)
+            .checked_sub(1)
+            .ok_or(AxError::InvalidInput)?;
+
+        let in_end = pos_in
+            .checked_add(copy_last)
+            .ok_or(AxError::InvalidInput)?;
+
+        let out_end = pos_out
+            .checked_add(copy_last)
+            .ok_or(AxError::InvalidInput)?;
+
+        if in_end >= pos_out && pos_in <= out_end {
+            return Err(AxError::InvalidInput);
         }
     }
 
-    let src = if !off_in.is_null() {
-        SendFile::Offset(file_in, off_in, off_in.vm_read()?)
+    let src: SendFile = if !off_in.is_null() {
+        SendFile::Offset(file_in, off_in, pos_in)
     } else {
         SendFile::Direct(file_in)
     };
 
-    // Output offset: when fd_out is a memfd, the regular `Offset`
-    // variant would unwrap to the inner `File` and bypass seal checks.
-    // `send_offset_out` keeps the `Memfd` wrapper so `Memfd::write_at`
-    // enforces `F_SEAL_WRITE` / `F_SEAL_GROW`.
-    let dst = if !off_out.is_null() {
+    let dst: SendFile = if !off_out.is_null() {
         send_offset_out(fd_out, off_out)?
     } else {
         SendFile::Direct(get_file_like(fd_out)?)
     };
 
-    do_send(src, dst, len).map(|n| n as _)
+    do_send(src, dst, len).map(|n: usize| n as isize)
 }
 
 pub fn sys_splice(
