@@ -16,6 +16,8 @@ use ringbuf::{
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
+#[cfg(target_arch = "riscv64")]
+use crate::mm::UserPtr;
 use crate::task::{AsThread, processes};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
@@ -701,5 +703,70 @@ pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> AxResult<isize> {
 #[cfg(target_arch = "riscv64")]
 pub fn sys_riscv_flush_icache() -> AxResult<isize> {
     riscv::asm::fence_i();
+    Ok(0)
+}
+
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct RiscvHwprobe {
+    key: i64,
+    value: u64,
+}
+
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_BASE_BEHAVIOR: i64 = 3;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_BASE_BEHAVIOR_IMA: u64 = 1 << 0;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_IMA_EXT_0: i64 = 4;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_IMA_FD: u64 = 1 << 0;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_IMA_C: u64 = 1 << 1;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_CPUPERF_0: i64 = 5;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF: i64 = 9;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF: i64 = 10;
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_hwprobe(
+    pairs: *mut u8,
+    pair_count: usize,
+    cpu_count: usize,
+    cpus: *const usize,
+    flags: u32,
+) -> AxResult<isize> {
+    if flags != 0 || cpu_count != 0 || !cpus.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    if pair_count == 0 {
+        return Ok(0);
+    }
+    if pair_count > isize::MAX as usize / core::mem::size_of::<RiscvHwprobe>() {
+        return Err(AxError::InvalidInput);
+    }
+
+    let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
+    for pair in pairs {
+        match pair.key {
+            RISCV_HWPROBE_KEY_BASE_BEHAVIOR => pair.value = RISCV_HWPROBE_BASE_BEHAVIOR_IMA,
+            RISCV_HWPROBE_KEY_IMA_EXT_0 => {
+                pair.value = RISCV_HWPROBE_IMA_FD | RISCV_HWPROBE_IMA_C;
+            }
+            RISCV_HWPROBE_KEY_CPUPERF_0
+            | RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF
+            | RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF => {
+                pair.value = 0;
+            }
+            _ => {
+                pair.key = -1;
+                pair.value = 0;
+            }
+        }
+    }
+
     Ok(0)
 }
