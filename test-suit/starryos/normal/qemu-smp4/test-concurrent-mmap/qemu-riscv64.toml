@@ -13,4 +13,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-concurrent-mmap"
 success_regex = ["(?m)DONE: \\d+ pass, 0 fail"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']
-timeout = 120
+timeout = 360

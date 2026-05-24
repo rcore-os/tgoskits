@@ -80,6 +80,18 @@ impl NextSignalCheckBlock {
 
 /// The inner data of a thread.
 pub struct Thread {
+    /// User-visible thread ID (the `Pid` returned by `gettid`).
+    ///
+    /// Initially equal to the underlying scheduler `TaskInner::id()`. The two
+    /// diverge after a successful non-leader `execve`: Linux's `de_thread`
+    /// step transfers the leader's TID/TGID to the calling thread so that
+    /// `gettid() == getpid()` holds in the new image. We model that by
+    /// updating this field while leaving the immutable scheduler ID alone.
+    /// All user-facing TID lookups (`sys_gettid`, `set_tid_address`, signal
+    /// child registration, `do_exit`'s thread-group bookkeeping, etc.) read
+    /// this rather than the scheduler ID.
+    tid: AtomicU32,
+
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
@@ -118,12 +130,20 @@ pub struct Thread {
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 
+    /// Set by `sys_execve` when reaping sibling threads. The signal-check
+    /// path turns this into a thread-only `do_exit(0, false)` — no group
+    /// exit, no fatal-signal cascade — so the new image is left intact.
+    exit_request: AtomicBool,
+
     /// The registered rseq area pointer (user address) for restartable
     /// sequences (`rseq(2)`).
     rseq_area: AtomicUsize,
 
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
+
+    /// PR_SET_NO_NEW_PRIVS: once set, cannot be unset.
+    no_new_privs: AtomicBool,
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
@@ -152,6 +172,7 @@ impl Thread {
     pub fn new(tid: u32, proc_data: Arc<ProcessData>, parent_cred: Option<Arc<Cred>>) -> Box<Self> {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
+            tid: AtomicU32::new(tid),
             signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
             proc_data,
             clear_child_tid: AtomicUsize::new(0),
@@ -162,14 +183,30 @@ impl Thread {
             accessing_user_memory: AtomicBool::new(false),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
+            exit_request: AtomicBool::new(false),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
+            no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
             #[cfg(feature = "kcov")]
             kcov: AssumeSync(RefCell::new(None)),
 
             fault_dump_signo: AtomicU8::new(0),
         })
+    }
+
+    /// Returns the user-visible TID for this thread.
+    ///
+    /// See the field doc on [`Thread::tid`] for why this can differ from
+    /// the underlying scheduler `TaskInner::id()`.
+    pub fn tid(&self) -> u32 {
+        self.tid.load(Ordering::Acquire)
+    }
+
+    /// Updates the user-visible TID. Called only by `execve`'s de_thread
+    /// step to transfer the leader's TID to a non-leader caller.
+    pub(crate) fn set_tid(&self, tid: u32) {
+        self.tid.store(tid, Ordering::Release);
     }
 
     /// Get the clear child tid field.
@@ -214,6 +251,27 @@ impl Thread {
         self.exit.store(true, Ordering::Release);
     }
 
+    /// Consume a pending thread-only exit request, returning whether one
+    /// was set. The flag is cleared in the same atomic step so that a
+    /// re-entrant `check_signals` (the user loop drains signals in a
+    /// while-loop) doesn't fire `do_exit` twice for the same zap.
+    pub fn take_exit_request(&self) -> bool {
+        self.exit_request.swap(false, Ordering::AcqRel)
+    }
+
+    /// Non-consuming probe for a pending thread-only exit request. Used
+    /// by in-kernel wait loops that want to abort cooperatively without
+    /// stealing the flag from the user-return `check_signals` path.
+    pub fn has_exit_request(&self) -> bool {
+        self.exit_request.load(Ordering::Acquire)
+    }
+
+    /// Request a thread-only exit. Honored by `check_signals` on the next
+    /// return to user space, where it routes to `do_exit(0, false)`.
+    pub fn set_exit_request(&self) {
+        self.exit_request.store(true, Ordering::Release);
+    }
+
     /// Check if the thread is accessing user memory.
     pub fn is_accessing_user_memory(&self) -> bool {
         self.accessing_user_memory.load(Ordering::Acquire)
@@ -233,6 +291,16 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Get the no_new_privs flag.
+    pub fn no_new_privs(&self) -> bool {
+        self.no_new_privs.load(Ordering::Relaxed)
+    }
+
+    /// Set the no_new_privs flag (one-way: once set, cannot be unset).
+    pub fn set_no_new_privs(&self) {
+        self.no_new_privs.store(true, Ordering::Relaxed);
     }
 
     /// Run a closure with a borrow of the current KCOV state for this thread.
@@ -349,16 +417,22 @@ impl AsThread for TaskInner {
 /// A one-shot completion for vfork synchronization.
 ///
 /// This avoids lost-wakeup races by recording the "done" state under the same
-/// lock as the wait queue. If the child completes before the parent enters the
+/// lock as the waker set. If the child completes before the parent enters the
 /// wait, the parent will see `done == true` and skip waiting.
+///
+/// We use [`PollSet`] (not `WaitQueue`) so the parent's wait can run inside
+/// `block_on(interruptible(...))`: a sibling thread that does `execve` will
+/// zap us via `task.interrupt()`, which only wakes futures-based polls, not
+/// `WaitQueue::wait_until`. Without this, the execve initiator would deadlock
+/// in its sibling-teardown loop waiting for us to exit.
 pub struct VforkDone {
     done: bool,
-    wq: Arc<ax_task::WaitQueue>,
+    poll: Arc<PollSet>,
 }
 
 impl VforkDone {
-    pub fn new(wq: Arc<ax_task::WaitQueue>) -> Self {
-        Self { done: false, wq }
+    pub fn new(poll: Arc<PollSet>) -> Self {
+        Self { done: false, poll }
     }
 }
 
@@ -385,6 +459,13 @@ pub struct ProcessData {
     pub child_exit_event: Arc<PollSet>,
     /// Self exit event
     pub exit_event: Arc<PollSet>,
+    /// Woken every time a thread in this process exits. Used by a thread
+    /// performing `execve` to wait for siblings to be reaped.
+    pub thread_exit_event: Arc<PollSet>,
+    /// Serializes `execve` within the process. Only one thread can be
+    /// tearing down the thread group at a time; concurrent attempts return
+    /// `EINTR` (the loser is about to be zapped anyway).
+    pub exec_lock: Mutex<()>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
 
@@ -457,6 +538,8 @@ impl ProcessData {
 
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
+            thread_exit_event: Arc::default(),
+            exec_lock: Mutex::new(()),
             exit_signal,
 
             signal: Arc::new(ProcessSignalManager::new(
@@ -563,8 +646,8 @@ impl ProcessData {
     }
 
     /// Set the dumpable flag (PR_SET_DUMPABLE).
-    /// Valid values: 0 (SUID_DUMP_DISABLE), 1 (SUID_DUMP_USER),
-    /// 2 (SUID_DUMP_ROOT). Caller must validate before storing.
+    /// Valid userspace values are 0 (SUID_DUMP_DISABLE) and 1
+    /// (SUID_DUMP_USER). Callers must validate before storing.
     pub fn set_dumpable(&self, dumpable: i32) {
         self.dumpable.store(dumpable, Ordering::SeqCst);
     }
@@ -619,47 +702,85 @@ impl ProcessData {
 
     /// Set the vfork completion (called on the child after a vfork,
     /// before the child task is spawned).
-    pub fn set_vfork_done(&self, wq: Arc<ax_task::WaitQueue>) {
-        *self.vfork_done.lock() = Some(VforkDone::new(wq));
+    pub fn set_vfork_done(&self, poll: Arc<PollSet>) {
+        *self.vfork_done.lock() = Some(VforkDone::new(poll));
     }
 
     /// Wait for vfork completion. Returns immediately if already done.
     /// This should be called by the parent after spawning the vfork child.
+    ///
+    /// The wait is killable but not arbitrarily signal-interruptible
+    /// (mirroring Linux's `wait_for_completion_killable`):
+    ///
+    ///   - If the child notifies (exec or exit), we return normally.
+    ///   - If another thread in this parent process does `execve` it will
+    ///     zap us by setting `exit_request`. We bail and let the user-
+    ///     return path consume `exit_request` and route to
+    ///     `do_exit(0, false)`. Without this, `WaitQueue::wait_until`
+    ///     would never observe the zap and the execve initiator would
+    ///     deadlock in its sibling-teardown loop.
+    ///   - Non-fatal signal wakeups must not unblock us: returning early
+    ///     while the child still shares our address space would violate
+    ///     the vfork contract. We re-enter the wait in that case.
     pub fn wait_vfork_done(&self) {
-        let wq = {
+        let poll = {
             let guard = self.vfork_done.lock();
             match guard.as_ref() {
-                Some(vfork) => vfork.wq.clone(),
+                Some(vfork) => vfork.poll.clone(),
                 None => return, // No vfork, shouldn't happen but be safe.
             }
         };
-        // Wait until done. The condition is checked under lock in wait_until.
-        wq.wait_until(|| {
-            self.vfork_done
-                .lock()
-                .as_ref()
-                .map(|v| v.done)
-                .unwrap_or(true)
-        });
+        let curr_task = ax_task::current();
+        let curr_thr = curr_task.as_thread();
+        loop {
+            let result = ax_task::future::block_on(ax_task::future::interruptible(
+                core::future::poll_fn(|cx| {
+                    // Register before re-checking so a notify that fires
+                    // between our last check and this register isn't lost.
+                    poll.register(cx.waker());
+                    let done = self
+                        .vfork_done
+                        .lock()
+                        .as_ref()
+                        .map(|v| v.done)
+                        .unwrap_or(true);
+                    if done {
+                        core::task::Poll::Ready(())
+                    } else {
+                        core::task::Poll::Pending
+                    }
+                }),
+            ));
+            match result {
+                Ok(()) => return,
+                Err(_) => {
+                    if curr_thr.has_exit_request() {
+                        return;
+                    }
+                    // Spurious wake from a non-fatal signal; keep waiting.
+                    continue;
+                }
+            }
+        }
     }
 
     /// Notify the vfork parent that this child has exec'd or exited.
     /// No-op if this process was not created by vfork.
     pub fn notify_vfork_done(&self) {
         // Set done under the lock, then drop the lock before notifying
-        // to avoid lock-order inversion with the wait-queue internal lock.
-        let wq = {
+        // to avoid lock-order inversion with the poll-set internal lock.
+        let poll = {
             let mut guard = self.vfork_done.lock();
             match guard.as_mut() {
                 Some(vfork) => {
                     vfork.done = true;
-                    vfork.wq.clone()
+                    vfork.poll.clone()
                 }
                 None => return,
             }
             // guard dropped here
         };
-        wq.notify_one(true);
+        poll.wake();
     }
 }
 

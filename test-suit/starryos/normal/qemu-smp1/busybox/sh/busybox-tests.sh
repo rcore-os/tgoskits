@@ -893,6 +893,13 @@ if echo "$_t" | grep -qF "bb_mkd_one"; then echo "PASS: busybox_mkdir"; PASS=$((
 _t=$({ timeout 10 sh -c 'busybox echo mv_ok > /tmp/bb_mv_from && busybox mv /tmp/bb_mv_from /tmp/bb_mv_to && busybox cat /tmp/bb_mv_to'; } 2>&1)
 if echo "$_t" | grep -qF "mv_ok"; then echo "PASS: busybox_mv"; PASS=$((PASS+1)); else echo "FAIL: busybox_mv"; FAIL=$((FAIL+1)); fi
 
+# tmpfs_rename_exec_elf - write an ELF via a temporary tmpfs path, rename it
+# to the final executable name, verify the renamed file still reads back the
+# ELF magic, then execute the final path. This regresses page-cache/user_data
+# loss across tmpfs rename, which surfaces as Exec format error.
+_t=$({ timeout 15 sh -c 'busybox rm -rf /tmp/bb_rename_elf && busybox mkdir -p /tmp/bb_rename_elf && busybox cp /bin/busybox /tmp/bb_rename_elf/busybox.tmp && busybox mv /tmp/bb_rename_elf/busybox.tmp /tmp/bb_rename_elf/busybox && [ "$(busybox head -c 4 /tmp/bb_rename_elf/busybox | busybox xxd -p)" = "7f454c46" ] && /tmp/bb_rename_elf/busybox echo rename_exec_ok'; } 2>&1)
+if echo "$_t" | grep -qF "rename_exec_ok"; then echo "PASS: tmpfs_rename_exec_elf"; PASS=$((PASS+1)); else echo "FAIL: tmpfs_rename_exec_elf"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 # busybox_rmdir
 _t=$({ timeout 10 sh -c 'busybox mkdir -p /tmp/bb_rmd && busybox rmdir /tmp/bb_rmd && busybox echo rmdir_ok'; } 2>&1)
 if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_rmdir"; FAIL=$((FAIL+1)); fi
@@ -919,6 +926,80 @@ _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: bl
 # hwclock — read hardware clock
 _t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'mkdir -p /tmp/bb_rp/d && busybox echo rp_ok > /tmp/bb_rp/d/00t && chmod +x /tmp/bb_rp/d/00t && busybox run-parts /tmp/bb_rp/d' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "rp_ok"; then echo "PASS: busybox_run_parts"; PASS=$((PASS+1)); else echo "FAIL: busybox_run_parts"; FAIL=$((FAIL+1)); fi
+
+# busybox_add_shell — exercise the real /etc/shells rewrite path (NOT --help).
+# add-shell opens /etc/shells O_RDONLY, opens /etc/shells.tmp
+# O_WRONLY|O_CREAT|O_TRUNC, writes the merged list, then rename(2)s
+# /etc/shells.tmp over /etc/shells.  Probe a unique path each run, verify
+# it lands in /etc/shells, verify the .tmp file did NOT leak, and restore
+# the original file so re-runs stay idempotent.
+_addshell_probe="/tmp/bb_addshell_probe_$$"
+_t=$(timeout 15 sh -c '
+    busybox cp /etc/shells /tmp/bb_addshell_backup
+    _probe='"$_addshell_probe"'
+    busybox add-shell "$_probe" 2>&1
+    _arc=$?
+    if [ "$_arc" = 0 ] \
+        && busybox grep -qxF "$_probe" /etc/shells \
+        && [ ! -e /etc/shells.tmp ]; then
+        busybox echo add_shell_ok
+    else
+        busybox echo "add_shell_failed arc=$_arc"
+        busybox echo "--- /etc/shells ---"
+        busybox cat /etc/shells 2>&1
+        busybox echo "--- /etc/shells.tmp (should not exist) ---"
+        busybox ls -la /etc/shells.tmp 2>&1
+    fi
+    busybox cp /tmp/bb_addshell_backup /etc/shells 2>&1 || true
+    busybox rm -f /tmp/bb_addshell_backup
+' 2>&1)
+if echo "$_t" | grep -qF "add_shell_ok"; then
+    echo "PASS: busybox_add_shell"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_add_shell"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
+
+# busybox_crontab — install a crontab into a private spool dir (-c), list it
+# back, byte-match the marker, then remove and confirm removal.  This
+# exercises the real read/write/rename(2)/fchown/fchmod/unlink paths in
+# miscutils/crontab.c rather than just usage-banner.  The pass marker
+# cron_tab_ok is only emitted when every step in the round-trip succeeds,
+# so the test reverse-falsifies "crontab silently dropped the install",
+# "crontab -l can't reopen the installed file", and "crontab -r left the
+# file behind".
+_t=$(timeout 20 sh -c '
+    busybox rm -rf /tmp/bb_crontab_tabs /tmp/bb_crontab_in /tmp/bb_crontab_out
+    busybox mkdir -p /tmp/bb_crontab_tabs
+    busybox printf "*/5 * * * * /bin/true crontab_marker_aaa\n" > /tmp/bb_crontab_in
+    busybox crontab -c /tmp/bb_crontab_tabs /tmp/bb_crontab_in
+    _irc=$?
+    busybox crontab -c /tmp/bb_crontab_tabs -l > /tmp/bb_crontab_out 2>&1
+    _lrc=$?
+    if [ "$_irc" = 0 ] && [ "$_lrc" = 0 ] && busybox grep -qF "crontab_marker_aaa" /tmp/bb_crontab_out; then
+        busybox crontab -c /tmp/bb_crontab_tabs -r
+        _rrc=$?
+        _after=$(busybox crontab -c /tmp/bb_crontab_tabs -l 2>&1)
+        if [ "$_rrc" = 0 ] && ! echo "$_after" | busybox grep -qF "crontab_marker_aaa"; then
+            busybox echo cron_tab_ok
+        else
+            busybox echo "crontab_remove_failed rrc=$_rrc after=$_after"
+        fi
+    else
+        busybox echo "crontab_install_or_list_failed irc=$_irc lrc=$_lrc"
+        busybox cat /tmp/bb_crontab_out 2>&1
+        busybox ls -la /tmp/bb_crontab_tabs 2>&1
+    fi
+' 2>&1)
+if echo "$_t" | grep -qF "cron_tab_ok"; then
+    echo "PASS: busybox_crontab"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_crontab"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
 
 # Additional stable BusyBox semantics for shell-script compatibility.
 _t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_touch_missing && busybox touch -c /tmp/bb_sem_touch_missing && busybox test ! -e /tmp/bb_sem_touch_missing && busybox echo touch_no_create_ok' 2>&1"; } 2>&1)
@@ -960,6 +1041,70 @@ if [ "$_printf" = "61 0a 62" ]; then echo "PASS: busybox_printf_escape"; PASS=$(
 
 _t=$({ timeout 10 sh -c "busybox sh -c 'export BB_SEM_ENV=ok; cd /tmp && [ \"\$BB_SEM_ENV:\$PWD\" = \"ok:/tmp\" ] && command -v busybox >/dev/null && busybox echo sh_env_cd_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qxF "sh_env_cd_ok"; then echo "PASS: busybox_sh_env_cd"; PASS=$((PASS+1)); else echo "FAIL: busybox_sh_env_cd"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+# busybox_crond — actually exercise bb_daemonize_or_rexec: launch crond in
+# background mode (no -f), confirm the parent returns rc=0 immediately, find
+# the detached daemon in `ps` by its argv tail, SIGTERM it, and confirm it's
+# gone.  Issue #13's pass criterion (`grep -qF "crond_ok"`) is only emitted
+# on the full successful round-trip, so the test reverse-falsifies "crond
+# didn't daemonize" / "crond ignored SIGTERM" / "kernel can't reap the
+# detached child".  We deliberately avoid `busybox pidof crond` here: the
+# applet is invoked via the multi-call binary (`busybox crond ...`) so
+# argv[0] is "busybox", and pidof-by-name returns empty — the same way it
+# would on Linux given the same invocation.  Matching by argv tail via
+# `ps | grep` is the reliable identification path.
+_t=$(timeout 20 sh -c '
+    _cleanup_crond() {
+        _crond_lines=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep)
+        if [ -n "$_crond_lines" ]; then
+            busybox printf "%s\n" "$_crond_lines" | while read _cpid _rest; do
+                [ -n "$_cpid" ] && busybox kill "$_cpid" 2>/dev/null || true
+            done
+        fi
+        busybox rm -rf /tmp/bb_crond_tabs
+    }
+    trap _cleanup_crond EXIT
+
+    busybox rm -rf /tmp/bb_crond_tabs
+    busybox mkdir -p /tmp/bb_crond_tabs
+    busybox crond -c /tmp/bb_crond_tabs
+    _drc=$?
+    _i=0
+    _line=""
+    while [ "$_i" -lt 5 ] && [ -z "$_line" ]; do
+        _line=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep | busybox head -n 1)
+        if [ -z "$_line" ]; then
+            busybox sleep 1
+            _i=$((_i + 1))
+        fi
+    done
+    set -- $_line
+    _pid=$1
+    if [ "$_drc" = 0 ] && [ -n "$_pid" ]; then
+        busybox kill "$_pid"
+        _i=0
+        _still="x"
+        while [ "$_i" -lt 5 ] && [ -n "$_still" ]; do
+            busybox sleep 1
+            _still=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep)
+            _i=$((_i + 1))
+        done
+        if [ -z "$_still" ]; then
+            busybox rm -rf /tmp/bb_crond_tabs
+            echo crond_ok
+        else
+            echo "crond_still_alive_after_sigterm: $_still"
+        fi
+    else
+        echo "crond_daemonize_failed drc=$_drc pid=$_pid"
+    fi
+' 2>&1)
+if echo "$_t" | grep -qF "crond_ok"; then
+    echo "PASS: busybox_crond"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_crond"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
 
 # busybox_acpid — applet wiring sanity check.
 # Without -f, acpid would daemonize and close stdio (Issue #13's `[ -n "$_t" ]`

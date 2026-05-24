@@ -7,7 +7,7 @@ use super::{
     irq,
     manager::UsbFsManager,
 };
-use crate::pseudofs::{NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs};
+use crate::pseudofs::{DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs};
 
 const SYSFS_MAGIC: u32 = 0x6265_6572;
 
@@ -46,7 +46,7 @@ struct SysRootDir {
 
 impl SimpleDirOps for SysRootDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["bus", "class"].into_iter().map(Cow::Borrowed))
+        Box::new(["bus", "class", "kernel"].into_iter().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -64,6 +64,29 @@ impl SimpleDirOps for SysRootDir {
                     fs: self.fs.clone(),
                 },
             )),
+            "kernel" => Ok(dir(
+                self.fs.clone(),
+                SysKernelDir {
+                    fs: self.fs.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysKernelDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SysKernelDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["debug"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "debug" => Ok(dir(self.fs.clone(), DirMapping::new())),
             _ => Err(ax_errno::AxError::NotFound),
         }
     }

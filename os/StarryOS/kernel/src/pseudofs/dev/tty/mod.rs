@@ -31,6 +31,9 @@ use crate::{
     task::{AsThread, get_process_group},
 };
 
+const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
+const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
+
 /// Tty device
 pub struct Tty<R, W> {
     this: Weak<Self>,
@@ -61,10 +64,12 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         if pg.session().sid() != proc.pid() {
             return Err(AxError::OperationNotPermitted);
         }
-        assert!(pg.session().set_terminal_with(|| {
-            self.terminal.job_control.set_session(&pg.session());
-            self.clone()
-        }));
+        if !pg.session().try_set_terminal_with(|| {
+            self.terminal.job_control.set_session(&pg.session())?;
+            Ok::<_, AxError>(self.clone() as Arc<dyn Any + Send + Sync>)
+        })? {
+            return Err(AxError::ResourceBusy);
+        }
 
         self.terminal.job_control.set_foreground(&pg).unwrap();
         Ok(())
@@ -90,6 +95,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         } else {
             let term = self.terminal.load_termios();
             write_output_bytes(&self.writer, term.as_ref(), buf);
+            if contains_bytes(buf, ANSI_CURSOR_POSITION_REQUEST) {
+                self.ldisc
+                    .lock()
+                    .inject_input(ANSI_CURSOR_POSITION_RESPONSE);
+            }
         }
         Ok(buf.len())
     }
@@ -156,6 +166,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .bind_to(&current().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
+                let session = current().as_thread().proc_data.proc.group().session();
                 if current()
                     .as_thread()
                     .proc_data
@@ -164,6 +175,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .session()
                     .unset_terminal(&(self.this.upgrade().unwrap() as _))
                 {
+                    self.terminal.job_control.clear_session(&session);
                     // TODO: If the process was session leader, send SIGHUP and
                     // SIGCONT to the foreground process group and all processes
                     // in the current session lose their
@@ -189,6 +201,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {

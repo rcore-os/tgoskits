@@ -1,6 +1,6 @@
 [package]
 name = "ax-runtime"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -19,6 +19,7 @@ multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
 smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
+stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = ["ax-hal/plat-dyn", "ax-driver/dyn", "paging", "buddy-slab"]
@@ -33,7 +34,7 @@ net-ng = ["ax-driver", "dep:ax-net-ng"]
 vsock = ["net-ng", "ax-net-ng/vsock"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true }
 ax-config = { workspace = true }
 ax-display = { workspace = true, optional = true }

@@ -5,11 +5,15 @@ extern crate log;
 #[macro_use]
 extern crate ax_plat;
 
+#[cfg(all(feature = "irq", not(feature = "hypervisor")))]
+mod irq;
+
+#[cfg(feature = "hypervisor")]
+pub mod irq;
+
 mod boot;
 mod console;
 mod init;
-#[cfg(feature = "irq")]
-mod irq;
 mod mem;
 mod power;
 mod time;

@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
-use ax_task::{AxTaskExt, WaitQueue, current, spawn_task};
+use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -207,11 +207,13 @@ impl CloneArgs {
                 .set_page_table_root(aspace.lock().page_table_root());
 
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
-                old_proc_data.signal.actions.clone()
+                old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
                 Arc::new(SpinNoIrq::new(Default::default()))
             } else {
-                Arc::new(SpinNoIrq::new(old_proc_data.signal.actions.lock().clone()))
+                Arc::new(SpinNoIrq::new(
+                    old_proc_data.signal.actions().lock().clone(),
+                ))
             };
 
             let proc_data = ProcessData::new(
@@ -252,10 +254,8 @@ impl CloneArgs {
                 if flags.contains(CloneFlags::FS) {
                     FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
                 } else {
-                    FS_CONTEXT
-                        .scope_mut(&mut scope)
-                        .lock()
-                        .clone_from(&FS_CONTEXT.lock());
+                    let fs_context = FS_CONTEXT.lock().clone();
+                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
                 }
             }
 
@@ -266,12 +266,15 @@ impl CloneArgs {
 
         let parent_cred = Some(curr.as_thread().cred());
         let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
+        if curr.as_thread().no_new_privs() {
+            thr.set_no_new_privs();
+        }
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(&thr)
+                PidFd::new_thread(&thr, tid)
             } else {
                 PidFd::new_process(&new_proc_data)
             };
@@ -283,10 +286,12 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-        // CLONE_VFORK: wire a shared WaitQueue to the child so it can wake us.
+        // CLONE_VFORK: wire a shared `PollSet` to the child so it can wake us
+        // (PollSet, not WaitQueue, so the parent's wait is interruptible by
+        // `task.interrupt()` — see `wait_vfork_done`).
         if flags.contains(CloneFlags::VFORK) {
-            let wq = Arc::new(WaitQueue::new());
-            new_proc_data.set_vfork_done(wq);
+            let poll = Arc::new(axpoll::PollSet::new());
+            new_proc_data.set_vfork_done(poll);
         }
 
         let task = spawn_task(new_task);

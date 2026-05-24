@@ -1,15 +1,15 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, run focused validation, leave Chinese inline review comments, approve, or request changes.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, validate Starry app-support test placement, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
 ---
 
 # Review Single PR
 
 ## Goal
 
-Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, test, or CI coverage problems.
+Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from the project reviewer direction table when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
 
-This skill is the authoritative single-PR workflow used by `review-open-prs`: do not scan all open PRs unless needed to check duplicate or superseded fixes.
+This skill is the authoritative single-PR workflow used by `review-open-prs`: do not fully review all open PRs, but always inspect enough related open PR context to classify duplicate, overlapping, superseded, or conflicting work.
 
 ## System Skill Priority
 
@@ -106,14 +106,48 @@ Never review multiple StarryOS QEMU cases in the same checkout at the same time.
 
 ## Merge Conflicts
 
-Handle merge conflicts in either of these cases: the user explicitly asks for conflict handling, or the review has no blocking findings and would otherwise be `APPROVE` while `mergeStateStatus=DIRTY` and `maintainerCanModify=true`. Do not submit approval before the conflict repair is pushed and re-validated against the new head.
+Handle merge conflicts in either of these cases: the user explicitly asks for conflict handling, or this review has no blocking findings and would otherwise be `APPROVE` while the current PR metadata says `mergeStateStatus=DIRTY` and `maintainerCanModify=true`. Do not submit or reaffirm approval before the conflict repair is pushed and re-validated against the new head.
 
-- If `mergeStateStatus` is `DIRTY` and `maintainerCanModify=false`, do not repair the branch. When conflict handling was explicitly requested, submit `REQUEST_CHANGES` explaining that the branch conflicts with base and maintainers cannot push a fix; ask the author to merge/rebase latest base and suggest enabling "Allow edits by maintainers". Otherwise, include the conflict limitation in the review body or user summary.
-- If `mergeStateStatus` is `DIRTY` and `maintainerCanModify=true`, create a separate conflict worktree, check out `origin/pr/<pr>` detached, merge `origin/<base>`, resolve conflicts according to PR intent and current base behavior, validate, then commit the merge locally.
-- Before pushing a repaired conflict branch, refresh the PR and confirm the local merge commit's first parent equals the current remote `headRefOid`. If the remote head changed, stop and rebase/re-review instead of pushing.
+First refresh and classify the conflict and approval state:
+
+```bash
+gh pr view <pr> --json number,baseRefName,headRefName,headRepositoryOwner,headRefOid,mergeStateStatus,maintainerCanModify,reviewDecision,reviews
+gh api "repos/<owner>/<repo>/pulls/<pr>/reviews?per_page=100"
+```
+
+- `reviewDecision=APPROVED` is the current aggregate approval state. Historical `APPROVED` review records are useful context, but do not by themselves mean the PR is currently approved; if aggregate approval is empty, `CHANGES_REQUESTED`, or review threads remain unresolved, treat conflict repair as a no-submit dry run unless the user specifically asked to push a repair.
+- If `mergeStateStatus=UNKNOWN`, refresh or wait and query again before acting. Do not infer a current conflict from stale search results.
+- If `mergeStateStatus=DIRTY` and `maintainerCanModify=false`, do not repair the branch. When conflict handling was explicitly requested, submit `REQUEST_CHANGES` explaining that the branch conflicts with base and maintainers cannot push a fix; ask the author to merge/rebase latest base and suggest enabling "Allow edits by maintainers". Otherwise, include the conflict limitation in the review body or user summary.
+- If `mergeStateStatus=DIRTY` and `maintainerCanModify=true`, create a separate conflict worktree and verify the contributor branch still matches `headRefOid` before doing pushable work:
+
+  ```bash
+  conflict_wt="$repo_parent/$(basename "$repo_root")-conflict-pr<pr>"
+  git fetch origin '+refs/pull/<pr>/head:refs/remotes/origin/pr/<pr>' '+refs/heads/<base>:refs/remotes/origin/<base>'
+  git ls-remote "https://github.com/<head-owner>/<repo>.git" "refs/heads/<headRefName>"
+  git worktree add --detach "$conflict_wt" origin/pr/<pr>
+  git -C "$conflict_wt" merge --no-ff --no-commit "origin/<base>"
+  git -C "$conflict_wt" diff --name-only --diff-filter=U
+  ```
+
+- In this detached conflict worktree, conflict marker `HEAD` / stage 2 / "ours" is the PR branch, and `origin/<base>` / stage 3 / "theirs" is current base. Use `git show :1:<path>`, `git show :2:<path>`, and `git show :3:<path>` when the ancestor, PR side, or base side is unclear.
+- Resolve conflicts semantically according to PR intent and current base behavior. Do not merely keep both sides, and do not resurrect APIs or layouts that base already replaced. Port the PR feature onto the new base abstraction, then keep independent additions from both sides when they do not conflict.
+- PR 837 is the reference example for this rule: the PR added `/proc/kallsyms`, while base had replaced the old `SeqFile` pattern with `SeqObject` plus `SpecialFsFile::new_regular_with_perm`. The correct repair was to keep the kallsyms feature but express it with the current base API, while also keeping independent base/PR additions such as `ktracepoint` plus `ksym` and `.tracepoint` plus `.kallsyms`.
+- Before committing the repair, run formatting, marker checks, diff hygiene, and focused validation for the changed surface:
+
+  ```bash
+  cargo fmt
+  rg -n '<<<<<<<|=======|>>>>>>>' <conflicted-files>
+  git -C "$conflict_wt" diff --check
+  <targeted cargo xtask/cargo test/cargo clippy commands>
+  git -C "$conflict_wt" add <resolved-files>
+  git -C "$conflict_wt" commit
+  ```
+
+- Before pushing a repaired conflict branch, refresh the PR and confirm the local merge commit's first parent equals the current remote `headRefOid`; also re-check the fork branch with `git ls-remote`. If the remote head changed, stop and re-review instead of pushing.
 - Push repaired fork branches with a normal non-force push to the PR head owner and branch, for example `git push https://github.com/<head-owner>/<repo>.git HEAD:<headRefName>`. Never force-push a contributor branch.
 - After pushing conflict repairs, refresh PR status, update the review worktree to the new head, and rerun the targeted validation that supports approval. Submit `APPROVE` only if the repaired head still has no blocking findings; otherwise submit `REQUEST_CHANGES` with the remaining conflict or validation problem.
 - `BLOCKED` or `UNSTABLE` may remain because of CI or reviews even after conflicts are gone; do not treat that alone as failed conflict repair.
+- If you performed only a conflict dry run or process exercise, do not push or submit a review. Record the PR number, approval-state nuance, conflicted files, semantic resolution, validation commands/results, and that no GitHub branch was changed; then abort/remove the conflict worktree unless the diagnostics must be kept.
 
 ## Review Focus
 
@@ -128,22 +162,56 @@ Review the PR against its stated intent, the current base branch, existing proje
 
 For bug fixes, require a reproduction test that fails before the fix and passes after it unless the environment makes that impossible. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
 
+For PRs that add StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
+
+- App-level smoke, demo, rootfs preparation, board/QEMU run scripts, and long-running or opt-in workflows belong under `apps/starry/<app-or-scenario>/`, following `apps/starry/README.md`.
+- Kernel ABI, syscall, filesystem, process, networking, or other bugfix coverage exposed while enabling the app belongs under `test-suit/starryos/normal` in the matching existing case group, such as `qemu-smp1/syscall`, `qemu-smp1/bugfix`, `qemu-smp1/c-regression`, networking, DRM, evdev, or another closest semantic group.
+- If the PR adds a syscall or changes syscall semantics for the app, require a minimal normal syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
+- If the PR fixes a bug found through the app, require a normal bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
+- Do not approve app-support PRs that put app workflows only into `test-suit/starryos/normal`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
+
 Do not approve changes that are only shaped to satisfy the added tests, such as hard-coded special cases, skipped behavior, fake state updates, no-op compatibility shims, or logic that does not implement the intended subsystem semantics. Treat this as blocking even when local tests and CI pass.
 
 Do not accept "success path" tests that silently skip on unexpected failure, such as returning early when `brk`, `sbrk`, I/O, or socket setup returns `ENOMEM`/`EAGAIN`, unless the test prints an explicit skip marker and the review explains why the environment legitimately cannot require success. Bugfix reproduction tests should fail loudly when the fixed behavior is absent.
 
-Before approving a bugfix PR, check whether the same bug is already fixed on base or in another open PR:
+## Duplicate And Overlap Analysis
+
+This analysis is required for every PR, not only bug fixes. Its purpose is to avoid approving duplicate implementations, stale rework, superseded fixes, or PRs that unknowingly conflict with another open PR.
+
+Build an intent fingerprint before searching:
+
+- PR title, body, linked issue numbers, commit subjects, and author-stated validation.
+- Changed crates, modules, test cases, configs, CI files, and generated assets.
+- Public APIs, syscall names, errno behavior, protocol terms, device types, runner commands, test binary names, and feature flags touched by the patch.
+- The semantic claim being made: new feature, bug fix, test coverage, refactor, config update, CI repair, or dependency/metadata change.
+
+Check current base branch first. Search for equivalent behavior, tests, config entries, public APIs, or previous fixes already present on `origin/<base>`:
 
 ```bash
 git grep -n -E '<relevant symbols|paths|commands>' origin/<base> -- <likely paths>
+git log --oneline --decorate -- <likely paths>
 ```
 
-Use the GitHub MCP/connector to search or list related open PRs first. Fallback only when the connector cannot search the needed PR set:
+If base already has the same behavior or a newer version of it, treat the PR as stale or duplicate unless it clearly adds distinct value. Verify that distinction by reading the relevant base code, not just matching names.
+
+Then check related open PRs. Use the GitHub MCP/connector to search or list candidate PRs before falling back to `gh`. Search with multiple terms derived from the intent fingerprint; do not rely only on the PR title. Useful terms include crate/module names, changed path fragments, syscall or API names, test case names, issue numbers, errno values, protocol/device names, CI job names, and config names.
 
 ```bash
-gh pr list --state open --limit 100 --search '<bug keyword or command>'
+gh pr list --state open --limit 200 --search '<symbol OR path OR issue keyword>'
+gh pr view <related-pr> --json number,title,body,author,baseRefName,headRefName,isDraft,updatedAt,files,commits
 gh pr diff <related-pr> --patch --color=never
+git diff --name-only origin/<base>...origin/pr/<related-pr>
 ```
+
+Inspect each plausible related PR enough to classify it:
+
+- `duplicate`: solves the same problem or adds the same test/API/config behavior with no meaningful distinction.
+- `partial-overlap`: touches the same surface but the changes are complementary, ordered, or separable.
+- `conflict-risk`: likely merge or semantic conflict because both PRs modify the same contract, runner behavior, generated asset, or ABI expectation.
+- `superseded`: another PR or current base implements the same intent more completely or in a better-aligned way.
+- `unrelated-after-inspection`: matched search terms but does not overlap after reading files/diff/intent.
+
+For `partial-overlap` or `conflict-risk`, compare the implementation direction with project semantics and note the expected merge order or follow-up needed. If correctness depends on another PR landing first, do not approve until that dependency is explicit in the PR body or review outcome. For `duplicate` or `superseded`, submit `REQUEST_CHANGES` or leave a neutral project-focused comment explaining which base code or open PR should be preferred and why.
 
 Use `git diff origin/<base>...origin/pr/<pr>` for the PR patch. Use `origin/<base>..origin/pr/<pr>` only when intentionally checking stale-branch effects.
 
@@ -166,6 +234,12 @@ If `cargo xtask` does not cover a special configuration, inspect the relevant `x
 For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. Running the containing grouped case is the preferred check, for example `cargo xtask starry test qemu --arch x86_64 -c syscall`. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, unreliable `success_regex`/`fail_regex`, or tests that accept both broken and fixed behavior as blocking.
 
 For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
+
+For StarryOS app-support PRs, validate both sides when both are present:
+
+- Run the relevant `apps/starry` command or an equivalent documented app workflow when the PR adds or changes app support, unless it needs unavailable hardware, credentials, or long-running services; record any limitation.
+- Run the corresponding `cargo xtask starry test qemu --test-group normal ...` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims normal test coverage. App validation does not replace normal regression validation.
+- If the app scenario and normal regression cover different risks, mention both results in the review body.
 
 When the PR does not add or modify a test case, inspect the PR body and commit messages for any claimed non-board validation method, such as QEMU, host unit tests, `cargo xtask`, `cargo test`, `cargo clippy`, shell scripts, emulators, or reproducible manual commands that do not require physical hardware:
 
@@ -194,10 +268,13 @@ Treat these as blocking unless clearly non-blocking:
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
 - bug fixes lack meaningful reproduction coverage;
+- merge conflicts are unresolved, conflict repair resurrects outdated base APIs instead of adapting PR intent to current base, or the repaired head was not revalidated after push;
+- StarryOS app-support PRs place app workflows under `test-suit/starryos/normal` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching normal test-suit case;
 - the implementation is a test-only or fake fix that does not implement the intended behavior;
 - submitted buffers, DMA memory, queue tokens, or IRQ ownership can leak, be freed too early, or cross the wrong abstraction layer;
 - a change silently makes CI hang, time out, or skip the new coverage;
-- the PR duplicates, weakens, or is superseded by a newer base-branch or open-PR fix.
+- the PR duplicates existing base-branch behavior, weakens an existing implementation, conflicts with a related open PR, or is superseded by a newer base-branch or open-PR fix;
+- the review cannot explain how this PR differs from a plausible related open PR after duplicate and overlap analysis.
 
 All GitHub review text, including inline comments, review body, and replies, must be in Chinese, neutral, and project-focused. Each blocking comment should include the concrete problem, the relevant standard/project rule/observed failure, and a suggested fix.
 
@@ -245,6 +322,8 @@ Review body must explain in Chinese:
 - validation commands and results, including exact failure mode for failing tests;
 - when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
 - CI status, including any unrelated failing checks, the evidence for unrelatedness, and the linked tracking issue;
+- duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
+- conflict handling status when applicable: conflicted files, resolution logic, validation after repair, and whether a repair commit was pushed or the work was intentionally kept as a dry run;
 - for PR-related CI failures, the failing check, failure mode, and expected fix direction;
 - reproduction coverage status for bug fixes;
 - unresolved review conversations that were resolved, and conversations intentionally left open and why;
@@ -258,6 +337,50 @@ Verify final state:
 ```bash
 gh pr view <pr> --json number,reviewDecision,latestReviews
 ```
+
+## Post-Review Reviewer Assignment
+
+After review submission, decide whether the PR still needs human reviewer requests. Do this after the technical review so reviewer choice is based on the actual changed surface, duplicate/overlap findings, validation risk, and remaining follow-up.
+
+Use discussion 594 as the reviewer source of truth. Read the current table directly before assigning because personnel directions may change:
+
+```bash
+gh api graphql \
+  -f query='query($owner:String!,$repo:String!,$number:Int!){ repository(owner:$owner,name:$repo){ discussion(number:$number){ title body url comments(first:100){nodes{author{login} body createdAt}} } } }' \
+  -F owner=rcore-os -F repo=tgoskits -F number=594
+```
+
+Map PR content to reviewer directions from the "人员方向整理" table:
+
+- StarryOS tests, `test-suit/starryos`, QEMU cases, rootfs/app tests, `apk`, distro behavior, or `axbuild` test flow: prefer reviewers covering `测试`, `发行版/rootfs`, `axbuild`, and the relevant `starry` area.
+- Syscall, filesystem, network, driver, platform, architecture, CI, documentation, and display changes should be mapped to the matching table columns, then cross-checked against changed files and PR body claims.
+- If a PR matches several domains, request one primary reviewer for the highest-risk domain and one secondary reviewer for integration or test coverage. Avoid over-requesting reviewers.
+- Drop the PR author from targets. Preserve existing bot review requests and unrelated existing human reviewer requests unless the user explicitly asks to rebalance them.
+
+For StarryOS normal QEMU app tests like PR 795 (`test-suit/starryos/normal/qemu-smp1/git`, `apk add`, app/rootfs behavior), a good mapping is `测试` + `发行版/rootfs` + `starry`: `@ZCShou` for test/rootfs/axbuild ownership and `@luodeb` for Starry/rootfs experience. Use this as a pattern, not as a hard-coded rule; still inspect the current discussion table and PR contents.
+
+Before writing reviewer requests, check current requested reviewers and permissions:
+
+```bash
+gh api repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers
+gh api repos/rcore-os/tgoskits/collaborators/<login>/permission
+```
+
+Use the REST requested-reviewers API instead of `gh pr edit`, because `gh pr edit` can fail in this repository while querying deprecated Projects classic fields:
+
+```bash
+printf '%s\n' '{"reviewers":["<login1>","<login2>"]}' |
+  gh api -X POST repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers --input -
+```
+
+After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone not supported by discussion 594.
+
+In the final user summary, state:
+
+- which reviewer direction columns matched the PR;
+- which reviewers were requested, already present, skipped, or rejected;
+- any permission/API limitation;
+- that only GitHub reviewer metadata was changed, when no code files were edited by the assignment step.
 
 ## Cleanup
 

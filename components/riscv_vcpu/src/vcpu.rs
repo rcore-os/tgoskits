@@ -742,7 +742,7 @@ impl RISCVVCpu {
         }
 
         let guest_pc = GuestVirtAddr::from(self.regs.guest_regs.sepc);
-        Ok(guest_mem::fetch_guest_instruction(guest_pc))
+        guest_mem::fetch_guest_instruction(guest_pc)
     }
 
     #[cfg(feature = "sstc")]
@@ -768,7 +768,7 @@ impl RISCVVCpu {
         let instr_len;
         if instr == 0 {
             // Read the instruction from guest memory.
-            instr = guest_mem::fetch_guest_instruction(vaddr) as _;
+            instr = guest_mem::fetch_guest_instruction(vaddr)? as _;
             instr_len = riscv_decode::instruction_length(instr as u16);
             instr = match instr_len {
                 2 => instr & 0xffff,
