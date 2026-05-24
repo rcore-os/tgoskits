@@ -180,7 +180,6 @@ mod prog_type {
     pub const SYSCALL: u32 = 31;
 }
 
-#[allow(dead_code)]
 mod cmd {
     pub const MAP_CREATE: u64 = 0;
     pub const MAP_LOOKUP_ELEM: u64 = 1;
@@ -759,10 +758,10 @@ impl StackTraceMap {
     fn store_trace(&mut self, ips: &[u64]) -> u32 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        if self.traces.len() >= self.meta.max_entries as usize {
-            if let Some(oldest) = self.traces.keys().min().copied() {
-                self.traces.remove(&oldest);
-            }
+        if self.traces.len() >= self.meta.max_entries as usize
+            && let Some(oldest) = self.traces.keys().min().copied()
+        {
+            self.traces.remove(&oldest);
         }
         self.traces.insert(id, ips.to_vec());
         id
@@ -1881,7 +1880,6 @@ const BPF_MAX_INSN: usize = 1000000;
 const BPF_MAX_STACK: usize = 512;
 
 struct BpfVm {
-    #[allow(dead_code)]
     helpers: alloc::collections::BTreeMap<u32, HelperFn>,
 }
 

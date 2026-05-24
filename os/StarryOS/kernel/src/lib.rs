@@ -22,6 +22,7 @@ mod file;
 #[cfg(feature = "kcov")]
 mod kcov;
 mod mm;
+#[cfg(feature = "ebpf")]
 mod perf_event;
 mod pseudofs;
 mod stop_machine;
