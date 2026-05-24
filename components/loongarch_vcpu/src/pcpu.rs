@@ -2,17 +2,8 @@ use ax_errno::AxResult;
 use axvcpu::AxArchPerCpu;
 
 use crate::registers::{
-    CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gcsr_eentry_write, gstat_read, gstat_write,
+    CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gstat_read, gstat_write,
 };
-
-#[cfg(target_arch = "loongarch64")]
-unsafe extern "C" {
-    static _exception_vectors: u8;
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-#[unsafe(no_mangle)]
-static _exception_vectors: u8 = 0;
 
 #[repr(C)]
 #[repr(align(4096))]
@@ -43,16 +34,14 @@ impl AxArchPerCpu for LoongArchPerCpu {
         self.original_eentry = unsafe { csr_read::<CSR_EENTRY>() };
         self.original_gstat = gstat_read();
         self.original_gcsr_eentry = gcsr_eentry_read();
-
-        unsafe {
-            gcsr_eentry_write(core::ptr::addr_of!(_exception_vectors) as usize);
-        }
         self.enabled = true;
 
         log::debug!(
-            "LoongArch virtualization enabled for CPU {}, GCSR_EENTRY={:#x}",
+            "LoongArch virtualization enabled for CPU {}, host CSR.EENTRY={:#x}, guest \
+             GCSR.EENTRY={:#x}",
             self.cpu_id,
-            core::ptr::addr_of!(_exception_vectors) as usize
+            self.original_eentry,
+            self.original_gcsr_eentry
         );
         Ok(())
     }
@@ -60,7 +49,6 @@ impl AxArchPerCpu for LoongArchPerCpu {
     fn hardware_disable(&mut self) -> AxResult {
         unsafe {
             gstat_write(self.original_gstat);
-            gcsr_eentry_write(self.original_gcsr_eentry);
             csr_write::<CSR_EENTRY>(self.original_eentry);
         }
         self.enabled = false;

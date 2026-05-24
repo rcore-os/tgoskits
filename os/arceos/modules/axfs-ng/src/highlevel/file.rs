@@ -216,6 +216,22 @@ impl OpenOptions {
             loc.entry().as_file()?.set_len(0)?;
         }
 
+        // ENXIO on opening a UNIX-domain-socket file. man 2 open §"ENXIO":
+        // "The file is a UNIX domain socket." Two exclusions:
+        //   (1) O_PATH bypass: socket file can still be O_PATH-opened to get a
+        //       location handle.
+        //   (2) Caller intends to create a socket (self.node_type == Socket,
+        //       used by axnet UnixSocket::bind which mounts /dev/log etc.)
+        //       — opening a freshly-created Socket via the create-then-open
+        //       path is internal kernel use, not user open(2).
+        // Fixes bug-open-unix-socket-no-enxio.
+        if !self.path
+            && self.node_type != NodeType::Socket
+            && loc.metadata()?.node_type == NodeType::Socket
+        {
+            return Err(VfsError::NoSuchDeviceOrAddress);
+        }
+
         Ok(if loc.is_dir() {
             if flags.contains(FileFlags::WRITE) {
                 return Err(VfsError::IsADirectory);
@@ -264,27 +280,75 @@ impl OpenOptions {
             return Err(VfsError::NotFound);
         }
 
+        // Trailing-slash check: man — paths with trailing '/' must refer to
+        // a directory. Components::parse_forward strips the empty trailing
+        // component, so we use Path::has_trailing_slash() to recover the
+        // signal. Captured early; the post-resolution check below enforces
+        // it. Fixes bug-open-trailing-slash.
+        let must_be_dir = path.as_ref().has_trailing_slash();
+
         let loc = match context.resolve_parent(path.as_ref()) {
             Ok((parent, name)) => {
+                // If the path ends with '/', Linux never creates regular
+                // files via O_CREAT here — the path explicitly requests a
+                // directory, and open() cannot create directories. Suppress
+                // create flags BEFORE open_file to avoid creating an inode
+                // that the post-check would then reject (codex P1: original
+                // ordering left a stale file on disk for failing calls).
+                let effective_create = self.create && !must_be_dir;
+                let effective_create_new = self.create_new && !must_be_dir;
                 let mut loc = parent.open_file(
                     &name,
                     &axfs_ng_vfs::OpenOptions {
-                        create: self.create,
-                        create_new: self.create_new,
+                        create: effective_create,
+                        create_new: effective_create_new,
                         node_type: self.node_type,
                         permission: NodePermission::from_bits_truncate(self.mode as _),
                         user: self.user,
                     },
                 )?;
                 if !self.no_follow {
-                    loc = context
-                        .with_current_dir(parent)?
-                        .try_resolve_symlink(loc, &mut 0)?;
+                    // Save the symlink-target path before resolving, so we can
+                    // recurse into create-at-target if the target is dangling.
+                    let was_symlink = loc.node_type() == NodeType::Symlink;
+                    let symlink_target = if was_symlink && self.create {
+                        loc.read_link().ok()
+                    } else {
+                        None
+                    };
+                    let parent_for_resolve = parent.clone();
+                    match context
+                        .with_current_dir(parent_for_resolve)?
+                        .try_resolve_symlink(loc, &mut 0)
+                    {
+                        Ok(resolved) => loc = resolved,
+                        Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
+                            // O_CREAT on a dangling symlink: man — Linux follows
+                            // the symlink and creates the target file (provided
+                            // its parent directory exists). Recurse with the
+                            // symlink target as the new path.
+                            // Fixes bug-open-creat-dangling-no-create.
+                            let target = symlink_target.unwrap();
+                            return self.open(&context.with_current_dir(parent)?, &target);
+                        }
+                        Err(e) => return Err(e),
+                    }
                 } else if loc.node_type() == NodeType::Symlink && !self.path {
                     // O_NOFOLLOW + basename is a symlink + not O_PATH:
                     // man "If the trailing component (i.e., basename) of
                     // pathname is a symbolic link, then the open fails,
                     // with the error ELOOP."
+                    //
+                    // Precedence: a trailing slash on the original path
+                    // forces the resolved entry to be a directory; a
+                    // symlink itself is not a directory, so ENOTDIR
+                    // takes priority over ELOOP (Linux behavior verified
+                    // via host gcc: `open("/tmp/sym/", O_NOFOLLOW)` →
+                    // ENOTDIR, not ELOOP). Without this check, starry
+                    // returns ELOOP and diverges from Linux.
+                    if must_be_dir {
+                        return Err(VfsError::NotADirectory);
+                    }
                     // Fixes bug-open-nofollow-sym.
                     return Err(VfsError::FilesystemLoop);
                 }
@@ -296,6 +360,14 @@ impl OpenOptions {
             }
             Err(err) => return Err(err),
         };
+
+        // Trailing-slash post-check: if the original pathname ended with '/'
+        // (other than the root itself), the resolved location MUST be a
+        // directory; otherwise return NotADirectory.
+        if must_be_dir && !loc.is_dir() {
+            return Err(VfsError::NotADirectory);
+        }
+
         self._open(loc)
     }
 
@@ -850,11 +922,29 @@ impl FileBackend {
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
-            Self::Direct(loc) => dst.read_from(&mut ax_io::read_fn(|buf| {
-                loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
-                    offset += *read as u64;
-                })
-            })),
+            Self::Direct(loc) => {
+                let mut total = 0;
+                while dst.remaining_mut() > 0 {
+                    let chunk = dst.remaining_mut().min(ax_io::DEFAULT_BUF_SIZE);
+                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
+                        loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
+                            offset += *read as u64;
+                        })
+                    })) {
+                        Ok(read) => read,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    total += read;
+                    if read < chunk {
+                        break;
+                    }
+                }
+                Ok(total)
+            }
         }
     }
 
@@ -862,14 +952,32 @@ impl FileBackend {
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
-            Self::Direct(loc) => src.write_to(&mut ax_io::write_fn(|buf| {
-                loc.entry()
-                    .as_file()?
-                    .write_at(buf, offset)
-                    .inspect(|written| {
-                        offset += *written as u64;
-                    })
-            })),
+            Self::Direct(loc) => {
+                let mut total = 0;
+                while src.remaining() > 0 {
+                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
+                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
+                        loc.entry()
+                            .as_file()?
+                            .write_at(buf, offset)
+                            .inspect(|written| {
+                                offset += *written as u64;
+                            })
+                    })) {
+                        Ok(written) => written,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
+                    if written == 0 {
+                        break;
+                    }
+                    total += written;
+                    if written < chunk {
+                        break;
+                    }
+                }
+                Ok(total)
+            }
         }
     }
 
@@ -878,14 +986,29 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.append(src),
             Self::Direct(loc) => {
-                let mut end = 0;
-                src.write_to(&mut ax_io::write_fn(|buf| {
-                    loc.entry().as_file()?.append(buf).map(|(n, offset)| {
-                        end = offset;
-                        n
-                    })
-                }))
-                .map(|n| (n, end))
+                let mut total = 0;
+                let mut end = loc.entry().as_file()?.len()?;
+                while src.remaining() > 0 {
+                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
+                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
+                        loc.entry().as_file()?.append(buf).map(|(n, offset)| {
+                            end = offset;
+                            n
+                        })
+                    })) {
+                        Ok(written) => written,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
+                    if written == 0 {
+                        break;
+                    }
+                    total += written;
+                    if written < chunk {
+                        break;
+                    }
+                }
+                Ok((total, end))
             }
         }
     }
@@ -938,7 +1061,6 @@ impl File {
         } else {
             Some(Mutex::new(0))
         };
-        let _ = flags;
         Self {
             inner,
             flags: AtomicU8::new(flags.bits()),

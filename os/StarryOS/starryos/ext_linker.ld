@@ -10,6 +10,12 @@ SECTIONS {
         KEEP(*(__dyndbg))
         __stop___dyndbg = .;
     }
+
+    .tracepoint : {
+        __start_tracepoint = .;
+        KEEP(*(.tracepoint .tracepoint.*))
+        __stop_tracepoint = .;
+    }
 }
 
 INSERT AFTER .data;

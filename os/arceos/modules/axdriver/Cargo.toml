@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -43,7 +43,7 @@ dyn = ["dep:ax-errno", "dep:axplat-dyn"]
 default = ["bus-pci"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
 ax-driver-base.workspace = true

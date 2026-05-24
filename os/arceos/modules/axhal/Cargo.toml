@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.5.14"
+version = "0.5.15"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -80,7 +80,7 @@ default = []
 ipi = ["irq"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config.workspace = true
 ax-cpu.workspace = true
 ax-plat.workspace = true

@@ -254,10 +254,8 @@ impl CloneArgs {
                 if flags.contains(CloneFlags::FS) {
                     FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
                 } else {
-                    FS_CONTEXT
-                        .scope_mut(&mut scope)
-                        .lock()
-                        .clone_from(&FS_CONTEXT.lock());
+                    let fs_context = FS_CONTEXT.lock().clone();
+                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
                 }
             }
 
@@ -268,12 +266,15 @@ impl CloneArgs {
 
         let parent_cred = Some(curr.as_thread().cred());
         let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
+        if curr.as_thread().no_new_privs() {
+            thr.set_no_new_privs();
+        }
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(&thr)
+                PidFd::new_thread(&thr, tid)
             } else {
                 PidFd::new_process(&new_proc_data)
             };

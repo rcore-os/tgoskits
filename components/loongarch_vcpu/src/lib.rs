@@ -8,7 +8,7 @@ mod registers;
 mod vcpu;
 
 pub use self::{
-    context_frame::{LoongArchContextFrame, LoongArchGuestSystemRegisters},
+    context_frame::LoongArchContextFrame,
     exception::{TrapKind, handle_exception_irq, handle_exception_sync},
     pcpu::LoongArchPerCpu,
     registers::inject_interrupt,

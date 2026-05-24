@@ -306,13 +306,18 @@ impl Pollable for File {
 pub struct Directory {
     inner: Location,
     pub offset: Mutex<u64>,
+    /// Original open flags (used by fd_is_path / sys_fchmodat to detect
+    /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
+    /// must reject fchmod just like O_PATH on a regular file).
+    open_flags: u32,
 }
 
 impl Directory {
-    pub fn new(inner: Location) -> Self {
+    pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
             offset: Mutex::new(0),
+            open_flags,
         }
     }
 
@@ -341,6 +346,10 @@ impl FileLike for Directory {
     fn inode_key(&self) -> Option<(u64, u64)> {
         let m = self.inner.metadata().ok()?;
         Some((m.device, m.inode))
+    }
+
+    fn open_flags(&self) -> u32 {
+        self.open_flags
     }
 
     fn path(&self) -> Cow<'_, str> {

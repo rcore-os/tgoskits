@@ -183,18 +183,26 @@ impl IrqIf for IrqIfImpl {
     }
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
+    ///
+    /// Runtime IPIs are sent NON-blocking (`IOCSR_IPI_SEND_BLOCKING` unset). The
+    /// blocking variant stalls the issuing CPU until the target clears its
+    /// `IOCSR_IPI_STATUS`; under a high-rate IPI burst the sender can block while
+    /// the target is mid-handler (IRQs disabled) — or while the sender itself holds
+    /// an IRQ-disabling lock — which deadlocks (the arceos-ipi SMP test hung 6h on
+    /// loongarch). Linux/riscv/x86 likewise fire runtime IPIs non-blocking; the
+    /// blocking form is reserved for the secondary-CPU boot mailbox (see `mp.rs`).
     fn send_ipi(_irq_num: usize, target: IpiTarget) {
         match target {
             IpiTarget::Current { cpu_id } => {
-                iocsr_write_w(IOCSR_IPI_SEND, make_ipi_send_value(cpu_id, 0, true));
+                iocsr_write_w(IOCSR_IPI_SEND, make_ipi_send_value(cpu_id, 0, false));
             }
             IpiTarget::Other { cpu_id } => {
-                iocsr_write_w(IOCSR_IPI_SEND, make_ipi_send_value(cpu_id, 0, true));
+                iocsr_write_w(IOCSR_IPI_SEND, make_ipi_send_value(cpu_id, 0, false));
             }
             IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
                 for i in 0..cpu_num {
                     if i != cpu_id {
-                        iocsr_write_w(IOCSR_IPI_SEND, make_ipi_send_value(i, 0, true));
+                        iocsr_write_w(IOCSR_IPI_SEND, make_ipi_send_value(i, 0, false));
                     }
                 }
             }
