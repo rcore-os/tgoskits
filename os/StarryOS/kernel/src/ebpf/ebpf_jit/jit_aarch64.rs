@@ -184,6 +184,10 @@ fn emit_mov(buf: &mut JitBuffer, rd: u32, rn: u32) {
     buf.emit_u32(0xAA0003E0 | (rn << 16) | rd);
 }
 
+fn emit_movw(buf: &mut JitBuffer, rd: u32, rn: u32) {
+    buf.emit_u32(0x2A0003E0 | (rn << 16) | rd);
+}
+
 fn emit_movz16(buf: &mut JitBuffer, rd: u32, imm: u16, shift: u32) {
     buf.emit_u32(0x52800000 | (shift << 21) | ((imm as u32) << 5) | rd);
 }
@@ -445,8 +449,10 @@ impl JitBackend for Aarch64Backend {
                     } else {
                         emit_load_imm32(buf, dst, insn.imm);
                     }
-                } else {
+                } else if is_64 {
                     emit_mov(buf, dst, src);
+                } else {
+                    emit_movw(buf, dst, src);
                 }
             }
             BPF_ARSH => {
@@ -519,7 +525,11 @@ impl JitBackend for Aarch64Backend {
             BPF_JGT => emit_bcond(buf, 8, target_off),
             BPF_JGE => emit_bcond(buf, 2, target_off),
             BPF_JSET => {
-                emit_and(buf, AA_X17, dst, src);
+                if is_64 {
+                    emit_and(buf, AA_X17, dst, src);
+                } else {
+                    emit_andw(buf, AA_X17, dst, src);
+                }
                 emit_cbnz(buf, AA_X17, target_off);
             }
             BPF_JNE => emit_bcond(buf, 1, target_off),
@@ -629,7 +639,8 @@ impl JitBackend for Aarch64Backend {
                     4
                 } else {
                     let cmp_size = if use_imm { 16 } else { 4 };
-                    cmp_size + 4
+                    let extra = if op == BPF_JSET { 4 } else { 0 };
+                    cmp_size + 4 + extra
                 }
             }
             BPF_ST => {
