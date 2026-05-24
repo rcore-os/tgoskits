@@ -817,7 +817,6 @@ impl JitBackend for X86_64Backend {
         match class {
             BPF_ALU | BPF_ALU64 => {
                 let alu_op = insn.alu_op();
-                let is_64 = class == BPF_ALU64;
                 let load_size = if use_imm && alu_op != BPF_MOV { 7 } else { 0 };
                 let op_size = match alu_op {
                     BPF_DIV | BPF_MOD => 50,
