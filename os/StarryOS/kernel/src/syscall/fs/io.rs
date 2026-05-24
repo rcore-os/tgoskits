@@ -753,13 +753,9 @@ pub fn sys_copy_file_range(
     };
 
     if len > 0 && meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
-        let copy_last = (len as u64)
-            .checked_sub(1)
-            .ok_or(AxError::InvalidInput)?;
+        let copy_last = (len as u64).checked_sub(1).ok_or(AxError::InvalidInput)?;
 
-        let in_end = pos_in
-            .checked_add(copy_last)
-            .ok_or(AxError::InvalidInput)?;
+        let in_end = pos_in.checked_add(copy_last).ok_or(AxError::InvalidInput)?;
 
         let out_end = pos_out
             .checked_add(copy_last)
