@@ -1599,7 +1599,10 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
         unsafe { core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len) };
     match starry_vm::vm_read_slice(src as *const u8, buf) {
         Ok(()) => 0,
-        Err(_) => 0,
+        Err(_) => {
+            unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
+            u64::MAX
+        }
     }
 }
 
