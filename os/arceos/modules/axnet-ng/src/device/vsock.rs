@@ -4,21 +4,24 @@ use core::{
     time::Duration,
 };
 
-use ax_driver::prelude::*;
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, interruptible};
+use rdif_vsock::{Interface, VsockAddr, VsockConnId, VsockError, VsockEvent};
 
 use crate::vsock::connection_manager::VSOCK_CONN_MANAGER;
 
+pub type VsockDevice = alloc::boxed::Box<dyn Interface>;
+pub type VsockDeviceList = alloc::vec::Vec<VsockDevice>;
+
 // we need a global and static only one vsock device
-static VSOCK_DEVICE: Mutex<Option<AxVsockDevice>> = Mutex::new(None);
-static PENDING_EVENTS: Mutex<VecDeque<VsockDriverEvent>> = Mutex::new(VecDeque::new());
+static VSOCK_DEVICE: Mutex<Option<VsockDevice>> = Mutex::new(None);
+static PENDING_EVENTS: Mutex<VecDeque<VsockEvent>> = Mutex::new(VecDeque::new());
 
 const VSOCK_RX_TMPBUF_SIZE: usize = 0x1000; // 4KiB buffer for vsock receive
 
 /// Registers a vsock device. Only one vsock device can be registered.
-pub fn register_vsock_device(dev: AxVsockDevice) -> AxResult {
+pub fn register_vsock_device(dev: VsockDevice) -> AxResult {
     let mut guard = VSOCK_DEVICE.lock();
     if guard.is_some() {
         ax_bail!(AlreadyExists, "vsock device already registered");
@@ -157,18 +160,18 @@ fn poll_vsock_interfaces() -> AxResult<bool> {
     Ok(event_count > 0)
 }
 
-fn handle_vsock_event(event: VsockDriverEvent, dev: &mut AxVsockDevice, buf: &mut [u8]) {
+fn handle_vsock_event(event: VsockEvent, dev: &mut VsockDevice, buf: &mut [u8]) {
     let mut manager = VSOCK_CONN_MANAGER.lock();
     debug!("Handling vsock event: {event:?}");
 
     match event {
-        VsockDriverEvent::ConnectionRequest(conn_id) => {
+        VsockEvent::ConnectionRequest(conn_id) => {
             if let Err(e) = manager.on_connection_request(conn_id) {
                 info!("Connection request failed: {conn_id:?}, error={e:?}");
             }
         }
 
-        VsockDriverEvent::Received(conn_id, len) => {
+        VsockEvent::Received(conn_id, len) => {
             let free_space = if let Some(conn) = manager.get_connection(conn_id) {
                 conn.lock().rx_buffer_free()
             } else {
@@ -179,7 +182,7 @@ fn handle_vsock_event(event: VsockDriverEvent, dev: &mut AxVsockDevice, buf: &mu
             if free_space == 0 {
                 PENDING_EVENTS
                     .lock()
-                    .push_back(VsockDriverEvent::Received(conn_id, len));
+                    .push_back(VsockEvent::Received(conn_id, len));
                 return;
             }
 
@@ -196,19 +199,19 @@ fn handle_vsock_event(event: VsockDriverEvent, dev: &mut AxVsockDevice, buf: &mu
             }
         }
 
-        VsockDriverEvent::Disconnected(conn_id) => {
+        VsockEvent::Disconnected(conn_id) => {
             if let Err(e) = manager.on_disconnected(conn_id) {
                 info!("Failed to handle disconnection: {conn_id:?}, error={e:?}",);
             }
         }
 
-        VsockDriverEvent::Connected(conn_id) => {
+        VsockEvent::Connected(conn_id) => {
             if let Err(e) = manager.on_connected(conn_id) {
                 info!("Failed to handle connection established: {conn_id:?}, error={e:?}",);
             }
         }
 
-        VsockDriverEvent::CreditUpdate(conn_id) => {
+        VsockEvent::CreditUpdate(conn_id) => {
             if let Err(e) = manager.on_credit_update(conn_id) {
                 warn!(
                     "Failed to handle credit update: {:?}, error={:?}",
@@ -217,31 +220,31 @@ fn handle_vsock_event(event: VsockDriverEvent, dev: &mut AxVsockDevice, buf: &mu
             }
         }
 
-        VsockDriverEvent::Unknown => warn!("Received unknown vsock event"),
+        VsockEvent::Unknown => warn!("Received unknown vsock event"),
     }
 }
 
 pub fn vsock_listen(addr: VsockAddr) -> AxResult<()> {
     let mut guard = VSOCK_DEVICE.lock();
     let dev = guard.as_mut().ok_or(AxError::NotFound)?;
-    dev.listen(addr.port);
-    Ok(())
+    dev.listen(addr.port).map_err(map_vsock_error)
 }
 
-fn map_dev_err(e: DevError) -> AxError {
+fn map_vsock_error(e: VsockError) -> AxError {
     match e {
-        DevError::AlreadyExists => AxError::AlreadyExists,
-        DevError::Again => AxError::WouldBlock,
-        DevError::InvalidParam => AxError::InvalidInput,
-        DevError::Io => AxError::Io,
-        _ => AxError::BadState,
+        VsockError::AlreadyExists => AxError::AlreadyExists,
+        VsockError::Retry => AxError::WouldBlock,
+        VsockError::NotConnected => AxError::NotConnected,
+        VsockError::NotAvailable => AxError::NotFound,
+        VsockError::NotSupported => AxError::Unsupported,
+        VsockError::Other(_) => AxError::BadState,
     }
 }
 
 pub fn vsock_connect(conn_id: VsockConnId) -> AxResult<()> {
     let mut guard = VSOCK_DEVICE.lock();
     let dev = guard.as_mut().ok_or(AxError::NotFound)?;
-    dev.connect(conn_id).map_err(map_dev_err)
+    dev.connect(conn_id).map_err(map_vsock_error)
 }
 
 pub fn vsock_send(conn_id: VsockConnId, buf: &[u8]) -> AxResult<usize> {
@@ -254,23 +257,23 @@ pub fn vsock_send(conn_id: VsockConnId, buf: &[u8]) -> AxResult<usize> {
         };
         match result {
             Ok(len) => return Ok(len),
-            Err(DevError::Again) => {
+            Err(VsockError::Retry) => {
                 let manager = VSOCK_CONN_MANAGER.lock();
                 if let Some(conn) = manager.get_connection(conn_id) {
                     drop(manager);
                     conn.lock().wait_for_tx();
                 };
             }
-            Err(e) => return Err(map_dev_err(e)),
+            Err(e) => return Err(map_vsock_error(e)),
         }
     }
-    Err(map_dev_err(DevError::Again))
+    Err(map_vsock_error(VsockError::Retry))
 }
 
 pub fn vsock_disconnect(conn_id: VsockConnId) -> AxResult<()> {
     let mut guard = VSOCK_DEVICE.lock();
     let dev = guard.as_mut().ok_or(AxError::NotFound)?;
-    dev.disconnect(conn_id).map_err(map_dev_err)
+    dev.disconnect(conn_id).map_err(map_vsock_error)
 }
 
 pub fn vsock_guest_cid() -> AxResult<u64> {

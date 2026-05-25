@@ -60,12 +60,14 @@ _copy_from_guest:
 //   A0: Guest address of the instruction to fetch, using the translation modes/tables currently
 //       programmed in HGATP and VSATP.
 //   A1: Pointer to a u32 where the instruction will be written.
+//   A2: Pointer to fault info written if the access faults.
 //
-// Returns -1 on error.
+// Returns 1 on error and writes scause, stval, and htval to A2. HLVX checks execute
+// permission but reports load-class exceptions, so the Rust side needs the raw
+// trap CSRs to recover the guest-visible fetch semantics.
 .global _fetch_guest_instruction
 _fetch_guest_instruction:
-    // handle_trap assumes t0 holds the address of where we want to jump to when we encounter
-    // a fault and will stick SCAUSE in t1.
+    // The exception table fixup redirects a faulting HLVX here.
     la    t0, 4f
 1:
     hlvx.hu t2, (a0)
@@ -86,8 +88,14 @@ _fetch_guest_instruction:
     mv    a0, zero
     ret
 4:
-    // Took a fault, return -1.
-    not   a0, zero
+    // Took a fault, record trap CSRs and return 1.
+    csrr  t2, scause
+    sd    t2, 0(a2)
+    csrr  t2, stval
+    sd    t2, 8(a2)
+    csrr  t2, htval
+    sd    t2, 16(a2)
+    li    a0, 1
     ret
 
 // memcpy() to a user address.

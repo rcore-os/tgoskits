@@ -1,4 +1,5 @@
 use alloc::{
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -6,7 +7,6 @@ use alloc::{
 };
 use core::task::Waker;
 
-use ax_driver::prelude::*;
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
@@ -21,7 +21,7 @@ use smoltcp::{
 
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{ArpEntry, Device},
+    device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -40,12 +40,12 @@ struct PendingNeighbor {
 
 struct EthernetIrqState {
     irq_num: Option<usize>,
-    driver: SpinNoIrq<AxNetDevice>,
+    driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: PollSet,
 }
 
 impl EthernetIrqState {
-    fn handle_irq(&self) -> NetIrqEvent {
+    fn handle_irq(&self) -> NetIrqEvents {
         self.driver.lock().handle_irq()
     }
 }
@@ -66,7 +66,7 @@ fn handle_ethernet_irq(slot: usize) {
     };
 
     let events = state.handle_irq();
-    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR | NetIrqEvent::TX_DONE) {
+    if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
         state.poll_ready.wake();
     }
 }
@@ -118,10 +118,16 @@ fn release_ethernet_irq_slot(slot: usize, state: &Arc<EthernetIrqState>) {
 }
 
 impl EthernetDevice {
-    const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
+    /// Lifetime of a resolved unicast neighbour entry.  Linux uses 5 minutes
+    /// for unicast neighbours; sticking to that value keeps long-running
+    /// streams (e.g. a cold-start API response that takes >60 s to begin
+    /// flowing) from invalidating the gateway entry mid-flow, which would
+    /// otherwise force every queued ACK back into the ARP-pending buffer
+    /// at once.
+    const NEIGHBOR_TTL: Duration = Duration::from_secs(300);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
-    pub fn new(name: String, inner: AxNetDevice, ip: Option<Ipv4Cidr>) -> Self {
+    pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
         let irq_num = inner.irq_num();
         let inner = Arc::new(EthernetIrqState {
             irq_num,
@@ -168,11 +174,11 @@ impl EthernetDevice {
 
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.driver.lock().mac_address().0)
+        EthernetAddress(self.inner.driver.lock().mac_address())
     }
 
     fn send_to<F>(
-        inner: &mut AxNetDevice,
+        inner: &mut dyn EthernetDriver,
         dst: EthernetAddress,
         size: usize,
         f: F,
@@ -186,7 +192,7 @@ impl EthernetDevice {
         }
 
         let repr = EthernetRepr {
-            src_addr: EthernetAddress(inner.mac_address().0),
+            src_addr: EthernetAddress(inner.mac_address()),
             dst_addr: dst,
             ethertype: proto,
         };
@@ -206,7 +212,7 @@ impl EthernetDevice {
             tx_buf.packet_len(),
             tx_buf.packet()
         );
-        if let Err(err) = inner.transmit(tx_buf) {
+        if let Err(err) = inner.transmit(&mut *tx_buf) {
             warn!("transmit failed: {:?}", err);
         }
     }
@@ -268,7 +274,7 @@ impl EthernetDevice {
 
         let mut inner = self.inner.driver.lock();
         Self::send_to(
-            &mut inner,
+            &mut **inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -349,7 +355,7 @@ impl EthernetDevice {
 
                 let mut inner = self.inner.driver.lock();
                 Self::send_to(
-                    &mut inner,
+                    &mut **inner,
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -357,39 +363,70 @@ impl EthernetDevice {
                 );
             }
 
-            if self
-                .pending_packets
-                .peek()
-                .is_ok_and(|it| it.0 == &IpAddress::Ipv4(source_protocol_addr))
-            {
-                while let Ok((&next_hop, buf)) = self.pending_packets.peek() {
-                    // TODO: optimize logic such that one long-pending ARP
-                    // request does not block all other packets
+            // Drain every entry in the pending queue and either send it (if
+            // the next-hop is now resolved) or re-queue it in arrival order.
+            // Peeking the head and stopping on the first mismatch would
+            // permanently block packets queued behind an unresolvable
+            // next-hop (e.g. a SYN to a fake IP at the head holds back a
+            // SYN to the gateway behind it).
+            //
+            // The kept buffer is pre-sized so the drain does not have to
+            // grow it through reallocations while a high-priority ARP IRQ
+            // is being processed.
+            let mut kept: Vec<(IpAddress, Vec<u8>)> =
+                Vec::with_capacity(ETHERNET_MAX_PENDING_PACKETS);
+            for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
+                let Ok((&next_hop, buf)) = self.pending_packets.peek() else {
+                    break;
+                };
+                enum Action {
+                    Send(EthernetAddress, Vec<u8>),
+                    Refresh(Vec<u8>),
+                    Keep(Vec<u8>),
+                }
+                let action = match self.neighbors.get(&next_hop) {
+                    Some(neighbor) if neighbor.expires_at > now => {
+                        Action::Send(neighbor.hardware_address, buf.to_vec())
+                    }
+                    Some(_) => Action::Refresh(buf.to_vec()),
+                    None => Action::Keep(buf.to_vec()),
+                };
+                let _ = self.pending_packets.dequeue();
 
-                    let Some(neighbor) = self.neighbors.get(&next_hop) else {
-                        break;
-                    };
-                    if neighbor.expires_at <= now {
-                        // Neighbor is expired, we need to request ARP again
+                match action {
+                    Action::Send(mac, payload) => {
+                        let mut inner = self.inner.driver.lock();
+                        info!(
+                            "{}: sending pending IPv4 packet to {} via {}",
+                            self.name, next_hop, mac
+                        );
+                        Self::send_to(
+                            &mut **inner,
+                            mac,
+                            payload.len(),
+                            |b| b.copy_from_slice(&payload),
+                            EthernetProtocol::Ipv4,
+                        );
+                    }
+                    Action::Refresh(payload) => {
                         self.neighbors.remove(&next_hop);
                         let _ = self.request_arp(next_hop, now);
-                        break;
+                        kept.push((next_hop, payload));
                     }
-
-                    let mut inner = self.inner.driver.lock();
-                    info!(
-                        "{}: sending pending IPv4 packet to {} via {}",
-                        self.name, next_hop, neighbor.hardware_address
-                    );
-                    Self::send_to(
-                        &mut inner,
-                        neighbor.hardware_address,
-                        buf.len(),
-                        |b| b.copy_from_slice(buf),
-                        EthernetProtocol::Ipv4,
-                    );
-                    let _ = self.pending_packets.dequeue();
+                    Action::Keep(payload) => {
+                        kept.push((next_hop, payload));
+                    }
                 }
+            }
+            for (next_hop, payload) in kept {
+                let Ok(dst) = self.pending_packets.enqueue(payload.len(), next_hop) else {
+                    warn!(
+                        "{}: pending buffer overflow while restoring queue entry to {}",
+                        self.name, next_hop
+                    );
+                    break;
+                };
+                dst.copy_from_slice(&payload);
             }
         }
     }
@@ -407,12 +444,12 @@ impl Device for EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
         loop {
-            let rx_buf = {
+            let mut rx_buf = {
                 let mut inner = self.inner.driver.lock();
                 match inner.receive() {
                     Ok(buf) => buf,
                     Err(err) => {
-                        if !matches!(err, DevError::Again) {
+                        if !matches!(err, NetDeviceError::Again) {
                             warn!("receive failed: {:?}", err);
                         }
                         return false;
@@ -426,7 +463,9 @@ impl Device for EthernetDevice {
             );
 
             let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
-            self.inner.driver.lock().recycle_rx_buffer(rx_buf).unwrap();
+            if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
+                warn!("recycle_rx_buffer failed: {:?}", err);
+            }
             if result {
                 return true;
             }
@@ -439,7 +478,7 @@ impl Device for EthernetDevice {
         if next_hop.is_broadcast() || is_subnet_broadcast {
             let mut inner = self.inner.driver.lock();
             Self::send_to(
-                &mut inner,
+                &mut **inner,
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
@@ -452,7 +491,7 @@ impl Device for EthernetDevice {
             Some(neighbor) if neighbor.expires_at > timestamp => {
                 let mut inner = self.inner.driver.lock();
                 Self::send_to(
-                    &mut inner,
+                    &mut **inner,
                     neighbor.hardware_address,
                     packet.len(),
                     |buf| buf.copy_from_slice(packet),

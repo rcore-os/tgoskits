@@ -16,8 +16,11 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     ioctl::{
-        SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS, SIOCGIFHWADDR,
-        SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK, SIOCGIFTXQLEN,
+        FIONREAD,
+        SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
+        SIOCGIFHWADDR,
+        SIOCGIFINDEX,
+        SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK, SIOCGIFTXQLEN,
     },
     net::{AF_INET, ifreq},
 };
@@ -241,6 +244,10 @@ impl FileLike for Socket {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         match cmd {
+            FIONREAD => {
+                let available = self.inner.recv_available()?.min(c_int::MAX as usize) as c_int;
+                (arg as *mut c_int).vm_write(available)?;
+            }
             SIOCGIFCONF => write_eth0_ifconf(arg)?,
             SIOCGIFFLAGS => {
                 let flags = match read_ifreq_interface(arg)? {

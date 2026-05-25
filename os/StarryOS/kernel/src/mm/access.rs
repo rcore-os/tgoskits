@@ -47,7 +47,16 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     }
 
     let curr = current();
-    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let Some(thr) = curr.try_as_thread() else {
+        warn!(
+            "reject user region check outside thread context: task={}, start={:#x}, len={}",
+            curr.id_name(),
+            start.as_usize(),
+            layout.size()
+        );
+        return Err(AxError::BadAddress);
+    };
+    let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return Err(AxError::BadAddress);
     }
@@ -94,7 +103,16 @@ fn check_null_terminated<T: PartialEq + Default>(
                 // querying the page table since the page might has not been
                 // allocated yet.
                 let curr = current();
-                let aspace_arc = curr.as_thread().proc_data.aspace();
+                let Some(thr) = curr.try_as_thread() else {
+                    warn!(
+                        "reject nul-terminated user check outside thread context: task={}, \
+                         start={:#x}",
+                        curr.id_name(),
+                        start as usize
+                    );
+                    return Err(AxError::BadAddress);
+                };
+                let aspace_arc = thr.proc_data.aspace();
                 if unsafe { aspace_arc.raw() }.is_owned_by_current() {
                     return Err(AxError::BadAddress);
                 }
@@ -281,14 +299,38 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     };
 
     if unlikely(!thr.is_accessing_user_memory()) {
-        return false;
+        // Still try to handle kernel-mode faults on user-space addresses.
+        // Several syscall sites (e.g. event.rs, net/io.rs, fs/lock.rs) obtain
+        // a direct `&mut` reference into user memory via get_as_mut /
+        // get_as_mut_slice and write through it outside of
+        // access_user_memory().  If a concurrent fork has re-marked the page
+        // read-only between check_region() and the write, the kernel write
+        // hits a COW #PF with no fixup-table entry and panics.  Handling the
+        // fault here lets the standard COW path copy the page just as it
+        // would for a user-mode write.
+        let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
+        if !user_range.contains(&vaddr.as_usize()) {
+            return false;
+        }
+        // Avoid recursion / deadlock: if this thread already holds the
+        // aspace lock (e.g. fault inside aspace.lock().handle_page_fault())
+        // we have to bail out instead of trying to lock it again.
+        let aspace_arc = thr.proc_data.aspace();
+        if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+            return false;
+        }
     }
 
     might_sleep();
-    thr.proc_data
-        .aspace()
-        .lock()
-        .handle_page_fault(vaddr, access_flags)
+    let aspace_arc = thr.proc_data.aspace();
+    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+        warn!(
+            "user page fault while current thread already owns its address-space lock: \
+             vaddr={vaddr:#x}, access_flags={access_flags:#x?}"
+        );
+        return false;
+    }
+    aspace_arc.lock().handle_page_fault(vaddr, access_flags)
 }
 
 pub fn vm_load_string(ptr: *const c_char) -> AxResult<String> {
@@ -310,6 +352,19 @@ pub fn check_access(start: usize, len: usize) -> VmResult {
     }
 }
 
+fn ensure_thread_context(op: &str, start: usize, len: usize) -> VmResult {
+    let curr = current();
+    if curr.try_as_thread().is_some() {
+        Ok(())
+    } else {
+        warn!(
+            "reject user memory {op} outside thread context: task={}, start={start:#x}, len={len}",
+            curr.id_name()
+        );
+        Err(VmError::AccessDenied)
+    }
+}
+
 #[extern_trait]
 unsafe impl VmIo for Vm {
     fn new() -> Self {
@@ -317,7 +372,11 @@ unsafe impl VmIo for Vm {
     }
 
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        if buf.is_empty() {
+            return Ok(());
+        }
         check_access(start, buf.len())?;
+        ensure_thread_context("read", start, buf.len())?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
         });
@@ -329,7 +388,11 @@ unsafe impl VmIo for Vm {
     }
 
     fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
+        if buf.is_empty() {
+            return Ok(());
+        }
         check_access(start, buf.len())?;
+        ensure_thread_context("write", start, buf.len())?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(start as _, buf.as_ptr() as *const _, buf.len())
         });

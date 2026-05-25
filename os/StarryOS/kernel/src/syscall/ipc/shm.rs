@@ -11,7 +11,7 @@ use ax_task::current;
 use linux_raw_sys::{ctypes::c_ushort, general::*};
 use starry_process::Pid;
 
-use super::{IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id};
+use super::{IPC_CREAT, IPC_EXCL, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id};
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
     task::AsThread,
@@ -131,20 +131,18 @@ impl ShmInner {
         }
     }
 
-    /// Updates the pid of last shmop and checks if the size and mapping flags
-    /// match.
-    pub fn try_update(
-        &mut self,
-        size: usize,
-        mapping_flags: MappingFlags,
-        pid: Pid,
-    ) -> AxResult<isize> {
-        if size as __kernel_size_t != self.shmid_ds.shm_segsz
-            || mapping_flags.bits() as __kernel_mode_t != self.shmid_ds.shm_perm.mode
-        {
+    /// Validates a `shmget` against an existing segment and records the
+    /// pid of the last operation.
+    ///
+    /// Mirrors Linux `shm_more_checks()`: the call is rejected with
+    /// `EINVAL` only when the requested size is larger than the segment.
+    /// The permission bits passed in `shmflg` do not have to match those
+    /// used when the segment was created.
+    pub fn try_update(&mut self, size: usize, pid: Pid) -> AxResult<isize> {
+        if size as __kernel_size_t > self.shmid_ds.shm_segsz {
             return Err(AxError::InvalidInput);
         }
-        self.shmid_ds.shm_lpid = pid as i32;
+        self.shmid_ds.shm_lpid = pid as __kernel_pid_t;
         Ok(self.shmid as isize)
     }
 
@@ -430,11 +428,6 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
 }
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
-    let page_num = ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K;
-    if page_num == 0 {
-        return Err(AxError::InvalidInput);
-    }
-
     let mut mapping_flags = MappingFlags::from_name("USER").unwrap();
     if shmflg & 0o400 != 0 {
         mapping_flags.insert(MappingFlags::READ);
@@ -453,14 +446,31 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     let mut shm_manager = SHM_MANAGER.lock();
 
     if key != IPC_PRIVATE {
-        // This process has already created a shared memory segment with the same key
+        // A segment already exists for this key.
         if let Some(shmid) = shm_manager.get_shmid_by_key(key) {
+            // IPC_CREAT | IPC_EXCL requires the creation to fail when the
+            // segment is already present. See Linux ipcget_public().
+            if shmflg & IPC_CREAT as usize != 0 && shmflg & IPC_EXCL as usize != 0 {
+                return Err(AxError::AlreadyExists);
+            }
             let shm_inner = shm_manager
                 .get_inner_by_shmid(shmid)
-                .ok_or(AxError::InvalidInput)?;
+                .ok_or(AxError::NotFound)?;
             let mut shm_inner = shm_inner.lock();
-            return shm_inner.try_update(size, mapping_flags, cur_pid);
+            return shm_inner.try_update(size, cur_pid);
         }
+
+        // No segment exists for this key: create one only when IPC_CREAT
+        // is requested, otherwise the lookup fails with ENOENT.
+        if shmflg & IPC_CREAT as usize == 0 {
+            return Err(AxError::NotFound);
+        }
+    }
+
+    // Creating a new segment: its page-rounded size must be non-zero.
+    let page_num = ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K;
+    if page_num == 0 {
+        return Err(AxError::InvalidInput);
     }
 
     // Create a new shm_inner

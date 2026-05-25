@@ -1,0 +1,12 @@
+[package]
+name = "rd-block-volume"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+categories = ["embedded", "no-std"]
+keywords = ["os", "driver", "block", "partition"]
+description = "no_std block volume and partition scanner for rd-block style adapters."
+
+[dependencies]

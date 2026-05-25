@@ -25,6 +25,9 @@
     mrs     x10, spsr_el1
     .endif
     stp     x9, x10, [sp, 31 * 8]
+
+    add     x9, sp, {trapframe_size}
+    str     x9, [sp, 33 * 8]
 .endm
 
 .macro RESTORE_REGS

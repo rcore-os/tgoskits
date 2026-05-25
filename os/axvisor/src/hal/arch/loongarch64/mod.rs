@@ -3,7 +3,7 @@
 mod api;
 pub mod cache;
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 const CSR_GSTAT: u16 = 0x50;
 const CSR_GINTC: u16 = 0x52;

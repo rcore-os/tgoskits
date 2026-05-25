@@ -17,9 +17,9 @@ paging = ["dep:ax-mm", "ax-feat/paging"]
 dma = ["dep:ax-dma", "ax-feat/dma"]
 multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-feat/multitask"]
 stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
-fs = ["dep:ax-fs", "dep:ax-driver", "ax-feat/fs"]
-net = ["dep:ax-net", "dep:ax-driver", "ax-feat/net"]
-display = ["dep:ax-display", "dep:ax-driver", "ax-feat/display"]
+fs = ["dep:ax-fs", "ax-feat/fs"]
+net = ["dep:ax-net", "ax-feat/net"]
+display = ["dep:ax-display", "ax-feat/display"]
 
 
 # Use dummy functions if the feature is not enabled
@@ -30,7 +30,6 @@ ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config.workspace = true
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
-ax-driver = { workspace = true, optional = true }
 ax-errno.workspace = true
 ax-feat.workspace = true
 ax-fs = { workspace = true, optional = true }

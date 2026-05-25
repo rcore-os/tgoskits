@@ -74,7 +74,7 @@ impl TcpSocket {
             peer_endpoint: Mutex::new(None),
             bound_registered: AtomicBool::new(false),
 
-            general: GeneralOptions::new(),
+            general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
             pending_error: AtomicI32::new(0),
             keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
             keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
@@ -98,7 +98,7 @@ impl TcpSocket {
             peer_endpoint: Mutex::new(Some(remote_endpoint)),
             bound_registered: AtomicBool::new(false),
 
-            general: GeneralOptions::new(),
+            general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
             pending_error: AtomicI32::new(0),
             keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
             keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
@@ -508,6 +508,18 @@ impl SocketOps for TcpSocket {
                 }
             })
         })
+    }
+
+    fn recv_available(&self) -> AxResult<usize> {
+        if self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
+        let available = self.with_smol_socket(|socket| socket.recv_queue());
+        if available > 0 {
+            return Ok(available);
+        }
+        poll_interfaces();
+        Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
 
     fn local_addr(&self) -> AxResult<SocketAddrEx> {

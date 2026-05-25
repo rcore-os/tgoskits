@@ -1686,9 +1686,8 @@ mod tests {
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(
             cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+                .target
+                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
         );
     }
 

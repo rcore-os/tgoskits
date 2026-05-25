@@ -50,7 +50,6 @@ ax-task = { workspace = true, optional = true }
 ax-errno.workspace = true
 ax-io.workspace = true
 flatten_objects = "0.2"
-lazy_static.workspace = true
 scope-local = { workspace = true, optional = true }
 spin.workspace = true
 
