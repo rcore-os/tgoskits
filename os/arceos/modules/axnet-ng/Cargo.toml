@@ -20,6 +20,7 @@ ax-fs-ng = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-hal = { workspace = true }
 ax-io = { workspace = true }
+ax-kspin = { workspace = true }
 axpoll = { workspace = true }
 ax-sync = { workspace = true }
 ax-task = { workspace = true, features = ["irq", "multitask"] }
@@ -28,7 +29,6 @@ cfg-if = { workspace = true }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 hashbrown = "0.16"
-lazy_static = { workspace = true }
 log = { workspace = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 spin = { workspace = true }

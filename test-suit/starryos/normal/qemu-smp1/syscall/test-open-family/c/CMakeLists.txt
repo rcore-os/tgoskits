@@ -4,7 +4,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# 地毯式全覆盖 28 模块（按维度切分），每模块自计 __pass/__fail，main 汇总。
+# 地毯式全覆盖 30 模块（按维度切分），每模块自计 __pass/__fail，main 汇总。
 # 见 notes/02 §17 + notes/10 §1.2。
 add_executable(test-open-family
     src/main.c
@@ -36,7 +36,9 @@ add_executable(test-open-family
     src/openat_dirfd.c
     src/openat_err.c
     src/openat_flag_matrix.c
-    src/openat_creat.c)
+    src/openat_creat.c
+    src/open_dev_null_zero.c
+    src/open_pread_pwrite.c)
 
 target_include_directories(test-open-family PRIVATE src)
 target_compile_options(test-open-family PRIVATE -Wall -Wextra -Werror)

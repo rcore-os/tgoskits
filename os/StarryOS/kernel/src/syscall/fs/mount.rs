@@ -270,9 +270,9 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
 
     target.unmount()?;
 
-    // After unmount the SpinNoPreempt lock inside ext4 is released; safe
-    // to do VFS I/O here.  Propagate writeback errors so userspace sees
-    // EIO when dirty data could not be persisted to the backing file.
+    // After unmount, filesystem block I/O has stopped; it is safe to do VFS
+    // writeback here. Propagate writeback errors so userspace sees EIO when
+    // dirty data could not be persisted to the backing file.
     if let Some(cb) = writeback {
         cb()?;
     }

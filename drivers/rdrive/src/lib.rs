@@ -7,9 +7,10 @@ extern crate log;
 
 use core::ptr::NonNull;
 
+use ax_kspin::SpinNoIrq as Mutex;
 pub use fdt_edit::Phandle;
 use register::{DriverRegister, ProbeLevel};
-use spin::{Mutex, Once};
+use spin::Once;
 
 mod descriptor;
 pub mod driver;

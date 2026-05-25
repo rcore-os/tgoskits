@@ -10,9 +10,7 @@ mod set;
 #[cfg(test)]
 mod tests;
 
-pub use self::area::MemoryArea;
-pub use self::backend::MappingBackend;
-pub use self::set::MemorySet;
+pub use self::{area::MemoryArea, backend::MappingBackend, set::MemorySet};
 
 /// Error type for memory mapping operations.
 #[derive(Debug, Eq, PartialEq)]

@@ -7,9 +7,10 @@ description = "A regression test for ArceOS lockdep lock-order detection"
 publish = false
 
 [features]
-ax-std = ["dep:ax-std", "dep:ax-kspin"]
+ax-std = ["dep:ax-std", "dep:ax-kspin", "dep:axfs-ng-vfs"]
 lockdep = ["ax-std", "ax-std/lockdep"]
 
 [dependencies]
 ax-std = { workspace = true, features = ["alloc", "multitask"], optional = true }
 ax-kspin = { workspace = true, optional = true }
+axfs-ng-vfs = { workspace = true, optional = true }

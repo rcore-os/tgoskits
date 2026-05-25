@@ -65,7 +65,7 @@ impl Mountpoint {
         Arc::new(Self {
             root,
             location: Mutex::new(location_in_parent),
-            children: Mutex::default(),
+            children: Mutex::new(HashMap::default()),
             device,
             readonly: AtomicBool::new(false),
             expired: AtomicBool::new(false),
@@ -98,10 +98,18 @@ impl Mountpoint {
             .readonly
             .store(source.mountpoint.is_readonly(), Ordering::Release);
         if recursive {
-            for (key, child) in source.mountpoint.children.lock().iter() {
-                if child.upgrade().is_none_or(|child| !child.is_unbindable()) {
-                    result.children.lock().insert(key.clone(), child.clone());
-                }
+            let mut children_to_bind: Vec<_> = source
+                .mountpoint
+                .children
+                .lock()
+                .iter()
+                .map(|(key, child)| (key.clone(), child.clone()))
+                .collect();
+            children_to_bind
+                .retain(|(_, child)| child.upgrade().is_none_or(|child| !child.is_unbindable()));
+            let mut result_children = result.children.lock();
+            for (key, child) in children_to_bind {
+                result_children.insert(key, child);
             }
         }
         result

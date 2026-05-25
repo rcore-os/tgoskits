@@ -59,6 +59,9 @@ pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
 
 const LOONGARCH64_HERMIT_JSON: &str =
     include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
+const TARGET_JSON_ROOT: &str = "scripts/targets";
+const NO_PIE_TARGET_DIR: &str = "no-pie";
+const PIE_TARGET_DIR: &str = "pie";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -137,7 +140,21 @@ impl BuildInfo {
         target: String,
         args: Vec<String>,
     ) -> Cargo {
-        let to_bin = default_to_bin_for_target(&target);
+        self.into_base_cargo_config_with_to_bin(
+            package,
+            target.clone(),
+            args,
+            default_to_bin_for_target(&target),
+        )
+    }
+
+    fn into_base_cargo_config_with_to_bin(
+        self,
+        package: String,
+        target: String,
+        args: Vec<String>,
+        to_bin: bool,
+    ) -> Cargo {
         Cargo {
             env: self.env,
             target,
@@ -147,6 +164,7 @@ impl BuildInfo {
             log: Some(self.log),
             extra_config: None,
             profile: None,
+            disable_someboot_build_config: true,
             args,
             pre_build_cmds: vec![],
             post_build_cmds: vec![],
@@ -175,6 +193,7 @@ impl BuildInfo {
     ) -> anyhow::Result<Cargo> {
         if self.std_build {
             self.validated_max_cpu_num()?;
+            self.resolve_std_features();
             let std_target = std_build_target_for(target)?;
             let mut cargo = self.into_base_cargo_config_with_log(
                 package.to_string(),
@@ -198,9 +217,33 @@ impl BuildInfo {
             extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
             extra_rustflags.push("-Cpasses=sancov-module".to_string());
         }
-        let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
+        let cargo_target = cargo_target_json_path(target, plat_dyn)?;
+        let cargo_target = cargo_target.display().to_string();
+        let args = Self::build_cargo_args(&cargo_target, &extra_rustflags);
+        self.env.insert(
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+            "true".to_string(),
+        );
 
-        Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
+        self.prepare_log_env();
+        self.prepare_max_cpu_num_env()
+            .expect("max_cpu_num validation should run before cargo config generation");
+        Ok(self.into_base_cargo_config_with_to_bin(
+            package.to_string(),
+            cargo_target,
+            args,
+            default_to_bin_for_target(target),
+        ))
+    }
+
+    fn resolve_std_features(&mut self) {
+        self.features = self
+            .features
+            .iter()
+            .map(|feature| normalize_std_feature(feature))
+            .collect();
+        self.features.sort();
+        self.features.dedup();
     }
 
     pub(crate) fn prepare_non_dynamic_platform_for(
@@ -357,32 +400,26 @@ impl BuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(
-        target: &str,
-        plat_dyn: bool,
-        extra_rustflags: &[String],
-    ) -> Vec<String> {
-        let mut args = Vec::new();
-        args.push("--config".to_string());
-        let mut rustflags: Vec<String> = Vec::new();
-        rustflags.extend(extra_rustflags.iter().cloned());
-        if plat_dyn {
-            rustflags.push("-Clink-arg=-Taxplat.x".to_string());
-        } else {
-            rustflags.push("-Clink-arg=-Tlinker.x".to_string());
-            rustflags.push("-Clink-arg=-no-pie".to_string());
-            rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
-        }
+    pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
+        let mut args = vec![
+            "-Z".to_string(),
+            "json-target-spec".to_string(),
+            "-Z".to_string(),
+            "build-std=core,alloc".to_string(),
+        ];
 
-        let mut rendered = format!("target.{target}.rustflags=[");
-        for (i, flag) in rustflags.iter().enumerate() {
-            if i > 0 {
-                rendered.push(',');
-            }
-            rendered.push_str(&format!("{flag:?}"));
+        if !extra_rustflags.is_empty() {
+            args.push("--config".to_string());
+            let rustflags_toml = toml::Value::Array(
+                extra_rustflags
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            )
+            .to_string();
+            args.push(format!("target.'{target}'.rustflags={rustflags_toml}"));
         }
-        rendered.push(']');
-        args.push(rendered);
         args
     }
 }
@@ -402,6 +439,29 @@ impl Default for BuildInfo {
             plat_dyn: false,
             std_build: false,
         }
+    }
+}
+
+pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Result<PathBuf> {
+    let target_file = match target {
+        "aarch64-unknown-none-softfloat"
+        | "riscv64gc-unknown-none-elf"
+        | "x86_64-unknown-none"
+        | "loongarch64-unknown-none-softfloat" => format!("{target}.json"),
+        _ => bail!("unsupported target triple `{target}`"),
+    };
+
+    if plat_dyn {
+        if target != "aarch64-unknown-none-softfloat" {
+            bail!("unsupported PIE target `{target}`");
+        }
+        Ok(Path::new(TARGET_JSON_ROOT)
+            .join(PIE_TARGET_DIR)
+            .join(target_file))
+    } else {
+        Ok(Path::new(TARGET_JSON_ROOT)
+            .join(NO_PIE_TARGET_DIR)
+            .join(target_file))
     }
 }
 
@@ -587,6 +647,19 @@ fn normalize_legacy_feature_alias(feature: &str) -> String {
     }
 }
 
+fn normalize_std_feature(feature: &str) -> String {
+    let normalized = normalize_legacy_feature_alias(feature);
+    match normalized.as_str() {
+        "ax-std" | "ax-feat" => normalized,
+        feature if feature.starts_with("ax-std/") || feature.starts_with("ax-feat/") => feature
+            .split_once('/')
+            .map(|(_, feature)| format!("arceos-rust/{feature}"))
+            .unwrap_or_else(|| normalized.clone()),
+        feature if feature.starts_with("arceos-rust/") => normalized,
+        feature => format!("arceos-rust/{feature}"),
+    }
+}
+
 pub(crate) fn parse_makefile_features(input: &str) -> Vec<String> {
     let mut features = Vec::new();
     for feature in input.split(|ch: char| ch == ',' || ch.is_whitespace()) {
@@ -648,6 +721,11 @@ fn apply_makefile_features_with_prefix_family(
         return;
     }
 
+    if build_info.std_build {
+        apply_std_makefile_features(build_info, makefile_features);
+        return;
+    }
+
     let prefix_family = build_info.resolve_ax_feature_prefix_family(package, prefix_family);
 
     for feature in makefile_features {
@@ -659,6 +737,19 @@ fn apply_makefile_features_with_prefix_family(
                 format!("{}{}", prefix_family.prefix(), normalized)
             };
 
+        if !build_info
+            .features
+            .iter()
+            .any(|existing| existing == &mapped)
+        {
+            build_info.features.push(mapped);
+        }
+    }
+}
+
+fn apply_std_makefile_features(build_info: &mut BuildInfo, makefile_features: &[String]) {
+    for feature in makefile_features {
+        let mapped = normalize_std_feature(feature);
         if !build_info
             .features
             .iter()
@@ -1138,6 +1229,87 @@ mod tests {
     }
 
     #[test]
+    fn cargo_target_json_path_maps_no_pie_targets() {
+        let cases = [
+            "aarch64-unknown-none-softfloat",
+            "riscv64gc-unknown-none-elf",
+            "x86_64-unknown-none",
+            "loongarch64-unknown-none-softfloat",
+        ];
+
+        for target in cases {
+            let path = cargo_target_json_path(target, false).unwrap();
+            assert!(path.ends_with(format!("scripts/targets/no-pie/{target}.json")));
+        }
+    }
+
+    #[test]
+    fn cargo_target_json_path_maps_aarch64_pie_target() {
+        let path = cargo_target_json_path("aarch64-unknown-none-softfloat", true).unwrap();
+
+        assert!(path.ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json"));
+    }
+
+    #[test]
+    fn cargo_target_json_path_rejects_unsupported_pie_target() {
+        let err = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported PIE target"));
+    }
+
+    #[test]
+    fn build_cargo_args_uses_json_target_spec_and_build_std() {
+        let args = BuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &[],
+        );
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
+        assert!(!args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(!args.iter().any(|arg| arg.contains("-Taxplat.x")));
+    }
+
+    #[test]
+    fn build_cargo_args_quotes_json_target_rustflags_key() {
+        let args = BuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &["-Cdebuginfo=2".to_string()],
+        );
+
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--config"
+                && pair[1].starts_with(
+                    "target.'scripts/targets/no-pie/aarch64-unknown-none-softfloat.json'.\
+                     rustflags=",
+                )
+                && pair[1].contains("\"-Cdebuginfo=2\"")
+        }));
+    }
+
+    #[test]
+    fn x86_64_no_pie_target_preserves_pic_codegen_without_pie_link() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!(
+            "../../targets/no-pie/x86_64-unknown-none.json"
+        ))
+        .unwrap();
+
+        assert_eq!(spec["relocation-model"], "pic");
+        assert_eq!(spec.get("position-independent-executables"), None);
+        assert_eq!(spec.get("static-position-independent-executables"), None);
+
+        let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
+        assert!(link_args.iter().any(|arg| arg == "-no-pie"));
+        assert!(!link_args.iter().any(|arg| arg == "-pie"));
+    }
+
+    #[test]
     fn detects_axfeat_direct_dependency_via_metadata() {
         let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
 
@@ -1145,6 +1317,45 @@ mod tests {
         let family = detect_ax_feature_prefix_family("ax-feat-app", &metadata).unwrap();
 
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
+    }
+
+    #[test]
+    fn std_build_maps_arceos_features_to_arceos_rust_dependency() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec![
+                "ax-std".to_string(),
+                "lockdep".to_string(),
+                "axstd/smp".to_string(),
+            ],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+
+        assert!(info.features.contains(&"ax-std".to_string()));
+        assert!(info.features.contains(&"arceos-rust/lockdep".to_string()));
+        assert!(info.features.contains(&"arceos-rust/smp".to_string()));
+        assert!(!info.features.contains(&"ax-std/lockdep".to_string()));
+        assert!(!info.features.contains(&"lockdep".to_string()));
+    }
+
+    #[test]
+    fn makefile_features_use_arceos_rust_prefix_for_std_build() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: Vec::new(),
+            ..BuildInfo::default()
+        };
+
+        apply_makefile_features_with_prefix_family(
+            &mut info,
+            "test-arceos-std-app",
+            &[String::from("lockdep")],
+            Err(anyhow::anyhow!("std test packages do not depend on ax-std")),
+        );
+
+        assert_eq!(info.features, vec!["arceos-rust/lockdep".to_string()]);
     }
 
     #[test]

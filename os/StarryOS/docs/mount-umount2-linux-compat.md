@@ -275,7 +275,7 @@ match fs_type.as_str() {
 
 对应代码位置：
 
-- [`os/StarryOS/kernel/src/syscall/fs/mount.rs`](/Users/ken/26s-rust/tgoskits/os/StarryOS/kernel/src/syscall/fs/mount.rs)
+- `os/StarryOS/kernel/src/syscall/fs/mount.rs`
 
 ### 讲解
 
@@ -332,7 +332,7 @@ pub struct Mountpoint {
 
 对应代码位置：
 
-- [`components/axfs-ng-vfs/src/mount.rs`](/Users/ken/26s-rust/tgoskits/components/axfs-ng-vfs/src/mount.rs)
+- `components/axfs-ng-vfs/src/mount.rs`
 
 ### 为什么放在 `Mountpoint` 上
 
@@ -636,7 +636,7 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 
 本次用户态验证集中在：
 
-- [`test-suit/starryos/normal/qemu-smp1/util-linux/c/src/main.c`](/Users/ken/26s-rust/tgoskits/test-suit/starryos/normal/qemu-smp1/util-linux/c/src/main.c)
+- `test-suit/starryos/normal/qemu-smp1/util-linux/c/src/main.c`
 
 它覆盖的核心点是：
 

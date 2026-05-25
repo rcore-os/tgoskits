@@ -79,6 +79,14 @@ static HOST_GUEST_EXIT_EENTRY: usize = 0;
 #[ax_percpu::def_percpu]
 static HOST_ECFG_VS: usize = 0;
 
+/// Host CSR number for TCFG (Timer Configuration).
+#[cfg(target_arch = "loongarch64")]
+const CSR_HOST_TCFG: u16 = 0x41;
+
+/// TCFG.EN bit: timer enable.
+#[cfg(target_arch = "loongarch64")]
+const TCFG_EN: usize = 0x1;
+
 #[cfg(target_arch = "loongarch64")]
 const GUEST_RESET_CRMD_DIRECT: usize = 1 << 3;
 #[cfg(target_arch = "loongarch64")]
@@ -144,6 +152,13 @@ impl AxArchVCpu for LoongArchVCpu {
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         #[cfg(target_arch = "loongarch64")]
         {
+            // Before entering the guest, program the host hardware timer with the
+            // guest's requested TCFG value.  In LVZ the guest's timer CSR writes go
+            // to GCSR TCFG transparently (no GSPR trap), so the only place we can
+            // observe the guest's timer configuration is in ctx.gcsr_tcfg, which is
+            // updated by SAVE_GUEST_REGS on each VM exit.
+            self.sync_guest_timer_to_host();
+
             log::debug!("LoongArch guest entry context:\n{}", self.ctx);
             let exit_reason = unsafe {
                 save_host_sp();
@@ -219,6 +234,35 @@ impl LoongArchVCpu {
 
         if config.passthrough_timer {
             self.ctx.gcsr_tcfg = 0x1;
+        }
+    }
+
+    /// Program the host hardware timer to match the guest's requested timer
+    /// configuration. In LVZ, guest timer CSR writes (TCFG/TVAL/TICLR) are
+    /// transparent (GCSR-swappable) and do NOT trap, so the guest's virtual
+    /// timer state is only observable via `ctx.gcsr_tcfg` which is updated by
+    /// SAVE_GUEST_REGS on each VM exit.
+    ///
+    /// By programming the host timer to match, the hardware timer fires at the
+    /// guest's requested time, causing an IRQ VM exit. The IRQ handler then
+    /// injects the timer interrupt into the guest via `gcsr_estat`.
+    ///
+    /// **Limitation**: This direct passthrough is only correct in the 1:1 vCPU
+    /// model where each vCPU exclusively owns a physical CPU. In SMP or
+    /// shared-CPU scenarios, a software-emulated timer (maintaining per-guest
+    /// virtual TCFG/TVAL) will be needed.
+    #[cfg(target_arch = "loongarch64")]
+    fn sync_guest_timer_to_host(&self) {
+        let guest_tcfg = self.ctx.gcsr_tcfg;
+        // Only program the host timer when the guest has set a non-zero
+        // init value.  With init_val=0 the timer fires immediately on
+        // every VM entry, preventing the guest from making progress.
+        let init_val = guest_tcfg >> 2;
+        if guest_tcfg & TCFG_EN != 0 && init_val != 0 {
+            log::debug!("Sync guest timer to host: gcsr_tcfg={:#x}", guest_tcfg);
+            unsafe {
+                csr_write::<CSR_HOST_TCFG>(guest_tcfg);
+            }
         }
     }
 

@@ -125,7 +125,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::percpu::init_secondary(cpu_id);
-    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    #[cfg(feature = "buddy-slab")]
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 
@@ -155,6 +155,9 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
 
     #[cfg(feature = "irq")]
     ax_hal::asm::enable_irqs();
+
+    #[cfg(all(feature = "irq", feature = "ipi"))]
+    ax_ipi::mark_current_cpu_ready();
 
     #[cfg(feature = "irq")]
     ax_hal::time::set_oneshot_timer(100);

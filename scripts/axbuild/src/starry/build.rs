@@ -93,7 +93,6 @@ fn patch_starry_cargo_config(
     let static_defplat = uses_static_default_platform(&cargo.features);
 
     cargo.package = request.package.clone();
-    cargo.target = request.target.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
     remove_qemu_feature_for_dynamic_platform(cargo);
     if static_defplat {
@@ -480,8 +479,11 @@ HELLO = "world"
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
+            StarryBuildInfo::build_cargo_args(
+                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
+                &[],
+            ),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -499,11 +501,9 @@ HELLO = "world"
         );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+        assert_eq!(
+            cargo.target,
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json"
         );
     }
 
@@ -529,8 +529,11 @@ HELLO = "world"
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
+            StarryBuildInfo::build_cargo_args(
+                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
+                &[],
+            ),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -563,7 +566,7 @@ HELLO = "world"
     }
 
     #[test]
-    fn patch_starry_cargo_config_keeps_linker_x_arg() {
+    fn patch_starry_cargo_config_preserves_json_target() {
         let request = ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
             arch: "aarch64".to_string(),
@@ -581,19 +584,21 @@ HELLO = "world"
         let build_info = default_starry_build_info_for_target(&request.target);
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json".to_string(),
+            StarryBuildInfo::build_cargo_args(
+                "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+                &[],
+            ),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
         patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
+        assert_eq!(
+            cargo.target,
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json"
         );
+        assert_eq!(cargo.env.get("AX_TARGET"), Some(&request.target));
     }
 
     #[test]
