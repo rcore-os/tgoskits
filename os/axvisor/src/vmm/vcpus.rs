@@ -50,6 +50,14 @@ const X86_IOAPIC_VECTOR_END: usize = X86_IOAPIC_VECTOR_BASE + X86_IOAPIC_GSI_COU
 
 #[cfg(target_arch = "x86_64")]
 static X86_IOAPIC_IRQ_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+static X86_IOAPIC_IRQ_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+static X86_IOAPIC_IRQ_FORWARD_VM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(target_arch = "x86_64")]
+static X86_IOAPIC_IRQ_FORWARD_VCPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(target_arch = "x86_64")]
+static X86_IOAPIC_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
 
 /// A global map that holds the vCPU task state for each VM.
 static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
@@ -425,10 +433,13 @@ fn vcpu_run() {
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
-    enable_x86_ioapic_irq_forwarding(&vm);
+    enable_x86_ioapic_irq_forwarding(&vm, &vcpu);
     mark_vcpu_running(vm_id);
 
     loop {
+        #[cfg(target_arch = "x86_64")]
+        drain_pending_x86_ioapic_irqs(&vm, &vcpu);
+
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => match exit_reason {
                 AxVCpuExitReason::Hypercall { nr, args } => {
@@ -465,7 +476,9 @@ fn vcpu_run() {
                     ax_hal::trap::irq_handler(vector as usize);
                     super::timer::check_events();
                     #[cfg(target_arch = "x86_64")]
-                    forward_x86_passthrough_irq(&vm, &vcpu, vector as usize);
+                    if !X86_IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
+                        forward_x86_passthrough_irq(&vm, &vcpu, vector as usize);
+                    }
                     #[cfg(target_arch = "x86_64")]
                     inject_pending_x86_serial_irq(&vm, &vcpu);
                     #[cfg(target_arch = "riscv64")]
@@ -648,16 +661,63 @@ fn forward_x86_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn enable_x86_ioapic_irq_forwarding(vm: &VMRef) {
+fn x86_ioapic_irq_forwarding_hook(vector: usize) {
+    if !(X86_IOAPIC_VECTOR_BASE..X86_IOAPIC_VECTOR_END).contains(&vector) {
+        return;
+    }
+
+    if X86_IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
+        || X86_IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) == usize::MAX
+    {
+        return;
+    }
+
+    let bit = 1usize << (vector - X86_IOAPIC_VECTOR_BASE);
+    X86_IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn drain_pending_x86_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
+    if !X86_IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
+        return;
+    }
+
+    loop {
+        let pending = X86_IOAPIC_IRQ_PENDING.swap(0, Ordering::AcqRel);
+        if pending == 0 {
+            break;
+        }
+
+        for gsi in 0..X86_IOAPIC_GSI_COUNT {
+            if pending & (1usize << gsi) != 0 {
+                forward_x86_passthrough_irq(vm, vcpu, X86_IOAPIC_VECTOR_BASE + gsi);
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn enable_x86_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return;
     }
+
+    X86_IOAPIC_IRQ_FORWARD_VM_ID.store(vm.id(), Ordering::Release);
+    X86_IOAPIC_IRQ_FORWARD_VCPU_ID.store(vcpu.id(), Ordering::Release);
 
     if X86_IOAPIC_IRQ_FORWARDING_ENABLED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return;
+    }
+
+    if irq::register_irq_hook(x86_ioapic_irq_forwarding_hook) {
+        X86_IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
+    } else {
+        warn!(
+            "x86 IOAPIC IRQ forwarding hook is already registered; VM-exit forwarding fallback remains active"
+        );
     }
 
     let mut registered = 0;

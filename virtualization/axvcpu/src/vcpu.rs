@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cell::{RefCell, UnsafeCell};
+use core::cell::UnsafeCell;
 
 use ax_errno::{AxResult, ax_err};
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvisor_api::vmm::{VCpuId, VMId};
+use spin::Mutex;
 
 use super::{AxArchVCpu, AxVCpuExitReason};
 
@@ -62,8 +63,9 @@ pub enum VCpuState {
 
 /// Mutable runtime state of a virtual CPU.
 ///
-/// This structure contains data that changes during VCpu execution,
-/// protected by RefCell for interior mutability.
+/// This structure contains data that changes during VCpu execution. The state is guarded by a
+/// short critical-section mutex because a vCPU can be observed by management or interrupt paths
+/// while the owning vCPU task is between VM exits.
 pub struct AxVCpuInnerMut {
     /// Current execution state of the VCpu
     state: VCpuState,
@@ -81,8 +83,8 @@ pub struct AxVCpuInnerMut {
 pub struct AxVCpu<A: AxArchVCpu> {
     /// Immutable VCpu configuration (VM ID, CPU affinity, etc.)
     inner_const: AxVCpuInnerConst,
-    /// Mutable VCpu state protected by RefCell for safe interior mutability
-    inner_mut: RefCell<AxVCpuInnerMut>,
+    /// Mutable VCpu state protected by a short critical-section mutex.
+    inner_mut: Mutex<AxVCpuInnerMut>,
     /// Architecture-specific VCpu implementation
     ///
     /// Uses UnsafeCell instead of RefCell because RefCell guards cannot be
@@ -121,7 +123,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
                 favor_phys_cpu,
                 phys_cpu_set,
             },
-            inner_mut: RefCell::new(AxVCpuInnerMut {
+            inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VCpuState::Created,
             }),
             arch_vcpu: UnsafeCell::new(A::new(vm_id, vcpu_id, arch_config)?),
@@ -184,7 +186,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
 
     /// Gets the current execution state of the VCpu.
     pub fn state(&self) -> VCpuState {
-        self.inner_mut.borrow().state
+        self.inner_mut.lock().state
     }
 
     /// Set the state of the VCpu.
@@ -192,7 +194,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     /// This method is unsafe because it may break the state transition model.
     /// Use it with caution.
     pub unsafe fn set_state(&self, state: VCpuState) {
-        self.inner_mut.borrow_mut().state = state;
+        self.inner_mut.lock().state = state;
     }
 
     /// Execute a block with the state of the VCpu transitioned from `from` to `to`. If the current state is not `from`, return an error.
@@ -205,7 +207,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         F: FnOnce() -> AxResult<T>,
     {
         {
-            let mut inner_mut = self.inner_mut.borrow_mut();
+            let mut inner_mut = self.inner_mut.lock();
             if inner_mut.state != from {
                 let current_state = inner_mut.state;
                 inner_mut.state = VCpuState::Invalid;
@@ -217,7 +219,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         }
 
         let result = f();
-        self.inner_mut.borrow_mut().state = if result.is_err() {
+        self.inner_mut.lock().state = if result.is_err() {
             VCpuState::Invalid
         } else {
             to

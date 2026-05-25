@@ -80,6 +80,13 @@ pub enum VmCpuMode {
 const MSR_IA32_EFER_LMA_BIT: u64 = 1 << 10;
 const CR0_PE: usize = 1 << 0;
 
+#[derive(Clone, Copy, Debug)]
+struct PendingEvent {
+    vector: u8,
+    err_code: Option<u32>,
+    level_triggered: bool,
+}
+
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu {
@@ -116,9 +123,7 @@ pub struct VmxVcpu {
 
     // Interrupt-related fields
     /// Pending events to be injected to the guest.
-    pending_events: VecDeque<(u8, Option<u32>)>,
-    /// Trigger mode for each pending interrupt vector.
-    pending_event_level: [bool; 256],
+    pending_events: VecDeque<PendingEvent>,
     /// Emulated Local APIC.
     vlapic: EmulatedLocalApic,
 
@@ -148,7 +153,6 @@ impl VmxVcpu {
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
-            pending_event_level: [false; 256],
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
@@ -398,7 +402,11 @@ impl VmxVcpu {
     /// Add a virtual interrupt or exception to the pending events list,
     /// and try to inject it before later VM entries.
     pub fn queue_event(&mut self, vector: u8, err_code: Option<u32>) {
-        self.pending_events.push_back((vector, err_code));
+        self.pending_events.push_back(PendingEvent {
+            vector,
+            err_code,
+            level_triggered: false,
+        });
     }
 
     /// Add a virtual interrupt or exception with trigger mode metadata.
@@ -408,8 +416,11 @@ impl VmxVcpu {
         err_code: Option<u32>,
         level_triggered: bool,
     ) {
-        self.pending_event_level[vector as usize] = level_triggered;
-        self.queue_event(vector, err_code);
+        self.pending_events.push_back(PendingEvent {
+            vector,
+            err_code,
+            level_triggered,
+        });
     }
 
     /// If enable, a VM exit occurs at the beginning of any instruction if
@@ -899,16 +910,15 @@ impl VmxVcpu {
         if let Some(event) = self.pending_events.front() {
             // trace!(
             //     "pending event vector {:#x} allow_int {}",
-            //     event.0,
+            //     event.vector,
             //     self.allow_interrupt()
             // );
-            if event.0 < 32 || self.allow_interrupt() {
+            if event.vector < 32 || self.allow_interrupt() {
                 // if it's an exception, or an interrupt that is not blocked, inject it directly.
-                vmcs::inject_event(event.0, event.1)?;
-                if event.0 >= 32 {
-                    let level_triggered = self.pending_event_level[event.0 as usize];
-                    self.pending_event_level[event.0 as usize] = false;
-                    self.vlapic.accept_interrupt(event.0, level_triggered);
+                vmcs::inject_event(event.vector, event.err_code)?;
+                if event.vector >= 32 {
+                    self.vlapic
+                        .accept_interrupt(event.vector, event.level_triggered);
                 }
                 self.pending_events.pop_front();
             } else {
@@ -1469,7 +1479,7 @@ impl VmxVcpu {
 
                     Some(x)
                 })
-                .ok_or(ax_err_type!(InvalidInput))
+                .ok_or_else(|| ax_err_type!(InvalidInput))
                 .and_then(|x| {
                     self.xstate.guest_xcr0 = x.bits();
                     self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
