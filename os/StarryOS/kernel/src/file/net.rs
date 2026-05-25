@@ -24,9 +24,11 @@ use linux_raw_sys::{
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
-use super::{FileLike, Kstat};
+use super::{
+    FileLike, Kstat,
+    packet::{ETH0_IFINDEX, LO_IFINDEX},
+};
 use crate::file::{IoDst, IoSrc, get_file_like};
-use super::packet::{ETH0_IFINDEX, LO_IFINDEX};
 
 const ETH0_NAME: &[u8] = b"eth0";
 const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
