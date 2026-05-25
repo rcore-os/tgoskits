@@ -2,6 +2,7 @@
 
 mod cred;
 pub mod futex;
+mod namespace;
 mod ops;
 pub mod posix_timer;
 mod resources;
@@ -31,8 +32,8 @@ use starry_signal::{
 };
 
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
-    timer::*, user::*,
+    cred::*, futex::*, namespace::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*,
+    stat::*, timer::*, user::*,
 };
 #[cfg(feature = "kcov")]
 use crate::kcov::KcovThreadState;
@@ -511,6 +512,11 @@ pub struct ProcessData {
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// The resource scope
     pub scope: RwLock<Scope>,
+    /// The UTS namespace (hostname, domainname) of this process.
+    /// Wrapped in `Arc` so that processes in the same namespace share
+    /// the same `UtNamespace`; changes made by one process are visible
+    /// to all processes in the namespace.
+    pub uts_ns: SpinNoIrq<Arc<SpinNoIrq<UtNamespace>>>,
     /// The user heap top
     heap_top: AtomicUsize,
 
@@ -620,6 +626,8 @@ impl ProcessData {
             )),
 
             futex_table: Arc::new(FutexTable::new()),
+
+            uts_ns: SpinNoIrq::new(ROOT_UTS_NS.clone()),
 
             vfork_done: SpinNoIrq::new(None),
 

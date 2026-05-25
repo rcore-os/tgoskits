@@ -121,11 +121,13 @@ impl CloneArgs {
             | CloneFlags::NEWNET
             | CloneFlags::NEWPID
             | CloneFlags::NEWUSER
-            | CloneFlags::NEWUTS
             | CloneFlags::NEWCGROUP;
 
+        // CLONE_NEWUTS is supported; other namespace flags are not yet
+        // implemented and we reject them.
         if flags.intersects(namespace_flags) {
-            warn!("sys_clone/sys_clone3: namespace flags detected, stub support only");
+            error!("sys_clone/sys_clone3: unsupported namespace flags {flags:?}");
+            return Err(AxError::InvalidInput);
         }
 
         Ok(())
@@ -241,6 +243,17 @@ impl CloneArgs {
             // supposed to enforce. Verified via Linux host: parent sets 0,
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
+
+            // Inherit the parent's UTS namespace. With the Arc model,
+            // the default path shares the same Arc so that changes by
+            // one process are visible to all processes in the namespace.
+            // CLONE_NEWUTS creates a fresh private namespace instead.
+            if flags.contains(CloneFlags::NEWUTS) {
+                let new_inner = old_proc_data.uts_ns.lock().lock().clone_ns();
+                *proc_data.uts_ns.lock() = alloc::sync::Arc::new(ax_kspin::SpinNoIrq::new(new_inner));
+            } else {
+                *proc_data.uts_ns.lock() = old_proc_data.uts_ns.lock().clone();
+            }
 
             {
                 let mut scope = proc_data.scope.write();

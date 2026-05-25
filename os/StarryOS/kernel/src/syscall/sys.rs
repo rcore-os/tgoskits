@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
-use ax_config::ARCH;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_sync::Mutex;
@@ -18,7 +17,7 @@ use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
 #[cfg(target_arch = "riscv64")]
 use crate::mm::UserPtr;
-use crate::task::{AsThread, processes};
+use crate::task::{AsThread, build_utsname, processes};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
@@ -539,27 +538,62 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     Ok(0)
 }
 
-const fn pad_str(info: &str) -> [c_char; 65] {
-    let mut data: [c_char; 65] = [0; 65];
-    // this needs #![feature(const_copy_from_slice)]
-    // data[..info.len()].copy_from_slice(info.as_bytes());
-    unsafe {
-        core::ptr::copy_nonoverlapping(info.as_ptr().cast(), data.as_mut_ptr(), info.len());
-    }
-    data
+pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
+    let curr = current();
+    // Build the utsname inside a block so the SpinNoIrq guard is dropped
+    // before we touch user memory via vm_write (access_user_memory requires
+    // IRQs enabled, but SpinNoIrq disables them).
+    let uts = {
+        let ns_arc = curr.as_thread().proc_data.uts_ns.lock();
+        let ns = ns_arc.lock();
+        build_utsname(&ns)
+    };
+    name.vm_write(uts)?;
+    Ok(0)
 }
 
-const UTSNAME: new_utsname = new_utsname {
-    sysname: pad_str("Linux"),
-    nodename: pad_str("starry"),
-    release: pad_str("10.0.0"),
-    version: pad_str("10.0.0"),
-    machine: pad_str(ARCH),
-    domainname: pad_str("https://github.com/Starry-OS/StarryOS"),
-};
+pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
+    if len > 64 {
+        return Err(AxError::InvalidInput);
+    }
+    let curr = current();
+    if curr.as_thread().cred().euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
+    vm_read_slice(name.cast::<u8>(), &mut buf)?;
+    let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
+    let mut nodename: [c_char; 65] = [0; 65];
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), nodename.as_mut_ptr(), len);
+    }
+    let proc_data = &curr.as_thread().proc_data;
+    proc_data.uts_ns.lock().lock().nodename = nodename;
+    Ok(0)
+}
 
-pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
-    name.vm_write(UTSNAME)?;
+pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
+    if len > 64 {
+        return Err(AxError::InvalidInput);
+    }
+    let curr = current();
+    if curr.as_thread().cred().euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
+    vm_read_slice(name.cast::<u8>(), &mut buf)?;
+    // SAFETY: vm_read_slice filled buf with valid data from user space.
+    let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
+    let mut domainname: [c_char; 65] = [0; 65];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr().cast::<c_char>(),
+            domainname.as_mut_ptr(),
+            len,
+        );
+    }
+    let proc_data = &curr.as_thread().proc_data;
+    proc_data.uts_ns.lock().lock().domainname = domainname;
     Ok(0)
 }
 
