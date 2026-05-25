@@ -19,15 +19,15 @@ use ax_hal::{
     time::{monotonic_time, wall_time},
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
     mm::BackendFileInfo,
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
-        SimpleFileOperation, SimpleFs,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir, SimpleDirOps, SimpleFile,
+        SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
         AsThread, ProcessData, TaskStat, get_process_data, get_task, processes, tasks,
@@ -566,6 +566,7 @@ impl SimpleDirOps for ThreadDir {
             [
                 "stat",
                 "status",
+                "statm",
                 "oom_score_adj",
                 "task",
                 "maps",
@@ -614,6 +615,18 @@ impl SimpleDirOps for ThreadDir {
                 })
                 .into()
             }
+            "statm" => {
+                SimpleFile::new_regular(fs, move || {
+                    let aspace = task.as_thread().proc_data.aspace();
+                    let aspace_lock = aspace.lock();
+                    // Page size is 4096 on all supported architectures.
+                    let total_pages = aspace_lock.size() / 4096;
+                    let resident = total_pages;
+                    // Format: size resident shared text lib data dt
+                    Ok(format!("{total_pages} {resident} 0 0 0 0 0\n"))
+                })
+                .into()
+            }
             "oom_score_adj" => SimpleFile::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
@@ -643,7 +656,13 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "maps" => {
                 let task = self.task.clone();
-                SeqFile::new_regular(fs, move || render_thread_maps(&task)).into()
+                let seq = SeqObject::new(move || render_thread_maps(&task));
+                SpecialFsFile::new_regular_with_perm(
+                    fs.clone(),
+                    seq,
+                    NodePermission::from_bits_truncate(0o444),
+                )
+                .into()
             }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
@@ -783,6 +802,18 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             // Approximate total idle as uptime × cpu_count (no per-CPU idle accounting yet).
             let idle_secs = secs.saturating_mul(ax_hal::cpu_num() as u64);
             Ok(format!("{secs}.{cs:02} {idle_secs}.00\n"))
+        }),
+    );
+    root.add(
+        "loadavg",
+        SimpleFile::new_regular(fs.clone(), || {
+            let all_tasks = tasks();
+            let running = all_tasks
+                .iter()
+                .filter(|t| matches!(t.state(), TaskState::Running | TaskState::Ready))
+                .count();
+            let total = all_tasks.len();
+            Ok(format!("0.00 0.00 0.00 {running}/{total} 1\n"))
         }),
     );
     root.add(

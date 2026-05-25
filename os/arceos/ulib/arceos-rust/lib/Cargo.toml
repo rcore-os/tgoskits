@@ -9,7 +9,7 @@ keywords.workspace = true
 license.workspace = true
 name = "arceos-rust-interface"
 repository.workspace = true
-version = "1.0.2"
+version = "1.0.3"
 
 [lib]
 crate-type = ["staticlib"]
@@ -49,9 +49,11 @@ tls = ["ax-feat/tls"]
 
 # Multi-threading and scheduler
 multitask = ["ax-api/multitask", "ax-feat/multitask", "irq"]
+lockdep = ["ax-feat/lockdep"]
 sched-cfs = ["ax-feat/sched-cfs"]
 sched-fifo = ["ax-feat/sched-fifo"]
 sched-rr = ["ax-feat/sched-rr"]
+stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
 fd = ["ax-posix-api/fd"]

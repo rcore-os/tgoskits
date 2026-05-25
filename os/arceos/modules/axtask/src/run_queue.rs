@@ -245,6 +245,8 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
             self.inner.cpu_id
         );
         assert!(task.is_ready());
+        #[cfg(feature = "smp")]
+        task.set_cpu_id(self.inner.cpu_id as _);
         self.inner.scheduler.lock().add_task(task);
     }
 
@@ -278,6 +280,25 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
 
 /// Core functions of run queue.
 impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
+    /// Unblock one task by inserting it into the current CPU's run queue.
+    ///
+    /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
+    #[cfg(feature = "irq")]
+    pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
+        let task_id_name = task.id_name();
+        if self
+            .inner
+            .put_task_with_state(task, TaskState::Blocked, resched)
+        {
+            let cpu_id = self.inner.cpu_id;
+            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if resched {
+                #[cfg(feature = "preempt")]
+                crate::current().set_preempt_pending(true);
+            }
+        }
+    }
+
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
@@ -294,6 +315,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         let curr = &self.current_task;
         trace!("task yield: {}", curr.id_name());
         assert!(curr.is_running());
+
+        #[cfg(feature = "smp")]
+        if !curr.cpumask().get(self.inner.cpu_id) {
+            self.migrate_current_to_affinity();
+            return;
+        }
 
         self.inner
             .put_task_with_state(curr.clone(), TaskState::Running, false);
@@ -350,6 +377,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             can_preempt
         );
         if can_preempt {
+            #[cfg(feature = "smp")]
+            if !curr.cpumask().get(self.inner.cpu_id) {
+                self.migrate_current_to_affinity();
+                return;
+            }
+
             self.inner
                 .put_task_with_state(curr.clone(), TaskState::Running, true);
             self.inner.resched();
@@ -472,6 +505,20 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             .scheduler
             .lock()
             .set_priority(&self.current_task, prio)
+    }
+
+    #[cfg(feature = "smp")]
+    fn migrate_current_to_affinity(&mut self) {
+        const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
+        let curr = self.current_task.clone();
+        let migration_task = TaskInner::new(
+            move || crate::run_queue::migrate_entry(curr),
+            "migration-task".into(),
+            MIGRATION_TASK_STACK_SIZE,
+        )
+        .into_arc();
+
+        self.migrate_current(migration_task);
     }
 }
 
@@ -665,8 +712,9 @@ fn gc_entry() {
 /// then puts the task to the scheduler of target run queue.
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
-    select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task)
-        .inner
+    let rq = select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task);
+    migrated_task.set_cpu_id(rq.inner.cpu_id as _);
+    rq.inner
         .scheduler
         .lock()
         .put_prev_task(migrated_task, false)

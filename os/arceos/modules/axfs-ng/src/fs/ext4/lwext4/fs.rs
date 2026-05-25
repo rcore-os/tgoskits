@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::cell::OnceCell;
 
 use ax_driver::{AxBlockDevice, PartitionRegion};
-use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
@@ -36,6 +36,13 @@ impl Ext4Filesystem {
         Ok(Filesystem::new(fs))
     }
 
+    /// Locks the shared lwext4 state.
+    ///
+    /// lwext4 operations may call into the block device while this guard is
+    /// held. The current rootfs setup can also run in early atomic contexts
+    /// where a blocking mutex trips `might_sleep()`, so use `SpinNoIrq`
+    /// instead of the older `SpinNoPreempt` to close same-CPU IRQ reentry
+    /// without changing the boot-time calling contract.
     pub(crate) fn lock(&self) -> MutexGuard<'_, LwExt4Filesystem> {
         self.inner.lock()
     }

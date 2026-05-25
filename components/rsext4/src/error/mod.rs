@@ -66,6 +66,10 @@ impl Ext4Error {
         Self::new(Errno::EBUSY)
     }
 
+    pub const fn not_empty() -> Self {
+        Self::new(Errno::ENOTEMPTY)
+    }
+
     pub const fn no_space() -> Self {
         Self::new(Errno::ENOSPC)
     }

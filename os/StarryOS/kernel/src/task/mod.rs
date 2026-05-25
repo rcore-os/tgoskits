@@ -142,14 +142,8 @@ pub struct Thread {
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
 
-    /// Whether the process is dumpable (SUID_DUMP_USER=1 by default).
-    /// 0 = not dumpable (SUID_DUMP_DISABLE), 1 = dumpable (SUID_DUMP_USER),
-    /// 2 = dumpable but only to root (SUID_DUMP_FSCRED).
-    dumpable: AtomicU32,
-
-    /// Whether PR_SET_NO_NEW_PRIVS has been set (0 = not set, 1 = set).
-    /// Once set to 1, it cannot be cleared.
-    no_new_privs: AtomicU32,
+    /// PR_SET_NO_NEW_PRIVS: once set, cannot be unset.
+    no_new_privs: AtomicBool,
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
@@ -192,8 +186,7 @@ impl Thread {
             exit_request: AtomicBool::new(false),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
-            dumpable: AtomicU32::new(1),
-            no_new_privs: AtomicU32::new(0),
+            no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
             #[cfg(feature = "kcov")]
             kcov: AssumeSync(RefCell::new(None)),
@@ -300,28 +293,14 @@ impl Thread {
         self.pdeathsig.store(sig, Ordering::Relaxed);
     }
 
-    /// Get the dumpable flag for this process (PR_GET_DUMPABLE).
-    pub fn dumpable(&self) -> u32 {
-        self.dumpable.load(Ordering::Acquire)
+    /// Get the no_new_privs flag.
+    pub fn no_new_privs(&self) -> bool {
+        self.no_new_privs.load(Ordering::Relaxed)
     }
 
-    /// Set the dumpable flag for this process (PR_SET_DUMPABLE).
-    pub fn set_dumpable(&self, val: u32) {
-        self.dumpable.store(val, Ordering::Release);
-    }
-
-    /// Get the no_new_privs flag (PR_GET_NO_NEW_PRIVS).
-    pub fn no_new_privs(&self) -> u32 {
-        self.no_new_privs.load(Ordering::Acquire)
-    }
-
-    /// Set the no_new_privs flag (PR_SET_NO_NEW_PRIVS).
-    /// Once set, this flag cannot be cleared on Linux, so only store 1
-    /// when a non-zero value is passed.
-    pub fn set_no_new_privs(&self, val: u32) {
-        if val == 1 {
-            self.no_new_privs.store(1, Ordering::Release);
-        }
+    /// Set the no_new_privs flag (one-way: once set, cannot be unset).
+    pub fn set_no_new_privs(&self) {
+        self.no_new_privs.store(true, Ordering::Relaxed);
     }
 
     /// Run a closure with a borrow of the current KCOV state for this thread.
@@ -667,8 +646,8 @@ impl ProcessData {
     }
 
     /// Set the dumpable flag (PR_SET_DUMPABLE).
-    /// Valid values: 0 (SUID_DUMP_DISABLE), 1 (SUID_DUMP_USER),
-    /// 2 (SUID_DUMP_ROOT). Caller must validate before storing.
+    /// Valid userspace values are 0 (SUID_DUMP_DISABLE) and 1
+    /// (SUID_DUMP_USER). Callers must validate before storing.
     pub fn set_dumpable(&self, dumpable: i32) {
         self.dumpable.store(dumpable, Ordering::SeqCst);
     }

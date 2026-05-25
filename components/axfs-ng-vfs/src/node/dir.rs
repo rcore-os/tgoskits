@@ -138,8 +138,8 @@ impl DirNode {
     pub fn new(ops: Arc<dyn DirNodeOps>) -> Self {
         Self {
             ops,
-            cache: Mutex::default(),
-            mountpoint: Mutex::default(),
+            cache: Mutex::new(DirChildren::default()),
+            mountpoint: Mutex::new(None),
         }
     }
 

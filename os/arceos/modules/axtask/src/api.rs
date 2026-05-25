@@ -110,6 +110,12 @@ pub fn current_may_uninit() -> Option<CurrentTask> {
     CurrentTask::try_get()
 }
 
+/// Reports whether the given fault address hits the current task's stack guard page.
+#[cfg(feature = "stack-guard-page")]
+pub fn diagnose_current_stack_guard_page_fault(fault_addr: VirtAddr) -> bool {
+    current_may_uninit().is_some_and(|curr| curr.diagnose_stack_guard_page_fault(fault_addr))
+}
+
 /// Gets the current task.
 ///
 /// # Panics

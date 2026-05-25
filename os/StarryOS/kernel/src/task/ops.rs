@@ -25,6 +25,24 @@ const FUTEX_OWNER_DIED: u32 = 0x40000000;
 const FUTEX_TID_MASK: u32 = 0x3fffffff;
 const FUTEX_WAITERS: u32 = 0x80000000;
 
+/// Decode the Linux wait-status encoding into (si_code, si_status).
+///
+/// - Normal exit (`_exit`/`exit_group`): `(CLD_EXITED, exit_value)`
+/// - Killed by signal: `(CLD_KILLED, signum)` or `(CLD_DUMPED, signum)`
+pub fn decode_wait_status(raw: i32) -> (i32, i32) {
+    use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
+    if raw & 0x7f == 0 {
+        (CLD_EXITED as i32, (raw >> 8) & 0xff)
+    } else {
+        let signum = raw & 0x7f;
+        if (raw & 0x80) != 0 {
+            (CLD_DUMPED as i32, signum)
+        } else {
+            (CLD_KILLED as i32, signum)
+        }
+    }
+}
+
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
@@ -200,16 +218,40 @@ pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
 
 /// Finds the process group with the given PGID.
 pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
-    PROCESS_GROUP_TABLE
-        .read()
-        .get(&pgid)
-        .ok_or(AxError::NoSuchProcess)
+    if let Some(pg) = PROCESS_GROUP_TABLE.read().get(&pgid) {
+        return Ok(pg);
+    }
+
+    if let Some(pg) = find_process_group_by_member(pgid) {
+        register_process_group(&pg);
+        return Ok(pg);
+    }
+
+    Err(AxError::NoSuchProcess)
 }
 
 /// Registers a process group in the global table.
 pub fn register_process_group(pg: &Arc<ProcessGroup>) {
     let mut pg_table = PROCESS_GROUP_TABLE.write();
     pg_table.insert(pg.pgid(), pg);
+}
+
+fn find_process_group_by_member(pgid: Pid) -> Option<Arc<ProcessGroup>> {
+    for proc_data in PROCESS_TABLE.read().values() {
+        let pg = proc_data.proc.group();
+        if pg.pgid() == pgid {
+            return Some(pg);
+        }
+    }
+
+    for zombie in ZOMBIE_TABLE.read().values() {
+        let pg = zombie.proc.group();
+        if pg.pgid() == pgid {
+            return Some(pg);
+        }
+    }
+
+    None
 }
 
 /// Registers a session in the global table.
@@ -462,32 +504,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
-                use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
                 use starry_signal::Signo;
 
                 let child_uid = thr.cred().uid;
-                // Decode si_code/si_status from the Linux wait-status encoding
-                // stored in exit_code, NOT from the `group_exit` flag.
-                //
-                // `group_exit` is true for both sys_exit_group() (normal exit)
-                // and signal-induced group termination, so it cannot distinguish
-                // the two cases.  The wait-status bits are the correct source:
-                //   bits 6:0 == 0  -> normal exit  (exit_code >> 8 is the value)
-                //   bits 6:0 != 0  -> killed by signal (bits 6:0 = signum,
-                //                     bit 7 = core dumped)
-                let raw = process.exit_code();
-                let (code, status) = if raw & 0x7f == 0 {
-                    // Normal exit via _exit() / exit_group().
-                    (CLD_EXITED as i32, (raw >> 8) & 0xff)
-                } else {
-                    let signum = raw & 0x7f;
-                    let core_dumped = (raw & 0x80) != 0;
-                    if core_dumped {
-                        (CLD_DUMPED as i32, signum)
-                    } else {
-                        (CLD_KILLED as i32, signum)
-                    }
-                };
+                let (code, status) = decode_wait_status(process.exit_code());
 
                 let sig = if signo == Signo::SIGCHLD {
                     SignalInfo::new_sigchld(process.pid(), child_uid, code, status)
