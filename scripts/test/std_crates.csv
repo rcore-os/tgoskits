@@ -43,7 +43,7 @@ ax-display
 ax-driver
 ax-hal
 ax-sync
-ax-task
+ax-task,multitask,sched-fifo,test
 ax-input
 ax-ipi
 ax-log
