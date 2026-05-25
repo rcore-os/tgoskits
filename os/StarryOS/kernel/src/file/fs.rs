@@ -204,13 +204,20 @@ impl FileLike for File {
         if self.append() {
             inner.seek(SeekFrom::End(0))?;
         }
-        if likely(self.is_blocking()) {
+        let result = if likely(self.is_blocking()) {
             inner.write(src)
         } else {
             block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
                 inner.write(&mut *src)
             }))
+        };
+        if let Ok(bytes) = result
+            && bytes > 0
+        {
+            let path = path_for(inner.location()).into_owned();
+            crate::file::inotify::notify_modify_path(&path);
         }
+        result
     }
 
     fn stat(&self) -> AxResult<Kstat> {
