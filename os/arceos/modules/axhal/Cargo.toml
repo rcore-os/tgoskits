@@ -76,6 +76,7 @@ paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",
     "ax-page-table-multiarch/ax-errno",
+    "ax-plat-loongarch64-qemu-virt?/paging",
 ]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]

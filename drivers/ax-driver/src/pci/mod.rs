@@ -3,6 +3,7 @@ use alloc::format;
 use alloc::sync::Arc;
 
 use heapless::Vec as ArrayVec;
+use mmio_api::MmioOp;
 #[cfg(virtio_dev)]
 use rdrive::probe::pci::{Endpoint, EndpointRc};
 use rdrive::{
@@ -131,14 +132,30 @@ pub fn register_ecam_controller(
     mem32: Option<PciMem32>,
     mem64: Option<PciMem64>,
 ) -> Result<(), OnProbeError> {
+    register_ecam_controller_with_mmio_op(
+        plat_dev,
+        ecam_base,
+        ecam_size,
+        mem32,
+        mem64,
+        axklib::mmio::op(),
+    )
+}
+
+pub fn register_ecam_controller_with_mmio_op(
+    plat_dev: PlatformDevice,
+    ecam_base: usize,
+    ecam_size: usize,
+    mem32: Option<PciMem32>,
+    mem64: Option<PciMem64>,
+    mmio_op: &'static dyn MmioOp,
+) -> Result<(), OnProbeError> {
     if ecam_base == 0 || ecam_size == 0 {
         return Err(OnProbeError::NotMatch);
     }
 
-    let mut controller =
-        rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, axklib::mmio::op()).map_err(
-            |err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")),
-        )?;
+    let mut controller = rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, mmio_op)
+        .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
 
     if let Some(mem32) = mem32 {
         controller.set_mem32(mem32, false);
