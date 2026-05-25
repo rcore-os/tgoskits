@@ -91,7 +91,7 @@ flowchart TD
 | 你要改什么 | 优先看哪里 | 常见影响面 |
 | --- | --- | --- |
 | 通用基础能力：错误、锁、页表、Per-CPU、容器 | `components/axerrno`、`components/kspin`、`components/page_table_multiarch`、`components/percpu` | 三套系统都可能受影响 |
-| ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`，以及相关 `axdriver_crates` / `axmm_crates` / `axplat_crates` | ArceOS，且可能波及 StarryOS / Axvisor |
+| ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`、`drivers/*`，以及相关 `axmm_crates` / `axplat_crates` | ArceOS，且可能波及 StarryOS / Axvisor |
 | ArceOS 的 feature 或应用接口 | `os/arceos/api/axfeat`、`os/arceos/ulib/axstd`、`os/arceos/ulib/axlibc` | ArceOS 应用与上层系统 |
 | StarryOS 的 Linux 兼容行为 | `components/starry-*`、`os/StarryOS/kernel/*` | StarryOS |
 | Hypervisor、vCPU、虚拟设备、VM 管理 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`components/axvisor_api`、`os/axvisor/src/*` | Axvisor |
@@ -271,7 +271,7 @@ my_component = { path = "components/my_component" }
 
 ### 5.5 遇到嵌套 workspace 时不要照抄
 
-`components/axplat_crates`、`components/axdriver_crates`、`components/axmm_crates` 这类目录本身是独立 workspace。给这类目录加新 crate 时，需要特别注意处理方式：
+`components/axplat_crates`、`components/axmm_crates` 这类目录本身是独立 workspace。给这类目录加新 crate 时，需要特别注意处理方式：
 
 - 先在它自己的 workspace 里接好
 - 再在根 `Cargo.toml` 里为具体 leaf crate 增加 patch 或 member

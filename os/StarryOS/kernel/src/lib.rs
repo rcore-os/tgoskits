@@ -7,8 +7,6 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
-extern crate ax_fs_ng as ax_fs;
-extern crate ax_net_ng as axnet;
 extern crate ax_runtime;
 
 #[macro_use]

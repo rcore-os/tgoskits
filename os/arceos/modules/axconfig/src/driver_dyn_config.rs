@@ -35,6 +35,10 @@ pub mod devices {
     pub const VIRTIO_MMIO_REGIONS: &[(usize, usize)] = &[];
     #[doc = " SDMMC controller physical address."]
     pub const SDMMC_PADDR: usize = 0;
+    #[doc = " SG2002 CV SD/MMC controller physical address."]
+    pub const CVSD_PADDR: usize = 0;
+    #[doc = " SG2002 system controller physical address."]
+    pub const SYSCON_PADDR: usize = 0;
 }
 #[doc = ""]
 #[doc = " Platform configs"]

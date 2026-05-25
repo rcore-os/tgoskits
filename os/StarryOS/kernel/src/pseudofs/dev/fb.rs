@@ -1,7 +1,5 @@
 use core::{any::Any, slice};
 
-#[allow(unused_imports)]
-use ax_driver::prelude::DisplayDriverOps;
 use ax_errno::AxError;
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PhysAddrRange, VirtAddr};

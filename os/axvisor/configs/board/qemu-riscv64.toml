@@ -1,6 +1,8 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-    "ax-std/bus-mmio",
+    "ax-hal/riscv64-qemu-virt-hv",
+    "ax-driver/fdt",
+    "ax-driver/virtio-blk",
     "ept-level-4",
     "fs",
     "sstc"

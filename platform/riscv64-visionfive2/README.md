@@ -74,4 +74,4 @@ TODO: 初始化分区表、OpenSBI 等
 
 2. 启动：最初我们在 U-Boot 中使用 booti 指令启动，因此伪装了 [Linux 启动镜像文件头](https://www.kernel.org/doc/html/v5.8/riscv/boot-image-header.html)，即代码 `boot.rs` 中 `.ascii  \"MZ\"` 这一段。后来我们才发现可以直接用 `go` 指令更方便地直接进行跳转，不过这一段文件头因为可以兼容两种启动方式就保留了下来。
 3. CPU 配置：VIsionFive 2 所使用的 JH7110 处理器有四个 64 位 RISC-V CPU（支持 rv64gc，编号为1-4）和一个 32 位 RISC-V CPU（支持rv32imfc，编号为0），因此 U-Boot 不会在 0 号核上启动，ArceOS 也无法在它上面运行。然而 ArceOS 许多设计都假定 cpuid 从 0 开始，我们把 cpu id 从原始的 1-4 映射到 0-3 来解决这个问题。
-4. 存储设备驱动：[Simple SD/MMC Driver](https://github.com/Starry-OS/simple-sdmmc)
+4. 存储设备驱动：当前平台尚未接入新的 `sdmmc-protocol`/host 驱动栈。

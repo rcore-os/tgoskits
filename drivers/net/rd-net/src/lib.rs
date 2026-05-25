@@ -60,6 +60,20 @@ pub struct Net {
     inner: Arc<NetInner>,
 }
 
+impl DriverGeneric for Net {
+    fn name(&self) -> &str {
+        self.interface().name()
+    }
+
+    fn raw_any(&self) -> Option<&dyn core::any::Any> {
+        Some(self)
+    }
+
+    fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+        Some(self)
+    }
+}
+
 impl Net {
     pub fn new(interface: impl Interface, dma_op: &'static dyn DmaOp) -> Self {
         Self {
@@ -255,7 +269,15 @@ impl TxPending<'_> {
 
     pub fn try_submit(&mut self) -> Result<(), NetError> {
         self.queue.reclaim_bounded(self.queue.capacity().max(1))?;
-        self.queue.interface.submit(self.bus_addr, self.len)?;
+        let buff = self
+            .buff
+            .as_ref()
+            .expect("tx pending buffer should exist until submit succeeds");
+        self.queue.interface.submit(DmaBuffer {
+            virt: buff.as_ptr(),
+            bus_addr: self.bus_addr,
+            len: self.len,
+        })?;
         let buff = self
             .buff
             .take()
@@ -294,7 +316,11 @@ impl RxQueue {
     fn submit_buffer(&mut self, buff: DBuff) -> Result<(), NetError> {
         let bus_addr = buff.dma_addr().as_u64();
         let len = self.config.buf_size.min(buff.len());
-        self.interface.submit(bus_addr, len)?;
+        self.interface.submit(DmaBuffer {
+            virt: buff.as_ptr(),
+            bus_addr,
+            len,
+        })?;
         self.inflight.insert(bus_addr, buff);
         Ok(())
     }

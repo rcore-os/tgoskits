@@ -71,7 +71,6 @@ members = [
     "components/x86_vlapic",
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
-    "components/axdriver_crates/axdriver_*",
     "components/axfs_crates/axfs_devfs",
     "components/axfs_crates/axfs_ramfs",
     "components/axfs_crates/axfs_vfs",
@@ -90,6 +89,7 @@ members = [
     "components/percpu/percpu",
     "components/percpu/percpu_macros",
 
+    "drivers/ax-driver",
     "drivers/blk/*",
     "drivers/examples/*",
     "drivers/firmware/*",
@@ -125,7 +125,22 @@ members = [
     "os/arceos/examples/std/io_test",
     "os/arceos/examples/std/thread_test",
     "os/arceos/examples/std/tokio_test",
-    "os/arceos/modules/*",
+    "os/arceos/modules/axalloc",
+    "os/arceos/modules/axconfig",
+    "os/arceos/modules/axdisplay",
+    "os/arceos/modules/axdma",
+    "os/arceos/modules/axfs",
+    "os/arceos/modules/axfs-ng",
+    "os/arceos/modules/axhal",
+    "os/arceos/modules/axinput",
+    "os/arceos/modules/axipi",
+    "os/arceos/modules/axlog",
+    "os/arceos/modules/axmm",
+    "os/arceos/modules/axnet",
+    "os/arceos/modules/axnet-ng",
+    "os/arceos/modules/axruntime",
+    "os/arceos/modules/axsync",
+    "os/arceos/modules/axtask",
     "os/arceos/tools/bwbench_client",
     "os/arceos/tools/deptool",
     "os/arceos/tools/raspi4/chainloader",
@@ -195,15 +210,8 @@ ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.5.14", path = "os/arceos/modules/axdisplay" }
 ax-dma = { version = "0.5.15", path = "os/arceos/modules/axdma" }
-ax-driver = { version = "0.5.16", path = "os/arceos/modules/axdriver" }
-ax-driver-base = { version = "0.3.12", path = "components/axdriver_crates/axdriver_base" }
-ax-driver-block = { version = "0.3.14", path = "components/axdriver_crates/axdriver_block" }
-ax-driver-display = { version = "0.3.12", path = "components/axdriver_crates/axdriver_display" }
-ax-driver-input = { version = "0.3.13", path = "components/axdriver_crates/axdriver_input" }
-ax-driver-net = { version = "0.3.13", path = "components/axdriver_crates/axdriver_net" }
-ax-driver-pci = { version = "0.3.12", path = "components/axdriver_crates/axdriver_pci" }
-ax-driver-virtio = { version = "0.4.1", path = "components/axdriver_crates/axdriver_virtio" }
-ax-driver-vsock = { version = "0.3.12", path = "components/axdriver_crates/axdriver_vsock" }
+ax-driver = { version = "0.6.0", path = "drivers/ax-driver" }
+virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.0", path = "components/axerrno" }
 ax-feat = { version = "0.5.16", path = "os/arceos/api/axfeat" }
 ax-fs = { version = "0.5.14", path = "os/arceos/modules/axfs" }
@@ -301,18 +309,22 @@ nvme-driver = { version = "0.4.2", path = "drivers/blk/nvme-driver" }
 pcie = { version = "0.6.1", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.1", path = "drivers/blk/ramdisk" }
 rd-block = { version = "0.1.2", path = "drivers/blk/rd-block" }
+rd-block-volume = { version = "0.1.0", path = "drivers/blk/rd-block-volume" }
 rd-net = { version = "0.1.1", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.1", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.7.1", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5.1", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.2.3", path = "drivers/interface/rdif-def" }
+rdif-display = { version = "0.1.0", path = "drivers/interface/rdif-display" }
 rdif-eth = { version = "0.2.1", path = "drivers/interface/rdif-eth" }
+rdif-input = { version = "0.1.0", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.14.1", path = "drivers/interface/rdif-intc" }
 rdif-pcie = { version = "0.2.1", path = "drivers/interface/rdif-pcie" }
 rdif-power = { version = "0.7.1", path = "drivers/interface/rdif-power" }
 rdif-serial = { version = "0.7.1", path = "drivers/interface/rdif-serial" }
 rdif-systick = { version = "0.6.1", path = "drivers/interface/rdif-systick" }
 rdif-timer = { version = "0.6.1", path = "drivers/interface/rdif-timer" }
+rdif-vsock = { version = "0.1.0", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2.0", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.2.1", path = "drivers/npu/rockchip-npu" }
 realtek-rtl8125 = { version = "0.2.0", path = "drivers/net/realtek-rtl8125" }
@@ -382,6 +394,9 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 sg200x-bsp = "0.6"
+simple-ahci = "0.1.1-preview.1"
+bcm2835-sdhci = "0.1.1-preview.1"
+ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
 
 [patch.crates-io]

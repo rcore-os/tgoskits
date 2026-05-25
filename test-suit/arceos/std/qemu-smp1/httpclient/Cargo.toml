@@ -12,4 +12,4 @@ default = []
 dns = ["arceos-rust/dns"]
 
 [target.'cfg(target_os = "hermit")'.dependencies]
-arceos-rust = { workspace = true, default-features = true, features = ["net", "log-level-debug"] }
+arceos-rust = { workspace = true, default-features = true, features = ["log-level-debug"] }

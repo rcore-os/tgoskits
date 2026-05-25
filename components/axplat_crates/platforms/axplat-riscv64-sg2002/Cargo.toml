@@ -28,6 +28,7 @@ ax-cpu = { workspace = true, features = ["xuantie-c9xx"] }
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }
+rdrive.workspace = true
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
 ax-riscv-plic = { workspace = true, optional = true }

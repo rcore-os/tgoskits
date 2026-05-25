@@ -24,6 +24,7 @@ extern crate ax_plat;
 mod apic;
 mod boot;
 mod console;
+mod drivers;
 mod init;
 mod mem;
 mod power;
@@ -40,6 +41,8 @@ pub mod config {
 
     pub mod devices {
         pub const TIMER_FREQUENCY: usize = 4_000_000_000; // 100 MHz
+        pub const PCI_ECAM_BASE: usize = 0xb000_0000;
+        pub const PCI_BUS_END: usize = 0xff;
     }
 }
 

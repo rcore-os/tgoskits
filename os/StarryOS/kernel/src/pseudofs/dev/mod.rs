@@ -13,6 +13,8 @@ mod fb;
 mod log;
 mod r#loop;
 #[cfg(feature = "ext4")]
+mod loop_block;
+#[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
 pub mod ion;

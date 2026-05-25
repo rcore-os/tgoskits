@@ -28,22 +28,22 @@ pub mod api;
 pub mod fops;
 
 use alloc::{
+    boxed::Box,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
 };
 
-use ax_driver::{AxBlockDevice, AxDeviceContainer, prelude::*};
-
-use crate::partition::PartitionInfo;
+pub use crate::dev::FsBlockDevice;
+use crate::{dev::Disk, partition::PartitionInfo};
 
 /// Initializes filesystems by block devices.
-pub fn init_filesystems(mut blk_devs: AxDeviceContainer<AxBlockDevice>, bootargs: Option<&str>) {
+pub fn init_filesystems(mut block_devs: Vec<Box<dyn FsBlockDevice>>, bootargs: Option<&str>) {
     info!("Initialize filesystems...");
 
-    let dev = blk_devs.take_one().expect("No block device found!");
-    info!("  use block device 0: {:?}", dev.device_name());
-    let mut disk = self::dev::Disk::new(dev);
+    let dev = block_devs.pop().expect("No block device found!");
+    info!("  use block device 0: {:?}", dev.name());
+    let mut disk = Disk::new(dev);
 
     // Parse root parameter from bootargs
     let root_spec = parse_root_spec(bootargs);
@@ -64,11 +64,7 @@ pub fn init_filesystems(mut blk_devs: AxDeviceContainer<AxBlockDevice>, bootargs
 }
 
 /// Initialize filesystems with detected partitions
-fn initialize_with_partitions(
-    disk: self::dev::Disk,
-    partitions: Vec<PartitionInfo>,
-    root_spec: &RootSpec,
-) {
+fn initialize_with_partitions(disk: Disk, partitions: Vec<PartitionInfo>, root_spec: &RootSpec) {
     info!(
         "Found {} partitions, initializing with dynamic filesystem detection",
         partitions.len()

@@ -3,6 +3,7 @@
 #![feature(used_with_arg)]
 
 extern crate alloc;
+extern crate ax_driver as _;
 extern crate somehal;
 
 #[macro_use]
@@ -20,14 +21,13 @@ mod init;
 mod irq;
 mod mem;
 mod power;
-#[cfg(feature = "rknpu")]
-pub mod rknpu;
 
 #[cfg(not(feature = "irq"))]
 #[somehal::irq_handler]
 fn somehal_handle_irq(_irq: somehal::irq::IrqId) {}
 
 pub use boot::boot_stack_bounds;
+pub use generic_timer::try_init_epoch_offset;
 
 // pub mod config {
 //     //! Platform configuration module.

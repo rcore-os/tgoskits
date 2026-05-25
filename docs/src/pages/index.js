@@ -738,17 +738,19 @@ function PlatformSection() {
 /* ── Driver Section ──────────────────────────────────────── */
 function DriverSection() {
   const driverCategories = [
-    { icon: 'server', title: '块设备驱动', desc: 'SD/MMC 存储支持', cssClass: 'blk', items: ['simple-sdmmc'] },
+    { icon: 'server', title: '块设备驱动', desc: 'SD/MMC 存储支持', cssClass: 'blk', items: ['sdhci-host', 'dwmmc-host', 'sdmmc-protocol'] },
     { icon: 'chip', title: 'NPU 驱动', desc: '神经网络加速', cssClass: 'npu', items: ['rockchip-npu'] },
     { icon: 'layers', title: 'PCI 总线驱动', desc: 'PCIe 控制器适配', cssClass: 'pci', items: ['rk3588-pci'] },
     { icon: 'grid', title: 'SoC 平台驱动', desc: '片上系统外设', cssClass: 'soc', items: ['rockchip (GPIO, clk, reset)'] },
   ];
 
   const driverSubsystems = [
-    { name: 'block', label: '块设备' }, { name: 'display', label: '显示' },
-    { name: 'input', label: '输入' }, { name: 'net', label: '网络' },
-    { name: 'pci', label: 'PCI 总线' }, { name: 'virtio', label: 'VirtIO' },
-    { name: 'vsock', label: '虚拟 Socket' }, { name: 'base', label: '驱动基础层' },
+    { name: 'rd-block', label: '块设备' },
+    { name: 'rd-net', label: '网络' },
+    { name: 'rdif-display', label: '显示' },
+    { name: 'rdif-input', label: '输入' },
+    { name: 'rdif-vsock', label: '虚拟 Socket' },
+    { name: 'rdrive', label: '设备注册' },
   ];
 
   return (
@@ -780,11 +782,11 @@ function DriverSection() {
         </div>
         <div className="driver-subsystem-panel">
           <h3>驱动子系统抽象</h3>
-          <p className="driver-subtitle">axdriver_crates 提供的通用驱动接口层</p>
+          <p className="driver-subtitle">rdrive 与 RDIF 提供的通用驱动能力层</p>
           <div className="driver-subsystem-grid">
             {driverSubsystems.map((sub) => (
               <div className="driver-subsystem-chip" key={sub.name}>
-                <code>axdriver_{sub.name}</code>
+                <code>{sub.name}</code>
                 <span>{sub.label}</span>
               </div>
             ))}

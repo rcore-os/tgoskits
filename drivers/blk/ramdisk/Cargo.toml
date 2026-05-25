@@ -11,8 +11,8 @@ version = "0.1.1"
 publish = false
 
 [dependencies]
-ax-kspin = { workspace = true }
 rdif-block = { workspace = true }
+spin = { workspace = true }
 
 [dev-dependencies]
 dma-api = { workspace = true }

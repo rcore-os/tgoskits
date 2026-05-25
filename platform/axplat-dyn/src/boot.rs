@@ -1,9 +1,8 @@
-use core::ptr::NonNull;
-
-use ax_errno::AxError;
 use ax_memory_addr::VirtAddr;
-use ax_plat::mem::phys_to_virt;
-use somehal::{KernelOp, setup::*};
+use somehal::{
+    KernelOp,
+    setup::{MapError, MmioAddr, MmioOp, MmioRaw},
+};
 
 #[somehal::entry(Kernel)]
 fn main() -> ! {
@@ -34,19 +33,10 @@ impl KernelOp for Kernel {}
 
 impl MmioOp for Kernel {
     fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<MmioRaw, MapError> {
-        let virt = match axklib::mem::iomap(addr.as_usize().into(), size) {
-            Ok(v) => v,
-            Err(AxError::AlreadyExists) => {
-                // If the region is already mapped, just return the existing mapping.
-                phys_to_virt(addr.as_usize().into())
-            }
-            Err(e) => {
-                error!("Failed to map MMIO region at {addr:?} with size {size:#x}: {e:?}");
-                return Err(MapError::Invalid);
-            }
-        };
-        Ok(unsafe { MmioRaw::new(addr, NonNull::new(virt.as_mut_ptr()).unwrap(), size) })
+        axklib::mmio::op().ioremap(addr, size)
     }
 
-    fn iounmap(&self, _mmio: &MmioRaw) {}
+    fn iounmap(&self, mmio: &MmioRaw) {
+        axklib::mmio::op().iounmap(mmio);
+    }
 }

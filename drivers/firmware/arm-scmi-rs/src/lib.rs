@@ -48,7 +48,7 @@ mod transport;
 
 use alloc::sync::Arc;
 
-use ax_kspin::SpinNoIrq as Mutex;
+use spin::Mutex;
 pub use transport::{Smc, Transport};
 
 type Data<T> = Arc<Mutex<ScmiData<T>>>;

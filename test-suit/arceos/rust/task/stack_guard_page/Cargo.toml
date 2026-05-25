@@ -6,4 +6,5 @@ authors = ["Yuekai Jia <equation618@gmail.com>"]
 publish = false
 
 [dependencies]
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["multitask", "stack-guard-page"], optional = true }

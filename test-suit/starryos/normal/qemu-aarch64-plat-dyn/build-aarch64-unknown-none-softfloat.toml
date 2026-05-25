@@ -1,11 +1,13 @@
 env = {}
 features = [
-    "starry-kernel/input",
-    "starry-kernel/plat-dyn",
-    "starry-kernel/vsock",
-    "axplat-dyn/intel-net",
-    "axplat-dyn/virtio-net-pci",
-    "axplat-dyn/xhci-pci",
+  "ax-hal/plat-dyn",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "starry-kernel/input",
+  "starry-kernel/plat-dyn",
+  "starry-kernel/vsock",
+  "ax-driver/intel-net",
+  "ax-driver/xhci-pci",
 ]
 log = "Warn"
 plat_dyn = true

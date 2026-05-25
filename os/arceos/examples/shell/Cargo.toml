@@ -13,4 +13,6 @@ publish = false
 default = []
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["alloc", "fs"], optional = true }

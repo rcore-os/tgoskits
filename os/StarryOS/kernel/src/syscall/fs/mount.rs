@@ -153,8 +153,6 @@ pub fn sys_mount(
 fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     use alloc::{boxed::Box, sync::Arc};
 
-    use ax_driver::prelude::BlockDriverOps;
-
     let ctx = FS_CONTEXT.lock();
 
     // Resolve source device path (e.g., "/dev/loop0") to a block device
@@ -182,7 +180,7 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     })?;
 
     let num_blocks = block_dev.num_blocks();
-    let region = ax_driver::PartitionRegion::from_num_blocks(num_blocks);
+    let region = ax_fs::BlockRegion::from_num_blocks(num_blocks);
 
     // Create ext4 filesystem from the dynamic block device
     let fs = ax_fs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {

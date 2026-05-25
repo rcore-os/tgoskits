@@ -59,3 +59,7 @@ ipi-irq = 0                 # uint
 
 # SDMMC controller physical address.
 sdmmc-paddr = 0             # uint
+# SG2002 CV SD/MMC controller physical address.
+cvsd-paddr = 0              # uint
+# SG2002 system controller physical address.
+syscon-paddr = 0            # uint

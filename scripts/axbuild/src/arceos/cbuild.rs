@@ -193,6 +193,9 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
     features
         .iter()
         .filter_map(|feature| {
+            if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+                return None;
+            }
             feature
                 .strip_prefix("ax-libc/")
                 .or_else(|| feature.strip_prefix("ax-feat/"))
@@ -203,7 +206,7 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
             !matches!(
                 *feature,
                 "ax-libc" | "ax-feat" | "ax-std" | "defplat" | "myplat" | "plat-dyn"
-            )
+            ) && !feature.contains('/')
         })
         .map(str::to_string)
         .collect()
@@ -307,6 +310,10 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
             .or_else(|| feature.strip_prefix("ax-std/"))
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            features.insert(feature.clone());
+            continue;
+        }
         match normalized {
             "ax-std" | "ax-feat" | "ax-libc" => {}
             "defplat" | "myplat" | "plat-dyn" => {
@@ -330,6 +337,10 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
             .or_else(|| feature.strip_prefix("ax-std/"))
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            features.insert(feature.clone());
+            continue;
+        }
         if LIB_FEATURES.contains(&normalized) {
             features.insert(format!("ax-libc/{normalized}"));
         } else {
@@ -392,6 +403,46 @@ fn link_c_app(
     command
         .exec()
         .with_context(|| format!("failed to link {}", elf_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn c_config_features_skips_nested_cargo_only_features() {
+        let features = c_config_features(&strings(&[
+            "ax-libc/net",
+            "ax-feat/paging",
+            "ax-driver/pci",
+            "ax-driver/virtio-net",
+            "ax-hal/riscv64-qemu-virt",
+            "some-crate/feature",
+        ]));
+
+        assert_eq!(
+            features.into_iter().collect::<Vec<_>>(),
+            vec!["net".to_string(), "paging".to_string()]
+        );
+    }
+
+    #[test]
+    fn map_c_app_features_preserves_driver_features() {
+        let features = map_c_app_features(
+            &strings(&["net", "ax-driver/pci", "ax-driver/virtio-net"]),
+            &strings(&["ax-hal/riscv64-qemu-virt"]),
+        );
+
+        assert!(features.contains(&"ax-libc/net".to_string()));
+        assert!(features.contains(&"ax-libc/fd".to_string()));
+        assert!(features.contains(&"ax-driver/pci".to_string()));
+        assert!(features.contains(&"ax-driver/virtio-net".to_string()));
+        assert!(features.contains(&"ax-hal/riscv64-qemu-virt".to_string()));
+    }
 }
 
 fn lld_machine(arch: &str) -> anyhow::Result<&'static str> {

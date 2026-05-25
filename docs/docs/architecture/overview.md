@@ -13,7 +13,7 @@ flowchart TD
         direction LR
         C1["架构组件<br/>aarch64_sysreg arm_vcpu ..."]
         C2["内存组件<br/>axaddrspace axmm_crates ..."]
-        C3["设备组件<br/>axdriver_crates axdevice ..."]
+        C3["设备组件<br/>drivers/ axdevice ..."]
         C4["文件系统组件<br/>axfs_crates axfs-ng-vfs rsext4"]
         C5["平台组件<br/>axplat_crates percpu ..."]
         C6["Starry 组件<br/>starry-process starry-signal starry-vm"]
@@ -93,6 +93,14 @@ Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor，建立在 ArceOS
 - 支持 ArceOS、Linux、NimbOS、RT-Thread、FreeRTOS、Zephyr 等 Guest
 
 → 详细架构见 [Axvisor 架构](./axvisor)
+
+## 驱动框架重构方向
+
+宿主物理设备路径正在收敛到 `rdrive + rdif`。这个方向将静态平台、FDT 动态平台和未来 ACPI 平台放进同一套 `rdrive` 注册与 probe 主线，并让文件系统、网络、显示、输入、vsock、StarryOS 和 Axvisor 直接消费 `rdif-*` / `rd-*` 设备。
+
+本轮重构不迁移 `axdevice` / `axdevice_base`。它们继续作为 Axvisor / axvm 的 guest emulated device model，与宿主物理设备路径保持边界。
+
+→ 详细设计见 [rdrive + rdif 驱动框架](./rdrive-rdif)
 
 ## 核心层次
 

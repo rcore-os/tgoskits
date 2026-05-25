@@ -77,6 +77,10 @@ impl_trait! {
             ax_mm::iomap(addr, size)
         }
 
+        fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
+            ax_hal::mem::virt_to_phys(addr)
+        }
+
         fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult {
             let Some((start, size)) = dma_coherent_range(addr, size) else {
                 return Ok(());
@@ -114,6 +118,31 @@ impl_trait! {
             Ok(())
         }
 
+        fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> AxResult<VirtAddr> {
+            let addr = if dma_mask <= u32::MAX as u64 {
+                ax_alloc::global_allocator().alloc_dma32_pages(
+                    num_pages,
+                    align,
+                    ax_alloc::UsageKind::Dma,
+                )
+            } else {
+                ax_alloc::global_allocator().alloc_pages(
+                    num_pages,
+                    align,
+                    ax_alloc::UsageKind::Dma,
+                )
+            }?;
+            Ok(VirtAddr::from(addr))
+        }
+
+        fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize) {
+            ax_alloc::global_allocator().dealloc_pages(
+                addr.as_usize(),
+                num_pages,
+                ax_alloc::UsageKind::Dma,
+            );
+        }
+
         /// Busy-wait for the given duration by calling into `ax-hal`.
         ///
         /// Short delays are serviced by the hardware abstraction layer's
@@ -123,26 +152,30 @@ impl_trait! {
             ax_hal::time::busy_wait(dur);
         }
 
+        fn time_monotonic_nanos() -> u64 {
+            ax_hal::time::monotonic_time_nanos()
+        }
+
+        fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
+            ax_hal::time::try_init_epoch_offset(epoch_time_nanos)
+        }
+
         /// Enable or disable the specified IRQ line.
         ///
         /// When the `irq` feature is enabled this forwards to
-        /// `ax_hal::irq::set_enable`. If the feature is not enabled the
-        /// function currently panics via `unimplemented!()`; callers should
-        /// avoid relying on IRQ operations when the platform omits IRQ
-        /// support.
+        /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
+        /// ignore this request because there is no interrupt controller
+        /// service to program.
         fn irq_set_enable(_irq: usize, _enabled: bool) {
             #[cfg(feature = "irq")]
             ax_hal::irq::set_enable(_irq, _enabled);
-            #[cfg(not(feature = "irq"))]
-            unimplemented!();
         }
 
         /// Register an IRQ handler for the given IRQ number.
         ///
         /// Returns `true` when registration succeeds. With the `irq`
-        /// feature enabled this delegates to `ax_hal::irq::register`.
-        /// When IRQs are not enabled the function is currently unimplemented
-        /// and will panic if called.
+        /// feature enabled this delegates to `ax_hal::irq::register`. Without
+        /// IRQ support registration fails explicitly by returning `false`.
         fn irq_register(_irq: usize, _handler: IrqHandler) -> bool {
             #[cfg(feature = "irq")]
             {
@@ -150,7 +183,7 @@ impl_trait! {
             }
             #[cfg(not(feature = "irq"))]
             {
-                unimplemented!()
+                false
             }
         }
     }

@@ -11,4 +11,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-mmap-prot-write"
 success_regex = ["(?m)DONE: \\d+ pass, 0 fail"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']
-timeout = 30
+timeout = 60

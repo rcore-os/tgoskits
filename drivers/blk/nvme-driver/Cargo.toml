@@ -11,11 +11,11 @@ repository.workspace = true
 version = "0.4.2"
 
 [dependencies]
-ax-kspin.workspace = true
 dma-api.workspace = true
 log = "0.4"
 mmio-api.workspace = true
 rd-block.workspace = true
+spin.workspace = true
 tock-registers = "0.10"
 
 [dev-dependencies]

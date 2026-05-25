@@ -6,4 +6,6 @@ authors = ["Dashuai Wu <wudashuaijss@foxmail.com>"]
 publish = false
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["net"], optional = true }

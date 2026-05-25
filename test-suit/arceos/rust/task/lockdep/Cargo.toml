@@ -11,6 +11,8 @@ ax-std = ["dep:ax-std", "dep:ax-kspin", "dep:axfs-ng-vfs"]
 lockdep = ["ax-std", "ax-std/lockdep"]
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["alloc", "multitask"], optional = true }
 ax-kspin = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }

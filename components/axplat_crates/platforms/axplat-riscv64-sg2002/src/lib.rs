@@ -12,6 +12,8 @@ mod boot;
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod console;
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+mod drivers;
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod init;
 #[cfg(all(feature = "irq", any(target_arch = "riscv32", target_arch = "riscv64")))]
 mod irq;

@@ -1,11 +1,11 @@
 use alloc::{boxed::Box, collections::BTreeSet, sync::Arc};
 use core::any::Any;
 
-use ax_kspin::SpinNoIrq as Mutex;
 use rd_block::{
     BlkError, Block as RdBlock, BuffConfig, DriverGeneric, Event, IQueue, IdList, Interface,
     Request, RequestId, RequestKind,
 };
+use spin::Mutex;
 
 use crate::{Namespace, Nvme, err::Result};
 

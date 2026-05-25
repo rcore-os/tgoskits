@@ -29,6 +29,7 @@ some-serial.workspace = true
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+rdrive.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

@@ -7,11 +7,13 @@ use smoltcp::{
     wire::{IpAddress, Ipv4Cidr},
 };
 
+mod driver;
 mod ethernet;
 mod loopback;
 #[cfg(feature = "vsock")]
 mod vsock;
 
+pub use driver::*;
 pub use ethernet::*;
 pub use loopback::*;
 #[cfg(feature = "vsock")]

@@ -6,6 +6,8 @@ use fdt_raw::FdtError;
 pub enum DriverError {
     #[error("FDT error: {0}")]
     Fdt(String),
+    #[error("unsupported driver source: {0}")]
+    Unsupported(&'static str),
     #[error("Unknown driver error: {0}")]
     Unknown(String),
 }

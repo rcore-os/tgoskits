@@ -76,16 +76,6 @@ input = ["ax-feat/input"]
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-feat/rtc"]
 
-# Device drivers
-bus-mmio = ["ax-feat/bus-mmio"]
-bus-pci = ["ax-feat/bus-pci"]
-driver-ramdisk = ["ax-feat/driver-ramdisk"]
-driver-sdmmc = ["ax-feat/driver-sdmmc"]
-driver-ixgbe = ["ax-feat/driver-ixgbe"]
-driver-fxmac = ["ax-feat/driver-fxmac"]
-driver-bcm2835-sdhci = ["ax-feat/driver-bcm2835-sdhci"]
-driver-ahci = ["ax-feat/driver-ahci"]
-
 # Backtrace
 backtrace = ["ax-feat/backtrace"]
 dwarf = ["ax-feat/dwarf"]

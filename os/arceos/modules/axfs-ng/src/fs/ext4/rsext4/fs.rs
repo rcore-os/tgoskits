@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
-use ax_driver::{AxBlockDevice, PartitionRegion, prelude::BlockDriverOps};
 use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
@@ -9,6 +8,7 @@ use axfs_ng_vfs::{
 use rsext4::{Jbd2Dev, bmalloc::InodeNumber, superblock::Ext4Superblock};
 
 use super::{Ext4Disk, Inode, util::into_vfs_err};
+use crate::block::{BlockRegion, FsBlockDevice};
 
 const EXT4_ROOT_INO: u32 = 2;
 
@@ -31,15 +31,14 @@ pub struct Ext4Filesystem {
 }
 
 impl Ext4Filesystem {
-    /// Create from a compile-time block device (e.g. VirtIO root device).
-    pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> VfsResult<Filesystem> {
-        Self::new_from_boxed(Box::new(dev) as Box<dyn BlockDriverOps>, region)
+    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
+        Self::new_from_boxed(dev, region)
     }
 
     /// Create from a dynamic (boxed) block device (e.g. loop device).
     pub fn new_from_boxed(
-        dev: Box<dyn BlockDriverOps>,
-        region: PartitionRegion,
+        dev: Box<dyn FsBlockDevice>,
+        region: BlockRegion,
     ) -> VfsResult<Filesystem> {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, Ext4Disk::new(dev, region), true);
         let fs = rsext4::mount(&mut dev).map_err(into_vfs_err)?;

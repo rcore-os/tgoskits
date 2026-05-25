@@ -1,17 +1,20 @@
+use alloc::boxed::Box;
+
 mod fs;
 mod inode;
 mod util;
 
-use ax_driver::{AxBlockDevice, PartitionBlockDevice, PartitionRegion, prelude::BlockDriverOps};
 pub use fs::*;
 pub use inode::*;
 use lwext4_rust::{BlockDevice, Ext4Error, Ext4Result, ffi::EIO};
 
-pub(crate) struct Ext4Disk(PartitionBlockDevice<AxBlockDevice>);
+use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
+
+pub(crate) struct Ext4Disk(RegionBlockDevice<Box<dyn FsBlockDevice>>);
 
 impl Ext4Disk {
-    pub(crate) const fn new(dev: AxBlockDevice, region: PartitionRegion) -> Self {
-        Self(PartitionBlockDevice::new(dev, region))
+    pub(crate) const fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> Self {
+        Self(RegionBlockDevice::new(dev, region))
     }
 
     fn check_buffer_len(&self, buf_len: usize) -> Ext4Result<()> {

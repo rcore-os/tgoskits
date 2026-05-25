@@ -10,7 +10,6 @@ repository.workspace = true
 version = "0.20.1"
 
 [dependencies]
-ax-kspin.workspace = true
 fdt-edit.workspace = true
 fdt-raw.workspace = true
 log = "0.4"

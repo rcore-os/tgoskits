@@ -1,5 +1,7 @@
 std = true
-features = []
+features = [
+  "ax-hal/aarch64-qemu-virt",
+]
 log = "Info"
 max_cpu_num = 1
 

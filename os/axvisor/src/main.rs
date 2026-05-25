@@ -28,11 +28,6 @@ extern crate alloc;
 
 extern crate ax_std as std;
 
-#[cfg(target_arch = "loongarch64")]
-extern crate ax_plat_loongarch64_qemu_virt;
-#[cfg(target_arch = "x86_64")]
-extern crate axplat_x86_qemu_q35;
-
 mod hal;
 mod logo;
 mod shell;
