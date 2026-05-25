@@ -465,13 +465,14 @@ fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool)
         emit_rex_w(buf, 0, X86_R11);
         buf.emit_u8(0xF7);
         emit_modrm(buf, 3, 6, X86_R11);
-        emit_mov_reg64(buf, dst, if is_div { X86_RAX } else { X86_RDX });
         let after = buf.offset();
         unsafe {
             let ptr = buf.entry().add(skip) as *mut u8;
             let off = (after - skip - 6) as i32;
             core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
         }
+        emit_pop(buf, X86_RCX);
+        emit_mov_reg64(buf, dst, if is_div { X86_RAX } else { X86_RDX });
     } else {
         emit_mov_reg32(buf, X86_R11, src);
         emit_mov_reg32(buf, X86_R10, dst);
@@ -486,16 +487,15 @@ fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool)
         buf.emit_u8(0xF7);
         emit_modrm(buf, 3, 6, X86_R11);
         emit_zext32(buf, if is_div { X86_RAX } else { X86_RDX });
-        emit_mov_reg32(buf, dst, if is_div { X86_RAX } else { X86_RDX });
         let after = buf.offset();
         unsafe {
             let ptr = buf.entry().add(skip) as *mut u8;
             let off = (after - skip - 6) as i32;
             core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
         }
+        emit_pop(buf, X86_RCX);
+        emit_mov_reg32(buf, dst, if is_div { X86_RAX } else { X86_RDX });
     }
-
-    emit_pop(buf, X86_RCX);
 }
 
 pub(crate) struct X86_64Backend;
@@ -545,11 +545,7 @@ impl JitBackend for X86_64Backend {
         if use_imm && insn.alu_op() != BPF_MOV {
             let imm = insn.imm;
             if is_64 {
-                if (0..256).contains(&imm) {
-                    emit_mov_imm32(buf, dst, imm);
-                } else {
-                    emit_mov_imm64(buf, X86_RCX, insn.imm as u64);
-                }
+                emit_mov_imm64(buf, X86_RCX, insn.imm as u64);
             } else {
                 emit_mov_imm32(buf, X86_RCX, imm);
             }
@@ -839,7 +835,8 @@ impl JitBackend for X86_64Backend {
                     5
                 } else {
                     let imm_size = if use_imm { 10 } else { 0 };
-                    imm_size + 4 + 6
+                let extra = if op == BPF_JSET { 3 } else { 0 };
+                imm_size + 4 + 6 + extra
                 }
             }
             BPF_ST => {
