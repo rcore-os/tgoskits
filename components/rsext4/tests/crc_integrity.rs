@@ -213,6 +213,31 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
 }
 
 #[test]
+fn old_32_byte_descriptors_match_low_16_bits_of_bitmap_checksums() {
+    let (device, _payload) = build_filesystem_with_written_file();
+    let mut sb = read_superblock(&device);
+    let mut desc = read_group_desc0(&device, &sb);
+
+    sb.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT;
+    sb.s_desc_size = Ext4GroupDesc::GOOD_OLD_DESC_SIZE as u16;
+    desc.bg_block_bitmap_csum_hi = 0;
+    desc.bg_inode_bitmap_csum_hi = 0;
+
+    let block_bitmap = device.read_block_bytes(desc.block_bitmap());
+    let inode_bitmap = device.read_block_bytes(desc.inode_bitmap());
+    let block_csum = ext4_block_bitmap_csum32(&sb, &block_bitmap);
+    let inode_csum = ext4_inode_bitmap_csum32(&sb, &inode_bitmap);
+
+    desc.bg_block_bitmap_csum_lo = block_csum as u16;
+    desc.bg_inode_bitmap_csum_lo = inode_csum as u16;
+
+    assert!(desc.block_bitmap_csum_matches(&sb, block_csum));
+    assert!(desc.inode_bitmap_csum_matches(&sb, inode_csum));
+    assert!(!desc.block_bitmap_csum_matches(&sb, block_csum ^ 1));
+    assert!(!desc.inode_bitmap_csum_matches(&sb, inode_csum ^ 1));
+}
+
+#[test]
 fn clean_mount_does_not_replay_journal_without_recovery_feature() {
     // Test idea: normal journaled operation may leave a non-zero journal
     // superblock start value, but ext4 recovery is driven by the superblock

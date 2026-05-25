@@ -10,14 +10,16 @@ license.workspace = true
 [features]
 default = []
 
+alloc = ["dep:ax-alloc"]
 dma = ["paging"]
-buddy-slab = ["ax-alloc/buddy-slab"]
+buddy-slab = ["alloc", "ax-alloc/buddy-slab"]
 ipi = ["dep:ax-ipi"]
 irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
-smp = ["ax-hal/smp", "ax-task?/smp"]
+smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
+stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = ["ax-hal/plat-dyn", "ax-driver/dyn", "paging", "buddy-slab"]
@@ -32,7 +34,7 @@ net-ng = ["ax-driver", "dep:ax-net-ng"]
 vsock = ["net-ng", "ax-net-ng/vsock"]
 
 [dependencies]
-ax-alloc = { workspace = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true }
 ax-config = { workspace = true }
 ax-display = { workspace = true, optional = true }

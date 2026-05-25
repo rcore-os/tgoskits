@@ -554,6 +554,28 @@ pub fn delete_dir<B: BlockDevice>(
     Ok(())
 }
 
+/// Check whether a directory inode is empty (contains only `.` and `..`).
+///
+/// Returns `Ok(true)` if the directory has no real children, `Ok(false)` otherwise.
+pub fn is_dir_empty<B: BlockDevice>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode: &mut Ext4Inode,
+) -> Ext4Result<bool> {
+    let dir_blocks = resolve_inode_block_allextend(fs, block_dev, inode)?;
+    for &phys in dir_blocks.values() {
+        let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
+        let data = &cached.data[..BLOCK_SIZE];
+        let iter = DirEntryIterator::new(data);
+        for (entry, _) in iter {
+            if !entry.is_dot() && !entry.is_dotdot() {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Remove a non-directory inode from its parent directory.
 pub fn delete_file<B: BlockDevice>(
     fs: &mut Ext4FileSystem,

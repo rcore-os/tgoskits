@@ -2,7 +2,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{any::Any, fmt};
+use core::{any::Any, convert::Infallible, fmt};
 
 use ax_kspin::SpinNoIrq;
 use weak_map::WeakMap;
@@ -40,12 +40,21 @@ impl Session {
 
     /// Sets the terminal for this session.
     pub fn set_terminal_with(&self, terminal: impl FnOnce() -> Arc<dyn Any + Send + Sync>) -> bool {
+        self.try_set_terminal_with(|| Ok::<_, Infallible>(terminal()))
+            .unwrap()
+    }
+
+    /// Sets the terminal for this session with a fallible terminal initializer.
+    pub fn try_set_terminal_with<E>(
+        &self,
+        terminal: impl FnOnce() -> Result<Arc<dyn Any + Send + Sync>, E>,
+    ) -> Result<bool, E> {
         let mut guard = self.terminal.lock();
         if guard.is_some() {
-            return false;
+            return Ok(false);
         }
-        *guard = Some(terminal());
-        true
+        *guard = Some(terminal()?);
+        Ok(true)
     }
 
     /// Unsets the terminal for this session if it is the given terminal.

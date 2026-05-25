@@ -23,9 +23,9 @@ thiserror = {version = "2.0", default-features = false}
 tock-registers = "0.10"
 
 [dev-dependencies]
-fdt-edit = "0.2.3"
-rockchip-pm = { workspace = true }
-rockchip-soc = { workspace = true }
+# fdt-edit = "0.2.3"
+# rockchip-pm = { workspace = true }
+# rockchip-soc = { workspace = true }
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

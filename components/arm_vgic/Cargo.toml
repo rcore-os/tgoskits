@@ -22,6 +22,7 @@ default = []
 vgicv3 = []
 
 [dependencies]
+ax-kspin.workspace = true
 axaddrspace = { workspace = true }
 axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }

@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
 #[cfg(feature = "ext4")]
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
@@ -81,13 +81,13 @@ fn writeback_buffer(file: &FileBackend, cd: &CacheData) -> bool {
 /// Owning an `Arc<CacheData>` keeps the buffer alive even if the
 /// `LoopDevice` replaces its cache slot (e.g. on re-mount).
 ///
-/// The buffer is protected by a `SpinNoPreempt` lock.  Both block-device
-/// I/O (`read_block`/`write_block`, already under ext4's SpinNoPreempt)
-/// and write-back paths (normal syscall context) acquire this lock,
-/// so no concurrent access is possible regardless of mount state.
+/// The buffer is protected by `SpinNoIrq` because ext4 may call
+/// `read_block`/`write_block` under filesystem locks that already disable IRQs.
+/// Write-back copies each chunk out under this short guard, then performs VFS
+/// I/O after dropping it.
 #[cfg(feature = "ext4")]
 struct CacheData {
-    blocks: SpinNoPreempt<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
+    blocks: SpinNoIrq<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
     total_len: usize,
     dirty: AtomicBool,
     /// `true` while a `LoopBlockDevice` referencing this cache is alive.
@@ -98,7 +98,7 @@ struct CacheData {
 impl CacheData {
     fn new(blocks: alloc::vec::Vec<alloc::vec::Vec<u8>>, total_len: usize) -> Self {
         Self {
-            blocks: SpinNoPreempt::new(blocks),
+            blocks: SpinNoIrq::new(blocks),
             total_len,
             dirty: AtomicBool::new(false),
             mounted: AtomicBool::new(false),
@@ -122,8 +122,8 @@ impl CacheData {
 ///   - `BLKFLSBUF` ioctl: explicit flush
 ///
 /// All three run in normal syscall context where VFS I/O is safe.
-/// The `flush()` callback is intentionally a no-op because ext4 invokes it
-/// inside `SpinNoPreempt`.
+/// The `flush()` callback is intentionally a no-op because filesystem block
+/// I/O paths must not re-enter backing-file VFS writeback.
 #[cfg(feature = "ext4")]
 pub struct LoopBlockDevice {
     cache: Arc<CacheData>,
@@ -227,10 +227,10 @@ impl ax_driver::prelude::BlockDriverOps for LoopBlockDevice {
     }
 
     fn flush(&mut self) -> ax_driver::prelude::DevResult {
-        // Intentionally a no-op.  ext4 calls this from inside SpinNoPreempt
-        // where sleeping VFS I/O would panic.  Dirty data is written back in
-        // LOOP_CLR_FD (losetup -d), BLKFLSBUF, or after umount — all in
-        // normal syscall context.
+        // Intentionally a no-op. Filesystem block I/O paths must not re-enter
+        // backing-file VFS writeback. Dirty data is written back in LOOP_CLR_FD
+        // (losetup -d), BLKFLSBUF, or after umount, all in normal syscall
+        // context.
         Ok(())
     }
 }
@@ -499,8 +499,8 @@ impl DeviceOps for LoopDevice {
 
                 // Write back dirty data from the block cache before clearing.
                 // This runs in normal syscall context so CachedFile VFS I/O
-                // (page cache updates) is safe.  The SpinNoPreempt lock
-                // ensures no concurrent write_block() can race.
+                // (page cache updates) is safe. The cache lock ensures no
+                // concurrent write_block() can race.
                 #[cfg(feature = "ext4")]
                 {
                     let cache = self.block_cache.lock();

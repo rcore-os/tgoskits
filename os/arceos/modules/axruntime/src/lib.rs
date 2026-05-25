@@ -19,6 +19,7 @@
 //!
 //! # Cargo Features
 //!
+//! - `alloc`: Enable global memory allocator.
 //! - `paging`: Enable page table manipulation support.
 //! - `irq`: Enable interrupt handling support.
 //! - `multitask`: Enable multi-threading support.
@@ -72,6 +73,19 @@ fn ax_app_entry() {
 }
 
 struct LogIfImpl;
+
+#[cfg(feature = "paging")]
+fn runtime_page_fault_handler(
+    addr: ax_memory_addr::VirtAddr,
+    flags: ax_hal::trap::PageFaultFlags,
+) -> bool {
+    #[cfg(feature = "stack-guard-page")]
+    if ax_task::diagnose_current_stack_guard_page_fault(addr) {
+        return false;
+    }
+
+    ax_mm::kernel_aspace().lock().handle_page_fault(addr, flags)
+}
 
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
@@ -134,7 +148,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(feature = "buddy-slab")]
+    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
@@ -181,6 +195,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         );
     }
 
+    #[cfg(feature = "alloc")]
     init_allocator();
 
     {
@@ -213,7 +228,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     );
 
     #[cfg(feature = "paging")]
-    ax_mm::init_memory_management();
+    {
+        ax_mm::init_memory_management();
+        ax_hal::trap::set_page_fault_handler(runtime_page_fault_handler);
+    }
 
     // #[cfg(feature = "plat-dyn")]
     // ax_driver::setup(arg);
@@ -294,6 +312,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 }
 
+#[cfg(feature = "alloc")]
 fn init_allocator() {
     use ax_hal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
 
@@ -374,6 +393,9 @@ fn init_interrupt() {
 
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();
+
+    #[cfg(feature = "ipi")]
+    ax_ipi::mark_current_cpu_ready();
 }
 
 #[cfg(all(feature = "tls", not(feature = "multitask")))]
