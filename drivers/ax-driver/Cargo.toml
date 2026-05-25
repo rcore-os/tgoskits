@@ -121,6 +121,7 @@ rdif-pcie = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true
+rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }

@@ -31,7 +31,6 @@ ax-cpu = { workspace = true }
 ax-driver = { workspace = true, features = ["pci", "virtio"] }
 ax-plat = { workspace = true }
 axklib.workspace = true
-rdrive.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

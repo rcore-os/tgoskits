@@ -1,8 +1,7 @@
 use alloc::{boxed::Box, format, sync::Arc};
 
-use ax_driver::block::PlatformDeviceBlock;
+use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rd_block::{BlkError, BuffConfig, DriverGeneric, Event, IQueue, Interface, Request, RequestId};
-use rdrive::{PlatformDevice, probe::OnProbeError};
 use sg200x_bsp::sdmmc::Sdmmc;
 use spin::Mutex;
 
@@ -13,7 +12,7 @@ const SDMMC_SIZE: usize = 0x1000;
 const SYSCON_SIZE: usize = 0x8000;
 pub const DEVICE_NAME: &str = "cvsd";
 
-rdrive::module_driver!(
+ax_driver::model_register!(
     name: "Static CVSD",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

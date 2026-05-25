@@ -31,7 +31,6 @@ ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }
 axklib.workspace = true
 rd-block.workspace = true
-rdrive.workspace = true
 sg200x-bsp.workspace = true
 spin.workspace = true
 

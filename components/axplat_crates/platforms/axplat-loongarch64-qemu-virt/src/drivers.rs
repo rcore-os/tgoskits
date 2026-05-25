@@ -1,11 +1,11 @@
-use rdrive::{PlatformDevice, probe::OnProbeError};
+use ax_driver::{PlatformDevice, probe::OnProbeError};
 
 use crate::config::devices;
 
 const PCI_ECAM_SIZE: usize = (devices::PCI_BUS_END + 1) << 20;
 const PCI_LEGACY_IRQS: &[usize] = &[16, 17, 18, 19];
 
-rdrive::module_driver!(
+ax_driver::model_register!(
     name: "Static PCIe ECAM",
     level: ProbeLevel::PreKernel,
     priority: ProbePriority::DEFAULT,

@@ -18,7 +18,7 @@ pub enum Error {
     InvalidData,
 }
 
-module_driver!(
+crate::model_register!(
     name: "Rockchip NPU",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

@@ -22,7 +22,7 @@ const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 
 #[cfg(probe = "pci")]
-module_driver!(
+crate::model_register!(
     name: "VirtIO Net",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

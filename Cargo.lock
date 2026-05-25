@@ -897,6 +897,7 @@ dependencies = [
  "rdif-pcie",
  "rdif-vsock",
  "rdrive",
+ "rdrive-macros",
  "realtek-rtl8125",
  "rk3588-pci",
  "rockchip-npu",
@@ -1333,7 +1334,6 @@ dependencies = [
  "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
  "log",
- "rdrive",
 ]
 
 [[package]]
@@ -1363,7 +1363,6 @@ dependencies = [
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "rdrive",
 ]
 
 [[package]]
@@ -1378,7 +1377,6 @@ dependencies = [
  "ax-plat-aarch64-peripherals",
  "axklib",
  "log",
- "rdrive",
 ]
 
 [[package]]
@@ -1392,7 +1390,6 @@ dependencies = [
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "rdrive",
 ]
 
 [[package]]
@@ -1410,7 +1407,6 @@ dependencies = [
  "chrono",
  "log",
  "loongArch64",
- "rdrive",
  "uart_16550 0.5.0",
 ]
 
@@ -1437,7 +1433,6 @@ dependencies = [
  "ax-riscv-plic",
  "axklib",
  "log",
- "rdrive",
  "riscv 0.16.0",
  "riscv_goldfish",
  "sbi-rt 0.0.3",
@@ -1459,7 +1454,6 @@ dependencies = [
  "dw_uart_rs",
  "log",
  "rd-block",
- "rdrive",
  "riscv 0.16.0",
  "sbi-rt 0.0.3",
  "sg200x-bsp",
@@ -1484,7 +1478,6 @@ dependencies = [
  "log",
  "multiboot",
  "raw-cpuid 11.6.0",
- "rdrive",
  "uart_16550 0.5.0",
  "x2apic",
  "x86",
@@ -1862,7 +1855,6 @@ dependencies = [
  "log",
  "multiboot",
  "raw-cpuid 11.6.0",
- "rdrive",
  "uart_16550 0.4.0",
  "x2apic",
  "x86",

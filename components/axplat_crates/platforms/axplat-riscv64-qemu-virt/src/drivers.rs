@@ -1,6 +1,6 @@
 use alloc::format;
 
-use rdrive::{PlatformDevice, probe::OnProbeError};
+use ax_driver::{PlatformDevice, probe::OnProbeError};
 
 use crate::config::devices;
 
@@ -10,7 +10,7 @@ const PCI_LEGACY_IRQS: &[usize] = &[32, 33, 34, 35];
 mod pci_ecam {
     use super::*;
 
-    rdrive::module_driver!(
+    ax_driver::model_register!(
         name: "Static PCIe ECAM",
         level: ProbeLevel::PreKernel,
         priority: ProbePriority::DEFAULT,
@@ -53,7 +53,7 @@ macro_rules! virtio_mmio_driver {
         mod $mod_name {
             use super::*;
 
-            rdrive::module_driver!(
+            ax_driver::model_register!(
                 name: $driver_name,
                 level: ProbeLevel::PostKernel,
                 priority: ProbePriority::DEFAULT,
