@@ -512,7 +512,6 @@ impl JitBackend for X86_64Backend {
         buf.emit_u8(0x81);
         buf.emit_u8(0xEC);
         buf.emit_u32(512);
-        emit_mov_reg64(buf, X86_RBP, X86_RDI);
         buf.offset()
     }
 
@@ -712,10 +711,12 @@ impl JitBackend for X86_64Backend {
             }
         }
 
-        if is_64 {
-            emit_cmp_reg64(buf, dst, src);
-        } else {
-            emit_cmp_reg32(buf, dst, src);
+        if op != BPF_JSET {
+            if is_64 {
+                emit_cmp_reg64(buf, dst, src);
+            } else {
+                emit_cmp_reg32(buf, dst, src);
+            }
         }
 
         let target_pc = (pc as isize + 1 + insn.off as isize) as usize;
@@ -756,12 +757,13 @@ impl JitBackend for X86_64Backend {
         }
         let off = insn.off as i32;
         let imm = insn.imm as i64;
+        let base = bpf_to_x86(insn.dst_reg());
         if insn.size() == BPF_DW {
             emit_mov_imm64(buf, X86_RCX, imm as u64);
-            emit_store_mem(buf, X86_RBP, off, X86_RCX, BPF_DW);
+            emit_store_mem(buf, base, off, X86_RCX, BPF_DW);
         } else {
             emit_mov_imm32(buf, X86_RCX, imm as i32);
-            emit_store_mem(buf, X86_RBP, off, X86_RCX, insn.size());
+            emit_store_mem(buf, base, off, X86_RCX, insn.size());
         }
     }
 
@@ -770,13 +772,14 @@ impl JitBackend for X86_64Backend {
             return;
         }
         let off = insn.off as i32;
+        let base = bpf_to_x86(insn.dst_reg());
         let src = bpf_to_x86(insn.src_reg());
         let sz = if insn.size() == BPF_DW {
             BPF_DW
         } else {
             insn.size()
         };
-        emit_store_mem(buf, X86_RBP, off, src, sz);
+        emit_store_mem(buf, base, off, src, sz);
     }
 
     fn emit_ldx(buf: &mut JitBuffer, insn: &BpfInsn) {
@@ -831,8 +834,7 @@ impl JitBackend for X86_64Backend {
                     5
                 } else {
                     let imm_size = if use_imm { 10 } else { 0 };
-                    let extra = if op == BPF_JSET { 3 } else { 0 };
-                    imm_size + 4 + 6 + extra
+                    imm_size + 3 + 6
                 }
             }
             BPF_ST => {
