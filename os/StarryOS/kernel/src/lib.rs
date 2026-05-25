@@ -21,6 +21,7 @@ mod config;
 mod file;
 #[cfg(feature = "kcov")]
 mod kcov;
+#[cfg(feature = "kprobe")]
 mod kprobe;
 mod mm;
 mod pseudofs;

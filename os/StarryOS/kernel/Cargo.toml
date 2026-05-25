@@ -29,6 +29,7 @@ plat-dyn = [
 ]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ax-feat/ipi"]
+kprobe = ["dep:kprobe"]
 sg2002 = [
     "dep:ax-dma",
     "dep:sg2002-tpu",
@@ -132,7 +133,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
-kprobe = { version = "0.5" }
+kprobe = { version = "0.5", optional = true }
 dw_apb_uart = { workspace = true, features = ["sg2002"], optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 # 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)

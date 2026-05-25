@@ -393,6 +393,44 @@ pub fn handle_breakpoint(tf: &mut ax_hal::context::TrapFrame) -> bool {
     false
 }
 
+#[allow(dead_code)]
+fn kprobe_selftest_target() -> i32 {
+    42
+}
+
+static SELFTEST_HIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn selftest_pre_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
+    SELFTEST_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn run_selftest() -> bool {
+    let target_addr = kprobe_selftest_target as *const () as usize;
+    let mut hit = false;
+
+    with_manager(|manager| {
+        let mut probe_list = kprobe::ProbePointList::new();
+        let builder = kprobe::ProbeBuilder::<KernelKprobeOps>::new()
+            .with_symbol_addr(target_addr)
+            .with_pre_handler(selftest_pre_handler)
+            .with_enable(true);
+
+        let kp = kprobe::register_kprobe(manager, &mut probe_list, builder);
+        let val = kprobe_selftest_target();
+        hit = SELFTEST_HIT.load(core::sync::atomic::Ordering::SeqCst);
+
+        kprobe::unregister_kprobe(manager, &mut probe_list, kp);
+
+        if hit && val == 42 {
+            info!("kprobe selftest passed");
+        } else {
+            warn!("kprobe selftest failed: hit={}, val={}", hit, val);
+        }
+    });
+
+    hit
+}
+
 #[cfg(target_arch = "x86_64")]
 pub fn handle_debug(tf: &mut ax_hal::context::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);

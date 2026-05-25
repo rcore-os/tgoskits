@@ -160,6 +160,7 @@ pub struct Thread {
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
 
+    #[cfg(feature = "kprobe")]
     pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 }
 
@@ -190,6 +191,7 @@ impl Thread {
             cred: SpinNoIrq::new(cred),
 
             fault_dump_signo: AtomicU8::new(0),
+            #[cfg(feature = "kprobe")]
             kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
         })
     }
