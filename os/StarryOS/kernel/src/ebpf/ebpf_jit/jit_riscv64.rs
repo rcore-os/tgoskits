@@ -508,11 +508,19 @@ impl JitBackend for Riscv64Backend {
             BPF_MOD => {
                 let skip = buf.offset();
                 if is_64 {
-                    emit_beq(buf, src, RV_ZERO, 8);
+                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remu(buf, dst, dst, src);
                 } else {
-                    emit_beq(buf, src, RV_ZERO, 8);
+                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remuw(buf, dst, dst, src);
+                }
+                emit_jal(buf, RV_ZERO, 8);
+                emit_addi(buf, dst, RV_ZERO, 0);
+                let after = buf.offset();
+                unsafe {
+                    let beq_ptr = buf.entry().add(skip) as *mut u32;
+                    let beq_off = ((skip + 12) - skip) as u32;
+                    *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                 }
             }
             BPF_XOR => {
@@ -755,7 +763,8 @@ impl JitBackend for Riscv64Backend {
             return;
         }
         let off = insn.off as i32;
-        emit_addi(buf, RV_T1, RV_S5, off);
+        let base = bpf_to_rv(insn.dst_reg());
+        emit_addi(buf, RV_T1, base, off);
         let val = insn.imm as u64;
         match insn.size() {
             BPF_B => {
@@ -784,7 +793,8 @@ impl JitBackend for Riscv64Backend {
         }
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
-        emit_addi(buf, RV_T1, RV_S5, off);
+        let base = bpf_to_rv(insn.dst_reg());
+        emit_addi(buf, RV_T1, base, off);
         match insn.size() {
             BPF_B => emit_sb(buf, src, RV_T1, 0),
             BPF_H => emit_sh(buf, src, RV_T1, 0),
@@ -860,8 +870,7 @@ impl JitBackend for Riscv64Backend {
                 };
                 let zext_size = if class == BPF_ALU && use_imm { 8 } else { 0 };
                 let op_size = match alu_op {
-                    BPF_DIV => 16,
-                    BPF_MOD => 8,
+                    BPF_DIV | BPF_MOD => 16,
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
                         if use_imm {
                             4
