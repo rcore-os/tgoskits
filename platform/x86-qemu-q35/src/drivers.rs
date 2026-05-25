@@ -14,6 +14,10 @@ ax_driver::model_register!(
 );
 
 fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    if !ax_driver::pci::has_static_endpoint_drivers() {
+        return Err(OnProbeError::NotMatch);
+    }
+
     ax_driver::pci::register_ecam_controller(
         plat_dev,
         devices::PCI_ECAM_BASE,

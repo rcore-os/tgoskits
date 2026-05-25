@@ -3,6 +3,8 @@ use core::ptr::NonNull;
 
 use ax_driver::{PlatformDevice, probe::OnProbeError};
 #[cfg(not(feature = "paging"))]
+use ax_plat::mem::{pa, phys_to_virt};
+#[cfg(not(feature = "paging"))]
 use mmio_api::{MapError, MmioAddr, MmioOp, MmioRaw};
 
 use crate::config::devices;
@@ -18,7 +20,8 @@ struct DirectMmio;
 #[cfg(not(feature = "paging"))]
 impl MmioOp for DirectMmio {
     fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<MmioRaw, MapError> {
-        let ptr = NonNull::new(addr.as_usize() as *mut u8).ok_or(MapError::Invalid)?;
+        let ptr = NonNull::new(phys_to_virt(pa!(addr.as_usize())).as_mut_ptr())
+            .ok_or(MapError::Invalid)?;
         Ok(unsafe { MmioRaw::new(addr, ptr, size) })
     }
 
@@ -35,6 +38,10 @@ ax_driver::model_register!(
 );
 
 fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    if !ax_driver::pci::has_static_endpoint_drivers() {
+        return Err(OnProbeError::NotMatch);
+    }
+
     let mem32 = ax_driver::pci::pci_mem32_from_ranges(devices::PCI_RANGES);
     let mem64 = ax_driver::pci::pci_mem64_from_ranges(devices::PCI_RANGES);
     ax_driver::pci::register_static_legacy_irq_routes(PCI_LEGACY_IRQS, PCI_ECAM_SIZE);

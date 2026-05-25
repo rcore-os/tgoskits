@@ -23,6 +23,16 @@ pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";
 
 pub struct VirtIoHalImpl(PhantomData<()>);
 
+pub const fn has_static_mmio_drivers() -> bool {
+    cfg!(any(
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket",
+    ))
+}
+
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (VirtIoPhysAddr, NonNull<u8>) {
         let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma) else {
@@ -71,6 +81,10 @@ pub fn register_static_mmio(
     base: usize,
     size: usize,
 ) -> Result<(), rdrive::probe::OnProbeError> {
+    if !has_static_mmio_drivers() {
+        return Err(rdrive::probe::OnProbeError::NotMatch);
+    }
+
     let mmio = axklib::mmio::ioremap_raw(base.into(), size).map_err(|err| {
         rdrive::probe::OnProbeError::other(alloc::format!(
             "failed to map virtio-mmio {base:#x}: {err:?}",

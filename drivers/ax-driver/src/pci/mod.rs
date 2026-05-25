@@ -93,6 +93,22 @@ static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQ
 
 pub const DEVICE_NAME: &str = "pci-ecam";
 
+pub const fn has_static_endpoint_drivers() -> bool {
+    cfg!(any(
+        feature = "ahci",
+        feature = "ixgbe",
+        feature = "intel-net",
+        feature = "realtek-rtl8125",
+        feature = "xhci-pci",
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket",
+        feature = "pci-list-devices",
+    ))
+}
+
 pub fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
     if irqs.is_empty() {
         return;
@@ -150,6 +166,10 @@ pub fn register_ecam_controller_with_mmio_op(
     mem64: Option<PciMem64>,
     mmio_op: &'static dyn MmioOp,
 ) -> Result<(), OnProbeError> {
+    if !has_static_endpoint_drivers() {
+        return Err(OnProbeError::NotMatch);
+    }
+
     if ecam_base == 0 || ecam_size == 0 {
         return Err(OnProbeError::NotMatch);
     }
