@@ -23,11 +23,9 @@ use crate::{
 };
 
 pub(crate) fn check_sigset_size(size: usize) -> AxResult<()> {
-    // Accept the kernel sigset size and any larger libc/ABI sigset size,
-    // since the kernel only uses the low `size_of::<SignalSet>()` bytes
-    // (glibc uses 8, musl uses 16). Keep accepting 0 for callers that use
-    // it to mean "no mask".
-    if size != 0 && size < size_of::<SignalSet>() {
+    // Align with Linux raw syscall semantics (for ABI param 'sigmask'): when sigsetsize is checked,
+    // it must exactly match the kernel SignalSet size (8 bytes).
+    if size != size_of::<SignalSet>() {
         return Err(AxError::InvalidInput);
     }
     Ok(())
