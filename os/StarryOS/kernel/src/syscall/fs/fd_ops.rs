@@ -218,6 +218,8 @@ pub fn sys_openat(
     // call tp:trace_sys_enter_openat
     trace_sys_enter_openat(dirfd, path as _, flags as _, mode);
 
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
@@ -266,9 +268,9 @@ pub fn sys_openat(
         dirfd
     };
 
-    let mode = mode & !current().as_thread().proc_data.umask();
+    let mode = mode & !thread.proc_data.umask();
 
-    let cred = current().as_thread().cred();
+    let cred = thread.cred();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     with_fs(dirfd, |fs| options.open(fs, path))
         .and_then(|it| add_to_fd(it, flags as _))
