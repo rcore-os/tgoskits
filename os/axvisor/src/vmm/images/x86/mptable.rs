@@ -51,15 +51,10 @@ fn build_floating_pointer() -> [u8; 16] {
 }
 
 fn build_config_table() -> Vec<u8> {
-    let mut entries = Vec::new();
-    push_processor_entry(&mut entries);
-    push_bus_entry(&mut entries, BUS_ID_PCI, b"PCI   ");
-    push_bus_entry(&mut entries, BUS_ID_ISA, b"ISA   ");
-    push_io_apic_entry(&mut entries);
-    push_isa_interrupt_entries(&mut entries);
-    push_pci_interrupt_entries(&mut entries);
+    let entries = config_entries();
+    let entries_len: usize = entries.iter().map(Vec::len).sum();
 
-    let mut table = Vec::with_capacity(44 + entries.len());
+    let mut table = Vec::with_capacity(44 + entries_len);
     table.extend_from_slice(b"PCMP");
     table.extend_from_slice(&0u16.to_le_bytes());
     table.push(4); // MP spec revision 1.4
@@ -68,12 +63,14 @@ fn build_config_table() -> Vec<u8> {
     table.extend_from_slice(b"X86LINUX    ");
     table.extend_from_slice(&0u32.to_le_bytes());
     table.extend_from_slice(&0u16.to_le_bytes());
-    table.extend_from_slice(&(entry_count() as u16).to_le_bytes());
+    table.extend_from_slice(&(entries.len() as u16).to_le_bytes());
     table.extend_from_slice(&LOCAL_APIC_ADDR.to_le_bytes());
     table.extend_from_slice(&0u16.to_le_bytes());
     table.push(0);
     table.push(0);
-    table.extend_from_slice(&entries);
+    for entry in &entries {
+        table.extend_from_slice(entry);
+    }
 
     let len = table.len() as u16;
     table[4..6].copy_from_slice(&len.to_le_bytes());
@@ -81,43 +78,57 @@ fn build_config_table() -> Vec<u8> {
     table
 }
 
-fn entry_count() -> usize {
-    1 + 2 + 1 + 16 + 16
+fn config_entries() -> Vec<Vec<u8>> {
+    let mut entries = vec![
+        processor_entry(),
+        bus_entry(BUS_ID_PCI, b"PCI   "),
+        bus_entry(BUS_ID_ISA, b"ISA   "),
+        io_apic_entry(),
+    ];
+    push_isa_interrupt_entries(&mut entries);
+    push_pci_interrupt_entries(&mut entries);
+    entries
 }
 
-fn push_processor_entry(entries: &mut Vec<u8>) {
-    entries.push(0);
-    entries.push(BSP_APIC_ID);
-    entries.push(APIC_VERSION);
-    entries.push(0x03); // enabled + BSP
-    entries.extend_from_slice(&0x0000_0600u32.to_le_bytes());
-    entries.extend_from_slice(&0x0000_0201u32.to_le_bytes());
-    entries.extend_from_slice(&[0; 8]);
+fn processor_entry() -> Vec<u8> {
+    let mut entry = Vec::with_capacity(20);
+    entry.push(0);
+    entry.push(BSP_APIC_ID);
+    entry.push(APIC_VERSION);
+    entry.push(0x03); // enabled + BSP
+    entry.extend_from_slice(&0x0000_0600u32.to_le_bytes());
+    entry.extend_from_slice(&0x0000_0201u32.to_le_bytes());
+    entry.extend_from_slice(&[0; 8]);
+    entry
 }
 
-fn push_bus_entry(entries: &mut Vec<u8>, bus_id: u8, bus_type: &[u8; 6]) {
-    entries.push(1);
-    entries.push(bus_id);
-    entries.extend_from_slice(bus_type);
+fn bus_entry(bus_id: u8, bus_type: &[u8; 6]) -> Vec<u8> {
+    let mut entry = Vec::with_capacity(8);
+    entry.push(1);
+    entry.push(bus_id);
+    entry.extend_from_slice(bus_type);
+    entry
 }
 
-fn push_io_apic_entry(entries: &mut Vec<u8>) {
-    entries.push(2);
-    entries.push(IO_APIC_ID);
-    entries.push(IO_APIC_VERSION);
-    entries.push(0x01); // enabled
-    entries.extend_from_slice(&IO_APIC_ADDR.to_le_bytes());
+fn io_apic_entry() -> Vec<u8> {
+    let mut entry = Vec::with_capacity(8);
+    entry.push(2);
+    entry.push(IO_APIC_ID);
+    entry.push(IO_APIC_VERSION);
+    entry.push(0x01); // enabled
+    entry.extend_from_slice(&IO_APIC_ADDR.to_le_bytes());
+    entry
 }
 
-fn push_isa_interrupt_entries(entries: &mut Vec<u8>) {
+fn push_isa_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
     // Keep legacy ISA IRQs identity-routed to the IOAPIC. IRQ0 is timer and
     // IRQ4 is COM1; both are useful during early Linux bring-up diagnostics.
     for irq in 0u8..16 {
-        push_interrupt_entry(entries, 0, BUS_ID_ISA, irq, irq);
+        entries.push(interrupt_entry(0, BUS_ID_ISA, irq, irq));
     }
 }
 
-fn push_pci_interrupt_entries(entries: &mut Vec<u8>) {
+fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
     // QEMU q35 exposes the host rootfs virtio-blk as 00:03.0 in the current
     // smoke setup. Add enough INTx routing for Linux to build the PCI IRQ
     // table before a fuller virtual PCI IRQ router exists.
@@ -125,7 +136,7 @@ fn push_pci_interrupt_entries(entries: &mut Vec<u8>) {
         for pin in 0u8..4 {
             let source_irq = (dev << 2) | pin;
             let intin = pci_intx_gsi(dev, pin);
-            push_interrupt_entry(entries, 0, BUS_ID_PCI, source_irq, intin);
+            entries.push(interrupt_entry(0, BUS_ID_PCI, source_irq, intin));
         }
     }
 }
@@ -141,20 +152,21 @@ const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
     }
 }
 
-fn push_interrupt_entry(
-    entries: &mut Vec<u8>,
+fn interrupt_entry(
     interrupt_type: u8,
     source_bus_id: u8,
     source_bus_irq: u8,
     dest_io_apic_intin: u8,
-) {
-    entries.push(3);
-    entries.push(interrupt_type);
-    entries.extend_from_slice(&0u16.to_le_bytes());
-    entries.push(source_bus_id);
-    entries.push(source_bus_irq);
-    entries.push(IO_APIC_ID);
-    entries.push(dest_io_apic_intin);
+) -> Vec<u8> {
+    let mut entry = Vec::with_capacity(8);
+    entry.push(3);
+    entry.push(interrupt_type);
+    entry.extend_from_slice(&0u16.to_le_bytes());
+    entry.push(source_bus_id);
+    entry.push(source_bus_irq);
+    entry.push(IO_APIC_ID);
+    entry.push(dest_io_apic_intin);
+    entry
 }
 
 fn checksum(bytes: &[u8]) -> u8 {

@@ -16,6 +16,7 @@ mod hvc;
 mod ivc;
 
 pub mod config;
+pub mod devices;
 pub mod images;
 pub mod timer;
 pub mod vcpus;

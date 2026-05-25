@@ -281,16 +281,7 @@ fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
 
 #[cfg(target_arch = "x86_64")]
 fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
-    if config.kernel.enable_bios {
-        return false;
-    }
-
-    match config.kernel.image_location.as_deref() {
-        Some("memory") => crate::vmm::images::is_x86_linux_image_config(config),
-        #[cfg(feature = "fs")]
-        Some("fs") => crate::vmm::images::is_x86_linux_image_config(config),
-        _ => false,
-    }
+    crate::vmm::images::is_x86_linux_image_config(config)
 }
 
 fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &VM) -> AxResult {
