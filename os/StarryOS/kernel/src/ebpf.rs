@@ -690,13 +690,6 @@ impl BpfMapOps for ProgArrayMap {
         if i >= self.prog_fds.len() {
             return Err(bpf_error::EINVAL);
         }
-        {
-            let guard = BPF_GLOBAL.lock();
-            if guard.progs.contains_key(&prog_fd) {
-            } else {
-                return Err(bpf_error::EINVAL);
-            }
-        }
         self.prog_fds[i] = Some(prog_fd);
         Ok(())
     }
@@ -1101,6 +1094,10 @@ impl BpfFdTable {
 }
 
 // Lock ordering: BPF_GLOBAL -> BPF_TAIL_CALL_TARGET
+// BPF_LOOKUP_CACHE is per-CPU (no lock needed).
+// ProgArrayMap::update_elem does NOT acquire BPF_GLOBAL; the caller
+// (handle_map_update_elem / helper_map_update_elem) validates prog_fd
+// while holding BPF_GLOBAL before calling map.update().
 // BpfVm::execute() must never be called while BPF_GLOBAL is held.
 // All helpers that acquire BPF_GLOBAL are called from execute(), which
 // runs without any lock. Syscall handlers acquire BPF_GLOBAL independently.
@@ -1451,14 +1448,29 @@ fn helper_map_update_elem(map_ptr: u64, key_ptr: u64, value_ptr: u64, flags: u64
         return u64::MAX;
     }
     let mut guard = BPF_GLOBAL.lock();
+    let meta = guard
+        .maps
+        .get(&(map_ptr as u32))
+        .map(|m| m.meta().clone())
+        .ok_or(u64::MAX);
+    let meta = match meta {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    if meta.map_type == map_type::PROG_ARRAY && meta.value_size == 4 {
+        let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, 4) };
+        let prog_fd = u32::from_ne_bytes([value[0], value[1], value[2], value[3]]);
+        if !guard.progs.contains_key(&prog_fd) {
+            return u64::MAX;
+        }
+    }
     let map = match guard.get_map(map_ptr as u32) {
         Ok(m) => m,
         Err(_) => return u64::MAX,
     };
-    let key_size = map.meta().key_size as usize;
-    let value_size = map.meta().value_size as usize;
-    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
-    let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
+    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, meta.key_size as usize) };
+    let value =
+        unsafe { core::slice::from_raw_parts(value_ptr as *const u8, meta.value_size as usize) };
     match map.update(key, value, flags) {
         Ok(()) => 0,
         Err(_) => u64::MAX,
