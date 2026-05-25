@@ -399,14 +399,21 @@ fn kprobe_selftest_target() -> i32 {
 }
 
 static SELFTEST_HIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static SELFTEST_RET_HIT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 fn selftest_pre_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
     SELFTEST_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
+fn selftest_ret_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
+    SELFTEST_RET_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn run_selftest() -> bool {
     let target_addr = kprobe_selftest_target as *const () as usize;
-    let mut hit = false;
+    let mut kprobe_ok = false;
+    let mut kretprobe_ok = false;
 
     with_manager(|manager| {
         let mut probe_list = kprobe::ProbePointList::new();
@@ -417,18 +424,41 @@ pub fn run_selftest() -> bool {
 
         let kp = kprobe::register_kprobe(manager, &mut probe_list, builder);
         let val = kprobe_selftest_target();
-        hit = SELFTEST_HIT.load(core::sync::atomic::Ordering::SeqCst);
+        kprobe_ok = SELFTEST_HIT.load(core::sync::atomic::Ordering::SeqCst);
 
         kprobe::unregister_kprobe(manager, &mut probe_list, kp);
 
-        if hit && val == 42 {
+        if kprobe_ok && val == 42 {
             info!("kprobe selftest passed");
         } else {
-            warn!("kprobe selftest failed: hit={}, val={}", hit, val);
+            warn!("kprobe selftest failed: hit={}, val={}", kprobe_ok, val);
         }
     });
 
-    hit
+    with_manager(|manager| {
+        let mut probe_list = kprobe::ProbePointList::new();
+        let builder = kprobe::KretprobeBuilder::<spin::Mutex<()>>::new(4)
+            .with_symbol_addr(target_addr)
+            .with_ret_handler(selftest_ret_handler)
+            .with_enable(true);
+
+        let kr = kprobe::register_kretprobe(manager, &mut probe_list, builder);
+        let val = kprobe_selftest_target();
+        kretprobe_ok = SELFTEST_RET_HIT.load(core::sync::atomic::Ordering::SeqCst);
+
+        kprobe::unregister_kretprobe(manager, &mut probe_list, kr);
+
+        if kretprobe_ok && val == 42 {
+            info!("kretprobe selftest passed");
+        } else {
+            warn!(
+                "kretprobe selftest failed: hit={}, val={}",
+                kretprobe_ok, val
+            );
+        }
+    });
+
+    kprobe_ok && kretprobe_ok
 }
 
 #[cfg(target_arch = "x86_64")]
