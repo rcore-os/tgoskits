@@ -62,7 +62,7 @@ impl RawSocket {
     /// Creates a raw socket for the given IP version and protocol.
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
         let handle = SOCKET_SET.add(new_raw_socket(ip_version, ip_protocol));
-        let general = GeneralOptions::new();
+        let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
         general.set_device_mask(u32::MAX);
         Self {
             handle,
