@@ -7,9 +7,9 @@ use ax_task::{WaitQueue, current, might_sleep};
 /// A [`lock_api::RawMutex`] implementation.
 ///
 /// When the mutex is locked, the current task will block and be put into the
-/// wait queue. When the mutex is unlocked, ownership is handed off to at most
-/// one task waiting on the queue; if no tasks are waiting, the mutex simply
-/// becomes unlocked.
+/// wait queue. When the mutex is unlocked, ownership is released before waking
+/// at most one waiting task; the woken task then acquires the mutex with the
+/// normal compare-exchange path.
 pub struct RawMutex {
     wq: WaitQueue,
     owner_id: AtomicU64,
@@ -80,7 +80,7 @@ impl Default for RawMutex {
 }
 
 unsafe impl lock_api::RawMutex for RawMutex {
-    type GuardMarker = lock_api::GuardSend;
+    type GuardMarker = lock_api::GuardNoSend;
 
     /// Initial value for an unlocked mutex.
     ///
@@ -129,10 +129,8 @@ unsafe impl lock_api::RawMutex for RawMutex {
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
-        // wake up one waiting thread.
-        self.wq.notify_one_with(true, |id: u64| {
-            self.owner_id.swap(id, Ordering::Release);
-        });
+        self.owner_id.store(0, Ordering::Release);
+        self.wq.notify_one(true);
     }
 
     #[inline(always)]
@@ -168,7 +166,10 @@ impl RawMutex {
                         owner_id, current_id,
                         "Thread({current_id}) tried to acquire mutex it already owns.",
                     );
-                    // Wait until someone hands off lock to me or lock is released
+                    // Wait until the lock is released. The woken waiter
+                    // competes through the normal CAS path, avoiding a state
+                    // where the owner id names a task that has not returned a
+                    // guard yet.
                     self.wq
                         .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
                     // This check is necessary: some newcomers may race with a wakened one.

@@ -285,6 +285,25 @@ impl TaskInner {
         self.interrupted.store(false, Ordering::Release);
     }
 
+    /// Atomically checks and clears the interrupt flag.
+    ///
+    /// Returns `true` if the task was interrupted.
+    #[inline]
+    pub fn take_interrupt(&self) -> bool {
+        self.interrupted.swap(false, Ordering::AcqRel)
+    }
+
+    /// Checks whether the task has been interrupted without clearing
+    /// the flag.
+    ///
+    /// This is a non-consuming read, unlike [`take_interrupt`]. Use this
+    /// when the interrupt flag needs to remain set for subsequent
+    /// consumers (e.g., an [`interruptible`] future wrapper).
+    #[inline]
+    pub fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::Acquire)
+    }
+
     /// Interrupts the task.
     #[inline]
     pub fn interrupt(&self) {

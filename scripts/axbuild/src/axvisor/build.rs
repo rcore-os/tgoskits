@@ -143,7 +143,6 @@ fn patch_axvisor_cargo_config(
     config_vmconfigs: &[PathBuf],
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
-    cargo.target = request.target.clone();
     cargo.to_bin = default_axvisor_to_bin(&request.arch);
     ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
@@ -450,7 +449,11 @@ plat_dyn = true
         .unwrap();
 
         assert_eq!(cargo.package, AXVISOR_PACKAGE);
-        assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+        );
         assert_eq!(
             cargo.env.get("AX_ARCH").map(String::as_str),
             Some("aarch64")
@@ -582,7 +585,11 @@ plat_dyn = false
                 .features
                 .contains(&"ax-hal/aarch64-qemu-virt".to_string())
         );
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/no-pie/aarch64-unknown-none-softfloat.json")
+        );
     }
 
     #[test]
@@ -615,6 +622,10 @@ log = "Info"
         .unwrap();
 
         assert!(!cargo.to_bin);
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/no-pie/loongarch64-unknown-none-softfloat.json")
+        );
     }
 }
