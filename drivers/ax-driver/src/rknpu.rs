@@ -55,7 +55,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     info!("NPU power enabled");
 
-    let dma = axklib::dma::device(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     let npu = Rknpu::new(&base_regs, config, dma);
     plat_dev.register(npu);
     info!("NPU registered successfully");

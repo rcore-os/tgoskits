@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use dma_api::{DArray, DeviceDma, DmaDirection};
+use dma_api::{CoherentArray, DeviceDma};
 use log::debug;
 use tock_registers::register_bitfields;
 
@@ -49,6 +49,7 @@ register_bitfields! [
 ];
 
 #[repr(transparent)]
+#[derive(Clone, Copy)]
 pub struct NvmeSubmission([u8; 64]);
 
 pub trait Submission {
@@ -270,13 +271,13 @@ impl NvmeQueue {
 }
 
 pub struct SubmitQueue {
-    queue: DArray<NvmeSubmission>,
+    queue: CoherentArray<NvmeSubmission>,
     tail: u32,
 }
 
 impl SubmitQueue {
     fn new(dma: &DeviceDma, queue_size: usize, page_size: usize) -> Result<Self> {
-        let queue = dma.array_zero_with_align(queue_size, page_size, DmaDirection::ToDevice)?;
+        let queue = dma.coherent_array_zero_with_align(queue_size, page_size)?;
         Ok(SubmitQueue { queue, tail: 0 })
     }
 
@@ -301,14 +302,14 @@ impl SubmitQueue {
 }
 
 pub struct CompleteQueue {
-    queue: DArray<NvmeCompletion>,
+    queue: CoherentArray<NvmeCompletion>,
     head: u32,
     phase: bool,
 }
 
 impl CompleteQueue {
     fn new(dma: &DeviceDma, queue_size: usize, page_size: usize) -> Result<Self> {
-        let queue = dma.array_zero_with_align(queue_size, page_size, DmaDirection::FromDevice)?;
+        let queue = dma.coherent_array_zero_with_align(queue_size, page_size)?;
         Ok(CompleteQueue {
             queue,
             head: 0,

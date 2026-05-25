@@ -1,0 +1,142 @@
+use alloc::vec::Vec;
+use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
+
+use crate::{DeviceDma, DmaDirection, DmaError, DmaMapHandle, DmaPod};
+
+pub struct StreamingMap<T: DmaPod> {
+    handle: DmaMapHandle,
+    device: DeviceDma,
+    direction: DmaDirection,
+    _marker: PhantomData<*mut T>,
+}
+
+unsafe impl<T: DmaPod + Send> Send for StreamingMap<T> {}
+
+impl<T: DmaPod> StreamingMap<T> {
+    pub(crate) fn map(
+        os: &DeviceDma,
+        buff: &mut [T],
+        align: usize,
+        direction: DmaDirection,
+    ) -> Result<Self, DmaError> {
+        let addr = NonNull::new(buff.as_mut_ptr().cast::<u8>()).ok_or(DmaError::NullPointer)?;
+        let size =
+            NonZeroUsize::new(core::mem::size_of_val(buff)).ok_or(DmaError::ZeroSizedBuffer)?;
+        let handle = unsafe { os.map_streaming(addr, size, align, direction)? };
+
+        Ok(Self {
+            handle,
+            device: os.clone(),
+            direction,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn dma_addr(&self) -> crate::DmaAddr {
+        self.handle.dma_addr()
+    }
+
+    pub fn len(&self) -> usize {
+        if core::mem::size_of::<T>() == 0 {
+            0
+        } else {
+            self.handle.size() / core::mem::size_of::<T>()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn bytes_len(&self) -> usize {
+        self.handle.size()
+    }
+
+    pub fn read(&self, index: usize) -> Option<T> {
+        if index >= self.len() {
+            return None;
+        }
+        Some(unsafe { self.handle.as_ptr().cast::<T>().add(index).read() })
+    }
+
+    pub fn set(&mut self, index: usize, value: T) {
+        assert!(
+            index < self.len(),
+            "index out of range, index: {}, len: {}",
+            index,
+            self.len()
+        );
+        unsafe {
+            self.handle.as_ptr().cast::<T>().add(index).write(value);
+        }
+    }
+
+    pub fn copy_from_slice(&mut self, src: &[T]) {
+        assert!(
+            core::mem::size_of_val(src) <= self.handle.size(),
+            "source slice is larger than DMA buffer"
+        );
+        unsafe {
+            self.handle
+                .as_ptr()
+                .cast::<T>()
+                .as_ptr()
+                .copy_from_nonoverlapping(src.as_ptr(), src.len());
+        }
+    }
+
+    pub fn to_vec(&self) -> Vec<T> {
+        let mut vec: Vec<T> = Vec::with_capacity(self.len());
+        unsafe {
+            let src_ptr = self.handle.as_ptr().as_ptr().cast::<T>();
+            let dst_ptr = vec.as_mut_ptr();
+            dst_ptr.copy_from_nonoverlapping(src_ptr, self.len());
+            vec.set_len(self.len());
+        }
+        vec
+    }
+
+    pub fn sync_for_device(&self, offset: usize, size: usize) {
+        self.check_range(offset, size);
+        self.device
+            .sync_map_for_device(&self.handle, offset, size, self.direction);
+    }
+
+    pub fn sync_for_cpu(&self, offset: usize, size: usize) {
+        self.check_range(offset, size);
+        self.device
+            .sync_map_for_cpu(&self.handle, offset, size, self.direction);
+    }
+
+    pub fn sync_for_device_all(&self) {
+        self.device
+            .sync_map_for_device(&self.handle, 0, self.handle.size(), self.direction);
+    }
+
+    pub fn sync_for_cpu_all(&self) {
+        self.device
+            .sync_map_for_cpu(&self.handle, 0, self.handle.size(), self.direction);
+    }
+
+    pub fn bounce_ptr(&self) -> Option<NonNull<u8>> {
+        self.handle.bounce_ptr()
+    }
+
+    fn check_range(&self, offset: usize, size: usize) {
+        assert!(
+            offset <= self.bytes_len() && size <= self.bytes_len().saturating_sub(offset),
+            "range out of bounds, offset: {}, size: {}, bytes_len: {}",
+            offset,
+            size,
+            self.bytes_len()
+        );
+    }
+}
+
+impl<T: DmaPod> Drop for StreamingMap<T> {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.unmap_streaming(self.handle);
+        }
+    }
+}

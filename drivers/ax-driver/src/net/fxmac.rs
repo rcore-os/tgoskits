@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::{alloc::Layout, cmp, ptr::NonNull};
 
-use dma_api::{DmaAddr, DmaHandle, DmaOp};
+use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
 use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice};
@@ -234,7 +234,9 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
             log::error!("FXmac DMA allocation layout is invalid: {size} bytes");
             return (0, 0);
         };
-        let Some(handle) = (unsafe { axklib::dma::op().alloc_coherent(DMA_MASK, layout) }) else {
+        let Some(handle) =
+            (unsafe { axklib::dma::op().alloc_coherent(DmaConstraints::new(DMA_MASK), layout) })
+        else {
             log::error!("FXmac DMA allocation failed: {pages} pages");
             return (0, 0);
         };
@@ -257,7 +259,7 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
             return;
         };
         let paddr = axklib::mem::virt_to_phys((vaddr.as_ptr() as usize).into()).as_usize();
-        let handle = unsafe { DmaHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
+        let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
         unsafe { axklib::dma::op().dealloc_coherent(handle) };
     }
 
