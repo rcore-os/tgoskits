@@ -1,12 +1,15 @@
+use core::{future::poll_fn, task::Poll};
+
 use ax_errno::{AxError, AxResult};
 use ax_hal::uspace::UserContext;
-use ax_task::{TaskInner, current};
+use ax_task::{TaskInner, current, future::block_on};
+use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED};
 use starry_process::Pid;
-use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
+use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 
 use super::{
-    AsThread, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group, get_task,
-    is_zombie_pid,
+    AsThread, ProcessData, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group,
+    get_task, is_zombie_pid,
 };
 
 /// Information needed to restart a syscall if SA_RESTART applies.
@@ -150,11 +153,78 @@ pub fn check_signals(
             }
             do_exit(128 + signo as i32, true);
         }
-        SignalOSAction::Stop => do_exit(1, true),
+        SignalOSAction::Stop => do_job_stop(thr, signo),
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
     }
     true
+}
+
+/// Notify a process's parent of a job-control state change by sending it
+/// `SIGCHLD` (with `CLD_STOPPED`/`CLD_CONTINUED`) and waking its `waitpid`.
+fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
+    let proc = &proc_data.proc;
+    let Some(parent) = proc.parent() else {
+        return;
+    };
+    // si_uid carries the child's real UID; read it from any live thread.
+    let child_uid = proc
+        .threads()
+        .into_iter()
+        .next()
+        .and_then(|tid| get_task(tid).ok())
+        .map_or(0, |task| task.as_thread().cred().uid);
+    let sig = SignalInfo::new_sigchld(proc.pid(), child_uid, code, status);
+    let _ = send_signal_to_process(parent.pid(), Some(sig));
+    if let Ok(data) = get_process_data(parent.pid()) {
+        data.child_exit_event.wake();
+    }
+}
+
+/// Enter a job-control stop: record the stop, notify the parent, then park the
+/// current thread until `SIGCONT` clears the stop (or `SIGKILL` force-resumes it
+/// so the kill can proceed).
+///
+/// Uses a plain block — not [`interruptible`](ax_task::future::interruptible) —
+/// because an ordinary signal must **not** wake a stopped process; only
+/// continue/kill clear `is_job_stopped`.
+///
+/// The STOP-immediately-followed-by-CONT race (e.g. busybox `killall5 -STOP`
+/// then `-CONT`) is closed by snapshotting `continue_generation` *before*
+/// recording the stop: if a `SIGCONT` bumped the generation in between,
+/// [`ProcessData::set_job_stopped`] returns `false` and we never park. This
+/// replaces the pending-signal scrubbing the reference design used (which would
+/// require modifying `starry-signal`).
+///
+/// Known limitations (acceptable for the single-threaded shells/tools this
+/// targets):
+/// - Only the thread that dequeues the stop signal parks; sibling threads of a
+///   multi-threaded process keep running until they next hit a stop signal.
+///   Linux stops every thread in the group.
+fn do_job_stop(thr: &Thread, signo: Signo) {
+    let proc_data = &thr.proc_data;
+    // Snapshot before recording the stop so a racing SIGCONT (which advances the
+    // generation) cancels this stop.
+    let continue_gen = proc_data.continue_generation();
+    if !proc_data.set_job_stopped(signo, continue_gen) {
+        return;
+    }
+    notify_parent_job_change(proc_data, CLD_STOPPED as i32, signo as i32);
+
+    let cont_event = proc_data.cont_event();
+    block_on(poll_fn(|cx| {
+        if !proc_data.is_job_stopped() {
+            return Poll::Ready(());
+        }
+        cont_event.register(cx.waker());
+        // Re-check after registering to avoid a lost wakeup if the continue
+        // landed between the check above and registration.
+        if proc_data.is_job_stopped() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    }));
 }
 
 pub fn block_next_signal() {
@@ -222,6 +292,26 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             return Err(AxError::NoSuchProcess);
         }
     };
+
+    // Job-control side effects must run at send time: a stopped process is
+    // parked in the kernel and cannot dequeue SIGCONT itself.
+    if let Some(sig) = &sig {
+        match sig.signo() {
+            // POSIX: SIGCONT resumes a stopped process and reports CLD_CONTINUED.
+            // `set_job_continued` (evaluated in the guard) always advances the
+            // process's continue generation as a side effect — so a stop signal
+            // already dequeued but not yet parked (e.g. killall5's
+            // kill(-1,SIGSTOP) immediately followed by kill(-1,SIGCONT)) observes
+            // the continue and skips parking, closing the STOP-then-CONT race
+            // without scrubbing the pending queue — and returns whether the
+            // process had actually been stopped; only then do we notify the parent.
+            Signo::SIGCONT if proc_data.set_job_continued() => {
+                notify_parent_job_change(&proc_data, CLD_CONTINUED as i32, Signo::SIGCONT as i32);
+            }
+            Signo::SIGKILL => proc_data.clear_job_stop_for_kill(),
+            _ => {}
+        }
+    }
 
     if let Some(sig) = sig {
         let signo = sig.signo();

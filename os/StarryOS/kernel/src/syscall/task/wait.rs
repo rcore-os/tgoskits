@@ -15,7 +15,8 @@ use starry_signal::SignalInfo;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::task::{
-    AsThread, decode_wait_status, get_task, get_zombie_cred, remove_process, unregister_zombie,
+    AsThread, JobStatus, decode_wait_status, get_process_data, get_task, get_zombie_cred,
+    remove_process, unregister_zombie,
 };
 
 bitflags! {
@@ -115,8 +116,38 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             child.free();
             remove_process(child.pid());
             unregister_zombie(child.pid());
-            Ok(Some(child.pid() as _))
-        } else if options.contains(WaitPidOptions::WNOHANG) {
+            return Ok(Some(child.pid() as _));
+        }
+
+        // Job-control status: a stopped (WUNTRACED) or continued (WCONTINUED)
+        // child reports its status without being reaped, unlike a zombie.
+        let want_stopped = options.contains(WaitPidOptions::WUNTRACED);
+        let want_continued = options.contains(WaitPidOptions::WCONTINUED);
+        if want_stopped || want_continued {
+            for child in &children {
+                let Ok(cdata) = get_process_data(child.pid()) else {
+                    continue;
+                };
+                if let Some(status) = cdata.peek_job_status_if(want_stopped, want_continued) {
+                    // Linux wait status encoding: stopped = (signo << 8) | 0x7f
+                    // (W_STOPCODE), continued = 0xffff (__W_CONTINUED).
+                    let raw = match status {
+                        JobStatus::Stopped(signo) => ((signo as i32) << 8) | 0x7f,
+                        JobStatus::Continued => 0xffff,
+                    };
+                    // Publish to userspace before consuming, so a faulting
+                    // `exit_code` pointer leaves the report intact to retry
+                    // (mirrors the zombie-reap ordering above).
+                    if let Some(exit_code) = exit_code.nullable() {
+                        exit_code.vm_write(raw)?;
+                    }
+                    cdata.take_job_status_if(want_stopped, want_continued);
+                    return Ok(Some(child.pid() as _));
+                }
+            }
+        }
+
+        if options.contains(WaitPidOptions::WNOHANG) {
             Ok(Some(0))
         } else {
             Ok(None)
