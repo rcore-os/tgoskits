@@ -24,6 +24,7 @@ use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeRef, VfsNodeType, VfsOps,
     VfsResult,
 };
+use ax_kspin::SpinNoIrq as Mutex;
 use rsext4::{
     Ext4Error, Ext4FileSystem as Rsext4FileSystem, Ext4Result, Ext4Timestamp, Jbd2Dev,
     api::{OpenFile, fs_mount, lseek, open, read_at},
@@ -32,7 +33,6 @@ use rsext4::{
     file::{delete_dir, is_dir_empty, mkfile, mv, truncate, unlink, write_file},
     loopfile::resolve_inode_block_allextend,
 };
-use spin::Mutex;
 
 use crate::dev::{Disk, Partition};
 

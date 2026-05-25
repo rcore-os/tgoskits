@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use core::ptr::NonNull;
 
 pub use dma_api;
 pub use rdif_base::{DriverGeneric, KError, io};
@@ -74,6 +75,18 @@ pub struct QueueConfig {
 
     /// Descriptor ring size.
     pub ring_size: usize,
+}
+
+/// DMA buffer passed from the runtime queue layer to a driver queue.
+#[derive(Clone, Copy, Debug)]
+pub struct DmaBuffer {
+    /// CPU virtual address for drivers that need to build descriptors from a
+    /// slice or write transport-specific headers.
+    pub virt: NonNull<u8>,
+    /// Device-visible DMA address for hardware descriptors.
+    pub bus_addr: u64,
+    /// Buffer length in bytes.
+    pub len: usize,
 }
 
 /// Bitmask tracking up to 64 queue identifiers.
@@ -172,7 +185,7 @@ pub trait ITxQueue: Send + 'static {
     ///
     /// `bus_addr` must point to a DMA-capable buffer whose first `len` bytes
     /// contain the packet to be transmitted.
-    fn submit(&mut self, bus_addr: u64, len: usize) -> Result<(), NetError>;
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError>;
 
     /// Reclaim the next completed transmit buffer.
     ///
@@ -198,7 +211,7 @@ pub trait IRxQueue: Send + 'static {
     /// Submit an empty DMA buffer to hardware.
     ///
     /// `bus_addr` must point to a DMA-capable buffer whose total size is `len`.
-    fn submit(&mut self, bus_addr: u64, len: usize) -> Result<(), NetError>;
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError>;
 
     /// Reclaim the next completed receive buffer.
     ///

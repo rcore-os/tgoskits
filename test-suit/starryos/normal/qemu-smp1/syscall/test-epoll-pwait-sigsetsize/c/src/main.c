@@ -1,10 +1,9 @@
 /*
  * test_epoll_pwait_sigsetsize.c
  *
- * epoll_pwait 的 sigsetsize 参数在 musl libc 下为 16 字节 (musl _NSIG/8 = 128/8)，
- * glibc 为 8 字节，内核 sigset 为 8 字节。内核应接受任意 >= 内核 sigset 大小的值，
- * 只读取低 8 字节。本测试通过直接发起 syscall 绕过 libc wrapper，验证不同 sigsetsize
- * 的接受行为，并验证 sigmask 为 NULL 时 sigsetsize 不再参与校验（epoll_wait 语义）。
+ * 验证 raw epoll_pwait 的 sigsetsize 语义：
+ * - sigmask == NULL 时，sigsetsize 不参与校验；
+ * - sigmask != NULL 时，sigsetsize 必须严格等于 8。
  */
 
 #include "test_framework.h"
@@ -22,7 +21,7 @@ static long raw_epoll_pwait(int epfd, struct epoll_event *events, int maxevents,
 
 int main(void)
 {
-    TEST_START("epoll_pwait: sigsetsize 兼容 musl/glibc");
+    TEST_START("epoll_pwait: sigsetsize Linux semantics");
 
     int epfd = epoll_create1(0);
     CHECK(epfd >= 0, "epoll_create1 ok");
@@ -58,15 +57,23 @@ int main(void)
         CHECK(r == 0, "sigmask + size=8 (glibc) accepted");
     }
 
-    /* Test 4: real sigmask with musl-style sigsetsize = 16 */
+    /* Test 4: real sigmask with sigsetsize = 16 should fail */
     {
         sigset_t mask;
         sigemptyset(&mask);
         long r = raw_epoll_pwait(epfd, out, 4, 0, &mask, 16);
-        CHECK(r == 0, "sigmask + size=16 (musl) accepted");
+        CHECK(r == -1 && errno == EINVAL, "sigmask + size=16 rejected with EINVAL");
     }
 
-    /* Test 5: sigsetsize smaller than kernel sigset should fail */
+    /* Test 5: non-NULL sigmask with size=0 should fail */
+    {
+        sigset_t mask;
+        sigemptyset(&mask);
+        long r = raw_epoll_pwait(epfd, out, 4, 0, &mask, 0);
+        CHECK(r == -1 && errno == EINVAL, "sigmask + size=0 rejected with EINVAL");
+    }
+
+    /* Test 6: sigsetsize smaller than kernel sigset should fail */
     {
         sigset_t mask;
         sigemptyset(&mask);

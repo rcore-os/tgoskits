@@ -79,7 +79,7 @@ mod tests {
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["fs", "sdmmc"]
+features = ["fs", "ax-driver/rockchip-sdhci"]
 log = "Info"
 plat_dyn = true
 vm_configs = []
@@ -151,7 +151,7 @@ plat_dyn = true
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["rockchip-soc"]
+features = ["ax-driver/rockchip-soc"]
 log = "Info"
 plat_dyn = true
 "#,

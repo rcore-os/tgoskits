@@ -1,4 +1,7 @@
 #![no_std]
+#![feature(used_with_arg)]
+
+extern crate ax_driver as _;
 
 #[macro_use]
 extern crate log;
@@ -23,6 +26,7 @@ pub mod config {
 
 mod boot;
 mod console;
+mod drivers;
 mod init;
 #[cfg(feature = "irq")]
 mod irq;

@@ -1,13 +1,13 @@
 use alloc::vec::Vec;
 
-use dma_api::{DArray, DBox, DmaDirection};
+use dma_api::{CoherentArray, CoherentBox, ContiguousArray, DmaDirection};
 use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputHandler};
 
 use super::SlotId;
 use crate::{err::*, osal::Kernel};
 
 pub struct DeviceContextList {
-    pub dcbaa: DArray<u64>,
+    pub dcbaa: CoherentArray<u64>,
     max_slots: usize,
 }
 
@@ -15,13 +15,13 @@ unsafe impl Send for DeviceContextList {}
 unsafe impl Sync for DeviceContextList {}
 
 pub(crate) struct Context32 {
-    out: DBox<Device32Byte>,
-    input: DBox<Input32Byte>,
+    out: CoherentBox<Device32Byte>,
+    input: CoherentBox<Input32Byte>,
 }
 
 pub(crate) struct Context64 {
-    out: DBox<Device64Byte>,
-    input: DBox<Input64Byte>,
+    out: CoherentBox<Device64Byte>,
+    input: CoherentBox<Input64Byte>,
 }
 pub(crate) enum ContextData {
     Context32(Context32),
@@ -32,17 +32,13 @@ impl ContextData {
     pub fn new(is_64: bool, dma: &Kernel) -> core::result::Result<Self, HostError> {
         if is_64 {
             Ok(ContextData::Context64(Context64 {
-                // out: DBox::zero_with_align(dma_mask as _, dma_api::Direction::FromDevice, 64)?,
-                // input: DBox::zero_with_align(dma_mask as _, dma_api::Direction::ToDevice, 64)?,
-                out: dma.box_zero_with_align(64, DmaDirection::FromDevice)?,
-                input: dma.box_zero_with_align(64, DmaDirection::ToDevice)?,
+                out: dma.coherent_box_zero_with_align(64)?,
+                input: dma.coherent_box_zero_with_align(64)?,
             }))
         } else {
             Ok(ContextData::Context32(Context32 {
-                // out: DBox::zero_with_align(dma_mask as _, dma_api::Direction::FromDevice, 64)?,
-                // input: DBox::zero_with_align(dma_mask as _, dma_api::Direction::ToDevice, 64)?,
-                out: dma.box_zero_with_align(64, DmaDirection::FromDevice)?,
-                input: dma.box_zero_with_align(64, DmaDirection::ToDevice)?,
+                out: dma.coherent_box_zero_with_align(64)?,
+                input: dma.coherent_box_zero_with_align(64)?,
             }))
         }
     }
@@ -115,10 +111,8 @@ impl ContextData {
 
 impl DeviceContextList {
     pub fn new(max_slots: usize, dma: &Kernel) -> Result<Self> {
-        // let dcbaa = DVec::zeros(dma_mask as _, 256, 0x1000, dma_api::Direction::ToDevice)
-        //     .map_err(|_| USBError::NoMemory)?;
         let dcbaa = dma
-            .array_zero_with_align(256, dma.page_size(), DmaDirection::ToDevice)
+            .coherent_array_zero_with_align(256, dma.page_size())
             .map_err(|_| USBError::NoMemory)?;
         Ok(Self { dcbaa, max_slots })
     }
@@ -134,44 +128,26 @@ impl DeviceContextList {
 }
 
 pub struct ScratchpadBufferArray {
-    pub entries: DArray<u64>,
-    pub _pages: Vec<DArray<u8>>,
+    pub entries: CoherentArray<u64>,
+    pub _pages: Vec<ContiguousArray<u8>>,
 }
 
 impl ScratchpadBufferArray {
     pub fn new(entries: usize, dma: &Kernel) -> Result<Self> {
-        // let mut entries_vec = DVec::zeros(
-        //     dma_mask as _,
-        //     entries,
-        //     64,
-        //     dma_api::Direction::Bidirectional,
-        // )
-        // .map_err(|_| USBError::NoMemory)?;
-
         let mut entries_vec = dma
-            .array_zero_with_align(entries, 64, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align(entries, 64)
             .map_err(|_| USBError::NoMemory)?;
 
-        // let pages: Vec<DVec<u8>> = (0..entries_vec.len())
-        //     .map(|_| {
-        //         DVec::<u8>::zeros(
-        //             dma_mask as _,
-        //             0x1000,
-        //             0x1000,
-        //             dma_api::Direction::Bidirectional,
-        //         )
-        //         .map_err(|_| USBError::NoMemory)
-        //     })
-        //     .try_collect()?;
-        let mut pages: Vec<DArray<u8>> = Vec::with_capacity(entries_vec.len());
+        let mut pages: Vec<ContiguousArray<u8>> = Vec::with_capacity(entries_vec.len());
         for _ in 0..entries_vec.len() {
             let page = dma
-                .array_zero_with_align(
+                .contiguous_array_zero_with_align(
                     dma.page_size(),
                     dma.page_size(),
                     DmaDirection::Bidirectional,
                 )
                 .map_err(|_| USBError::NoMemory)?;
+            page.sync_for_device_all();
             pages.push(page);
         }
 

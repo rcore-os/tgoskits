@@ -38,7 +38,7 @@
 graph LR
     current["fxmac_rs"]
     current --> ax_crate_interface["ax-crate-interface"]
-    ax_driver_net["ax-driver-net"] --> current
+    ax_driver["ax-driver"] --> current
 ```
 
 ### 直接依赖
@@ -48,7 +48,7 @@ graph LR
 - 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
 
 ### 3.3 被依赖情况
-- `ax-driver-net`
+- `ax-driver`
 
 ### 被依赖情况
 - `arceos-affinity`

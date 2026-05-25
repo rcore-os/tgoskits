@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-prctl-no-new-privs C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-prctl-no-new-privs src/main.c)
+target_compile_options(test-prctl-no-new-privs PRIVATE -Wall -Wextra)
+install(TARGETS test-prctl-no-new-privs RUNTIME DESTINATION usr/bin/starry-test-suit)

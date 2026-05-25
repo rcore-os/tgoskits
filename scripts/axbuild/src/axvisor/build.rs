@@ -125,10 +125,6 @@ fn to_cargo_config(
     metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
-    let plat_dyn = config
-        .build_info
-        .effective_plat_dyn(&config.target, request.plat_dyn);
-    normalize_axvisor_platform_features(&mut config.build_info.features, plat_dyn);
     let mut cargo = config
         .build_info
         .into_prepared_base_cargo_config_with_metadata(
@@ -147,7 +143,6 @@ fn patch_axvisor_cargo_config(
     config_vmconfigs: &[PathBuf],
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
-    cargo.target = request.target.clone();
     cargo.to_bin = default_axvisor_to_bin(&request.arch);
     ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
@@ -174,8 +169,6 @@ fn patch_axvisor_cargo_config(
         );
     }
 
-    let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
-    normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
     if request.arch == "x86_64" {
         x86::normalize_backend_features(&mut cargo.features)?;
     }
@@ -207,29 +200,6 @@ fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
 
     args.push("--bin".to_string());
     args.push(AXVISOR_PACKAGE.to_string());
-}
-
-fn normalize_axvisor_platform_features(features: &mut Vec<String>, plat_dyn: bool) {
-    let has_axstd_defplat = features.iter().any(|feature| feature == "ax-std/defplat");
-    let has_axstd_myplat = features.iter().any(|feature| feature == "ax-std/myplat");
-    let has_axstd_plat_dyn = features.iter().any(|feature| feature == "ax-std/plat-dyn");
-
-    if has_axstd_defplat && !has_axstd_myplat {
-        for feature in features.iter_mut() {
-            if feature == "ax-std/defplat" {
-                *feature = "ax-std/myplat".to_string();
-            }
-        }
-    } else {
-        features.retain(|feature| feature != "ax-std/defplat");
-    }
-
-    if !plat_dyn
-        && !has_axstd_plat_dyn
-        && !features.iter().any(|feature| feature == "ax-std/myplat")
-    {
-        features.push("ax-std/myplat".to_string());
-    }
 }
 
 pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
@@ -428,7 +398,7 @@ mod tests {
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4", "ax-std/bus-mmio"]
+features = ["ept-level-4", "ax-driver/fdt"]
 log = "Info"
 plat_dyn = true
 vm_configs = []
@@ -443,7 +413,7 @@ vm_configs = []
         .unwrap();
 
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"ax-std/bus-mmio".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/fdt".to_string()));
         assert!(path.exists());
     }
 
@@ -479,7 +449,11 @@ plat_dyn = true
         .unwrap();
 
         assert_eq!(cargo.package, AXVISOR_PACKAGE);
-        assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+        );
         assert_eq!(
             cargo.env.get("AX_ARCH").map(String::as_str),
             Some("aarch64")
@@ -541,7 +515,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ept-level-4", "fs", "vmx"]
+features = ["ax-hal/x86-qemu-q35", "ept-level-4", "fs", "vmx"]
 log = "Info"
 vm_configs = []
 "#,
@@ -572,18 +546,18 @@ vm_configs = []
         assert!(cargo.features.contains(&"vmx".to_string()));
         assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
-        assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
+        assert!(cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     }
 
     #[test]
-    fn load_cargo_config_replaces_axstd_defplat_with_myplat() {
+    fn load_cargo_config_injects_default_axhal_platform() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
         fs::write(
             &config_path,
             r#"
 env = {}
-features = ["ax-std", "ax-std/defplat", "ept-level-4"]
+features = ["ax-std", "ept-level-4"]
 log = "Info"
 plat_dyn = false
 "#,
@@ -606,8 +580,16 @@ plat_dyn = false
         .unwrap();
 
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
-        assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(
+            cargo
+                .features
+                .contains(&"ax-hal/aarch64-qemu-virt".to_string())
+        );
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/no-pie/aarch64-unknown-none-softfloat.json")
+        );
     }
 
     #[test]
@@ -618,7 +600,7 @@ plat_dyn = false
             &config_path,
             r#"
 env = {}
-features = ["ept-level-4", "ax-std/bus-mmio"]
+features = ["ept-level-4", "ax-driver/fdt"]
 log = "Info"
 "#,
         )
@@ -640,6 +622,10 @@ log = "Info"
         .unwrap();
 
         assert!(!cargo.to_bin);
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/no-pie/loongarch64-unknown-none-softfloat.json")
+        );
     }
 }

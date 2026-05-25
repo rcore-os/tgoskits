@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 rdif-block = { workspace = true }
-spin = "0.10"
+spin = { workspace = true }
 
 [dev-dependencies]
 dma-api = { workspace = true }

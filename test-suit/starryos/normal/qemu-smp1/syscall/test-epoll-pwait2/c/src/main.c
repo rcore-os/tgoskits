@@ -14,6 +14,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#define KERNEL_SIGSET_SIZE 8
+
 static void on_sigusr1(int signo)
 {
     (void)signo;
@@ -32,7 +34,7 @@ static void test_invalid_args(void)
     struct epoll_event out[4];
 
     errno = 0;
-    CHECK(raw_epoll_pwait2(-1, out, 4, NULL, NULL, sizeof(sigset_t)) == -1 && errno == EBADF,
+    CHECK(raw_epoll_pwait2(-1, out, 4, NULL, NULL, KERNEL_SIGSET_SIZE) == -1 && errno == EBADF,
           "invalid epfd returns EBADF");
 
     int epfd = epoll_create1(0);
@@ -42,11 +44,11 @@ static void test_invalid_args(void)
     }
 
     errno = 0;
-    CHECK(raw_epoll_pwait2(epfd, out, 0, NULL, NULL, sizeof(sigset_t)) == -1 && errno == EINVAL,
+    CHECK(raw_epoll_pwait2(epfd, out, 0, NULL, NULL, KERNEL_SIGSET_SIZE) == -1 && errno == EINVAL,
           "maxevents == 0 returns EINVAL");
 
     errno = 0;
-    CHECK(raw_epoll_pwait2(epfd, out, -1, NULL, NULL, sizeof(sigset_t)) == -1 && errno == EINVAL,
+    CHECK(raw_epoll_pwait2(epfd, out, -1, NULL, NULL, KERNEL_SIGSET_SIZE) == -1 && errno == EINVAL,
           "maxevents < 0 returns EINVAL");
 
     close(epfd);
@@ -78,11 +80,11 @@ static void test_null_timeout_and_zero_timeout(void)
     struct epoll_event out[4];
     struct timespec ts0 = {.tv_sec = 0, .tv_nsec = 0};
 
-    CHECK_RET(raw_epoll_pwait2(epfd, out, 4, &ts0, NULL, sizeof(sigset_t)), 0,
+    CHECK_RET(raw_epoll_pwait2(epfd, out, 4, &ts0, NULL, KERNEL_SIGSET_SIZE), 0,
               "zero timeout returns 0 when no fd is ready");
 
     CHECK_RET(write(pipefd[1], "X", 1), 1, "write one byte to pipe");
-    long n = raw_epoll_pwait2(epfd, out, 4, NULL, NULL, sizeof(sigset_t));
+    long n = raw_epoll_pwait2(epfd, out, 4, NULL, NULL, KERNEL_SIGSET_SIZE);
     CHECK(n == 1 && (out[0].events & EPOLLIN) != 0 && out[0].data.fd == pipefd[0],
           "NULL timeout waits and returns ready event");
 
@@ -108,12 +110,17 @@ static void test_timeout_and_sigsetsize(void)
     CHECK_RET(raw_epoll_pwait2(epfd, out, 4, &ts, NULL, 0), 0,
               "NULL sigmask ignores sigsetsize and times out");
 
-    CHECK_RET(raw_epoll_pwait2(epfd, out, 4, &ts, &mask, sizeof(sigset_t)), 0,
-              "sigmask + sizeof(sigset_t) accepted");
+    CHECK_RET(raw_epoll_pwait2(epfd, out, 4, &ts, &mask, KERNEL_SIGSET_SIZE), 0,
+              "sigmask + size=8 accepted");
 
     errno = 0;
     CHECK(raw_epoll_pwait2(epfd, out, 4, &ts, &mask, 4) == -1 && errno == EINVAL,
           "sigmask with too small sigsetsize returns EINVAL");
+
+    errno = 0;
+    size_t bad_size = sizeof(sigset_t) == KERNEL_SIGSET_SIZE ? 16 : sizeof(sigset_t);
+    CHECK(raw_epoll_pwait2(epfd, out, 4, &ts, &mask, bad_size) == -1 && errno == EINVAL,
+          "sigmask with non-8 sigsetsize returns EINVAL");
 
     close(epfd);
 }
@@ -143,7 +150,7 @@ static void test_efault_events_ptr(void)
     CHECK_RET(write(pipefd[1], "Z", 1), 1, "write one byte to make event ready");
 
     errno = 0;
-    long n = raw_epoll_pwait2(epfd, (struct epoll_event *)(uintptr_t)1, 1, NULL, NULL, sizeof(sigset_t));
+    long n = raw_epoll_pwait2(epfd, (struct epoll_event *)(uintptr_t)1, 1, NULL, NULL, KERNEL_SIGSET_SIZE);
     CHECK(n == -1 && errno == EFAULT, "invalid events pointer returns EFAULT");
 
     close(pipefd[0]);
@@ -166,7 +173,7 @@ static void test_timeout_monotonic_duration(void)
     struct timespec end;
     CHECK(clock_gettime(CLOCK_MONOTONIC, &start) == 0, "clock_gettime start ok");
 
-    long n = raw_epoll_pwait2(epfd, out, 2, &ts, NULL, sizeof(sigset_t));
+    long n = raw_epoll_pwait2(epfd, out, 2, &ts, NULL, KERNEL_SIGSET_SIZE);
     CHECK(n == 0, "no event with 100ms timeout returns 0");
 
     CHECK(clock_gettime(CLOCK_MONOTONIC, &end) == 0, "clock_gettime end ok");
@@ -214,11 +221,11 @@ static void test_maxevents_boundary(void)
     CHECK_RET(write(p2[1], "B", 1), 1, "write pipe2");
 
     struct epoll_event one[1];
-    long n1 = raw_epoll_pwait2(epfd, one, 1, NULL, NULL, sizeof(sigset_t));
+    long n1 = raw_epoll_pwait2(epfd, one, 1, NULL, NULL, KERNEL_SIGSET_SIZE);
     CHECK(n1 == 1, "maxevents=1 returns exactly one ready event");
 
     struct epoll_event many[1024];
-    long n2 = raw_epoll_pwait2(epfd, many, 1024, NULL, NULL, sizeof(sigset_t));
+    long n2 = raw_epoll_pwait2(epfd, many, 1024, NULL, NULL, KERNEL_SIGSET_SIZE);
     CHECK(n2 >= 1, "large maxevents can fetch remaining ready events");
 
     close(p1[0]);
@@ -259,7 +266,7 @@ static void test_sigmask_effect_and_eintr(void)
     struct epoll_event out[1];
 
     errno = 0;
-    long r_masked = raw_epoll_pwait2(epfd, out, 1, &ts, &block_usr1, sizeof(sigset_t));
+    long r_masked = raw_epoll_pwait2(epfd, out, 1, &ts, &block_usr1, KERNEL_SIGSET_SIZE);
     CHECK(r_masked == 0, "masked SIGUSR1 does not interrupt epoll_pwait2 timeout");
     waitpid(pid, NULL, 0);
 
@@ -272,7 +279,7 @@ static void test_sigmask_effect_and_eintr(void)
     }
 
     errno = 0;
-    r_masked = raw_epoll_pwait2(epfd, out, 1, NULL, NULL, sizeof(sigset_t));
+    r_masked = raw_epoll_pwait2(epfd, out, 1, NULL, NULL, KERNEL_SIGSET_SIZE);
     CHECK(r_masked == -1 && errno == EINTR, "unmasked signal interrupts with EINTR");
     waitpid(pid, NULL, 0);
 

@@ -16,12 +16,13 @@
 
 use core::{cell::UnsafeCell, ptr};
 
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use axdevice_base::BaseDeviceOps;
 use axvisor_api::memory::phys_to_virt;
 use log::{debug, trace};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use super::{
     registers::*,

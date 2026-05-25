@@ -13,15 +13,15 @@ license.workspace = true
 [features]
 smoltcp = ["dep:smoltcp"]
 default = ["smoltcp"]
-vsock = ["ax-driver/vsock"]
+vsock = []
 
 [dependencies]
-ax-driver = { workspace = true, features = ["net"] }
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
+ax-net-ng.workspace = true
 cfg-if.workspace = true
 ax-lazyinit.workspace = true
 log.workspace = true

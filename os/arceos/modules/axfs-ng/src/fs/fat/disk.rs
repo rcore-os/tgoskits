@@ -1,7 +1,9 @@
 use alloc::{boxed::Box, vec};
 use core::mem;
 
-use ax_driver::{AxBlockDevice, PartitionBlockDevice, PartitionRegion, prelude::*};
+use ax_errno::{AxError as FsBlockError, AxResult as FsBlockResult};
+
+use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
 
 fn take<'a>(buf: &mut &'a [u8], cnt: usize) -> &'a [u8] {
     let (first, rem) = buf.split_at(cnt);
@@ -18,7 +20,7 @@ fn take_mut<'a>(buf: &mut &'a mut [u8], cnt: usize) -> &'a mut [u8] {
 
 /// A disk device with a cursor.
 pub struct SeekableDisk {
-    dev: PartitionBlockDevice<AxBlockDevice>,
+    dev: RegionBlockDevice<Box<dyn FsBlockDevice>>,
 
     block_id: u64,
     offset: usize,
@@ -33,14 +35,14 @@ pub struct SeekableDisk {
 }
 
 impl SeekableDisk {
-    pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> Self {
+    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> Self {
         assert!(dev.block_size().is_power_of_two());
         let block_size = dev.block_size();
         let block_size_log2 = block_size.trailing_zeros() as u8;
         let read_buffer = vec![0u8; block_size].into_boxed_slice();
         let write_buffer = vec![0u8; block_size].into_boxed_slice();
         Self {
-            dev: PartitionBlockDevice::new(dev, region),
+            dev: RegionBlockDevice::new(dev, region),
             block_id: 0,
             offset: 0,
             block_size_log2,
@@ -66,7 +68,7 @@ impl SeekableDisk {
     }
 
     /// Set the position of the cursor.
-    pub fn set_position(&mut self, pos: u64) -> DevResult<()> {
+    pub fn set_position(&mut self, pos: u64) -> FsBlockResult<()> {
         self.flush()?;
         self.block_id = pos >> self.block_size_log2;
         self.offset = pos as usize & (self.block_size() - 1);
@@ -74,7 +76,7 @@ impl SeekableDisk {
     }
 
     /// Write all pending changes to the disk.
-    pub fn flush(&mut self) -> DevResult<()> {
+    pub fn flush(&mut self) -> FsBlockResult<()> {
         if self.write_buffer_dirty {
             self.dev.write_block(self.block_id, &self.write_buffer)?;
             self.write_buffer_dirty = false;
@@ -82,7 +84,7 @@ impl SeekableDisk {
         Ok(())
     }
 
-    fn read_partial(&mut self, buf: &mut &mut [u8]) -> DevResult<usize> {
+    fn read_partial(&mut self, buf: &mut &mut [u8]) -> FsBlockResult<usize> {
         self.flush()?;
         self.dev.read_block(self.block_id, &mut self.read_buffer)?;
 
@@ -100,7 +102,7 @@ impl SeekableDisk {
     }
 
     /// Read from the disk, returns the number of bytes read.
-    pub fn read(&mut self, mut buf: &mut [u8]) -> DevResult<usize> {
+    pub fn read(&mut self, mut buf: &mut [u8]) -> FsBlockResult<usize> {
         let mut read = 0;
         if self.offset != 0 {
             read += self.read_partial(&mut buf)?;
@@ -115,7 +117,7 @@ impl SeekableDisk {
             self.block_id = self
                 .block_id
                 .checked_add(blocks as u64)
-                .ok_or(DevError::BadState)?;
+                .ok_or(FsBlockError::BadState)?;
         }
         if !buf.is_empty() {
             read += self.read_partial(&mut buf)?;
@@ -124,7 +126,7 @@ impl SeekableDisk {
         Ok(read)
     }
 
-    fn write_partial(&mut self, buf: &mut &[u8]) -> DevResult<usize> {
+    fn write_partial(&mut self, buf: &mut &[u8]) -> FsBlockResult<usize> {
         if !self.write_buffer_dirty {
             self.dev.read_block(self.block_id, &mut self.write_buffer)?;
             self.write_buffer_dirty = true;
@@ -145,7 +147,7 @@ impl SeekableDisk {
     }
 
     /// Write to the disk, returns the number of bytes written.
-    pub fn write(&mut self, mut buf: &[u8]) -> DevResult<usize> {
+    pub fn write(&mut self, mut buf: &[u8]) -> FsBlockResult<usize> {
         let mut written = 0;
         if self.offset != 0 {
             written += self.write_partial(&mut buf)?;
@@ -160,7 +162,7 @@ impl SeekableDisk {
             self.block_id = self
                 .block_id
                 .checked_add(blocks as u64)
-                .ok_or(DevError::BadState)?;
+                .ok_or(FsBlockError::BadState)?;
         }
         if !buf.is_empty() {
             written += self.write_partial(&mut buf)?;

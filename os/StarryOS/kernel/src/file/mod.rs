@@ -1,6 +1,7 @@
 pub mod epoll;
 pub mod event;
 mod fs;
+pub mod inotify;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 pub mod memfd;
@@ -24,7 +25,8 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    O_PATH, O_RDONLY, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx, statx_timestamp,
+    O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
+    statx_timestamp,
 };
 use spin::RwLock;
 
@@ -303,6 +305,14 @@ pub fn close_file_like(fd: c_int) -> AxResult {
     Ok(())
 }
 
+fn notify_close_write(fd: &FileDescriptor) {
+    let access = fd.inner.open_flags() & O_ACCMODE;
+    if (access == O_WRONLY || access == O_RDWR) && fd.inner.is::<File>() {
+        let path = fd.inner.path();
+        inotify::notify_close_write_path(path.as_ref());
+    }
+}
+
 /// Close-time advisory-lock cleanup (the kernel side of POSIX
 /// "close-eats-locks", plus OFD release-on-last-close):
 ///
@@ -320,6 +330,7 @@ pub fn close_file_like(fd: c_int) -> AxResult {
 /// `Weak` still alive, and sleep forever.
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
+    notify_close_write(&fd);
     if let Some(k) = key {
         let pid = current().as_thread().proc_data.proc.pid();
         crate::syscall::release_inode_posix_locks(pid, k);
@@ -374,6 +385,9 @@ pub fn close_all_fds() {
         .iter()
         .filter_map(|fd| fd.inner.inode_key())
         .collect();
+    for fd in &removed {
+        notify_close_write(fd);
+    }
     // Drop removed descriptors after releasing FD_TABLE lock to avoid
     // lock re-entry or side effects from destructor paths.
     drop(removed);
