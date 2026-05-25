@@ -14,9 +14,10 @@
 
 use core::arch::riscv64::hfence_vvma_all;
 
-use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use riscv_h::register::vsatp::Vsatp;
+
+use crate::trap::Exception;
 
 // Notes about this file:
 //
@@ -36,7 +37,86 @@ unsafe extern "C" {
     /// Copy data from host address to guest virtual address.
     fn _copy_to_guest(dst_gva: usize, src: *const u8, len: usize) -> usize;
     /// Fetch the guest instruction at the given guest virtual address.
-    fn _fetch_guest_instruction(gva: usize, raw_inst: *mut u32) -> isize;
+    ///
+    /// Returns zero on success. On fault, returns non-zero and writes the trap
+    /// CSRs captured at the HLVX fault site into `fault`.
+    fn _fetch_guest_instruction(
+        gva: usize,
+        raw_inst: *mut u32,
+        fault: *mut GuestInstructionFetchFaultRaw,
+    ) -> usize;
+}
+
+#[derive(Debug, Default)]
+#[repr(C)]
+/// Raw trap CSR snapshot returned by the HLVX fetch helper on fault.
+struct GuestInstructionFetchFaultRaw {
+    scause: usize,
+    stval: usize,
+    htval: usize,
+}
+
+/// Fault categories produced while fetching a guest instruction with HLVX.
+///
+/// HLVX checks execute permission, but architecturally reports load-class
+/// exceptions. These variants carry the guest-facing fetch semantics that the
+/// vCPU code should inject or forward.
+#[derive(Debug)]
+pub(crate) enum GuestInstructionFetchFault {
+    /// Guest VS-stage translation denied or missed the instruction address.
+    PageFault { addr: GuestVirtAddr },
+    /// Guest instruction access fault after translation.
+    AccessFault { addr: GuestVirtAddr },
+    /// Guest instruction address was misaligned.
+    Misaligned { addr: GuestVirtAddr },
+    /// G-stage translation fault while resolving the instruction access.
+    GuestPageFault { addr: GuestPhysAddr },
+    /// A trap cause that is not expected from HLVX instruction fetching.
+    Unhandled {
+        scause: usize,
+        stval: usize,
+        htval: usize,
+    },
+}
+
+impl GuestInstructionFetchFaultRaw {
+    fn into_fetch_fault(self, gva: GuestVirtAddr) -> GuestInstructionFetchFault {
+        let exception = self.scause & !(1usize << (usize::BITS - 1));
+        let fault_gva = GuestVirtAddr::from_usize(self.stval);
+
+        match exception {
+            // HLVX reports these as load faults even though the guest-visible
+            // operation is an instruction fetch.
+            x if x == Exception::InstructionPageFault as usize
+                || x == Exception::LoadPageFault as usize =>
+            {
+                GuestInstructionFetchFault::PageFault { addr: fault_gva }
+            }
+            x if x == Exception::InstructionFault as usize
+                || x == Exception::LoadFault as usize =>
+            {
+                GuestInstructionFetchFault::AccessFault { addr: fault_gva }
+            }
+            x if x == Exception::InstructionMisaligned as usize
+                || x == Exception::LoadMisaligned as usize =>
+            {
+                GuestInstructionFetchFault::Misaligned { addr: gva }
+            }
+            x if x == Exception::InstructionGuestPageFault as usize
+                || x == Exception::LoadGuestPageFault as usize =>
+            {
+                // For guest-page faults, htval holds GPA[XLEN-1:2] and stval
+                // supplies the low two bits of the faulting guest physical address.
+                let fault_gpa = GuestPhysAddr::from((self.htval << 2) | (self.stval & 0b11));
+                GuestInstructionFetchFault::GuestPageFault { addr: fault_gpa }
+            }
+            _ => GuestInstructionFetchFault::Unhandled {
+                scause: self.scause,
+                stval: self.stval,
+                htval: self.htval,
+            },
+        }
+    }
 }
 
 /// Copies data from guest virtual address to host memory.
@@ -86,16 +166,26 @@ pub(crate) fn copy_to_guest(src: &[u8], gpa: GuestPhysAddr) -> usize {
 }
 
 /// Fetches the guest instruction at the given guest virtual address.
+///
+/// The assembly helper uses HLVX so execute permission is checked as a guest
+/// instruction fetch, while this wrapper converts the load-class trap CSRs back
+/// into guest instruction-fetch categories.
 #[inline(always)]
-pub(crate) fn fetch_guest_instruction(gva: GuestVirtAddr) -> AxResult<u32> {
+pub(crate) fn fetch_guest_instruction(
+    gva: GuestVirtAddr,
+) -> Result<u32, GuestInstructionFetchFault> {
     let mut inst = 0u32;
-    let ret = unsafe { _fetch_guest_instruction(gva.as_usize(), &mut inst as *mut u32) };
+    let mut fault = GuestInstructionFetchFaultRaw::default();
+    let ret = unsafe {
+        _fetch_guest_instruction(
+            gva.as_usize(),
+            &mut inst as *mut u32,
+            &mut fault as *mut GuestInstructionFetchFaultRaw,
+        )
+    };
     if ret == 0 {
         Ok(inst)
     } else {
-        Err(ax_err_type!(
-            BadAddress,
-            alloc::format!("failed to fetch guest instruction at {gva:#x}")
-        ))
+        Err(fault.into_fetch_fault(gva))
     }
 }
