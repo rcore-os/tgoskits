@@ -124,6 +124,18 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 /// It is called from the bootstrapping code in the specific platform crate.
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
+    // Park harts whose logical index is beyond the compile-time CPU count: QEMU
+    // may start more harts (`-smp M`) than the kernel was built for
+    // (`MAX_CPU_NUM == N`). Mirror Linux — run on the first N CPUs and park the
+    // excess, rather than panicking in `percpu::init_secondary(cpu_id)` /
+    // `AxCpuMask::one_shot(cpu_id)` / `RUN_QUEUES[cpu_id]`, which all assert
+    // `index < MAX_CPU_NUM`. Must precede `init_secondary`, which would otherwise
+    // mis-index the per-CPU area first.
+    if cpu_id >= MAX_CPU_NUM {
+        loop {
+            ax_hal::asm::wait_for_irqs();
+        }
+    }
     ax_hal::percpu::init_secondary(cpu_id);
     #[cfg(feature = "buddy-slab")]
     ax_alloc::init_percpu_slab(cpu_id);
