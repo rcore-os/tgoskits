@@ -1,8 +1,8 @@
 use ax_errno::{AxResult, ax_err};
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::device::{AccessWidth, Port, PortRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use axvisor_api::time;
-use spin::Mutex;
 
 const PIT_CHANNEL0: u16 = 0x40;
 const PIT_CHANNEL2: u16 = 0x42;

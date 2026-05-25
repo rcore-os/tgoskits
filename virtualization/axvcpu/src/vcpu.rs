@@ -15,9 +15,9 @@
 use core::cell::UnsafeCell;
 
 use ax_errno::{AxResult, ax_err};
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvisor_api::vmm::{VCpuId, VMId};
-use spin::Mutex;
 
 use super::{AxArchVCpu, AxVCpuExitReason};
 

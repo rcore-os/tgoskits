@@ -75,7 +75,19 @@ impl EmulatedLocalApic {
         unsafe { &*self.vlapic_regs.get() }
     }
 
-    #[allow(clippy::mut_from_ref)] // SAFETY: get_mut_vlapic_regs is never called concurrently.
+    /// Returns mutable access to the virtual APIC register state.
+    ///
+    /// # Safety
+    ///
+    /// `vlapic_regs` is stored in an [`UnsafeCell`] because the vLAPIC MMIO/MSR
+    /// handlers are exposed through shared device references. Callers must
+    /// guarantee that no two execution contexts call this method, or otherwise
+    /// mutate/read the same [`VirtualApicRegs`], concurrently. In the current
+    /// Axvisor x86 path each `EmulatedLocalApic` is owned by one vCPU and vLAPIC
+    /// register accesses are handled synchronously on that vCPU's run path; any
+    /// cross-vCPU interrupt requests are funneled through the vCPU task instead
+    /// of directly mutating another vCPU's local APIC registers.
+    #[allow(clippy::mut_from_ref)]
     fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs {
         unsafe { &mut *self.vlapic_regs.get() }
     }

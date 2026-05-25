@@ -1948,11 +1948,11 @@ name = "axvcpu"
 version = "0.5.9"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "axaddrspace",
  "axvisor_api",
- "spin",
 ]
 
 [[package]]
@@ -10245,6 +10245,7 @@ name = "x86_vlapic"
 version = "0.4.10"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",
@@ -10252,7 +10253,6 @@ dependencies = [
  "bit",
  "log",
  "paste",
- "spin",
  "tock-registers 0.10.1",
 ]
 

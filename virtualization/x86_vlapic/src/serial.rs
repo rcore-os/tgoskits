@@ -1,8 +1,8 @@
 use ax_errno::{AxResult, ax_err};
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::device::{AccessWidth, Port, PortRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use axvisor_api::console;
-use spin::Mutex;
 
 const COM1_BASE: u16 = 0x3f8;
 const COM1_END: u16 = COM1_BASE + 7;
