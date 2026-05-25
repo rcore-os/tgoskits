@@ -26,6 +26,7 @@ use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
 use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
+use super::packet::{ETH0_IFINDEX, LO_IFINDEX};
 
 const ETH0_NAME: &[u8] = b"eth0";
 const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -44,10 +45,6 @@ const IFCONF_LEN_OFFSET: usize = 0;
 const IFCONF_BUF_OFFSET: usize = 8;
 const ETH0_MTU: i32 = 1500;
 const LO_MTU: i32 = 65536;
-// Interface indices matching the packet layer; AF_INET sockets query these via
-// SIOCGIFINDEX (e.g. OpenJDK NetworkInterface).
-const ETH0_IFINDEX: i32 = 2;
-const LO_IFINDEX: i32 = 1;
 
 pub struct Socket {
     inner: SocketInner,
