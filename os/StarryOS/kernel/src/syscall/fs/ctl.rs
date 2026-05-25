@@ -128,10 +128,12 @@ ktracepoint::define_event_trace!(
 );
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
-    let mode = mode & !current().as_thread().proc_data.umask();
+    let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
 
     // call tp:trace_sys_mkdirat
@@ -150,6 +152,8 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 }
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!(
         "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
@@ -160,7 +164,7 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     let ftype = mode & S_IFMT;
     let mut perm = mode & !S_IFMT;
     // apply umask like mkdir
-    perm &= !current().as_thread().proc_data.umask();
+    perm &= !thread.proc_data.umask();
 
     // Linux mknod semantics: S_IFDIR → EPERM, unknown type bits → EINVAL.
     let node_type = match ftype {
