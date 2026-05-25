@@ -226,7 +226,7 @@ smp = ["alloc", "ax-hal/smp", "ax-runtime/smp", "ax-task?/smp"]
 fp-simd = ["ax-hal/fp-simd"]
 
 # 内存
-alloc = ["ax-alloc"]
+alloc = ["ax-alloc", "ax-runtime/alloc"]
 paging = ["alloc", "ax-hal/paging", "ax-runtime/paging"]
 
 # 任务

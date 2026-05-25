@@ -44,7 +44,7 @@ aarch64-gic-v3 = ["ax-hal/aarch64-gic-v3"]
 aarch64-cntv-timer = ["ax-hal/aarch64-cntv-timer"]
 
 # Memory
-alloc = ["ax-alloc"]
+alloc = ["ax-alloc", "ax-runtime/alloc"]
 alloc-tlsf = ["ax-alloc/tlsf"]
 alloc-slab = ["ax-alloc/slab"]
 alloc-buddy = ["ax-alloc/buddy"]
