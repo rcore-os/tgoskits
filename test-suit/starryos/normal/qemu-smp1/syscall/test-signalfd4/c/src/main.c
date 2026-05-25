@@ -3,7 +3,7 @@
  *
  * 覆盖场景：
  *   1. 基本创建：各种 flag 组合，非法 flags → EINVAL
- *   2. sigsetsize 校验：size < 8 → EINVAL
+ *   2. sigsetsize 校验：非空 mask 时 size 必须为 8
  *   3. 修改已有 signalfd 的 mask（fd != -1）
  *   4. 修改已有 fd 时传 SFD_CLOEXEC → EINVAL
  *   5. 非阻塞空读 → EAGAIN
@@ -130,9 +130,9 @@ static void test_sigsetsize(void) {
     CHECK(fd >= 0, "sigsetsize=8 succeeds");
     if (fd >= 0) close(fd);
 
-    /* sigsetsize=0 is explicitly allowed ("no mask" callers) */
+    /* non-NULL mask with sigsetsize=0 should fail */
     fd = (int)syscall(__NR_signalfd4, -1, &mask, 0, 0);
-    CHECK(fd >= 0, "sigsetsize=0 succeeds");
+    CHECK(fd == -1 && errno == EINVAL, "sigsetsize=0 -> EINVAL");
     if (fd >= 0) close(fd);
 }
 
