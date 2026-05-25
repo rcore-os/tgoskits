@@ -1377,6 +1377,7 @@ dependencies = [
  "ax-plat-aarch64-peripherals",
  "axklib",
  "log",
+ "mmio-api",
 ]
 
 [[package]]
@@ -1407,6 +1408,7 @@ dependencies = [
  "chrono",
  "log",
  "loongArch64",
+ "mmio-api",
  "uart_16550 0.5.0",
 ]
 
@@ -1433,6 +1435,7 @@ dependencies = [
  "ax-riscv-plic",
  "axklib",
  "log",
+ "mmio-api",
  "riscv 0.16.0",
  "riscv_goldfish",
  "sbi-rt 0.0.3",
