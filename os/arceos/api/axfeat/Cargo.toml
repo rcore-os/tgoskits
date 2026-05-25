@@ -81,8 +81,10 @@ fs = [
     "dep:ax-fs",
     "ax-runtime/fs",
 ] # TODO: try to remove "paging"
-fs-ext4 = ["fs", "ax-fs/ext4"]
-fs-fat = ["fs", "ax-fs/fat"]
+fs-ext4 = ["fs", "ax-fs/ext4", "ax-runtime/fs-ext4"]
+fs-fat = ["fs", "ax-fs/fat", "ax-runtime/fs-fat"]
+fs-devfs = ["fs", "ax-fs/devfs"]
+fs-ramfs = ["fs", "ax-fs/ramfs"]
 fs-times = ["fs", "ax-fs/times"]
 
 # Networking

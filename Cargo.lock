@@ -1531,7 +1531,6 @@ dependencies = [
  "cfg-if",
  "chrono",
  "indoc",
- "rd-block",
  "rd-net",
  "rdrive",
  "spin",

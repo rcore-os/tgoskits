@@ -85,17 +85,13 @@ pub fn sys_mount(
             return Err(AxError::InvalidInput);
         }
 
+        let _ = (MS_SHARED, MS_PRIVATE, MS_SLAVE);
         let target = FS_CONTEXT.lock().resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
-        let mountpoint = target.mountpoint().clone();
-        match propagation {
-            MS_SHARED => mountpoint.set_shared(),
-            MS_PRIVATE => mountpoint.set_private(),
-            MS_SLAVE => mountpoint.set_slave(),
-            MS_UNBINDABLE => mountpoint.set_unbindable(),
-            _ => {}
+        if propagation == MS_UNBINDABLE {
+            target.mountpoint().set_unbindable();
         }
         return Ok(0);
     }
@@ -123,7 +119,7 @@ pub fn sys_mount(
         let ctx = FS_CONTEXT.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
-        let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
+        let mp = target.bind_mount(&source)?;
         if (flags & MS_RDONLY) != 0 {
             mp.set_readonly(true);
         }

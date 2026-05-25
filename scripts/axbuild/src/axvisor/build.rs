@@ -426,7 +426,7 @@ vm_configs = []
             &config_path,
             r#"
 env = {}
-features = ["fs", "ept-level-4"]
+features = ["ept-level-4"]
 log = "Info"
 plat_dyn = true
 "#,
@@ -515,7 +515,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ax-hal/x86-qemu-q35", "ept-level-4", "fs", "vmx"]
+features = ["ax-hal/x86-qemu-q35", "ept-level-4", "vmx"]
 log = "Info"
 vm_configs = []
 "#,
@@ -542,7 +542,6 @@ vm_configs = []
             fs::read_to_string(board_path).unwrap()
         );
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"fs".to_string()));
         assert!(cargo.features.contains(&"vmx".to_string()));
         assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));

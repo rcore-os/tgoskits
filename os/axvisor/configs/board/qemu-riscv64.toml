@@ -4,7 +4,6 @@ features = [
     "ax-driver/fdt",
     "ax-driver/virtio-blk",
     "ept-level-4",
-    "fs",
     "sstc"
 ]
 log = "Info"

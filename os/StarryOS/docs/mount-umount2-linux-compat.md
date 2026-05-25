@@ -315,7 +315,7 @@ if propagation != 0 {
 - `flags & !allowed != 0` 对应 Linux 的“propagation type flags 只能和 `MS_REC` / `MS_SILENT` 共存”
 - 这里当前只是让 StarryOS 具备“不要误挂新 fs”的语义边界，真实传播机制仍是后续工作
 
-## 5.3 `axfs-ng-vfs::Mountpoint`：把 mountpoint 当成 mount 语义状态承载体
+## 5.3 `ax-fs-vfs::Mountpoint`：把 mountpoint 当成 mount 语义状态承载体
 
 本次把几个 Linux mount 语义相关的状态放到了 `Mountpoint` 上：
 
@@ -327,12 +327,13 @@ pub struct Mountpoint {
     device: u64,
     readonly: AtomicBool,
     expired: AtomicBool,
+    unbindable: AtomicBool,
 }
 ```
 
 对应代码位置：
 
-- `components/axfs-ng-vfs/src/mount.rs`
+- `components/axfs_crates/axfs_vfs/src/mount.rs`
 
 ### 为什么放在 `Mountpoint` 上
 

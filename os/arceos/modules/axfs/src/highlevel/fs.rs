@@ -20,7 +20,8 @@ use super::File;
 /// Maximum number of symlinks that will be followed during path resolution.
 pub const SYMLINKS_MAX: usize = 40;
 
-/// Global root filesystem context, initialized once during [`init_filesystems`](crate::init_filesystems).
+/// Global root filesystem context, initialized once during
+/// [`init_root_filesystem`](crate::init_root_filesystem).
 pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
 
 /// Registry of all live `FsContext` instances (weak references).
