@@ -375,7 +375,7 @@ mmio-api = { version = "0.2.2", path = "components/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = { version = "0.10", path = "components/spin" }
-ostool = { version = "0.18" }
+ostool = { version = "0.19" }
 uefi = "0.36"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
