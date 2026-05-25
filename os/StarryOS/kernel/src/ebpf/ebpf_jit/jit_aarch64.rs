@@ -196,11 +196,19 @@ fn emit_movk16(buf: &mut JitBuffer, rd: u32, imm: u16, shift: u32) {
     buf.emit_u32(0x72800000 | (shift << 21) | ((imm as u32) << 5) | rd);
 }
 
+fn emit_movz16_64(buf: &mut JitBuffer, rd: u32, imm: u16, shift: u32) {
+    buf.emit_u32(0xD2800000 | (shift << 21) | ((imm as u32) << 5) | rd);
+}
+
+fn emit_movk16_64(buf: &mut JitBuffer, rd: u32, imm: u16, shift: u32) {
+    buf.emit_u32(0xF2800000 | (shift << 21) | ((imm as u32) << 5) | rd);
+}
+
 fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
-    emit_movz16(buf, rd, (val & 0xFFFF) as u16, 0);
-    emit_movk16(buf, rd, ((val >> 16) & 0xFFFF) as u16, 1);
-    emit_movk16(buf, rd, ((val >> 32) & 0xFFFF) as u16, 2);
-    emit_movk16(buf, rd, ((val >> 48) & 0xFFFF) as u16, 3);
+    emit_movz16_64(buf, rd, (val & 0xFFFF) as u16, 0);
+    emit_movk16_64(buf, rd, ((val >> 16) & 0xFFFF) as u16, 1);
+    emit_movk16_64(buf, rd, ((val >> 32) & 0xFFFF) as u16, 2);
+    emit_movk16_64(buf, rd, ((val >> 48) & 0xFFFF) as u16, 3);
 }
 
 fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
@@ -606,12 +614,11 @@ impl JitBackend for Aarch64Backend {
 
     fn emit_call(buf: &mut JitBuffer, helper_fn: HelperFn) {
         emit_load_imm64(buf, AA_X16, helper_fn as u64);
-        emit_mov(buf, AA_X17, AA_X5);
-        emit_mov(buf, AA_X5, AA_X4);
-        emit_mov(buf, AA_X4, AA_X3);
-        emit_mov(buf, AA_X3, AA_X2);
-        emit_mov(buf, AA_X2, AA_X1);
-        emit_mov(buf, AA_X1, AA_X0);
+        emit_mov(buf, AA_X0, AA_X1);
+        emit_mov(buf, AA_X1, AA_X2);
+        emit_mov(buf, AA_X2, AA_X3);
+        emit_mov(buf, AA_X3, AA_X4);
+        emit_mov(buf, AA_X4, AA_X5);
         emit_blr(buf, AA_X16);
     }
 
