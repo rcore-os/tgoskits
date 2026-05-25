@@ -64,6 +64,23 @@ pub fn init() {
     for vm in vm_list::get_vm_list() {
         vcpus::setup_vm_primary_vcpu(vm);
     }
+
+    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    release_host_filesystem_for_guest_passthrough();
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn release_host_filesystem_for_guest_passthrough() {
+    use std::os::arceos::modules::ax_fs;
+
+    if vm_list::get_vm_list().is_empty() {
+        return;
+    }
+
+    match ax_fs::shutdown_filesystems() {
+        Ok(()) => info!("Host filesystem cleanly unmounted before guest passthrough devices start"),
+        Err(err) => warn!("Failed to cleanly unmount host filesystem before guest start: {err:?}"),
+    }
 }
 
 /// Start the VMM.
