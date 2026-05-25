@@ -510,6 +510,18 @@ impl SocketOps for TcpSocket {
         })
     }
 
+    fn recv_available(&self) -> AxResult<usize> {
+        if self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
+        let available = self.with_smol_socket(|socket| socket.recv_queue());
+        if available > 0 {
+            return Ok(available);
+        }
+        poll_interfaces();
+        Ok(self.with_smol_socket(|socket| socket.recv_queue()))
+    }
+
     fn local_addr(&self) -> AxResult<SocketAddrEx> {
         let endpoint = self.with_smol_socket(|socket| {
             socket
