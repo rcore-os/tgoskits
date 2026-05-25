@@ -580,12 +580,13 @@ int main(void)
     manual_rmdir_recursive(BASE);
     CHECK(mkdir(BASE, 0755) == 0, "mkdir base");
 
-    char parent[256], sibling[256];
+    char parent[256], sibling[256], empty_dir[256];
     snprintf(parent, sizeof(parent), "%s/parent", BASE);
     snprintf(sibling, sizeof(sibling), "%s/parent/sibling.txt", BASE);
+    snprintf(empty_dir, sizeof(empty_dir), "%s/parent/empty", BASE);
     CHECK(mkdir(parent, 0755) == 0, "mkdir parent");
     CHECK(write_file(sibling, "sibling\n") == 0, "create sibling.txt");
-    CHECK(mkdir(parent, 0755) == 0 || errno == EEXIST, "mkdir empty (control)");
+    CHECK(mkdir(empty_dir, 0755) == 0, "mkdir empty (control)");
 
     /* rmdir tests */
     test_rmdir_nonempty_mixed();
