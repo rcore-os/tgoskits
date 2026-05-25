@@ -8,9 +8,6 @@ pub struct EventBuffer {
 
 impl EventBuffer {
     pub fn new(size: usize, kernel: &Kernel) -> crate::err::Result<Self> {
-        // let buffer = DVec::zeros(dma_mask as _, size, 0x1000, dma_api::Direction::FromDevice)
-        //     .map_err(|_| crate::err::USBError::NoMemory)?;
-
         let buffer = kernel
             .contiguous_array_zero_with_align(size, 0x1000, DmaDirection::FromDevice)
             .map_err(|_| crate::err::USBError::NoMemory)?;

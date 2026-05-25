@@ -3,48 +3,41 @@
 
 extern crate alloc;
 
-use core::{num::NonZeroUsize, ops::Deref, ptr::NonNull};
+use core::{num::NonZeroUsize, ptr::NonNull};
 
-mod osal;
+mod op;
 
 mod array;
 mod common;
 mod dbox;
 mod def;
-mod map_single;
 mod pool;
+mod streaming;
 
 pub use array::*;
 pub use dbox::*;
 pub use def::*;
-pub use map_single::*;
-pub use osal::DmaOp;
+pub use op::DmaOp;
 pub use pool::*;
-
-impl Deref for DmaAllocHandle {
-    type Target = core::alloc::Layout;
-    fn deref(&self) -> &Self::Target {
-        &self.layout
-    }
-}
+pub use streaming::*;
 
 #[derive(Clone)]
 pub struct DeviceDma {
-    os: &'static dyn DmaOp,
+    op: &'static dyn DmaOp,
     constraints: DmaConstraints,
 }
 
 impl DeviceDma {
-    pub fn new(dma_mask: u64, osal: &'static dyn DmaOp) -> Self {
+    pub fn new(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
         Self {
             constraints: DmaConstraints::new(dma_mask),
-            os: osal,
+            op,
         }
     }
 
     pub fn with_constraints(&self, constraints: DmaConstraints) -> Self {
         Self {
-            os: self.os,
+            op: self.op,
             constraints,
         }
     }
@@ -58,19 +51,19 @@ impl DeviceDma {
     }
 
     pub fn flush(&self, addr: NonNull<u8>, size: usize) {
-        self.os.flush(addr, size)
+        self.op.flush(addr, size)
     }
 
     pub fn invalidate(&self, addr: NonNull<u8>, size: usize) {
-        self.os.invalidate(addr, size)
+        self.op.invalidate(addr, size)
     }
 
     pub fn flush_invalidate(&self, addr: NonNull<u8>, size: usize) {
-        self.os.flush_invalidate(addr, size)
+        self.op.flush_invalidate(addr, size)
     }
 
     pub fn page_size(&self) -> usize {
-        self.os.page_size()
+        self.op.page_size()
     }
 
     pub(crate) unsafe fn alloc_contiguous(
@@ -79,18 +72,18 @@ impl DeviceDma {
     ) -> Result<DmaAllocHandle, DmaError> {
         let constraints = self.constraints.with_align(layout.align());
         let res =
-            unsafe { self.os.alloc_contiguous(constraints, layout) }.ok_or(DmaError::NoMemory)?;
+            unsafe { self.op.alloc_contiguous(constraints, layout) }.ok_or(DmaError::NoMemory)?;
         match self.check_alloc_handle(&res, constraints) {
             Ok(()) => Ok(res),
             Err(e) => {
-                unsafe { self.os.dealloc_contiguous(res) };
+                unsafe { self.op.dealloc_contiguous(res) };
                 Err(e)
             }
         }
     }
 
     pub(crate) unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
-        unsafe { self.os.dealloc_contiguous(handle) }
+        unsafe { self.op.dealloc_contiguous(handle) }
     }
 
     pub(crate) unsafe fn alloc_coherent(
@@ -99,18 +92,18 @@ impl DeviceDma {
     ) -> Result<DmaAllocHandle, DmaError> {
         let constraints = self.constraints.with_align(layout.align());
         let res =
-            unsafe { self.os.alloc_coherent(constraints, layout) }.ok_or(DmaError::NoMemory)?;
+            unsafe { self.op.alloc_coherent(constraints, layout) }.ok_or(DmaError::NoMemory)?;
         match self.check_alloc_handle(&res, constraints) {
             Ok(()) => Ok(res),
             Err(e) => {
-                unsafe { self.os.dealloc_coherent(res) };
+                unsafe { self.op.dealloc_coherent(res) };
                 Err(e)
             }
         }
     }
 
     pub(crate) unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
-        unsafe { self.os.dealloc_coherent(handle) }
+        unsafe { self.op.dealloc_coherent(handle) }
     }
 
     pub(crate) unsafe fn map_streaming(
@@ -121,18 +114,18 @@ impl DeviceDma {
         direction: DmaDirection,
     ) -> Result<DmaMapHandle, DmaError> {
         let constraints = self.constraints.with_align(align);
-        let res = unsafe { self.os.map_streaming(constraints, addr, size, direction) }?;
+        let res = unsafe { self.op.map_streaming(constraints, addr, size, direction) }?;
         match self.check_map_handle(&res, constraints) {
             Ok(()) => Ok(res),
             Err(e) => {
-                unsafe { self.os.unmap_streaming(res) };
+                unsafe { self.op.unmap_streaming(res) };
                 Err(e)
             }
         }
     }
 
     pub(crate) unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
-        unsafe { self.os.unmap_streaming(handle) }
+        unsafe { self.op.unmap_streaming(handle) }
     }
 
     pub(crate) fn sync_alloc_for_device(
@@ -142,7 +135,7 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.os
+        self.op
             .sync_alloc_for_device(handle, offset, size, direction);
     }
 
@@ -153,7 +146,7 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.os.sync_alloc_for_cpu(handle, offset, size, direction);
+        self.op.sync_alloc_for_cpu(handle, offset, size, direction);
     }
 
     pub(crate) fn sync_map_for_device(
@@ -163,7 +156,7 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.os.sync_map_for_device(handle, offset, size, direction);
+        self.op.sync_map_for_device(handle, offset, size, direction);
     }
 
     pub(crate) fn sync_map_for_cpu(
@@ -173,7 +166,7 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.os.sync_map_for_cpu(handle, offset, size, direction);
+        self.op.sync_map_for_cpu(handle, offset, size, direction);
     }
 
     pub fn coherent_array_zero<T: DmaPod>(&self, len: usize) -> Result<CoherentArray<T>, DmaError> {
@@ -240,18 +233,18 @@ impl DeviceDma {
         StreamingMap::map(self, buff, align, direction)
     }
 
-    pub fn new_pool(
+    pub fn contiguous_buffer_pool(
         &self,
         layout: core::alloc::Layout,
         direction: DmaDirection,
         cap: usize,
     ) -> ContiguousBufferPool {
-        let config = DArrayConfig {
+        let config = ContiguousBufferConfig {
             size: layout.size(),
             align: layout.align(),
             direction,
         };
-        ContiguousBufferPool::new_pool(self.clone(), config, cap)
+        ContiguousBufferPool::with_capacity(self.clone(), config, cap)
     }
 
     fn check_alloc_handle(

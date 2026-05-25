@@ -234,7 +234,7 @@ impl DmaOp for TrackingDmaOp {
             });
 
         let dma_addr = self.alloc_dma_addr(layout, constraints);
-        let map_alloc_virt = if dma_addr != addr.as_ptr() as u64 {
+        let bounce_ptr = if dma_addr != addr.as_ptr() as u64 {
             let ptr = unsafe { alloc_zeroed(layout) };
             let ptr = NonNull::new(ptr).ok_or(DmaError::NoMemory)?;
             self.map_allocations
@@ -246,7 +246,7 @@ impl DmaOp for TrackingDmaOp {
             None
         };
 
-        Ok(unsafe { DmaMapHandle::new(addr, dma_addr.into(), layout, map_alloc_virt) })
+        Ok(unsafe { DmaMapHandle::new(addr, dma_addr.into(), layout, bounce_ptr) })
     }
 
     unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
@@ -256,7 +256,7 @@ impl DmaOp for TrackingDmaOp {
             .push(DmaOperation::UnmapStreaming {
                 size: handle.size(),
             });
-        if let Some(ptr) = handle.alloc_virt()
+        if let Some(ptr) = handle.bounce_ptr()
             && let Some(layout) = self
                 .map_allocations
                 .lock()
@@ -316,7 +316,7 @@ impl DmaOp for TrackingDmaOp {
                 size,
                 direction,
             });
-        if let Some(map_virt) = handle.alloc_virt() {
+        if let Some(map_virt) = handle.bounce_ptr() {
             unsafe {
                 map_virt
                     .add(offset)
@@ -341,7 +341,7 @@ impl DmaOp for TrackingDmaOp {
                 size,
                 direction,
             });
-        if let Some(map_virt) = handle.alloc_virt() {
+        if let Some(map_virt) = handle.bounce_ptr() {
             unsafe {
                 handle
                     .as_ptr()

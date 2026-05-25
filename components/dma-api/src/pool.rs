@@ -9,7 +9,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use crate::{ContiguousArray, DeviceDma, DmaDirection, DmaError};
 
 #[derive(Clone, Debug)]
-pub(crate) struct DArrayConfig {
+pub(crate) struct ContiguousBufferConfig {
     pub size: usize,
     pub align: usize,
     pub direction: DmaDirection,
@@ -54,7 +54,7 @@ impl Drop for ContiguousBuffer {
 
 struct Inner {
     dev: DeviceDma,
-    config: DArrayConfig,
+    config: ContiguousBufferConfig,
     pool: VecDeque<ContiguousArray<u8>>,
 }
 
@@ -69,9 +69,9 @@ impl Inner {
 }
 
 impl ContiguousBufferPool {
-    pub(crate) fn new_pool(
+    pub(crate) fn with_capacity(
         dev: DeviceDma,
-        config: DArrayConfig,
+        config: ContiguousBufferConfig,
         cap: usize,
     ) -> ContiguousBufferPool {
         let mut pool = VecDeque::with_capacity(cap);

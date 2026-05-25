@@ -1,9 +1,9 @@
 use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
-use crate::{DeviceDma, DmaAddr, DmaDirection, DmaError, DmaPod, common::DCommon};
+use crate::{DeviceDma, DmaAddr, DmaDirection, DmaError, DmaPod, common::DmaAllocation};
 
 pub struct CoherentBox<T: DmaPod> {
-    data: DCommon,
+    data: DmaAllocation,
     _marker: PhantomData<T>,
 }
 
@@ -16,7 +16,7 @@ impl<T: DmaPod> CoherentBox<T> {
     }
 
     pub(crate) fn new_zero_with_align(os: &DeviceDma, align: usize) -> Result<Self, DmaError> {
-        let data = DCommon::new_zero_coherent(os, box_layout::<T>(align)?)?;
+        let data = DmaAllocation::new_zero_coherent(os, box_layout::<T>(align)?)?;
         Ok(Self {
             data,
             _marker: PhantomData,
@@ -49,13 +49,13 @@ impl<T: DmaPod> CoherentBox<T> {
     ///
     /// The caller must ensure the device is not concurrently accessing this
     /// memory in a way that races with CPU writes.
-    pub unsafe fn as_buff_mut(&mut self) -> &mut [u8] {
+    pub unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
         self.data.as_mut_slice()
     }
 }
 
 pub struct ContiguousBox<T: DmaPod> {
-    data: DCommon,
+    data: DmaAllocation,
     _marker: PhantomData<T>,
 }
 
@@ -72,7 +72,7 @@ impl<T: DmaPod> ContiguousBox<T> {
         align: usize,
         direction: DmaDirection,
     ) -> Result<Self, DmaError> {
-        let data = DCommon::new_zero_contiguous(os, box_layout::<T>(align)?, direction)?;
+        let data = DmaAllocation::new_zero_contiguous(os, box_layout::<T>(align)?, direction)?;
         Ok(Self {
             data,
             _marker: PhantomData,
@@ -113,7 +113,7 @@ impl<T: DmaPod> ContiguousBox<T> {
     ///
     /// The caller must ensure the device is not concurrently accessing this
     /// memory in a way that races with CPU writes.
-    pub unsafe fn as_buff_mut(&mut self) -> &mut [u8] {
+    pub unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
         self.data.as_mut_slice()
     }
 }

@@ -1,9 +1,9 @@
 use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
-use crate::{DeviceDma, DmaAddr, DmaDirection, DmaError, DmaPod, common::DCommon};
+use crate::{DeviceDma, DmaAddr, DmaDirection, DmaError, DmaPod, common::DmaAllocation};
 
 pub struct CoherentArray<T: DmaPod> {
-    data: DCommon,
+    data: DmaAllocation,
     _phantom: PhantomData<T>,
 }
 
@@ -18,7 +18,7 @@ impl<T: DmaPod> CoherentArray<T> {
     ) -> Result<Self, DmaError> {
         let layout = array_layout::<T>(len, align)?;
         Ok(Self {
-            data: DCommon::new_zero_coherent(os, layout)?,
+            data: DmaAllocation::new_zero_coherent(os, layout)?,
             _phantom: PhantomData,
         })
     }
@@ -93,7 +93,7 @@ impl<T: DmaPod> CoherentArray<T> {
 }
 
 pub struct ContiguousArray<T: DmaPod> {
-    data: DCommon,
+    data: DmaAllocation,
     _phantom: PhantomData<T>,
 }
 
@@ -109,7 +109,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     ) -> Result<Self, DmaError> {
         let layout = array_layout::<T>(len, align)?;
         Ok(Self {
-            data: DCommon::new_zero_contiguous(os, layout, direction)?,
+            data: DmaAllocation::new_zero_contiguous(os, layout, direction)?,
             _phantom: PhantomData,
         })
     }

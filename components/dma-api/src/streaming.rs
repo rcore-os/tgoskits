@@ -5,7 +5,7 @@ use crate::{DeviceDma, DmaDirection, DmaError, DmaMapHandle, DmaPod};
 
 pub struct StreamingMap<T: DmaPod> {
     handle: DmaMapHandle,
-    osal: DeviceDma,
+    device: DeviceDma,
     direction: DmaDirection,
     _marker: PhantomData<*mut T>,
 }
@@ -26,7 +26,7 @@ impl<T: DmaPod> StreamingMap<T> {
 
         Ok(Self {
             handle,
-            osal: os.clone(),
+            device: os.clone(),
             direction,
             _marker: PhantomData,
         })
@@ -98,28 +98,28 @@ impl<T: DmaPod> StreamingMap<T> {
 
     pub fn sync_for_device(&self, offset: usize, size: usize) {
         self.check_range(offset, size);
-        self.osal
+        self.device
             .sync_map_for_device(&self.handle, offset, size, self.direction);
     }
 
     pub fn sync_for_cpu(&self, offset: usize, size: usize) {
         self.check_range(offset, size);
-        self.osal
+        self.device
             .sync_map_for_cpu(&self.handle, offset, size, self.direction);
     }
 
     pub fn sync_for_device_all(&self) {
-        self.osal
+        self.device
             .sync_map_for_device(&self.handle, 0, self.handle.size(), self.direction);
     }
 
     pub fn sync_for_cpu_all(&self) {
-        self.osal
+        self.device
             .sync_map_for_cpu(&self.handle, 0, self.handle.size(), self.direction);
     }
 
     pub fn bounce_ptr(&self) -> Option<NonNull<u8>> {
-        self.handle.alloc_virt()
+        self.handle.bounce_ptr()
     }
 
     fn check_range(&self, offset: usize, size: usize) {
@@ -136,7 +136,7 @@ impl<T: DmaPod> StreamingMap<T> {
 impl<T: DmaPod> Drop for StreamingMap<T> {
     fn drop(&mut self) {
         unsafe {
-            self.osal.unmap_streaming(self.handle);
+            self.device.unmap_streaming(self.handle);
         }
     }
 }

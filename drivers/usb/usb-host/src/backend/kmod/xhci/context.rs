@@ -111,8 +111,6 @@ impl ContextData {
 
 impl DeviceContextList {
     pub fn new(max_slots: usize, dma: &Kernel) -> Result<Self> {
-        // let dcbaa = DVec::zeros(dma_mask as _, 256, 0x1000, dma_api::Direction::ToDevice)
-        //     .map_err(|_| USBError::NoMemory)?;
         let dcbaa = dma
             .coherent_array_zero_with_align(256, dma.page_size())
             .map_err(|_| USBError::NoMemory)?;
@@ -136,29 +134,10 @@ pub struct ScratchpadBufferArray {
 
 impl ScratchpadBufferArray {
     pub fn new(entries: usize, dma: &Kernel) -> Result<Self> {
-        // let mut entries_vec = DVec::zeros(
-        //     dma_mask as _,
-        //     entries,
-        //     64,
-        //     dma_api::Direction::Bidirectional,
-        // )
-        // .map_err(|_| USBError::NoMemory)?;
-
         let mut entries_vec = dma
             .coherent_array_zero_with_align(entries, 64)
             .map_err(|_| USBError::NoMemory)?;
 
-        // let pages: Vec<DVec<u8>> = (0..entries_vec.len())
-        //     .map(|_| {
-        //         DVec::<u8>::zeros(
-        //             dma_mask as _,
-        //             0x1000,
-        //             0x1000,
-        //             dma_api::Direction::Bidirectional,
-        //         )
-        //         .map_err(|_| USBError::NoMemory)
-        //     })
-        //     .try_collect()?;
         let mut pages: Vec<ContiguousArray<u8>> = Vec::with_capacity(entries_vec.len());
         for _ in 0..entries_vec.len() {
             let page = dma

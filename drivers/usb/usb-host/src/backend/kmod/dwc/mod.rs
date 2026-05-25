@@ -514,14 +514,6 @@ impl Dwc {
             .map_err(|_| USBError::NoMemory)?;
         scratchbuf.sync_for_device_all();
 
-        // let scratchbuf = DVec::zeros(
-        //     self.xhci.dma_mask as _,
-        //     scratch_size,
-        //     page_size(),
-        //     dma_api::Direction::Bidirectional,
-        // )
-        // .map_err(|_| USBError::NoMemory)?;
-
         self.scratchbuf = Some(scratchbuf);
         debug!(
             "DWC3: Allocated {} scratch buffers (total {} bytes)",

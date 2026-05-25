@@ -13,7 +13,7 @@ pub fn op() -> &'static KlibDma {
     &DMA
 }
 
-pub fn device(dma_mask: u64) -> DeviceDma {
+pub fn device_with_mask(dma_mask: u64) -> DeviceDma {
     DeviceDma::new(dma_mask, op())
 }
 
@@ -161,7 +161,7 @@ impl DmaOp for KlibDma {
         constraints: DmaConstraints,
         addr: NonNull<u8>,
         size: NonZeroUsize,
-        direction: DmaDirection,
+        _direction: DmaDirection,
     ) -> Result<DmaMapHandle, DmaError> {
         let align = constraints.align.max(1);
         let layout = Layout::from_size_align(size.get(), align)?;
@@ -174,24 +174,18 @@ impl DmaOp for KlibDma {
         }
 
         let map_pages = unsafe { DmaPages::alloc_for_layout(constraints, layout)? };
-        let map_virt = map_pages.cpu_addr;
-
-        if matches!(
-            direction,
-            DmaDirection::ToDevice | DmaDirection::Bidirectional
-        ) {
-            unsafe {
-                map_virt
-                    .as_ptr()
-                    .copy_from_nonoverlapping(addr.as_ptr(), size.get());
-            }
-        }
-
-        Ok(unsafe { DmaMapHandle::new(addr, map_pages.dma_addr.into(), layout, Some(map_virt)) })
+        Ok(unsafe {
+            DmaMapHandle::new(
+                addr,
+                map_pages.dma_addr.into(),
+                layout,
+                Some(map_pages.cpu_addr),
+            )
+        })
     }
 
     unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
-        if let Some(map_virt) = handle.alloc_virt() {
+        if let Some(map_virt) = handle.bounce_ptr() {
             let num_pages = DmaPages::layout_pages(handle.layout());
             unsafe { DmaPages::dealloc_pages(map_virt, num_pages) };
         }

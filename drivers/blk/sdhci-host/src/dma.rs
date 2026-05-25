@@ -14,10 +14,9 @@
 //!   needed before the device reads CPU-written memory and after the
 //!   device writes CPU-read memory.
 //!
-//! That split keeps the SDHCI logic portable across hosted Linux (where
-//! `DeviceDma` typically calls `dma_map_single`), bare-metal coherent
-//! systems (identity mapping, no cache ops), and bare-metal incoherent
-//! systems (identity mapping + dcache flush/invalidate).
+//! That split keeps the SDHCI logic portable across hosted kernels,
+//! bare-metal coherent systems (identity mapping, no cache ops), and
+//! bare-metal incoherent systems (identity mapping + dcache flush/invalidate).
 
 use core::{num::NonZeroUsize, ptr::NonNull};
 

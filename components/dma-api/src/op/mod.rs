@@ -135,7 +135,7 @@ pub trait DmaOp: Sync + Send + 'static {
         direction: DmaDirection,
     ) {
         let source = unsafe { handle.as_ptr().add(offset) };
-        if let Some(map_virt) = handle.alloc_virt()
+        if let Some(map_virt) = handle.bounce_ptr()
             && map_virt != handle.as_ptr()
         {
             let target = unsafe { map_virt.add(offset) };
@@ -177,7 +177,7 @@ pub trait DmaOp: Sync + Send + 'static {
         }
 
         let target = unsafe { handle.as_ptr().add(offset) };
-        if let Some(map_virt) = handle.alloc_virt()
+        if let Some(map_virt) = handle.bounce_ptr()
             && map_virt != handle.as_ptr()
         {
             let source = unsafe { map_virt.add(offset) };

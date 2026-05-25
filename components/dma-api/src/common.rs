@@ -7,15 +7,15 @@ pub(crate) enum AllocationKind {
     Contiguous { direction: DmaDirection },
 }
 
-pub(crate) struct DCommon {
+pub(crate) struct DmaAllocation {
     pub handle: DmaAllocHandle,
-    pub osal: DeviceDma,
+    pub device: DeviceDma,
     pub kind: AllocationKind,
 }
 
-unsafe impl Send for DCommon {}
+unsafe impl Send for DmaAllocation {}
 
-impl DCommon {
+impl DmaAllocation {
     pub fn new_zero_coherent(os: &DeviceDma, layout: Layout) -> Result<Self, DmaError> {
         let handle = unsafe { os.alloc_coherent(layout) }?;
         unsafe {
@@ -24,7 +24,7 @@ impl DCommon {
 
         Ok(Self {
             handle,
-            osal: os.clone(),
+            device: os.clone(),
             kind: AllocationKind::Coherent,
         })
     }
@@ -41,7 +41,7 @@ impl DCommon {
 
         Ok(Self {
             handle,
-            osal: os.clone(),
+            device: os.clone(),
             kind: AllocationKind::Contiguous { direction },
         })
     }
@@ -54,28 +54,28 @@ impl DCommon {
 
     pub fn sync_for_device(&self, offset: usize, size: usize) {
         if let AllocationKind::Contiguous { direction } = self.kind {
-            self.osal
+            self.device
                 .sync_alloc_for_device(&self.handle, offset, size, direction);
         }
     }
 
     pub fn sync_for_cpu(&self, offset: usize, size: usize) {
         if let AllocationKind::Contiguous { direction } = self.kind {
-            self.osal
+            self.device
                 .sync_alloc_for_cpu(&self.handle, offset, size, direction);
         }
     }
 }
 
-impl Drop for DCommon {
+impl Drop for DmaAllocation {
     fn drop(&mut self) {
         if self.handle.size() == 0 {
             return;
         }
         unsafe {
             match self.kind {
-                AllocationKind::Coherent => self.osal.dealloc_coherent(self.handle),
-                AllocationKind::Contiguous { .. } => self.osal.dealloc_contiguous(self.handle),
+                AllocationKind::Coherent => self.device.dealloc_coherent(self.handle),
+                AllocationKind::Contiguous { .. } => self.device.dealloc_contiguous(self.handle),
             }
         }
     }

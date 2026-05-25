@@ -163,7 +163,7 @@ fn make_pool(
     let layout = Layout::from_size_align(config.buf_size, config.align.max(1))
         .map_err(|_| other_error("invalid queue layout"))?;
     let dma = DeviceDma::new(config.dma_mask, dma_op);
-    Ok(dma.new_pool(layout, direction, config.ring_size))
+    Ok(dma.contiguous_buffer_pool(layout, direction, config.ring_size))
 }
 
 pub struct IrqHandler {

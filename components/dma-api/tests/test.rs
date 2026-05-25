@@ -181,7 +181,7 @@ fn streaming_map_rejects_backend_address_outside_mask() {
 #[test]
 fn pool_reuses_contiguous_buffers_without_implicit_zeroing() {
     let (dev, tracker) = new_tracking_device();
-    let pool = dev.new_pool(
+    let pool = dev.contiguous_buffer_pool(
         core::alloc::Layout::from_size_align(64, 64).unwrap(),
         DmaDirection::ToDevice,
         1,

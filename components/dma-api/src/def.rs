@@ -176,26 +176,26 @@ pub struct DmaMapHandle {
     pub(crate) cpu_addr: NonNull<u8>,
     pub(crate) dma_addr: DmaAddr,
     pub(crate) layout: Layout,
-    pub(crate) map_alloc_virt: Option<NonNull<u8>>,
+    pub(crate) bounce_ptr: Option<NonNull<u8>>,
 }
 
 impl DmaMapHandle {
     /// # Safety
     ///
     /// `cpu_addr` must point to the caller-owned mapped buffer for the mapping
-    /// lifetime. `alloc_virt`, when present, must point to a live bounce buffer
+    /// lifetime. `bounce_ptr`, when present, must point to a live bounce buffer
     /// described by `layout`.
     pub unsafe fn new(
         cpu_addr: NonNull<u8>,
         dma_addr: DmaAddr,
         layout: Layout,
-        alloc_virt: Option<NonNull<u8>>,
+        bounce_ptr: Option<NonNull<u8>>,
     ) -> Self {
         Self {
             cpu_addr,
             dma_addr,
             layout,
-            map_alloc_virt: alloc_virt,
+            bounce_ptr,
         }
     }
 
@@ -219,7 +219,7 @@ impl DmaMapHandle {
         self.layout
     }
 
-    pub fn alloc_virt(&self) -> Option<NonNull<u8>> {
-        self.map_alloc_virt
+    pub fn bounce_ptr(&self) -> Option<NonNull<u8>> {
+        self.bounce_ptr
     }
 }

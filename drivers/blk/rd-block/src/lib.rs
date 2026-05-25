@@ -129,7 +129,7 @@ impl Block {
         }
         let layout = Layout::from_size_align(config.size, config.align).ok()?;
         let dma = DeviceDma::new(config.dma_mask, self.inner.dma_op);
-        let pool = dma.new_pool(layout, DmaDirection::FromDevice, capacity);
+        let pool = dma.contiguous_buffer_pool(layout, DmaDirection::FromDevice, capacity);
         let waker = self.inner.queue_waker_map.register(queue_id);
         drop(irq_guard);
 
