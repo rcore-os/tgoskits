@@ -8,11 +8,11 @@ use alloc::{
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::VirtAddr;
 
-pub(crate) use super::{
-    HelperFn,
-    bpf_insn::{
-        BPF_ALU, BPF_ALU64, BPF_EXIT, BPF_JMP, BPF_JMP32, BPF_LD, BPF_LDX, BPF_ST, BPF_STX, BpfInsn,
-    },
+pub(crate) use super::HelperFn;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) use super::bpf_insn;
+use super::bpf_insn::{
+    BPF_ALU, BPF_ALU64, BPF_EXIT, BPF_JMP, BPF_JMP32, BPF_LD, BPF_LDX, BPF_ST, BPF_STX, BpfInsn,
 };
 
 #[cfg(target_arch = "aarch64")]

@@ -437,10 +437,9 @@ impl JitBackend for Riscv64Backend {
                 }
                 emit_jal(buf, RV_ZERO, 8);
                 emit_addi(buf, dst, RV_ZERO, 0);
-                let after = buf.offset();
                 unsafe {
                     let beq_ptr = buf.entry().add(skip) as *mut u32;
-                    let beq_off = ((skip + 12) - skip) as u32;
+                    let beq_off = 12u32;
                     *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                 }
             }
@@ -516,10 +515,9 @@ impl JitBackend for Riscv64Backend {
                 }
                 emit_jal(buf, RV_ZERO, 8);
                 emit_addi(buf, dst, RV_ZERO, 0);
-                let after = buf.offset();
                 unsafe {
                     let beq_ptr = buf.entry().add(skip) as *mut u32;
-                    let beq_off = ((skip + 12) - skip) as u32;
+                    let beq_off = 12u32;
                     *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                 }
             }
