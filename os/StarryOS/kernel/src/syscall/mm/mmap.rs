@@ -36,7 +36,7 @@ bitflags::bitflags! {
 
 impl From<MmapProt> for MappingFlags {
     fn from(value: MmapProt) -> Self {
-        let mut flags = MappingFlags::USER;
+        let mut flags = MappingFlags::empty();
         if value.contains(MmapProt::READ) {
             flags |= MappingFlags::READ;
         }
@@ -51,6 +51,15 @@ impl From<MmapProt> for MappingFlags {
         }
         if value.contains(MmapProt::EXEC) {
             flags |= MappingFlags::EXECUTE;
+        }
+        // PROT_NONE must yield empty flags so the PTE is non-present and any
+        // access faults. Tagging it USER would, on x86_64, still set the PRESENT
+        // bit (present implies readable on x86) and silently defeat the
+        // protection — breaking guard pages such as JVM thread-stack guards,
+        // letting a stack overflow corrupt adjacent memory instead of trapping.
+        // Only accessible mappings get the USER tag.
+        if !flags.is_empty() {
+            flags |= MappingFlags::USER;
         }
         flags
     }

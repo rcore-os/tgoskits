@@ -283,8 +283,17 @@ impl BackendOps for FileBackend {
                         flags - MappingFlags::WRITE
                     };
                     self.0.cache.with_page_or_insert(pn, |page, evicted| {
-                        if let Some((pn, _)) = evicted {
-                            to_be_evicted.push(pn);
+                        if let Some(evicted) = evicted {
+                            // Keep the evicted page (and thus its physical frame)
+                            // alive until `on_evict` below has torn down its mapping
+                            // and flushed the TLB. The eviction listener cannot unmap
+                            // here because the address space is already locked by this
+                            // populate, so the unmap is deferred; freeing the frame now
+                            // (by dropping the page) would leave the evicted VA mapped
+                            // to a frame that can be reallocated, so a sibling thread
+                            // preempted into userspace could read another page's data
+                            // through the stale mapping.
+                            to_be_evicted.push(evicted);
                         }
                         pt.map(addr, page.paddr(), PageSize::Size4K, map_flags)?;
                         pages += 1;
@@ -301,8 +310,34 @@ impl BackendOps for FileBackend {
             } else {
                 let inner = self.0.clone();
                 Some(Box::new(move |aspace: &mut AddrSpace| {
-                    for pn in to_be_evicted {
-                        inner.on_evict(pn, aspace);
+                    for (pn, page) in to_be_evicted {
+                        // Unmap (and TLB-flush via the cursor) the evicted VA first,
+                        // then drop the page to free its frame — never the reverse.
+                        //
+                        // The page cache is shared across all areas backed by the same
+                        // file. After mprotect splits a file mapping, `split` creates a
+                        // sibling FileBackendInner (same CachedFile, different
+                        // start/offset_page). A populate on one sub-area can evict a page
+                        // owned by another sub-area; `inner.on_evict` only covers
+                        // `inner`'s own page range (its `checked_sub` returns None
+                        // otherwise), so route the evicted page to every area sharing this
+                        // cache. `on_evict` self-validates (range + area ptr_eq), so only
+                        // the true owner unmaps. Without this, the sibling's PTE keeps
+                        // pointing at the just-freed frame — a use-after-free that
+                        // surfaces as a wild pointer (the JVM jimage on loongarch).
+                        let owners: Vec<_> = aspace
+                            .areas()
+                            .filter_map(|area| match area.backend() {
+                                Backend::File(fb) if fb.0.cache.ptr_eq(&inner.cache) => {
+                                    Some(fb.0.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        for owner in owners {
+                            owner.on_evict(pn, aspace);
+                        }
+                        drop(page);
                     }
                 }))
             },
