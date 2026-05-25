@@ -7,4 +7,6 @@ description = "An ArceOS SMP wait-queue remote wakeup progress regression test"
 publish = false
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["multitask", "irq", "ipi"], optional = true }
