@@ -495,9 +495,14 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // Mark the task as blocked, this has to be done before adding it to the wait queue
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
-        curr.set_in_wait_queue(true);
 
-        wq_guard.push_back(curr.clone());
+        // A preemptive future wake can re-enter a wait path before a previous
+        // wait-queue entry has been consumed. Avoid leaving a stale duplicate
+        // waiter that may receive mutex ownership after the task is running.
+        if !curr.in_wait_queue() {
+            curr.set_in_wait_queue(true);
+            wq_guard.push_back(curr.clone());
+        }
         // Drop the lock of wait queue explictly.
         drop(wq_guard);
 
