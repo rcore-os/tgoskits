@@ -64,10 +64,12 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         if pg.session().sid() != proc.pid() {
             return Err(AxError::OperationNotPermitted);
         }
-        assert!(pg.session().set_terminal_with(|| {
-            self.terminal.job_control.set_session(&pg.session());
-            self.clone()
-        }));
+        if !pg.session().try_set_terminal_with(|| {
+            self.terminal.job_control.set_session(&pg.session())?;
+            Ok::<_, AxError>(self.clone() as Arc<dyn Any + Send + Sync>)
+        })? {
+            return Err(AxError::ResourceBusy);
+        }
 
         self.terminal.job_control.set_foreground(&pg).unwrap();
         Ok(())
@@ -164,6 +166,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .bind_to(&current().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
+                let session = current().as_thread().proc_data.proc.group().session();
                 if current()
                     .as_thread()
                     .proc_data
@@ -172,6 +175,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .session()
                     .unset_terminal(&(self.this.upgrade().unwrap() as _))
                 {
+                    self.terminal.job_control.clear_session(&session);
                     // TODO: If the process was session leader, send SIGHUP and
                     // SIGCONT to the foreground process group and all processes
                     // in the current session lose their

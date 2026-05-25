@@ -65,13 +65,29 @@ dependencies = [
 
 [[package]]
 name = "addr2line"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
+dependencies = [
+ "cpp_demangle 0.4.5",
+ "fallible-iterator",
+ "gimli 0.32.3",
+ "memmap2",
+ "object 0.37.3",
+ "rustc-demangle",
+ "smallvec",
+ "typed-arena",
+]
+
+[[package]]
+name = "addr2line"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59317f77929f0e679d39364702289274de2f0f0b22cbf50b2b8cff2169a0b27a"
 dependencies = [
- "cpp_demangle",
+ "cpp_demangle 0.5.1",
  "fallible-iterator",
- "gimli",
+ "gimli 0.33.0",
  "memmap2",
  "object 0.39.1",
  "rustc-demangle",
@@ -382,6 +398,13 @@ dependencies = [
 
 [[package]]
 name = "arceos-sleep"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-stack-guard-page"
 version = "0.3.1"
 dependencies = [
  "ax-std",
@@ -1533,16 +1556,19 @@ dependencies = [
 name = "ax-task"
 version = "0.5.16"
 dependencies = [
+ "ax-alloc",
  "ax-config",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-errno",
  "ax-hal",
+ "ax-ipi",
  "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",
  "ax-lockdep",
  "ax-memory-addr",
+ "ax-mm",
  "ax-percpu",
  "ax-sched",
  "ax-timer-list",
@@ -1593,10 +1619,10 @@ dependencies = [
 name = "axbacktrace"
 version = "0.4.0"
 dependencies = [
- "addr2line",
+ "addr2line 0.26.1",
  "axpanic",
  "cfg-if",
- "gimli",
+ "gimli 0.33.0",
  "log",
  "paste",
  "spin 0.10.0",
@@ -1606,7 +1632,7 @@ dependencies = [
 name = "axbuild"
 version = "0.4.8"
 dependencies = [
- "addr2line",
+ "addr2line 0.26.1",
  "anyhow",
  "ax-config-gen",
  "axvmconfig",
@@ -2043,6 +2069,26 @@ dependencies = [
  "log",
  "tock-registers 0.10.1",
  "volatile 0.3.0",
+]
+
+[[package]]
+name = "bincode"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
+dependencies = [
+ "bincode_derive",
+ "serde",
+ "unty",
+]
+
+[[package]]
+name = "bincode_derive"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
+dependencies = [
+ "virtue",
 ]
 
 [[package]]
@@ -2660,6 +2706,15 @@ name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
+name = "cpp_demangle"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2bb79cb74d735044c972aae58ed0aaa9a837e85b01106a54c39e42e97f62253"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "cpp_demangle"
@@ -4028,6 +4083,16 @@ dependencies = [
 
 [[package]]
 name = "gimli"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+dependencies = [
+ "fallible-iterator",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "gimli"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
@@ -5068,10 +5133,14 @@ name = "loongarch_vcpu"
 version = "0.5.3"
 dependencies = [
  "ax-errno",
+ "ax-memory-addr",
+ "ax-page-table-multiarch",
  "ax-percpu",
  "axaddrspace",
  "axvcpu",
+ "axvisor_api",
  "log",
+ "loongArch64",
  "spin 0.10.0",
 ]
 
@@ -5521,6 +5590,17 @@ dependencies = [
  "rd-block",
  "spin 0.10.0",
  "tock-registers 0.10.1",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "flate2",
+ "memchr",
+ "ruzstd",
 ]
 
 [[package]]
@@ -6026,12 +6106,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "qemu-plugin"
+version = "10.1.0-v2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19df903439a896a96aec394ca3e1b6e0fdbd92b8112aec484cd9a56c9453e806"
+dependencies = [
+ "anyhow",
+ "lazy_static",
+ "libc",
+ "libloading",
+ "qemu-plugin-sys",
+ "thiserror 2.0.18",
+ "windows",
+]
+
+[[package]]
+name = "qemu-plugin-sys"
+version = "10.1.0-v2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "626809b8b33148371d3e2754834b68e27ff0bf5a5b326a67d83fccd4e1699cab"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "qoi"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "qperf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "crossbeam-channel",
+ "qemu-plugin",
+ "zerocopy",
+]
+
+[[package]]
+name = "qperf-analyzer"
+version = "0.1.0"
+dependencies = [
+ "addr2line 0.25.1",
+ "anyhow",
+ "bincode",
+ "clap",
 ]
 
 [[package]]
@@ -6858,6 +6983,10 @@ dependencies = [
  "lazy_static",
  "log",
 ]
+
+[[package]]
+name = "rust-hello"
+version = "0.1.0"
 
 [[package]]
 name = "rust_decimal"
@@ -7764,7 +7893,7 @@ dependencies = [
  "event-listener",
  "extern-trait",
  "flatten_objects",
- "gimli",
+ "gimli 0.33.0",
  "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",
@@ -8917,6 +9046,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "unty"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+
+[[package]]
 name = "ureq"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9025,6 +9160,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "uvc-fps"
+version = "0.1.0"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "uvc-frame-parser"
 version = "0.1.1"
 dependencies = [
@@ -9072,6 +9214,12 @@ dependencies = [
  "thiserror 2.0.18",
  "zerocopy",
 ]
+
+[[package]]
+name = "virtue"
+version = "0.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vm-fdt"

@@ -29,15 +29,28 @@ use crate::vmm::fdt::create::update_cpu_node;
 const PAGE_SIZE_4K: usize = 0x1000;
 
 pub fn get_host_fdt() -> &'static [u8] {
+    try_get_host_fdt().expect("Failed to get host FDT from boot context")
+}
+
+pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
     let bootarg: usize = dtb::get_bootarg();
+    if bootarg == 0 {
+        warn!("Boot argument does not contain a host FDT pointer");
+        return None;
+    }
+
     let fdt_vaddr = mem::phys_to_virt(bootarg.into());
     let header = unsafe {
         core::slice::from_raw_parts(fdt_vaddr.as_ptr(), core::mem::size_of::<FdtHeader>())
     };
-    let fdt_header = FdtHeader::from_bytes(header)
-        .map_err(|e| format!("Failed to parse FDT header: {e:#?}"))
-        .unwrap();
+    let fdt_header = match FdtHeader::from_bytes(header) {
+        Ok(header) => header,
+        Err(e) => {
+            error!("Failed to parse host FDT header: {e:#?}");
+            return None;
+        }
+    };
 
     if fdt_header.magic.get() != FDT_VALID_MAGIC {
         error!(
@@ -45,9 +58,10 @@ pub fn get_host_fdt() -> &'static [u8] {
             FDT_VALID_MAGIC,
             fdt_header.magic.get()
         );
+        return None;
     }
 
-    unsafe { core::slice::from_raw_parts(fdt_vaddr.as_ptr(), fdt_header.total_size()) }
+    Some(unsafe { core::slice::from_raw_parts(fdt_vaddr.as_ptr(), fdt_header.total_size()) })
 }
 
 pub fn setup_guest_fdt_from_vmm(
