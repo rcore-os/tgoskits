@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
+use anyhow::{Context as _, anyhow};
 use cargo_metadata::Metadata;
 use ostool::build::config::Cargo;
 
+use super::board;
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
@@ -30,6 +31,20 @@ pub(crate) fn resolve_build_info_path(
         STARRY_PACKAGE,
         target,
     ))
+}
+
+pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("failed to read Starry build config {}: {e}", path.display()))?;
+
+    if let Ok(board_file) = toml::from_str::<board::StarryBoardFile>(&content) {
+        return Ok(Some(board_file.target));
+    }
+    if toml::from_str::<StarryBuildInfo>(&content).is_ok() {
+        return Ok(None);
+    }
+
+    Err(anyhow!("invalid Starry build config {}", path.display()))
 }
 
 #[cfg(test)]

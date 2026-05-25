@@ -15,7 +15,6 @@ use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
-use lazy_static::lazy_static;
 use linux_raw_sys::{
     general::{
         IN_ALL_EVENTS, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_ISDIR,
@@ -23,6 +22,7 @@ use linux_raw_sys::{
     },
     ioctl::FIONREAD,
 };
+use spin::Lazy;
 use starry_vm::VmMutPtr;
 
 use crate::file::{FileLike, IoDst, IoSrc};
@@ -49,9 +49,7 @@ pub struct Inotify {
     poll_rx: PollSet,
 }
 
-lazy_static! {
-    static ref INOTIFY_INSTANCES: Mutex<Vec<Weak<Inotify>>> = Mutex::new(Vec::new());
-}
+static INOTIFY_INSTANCES: Lazy<Mutex<Vec<Weak<Inotify>>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 impl Inotify {
     pub fn new() -> Arc<Self> {

@@ -137,14 +137,20 @@ impl AppContext {
                 .then_some(snapshot.config.as_ref())
                 .flatten(),
         );
+        let config_target = resolved_config
+            .as_deref()
+            .filter(|_| cli.config.is_some() && cli.target.is_none())
+            .map(crate::starry::build::load_target_from_build_config)
+            .transpose()?
+            .flatten();
         let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() {
+            if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
                 snapshot.arch.clone()
             }
         });
-        let effective_target = cli.target.clone().or_else(|| {
+        let effective_target = cli.target.clone().or(config_target).or_else(|| {
             if cli.arch.is_some() {
                 None
             } else {

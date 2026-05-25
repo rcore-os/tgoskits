@@ -632,7 +632,6 @@ impl SimpleDirOps for ThreadDir {
                 "stat",
                 "statm",
                 "status",
-                "statm",
                 "oom_score_adj",
                 "task",
                 "maps",
@@ -684,18 +683,6 @@ impl SimpleDirOps for ThreadDir {
                     } else {
                         Ok(task_status(&task))
                     }
-                })
-                .into()
-            }
-            "statm" => {
-                SimpleFile::new_regular(fs, move || {
-                    let aspace = task.as_thread().proc_data.aspace();
-                    let aspace_lock = aspace.lock();
-                    // Page size is 4096 on all supported architectures.
-                    let total_pages = aspace_lock.size() / 4096;
-                    let resident = total_pages;
-                    // Format: size resident shared text lib data dt
-                    Ok(format!("{total_pages} {resident} 0 0 0 0 0\n"))
                 })
                 .into()
             }
