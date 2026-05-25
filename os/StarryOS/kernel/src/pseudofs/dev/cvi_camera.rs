@@ -3,11 +3,11 @@ use alloc::{collections::vec_deque::VecDeque, vec::Vec};
 use core::{any::Any, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
+use ax_fs_vfs::{NodeFlags, VfsResult};
 use ax_hal::mem::phys_to_virt;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
 use ax_task::sleep;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux},
     soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},

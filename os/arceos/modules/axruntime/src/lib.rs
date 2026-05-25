@@ -55,8 +55,8 @@ mod registers;
 pub use self::mp::rust_main_secondary;
 
 #[cfg(any(
-    all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")),
-    all(any(feature = "fs", feature = "fs-ng"), feature = "plat-dyn"),
+    all(feature = "fs", not(feature = "plat-dyn")),
+    all(feature = "fs", feature = "plat-dyn"),
     feature = "net",
     feature = "net-ng",
     feature = "display",
@@ -274,14 +274,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     devices::probe_all_devices();
 
     cfg_if::cfg_if! {
-        if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {
-            ax_fs_ng::init_filesystems(
-                devices::take_dyn_fs_ng_block_devices(),
-                ax_hal::dtb::get_chosen_bootargs(),
-            );
-        } else if #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))] {
-            ax_fs_ng::init_filesystems(devices::take_static_fs_ng_block_devices(), None);
-        } else if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
+        if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
             ax_fs::init_filesystems(
                 devices::take_dyn_fs_block_devices(),
                 ax_hal::dtb::get_chosen_bootargs(),

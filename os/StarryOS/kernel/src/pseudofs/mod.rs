@@ -18,8 +18,8 @@ use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::LinuxResult;
 use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};

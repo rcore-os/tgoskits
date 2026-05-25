@@ -18,9 +18,9 @@ use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_vfs::DeviceId;
 use ax_io::prelude::*;
 use ax_task::current;
-use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;

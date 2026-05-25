@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 
+use ax_fs_vfs::{VfsError, VfsResult};
 use ax_sync::Mutex;
-use axfs_ng_vfs::{VfsError, VfsResult};
 use sg200x_bsp::{
     pwm::{Pwm, PwmChannel, PwmMode, PwmPolarity},
     soc::PWM0_BASE,

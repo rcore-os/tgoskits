@@ -19,9 +19,9 @@ English | [中文](README_CN.md)
 
 ## Workspace Members
 
+- `axfs_devfs`
+- `axfs_ramfs`
 - `axfs_vfs`
-- `ax-fs-devfs`
-- `ax-fs-ramfs`
 
 ## Quick Start
 

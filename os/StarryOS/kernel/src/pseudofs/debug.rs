@@ -5,7 +5,7 @@ use super::{DirMaker, DirMapping, SimpleDir, SimpleFs};
 const DEBUGFS_MAGIC: u32 = 0x64626720;
 
 /// Create a new debugfs filesystem.
-pub fn new_debugfs() -> axfs_ng_vfs::Filesystem {
+pub fn new_debugfs() -> ax_fs_vfs::Filesystem {
     // TODO: update fs_type
     SimpleFs::new_with("debug".into(), DEBUGFS_MAGIC, debugfs_builder)
 }

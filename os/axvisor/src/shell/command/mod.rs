@@ -480,10 +480,7 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 }
 
 pub fn print_prompt() {
-    #[cfg(feature = "fs")]
     print!("axvisor:{}$ ", std::env::current_dir().unwrap());
-    #[cfg(not(feature = "fs"))]
-    print!("axvisor:$ ");
     std::io::stdout().flush().unwrap();
 }
 

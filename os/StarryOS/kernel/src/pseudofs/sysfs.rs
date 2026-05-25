@@ -33,7 +33,7 @@ use alloc::{
     vec::Vec,
 };
 
-use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
+use ax_fs_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 
 use crate::pseudofs::{
     DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs,

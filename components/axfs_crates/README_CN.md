@@ -19,9 +19,9 @@
 
 ## 工作区成员
 
+- `axfs_devfs`
+- `axfs_ramfs`
 - `axfs_vfs`
-- `ax-fs-devfs`
-- `ax-fs-ramfs`
 
 ## 快速开始
 

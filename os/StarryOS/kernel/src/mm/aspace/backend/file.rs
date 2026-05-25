@@ -8,10 +8,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{CachedFile, FileFlags};
+use ax_fs_vfs::Location;
 use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
-use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
 use super::{AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, pages_in};

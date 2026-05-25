@@ -1,11 +1,11 @@
 use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
-use ax_kspin::SpinNoIrq;
-use axfs_ng_vfs::{
+use ax_fs_vfs::{
     DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
+use ax_kspin::SpinNoIrq;
 use slab::Slab;
 
 use super::DirMaker;

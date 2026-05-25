@@ -8,9 +8,9 @@ use alloc::sync::{Arc, Weak};
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use ax_errno::{AxError, AxResult};
+use ax_fs_vfs::NodeFlags;
 use ax_sync::Mutex;
 use ax_task::current;
-use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};

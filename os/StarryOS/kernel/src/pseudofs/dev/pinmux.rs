@@ -2,7 +2,7 @@ use core::{any::Any, str};
 
 use ax_config::plat::PHYS_VIRT_OFFSET;
 use ax_errno::AxError;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
+use ax_fs_vfs::{NodeFlags, VfsResult};
 use bytemuck::AnyBitPattern;
 use starry_vm::VmPtr;
 

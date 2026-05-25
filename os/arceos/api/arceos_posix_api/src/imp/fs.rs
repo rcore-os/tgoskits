@@ -4,19 +4,20 @@ use core::ffi::{c_char, c_int};
 use core::mem::size_of;
 
 use ax_errno::{LinuxError, LinuxResult};
-use ax_fs::fops::OpenOptions;
-use ax_io::{PollState, SeekFrom};
+use ax_fs::{OpenOptions, ReadDir};
+use ax_fs_vfs::{Metadata, NodeType};
+use ax_io::{PollState, SeekFrom, prelude::*};
 use ax_sync::Mutex;
 
 use super::fd_ops::{FileLike, get_file_like};
 use crate::{ctypes, utils::char_ptr_to_str};
 
 pub struct File {
-    inner: Mutex<ax_fs::fops::File>,
+    inner: Mutex<ax_fs::File>,
 }
 
 pub struct Directory {
-    inner: Mutex<ax_fs::fops::Directory>,
+    inner: Mutex<ReadDir>,
 }
 
 // ============================================================================
@@ -159,17 +160,34 @@ impl<'a> HermitDirBuffer<'a> {
 // Common file type conversion
 // ============================================================================
 
-fn file_type_to_d_type(ty: ax_fs::fops::FileType) -> u8 {
+fn file_type_to_d_type(ty: NodeType) -> u8 {
     match ty {
-        ax_fs::fops::FileType::Dir => 4,      // DT_DIR
-        ax_fs::fops::FileType::File => 8,     // DT_REG
-        ax_fs::fops::FileType::SymLink => 10, // DT_LNK
-        _ => 0,                               // DT_UNKNOWN
+        NodeType::Directory => 4,   // DT_DIR
+        NodeType::RegularFile => 8, // DT_REG
+        NodeType::Symlink => 10,    // DT_LNK
+        _ => 0,                     // DT_UNKNOWN
+    }
+}
+
+fn metadata_to_stat(metadata: Metadata) -> ctypes::stat {
+    let ty = metadata.node_type as u8;
+    let perm = metadata.mode.bits() as u32;
+    let st_mode = ((ty as u32) << 12) | perm;
+    ctypes::stat {
+        st_ino: 1,
+        st_nlink: 1,
+        st_mode,
+        st_uid: 1000,
+        st_gid: 1000,
+        st_size: metadata.size as _,
+        st_blocks: metadata.blocks as _,
+        st_blksize: 512,
+        ..Default::default()
     }
 }
 
 impl File {
-    fn new(inner: ax_fs::fops::File) -> Self {
+    fn new(inner: ax_fs::File) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
@@ -188,7 +206,7 @@ impl File {
 }
 
 impl Directory {
-    fn new(inner: ax_fs::fops::Directory) -> Self {
+    fn new(inner: ReadDir) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
@@ -216,21 +234,7 @@ impl FileLike for File {
     }
 
     fn stat(&self) -> LinuxResult<ctypes::stat> {
-        let metadata = self.inner.lock().get_attr()?;
-        let ty = metadata.file_type() as u8;
-        let perm = metadata.perm().bits() as u32;
-        let st_mode = ((ty as u32) << 12) | perm;
-        Ok(ctypes::stat {
-            st_ino: 1,
-            st_nlink: 1,
-            st_mode,
-            st_uid: 1000,
-            st_gid: 1000,
-            st_size: metadata.size() as _,
-            st_blocks: metadata.blocks() as _,
-            st_blksize: 512,
-            ..Default::default()
-        })
+        Ok(metadata_to_stat(self.inner.lock().location().metadata()?))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
@@ -294,8 +298,12 @@ fn flags_to_options(flags: c_int, _mode: ctypes::mode_t) -> OpenOptions {
     let flags = flags as u32;
     let mut options = OpenOptions::new();
     match flags & 0b11 {
-        ctypes::O_RDONLY => options.read(true),
-        ctypes::O_WRONLY => options.write(true),
+        ctypes::O_RDONLY => {
+            options.read(true);
+        }
+        ctypes::O_WRONLY => {
+            options.write(true);
+        }
         _ => {
             options.read(true);
             options.write(true);
@@ -327,10 +335,14 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
         let options = flags_to_options(flags, mode);
         let filename = filename?;
         if (flags as u32) & ctypes::O_DIRECTORY != 0 {
-            let dir = ax_fs::fops::Directory::open_dir(filename, &options)?;
-            Directory::new(dir).add_to_fd_table()
+            let mut options = options;
+            options.directory(true);
+            let ctx = ax_fs::FS_CONTEXT.lock();
+            let dir = options.open(&ctx, filename)?.into_dir()?;
+            Directory::new(ReadDir::new(dir)).add_to_fd_table()
         } else {
-            let file = ax_fs::fops::File::open(filename, &options)?;
+            let ctx = ax_fs::FS_CONTEXT.lock();
+            let file = options.open(&ctx, filename)?.into_file()?;
             File::new(file).add_to_fd_table()
         }
     })
@@ -358,20 +370,17 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = DirBuffer::new(out);
 
-        let mut entries: [ax_fs::fops::DirEntry; 16] =
-            core::array::from_fn(|_| ax_fs::fops::DirEntry::default());
-        loop {
-            let nr = dir.read_dir(&mut entries)?;
-            if nr == 0 {
-                break;
-            }
-
-            for entry in entries.iter().take(nr) {
-                let d_type = file_type_to_d_type(entry.entry_type());
-                // Linux style: d_ino, d_off both present
-                if !dir_buf.write_entry(1, 0, d_type, entry.name_as_bytes()) {
-                    return Ok(dir_buf.used_len() as ctypes::ssize_t);
-                }
+        for entry in dir.by_ref() {
+            let entry = entry?;
+            let d_type = file_type_to_d_type(entry.node_type);
+            // Linux style: d_ino, d_off both present
+            if !dir_buf.write_entry(
+                entry.ino,
+                entry.offset as i64,
+                d_type,
+                entry.name.as_bytes(),
+            ) {
+                return Ok(dir_buf.used_len() as ctypes::ssize_t);
             }
         }
 
@@ -412,20 +421,12 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = HermitDirBuffer::new(out);
 
-        let mut entries: [ax_fs::fops::DirEntry; 16] =
-            core::array::from_fn(|_| ax_fs::fops::DirEntry::default());
-        loop {
-            let nr = dir.read_dir(&mut entries)?;
-            if nr == 0 {
-                break;
-            }
-
-            for entry in entries.iter().take(nr) {
-                let d_type = file_type_to_d_type(entry.entry_type());
-                // Hermit style: only d_ino and d_type, d_off is not meaningful
-                if !dir_buf.write_entry(1, d_type, entry.name_as_bytes()) {
-                    return Ok(dir_buf.used_len() as ctypes::ssize_t);
-                }
+        for entry in dir.by_ref() {
+            let entry = entry?;
+            let d_type = file_type_to_d_type(entry.node_type);
+            // Hermit style: only d_ino and d_type, d_off is not meaningful
+            if !dir_buf.write_entry(entry.ino, d_type, entry.name.as_bytes()) {
+                return Ok(dir_buf.used_len() as ctypes::ssize_t);
             }
         }
 
@@ -445,7 +446,9 @@ pub fn sys_lseek(fd: c_int, offset: ctypes::off_t, whence: c_int) -> ctypes::off
             2 => SeekFrom::End(offset as _),
             _ => return Err(LinuxError::EINVAL),
         };
-        let off = File::from_fd(fd)?.inner.lock().seek(pos)?;
+        let file = File::from_fd(fd)?;
+        let file = file.inner.lock();
+        let off = (&*file).seek(pos)?;
         Ok(off)
     })
 }
@@ -460,10 +463,8 @@ pub unsafe fn sys_stat(path: *const c_char, buf: *mut ctypes::stat) -> c_int {
         if buf.is_null() {
             return Err(LinuxError::EFAULT);
         }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        let file = ax_fs::fops::File::open(path?, &options)?;
-        let st = File::new(file).stat()?;
+        let ctx = ax_fs::FS_CONTEXT.lock();
+        let st = metadata_to_stat(ctx.metadata(path?)?);
         unsafe { *buf = st };
         Ok(0)
     })
@@ -495,10 +496,8 @@ pub unsafe fn sys_lstat(path: *const c_char, buf: *mut ctypes::stat) -> ctypes::
             return Err(LinuxError::EFAULT);
         }
         // ArceOS currently doesn't support symbolic links, so lstat behaves the same as stat
-        let mut options = OpenOptions::new();
-        options.read(true);
-        let file = ax_fs::fops::File::open(path?, &options)?;
-        let st = File::new(file).stat()?;
+        let ctx = ax_fs::FS_CONTEXT.lock();
+        let st = metadata_to_stat(ctx.metadata(path?)?);
         unsafe { *buf = st };
         Ok(0)
     })
@@ -513,8 +512,8 @@ pub fn sys_getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
             return Ok(core::ptr::null::<c_char>() as _);
         }
         let dst = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, size as _) };
-        let cwd = ax_fs::api::current_dir()?;
-        let cwd = cwd.as_bytes();
+        let cwd = ax_fs::FS_CONTEXT.lock().current_dir().absolute_path()?;
+        let cwd = cwd.as_str().as_bytes();
         if cwd.len() < size {
             dst[..cwd.len()].copy_from_slice(cwd);
             dst[cwd.len()] = 0;
@@ -534,7 +533,7 @@ pub fn sys_rename(old: *const c_char, new: *const c_char) -> c_int {
         let old_path = char_ptr_to_str(old)?;
         let new_path = char_ptr_to_str(new)?;
         debug!("sys_rename <= old: {old_path:?}, new: {new_path:?}");
-        ax_fs::api::rename(old_path, new_path)?;
+        ax_fs::FS_CONTEXT.lock().rename(old_path, new_path)?;
         Ok(0)
     })
 }

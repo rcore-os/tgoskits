@@ -7,8 +7,8 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_fs_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -99,7 +99,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     //         if fifo.reader_count() == 0 { return Err(...ENXIO...); }
     //     }
     //   同时阻塞模式（非 NONBLOCK）的 WRONLY 应等待 reader 到来（更复杂）。
-    //   该完整修复需联动 axfs-ng-vfs::Fifo 节点定义（目前无独立类型，FIFO 走通用
+    //   该完整修复需联动 ax-fs-vfs 的 FIFO 节点定义（目前无独立类型，FIFO 走通用
     //   File backend 即不区分 reader / writer），属 IPC 子系统专项。
     //
     // Fixes bug-open-fifo-wronly-no-reader-no-enxio (no-reader case only).

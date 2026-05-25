@@ -33,14 +33,6 @@ fs = [
     "dep:axklib",
     "ax-driver/block",
 ]
-fs-ng = [
-    "dep:ax-errno",
-    "dep:ax-fs-ng",
-    "dep:rd-block",
-    "dep:spin",
-    "dep:axklib",
-    "ax-driver/block",
-]
 input = ["dep:ax-input", "ax-driver/input"]
 net = ["dep:ax-net", "ax-driver/net"]
 net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
@@ -54,7 +46,6 @@ ax-display = { workspace = true, optional = true }
 ax-driver = { workspace = true }
 ax-errno = { workspace = true, optional = true }
 ax-fs = { workspace = true, optional = true }
-ax-fs-ng = { workspace = true, optional = true }
 ax-hal = { workspace = true }
 ax-input = { workspace = true, optional = true }
 ax-ipi = { workspace = true, optional = true }

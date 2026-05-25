@@ -60,8 +60,8 @@ stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
 fs = ["ax-api/fs", "ax-feat/fs"]
-ext4fs = ["ax-api/fs", "ax-feat/fs"]
-fatfs = ["ax-api/fs", "ax-feat/fs"]
+ext4fs = ["fs", "ax-feat/fs-ext4"]
+fatfs = ["fs", "ax-feat/fs-fat"]
 
 # Networking
 net = ["ax-api/net", "ax-feat/net"]

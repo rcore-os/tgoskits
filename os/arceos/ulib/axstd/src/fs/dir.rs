@@ -37,8 +37,7 @@ impl<'a> ReadDir<'a> {
         opts.read(true);
         let inner = api::ax_open_dir(path, &opts)?;
 
-        const EMPTY: api::AxDirEntry = api::AxDirEntry::default();
-        let dirent_buf = [EMPTY; 31];
+        let dirent_buf = core::array::from_fn(|_| api::AxDirEntry::default());
         Ok(ReadDir {
             path,
             inner,

@@ -3,8 +3,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
+use ax_fs_vfs::VfsResult;
 use ax_kspin::SpinNoIrq;
-use axfs_ng_vfs::VfsResult;
 
 use super::r#loop::LoopDevice;
 

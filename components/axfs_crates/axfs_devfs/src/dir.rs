@@ -1,142 +1,158 @@
-use alloc::{
-    collections::BTreeMap,
-    sync::{Arc, Weak},
-};
+use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use core::{any::Any, ops::Deref, task::Context, time::Duration};
 
 use ax_fs_vfs::{
-    VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsResult,
+    DeviceId, DirEntry, DirEntrySink, DirNode as VfsDirNode, DirNodeOps, FileNode, FilesystemOps,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, VfsError,
+    VfsResult, WeakDirEntry,
 };
-use spin::RwLock;
+use ax_kspin::SpinNoIrq as Mutex;
+use axpoll::{IoEvents, Pollable};
 
-/// The directory node in the device filesystem.
-///
-/// It implements [`ax_fs_vfs::VfsNodeOps`].
-pub struct DirNode {
-    parent: RwLock<Weak<dyn VfsNodeOps>>,
-    children: RwLock<BTreeMap<&'static str, VfsNodeRef>>,
+use crate::{
+    DeviceFileSystem,
+    device::{NullDev, UrandomDev, ZeroDev},
+};
+
+pub(crate) struct DevDirNode {
+    fs: Arc<DeviceFileSystem>,
+    this: WeakDirEntry,
+    inode: u64,
+    children: Mutex<BTreeMap<String, DirEntry>>,
 }
 
-impl DirNode {
-    pub(super) fn new(parent: Option<&VfsNodeRef>) -> Arc<Self> {
-        let parent = parent.map_or(Weak::<Self>::new() as _, Arc::downgrade);
-        Arc::new(Self {
-            parent: RwLock::new(parent),
-            children: RwLock::new(BTreeMap::new()),
+impl DevDirNode {
+    pub(crate) fn make(fs: Arc<DeviceFileSystem>, this: WeakDirEntry, inode: u64) -> VfsDirNode {
+        VfsDirNode::new(Arc::new(Self {
+            fs,
+            this,
+            inode,
+            children: Mutex::new(BTreeMap::new()),
+        }))
+    }
+
+    pub(crate) fn populate_static_devices(&self) {
+        self.add_static(
+            "null",
+            NullDev::make(self.fs.clone(), self.fs.alloc_inode()),
+        );
+        self.add_static(
+            "zero",
+            ZeroDev::make(self.fs.clone(), self.fs.alloc_inode()),
+        );
+        self.add_static(
+            "urandom",
+            UrandomDev::make(self.fs.clone(), self.fs.alloc_inode()),
+        );
+    }
+
+    fn add_static(&self, name: &str, file: FileNode) {
+        let entry = DirEntry::new_file(
+            file,
+            NodeType::CharacterDevice,
+            Reference::new(self.this.upgrade(), name.into()),
+        );
+        self.children.lock().insert(name.into(), entry);
+    }
+}
+
+impl NodeOps for DevDirNode {
+    fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            device: 0,
+            inode: self.inode,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type: NodeType::Directory,
+            uid: 0,
+            gid: 0,
+            size: 4096,
+            block_size: 4096,
+            blocks: 8,
+            rdev: DeviceId::default(),
+            atime: Duration::default(),
+            mtime: Duration::default(),
+            ctime: Duration::default(),
         })
     }
 
-    pub(super) fn set_parent(&self, parent: Option<&VfsNodeRef>) {
-        *self.parent.write() = parent.map_or(Weak::<Self>::new() as _, Arc::downgrade);
+    fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+        Ok(())
     }
 
-    /// Create a subdirectory at this directory.
-    pub fn mkdir(self: &Arc<Self>, name: &'static str) -> Arc<Self> {
-        let parent = self.clone() as VfsNodeRef;
-        let node = Self::new(Some(&parent));
-        self.children.write().insert(name, node.clone());
-        node
+    fn filesystem(&self) -> &dyn FilesystemOps {
+        self.fs.deref()
     }
 
-    /// Add a node to this directory.
-    pub fn add(&self, name: &'static str, node: VfsNodeRef) {
-        self.children.write().insert(name, node);
+    fn sync(&self, _data_only: bool) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
     }
 }
 
-impl VfsNodeOps for DirNode {
-    fn get_attr(&self) -> VfsResult<VfsNodeAttr> {
-        Ok(VfsNodeAttr::new_dir(4096, 0))
-    }
-
-    fn parent(&self) -> Option<VfsNodeRef> {
-        self.parent.read().upgrade()
-    }
-
-    fn lookup(self: Arc<Self>, path: &str) -> VfsResult<VfsNodeRef> {
-        let (name, rest) = split_path(path);
-        let node = match name {
-            "" | "." => Ok(self.clone() as VfsNodeRef),
-            ".." => self.parent().ok_or(VfsError::NotFound),
-            _ => self
-                .children
-                .read()
-                .get(name)
-                .cloned()
-                .ok_or(VfsError::NotFound),
-        }?;
-
-        if let Some(rest) = rest {
-            node.lookup(rest)
-        } else {
-            Ok(node)
-        }
-    }
-
-    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> VfsResult<usize> {
-        let children = self.children.read();
-        let mut children = children.iter().skip(start_idx.max(2) - 2);
-        for (i, ent) in dirents.iter_mut().enumerate() {
-            match i + start_idx {
-                0 => *ent = VfsDirEntry::new(".", VfsNodeType::Dir),
-                1 => *ent = VfsDirEntry::new("..", VfsNodeType::Dir),
-                _ => {
-                    if let Some((name, node)) = children.next() {
-                        *ent = VfsDirEntry::new(name, node.get_attr().unwrap().file_type());
-                    } else {
-                        return Ok(i);
-                    }
-                }
+impl DirNodeOps for DevDirNode {
+    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let mut count = 0;
+        for (index, (name, entry)) in self
+            .children
+            .lock()
+            .iter()
+            .enumerate()
+            .skip(offset as usize)
+        {
+            if !sink.accept(name, entry.inode(), entry.node_type(), (index + 1) as u64) {
+                break;
             }
+            count += 1;
         }
-        Ok(dirents.len())
+        Ok(count)
     }
 
-    fn create(&self, path: &str, ty: VfsNodeType) -> VfsResult {
-        log::debug!("create {ty:?} at devfs: {path}");
-        let (name, rest) = split_path(path);
-        if let Some(rest) = rest {
-            match name {
-                "" | "." => self.create(rest, ty),
-                ".." => self.parent().ok_or(VfsError::NotFound)?.create(rest, ty),
-                _ => self
-                    .children
-                    .read()
-                    .get(name)
-                    .ok_or(VfsError::NotFound)?
-                    .create(rest, ty),
-            }
-        } else if name.is_empty() || name == "." || name == ".." {
-            Ok(()) // already exists
-        } else {
-            Err(VfsError::PermissionDenied) // do not support to create nodes dynamically
-        }
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
+        self.children
+            .lock()
+            .get(name)
+            .cloned()
+            .ok_or(VfsError::NotFound)
     }
 
-    fn remove(&self, path: &str) -> VfsResult {
-        log::debug!("remove at devfs: {path}");
-        let (name, rest) = split_path(path);
-        if let Some(rest) = rest {
-            match name {
-                "" | "." => self.remove(rest),
-                ".." => self.parent().ok_or(VfsError::NotFound)?.remove(rest),
-                _ => self
-                    .children
-                    .read()
-                    .get(name)
-                    .ok_or(VfsError::NotFound)?
-                    .remove(rest),
-            }
-        } else {
-            Err(VfsError::PermissionDenied) // do not support to remove nodes dynamically
-        }
+    fn create(
+        &self,
+        _name: &str,
+        _node_type: NodeType,
+        _permission: NodePermission,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::PermissionDenied)
     }
 
-    ax_fs_vfs::impl_vfs_dir_default! {}
+    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+        Err(VfsError::PermissionDenied)
+    }
+
+    fn unlink(&self, _name: &str) -> VfsResult<()> {
+        Err(VfsError::PermissionDenied)
+    }
+
+    fn rename(&self, _src_name: &str, _dst_dir: &VfsDirNode, _dst_name: &str) -> VfsResult<()> {
+        Err(VfsError::PermissionDenied)
+    }
 }
 
-fn split_path(path: &str) -> (&str, Option<&str>) {
-    let trimmed_path = path.trim_start_matches('/');
-    trimmed_path.find('/').map_or((trimmed_path, None), |n| {
-        (&trimmed_path[..n], Some(&trimmed_path[n + 1..]))
-    })
+impl Pollable for DevDirNode {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }

@@ -26,7 +26,7 @@ alloc = ["dep:ax-alloc", "ax-feat/alloc"]
 multitask = ["alloc", "ax-task/multitask", "ax-feat/multitask", "ax-sync/multitask"]
 lockdep = ["multitask", "ax-feat/lockdep", "ax-sync/lockdep"]
 fd = ["alloc", "dep:scope-local"]
-fs = ["dep:ax-fs", "ax-feat/fs", "fd"]
+fs = ["dep:ax-fs", "dep:ax-fs-vfs", "ax-feat/fs", "fd"]
 net = ["dep:ax-net", "ax-feat/net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
@@ -39,6 +39,7 @@ ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config.workspace = true
 ax-feat.workspace = true
 ax-fs = { workspace = true, optional = true }
+ax-fs-vfs = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }

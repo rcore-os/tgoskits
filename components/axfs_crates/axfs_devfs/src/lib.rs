@@ -1,71 +1,88 @@
-//! Device filesystem used by [ArceOS](https://github.com/arceos-org/arceos).
+//! Device filesystem implementation for ArceOS.
 //!
-//! The implementation is based on [`axfs_vfs`].
+//! The filesystem exposes a small static `/dev` tree and implements the
+//! current `ax-fs-vfs` object model directly.
 
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
+mod device;
 mod dir;
-mod null;
-mod urandom;
-mod zero;
-
-#[cfg(test)]
-mod tests;
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_fs_vfs::{VfsNodeRef, VfsOps, VfsResult};
-use spin::once::Once;
+use ax_fs_vfs::{
+    DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
+};
+use spin::Once;
 
-pub use self::{dir::DirNode, null::NullDev, urandom::UrandomDev, zero::ZeroDev};
+use self::dir::DevDirNode;
 
-/// A device filesystem that implements [`ax_fs_vfs::VfsOps`].
+/// Creates a new mountable device filesystem handle.
+pub fn new() -> Filesystem {
+    DeviceFileSystem::new_filesystem()
+}
+
+/// Device filesystem.
 pub struct DeviceFileSystem {
-    parent: Once<VfsNodeRef>,
-    root: Arc<DirNode>,
+    next_inode: AtomicU64,
+    root_dir: Once<DirEntry>,
 }
 
 impl DeviceFileSystem {
-    /// Create a new instance.
-    pub fn new() -> Self {
-        Self {
-            parent: Once::new(),
-            root: DirNode::new(None),
-        }
+    /// Creates a new device filesystem object with `null`, `zero`, and `urandom`.
+    pub fn new() -> Arc<Self> {
+        let fs = Arc::new(Self {
+            next_inode: AtomicU64::new(2),
+            root_dir: Once::new(),
+        });
+        let root_fs = fs.clone();
+        let root_dir = DirEntry::new_dir(
+            |this| DevDirNode::make(root_fs.clone(), this, 1),
+            Reference::root(),
+        );
+        fs.root_dir.call_once(|| root_dir.clone());
+        root_dir
+            .as_dir()
+            .and_then(|dir| dir.downcast::<DevDirNode>())
+            .expect("devfs root downcast failed")
+            .populate_static_devices();
+        fs
     }
 
-    /// Create a subdirectory at the root directory.
-    pub fn mkdir(&self, name: &'static str) -> Arc<DirNode> {
-        self.root.mkdir(name)
+    /// Creates a new mountable device filesystem handle.
+    pub fn new_filesystem() -> Filesystem {
+        Filesystem::new(Self::new())
     }
 
-    /// Add a node to the root directory.
-    ///
-    /// The node must implement [`ax_fs_vfs::VfsNodeOps`], and be wrapped in [`Arc`].
-    pub fn add(&self, name: &'static str, node: VfsNodeRef) {
-        self.root.add(name, node);
-    }
-}
-
-impl VfsOps for DeviceFileSystem {
-    fn mount(&self, _path: &str, mount_point: VfsNodeRef) -> VfsResult {
-        if let Some(parent) = mount_point.parent() {
-            self.root.set_parent(Some(self.parent.call_once(|| parent)));
-        } else {
-            self.root.set_parent(None);
-        }
-        Ok(())
-    }
-
-    fn root_dir(&self) -> VfsNodeRef {
-        self.root.clone()
+    pub(crate) fn alloc_inode(&self) -> u64 {
+        self.next_inode.fetch_add(1, Ordering::Relaxed)
     }
 }
 
-impl Default for DeviceFileSystem {
-    fn default() -> Self {
-        Self::new()
+impl FilesystemOps for DeviceFileSystem {
+    fn name(&self) -> &str {
+        "devfs"
+    }
+
+    fn root_dir(&self) -> DirEntry {
+        self.root_dir.get().unwrap().clone()
+    }
+
+    fn stat(&self) -> VfsResult<StatFs> {
+        Ok(StatFs {
+            fs_type: 0x1373,
+            block_size: 4096,
+            blocks: 0,
+            blocks_free: 0,
+            blocks_available: 0,
+            file_count: self.next_inode.load(Ordering::Relaxed),
+            free_file_count: 0,
+            name_length: MAX_NAME_LEN as u32,
+            fragment_size: 4096,
+            mount_flags: 0,
+        })
     }
 }

@@ -37,10 +37,10 @@ use core::{
     task::Context,
 };
 
+use ax_fs_vfs::{NodeFlags, VfsError, VfsResult};
 use ax_hal::{mem::virt_to_phys, paging::PageSize, time::monotonic_time};
 use ax_memory_addr::{PhysAddr, PhysAddrRange, VirtAddr};
 use ax_sync::Mutex;
-use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::bytes_of;
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};

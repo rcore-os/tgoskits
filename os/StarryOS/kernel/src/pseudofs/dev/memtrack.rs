@@ -7,8 +7,8 @@ use core::{
 };
 
 use ax_alloc::tracking::{allocations_in, current_generation, disable_tracking, enable_tracking};
+use ax_fs_vfs::{NodeFlags, VfsResult};
 use axbacktrace::Backtrace;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
 
 use crate::{
     mm::clear_elf_cache,
@@ -66,8 +66,8 @@ impl MemoryCategory {
                 "ax_task::timers::set_alarm_wakeup" => {
                     return Some("timer");
                 }
-                "axfs_ng_vfs::node::dir::DirNode::lookup_locked"
-                | "axfs_ng_vfs::node::dir::DirNode::create_locked" => {
+                "ax_fs_vfs::node::dir::DirNode::lookup_locked"
+                | "ax_fs_vfs::node::dir::DirNode::create_locked" => {
                     return Some("dentry");
                 }
                 "ext4_user_malloc" => {

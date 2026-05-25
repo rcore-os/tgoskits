@@ -167,15 +167,15 @@ impl TpuDevice {
 }
 
 impl DeviceOps for TpuDevice {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> axfs_ng_vfs::VfsResult<usize> {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> ax_fs_vfs::VfsResult<usize> {
         Ok(0)
     }
 
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> axfs_ng_vfs::VfsResult<usize> {
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> ax_fs_vfs::VfsResult<usize> {
         Ok(0)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> axfs_ng_vfs::VfsResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> ax_fs_vfs::VfsResult<usize> {
         debug!("TPU ioctl: cmd=0x{:x}, arg=0x{:x}", cmd, arg);
 
         let result = match cmd {

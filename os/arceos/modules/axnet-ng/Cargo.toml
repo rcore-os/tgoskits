@@ -15,8 +15,8 @@ async-channel = { version = "2.5", default-features = false }
 async-trait = "0.1"
 ax-config = { workspace = true }
 ax-errno = { workspace = true }
-ax-fs-ng = { workspace = true }
-axfs-ng-vfs = { workspace = true }
+ax-fs = { workspace = true }
+ax-fs-vfs = { workspace = true }
 ax-hal = { workspace = true }
 ax-io = { workspace = true }
 ax-kspin = { workspace = true }

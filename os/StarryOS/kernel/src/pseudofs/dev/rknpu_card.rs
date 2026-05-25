@@ -4,8 +4,8 @@ use core::{
     ffi::{c_char, c_ulong},
 };
 
+use ax_fs_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use ax_hal::asm::user_copy;
-use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 
 use super::rknpu_drm::DrmVersion;
 use crate::pseudofs::{

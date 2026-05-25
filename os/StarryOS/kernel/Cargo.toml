@@ -53,14 +53,14 @@ ax-feat = { workspace = true, features = [
 
     "rtc",
 
-    "fs-ng-ext4",
+    "fs-ext4",
     "net-ng",
 ] }
 
 ax-alloc = { workspace = true, features = ["default"] }
 ax-config.workspace = true
 ax-display.workspace = true
-ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-fs.workspace = true
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
@@ -79,7 +79,7 @@ rdrive = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
-axfs-ng-vfs = { workspace = true }
+ax-fs-vfs = { workspace = true }
 ax-io = { workspace = true }
 axpoll = { workspace = true }
 bitflags = "2.10"

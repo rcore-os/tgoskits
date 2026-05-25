@@ -1,5 +1,5 @@
+use ax_fs_vfs::{VfsError, VfsResult};
 use ax_sync::Mutex;
-use axfs_ng_vfs::{VfsError, VfsResult};
 use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
 use crate::{

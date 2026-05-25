@@ -1,7 +1,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
+use ax_fs_vfs::{NodePermission, VfsError, VfsResult};
 use ax_sync::Mutex;
-use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 use ddebug::ControlFile;
 
 use super::SimpleFs;

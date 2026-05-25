@@ -42,7 +42,6 @@ pub mod config {
     }
 
     /// Read VM configs from filesystem
-    #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs() -> Vec<String> {
         use ax_std::fs;
         use ax_std::io::{BufReader, Read};
@@ -122,12 +121,6 @@ pub mod config {
         configs
     }
 
-    /// Fallback function for when "fs" feature is not enabled
-    #[cfg(not(feature = "fs"))]
-    pub fn filesystem_vm_configs() -> Vec<String> {
-        Vec::new()
-    }
-
     include!(concat!(env!("OUT_DIR"), "/vm_configs.rs"));
 }
 
@@ -157,7 +150,7 @@ pub fn init_guest_vms() {
         init_dtb_cache();
     }
 
-    // First try to get configs from filesystem if fs feature is enabled
+    // First try to get configs from filesystem.
     let mut gvm_raw_configs = config::filesystem_vm_configs();
 
     // If no filesystem configs found, fallback to static configs

@@ -2,8 +2,8 @@ use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FS_CONTEXT;
+use ax_fs_vfs::{MetadataUpdate, NodeType};
 use ax_task::current;
-use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{

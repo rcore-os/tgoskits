@@ -6,9 +6,9 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
+use ax_fs_vfs::{NodePermission, NodeType};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{__kernel_off_t, O_APPEND};
 use starry_vm::{VmMutPtr, VmPtr};

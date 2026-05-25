@@ -66,9 +66,9 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let entry = tmpfs.create_anonymous_file(
         &name_str,
-        axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),
+        ax_fs_vfs::NodePermission::from_bits_truncate(0o666),
     );
-    let loc = axfs_ng_vfs::Location::new(mountpoint, entry);
+    let loc = ax_fs_vfs::Location::new(mountpoint, entry);
 
     let file = OpenOptions::new()
         .read(true)

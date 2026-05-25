@@ -1,8 +1,8 @@
 use core::{future::poll_fn, task::Poll};
 
+use ax_fs_vfs::VfsResult;
 use ax_sync::Mutex;
 use ax_task::future::{block_on, interruptible};
-use axfs_ng_vfs::VfsResult;
 use ktracepoint::TracePipeOps;
 
 use crate::pseudofs::DirectRwFsFileOps;

@@ -36,7 +36,7 @@ use std::{
 use ax_kspin::SpinRaw;
 
 #[cfg(feature = "ax-std")]
-use axfs_ng_vfs::{
+use ax_fs_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata,
     MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
     VfsResult, WeakDirEntry,
@@ -54,7 +54,7 @@ const WAIT_UNTIL_RETRY_LIMIT: usize = 10_000_000;
 // - mixed-two-task: two-task spin->mutex then mutex->spin
 // - mixed-ms-single: single-task mutex->spin then spin->mutex
 // - mixed-ms-two-task: two-task mutex->spin then spin->mutex
-// - vfs-cache-single: single-task axfs-ng-vfs dentry cache ABBA
+// - vfs-cache-single: single-task ax-fs-vfs dentry cache ABBA
 #[cfg(feature = "ax-std")]
 fn lockdep_case() -> &'static str {
     match option_env!("LOCKDEP_CASE") {

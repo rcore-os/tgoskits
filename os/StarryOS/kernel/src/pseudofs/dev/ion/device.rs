@@ -4,8 +4,8 @@ use alloc::sync::Arc;
 use core::any::Any;
 
 use ax_errno::AxError;
+use ax_fs_vfs::{NodeFlags, VfsResult};
 use ax_memory_addr::PhysAddrRange;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg2002_tpu::ion::{
     IonAllocData, IonBufferManager, IonFdData, IonHandle, IonHandleData, IonHeapData,
     IonHeapManager, IonHeapQuery, IonHeapType, MAX_HEAP_NAME,

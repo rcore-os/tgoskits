@@ -1,6 +1,6 @@
 use alloc::{borrow::Cow, boxed::Box, format, string::String, sync::Arc, vec::Vec};
 
-use axfs_ng_vfs::{Filesystem, NodeType, VfsResult};
+use ax_fs_vfs::{Filesystem, NodeType, VfsResult};
 
 use super::{
     descriptor::{UsbDeviceSnapshot, bus_name, device_name},

@@ -12,7 +12,7 @@ This test app exercises lock order inversion detection for ArceOS lockdep.
 - `mixed-two-task`: two-task spin->mutex then mutex->spin
 - `mixed-ms-single`: single-task mutex->spin then spin->mutex
 - `mixed-ms-two-task`: two-task mutex->spin then spin->mutex
-- `vfs-cache-single`: single-task `axfs-ng-vfs` dentry user-data/cache ABBA
+- `vfs-cache-single`: single-task `ax-fs-vfs` dentry user-data/cache ABBA
 
 ## Test modes
 

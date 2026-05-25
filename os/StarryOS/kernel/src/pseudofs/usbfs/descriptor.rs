@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use core::mem::size_of;
 
-use axfs_ng_vfs::{DeviceId, VfsResult};
+use ax_fs_vfs::{DeviceId, VfsResult};
 use bytemuck::AnyBitPattern;
 use crab_usb::{
     ProbedDevice,

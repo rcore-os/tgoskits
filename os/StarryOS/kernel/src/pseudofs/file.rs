@@ -1,11 +1,11 @@
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering, task::Context};
 
-use ax_sync::Mutex;
-use axfs_ng_vfs::{
+use ax_fs_vfs::{
     FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
     NodeType, VfsError, VfsResult,
 };
+use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 

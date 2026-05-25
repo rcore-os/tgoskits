@@ -43,8 +43,8 @@ use alloc::{format, sync::Arc};
 use core::any::Any;
 
 use ax_errno::AxError;
+use ax_fs_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use ax_sync::Mutex;
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 #[cfg(feature = "sg2002")]
 use spin::Once;
 

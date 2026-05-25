@@ -5,8 +5,8 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
+use ax_fs_vfs::{DeviceId, NodeFlags, VfsResult};
 use ax_sync::Mutex;
-use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
     ioctl::{

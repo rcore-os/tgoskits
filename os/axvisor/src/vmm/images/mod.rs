@@ -30,14 +30,13 @@ mod x86_boot;
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
         Some("memory") => with_memory_image(config, linux::Header::parse),
-        #[cfg(feature = "fs")]
         Some("fs") => {
             let read_size = linux::Header::hdr_size();
             let data = fs::kernal_read(config, read_size).ok()?;
             linux::Header::parse(&data)
         }
         _ => unimplemented!(
-            "Check your \"image_location\" in config.toml, \"memory\" and \"fs\" are supported,\n NOTE: \"fs\" feature should be enabled if you want to load images from filesystem. (APP_FEATURES=fs)"
+            "Check your \"image_location\" in config.toml; \"memory\" and \"fs\" are supported."
         ),
     }
 }
@@ -92,10 +91,9 @@ impl ImageLoader {
 
         match self.config.kernel.image_location.as_deref() {
             Some("memory") => self.load_vm_images_from_memory(),
-            #[cfg(feature = "fs")]
             Some("fs") => fs::load_vm_images_from_filesystem(self),
             _ => unimplemented!(
-                "Check your \"image_location\" in config.toml, \"memory\" and \"fs\" are supported,\n NOTE: \"fs\" feature should be enabled if you want to load images from filesystem. (APP_FEATURES=fs)"
+                "Check your \"image_location\" in config.toml; \"memory\" and \"fs\" are supported."
             ),
         }
     }
@@ -245,7 +243,6 @@ impl ImageLoader {
         load_vm_image_from_memory(ramdisk, load_gpa, self.vm.clone())
     }
 
-    #[cfg(feature = "fs")]
     fn load_ramdisk_from_filesystem(&self, ramdisk_path: &str) -> AxResult {
         let load_gpa = self
             .vm
@@ -316,7 +313,6 @@ pub fn load_vm_image_from_memory(
     Ok(())
 }
 
-#[cfg(feature = "fs")]
 pub mod fs {
     use super::*;
     use ax_errno::{AxResult, ax_err, ax_err_type};

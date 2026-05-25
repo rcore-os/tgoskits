@@ -8,10 +8,10 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
+use ax_fs_vfs::{Location, Metadata, NodeFlags};
 use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 
@@ -113,7 +113,7 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
     }
 }
 
-/// File wrapper for `ax_fs::fops::File`.
+/// File wrapper for `ax_fs::File`.
 pub struct File {
     inner: ax_fs::File,
     open_flags: u32,
@@ -309,7 +309,7 @@ impl Pollable for File {
     }
 }
 
-/// Directory wrapper for `ax_fs::fops::Directory`.
+/// Directory wrapper for `ax_fs::ReadDir`.
 pub struct Directory {
     inner: Location,
     pub offset: Mutex<u64>,

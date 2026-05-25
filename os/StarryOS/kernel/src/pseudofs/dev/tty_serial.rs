@@ -2,12 +2,12 @@ use alloc::collections::vec_deque::VecDeque;
 use core::{any::Any, task::Context};
 
 use ax_errno::{AxError, LinuxError};
+use ax_fs_vfs::{NodeFlags, VfsResult};
 use ax_hal::mem::phys_to_virt;
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PhysAddr, pa};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::AnyBitPattern;
 use dw_apb_uart::DW8250;

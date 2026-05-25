@@ -3,7 +3,7 @@ name = "ax-fs-vfs"
 description = "Virtual filesystem interfaces used by ArceOS"
 keywords = ["arceos", "filesystem", "vfs"]
 edition.workspace = true
-version = "0.3.11"
+version = "0.4.0"
 repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 categories = ["os", "no-std", "filesystem"]
@@ -14,5 +14,11 @@ default = []
 
 [dependencies]
 log = "0.4"
-bitflags = "2.6"
+bitflags = "2.10"
 ax-errno = { workspace = true }
+ax-kspin = { workspace = true }
+axpoll = { workspace = true }
+cfg-if = "1"
+hashbrown = "0.16"
+inherit-methods-macro = "0.1"
+smallvec = "1.15"

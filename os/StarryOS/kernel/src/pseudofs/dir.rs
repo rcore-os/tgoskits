@@ -7,7 +7,7 @@ use alloc::{
 };
 use core::any::Any;
 
-use axfs_ng_vfs::{
+use ax_fs_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FilesystemOps, Metadata, MetadataUpdate,
     NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},

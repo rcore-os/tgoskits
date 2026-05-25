@@ -21,7 +21,6 @@ use std::{
 
 use ax_hal::time::busy_wait;
 use axvm::VMStatus;
-#[cfg(feature = "fs")]
 use std::fs::read_to_string;
 
 use crate::{
@@ -122,7 +121,6 @@ fn vm_help(_cmd: &ParsedCommand) {
     println!("Use 'vm <command> --help' for more information on a specific command.");
 }
 
-#[cfg(feature = "fs")]
 fn vm_create(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -173,7 +171,6 @@ fn vm_create(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn vm_start(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let detach = cmd.flags.get("detach").unwrap_or(&false);
@@ -781,7 +778,6 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     println!("✓ VM[{}] deletion completed", vm_id);
 }
 
-#[cfg(feature = "fs")]
 fn vm_list_simple() {
     let vms = vm_list::get_vm_list();
     println!("ID    NAME           STATE      VCPU   MEMORY");
@@ -1273,7 +1269,6 @@ fn show_vm_full_details(vm_id: usize) {
 
 /// Build the VM command tree and register it.
 pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
-    #[cfg(feature = "fs")]
     let create_cmd = CommandNode::new("Create a new virtual machine")
         .with_handler(vm_create)
         .with_usage("vm create [OPTIONS] <CONFIG_FILE>...")
@@ -1298,7 +1293,6 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
                 .with_long("force"),
         );
 
-    #[cfg(feature = "fs")]
     let start_cmd = CommandNode::new("Start a virtual machine")
         .with_handler(vm_start)
         .with_usage("vm start [OPTIONS] [VM_ID...]")
@@ -1392,7 +1386,6 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
             CommandNode::new("Show VM help").with_handler(vm_help),
         );
 
-    #[cfg(feature = "fs")]
     {
         vm_node = vm_node
             .add_subcommand("create", create_cmd)

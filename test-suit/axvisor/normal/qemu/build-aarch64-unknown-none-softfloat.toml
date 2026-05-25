@@ -3,7 +3,6 @@ features = [
   "ax-hal/plat-dyn",
     "ept-level-4",
     "ax-driver/virtio-blk",
-    "fs",
 ]
 log = "Info"
 plat_dyn = true

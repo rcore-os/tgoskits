@@ -9,10 +9,10 @@ use alloc::sync::Arc;
 use core::any::Any;
 
 use ax_errno::AxError;
+use ax_fs_vfs::{NodeFlags, VfsError, VfsResult};
 use ax_hal::{kcov::KCOV_GLOBAL_GATE, mem::phys_to_virt, paging::PageSize};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_sync::Mutex;
-use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 
 use crate::{
     mm::SharedPages,

@@ -1,15 +1,19 @@
 [package]
 name = "ax-fs-ramfs"
-description = "RAM filesystem used by ArceOS"
+description = "In-memory filesystem implementation for ArceOS"
 keywords = ["arceos", "filesystem", "ramfs"]
 edition.workspace = true
-version = "0.3.12"
+version = "0.4.0"
 repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 categories = ["os", "no-std", "filesystem"]
 license = "Apache-2.0"
 
+[features]
+default = []
+
 [dependencies]
-ax-fs-vfs.workspace = true
+ax-fs-vfs = { workspace = true }
+ax-kspin = { workspace = true }
+axpoll = { workspace = true }
 spin = { workspace = true }
-log = "0.4"

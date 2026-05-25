@@ -7,12 +7,12 @@ use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use core::{num::NonZero, ops::Deref};
 
 use ax_errno::{AxError, AxResult};
+use ax_fs_vfs::NodePermission;
 use ax_hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sync::Mutex;
 use ax_task::current;
-use axfs_ng_vfs::NodePermission;
 use axpoll::PollSet;
 use ktracepoint::*;
 

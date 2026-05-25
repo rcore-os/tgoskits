@@ -132,7 +132,6 @@ pub fn get_developer_provided_dtb(
                 return Some(dtb.to_vec());
             }
         }
-        #[cfg(feature = "fs")]
         Some("fs") => {
             use ax_errno::ax_err_type;
             use std::io::{BufReader, Read};

@@ -1,13 +1,13 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
-use axfs_ng_vfs::{
+use ax_fs_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
+use ax_kspin::SpinNoIrq;
+use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;

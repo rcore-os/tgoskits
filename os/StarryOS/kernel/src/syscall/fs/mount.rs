@@ -30,7 +30,7 @@ const MS_SHARED: i32 = 1 << 20;
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
 
-fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
+fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<ax_fs_vfs::Mountpoint>) -> bool {
     fd.downcast_ref::<File>()
         .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
         || fd
@@ -38,7 +38,7 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
             .is_some_and(|d| Arc::ptr_eq(d.inner().mountpoint(), mp))
 }
 
-fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
+fn is_mount_busy(mp: &Arc<ax_fs_vfs::Mountpoint>) -> bool {
     if fs_is_mount_busy(mp) {
         return true;
     }

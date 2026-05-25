@@ -2,7 +2,7 @@ use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
 use core::{any::Any, task::Context};
 
 use ax_errno::AxError;
-use axfs_ng_vfs::{NodeFlags, NodeType, VfsResult};
+use ax_fs_vfs::{NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_vm::VmMutPtr;
 

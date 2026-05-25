@@ -14,13 +14,13 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_fs_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use ax_hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
-use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use starry_process::{Pid, Process};
 
 use crate::{

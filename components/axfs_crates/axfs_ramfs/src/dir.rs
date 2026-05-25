@@ -1,182 +1,268 @@
-use alloc::{
-    collections::BTreeMap,
-    string::String,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use core::{any::Any, ops::Deref, task::Context, time::Duration};
 
 use ax_fs_vfs::{
-    VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsResult,
+    DeviceId, DirEntry, DirEntrySink, DirNode as VfsDirNode, DirNodeOps, FilesystemOps, Metadata,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
+    WeakDirEntry,
 };
-use spin::RwLock;
+use ax_kspin::SpinNoIrq as Mutex;
+use axpoll::{IoEvents, Pollable};
 
-use crate::file::FileNode;
+use crate::{RamFileSystem, file::FileNode};
 
-/// The directory node in the RAM filesystem.
-///
-/// It implements [`ax_fs_vfs::VfsNodeOps`].
-pub struct DirNode {
-    this: Weak<DirNode>,
-    parent: RwLock<Weak<dyn VfsNodeOps>>,
-    children: RwLock<BTreeMap<String, VfsNodeRef>>,
+pub(crate) struct RamDirNode {
+    fs: Arc<RamFileSystem>,
+    this: Mutex<WeakDirEntry>,
+    inode: u64,
+    mode: Mutex<NodePermission>,
+    children: Mutex<BTreeMap<String, DirEntry>>,
 }
 
-impl DirNode {
-    pub(super) fn new(parent: Option<Weak<dyn VfsNodeOps>>) -> Arc<Self> {
-        Arc::new_cyclic(|this| Self {
-            this: this.clone(),
-            parent: RwLock::new(parent.unwrap_or_else(|| Weak::<Self>::new())),
-            children: RwLock::new(BTreeMap::new()),
-        })
+impl RamDirNode {
+    pub(crate) fn make(
+        fs: Arc<RamFileSystem>,
+        this: WeakDirEntry,
+        inode: u64,
+        mode: NodePermission,
+    ) -> VfsDirNode {
+        VfsDirNode::new(Arc::new(Self {
+            fs,
+            this: Mutex::new(this),
+            inode,
+            mode: Mutex::new(mode),
+            children: Mutex::new(BTreeMap::new()),
+        }))
     }
 
-    pub(super) fn set_parent(&self, parent: Option<&VfsNodeRef>) {
-        *self.parent.write() = parent.map_or(Weak::<Self>::new() as _, Arc::downgrade);
-    }
-
-    /// Returns a string list of all entries in this directory.
-    pub fn get_entries(&self) -> Vec<String> {
-        self.children.read().keys().cloned().collect()
-    }
-
-    /// Checks whether a node with the given name exists in this directory.
-    pub fn exist(&self, name: &str) -> bool {
-        self.children.read().contains_key(name)
-    }
-
-    /// Creates a new node with the given name and type in this directory.
-    pub fn create_node(&self, name: &str, ty: VfsNodeType) -> VfsResult {
-        if self.exist(name) {
-            log::error!("AlreadyExists {name}");
-            return Err(VfsError::AlreadyExists);
+    fn make_entry(
+        &self,
+        name: &str,
+        node_type: NodeType,
+        mode: NodePermission,
+    ) -> VfsResult<DirEntry> {
+        let fs = self.fs.clone();
+        let reference = Reference::new(self.this.lock().upgrade(), name.into());
+        let inode = fs.alloc_inode();
+        match node_type {
+            NodeType::RegularFile | NodeType::Symlink => Ok(DirEntry::new_file(
+                FileNode::make(fs, inode, mode, None),
+                node_type,
+                reference,
+            )),
+            NodeType::Directory => Ok(DirEntry::new_dir(
+                |this| {
+                    VfsDirNode::new(Arc::new(Self {
+                        fs,
+                        this: Mutex::new(this),
+                        inode,
+                        mode: Mutex::new(mode),
+                        children: Mutex::new(BTreeMap::new()),
+                    }))
+                },
+                reference,
+            )),
+            _ => Err(VfsError::Unsupported),
         }
-        let node: VfsNodeRef = match ty {
-            VfsNodeType::File => Arc::new(FileNode::new()),
-            VfsNodeType::Dir => Self::new(Some(self.this.clone())),
-            _ => return Err(VfsError::Unsupported),
-        };
-        self.children.write().insert(name.into(), node);
+    }
+
+    fn rebind_entry(
+        &self,
+        entry: &DirEntry,
+        parent: Option<DirEntry>,
+        name: &str,
+    ) -> VfsResult<DirEntry> {
+        let reference = Reference::new(parent, name.into());
+        if entry.is_file() {
+            return Ok(DirEntry::new_file(
+                ax_fs_vfs::FileNode::new(entry.as_file()?.inner().clone()),
+                entry.node_type(),
+                reference,
+            ));
+        }
+
+        let old_dir = entry.as_dir()?.downcast::<Self>()?;
+        let node = old_dir.clone();
+        let rebound = DirEntry::new_dir_node_cyclic(
+            |this| {
+                *node.this.lock() = this;
+                VfsDirNode::new(node)
+            },
+            reference,
+        );
+        old_dir.rebind_children_to(&rebound)?;
+        Ok(rebound)
+    }
+
+    fn rebind_children_to(&self, parent: &DirEntry) -> VfsResult<()> {
+        let mut children = self.children.lock();
+        for (name, child) in children.iter_mut() {
+            *child = self.rebind_entry(child, Some(parent.clone()), name)?;
+        }
         Ok(())
     }
 
-    /// Removes a node by the given name in this directory.
-    pub fn remove_node(&self, name: &str) -> VfsResult {
-        let mut children = self.children.write();
-        let node = children.get(name).ok_or(VfsError::NotFound)?;
-        if node
-            .as_any()
-            .downcast_ref::<DirNode>()
-            .is_some_and(|dir| !dir.children.read().is_empty())
+    fn check_replace_target(children: &BTreeMap<String, DirEntry>, name: &str) -> VfsResult<()> {
+        if let Some(existing) = children.get(name)
+            && existing.is_dir()
+            && existing.as_dir()?.has_children()?
+        {
+            return Err(VfsError::DirectoryNotEmpty);
+        }
+        Ok(())
+    }
+}
+
+impl NodeOps for RamDirNode {
+    fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            device: 0,
+            inode: self.inode,
+            nlink: 1,
+            mode: *self.mode.lock(),
+            node_type: NodeType::Directory,
+            uid: 0,
+            gid: 0,
+            size: 4096,
+            block_size: 4096,
+            blocks: 8,
+            rdev: DeviceId::default(),
+            atime: Duration::default(),
+            mtime: Duration::default(),
+            ctime: Duration::default(),
+        })
+    }
+
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        if let Some(mode) = update.mode {
+            *self.mode.lock() = mode;
+        }
+        Ok(())
+    }
+
+    fn filesystem(&self) -> &dyn FilesystemOps {
+        self.fs.deref()
+    }
+
+    fn sync(&self, _data_only: bool) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::ALWAYS_CACHE
+    }
+}
+
+impl DirNodeOps for RamDirNode {
+    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let mut count = 0;
+        for (index, (name, entry)) in self
+            .children
+            .lock()
+            .iter()
+            .enumerate()
+            .skip(offset as usize)
+        {
+            if !sink.accept(name, entry.inode(), entry.node_type(), (index + 1) as u64) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
+        self.children
+            .lock()
+            .get(name)
+            .cloned()
+            .ok_or(VfsError::NotFound)
+    }
+
+    fn create(
+        &self,
+        name: &str,
+        node_type: NodeType,
+        permission: NodePermission,
+    ) -> VfsResult<DirEntry> {
+        let mut children = self.children.lock();
+        if children.contains_key(name) {
+            return Err(VfsError::AlreadyExists);
+        }
+        let entry = self.make_entry(name, node_type, permission)?;
+        children.insert(name.into(), entry.clone());
+        Ok(entry)
+    }
+
+    fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
+        if node.is_dir() {
+            return Err(VfsError::OperationNotPermitted);
+        }
+        let mut children = self.children.lock();
+        if children.contains_key(name) {
+            return Err(VfsError::AlreadyExists);
+        }
+        let reference = Reference::new(self.this.lock().upgrade(), name.into());
+        let entry = DirEntry::new_file(
+            ax_fs_vfs::FileNode::new(node.as_file()?.inner().clone()),
+            node.node_type(),
+            reference,
+        );
+        children.insert(name.into(), entry.clone());
+        Ok(entry)
+    }
+
+    fn unlink(&self, name: &str) -> VfsResult<()> {
+        let mut children = self.children.lock();
+        let entry = children.get(name).ok_or(VfsError::NotFound)?;
+        if let Ok(dir) = entry.as_dir()
+            && dir.has_children()?
         {
             return Err(VfsError::DirectoryNotEmpty);
         }
         children.remove(name);
         Ok(())
     }
+
+    fn rename(&self, src_name: &str, dst_dir: &VfsDirNode, dst_name: &str) -> VfsResult<()> {
+        let dst = dst_dir.downcast::<Self>()?;
+        if core::ptr::eq(self, dst.as_ref()) {
+            if src_name == dst_name {
+                return Ok(());
+            }
+            let mut children = self.children.lock();
+            let entry = children.get(src_name).cloned().ok_or(VfsError::NotFound)?;
+            Self::check_replace_target(&children, dst_name)?;
+            let rebound = self.rebind_entry(&entry, self.this.lock().upgrade(), dst_name)?;
+            children.remove(src_name);
+            children.insert(dst_name.into(), rebound);
+            return Ok(());
+        }
+
+        let entry = self.lookup(src_name)?;
+        {
+            let dst_children = dst.children.lock();
+            Self::check_replace_target(&dst_children, dst_name)?;
+        }
+        let rebound = dst.rebind_entry(&entry, dst.this.lock().upgrade(), dst_name)?;
+        self.children.lock().remove(src_name);
+        dst.children.lock().insert(dst_name.into(), rebound);
+        Ok(())
+    }
 }
 
-impl VfsNodeOps for DirNode {
-    fn get_attr(&self) -> VfsResult<VfsNodeAttr> {
-        Ok(VfsNodeAttr::new_dir(4096, 0))
+impl Pollable for RamDirNode {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn parent(&self) -> Option<VfsNodeRef> {
-        self.parent.read().upgrade()
-    }
-
-    fn lookup(self: Arc<Self>, path: &str) -> VfsResult<VfsNodeRef> {
-        let (name, rest) = split_path(path);
-        let node = match name {
-            "" | "." => Ok(self.clone() as VfsNodeRef),
-            ".." => self.parent().ok_or(VfsError::NotFound),
-            _ => self
-                .children
-                .read()
-                .get(name)
-                .cloned()
-                .ok_or(VfsError::NotFound),
-        }?;
-
-        if let Some(rest) = rest {
-            node.lookup(rest)
-        } else {
-            Ok(node)
-        }
-    }
-
-    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> VfsResult<usize> {
-        let children = self.children.read();
-        let mut children = children.iter().skip(start_idx.max(2) - 2);
-        for (i, ent) in dirents.iter_mut().enumerate() {
-            match i + start_idx {
-                0 => *ent = VfsDirEntry::new(".", VfsNodeType::Dir),
-                1 => *ent = VfsDirEntry::new("..", VfsNodeType::Dir),
-                _ => {
-                    if let Some((name, node)) = children.next() {
-                        *ent = VfsDirEntry::new(name, node.get_attr().unwrap().file_type());
-                    } else {
-                        return Ok(i);
-                    }
-                }
-            }
-        }
-        Ok(dirents.len())
-    }
-
-    fn create(&self, path: &str, ty: VfsNodeType) -> VfsResult {
-        log::debug!("create {ty:?} at ramfs: {path}");
-        let (name, rest) = split_path(path);
-        if let Some(rest) = rest {
-            match name {
-                "" | "." => self.create(rest, ty),
-                ".." => self.parent().ok_or(VfsError::NotFound)?.create(rest, ty),
-                _ => {
-                    let subdir = self
-                        .children
-                        .read()
-                        .get(name)
-                        .ok_or(VfsError::NotFound)?
-                        .clone();
-                    subdir.create(rest, ty)
-                }
-            }
-        } else if name.is_empty() || name == "." || name == ".." {
-            Ok(()) // already exists
-        } else {
-            self.create_node(name, ty)
-        }
-    }
-
-    fn remove(&self, path: &str) -> VfsResult {
-        log::debug!("remove at ramfs: {path}");
-        let (name, rest) = split_path(path);
-        if let Some(rest) = rest {
-            match name {
-                "" | "." => self.remove(rest),
-                ".." => self.parent().ok_or(VfsError::NotFound)?.remove(rest),
-                _ => {
-                    let subdir = self
-                        .children
-                        .read()
-                        .get(name)
-                        .ok_or(VfsError::NotFound)?
-                        .clone();
-                    subdir.remove(rest)
-                }
-            }
-        } else if name.is_empty() || name == "." || name == ".." {
-            Err(VfsError::InvalidInput) // remove '.' or '..
-        } else {
-            self.remove_node(name)
-        }
-    }
-
-    ax_fs_vfs::impl_vfs_dir_default! {}
-}
-
-fn split_path(path: &str) -> (&str, Option<&str>) {
-    let trimmed_path = path.trim_start_matches('/');
-    trimmed_path.find('/').map_or((trimmed_path, None), |n| {
-        (&trimmed_path[..n], Some(&trimmed_path[n + 1..]))
-    })
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }

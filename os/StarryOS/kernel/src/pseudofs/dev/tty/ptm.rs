@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::any::Any;
 
 use ax_errno::AxResult;
-use axfs_ng_vfs::{DeviceId, NodeType};
+use ax_fs_vfs::{DeviceId, NodeType};
 
 use crate::pseudofs::{Device, DeviceOps, SimpleFs};
 

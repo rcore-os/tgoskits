@@ -1,6 +1,6 @@
 use core::any::Any;
 
-use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+use ax_fs_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use starry_vm::VmMutPtr;
 
 use crate::pseudofs::DeviceOps;

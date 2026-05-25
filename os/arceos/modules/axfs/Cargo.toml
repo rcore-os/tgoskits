@@ -1,38 +1,57 @@
 [package]
 name = "ax-fs"
-version = "0.5.14"
+version = "0.6.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
-authors = ["Yuekai Jia <equation618@gmail.com>"]
+authors = ["Mivik <mivikq@gmail.com>"]
 description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
-default = []
+fat = ["dep:fatfs"]
+devfs = ["dep:ax-fs-devfs"]
+ext4-lwext4 = ["dep:lwext4_rust"]
+ext4-rsext4 = ["dep:rsext4"]
+ext4 = ["ext4-rsext4"]
+ramfs = ["dep:ax-fs-ramfs"]
 times = []
+std = ["lwext4_rust?/std"]
 use-ramdisk = []
 
 [dependencies]
+ax-alloc = { workspace = true, features = ["default"] }
 ax-errno = { workspace = true }
-ax-hal = { workspace = true }
-ax-fs-devfs = { workspace = true }
-ax-fs-ramfs = { workspace = true }
+ax-fs-devfs = { workspace = true, optional = true }
+ax-fs-ramfs = { workspace = true, optional = true }
 ax-fs-vfs = { workspace = true }
+ax-hal = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
-ax-cap-access = { workspace = true }
+axpoll = { workspace = true }
+ax-sync = { workspace = true }
+bitflags = "2.10"
+cfg-if = { workspace = true }
+chrono = { workspace = true }
+intrusive-collections = "0.9"
 ax-kspin = { workspace = true }
-ax-lazyinit = { workspace = true }
 log = { workspace = true }
-rsext4 = { workspace = true }
+lru = "0.16"
+rd-block-volume = { workspace = true }
+scope-local = { workspace = true }
+slab = { version = "0.4", default-features = false }
 spin = { workspace = true }
 
-[dependencies.axfatfs]
-version = "0.1.0-pre.0"
+[dependencies.lwext4_rust]
+version = "0.2"
 default-features = false
-features = [
-  # no std
-  "alloc",
-  "lfn",
-  "log_level_trace",
-  "unicode",
-]
+optional = true
+
+[dependencies.rsext4]
+workspace = true
+optional = true
+
+[dependencies.fatfs]
+package = "starry-fatfs"
+version = "0.4.1-preview.2"
+default-features = false
+optional = true
+features = ["alloc", "lfn", "log_level_trace", "unicode"]

@@ -342,10 +342,10 @@ name = "arceos-lockdep"
 version = "0.3.1"
 dependencies = [
  "ax-driver",
+ "ax-fs-vfs",
  "ax-hal",
  "ax-kspin",
  "ax-std",
- "axfs-ng-vfs",
 ]
 
 [[package]]
@@ -723,6 +723,7 @@ dependencies = [
  "ax-errno",
  "ax-feat",
  "ax-fs",
+ "ax-fs-vfs",
  "ax-hal",
  "ax-io",
  "ax-ipi",
@@ -928,7 +929,6 @@ dependencies = [
  "ax-display",
  "ax-driver",
  "ax-fs",
- "ax-fs-ng",
  "ax-hal",
  "ax-input",
  "ax-ipi",
@@ -944,9 +944,9 @@ dependencies = [
 
 [[package]]
 name = "ax-fs"
-version = "0.5.14"
+version = "0.6.0"
 dependencies = [
- "ax-cap-access",
+ "ax-alloc",
  "ax-errno",
  "ax-fs-devfs",
  "ax-fs-ramfs",
@@ -954,33 +954,7 @@ dependencies = [
  "ax-hal",
  "ax-io",
  "ax-kspin",
- "ax-lazyinit",
- "axfatfs",
- "log",
- "rsext4",
- "spin",
-]
-
-[[package]]
-name = "ax-fs-devfs"
-version = "0.3.11"
-dependencies = [
- "ax-fs-vfs",
- "log",
- "spin",
-]
-
-[[package]]
-name = "ax-fs-ng"
-version = "0.5.15"
-dependencies = [
- "ax-alloc",
- "ax-errno",
- "ax-hal",
- "ax-io",
- "ax-kspin",
  "ax-sync",
- "axfs-ng-vfs",
  "axpoll",
  "bitflags 2.11.1",
  "cfg-if",
@@ -998,21 +972,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-fs-ramfs"
-version = "0.3.12"
+name = "ax-fs-devfs"
+version = "0.4.0"
 dependencies = [
  "ax-fs-vfs",
- "log",
+ "ax-kspin",
+ "axpoll",
+ "spin",
+]
+
+[[package]]
+name = "ax-fs-ramfs"
+version = "0.4.0"
+dependencies = [
+ "ax-fs-vfs",
+ "ax-kspin",
+ "axpoll",
  "spin",
 ]
 
 [[package]]
 name = "ax-fs-vfs"
-version = "0.3.11"
+version = "0.4.0"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
+ "axpoll",
  "bitflags 2.11.1",
+ "cfg-if",
+ "hashbrown 0.16.1",
+ "inherit-methods-macro",
  "log",
+ "smallvec",
 ]
 
 [[package]]
@@ -1240,13 +1231,13 @@ dependencies = [
  "async-trait",
  "ax-config",
  "ax-errno",
- "ax-fs-ng",
+ "ax-fs",
+ "ax-fs-vfs",
  "ax-hal",
  "ax-io",
  "ax-kspin",
  "ax-sync",
  "ax-task",
- "axfs-ng-vfs",
  "axpoll",
  "bitflags 2.11.1",
  "cfg-if",
@@ -1489,6 +1480,7 @@ dependencies = [
  "ax-errno",
  "ax-feat",
  "ax-fs",
+ "ax-fs-vfs",
  "ax-hal",
  "ax-io",
  "ax-log",
@@ -1521,7 +1513,6 @@ dependencies = [
  "ax-driver",
  "ax-errno",
  "ax-fs",
- "ax-fs-ng",
  "ax-hal",
  "ax-input",
  "ax-ipi",
@@ -1735,31 +1726,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfatfs"
-version = "0.1.0-pre.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bf1c27753a96a0f835cca49e6fb354912107d018c905d13c7eff39be757eb5a"
-dependencies = [
- "bitflags 2.11.1",
- "log",
-]
-
-[[package]]
-name = "axfs-ng-vfs"
-version = "0.4.2"
-dependencies = [
- "ax-errno",
- "ax-kspin",
- "axpoll",
- "bitflags 2.11.1",
- "cfg-if",
- "hashbrown 0.16.1",
- "inherit-methods-macro",
- "log",
- "smallvec",
-]
-
-[[package]]
 name = "axhvc"
 version = "0.4.8"
 dependencies = [
@@ -1943,6 +1909,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-driver",
  "ax-errno",
+ "ax-feat",
  "ax-hal",
  "ax-kernel-guard",
  "ax-kspin",
@@ -7855,7 +7822,8 @@ dependencies = [
  "ax-driver",
  "ax-errno",
  "ax-feat",
- "ax-fs-ng",
+ "ax-fs",
+ "ax-fs-vfs",
  "ax-hal",
  "ax-input",
  "ax-io",
@@ -7874,7 +7842,6 @@ dependencies = [
  "ax-sync",
  "ax-task",
  "axbacktrace",
- "axfs-ng-vfs",
  "axplat-dyn",
  "axpoll",
  "bitflags 2.11.1",
