@@ -510,7 +510,7 @@ jobs:
             command: cargo xtask starry test board --board licheerv-nano-sg2002
             cache_key: ""
             container_image: ""
-            required_repository_owner: rcore-os
+            limit_to_owner: rcore-os
             main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:

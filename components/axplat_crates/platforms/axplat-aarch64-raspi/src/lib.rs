@@ -4,6 +4,7 @@
 extern crate ax_plat;
 
 mod boot;
+mod drivers;
 mod init;
 mod mem;
 mod power;

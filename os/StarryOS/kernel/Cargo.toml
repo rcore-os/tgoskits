@@ -16,12 +16,17 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
-ext4 = ["ax-fs-ng/ext4"]
+ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 kcov = ["ax-hal/starry-kcov"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
-rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
-plat-dyn = ["dep:axplat-dyn", "axplat-dyn/usb", "dep:crab-usb", "dep:rdrive"]
+rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
+plat-dyn = [
+    "dep:ax-driver",
+    "ax-driver/usb",
+    "dep:crab-usb",
+    "dep:rdrive",
+]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ax-feat/ipi"]
 sg2002 = [
@@ -55,14 +60,14 @@ ax-feat = { workspace = true, features = [
 ax-alloc = { workspace = true, features = ["default"] }
 ax-config.workspace = true
 ax-display.workspace = true
-ax-driver.workspace = true
-ax-fs-ng.workspace = true
+ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
-ax-net-ng.workspace = true
+axnet = { version = "0.6.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
+ax-driver = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true

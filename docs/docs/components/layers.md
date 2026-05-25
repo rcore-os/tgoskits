@@ -51,16 +51,16 @@ flowchart TB
     L4["<b>层级 4</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-plat-aarch64-peripherals`、`ax-plat-loongarch64-qemu-virt`、`ax-plat-x86-pc`、`axdevice_base`、`axplat-dyn`、`axplat-x86-qemu-q35`、`axvisor_api`、`starry-signal`"]
     classDef ls4 fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px,color:#000
     class L4 ls4
-    L3["<b>层级 3</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-alloc`、`ax-cpu`、`ax-driver-virtio`、`ax-log`、`ax-plat`、`axaddrspace`、`scope-local`、`starry-process`、`test-simple`、`test-weak`、`test-weak-partial`、`tg-xtask`"]
+    L3["<b>层级 3</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-alloc`、`ax-cpu`、`ax-log`、`ax-plat`、`axaddrspace`、`scope-local`、`starry-process`、`test-simple`、`test-weak`、`test-weak-partial`、`tg-xtask`"]
     classDef ls3 fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px,color:#000
     class L3 ls3
-    L2["<b>层级 2</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-config`、`ax-driver-net`、`ax-fs-devfs`、`ax-fs-ramfs`、`ax-kspin`、`ax-page-table-multiarch`、`ax-percpu`、`axbuild`、`impl-simple-traits`、`impl-weak-partial`、`impl-weak-traits`"]
+    L2["<b>层级 2</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-config`、`ax-fs-devfs`、`ax-fs-ramfs`、`ax-kspin`、`ax-page-table-multiarch`、`ax-percpu`、`axbuild`、`impl-simple-traits`、`impl-weak-partial`、`impl-weak-traits`"]
     classDef ls2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
     class L2 ls2
-    L1["<b>层级 1</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-allocator`、`ax-config-macros`、`ax-ctor-bare`、`ax-driver-block`、`ax-driver-display`、`ax-driver-input`、`ax-driver-vsock`、`ax-fs-vfs`、`ax-io`、`ax-kernel-guard`、`ax-memory-set`、`ax-page-table-entry`、`ax-plat-macros`、`ax-sched`、`axfs-ng-vfs`、`axhvc`、`axklib`、`axvmconfig`、`define-simple-traits`、`define-weak-traits` …共23个"]
+    L1["<b>层级 1</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-allocator`、`ax-config-macros`、`ax-ctor-bare`、`ax-fs-vfs`、`ax-io`、`ax-kernel-guard`、`ax-memory-set`、`ax-page-table-entry`、`ax-plat-macros`、`ax-sched`、`axfs-ng-vfs`、`axhvc`、`axklib`、`axvmconfig`、`define-simple-traits`、`define-weak-traits` …共19个"]
     classDef ls1 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
     class L1 ls1
-    L0["<b>层级 0</b><br/>基础层（无仓库内直接依赖）<br/>`aarch64_sysreg`、`ax-arm-pl011`、`ax-arm-pl031`、`ax-cap-access`、`ax-config-gen`、`ax-cpumask`、`ax-crate-interface`、`ax-crate-interface-lite`、`ax-ctor-bare-macros`、`ax-driver-base`、`ax-driver-pci`、`ax-errno`、`ax-handler-table`、`ax-int-ratio`、`ax-lazyinit`、`ax-linked-list-r4l`、`ax-memory-addr`、`ax-percpu-macros`、`ax-riscv-plic`、`ax-timer-list` …共32个"]
+    L0["<b>层级 0</b><br/>基础层（无仓库内直接依赖）<br/>`aarch64_sysreg`、`ax-arm-pl011`、`ax-arm-pl031`、`ax-cap-access`、`ax-config-gen`、`ax-cpumask`、`ax-crate-interface`、`ax-crate-interface-lite`、`ax-ctor-bare-macros`、`ax-errno`、`ax-handler-table`、`ax-int-ratio`、`ax-lazyinit`、`ax-linked-list-r4l`、`ax-memory-addr`、`ax-percpu-macros`、`ax-riscv-plic`、`ax-timer-list` …共30个"]
     classDef ls0 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
     class L0 ls0
     L16 --> L15
@@ -98,8 +98,6 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-crate-interface` | `0.5.0` | `components/crate_interface` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-crate-interface-lite` | `0.3.0` | `components/crate_interface/crate_interface_lite` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-ctor-bare-macros` | `0.4.1` | `components/ctor_bare/ctor_bare_macros` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-driver-base` | `0.3.4` | `components/axdriver_crates/axdriver_base` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-driver-pci` | `0.3.4` | `components/axdriver_crates/axdriver_pci` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-errno` | `0.4.2` | `components/axerrno` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-handler-table` | `0.3.2` | `components/handler_table` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-int-ratio` | `0.3.2` | `components/int_ratio` |
@@ -120,10 +118,6 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `ax-allocator` | `0.4.0` | `components/axallocator` |
 | 1 | 堆叠层 | 组件层 | `ax-config-macros` | `0.4.1` | `components/axconfig-gen/axconfig-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-ctor-bare` | `0.4.1` | `components/ctor_bare/ctor_bare` |
-| 1 | 堆叠层 | 组件层 | `ax-driver-block` | `0.3.4` | `components/axdriver_crates/axdriver_block` |
-| 1 | 堆叠层 | 组件层 | `ax-driver-display` | `0.3.4` | `components/axdriver_crates/axdriver_display` |
-| 1 | 堆叠层 | 组件层 | `ax-driver-input` | `0.3.4` | `components/axdriver_crates/axdriver_input` |
-| 1 | 堆叠层 | 组件层 | `ax-driver-vsock` | `0.3.4` | `components/axdriver_crates/axdriver_vsock` |
 | 1 | 堆叠层 | 组件层 | `ax-fs-vfs` | `0.3.2` | `components/axfs_crates/axfs_vfs` |
 | 1 | 堆叠层 | 组件层 | `ax-io` | `0.5.0` | `components/axio` |
 | 1 | 堆叠层 | 组件层 | `ax-kernel-guard` | `0.3.3` | `components/kernel_guard` |
@@ -142,7 +136,6 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `starry-vm` | `0.5.0` | `components/starry-vm` |
 | 2 | 堆叠层 | ArceOS 层 | `ax-config` | `0.5.0` | `os/arceos/modules/axconfig` |
 | 2 | 堆叠层 | 工具层 | `axbuild` | `0.4.0` | `scripts/axbuild` |
-| 2 | 堆叠层 | 组件层 | `ax-driver-net` | `0.3.4` | `components/axdriver_crates/axdriver_net` |
 | 2 | 堆叠层 | 组件层 | `ax-fs-devfs` | `0.3.2` | `components/axfs_crates/axfs_devfs` |
 | 2 | 堆叠层 | 组件层 | `ax-fs-ramfs` | `0.3.2` | `components/axfs_crates/axfs_ramfs` |
 | 2 | 堆叠层 | 组件层 | `ax-kspin` | `0.3.1` | `components/kspin` |
@@ -155,7 +148,6 @@ flowchart TB
 | 3 | 堆叠层 | ArceOS 层 | `ax-log` | `0.5.0` | `os/arceos/modules/axlog` |
 | 3 | 堆叠层 | 工具层 | `tg-xtask` | `0.5.0` | `xtask` |
 | 3 | 堆叠层 | 组件层 | `ax-cpu` | `0.5.0` | `components/axcpu` |
-| 3 | 堆叠层 | 组件层 | `ax-driver-virtio` | `0.3.4` | `components/axdriver_crates/axdriver_virtio` |
 | 3 | 堆叠层 | 组件层 | `ax-plat` | `0.5.1` | `components/axplat_crates/axplat` |
 | 3 | 堆叠层 | 组件层 | `axaddrspace` | `0.5.0` | `components/axaddrspace` |
 | 3 | 堆叠层 | 组件层 | `scope-local` | `0.3.2` | `components/scope-local` |
@@ -194,7 +186,7 @@ flowchart TB
 | 7 | 堆叠层 | 组件层 | `axvm` | `0.5.0` | `components/axvm` |
 | 8 | 堆叠层 | ArceOS 层 | `ax-dma` | `0.5.0` | `os/arceos/modules/axdma` |
 | 8 | 堆叠层 | ArceOS 层 | `ax-sync` | `0.5.0` | `os/arceos/modules/axsync` |
-| 9 | 堆叠层 | ArceOS 层 | `ax-driver` | `0.5.0` | `os/arceos/modules/axdriver` |
+| 9 | 堆叠层 | ArceOS 层 | `ax-driver` | `0.5.0` | `drivers/ax-driver` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-display` | `0.5.0` | `os/arceos/modules/axdisplay` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-fs` | `0.5.0` | `os/arceos/modules/axfs` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-fs-ng` | `0.5.0` | `os/arceos/modules/axfs-ng` |
@@ -237,10 +229,10 @@ flowchart TB
 
 | 层级 | 数 | 成员 |
 |------|-----|------|
-| 0 | 32 | `aarch64_sysreg` `ax-arm-pl011` `ax-arm-pl031` `ax-cap-access` `ax-config-gen` `ax-cpumask` `ax-crate-interface` `ax-crate-interface-lite` `ax-ctor-bare-macros` `ax-driver-base` `ax-driver-pci` `ax-errno` `ax-handler-table` `ax-int-ratio` `ax-lazyinit` `ax-linked-list-r4l` `ax-memory-addr` `ax-percpu-macros` `ax-riscv-plic` `ax-timer-list` `axbacktrace` `axpoll` `axvisor_api_proc` `bitmap-allocator` `bwbench-client` `deptool` `mingo` `range-alloc-arceos` `riscv-h` `rsext4` `smoltcp` |
-| 1 | 23 | `ax-allocator` `ax-config-macros` `ax-ctor-bare` `ax-driver-block` `ax-driver-display` `ax-driver-input` `ax-driver-vsock` `ax-fs-vfs` `ax-io` `ax-kernel-guard` `ax-memory-set` `ax-page-table-entry` `ax-plat-macros` `ax-sched` `axfs-ng-vfs` `axhvc` `axklib` `axvmconfig` `define-simple-traits` `define-weak-traits` `fxmac_rs` `smoltcp-fuzz` `starry-vm` |
-| 2 | 11 | `ax-config` `ax-driver-net` `ax-fs-devfs` `ax-fs-ramfs` `ax-kspin` `ax-page-table-multiarch` `ax-percpu` `axbuild` `impl-simple-traits` `impl-weak-partial` `impl-weak-traits` |
-| 3 | 12 | `ax-alloc` `ax-cpu` `ax-driver-virtio` `ax-log` `ax-plat` `axaddrspace` `scope-local` `starry-process` `test-simple` `test-weak` `test-weak-partial` `tg-xtask` |
+| 0 | 30 | `aarch64_sysreg` `ax-arm-pl011` `ax-arm-pl031` `ax-cap-access` `ax-config-gen` `ax-cpumask` `ax-crate-interface` `ax-crate-interface-lite` `ax-ctor-bare-macros` `ax-errno` `ax-handler-table` `ax-int-ratio` `ax-lazyinit` `ax-linked-list-r4l` `ax-memory-addr` `ax-percpu-macros` `ax-riscv-plic` `ax-timer-list` `axbacktrace` `axpoll` `axvisor_api_proc` `bitmap-allocator` `bwbench-client` `deptool` `mingo` `range-alloc-arceos` `riscv-h` `rsext4` `smoltcp` |
+| 1 | 19 | `ax-allocator` `ax-config-macros` `ax-ctor-bare` `ax-fs-vfs` `ax-io` `ax-kernel-guard` `ax-memory-set` `ax-page-table-entry` `ax-plat-macros` `ax-sched` `axfs-ng-vfs` `axhvc` `axklib` `axvmconfig` `define-simple-traits` `define-weak-traits` `fxmac_rs` `smoltcp-fuzz` `starry-vm` |
+| 2 | 10 | `ax-config` `ax-fs-devfs` `ax-fs-ramfs` `ax-kspin` `ax-page-table-multiarch` `ax-percpu` `axbuild` `impl-simple-traits` `impl-weak-partial` `impl-weak-traits` |
+| 3 | 11 | `ax-alloc` `ax-cpu` `ax-log` `ax-plat` `axaddrspace` `scope-local` `starry-process` `test-simple` `test-weak` `test-weak-partial` `tg-xtask` |
 | 4 | 8 | `ax-plat-aarch64-peripherals` `ax-plat-loongarch64-qemu-virt` `ax-plat-x86-pc` `axdevice_base` `axplat-dyn` `axplat-x86-qemu-q35` `axvisor_api` `starry-signal` |
 | 5 | 10 | `arm_vgic` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-riscv64-qemu-virt` `ax-plat-riscv64-qemu-virt` `axvcpu` `riscv_vplic` `x86_vlapic` |
 | 6 | 8 | `arm_vcpu` `ax-hal` `axdevice` `hello-kernel` `irq-kernel` `riscv_vcpu` `smp-kernel` `x86_vcpu` |
@@ -298,15 +290,7 @@ flowchart TB
 | `ax-ctor-bare-macros` | 0 | Macros for registering constructor functions for … | — | `ax-ctor-bare` |
 | `ax-display` | 10 | ArceOS graphics module | `ax-driver` `ax-lazyinit` `ax-sync` | `ax-api` `ax-feat` `ax-runtime` `starry-kernel` |
 | `ax-dma` | 8 | ArceOS global DMA allocator | `ax-alloc` `ax-allocator` `ax-config` `ax-hal` `ax-kspin` `ax-memory-addr` `ax-mm` | `ax-api` `ax-driver` |
-| `ax-driver` | 9 | ArceOS device drivers | `ax-alloc` `ax-config` `ax-crate-interface` `ax-dma` `ax-driver-base` `ax-driver-block` `ax-driver-display` `ax-driver-input` `ax-driver-net` `ax-driver-pci` `ax-driver-virtio` `ax-driver-vsock` `ax-errno` `ax-hal` `axplat-dyn` | `ax-api` `ax-display` `ax-feat` `ax-fs` `ax-fs-ng` `ax-input` `ax-net` `ax-net-ng` `ax-runtime` `starry-kernel` |
-| `ax-driver-base` | 0 | Common interfaces for all kinds of device drivers | — | `ax-driver` `ax-driver-block` `ax-driver-display` `ax-driver-input` `ax-driver-net` `ax-driver-virtio` `ax-driver-vsock` `axplat-dyn` |
-| `ax-driver-block` | 1 | Common traits and types for block storage drivers | `ax-driver-base` | `ax-driver` `ax-driver-virtio` `axplat-dyn` |
-| `ax-driver-display` | 1 | Common traits and types for graphics device drive… | `ax-driver-base` | `ax-driver` `ax-driver-virtio` |
-| `ax-driver-input` | 1 | Common traits and types for input device drivers | `ax-driver-base` | `ax-driver` `ax-driver-virtio` |
-| `ax-driver-net` | 2 | Common traits and types for network device (NIC) … | `ax-driver-base` `fxmac_rs` | `ax-driver` `ax-driver-virtio` |
-| `ax-driver-pci` | 0 | Structures and functions for PCI bus operations | — | `ax-driver` |
-| `ax-driver-virtio` | 3 | Wrappers of some devices in the `virtio-drivers` … | `ax-driver-base` `ax-driver-block` `ax-driver-display` `ax-driver-input` `ax-driver-net` `ax-driver-vsock` | `ax-driver` `axplat-dyn` |
-| `ax-driver-vsock` | 1 | Common traits and types for vsock drivers | `ax-driver-base` | `ax-driver` `ax-driver-virtio` |
+| `ax-driver` | 9 | ArceOS device drivers | `anyhow` `ax-alloc` `ax-crate-interface` `ax-dma` `ax-errno` `ax-kernel-guard` `ax-kspin` `axklib` `dma-api` `mmio-api` `rdrive` `rd-block` `rd-net` `rdif-*` `virtio-drivers` | `ax-api` `ax-display` `ax-feat` `ax-fs` `ax-fs-ng` `ax-input` `ax-net` `ax-net-ng` `ax-runtime` `starry-kernel` |
 | `ax-errno` | 0 | Generic error code representation. | — | `arm_vcpu` `arm_vgic` `ax-alloc` `ax-allocator` `ax-api` `ax-driver` `ax-fs` `ax-fs-ng` `ax-fs-vfs` `ax-io` `ax-libc` `ax-memory-set` `ax-mm` `ax-net` `ax-net-ng` `ax-page-table-multiarch` `ax-posix-api` `ax-std` `ax-task` `axaddrspace` `axdevice` `axdevice_base` `axfs-ng-vfs` `axhvc` `axklib` `axplat-dyn` `axvcpu` `axvisor` `axvm` `axvmconfig` `riscv_vcpu` `riscv_vplic` `starry-kernel` `starry-vm` `x86_vcpu` `x86_vlapic` |
 | `ax-feat` | 13 | Top-level feature selection for ArceOS | `ax-alloc` `ax-config` `ax-display` `ax-driver` `ax-fs` `ax-fs-ng` `ax-hal` `ax-input` `ax-ipi` `ax-kspin` `ax-log` `ax-net` `ax-runtime` `ax-sync` `ax-task` `axbacktrace` | `ax-api` `ax-libc` `ax-posix-api` `ax-std` `starry-kernel` `starryos` `starryos-test` |
 | `ax-fs` | 10 | ArceOS filesystem module | `ax-cap-access` `ax-driver` `ax-errno` `ax-fs-devfs` `ax-fs-ramfs` `ax-fs-vfs` `ax-hal` `ax-io` `ax-lazyinit` `rsext4` | `ax-api` `ax-feat` `ax-posix-api` `ax-runtime` |
@@ -367,7 +351,7 @@ flowchart TB
 | `axfs-ng-vfs` | 1 | Virtual filesystem layer for ArceOS | `ax-errno` `axpoll` | `ax-fs-ng` `ax-net-ng` `starry-kernel` |
 | `axhvc` | 1 | AxVisor HyperCall definitions for guest-hyperviso… | `ax-errno` | `axvisor` |
 | `axklib` | 1 | Small kernel-helper abstractions used across the … | `ax-errno` `ax-memory-addr` | `ax-runtime` `axplat-dyn` `axvisor` |
-| `axplat-dyn` | 4 | A dynamic platform module for ArceOS, providing r… | `ax-alloc` `ax-config-macros` `ax-cpu` `ax-driver-base` `ax-driver-block` `ax-driver-virtio` `ax-errno` `ax-memory-addr` `ax-percpu` `ax-plat` `axklib` | `ax-driver` `ax-hal` |
+| `axplat-dyn` | 4 | A dynamic platform module for ArceOS, providing r… | `ax-cpu` `ax-driver` `ax-errno` `ax-memory-addr` `ax-percpu` `ax-plat` `axklib` `rdrive` `somehal` | `ax-driver` `ax-hal` |
 | `axplat-x86-qemu-q35` | 4 | Hardware platform implementation for x86_64 QEMU … | `ax-config-macros` `ax-cpu` `ax-int-ratio` `ax-kspin` `ax-lazyinit` `ax-percpu` `ax-plat` | `axvisor` |
 | `axpoll` | 0 | A library for polling I/O events and waking up ta… | — | `ax-fs-ng` `ax-net-ng` `ax-task` `axfs-ng-vfs` `starry-kernel` |
 | `axvcpu` | 5 | Virtual CPU abstraction for ArceOS hypervisor | `ax-errno` `ax-memory-addr` `ax-percpu` `axaddrspace` `axvisor_api` | `arm_vcpu` `axvisor` `axvm` `riscv_vcpu` `x86_vcpu` |
@@ -381,7 +365,7 @@ flowchart TB
 | `define-simple-traits` | 1 | Define simple traits without default implementati… | `ax-crate-interface` | `impl-simple-traits` `test-simple` |
 | `define-weak-traits` | 1 | Define traits with default implementations using … | `ax-crate-interface` | `impl-weak-partial` `impl-weak-traits` `test-weak` `test-weak-partial` |
 | `deptool` | 0 | ArceOS 配套工具与辅助程序 | — | — |
-| `fxmac_rs` | 1 | FXMAC Ethernet driver in Rust for PhytiumPi (Phyt… | `ax-crate-interface` | `ax-driver-net` |
+| `fxmac_rs` | 1 | FXMAC Ethernet driver in Rust for PhytiumPi (Phyt… | `ax-crate-interface` | `ax-driver` |
 | `hello-kernel` | 6 | 可复用基础组件 | `ax-plat` `ax-plat-aarch64-qemu-virt` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` | — |
 | `impl-simple-traits` | 2 | Implement the simple traits defined in define-sim… | `ax-crate-interface` `define-simple-traits` | `test-simple` |
 | `impl-weak-partial` | 2 | Partial implementation of WeakDefaultIf trait. Th… | `ax-crate-interface` `define-weak-traits` | `test-weak-partial` |

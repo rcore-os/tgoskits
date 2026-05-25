@@ -179,9 +179,10 @@ mod tests {
     #[test]
     fn resolves_dynamic_platform_features_and_args() {
         let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
-        build_info.resolve_features("ax-helloworld", true);
+        build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", true);
 
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
         let args = ArceosBuildInfo::build_cargo_args(
@@ -201,9 +202,13 @@ mod tests {
     #[test]
     fn resolves_non_dynamic_platform_features_and_args() {
         let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
-        build_info.resolve_features("ax-helloworld", false);
+        build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", false);
 
-        assert!(build_info.features.contains(&"ax-std/defplat".to_string()));
+        assert!(
+            build_info
+                .features
+                .contains(&"ax-hal/aarch64-qemu-virt".to_string())
+        );
         assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
         let args = ArceosBuildInfo::build_cargo_args(
@@ -229,7 +234,12 @@ mod tests {
             ..ArceosBuildInfo::default()
         };
 
-        build_info.resolve_features_with_metadata("starryos", false, &metadata);
+        build_info.resolve_features_with_metadata(
+            "starryos",
+            "aarch64-unknown-none-softfloat",
+            false,
+            &metadata,
+        );
 
         assert!(build_info.features.contains(&"ax-feat/smp".to_string()));
     }

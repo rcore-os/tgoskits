@@ -1,9 +1,9 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{cell::UnsafeCell, num::NonZeroU32};
 
-use ax_kspin::SpinNoIrq as Mutex;
 use heapless::Deque;
 use rdif_base::DriverGeneric;
+use spin::Mutex;
 
 use super::{
     BIrqHandler, BReciever, BSender, BSerial, InterfaceRaw, InterruptMask, TransBytesError,

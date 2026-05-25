@@ -20,6 +20,10 @@ default = [
   "tls",
   "defplat",
   "fd",
+  "fs",
+  "net",
+  "irq",
+  "multitask",
 ]
 
 # Multicore
@@ -57,25 +61,17 @@ stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
 fd = ["ax-posix-api/fd"]
-fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs"]
+fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs", "ax-driver/pci", "ax-driver/virtio-blk"]
 
 # Networking
 dns = []
-net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net"]
+net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net", "ax-driver/pci", "ax-driver/virtio-net"]
 
 # Display
 display = ["ax-api/display", "ax-feat/display"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-feat/rtc"]
-
-# Device drivers
-bus-mmio = ["ax-feat/bus-mmio"]
-bus-pci = ["ax-feat/bus-pci"]
-driver-bcm2835-sdhci = ["ax-feat/driver-bcm2835-sdhci"]
-driver-fxmac = ["ax-feat/driver-fxmac"]
-driver-ixgbe = ["ax-feat/driver-ixgbe"]
-driver-ramdisk = ["ax-feat/driver-ramdisk"]
 
 # Logging
 log-level-debug = []
@@ -87,8 +83,10 @@ log-level-warn = []
 
 [dependencies]
 ax-api = {workspace = true, features = ["alloc"]}
+ax-driver = {workspace = true}
 ax-errno = {workspace = true}
 ax-feat = {workspace = true}
+ax-hal = {workspace = true}
 ax-io = {workspace = true}
 ax-kspin = {workspace = true}
 ax-posix-api = {workspace = true, features = ["use-hermit-types"]}

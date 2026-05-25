@@ -1,8 +1,8 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
+use spin::Mutex;
 use usb_if::{
     descriptor::{
         ConfigurationDescriptor, DescriptorType, DeviceDescriptor, DeviceDescriptorBase,

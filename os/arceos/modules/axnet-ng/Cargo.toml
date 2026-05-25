@@ -8,13 +8,12 @@ description = "ArceOS network module"
 license.workspace = true
 
 [features]
-vsock = ["ax-driver/vsock"]
+vsock = ["dep:rdif-vsock"]
 
 [dependencies]
 async-channel = { version = "2.5", default-features = false }
 async-trait = "0.1"
 ax-config = { workspace = true }
-ax-driver = { workspace = true, features = ["net"] }
 ax-errno = { workspace = true }
 ax-fs-ng = { workspace = true }
 axfs-ng-vfs = { workspace = true }
@@ -30,6 +29,8 @@ enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 hashbrown = "0.16"
 log = { workspace = true }
+rd-net = { workspace = true }
+rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 spin = { workspace = true }
 
