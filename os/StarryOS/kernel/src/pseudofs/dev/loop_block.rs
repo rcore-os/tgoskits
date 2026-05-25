@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::VfsResult;
 
 use super::r#loop::LoopDevice;
@@ -21,7 +21,7 @@ impl BlockCache {
 }
 
 struct CacheData {
-    blocks: SpinNoPreempt<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
+    blocks: SpinNoIrq<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
     total_len: usize,
     dirty: AtomicBool,
     mounted: AtomicBool,
@@ -30,7 +30,7 @@ struct CacheData {
 impl CacheData {
     fn new(blocks: alloc::vec::Vec<alloc::vec::Vec<u8>>, total_len: usize) -> Self {
         Self {
-            blocks: SpinNoPreempt::new(blocks),
+            blocks: SpinNoIrq::new(blocks),
             total_len,
             dirty: AtomicBool::new(false),
             mounted: AtomicBool::new(false),

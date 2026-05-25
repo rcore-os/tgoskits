@@ -188,8 +188,8 @@ impl DeviceOps for LoopDevice {
 
                 // Write back dirty data from the block cache before clearing.
                 // This runs in normal syscall context so CachedFile VFS I/O
-                // (page cache updates) is safe.  The SpinNoPreempt lock
-                // ensures no concurrent write_block() can race.
+                // (page cache updates) is safe. The cache lock ensures no
+                // concurrent write_block() can race.
                 #[cfg(feature = "ext4")]
                 self.detach_block_cache(guard.as_ref())?;
 

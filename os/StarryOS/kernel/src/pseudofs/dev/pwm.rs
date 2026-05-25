@@ -2,11 +2,11 @@ use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 
 use ax_sync::Mutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
-use lazy_static::lazy_static;
 use sg200x_bsp::{
     pwm::{Pwm, PwmChannel, PwmMode, PwmPolarity},
     soc::PWM0_BASE,
 };
+use spin::Lazy;
 
 use crate::pseudofs::{
     DirMaker, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile, SimpleFileOperation,
@@ -60,9 +60,7 @@ impl PwmSysfsState {
     }
 }
 
-lazy_static! {
-    static ref PWM_SYSFS_STATE: Mutex<PwmSysfsState> = Mutex::new(PwmSysfsState::new());
-}
+static PWM_SYSFS_STATE: Lazy<Mutex<PwmSysfsState>> = Lazy::new(|| Mutex::new(PwmSysfsState::new()));
 
 struct PwmClassDir {
     fs: Arc<SimpleFs>,

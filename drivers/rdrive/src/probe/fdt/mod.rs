@@ -4,8 +4,9 @@ use alloc::{
 };
 use core::ptr::NonNull;
 
+use ax_kspin::SpinNoIrq as Mutex;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeType, Phandle, RegInfo, Status};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use super::ProbeError;
 use crate::{

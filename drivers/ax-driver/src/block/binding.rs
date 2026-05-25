@@ -16,16 +16,16 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq;
 use log::{error, warn};
 use rd_block::BlkError;
 use rdrive::Device;
-use spin::Mutex;
 pub struct Block {
     name: String,
     irq_num: Option<usize>,
     #[cfg(feature = "irq")]
     irq_state: Option<Arc<BlockIrqState>>,
-    queue: Mutex<rd_block::CmdQueue>,
+    queue: SpinNoIrq<rd_block::CmdQueue>,
 }
 
 pub struct PlatformBlockDevice {
@@ -81,8 +81,8 @@ impl Wake for BlockIrqWaiter {
 #[cfg(feature = "irq")]
 const BLOCK_IRQ_SLOTS: usize = 16;
 #[cfg(feature = "irq")]
-static IRQ_SOURCES: [Mutex<Option<Weak<BlockIrqState>>>; BLOCK_IRQ_SLOTS] =
-    [const { Mutex::new(None) }; BLOCK_IRQ_SLOTS];
+static IRQ_SOURCES: [SpinNoIrq<Option<Weak<BlockIrqState>>>; BLOCK_IRQ_SLOTS] =
+    [const { SpinNoIrq::new(None) }; BLOCK_IRQ_SLOTS];
 #[cfg(feature = "irq")]
 const BLOCK_IRQ_REPOLL_SPINS: usize = 256;
 
@@ -241,7 +241,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
             irq_num,
             #[cfg(feature = "irq")]
             irq_state,
-            queue: Mutex::new(queue),
+            queue: SpinNoIrq::new(queue),
         })
     }
 }

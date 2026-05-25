@@ -2,10 +2,12 @@ use alloc::format;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use arm_scmi_rs::{Scmi, Shmem, Smc};
+use ax_kspin::SpinNoIrq as Mutex;
 use fdt_edit::Phandle;
 use log::{info, warn};
-use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
-use spin::Mutex;
+use rdrive::{
+    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+};
 
 use crate::mmio::iomap;
 

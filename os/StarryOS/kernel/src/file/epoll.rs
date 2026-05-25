@@ -19,7 +19,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
@@ -101,6 +101,14 @@ enum ConsumeResult {
     NoEvent,
 }
 
+fn match_ready_events(current: IoEvents, interested: IoEvents) -> IoEvents {
+    (current & interested) | (current & IoEvents::ALWAYS_POLL)
+}
+
+fn register_events(interested: IoEvents) -> IoEvents {
+    interested | IoEvents::ALWAYS_POLL
+}
+
 #[derive(Clone)]
 struct EntryKey {
     fd: i32,
@@ -137,7 +145,7 @@ impl Eq for EntryKey {}
 struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
-    mode: SpinNoPreempt<TriggerMode>,
+    mode: SpinNoIrq<TriggerMode>,
     in_ready_queue: AtomicBool,
 }
 
@@ -146,7 +154,7 @@ impl EpollInterest {
         Self {
             key,
             event,
-            mode: SpinNoPreempt::new(TriggerMode::from_flags(flags)),
+            mode: SpinNoIrq::new(TriggerMode::from_flags(flags)),
             in_ready_queue: AtomicBool::new(false),
         }
     }
@@ -175,7 +183,7 @@ impl EpollInterest {
 
     fn consume(&self, file: &dyn FileLike) -> ConsumeResult {
         let current_events = file.poll();
-        let matched = current_events & self.event.events;
+        let matched = match_ready_events(current_events, self.event.events);
 
         // not ready
         if matched.is_empty() {
@@ -233,6 +241,10 @@ impl Wake for InterestWaker {
         };
 
         if interest.try_mark_in_queue() {
+            // The queue lock must disable IRQs because wakers may be invoked
+            // from IRQ wake paths. `VecDeque::push_back` can still allocate
+            // when capacity is exhausted; if this path is proven to run in IRQ
+            // context, replace the queue with a bounded or deferred design.
             epoll
                 .ready_queue
                 .lock()
@@ -247,16 +259,16 @@ impl Wake for InterestWaker {
 }
 
 struct EpollInner {
-    interests: SpinNoPreempt<HashMap<EntryKey, Arc<EpollInterest>>>,
-    ready_queue: SpinNoPreempt<VecDeque<Weak<EpollInterest>>>,
+    interests: SpinNoIrq<HashMap<EntryKey, Arc<EpollInterest>>>,
+    ready_queue: SpinNoIrq<VecDeque<Weak<EpollInterest>>>,
     poll_ready: PollSet,
 }
 
 impl Default for EpollInner {
     fn default() -> Self {
         Self {
-            interests: SpinNoPreempt::new(HashMap::new()),
-            ready_queue: SpinNoPreempt::new(VecDeque::new()),
+            interests: SpinNoIrq::new(HashMap::new()),
+            ready_queue: SpinNoIrq::new(VecDeque::new()),
             poll_ready: PollSet::new(),
         }
     }
@@ -288,7 +300,7 @@ impl Epoll {
         }));
 
         let mut context = Context::from_waker(&waker);
-        file.register(&mut context, interest.event.events);
+        file.register(&mut context, register_events(interest.event.events));
     }
 
     // for add/modify
@@ -306,15 +318,15 @@ impl Epoll {
             interest: Arc::downgrade(interest),
         }));
 
-        let current = file.poll() & interest.event.events;
+        let current = match_ready_events(file.poll(), interest.event.events);
 
         if !current.is_empty() {
             waker.wake_by_ref();
         } else {
             let mut context = Context::from_waker(&waker);
-            file.register(&mut context, interest.event.events);
+            file.register(&mut context, register_events(interest.event.events));
 
-            let current = file.poll() & interest.event.events;
+            let current = match_ready_events(file.poll(), interest.event.events);
             if !current.is_empty() {
                 waker.wake_by_ref();
             }

@@ -19,6 +19,7 @@ multitask = ["ax-task/multitask"]
 paging = ["alloc", "ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
 smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
+stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = ["ax-hal/plat-dyn", "paging", "buddy-slab"]
@@ -46,7 +47,7 @@ net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/ne
 vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true }
 ax-config = { workspace = true }
 ax-display = { workspace = true, optional = true }

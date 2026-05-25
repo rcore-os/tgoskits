@@ -16,6 +16,7 @@ alloc = ["dep:ax-alloc", "ax-feat/alloc"]
 paging = ["dep:ax-mm", "ax-feat/paging"]
 dma = ["dep:ax-dma", "ax-feat/dma"]
 multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-feat/multitask"]
+stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 fs = ["dep:ax-fs", "ax-feat/fs"]
 net = ["dep:ax-net", "ax-feat/net"]
 display = ["dep:ax-display", "ax-feat/display"]
@@ -25,7 +26,7 @@ display = ["dep:ax-display", "ax-feat/display"]
 dummy-if-not-enabled = []
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 ax-config.workspace = true
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }

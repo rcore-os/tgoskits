@@ -922,11 +922,29 @@ impl FileBackend {
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
-            Self::Direct(loc) => dst.read_from(&mut ax_io::read_fn(|buf| {
-                loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
-                    offset += *read as u64;
-                })
-            })),
+            Self::Direct(loc) => {
+                let mut total = 0;
+                while dst.remaining_mut() > 0 {
+                    let chunk = dst.remaining_mut().min(ax_io::DEFAULT_BUF_SIZE);
+                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
+                        loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
+                            offset += *read as u64;
+                        })
+                    })) {
+                        Ok(read) => read,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    total += read;
+                    if read < chunk {
+                        break;
+                    }
+                }
+                Ok(total)
+            }
         }
     }
 
@@ -934,14 +952,32 @@ impl FileBackend {
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
-            Self::Direct(loc) => src.write_to(&mut ax_io::write_fn(|buf| {
-                loc.entry()
-                    .as_file()?
-                    .write_at(buf, offset)
-                    .inspect(|written| {
-                        offset += *written as u64;
-                    })
-            })),
+            Self::Direct(loc) => {
+                let mut total = 0;
+                while src.remaining() > 0 {
+                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
+                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
+                        loc.entry()
+                            .as_file()?
+                            .write_at(buf, offset)
+                            .inspect(|written| {
+                                offset += *written as u64;
+                            })
+                    })) {
+                        Ok(written) => written,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
+                    if written == 0 {
+                        break;
+                    }
+                    total += written;
+                    if written < chunk {
+                        break;
+                    }
+                }
+                Ok(total)
+            }
         }
     }
 
@@ -950,14 +986,29 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.append(src),
             Self::Direct(loc) => {
-                let mut end = 0;
-                src.write_to(&mut ax_io::write_fn(|buf| {
-                    loc.entry().as_file()?.append(buf).map(|(n, offset)| {
-                        end = offset;
-                        n
-                    })
-                }))
-                .map(|n| (n, end))
+                let mut total = 0;
+                let mut end = loc.entry().as_file()?.len()?;
+                while src.remaining() > 0 {
+                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
+                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
+                        loc.entry().as_file()?.append(buf).map(|(n, offset)| {
+                            end = offset;
+                            n
+                        })
+                    })) {
+                        Ok(written) => written,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
+                    if written == 0 {
+                        break;
+                    }
+                    total += written;
+                    if written < chunk {
+                        break;
+                    }
+                }
+                Ok((total, end))
             }
         }
     }

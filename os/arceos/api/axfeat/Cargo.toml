@@ -21,8 +21,8 @@ uspace = ["ax-hal/uspace", "ax-task?/uspace"]
 hv = ["ax-hal/hv"]
 
 # Interrupts
-irq = ["alloc", "ax-hal/irq", "ax-runtime/irq", "ax-task?/irq"]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi"]
+irq = ["alloc", "ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
+ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
 
 # Custom or default platforms
 myplat = ["ax-hal/myplat"]
@@ -66,6 +66,13 @@ task-ext = ["ax-task/task-ext"]
 sched-fifo = ["ax-task/sched-fifo"]
 sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]
+stack-guard-page = [
+    "ipi",
+    "multitask",
+    "paging",
+    "ax-task/stack-guard-page",
+    "ax-runtime/stack-guard-page",
+]
 
 # File system
 fs = [
@@ -115,9 +122,10 @@ backtrace = ["alloc", "axbacktrace/alloc"]
 dwarf = ["alloc", "axbacktrace/dwarf"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 axbacktrace.workspace = true
 ax-config = { workspace = true, optional = true }
+ax-driver = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
 ax-fs = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }

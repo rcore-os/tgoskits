@@ -25,6 +25,24 @@ const FUTEX_OWNER_DIED: u32 = 0x40000000;
 const FUTEX_TID_MASK: u32 = 0x3fffffff;
 const FUTEX_WAITERS: u32 = 0x80000000;
 
+/// Decode the Linux wait-status encoding into (si_code, si_status).
+///
+/// - Normal exit (`_exit`/`exit_group`): `(CLD_EXITED, exit_value)`
+/// - Killed by signal: `(CLD_KILLED, signum)` or `(CLD_DUMPED, signum)`
+pub fn decode_wait_status(raw: i32) -> (i32, i32) {
+    use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
+    if raw & 0x7f == 0 {
+        (CLD_EXITED as i32, (raw >> 8) & 0xff)
+    } else {
+        let signum = raw & 0x7f;
+        if (raw & 0x80) != 0 {
+            (CLD_DUMPED as i32, signum)
+        } else {
+            (CLD_KILLED as i32, signum)
+        }
+    }
+}
+
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
@@ -486,32 +504,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
-                use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
                 use starry_signal::Signo;
 
                 let child_uid = thr.cred().uid;
-                // Decode si_code/si_status from the Linux wait-status encoding
-                // stored in exit_code, NOT from the `group_exit` flag.
-                //
-                // `group_exit` is true for both sys_exit_group() (normal exit)
-                // and signal-induced group termination, so it cannot distinguish
-                // the two cases.  The wait-status bits are the correct source:
-                //   bits 6:0 == 0  -> normal exit  (exit_code >> 8 is the value)
-                //   bits 6:0 != 0  -> killed by signal (bits 6:0 = signum,
-                //                     bit 7 = core dumped)
-                let raw = process.exit_code();
-                let (code, status) = if raw & 0x7f == 0 {
-                    // Normal exit via _exit() / exit_group().
-                    (CLD_EXITED as i32, (raw >> 8) & 0xff)
-                } else {
-                    let signum = raw & 0x7f;
-                    let core_dumped = (raw & 0x80) != 0;
-                    if core_dumped {
-                        (CLD_DUMPED as i32, signum)
-                    } else {
-                        (CLD_KILLED as i32, signum)
-                    }
-                };
+                let (code, status) = decode_wait_status(process.exit_code());
 
                 let sig = if signo == Signo::SIGCHLD {
                     SignalInfo::new_sigchld(process.pid(), child_uid, code, status)

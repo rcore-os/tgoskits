@@ -175,6 +175,7 @@ impl BuildInfo {
     ) -> anyhow::Result<Cargo> {
         if self.std_build {
             self.validated_max_cpu_num()?;
+            self.resolve_std_features();
             let std_target = std_build_target_for(target)?;
             let mut cargo = self.into_base_cargo_config_with_log(
                 package.to_string(),
@@ -202,6 +203,16 @@ impl BuildInfo {
         let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
 
         Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
+    }
+
+    fn resolve_std_features(&mut self) {
+        self.features = self
+            .features
+            .iter()
+            .map(|feature| normalize_std_feature(feature))
+            .collect();
+        self.features.sort();
+        self.features.dedup();
     }
 
     pub(crate) fn prepare_non_dynamic_platform_for(
@@ -620,6 +631,19 @@ fn normalize_legacy_feature_alias(feature: &str) -> String {
     }
 }
 
+fn normalize_std_feature(feature: &str) -> String {
+    let normalized = normalize_legacy_feature_alias(feature);
+    match normalized.as_str() {
+        "ax-std" | "ax-feat" => normalized,
+        feature if feature.starts_with("ax-std/") || feature.starts_with("ax-feat/") => feature
+            .split_once('/')
+            .map(|(_, feature)| format!("arceos-rust/{feature}"))
+            .unwrap_or_else(|| normalized.clone()),
+        feature if feature.starts_with("arceos-rust/") => normalized,
+        feature => format!("arceos-rust/{feature}"),
+    }
+}
+
 pub(crate) fn parse_makefile_features(input: &str) -> Vec<String> {
     let mut features = Vec::new();
     for feature in input.split(|ch: char| ch == ',' || ch.is_whitespace()) {
@@ -681,6 +705,11 @@ fn apply_makefile_features_with_prefix_family(
         return;
     }
 
+    if build_info.std_build {
+        apply_std_makefile_features(build_info, makefile_features);
+        return;
+    }
+
     let prefix_family = build_info.resolve_ax_feature_prefix_family(package, prefix_family);
 
     for feature in makefile_features {
@@ -692,6 +721,19 @@ fn apply_makefile_features_with_prefix_family(
                 format!("{}{}", prefix_family.prefix(), normalized)
             };
 
+        if !build_info
+            .features
+            .iter()
+            .any(|existing| existing == &mapped)
+        {
+            build_info.features.push(mapped);
+        }
+    }
+}
+
+fn apply_std_makefile_features(build_info: &mut BuildInfo, makefile_features: &[String]) {
+    for feature in makefile_features {
+        let mapped = normalize_std_feature(feature);
         if !build_info
             .features
             .iter()
@@ -1301,6 +1343,45 @@ mod tests {
         let family = detect_ax_feature_prefix_family("ax-feat-app", &metadata).unwrap();
 
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
+    }
+
+    #[test]
+    fn std_build_maps_arceos_features_to_arceos_rust_dependency() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec![
+                "ax-std".to_string(),
+                "lockdep".to_string(),
+                "axstd/smp".to_string(),
+            ],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+
+        assert!(info.features.contains(&"ax-std".to_string()));
+        assert!(info.features.contains(&"arceos-rust/lockdep".to_string()));
+        assert!(info.features.contains(&"arceos-rust/smp".to_string()));
+        assert!(!info.features.contains(&"ax-std/lockdep".to_string()));
+        assert!(!info.features.contains(&"lockdep".to_string()));
+    }
+
+    #[test]
+    fn makefile_features_use_arceos_rust_prefix_for_std_build() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: Vec::new(),
+            ..BuildInfo::default()
+        };
+
+        apply_makefile_features_with_prefix_family(
+            &mut info,
+            "test-arceos-std-app",
+            &[String::from("lockdep")],
+            Err(anyhow::anyhow!("std test packages do not depend on ax-std")),
+        );
+
+        assert_eq!(info.features, vec!["arceos-rust/lockdep".to_string()]);
     }
 
     #[test]

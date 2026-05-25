@@ -17,6 +17,7 @@ use core::{alloc::Layout, fmt};
 
 use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{
     AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
@@ -24,7 +25,7 @@ use axaddrspace::{
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
-use spin::{Mutex, Once};
+use spin::Once;
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
@@ -46,6 +47,24 @@ type VCpu = AxVCpu<AxArchVCpuImpl>;
 pub type AxVCpuRef = Arc<VCpu>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
+
+fn width_mask(width: AccessWidth) -> usize {
+    match width {
+        AccessWidth::Byte => 0xff,
+        AccessWidth::Word => 0xffff,
+        AccessWidth::Dword => 0xffff_ffff,
+        AccessWidth::Qword => usize::MAX,
+    }
+}
+
+fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
+    match width {
+        AccessWidth::Byte => (value as i8) as isize as usize,
+        AccessWidth::Word => (value as i16) as isize as usize,
+        AccessWidth::Dword => (value as i32) as isize as usize,
+        AccessWidth::Qword => value,
+    }
+}
 
 struct AxVMInnerConst {
     phys_cpu_ls: PhysCpuList,
@@ -356,7 +375,16 @@ impl AxVM {
                     passthrough_timer: passthrough,
                 }
             };
-            #[cfg(not(target_arch = "aarch64"))]
+            #[cfg(target_arch = "loongarch64")]
+            let setup_config = {
+                let passthrough =
+                    inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+                crate::vcpu::AxVCpuSetupConfig {
+                    passthrough_interrupt: passthrough,
+                    passthrough_timer: passthrough,
+                }
+            };
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
             #[allow(clippy::let_unit_value)]
             let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
 
@@ -530,10 +558,16 @@ impl AxVM {
                     addr,
                     width,
                     reg,
-                    reg_width: _,
-                    signed_ext: _,
+                    reg_width,
+                    signed_ext,
                 } => {
-                    let val = self.get_devices().handle_mmio_read(*addr, *width)?;
+                    let raw = self.get_devices().handle_mmio_read(*addr, *width)?;
+                    let masked = raw & width_mask(*width);
+                    let val = if *signed_ext {
+                        sign_extend_value(masked, *width)
+                    } else {
+                        masked & width_mask(*reg_width)
+                    };
                     vcpu.set_gpr(*reg, val);
                     true
                 }
@@ -575,11 +609,9 @@ impl AxVM {
                     )?;
                     true
                 }
-                AxVCpuExitReason::NestedPageFault { addr, access_flags } => self
-                    .inner_mut
-                    .lock()
-                    .address_space
-                    .handle_page_fault(*addr, *access_flags),
+                AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
+                    self.handle_nested_page_fault(*addr, *access_flags)
+                }
                 _ => false,
             };
             if !handled {
@@ -589,6 +621,124 @@ impl AxVM {
 
         vcpu.unbind()?;
         Ok(exit_reason)
+    }
+
+    fn handle_nested_page_fault(&self, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {
+        let mut guard = self.inner_mut.lock();
+        let handled = guard.address_space.handle_page_fault(addr, access_flags);
+        Self::debug_nested_page_fault(self.id(), &guard, addr, access_flags, handled);
+        handled
+    }
+
+    fn debug_nested_page_fault(
+        vm_id: usize,
+        inner: &AxVMInnerMut,
+        addr: GuestPhysAddr,
+        access_flags: MappingFlags,
+        handled: bool,
+    ) {
+        let root = inner.address_space.page_table_root();
+        match inner.address_space.page_table().query(addr) {
+            Ok((hpa, flags, size)) => {
+                if handled {
+                    debug!(
+                        "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
+                         pte_flags={:?}, page_size={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        hpa.as_usize(),
+                        access_flags,
+                        flags,
+                        size,
+                        root.as_usize()
+                    );
+                } else {
+                    warn!(
+                        "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
+                         pte_flags={:?}, page_size={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        hpa.as_usize(),
+                        access_flags,
+                        flags,
+                        size,
+                        root.as_usize()
+                    );
+                }
+            }
+            Err(err) => {
+                if handled {
+                    debug!(
+                        "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        access_flags,
+                        err,
+                        root.as_usize()
+                    );
+                } else {
+                    warn!(
+                        "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        access_flags,
+                        err,
+                        root.as_usize()
+                    );
+                }
+            }
+        }
+
+        let translate = inner.address_space.translate(addr);
+        if handled {
+            debug!(
+                "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
+                vm_id,
+                addr.as_usize(),
+                translate
+            );
+        } else {
+            warn!(
+                "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
+                vm_id,
+                addr.as_usize(),
+                translate
+            );
+        }
+
+        for (idx, region) in inner.memory_regions.iter().enumerate() {
+            let start = region.gpa.as_usize();
+            let end = start + region.size();
+            if (start..end).contains(&addr.as_usize()) {
+                if handled {
+                    debug!(
+                        "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
+                         size={:#x} identical={}",
+                        vm_id,
+                        idx,
+                        start,
+                        end,
+                        region.hva.as_usize(),
+                        region.host_paddr().as_usize(),
+                        region.size(),
+                        region.is_identical()
+                    );
+                } else {
+                    warn!(
+                        "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
+                         size={:#x} identical={}",
+                        vm_id,
+                        idx,
+                        start,
+                        end,
+                        region.hva.as_usize(),
+                        region.host_paddr().as_usize(),
+                        region.size(),
+                        region.is_identical()
+                    );
+                }
+            }
+        }
     }
 
     /// Injects an interrupt to the vCPU.
