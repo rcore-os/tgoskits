@@ -20,11 +20,6 @@ use uart_16550::SerialPort;
 
 static COM1: SpinNoIrq<SerialPort> = unsafe { SpinNoIrq::new(SerialPort::new(0x3f8)) };
 
-/// Writes a byte to the console.
-pub fn putchar(c: u8) {
-    COM1.lock().send(c)
-}
-
 /// Reads a byte from the console, or returns [`None`] if no input is available.
 pub fn getchar() -> Option<u8> {
     COM1.lock().try_receive().ok()
@@ -40,8 +35,13 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes given bytes to the console.
     fn write_bytes(bytes: &[u8]) {
-        for c in bytes {
-            putchar(*c);
+        // Hold COM1 for the entire write so that one logical output
+        // (e.g. a full ANSI TUI frame) is never interleaved with output
+        // from another task.  This also avoids paying lock-acquire cost
+        // for every byte, which is visible on large frame dumps.
+        let mut com = COM1.lock();
+        for &c in bytes {
+            com.send(c);
         }
     }
 
