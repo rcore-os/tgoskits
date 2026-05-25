@@ -12,4 +12,6 @@ sched-rr = ["ax-std?/sched-rr"]
 sched-cfs = ["ax-std?/sched-cfs"]
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["multitask"], optional = true }

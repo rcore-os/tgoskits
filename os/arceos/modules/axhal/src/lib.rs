@@ -37,32 +37,27 @@ extern crate log;
 #[macro_use]
 extern crate ax_memory_addr;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "myplat")] {
-        // link the custom platform crate in your application.
-    }
-    else if #[cfg(plat_dyn)] {
-        extern crate axplat_dyn;
-    }
-    else if #[cfg(all(target_os = "none", feature = "defplat"))] {
-        #[cfg(target_arch = "x86_64")]
-        extern crate ax_plat_x86_pc;
-        #[cfg(target_arch = "aarch64")]
-        extern crate ax_plat_aarch64_qemu_virt;
-        #[cfg(target_arch = "riscv64")]
-        extern crate ax_plat_riscv64_qemu_virt;
-        #[cfg(target_arch = "loongarch64")]
-        extern crate ax_plat_loongarch64_qemu_virt;
-    } else {
-        // Link the dummy platform implementation to pass cargo test.
-        mod dummy;
-    }
-}
+#[path = "platform.rs"]
+mod platform_select;
+pub use platform_select::selected as platform;
 
 pub mod dtb;
 pub mod mem;
 pub mod percpu;
 pub mod time;
+
+/// Static driver resources exported by the selected platform.
+pub mod drivers {
+    #[cfg(not(feature = "plat-dyn"))]
+    pub fn static_devices() -> &'static [rdrive::probe::static_::StaticDeviceDesc] {
+        ax_plat::drivers::static_devices()
+    }
+
+    #[cfg(feature = "plat-dyn")]
+    pub const fn static_devices() -> &'static [rdrive::probe::static_::StaticDeviceDesc] {
+        &[]
+    }
+}
 
 #[cfg(feature = "tls")]
 pub mod tls;

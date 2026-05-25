@@ -398,8 +398,6 @@ pub mod modules {
     pub use ax_display;
     #[cfg(feature = "dma")]
     pub use ax_dma;
-    #[cfg(any(feature = "fs", feature = "net", feature = "display"))]
-    pub use ax_driver;
     #[cfg(feature = "fs")]
     pub use ax_fs;
     pub use ax_hal;

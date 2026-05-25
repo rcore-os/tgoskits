@@ -136,7 +136,7 @@ mod tests {
 
     impl IrqTest {
         fn is_ok(&mut self) -> bool {
-            true // Placeholder for actual logic
+            true
         }
     }
 

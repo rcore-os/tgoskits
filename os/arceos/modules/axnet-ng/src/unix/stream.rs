@@ -156,7 +156,7 @@ impl StreamTransport {
             channel: Mutex::new(channel),
             conn_rx: Mutex::new(None),
             poll_state: PollSet::new(),
-            general: GeneralOptions::default(),
+            general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
             pid,
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),

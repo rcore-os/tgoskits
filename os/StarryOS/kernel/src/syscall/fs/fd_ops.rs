@@ -218,6 +218,8 @@ pub fn sys_openat(
     // call tp:trace_sys_enter_openat
     trace_sys_enter_openat(dirfd, path as _, flags as _, mode);
 
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
@@ -266,13 +268,25 @@ pub fn sys_openat(
         dirfd
     };
 
-    let mode = mode & !current().as_thread().proc_data.umask();
+    let mode = mode & !thread.proc_data.umask();
 
-    let cred = current().as_thread().cred();
+    let cred = thread.cred();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
-    with_fs(dirfd, |fs| options.open(fs, path))
-        .and_then(|it| add_to_fd(it, flags as _))
-        .map(|fd| fd as isize)
+    let should_notify_create = uflags & O_CREAT != 0
+        && uflags & O_PATH == 0
+        && with_fs(dirfd, |fs| match fs.resolve_no_follow(&path) {
+            Ok(_) => Ok(false),
+            Err(AxError::NotFound) => Ok(true),
+            Err(err) => Err(err),
+        })?;
+
+    let fd =
+        with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
+    if should_notify_create {
+        let file = get_file_like(fd)?;
+        crate::file::inotify::notify_create_path(file.path().as_ref(), false);
+    }
+    Ok(fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.

@@ -260,7 +260,7 @@ pub fn sys_execve(
     // the thread-exit path don't dereference freed user pages.
     thr.set_clear_child_tid(0);
     thr.set_robust_list_head(0);
-    thr.set_rseq_area(0);
+    thr.clear_rseq_state();
 
     // Remove CLOEXEC fds from the table under the write guard we took
     // for the post-teardown snapshot — no fd can be added or have its

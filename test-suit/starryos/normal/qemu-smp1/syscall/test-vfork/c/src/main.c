@@ -1,5 +1,7 @@
+#define _GNU_SOURCE
 #define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 199309L
+#include <sched.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -33,6 +35,12 @@ static inline pid_t raw_vfork(void) {
 #else
 #define do_vfork() vfork()
 #endif
+
+static int clone_child_sleep(void *arg) {
+    (void)arg;
+    sleep(2);
+    _exit(0);
+}
 
 /* Test 1: Memory Sniff - Check if vfork shares address space */
 int test_vfork_memory_sniff(void) {
@@ -92,14 +100,46 @@ int test_vfork_execution_order(void) {
     return 0;
 }
 
+/* Test 3: Linux-compatible clone semantics. CLONE_VFORK blocks the parent
+   until the child exits or execs even when the caller passes a private child
+   stack. BusyBox shell/timeout code depends on this ordering. */
+int test_vfork_clone_child_stack_blocking(void) {
+    static char child_stack[16384];
+    char *stack_top = child_stack + sizeof(child_stack);
+    struct timespec start, end;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int pid = clone(clone_child_sleep, stack_top, CLONE_VM | CLONE_VFORK | SIGCHLD, NULL);
+    if (pid < 0) {
+        perror("clone(CLONE_VM|CLONE_VFORK) failed");
+        return -1;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return 0;
+    }
+
+    long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000 +
+                      (end.tv_nsec - start.tv_nsec) / 1000000;
+
+    return (elapsed_ms >= 1500) ? 1 : 0;
+}
+
 int main(void) {
-    int vfork_mem_pass = 0, vfork_exec_pass = 0;
+    int vfork_mem_pass = 0, vfork_exec_pass = 0, clone_stack_pass = 0;
 
     /* Test 1: vfork memory sharing */
     vfork_mem_pass = test_vfork_memory_sniff();
 
     /* Test 2: vfork execution blocking */
     vfork_exec_pass = test_vfork_execution_order();
+
+    /* Test 3: CLONE_VFORK with a private child stack still blocks parent */
+    clone_stack_pass = test_vfork_clone_child_stack_blocking();
 
     /* Report results */
     if (vfork_mem_pass > 0) {
@@ -114,8 +154,14 @@ int main(void) {
         printf("VFORK: FAIL (Parent NOT blocked)\n");
     }
 
-    /* Return success only if both vfork tests pass */
-    if (vfork_mem_pass > 0 && vfork_exec_pass > 0) {
+    if (clone_stack_pass > 0) {
+        printf("VFORK: PASS (Child stack clone blocked parent)\n");
+    } else {
+        printf("VFORK: FAIL (Child stack clone did NOT block parent)\n");
+    }
+
+    /* Return success only if all vfork-related tests pass */
+    if (vfork_mem_pass > 0 && vfork_exec_pass > 0 && clone_stack_pass > 0) {
         printf("VFORK TEST: ALL TESTS PASSED\n");
         return 0;
     } else {

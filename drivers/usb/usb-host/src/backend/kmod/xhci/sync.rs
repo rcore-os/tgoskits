@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use spin::{Mutex, RwLock};
+use spin::{Mutex, MutexGuard, RwLock};
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
@@ -33,6 +33,13 @@ impl<T> IrqLock<T> {
         }
     }
 
+    /// # Safety
+    ///
+    /// The caller must run from the xHCI interrupt/event path while no task
+    /// side `lock()` guard is alive. Task-side mutation uses `lock()`, which
+    /// disables the controller interrupter before taking the mutex. This
+    /// method deliberately avoids taking the mutex so the interrupt hot path
+    /// can only touch state that was pre-registered under that protocol.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn force_use(&self) -> &mut T {
         unsafe { &mut *self.data.get() }
@@ -40,7 +47,7 @@ impl<T> IrqLock<T> {
 }
 
 pub(crate) struct IrqLockGuard<'a, T> {
-    _guard: spin::MutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
     data: &'a mut T,
     _disable_guard: DisableIrqGuard,
 }

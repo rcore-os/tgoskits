@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::ops::{Deref, DerefMut};
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 use crate::{DArray, DeviceDma, DmaDirection, DmaError};
 

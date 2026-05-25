@@ -4,6 +4,7 @@
 use ax_plat::irq::{IpiTarget, IrqHandler, IrqIf};
 use ax_plat::{
     console::ConsoleIf,
+    drivers::DriversIf,
     impl_plat_interface,
     init::InitIf,
     mem::{MemIf, RawRange},
@@ -16,6 +17,7 @@ struct DummyConsole;
 struct DummyMem;
 struct DummyTime;
 struct DummyPower;
+struct DummyDrivers;
 #[cfg(feature = "irq")]
 struct DummyIrq;
 
@@ -121,6 +123,13 @@ impl PowerIf for DummyPower {
 
     fn cpu_num() -> usize {
         1
+    }
+}
+
+#[impl_plat_interface]
+impl DriversIf for DummyDrivers {
+    fn static_devices_fn() -> &'static [rdrive::probe::static_::StaticDeviceDesc] {
+        &[]
     }
 }
 

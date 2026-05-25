@@ -8,6 +8,7 @@ extern crate ax_plat;
 mod apic;
 mod boot;
 mod console;
+mod drivers;
 mod init;
 mod mem;
 mod power;

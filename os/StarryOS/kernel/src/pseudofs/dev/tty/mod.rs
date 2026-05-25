@@ -117,7 +117,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TCSETS | TCSETSF | TCSETSW => {
                 // TODO: drain output?
-                // Note: vm_read() must complete before acquiring the SpinNoPreempt lock.
+                // Note: vm_read() must complete before acquiring the terminal lock.
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));

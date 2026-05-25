@@ -40,7 +40,7 @@ impl Mountpoint {
         Arc::new(Self {
             root,
             location: Mutex::new(location_in_parent),
-            children: Mutex::default(),
+            children: Mutex::new(HashMap::default()),
             device: DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
         })
     }

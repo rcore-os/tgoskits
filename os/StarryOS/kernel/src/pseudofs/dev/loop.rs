@@ -1,5 +1,3 @@
-#[cfg(feature = "ext4")]
-use alloc::{boxed::Box, sync::Arc};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
@@ -7,8 +5,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
-#[cfg(feature = "ext4")]
-use ax_kspin::SpinNoPreempt;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
@@ -24,6 +20,8 @@ use linux_raw_sys::{
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
+#[cfg(feature = "ext4")]
+use super::loop_block::BlockCache;
 use crate::{
     file::{FileLike, get_file_like},
     pseudofs::{DeviceMmap, DeviceOps},
@@ -32,214 +30,6 @@ use crate::{
 /// HDIO_GETGEO ioctl command (get drive geometry).
 /// Not defined in linux-raw-sys, so we use the standard value directly.
 const HDIO_GETGEO: u32 = 0x0301;
-
-#[cfg(feature = "ext4")]
-const CACHE_BLK: usize = 4096;
-
-#[cfg(feature = "ext4")]
-fn writeback_buffer(file: &FileBackend, cd: &CacheData) -> bool {
-    let total = cd.total_len;
-    let nchunks = cd.blocks.lock().len();
-    let mut offset: usize = 0;
-    for i in 0..nchunks {
-        let mut buf = [0u8; CACHE_BLK];
-        let to_write = {
-            let guard = cd.blocks.lock();
-            let Some(chunk) = guard.get(i) else { break };
-            let n = chunk.len().min(total.saturating_sub(offset));
-            buf[..n].copy_from_slice(&chunk[..n]);
-            n
-        };
-        if to_write == 0 {
-            break;
-        }
-        let mut written = 0usize;
-        while written < to_write {
-            match file.write_at(&buf[written..to_write], (offset + written) as u64) {
-                Ok(0) => {
-                    warn!("LoopDevice: writeback stalled at {}", offset + written);
-                    return false;
-                }
-                Ok(w) => written += w,
-                Err(e) => {
-                    warn!("LoopDevice: writeback err at {}: {e:?}", offset + written);
-                    return false;
-                }
-            }
-        }
-        offset += to_write;
-    }
-    if let Err(e) = file.sync(true) {
-        warn!("LoopDevice: writeback sync failed: {e:?}");
-        return false;
-    }
-    true
-}
-
-/// Shared cache data backing a `LoopBlockDevice`.
-///
-/// Owning an `Arc<CacheData>` keeps the buffer alive even if the
-/// `LoopDevice` replaces its cache slot (e.g. on re-mount).
-///
-/// The buffer is protected by a `SpinNoPreempt` lock.  Both block-device
-/// I/O (`read_block`/`write_block`, already under ext4's SpinNoPreempt)
-/// and write-back paths (normal syscall context) acquire this lock,
-/// so no concurrent access is possible regardless of mount state.
-#[cfg(feature = "ext4")]
-struct CacheData {
-    blocks: SpinNoPreempt<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
-    total_len: usize,
-    dirty: AtomicBool,
-    /// `true` while a `LoopBlockDevice` referencing this cache is alive.
-    mounted: AtomicBool,
-}
-
-#[cfg(feature = "ext4")]
-impl CacheData {
-    fn new(blocks: alloc::vec::Vec<alloc::vec::Vec<u8>>, total_len: usize) -> Self {
-        Self {
-            blocks: SpinNoPreempt::new(blocks),
-            total_len,
-            dirty: AtomicBool::new(false),
-            mounted: AtomicBool::new(false),
-        }
-    }
-}
-
-/// Adapter that wraps a LoopDevice's file backend as a block device.
-///
-/// This allows ext4 (or other filesystem drivers) to use a loop device as
-/// backing storage by converting offset-based I/O to block-based I/O.
-///
-/// The adapter holds an `Arc<CacheData>` so the buffer remains valid even if
-/// the `LoopDevice`'s cache slot is later replaced (e.g. on re-mount while
-/// old filesystem references still exist).  The old adapter keeps its buffer
-/// alive through the Arc — no use-after-free.
-///
-/// Write-back happens in three places:
-///   - `LOOP_CLR_FD` (losetup -d): writes back and clears the cache
-///   - `as_dyn_block_device()` (re-mount): writes back before re-reading
-///   - `BLKFLSBUF` ioctl: explicit flush
-///
-/// All three run in normal syscall context where VFS I/O is safe.
-/// The `flush()` callback is intentionally a no-op because ext4 invokes it
-/// inside `SpinNoPreempt`.
-#[cfg(feature = "ext4")]
-pub struct LoopBlockDevice {
-    cache: Arc<CacheData>,
-    block_size: usize,
-    ro: bool,
-}
-
-#[cfg(feature = "ext4")]
-impl LoopBlockDevice {
-    /// Create a new block device adapter backed by the given `CacheData`.
-    fn new(cache: Arc<CacheData>, ro: bool) -> VfsResult<Self> {
-        cache.mounted.store(true, Ordering::Release);
-        Ok(Self {
-            cache,
-            block_size: 512,
-            ro,
-        })
-    }
-}
-
-#[cfg(feature = "ext4")]
-impl Drop for LoopBlockDevice {
-    fn drop(&mut self) {
-        self.cache.mounted.store(false, Ordering::Release);
-    }
-}
-
-#[cfg(feature = "ext4")]
-impl ax_driver::prelude::BaseDriverOps for LoopBlockDevice {
-    fn device_name(&self) -> &str {
-        "loop"
-    }
-
-    fn device_type(&self) -> ax_driver::prelude::DeviceType {
-        ax_driver::prelude::DeviceType::Block
-    }
-}
-
-#[cfg(feature = "ext4")]
-impl ax_driver::prelude::BlockDriverOps for LoopBlockDevice {
-    fn num_blocks(&self) -> u64 {
-        self.cache.total_len as u64 / self.block_size as u64
-    }
-
-    fn block_size(&self) -> usize {
-        self.block_size
-    }
-
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_driver::prelude::DevResult {
-        let byte_off = block_id as usize * self.block_size;
-        if byte_off
-            .checked_add(buf.len())
-            .is_none_or(|end| end > self.cache.total_len)
-        {
-            return Err(ax_driver::prelude::DevError::Io);
-        }
-        let blocks = self.cache.blocks.lock();
-        let mut pos = 0;
-        let mut cur = byte_off;
-        while pos < buf.len() {
-            let idx = cur / CACHE_BLK;
-            let off = cur % CACHE_BLK;
-            let Some(chunk) = blocks.get(idx) else {
-                return Err(ax_driver::prelude::DevError::Io);
-            };
-            let to_copy = (buf.len() - pos).min(CACHE_BLK - off);
-            buf[pos..pos + to_copy].copy_from_slice(&chunk[off..off + to_copy]);
-            pos += to_copy;
-            cur += to_copy;
-        }
-        Ok(())
-    }
-
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_driver::prelude::DevResult {
-        if self.ro {
-            return Err(ax_driver::prelude::DevError::Io);
-        }
-        let byte_off = block_id as usize * self.block_size;
-        if byte_off
-            .checked_add(buf.len())
-            .is_none_or(|end| end > self.cache.total_len)
-        {
-            return Err(ax_driver::prelude::DevError::Io);
-        }
-        let mut blocks = self.cache.blocks.lock();
-        let mut pos = 0;
-        let mut cur = byte_off;
-        while pos < buf.len() {
-            let idx = cur / CACHE_BLK;
-            let off = cur % CACHE_BLK;
-            let Some(chunk) = blocks.get_mut(idx) else {
-                return Err(ax_driver::prelude::DevError::Io);
-            };
-            let to_copy = (buf.len() - pos).min(CACHE_BLK - off);
-            chunk[off..off + to_copy].copy_from_slice(&buf[pos..pos + to_copy]);
-            pos += to_copy;
-            cur += to_copy;
-        }
-        self.cache.dirty.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    fn flush(&mut self) -> ax_driver::prelude::DevResult {
-        // Intentionally a no-op.  ext4 calls this from inside SpinNoPreempt
-        // where sleeping VFS I/O would panic.  Dirty data is written back in
-        // LOOP_CLR_FD (losetup -d), BLKFLSBUF, or after umount — all in
-        // normal syscall context.
-        Ok(())
-    }
-}
-
-/// Block-device data cache owned by the LoopDevice.
-#[cfg(feature = "ext4")]
-struct BlockCache {
-    data: Option<Arc<CacheData>>,
-}
 
 /// /dev/loopX devices
 pub struct LoopDevice {
@@ -260,7 +50,7 @@ pub struct LoopDevice {
     /// Block-device data cache.  Populated by `as_dyn_block_device()`,
     /// written back and cleared by `LOOP_CLR_FD`.
     #[cfg(feature = "ext4")]
-    block_cache: Mutex<BlockCache>,
+    pub(super) block_cache: Mutex<BlockCache>,
 }
 
 impl LoopDevice {
@@ -275,7 +65,7 @@ impl LoopDevice {
             flags: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
             #[cfg(feature = "ext4")]
-            block_cache: Mutex::new(BlockCache { data: None }),
+            block_cache: Mutex::new(BlockCache::new()),
         }
     }
 
@@ -329,107 +119,6 @@ impl LoopDevice {
     pub fn clone_file(&self) -> VfsResult<FileBackend> {
         let file = self.file.lock().clone();
         file.ok_or(AxError::from(LinuxError::ENXIO))
-    }
-
-    /// Create a boxed block device adapter from this loop device.
-    ///
-    /// Returns `Err` if no file is attached to the loop device.
-    ///
-    /// If a previous `CacheData` still has outstanding `Arc` references from
-    /// an old (unmounted) filesystem, those references keep the old buffer
-    /// alive — no use-after-free.  The new adapter gets a fresh `CacheData`
-    /// re-read from the backing file.
-    #[cfg(feature = "ext4")]
-    pub fn as_dyn_block_device(&self) -> VfsResult<Box<dyn ax_driver::prelude::BlockDriverOps>> {
-        let file = self.file.lock().clone();
-        let file = file.ok_or(AxError::from(LinuxError::ENXIO))?;
-        let len = file.location().len().unwrap_or(0) as usize;
-
-        // Reject re-mount if an existing CacheData is still actively mounted.
-        {
-            let mut cache = self.block_cache.lock();
-            if let Some(ref cd) = cache.data {
-                if cd.mounted.load(Ordering::Acquire) {
-                    return Err(AxError::from(LinuxError::EBUSY));
-                }
-                if cd.dirty.swap(false, Ordering::AcqRel) {
-                    if self.ro.load(Ordering::Relaxed) {
-                        cd.dirty.store(true, Ordering::Release);
-                        return Err(AxError::Io);
-                    }
-                    if !writeback_buffer(&file, cd) {
-                        cd.dirty.store(true, Ordering::Release);
-                        return Err(AxError::Io);
-                    }
-                }
-            }
-            cache.data = None;
-        }
-
-        // Read the backing file in CACHE_BLK-sized chunks.  Each individual
-        // allocation is only 4 KiB, small enough to satisfy even when physical
-        // memory is fragmented after many mount/umount cycles.
-        let num_chunks = if len == 0 {
-            0
-        } else {
-            (len - 1) / CACHE_BLK + 1
-        };
-        let mut chunks = alloc::vec::Vec::with_capacity(num_chunks);
-        let mut offset: usize = 0;
-        for _ in 0..num_chunks {
-            let to_read = CACHE_BLK.min(len - offset);
-            let mut chunk = alloc::vec![0u8; CACHE_BLK];
-            let n = file.read_at(&mut chunk[..to_read], offset as u64)?;
-            if n != to_read {
-                warn!("LoopDevice: short read {n}/{to_read} at offset {offset}");
-                return Err(AxError::Io);
-            }
-            chunks.push(chunk);
-            offset += to_read;
-        }
-
-        let mut cache = self.block_cache.lock();
-        let cd = Arc::new(CacheData::new(chunks, len));
-        cache.data = Some(cd.clone());
-        drop(cache);
-
-        Ok(Box::new(LoopBlockDevice::new(
-            cd,
-            self.ro.load(Ordering::Relaxed),
-        )?))
-    }
-
-    /// Write back dirty block-cache data to the backing file.
-    ///
-    /// Called after `unmount` in normal syscall context where VFS I/O is
-    /// safe, so that data is persisted without requiring an explicit
-    /// `losetup -d` or `BLKFLSBUF`.
-    ///
-    /// Returns `Err(AxError::Io)` if writeback fails, so that callers
-    /// (`sys_umount2`) can propagate the error to userspace.  On failure
-    /// the dirty flag is preserved so that subsequent flush attempts
-    /// (BLKFLSBUF, LOOP_CLR_FD) can retry.
-    #[cfg(feature = "ext4")]
-    pub fn flush_cache_to_file(&self) -> AxResult<()> {
-        let file = self.file.lock().clone();
-        let cache = self.block_cache.lock();
-        if let Some(ref cd) = cache.data {
-            let mut wb_err = false;
-            if cd.dirty.swap(false, Ordering::AcqRel)
-                && let Some(ref file) = file
-            {
-                let writeback_ok = !self.ro.load(Ordering::Relaxed) && writeback_buffer(file, cd);
-                if !writeback_ok {
-                    cd.dirty.store(true, Ordering::Release);
-                    wb_err = true;
-                }
-            }
-            cd.mounted.store(false, Ordering::Release);
-            if wb_err {
-                return Err(AxError::Io);
-            }
-        }
-        Ok(())
     }
 }
 
@@ -499,38 +188,10 @@ impl DeviceOps for LoopDevice {
 
                 // Write back dirty data from the block cache before clearing.
                 // This runs in normal syscall context so CachedFile VFS I/O
-                // (page cache updates) is safe.  The SpinNoPreempt lock
-                // ensures no concurrent write_block() can race.
+                // (page cache updates) is safe. The cache lock ensures no
+                // concurrent write_block() can race.
                 #[cfg(feature = "ext4")]
-                {
-                    let cache = self.block_cache.lock();
-                    // If a LoopBlockDevice is still alive (mounted), refuse to
-                    // detach — the old Arc<CacheData> would keep receiving
-                    // write_block calls but the backing file would be gone,
-                    // causing silent data loss on umount.
-                    if let Some(ref cd) = cache.data
-                        && cd.mounted.load(Ordering::Acquire)
-                    {
-                        return Err(AxError::from(LinuxError::EBUSY));
-                    }
-
-                    if let Some(ref cd) = cache.data
-                        && cd.dirty.load(Ordering::Acquire)
-                    {
-                        if self.ro.load(Ordering::Relaxed) {
-                            return Err(AxError::Io);
-                        }
-                        if let Some(ref file) = *guard
-                            && !writeback_buffer(file, cd)
-                        {
-                            warn!("LoopDevice: writeback failed on LOOP_CLR_FD, data may be lost");
-                            return Err(AxError::Io);
-                        }
-                        cd.dirty.store(false, Ordering::Release);
-                    }
-                    drop(cache);
-                    self.block_cache.lock().data = None;
-                }
+                self.detach_block_cache(guard.as_ref())?;
 
                 *guard = None;
                 *self.file_name.lock() = [0u8; 64];
@@ -540,7 +201,7 @@ impl DeviceOps for LoopDevice {
                 (arg as *mut loop_info).vm_write(self.get_info()?)?;
             }
             LOOP_SET_STATUS => {
-                // FIXME: AnyBitPattern
+                // `loop_info` is a C ioctl payload copied from the guest ABI.
                 let info = unsafe { (arg as *const loop_info).vm_read_uninit()?.assume_init() };
                 self.set_info(info)?;
                 let mut name = self.file_name.lock();
@@ -558,13 +219,13 @@ impl DeviceOps for LoopDevice {
                 (arg as *mut loop_info64).vm_write(self.get_info64()?)?;
             }
             LOOP_SET_STATUS64 => {
-                // FIXME: AnyBitPattern
+                // `loop_info64` is a C ioctl payload copied from the guest ABI.
                 let info = unsafe { (arg as *const loop_info64).vm_read_uninit()?.assume_init() };
                 *self.file_name.lock() = info.lo_file_name;
                 self.set_lo_flags(info.lo_flags);
             }
             LOOP_CONFIGURE => {
-                // FIXME: AnyBitPattern
+                // `loop_config` is a C ioctl payload copied from the guest ABI.
                 let cfg = unsafe { (arg as *const loop_config).vm_read_uninit()?.assume_init() };
                 let fd = cfg.fd as i32;
                 if fd < 0 {
@@ -587,7 +248,6 @@ impl DeviceOps for LoopDevice {
                 }
                 self.set_lo_flags(flags);
             }
-            // TODO: the following should apply to any block devices
             BLKGETSIZE | BLKGETSIZE64 => {
                 let sectors = if let Ok(f) = self.clone_file() {
                     f.location().len()? / 512
@@ -646,24 +306,7 @@ impl DeviceOps for LoopDevice {
                 // write_block() will re-set dirty=true after our snapshot,
                 // guaranteeing its data is flushed on the next attempt.
                 #[cfg(feature = "ext4")]
-                {
-                    let file = self.file.lock().clone();
-                    let cache = self.block_cache.lock();
-                    if let Some(ref cd) = cache.data
-                        && let Some(ref file) = file
-                    {
-                        if self.ro.load(Ordering::Relaxed) {
-                            return Err(AxError::Io);
-                        }
-                        if !cd.dirty.swap(false, Ordering::AcqRel) {
-                            return Ok(0);
-                        }
-                        if !writeback_buffer(file, cd) {
-                            cd.dirty.store(true, Ordering::Release);
-                            return Err(AxError::Io);
-                        }
-                    }
-                }
+                self.flush_block_cache_ioctl()?;
             }
             BLKIOMIN => {
                 // minimum I/O size

@@ -121,26 +121,85 @@ fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReas
 
 fn emulate_csrx(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
     let rd = extract_field(ins, 0, 5);
-    let ty = extract_field(ins, 5, 5);
+    let rj = extract_field(ins, 5, 5);
     let csr = extract_field(ins, 10, 14);
 
-    match ty {
-        0 => {
-            log::info!("LoongArch GSPR csrrd emulation: csr={:#x}", csr);
-            ctx.set_gpr(rd, 0);
-        }
-        1 => {
-            log::info!("LoongArch GSPR csrwr emulation: csr={:#x}", csr);
-            ctx.set_gpr(rd, 0);
-        }
+    match csr {
+        CSR_TCFG | CSR_TVAL | CSR_TICLR => emulate_timer_csr(ctx, rd, rj, csr),
         _ => {
-            log::info!("LoongArch GSPR csrxchg emulation: csr={:#x}", csr);
+            match rj {
+                0 => log::info!("LoongArch GSPR csrrd emulation: csr={:#x}", csr),
+                _ => log::info!("LoongArch GSPR csrwr/csrxchg emulation: csr={:#x}", csr),
+            }
             ctx.set_gpr(rd, 0);
         }
     }
 
     advance_guest_pc(ctx);
     AxVCpuExitReason::Nothing
+}
+
+/// Timer CSR numbers (matching GCSR encoding in LoongArch LVZ).
+const CSR_TCFG: usize = 0x41;
+const CSR_TVAL: usize = 0x42;
+const CSR_TICLR: usize = 0x44;
+
+/// Emulate guest timer CSR accesses by passing through to the host hardware
+/// timer. In the 1:1 vCPU model the host hardware timer is shared: when the
+/// guest writes TCFG/TVAL we program the actual timer so that it fires, and
+/// when it fires the IRQ handler injects the interrupt into the guest ESTAT.
+fn emulate_timer_csr(ctx: &mut LoongArchContextFrame, rd: usize, rj: usize, csr: usize) {
+    if rj == 0 {
+        // csrrd – read the current host hardware timer value.
+        let value = read_host_timer_csr(csr);
+        ctx.set_gpr(rd, value);
+        log::debug!("Timer CSR read: csr={:#x} -> {:#x}", csr, value);
+    } else {
+        // csrwr / csrxchg – write guest value to host hardware timer.
+        let old_value = read_host_timer_csr(csr);
+        let new_value = ctx.x[rj];
+        write_host_timer_csr(csr, new_value);
+        ctx.set_gpr(rd, old_value);
+        log::debug!(
+            "Timer CSR write: csr={:#x} <- {:#x} (old={:#x})",
+            csr,
+            new_value,
+            old_value
+        );
+
+        // When the guest clears the timer interrupt via TICLR, also clear the
+        // injected timer bit in the guest ESTAT so the guest doesn't re-take
+        // the interrupt on the next VM entry.
+        if csr == CSR_TICLR && (new_value & 0x1) != 0 {
+            ctx.gcsr_estat &= !TIMER_BIT;
+        }
+    }
+}
+
+/// Read a host hardware timer CSR via inline assembly.
+fn read_host_timer_csr(csr: usize) -> usize {
+    let value: usize;
+    unsafe {
+        match csr {
+            CSR_TCFG => core::arch::asm!("csrrd {}, 0x41", out(reg) value),
+            CSR_TVAL => core::arch::asm!("csrrd {}, 0x42", out(reg) value),
+            CSR_TICLR => core::arch::asm!("csrrd {}, 0x44", out(reg) value),
+            _ => value = 0,
+        }
+    }
+    value
+}
+
+/// Write a host hardware timer CSR via inline assembly.
+fn write_host_timer_csr(csr: usize, value: usize) {
+    unsafe {
+        match csr {
+            CSR_TCFG => core::arch::asm!("csrwr {}, 0x41", in(reg) value),
+            CSR_TVAL => core::arch::asm!("csrwr {}, 0x42", in(reg) value),
+            CSR_TICLR => core::arch::asm!("csrwr {}, 0x44", in(reg) value),
+            _ => {}
+        }
+    }
 }
 
 fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> AxVCpuExitReason {
@@ -154,9 +213,12 @@ fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> AxVCpuExitReas
 
 fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
     let level = extract_field(ins, 0, 15);
-    log::info!("LoongArch guest idle request: level={:#x}", level);
+    log::debug!("LoongArch guest idle request: level={:#x}", level);
     advance_guest_pc(ctx);
-    AxVCpuExitReason::Halt
+    // Return Nothing instead of Halt so the guest busy-loops in its idle
+    // handler. A Halt exit would permanently block the vCPU task because
+    // there is no timer-based wakeup mechanism yet.
+    AxVCpuExitReason::Nothing
 }
 
 fn emulate_iocsr(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
@@ -223,8 +285,8 @@ fn emulate_gspr(ctx: &mut LoongArchContextFrame) -> AxVCpuExitReason {
     const OPCODE_IDLE_LEN: usize = 17;
     const OPCODE_CSRX: usize = 0b00000100;
     const OPCODE_CSRX_LEN: usize = 8;
-    const OPCODE_IOCSR: usize = 0b000_0011_0010_0100_0000;
-    const OPCODE_IOCSR_LEN: usize = 19;
+    const OPCODE_IOCSR: usize = 0b0000011001;
+    const OPCODE_IOCSR_LEN: usize = 10;
 
     let matches = |opcode: usize, len: usize| -> bool {
         let shift = 32 - len;
@@ -272,7 +334,7 @@ pub fn handle_exception_sync(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpu
         ctx.host_tlbrera
     );
 
-    match ecode {
+    let result = match ecode {
         ECODE_HVC => {
             let nr = ctx.get_a0() as u64;
             let args = [
@@ -331,7 +393,19 @@ pub fn handle_exception_sync(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpu
             get_badv(ctx),
             get_badi(ctx)
         ),
+    };
+    // When a timer interrupt is pending alongside a synchronous exception, the
+    // sync exception wins in the hardware priority arbitration and the IRQ exit
+    // is never taken. Forward the timer interrupt into the guest by setting the
+    // timer bit in the guest ESTAT so that it is observed on the next VM entry.
+    if get_guest_interrupt_status(ctx) & TIMER_BIT != 0 {
+        ctx.gcsr_estat |= TIMER_BIT;
+        // Acknowledge the host timer interrupt so it stops firing.
+        unsafe {
+            core::arch::asm!("csrwr {}, 0x44", in(reg) 1usize);
+        }
     }
+    result
 }
 
 pub fn handle_exception_irq(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpuExitReason> {
@@ -346,6 +420,14 @@ pub fn handle_exception_irq(ctx: &mut LoongArchContextFrame) -> AxResult<AxVCpuE
             get_guest_pc(ctx),
             ctx.gcsr_era
         );
+
+        // Inject the timer interrupt into the guest by setting the timer bit
+        // in the guest ESTAT. On the next VM entry RESTORE_GUEST_REGS will
+        // write this to GCSR ESTAT, so the guest sees the interrupt.
+        if vector == INT_TIMER {
+            ctx.gcsr_estat |= TIMER_BIT;
+        }
+
         return Ok(AxVCpuExitReason::ExternalInterrupt {
             vector: vector as u64,
         });

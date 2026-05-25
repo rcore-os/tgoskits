@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
+use anyhow::{Context as _, anyhow};
 use cargo_metadata::Metadata;
 use ostool::build::config::Cargo;
 
+use super::board;
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
@@ -30,6 +31,20 @@ pub(crate) fn resolve_build_info_path(
         STARRY_PACKAGE,
         target,
     ))
+}
+
+pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("failed to read Starry build config {}: {e}", path.display()))?;
+
+    if let Ok(board_file) = toml::from_str::<board::StarryBoardFile>(&content) {
+        return Ok(Some(board_file.target));
+    }
+    if toml::from_str::<StarryBuildInfo>(&content).is_ok() {
+        return Ok(None);
+    }
+
+    Err(anyhow!("invalid Starry build config {}", path.display()))
 }
 
 #[cfg(test)]
@@ -93,7 +108,6 @@ fn patch_starry_cargo_config(
     let static_defplat = uses_static_default_platform(&cargo.features);
 
     cargo.package = request.package.clone();
-    cargo.target = request.target.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
     remove_qemu_feature_for_dynamic_platform(cargo);
     if static_defplat {
@@ -151,7 +165,7 @@ fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
     let uses_dynamic_platform = cargo.features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
         )
     });
     if uses_dynamic_platform {
@@ -160,26 +174,28 @@ fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
 }
 
 fn uses_static_default_platform(features: &[String]) -> bool {
-    let has_defplat = features.iter().any(|feature| {
+    let has_static_platform = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
             "defplat" | "ax-feat/defplat" | "ax-std/defplat"
         )
+    }) || features.iter().any(|feature| {
+        feature.starts_with("ax-hal/") && feature != "ax-hal/plat-dyn" && feature != "ax-hal/myplat"
     });
     let has_dynamic = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
         )
     });
     let has_custom = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "myplat" | "ax-feat/myplat" | "ax-std/myplat"
+            "myplat" | "ax-feat/myplat" | "ax-std/myplat" | "ax-hal/myplat"
         )
     });
 
-    has_defplat && !has_dynamic && !has_custom
+    has_static_platform && !has_dynamic && !has_custom
 }
 
 fn ensure_starry_bin_arg(
@@ -466,11 +482,9 @@ HELLO = "world"
             env: HashMap::new(),
             features: vec![
                 "common".to_string(),
-                "ax-feat/bus-mmio".to_string(),
-                "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
-                "axplat-dyn/rockchip-soc".to_string(),
-                "axplat-dyn/rockchip-sdhci".to_string(),
+                "ax-driver/rockchip-soc".to_string(),
+                "ax-driver/rockchip-sdhci".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
@@ -480,8 +494,11 @@ HELLO = "world"
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
+            StarryBuildInfo::build_cargo_args(
+                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
+                &[],
+            ),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -490,20 +507,18 @@ HELLO = "world"
         assert!(
             cargo
                 .features
-                .contains(&"axplat-dyn/rockchip-soc".to_string())
+                .contains(&"ax-driver/rockchip-soc".to_string())
         );
         assert!(
             cargo
                 .features
-                .contains(&"axplat-dyn/rockchip-sdhci".to_string())
+                .contains(&"ax-driver/rockchip-sdhci".to_string())
         );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+        assert_eq!(
+            cargo.target,
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json"
         );
     }
 
@@ -529,8 +544,11 @@ HELLO = "world"
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
+            StarryBuildInfo::build_cargo_args(
+                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
+                &[],
+            ),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -563,7 +581,7 @@ HELLO = "world"
     }
 
     #[test]
-    fn patch_starry_cargo_config_keeps_linker_x_arg() {
+    fn patch_starry_cargo_config_preserves_json_target() {
         let request = ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
             arch: "aarch64".to_string(),
@@ -581,19 +599,21 @@ HELLO = "world"
         let build_info = default_starry_build_info_for_target(&request.target);
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json".to_string(),
+            StarryBuildInfo::build_cargo_args(
+                "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+                &[],
+            ),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
         patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
+        assert_eq!(
+            cargo.target,
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json"
         );
+        assert_eq!(cargo.env.get("AX_TARGET"), Some(&request.target));
     }
 
     #[test]

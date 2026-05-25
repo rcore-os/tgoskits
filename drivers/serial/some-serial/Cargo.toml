@@ -24,10 +24,10 @@ tock-registers.workspace = true
 x86.workspace = true
 
 [target.'cfg(target_os = "none")'.dev-dependencies]
+ax-kspin.workspace = true
 fdt-edit.workspace = true
 rdif-intc.workspace = true
 rdrive.workspace = true
-spin.workspace = true
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

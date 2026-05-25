@@ -32,15 +32,15 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
-use lazy_static::lazy_static;
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     net::AF_NETLINK,
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
-use spin::Mutex;
+use spin::Lazy;
 
 use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
 use crate::{
@@ -245,12 +245,11 @@ pub struct NetlinkSocket {
     queue: Mutex<VecDeque<Vec<u8>>>,
 }
 
-lazy_static! {
-    /// Global registry of bound netlink sockets, used by [`broadcast`]
-    /// to dispatch kernel-side messages.  Holds weak refs so socket close
-    /// drops naturally; dead entries are pruned on each broadcast.
-    static ref NETLINK_SOCKETS: Mutex<Vec<Weak<NetlinkSocket>>> = Mutex::new(Vec::new());
-}
+/// Global registry of bound netlink sockets, used by [`broadcast`] to dispatch
+/// kernel-side messages. Holds weak refs so socket close drops naturally; dead
+/// entries are pruned on each broadcast.
+static NETLINK_SOCKETS: Lazy<Mutex<Vec<Weak<NetlinkSocket>>>> =
+    Lazy::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
     pub fn new(protocol: u32) -> Arc<Self> {
@@ -416,13 +415,15 @@ impl NetlinkSocket {
     /// Drain at most one queued message into `dst`.  Returns `WouldBlock`
     /// when the queue is empty.
     fn read_one(&self, dst: &mut IoDst) -> AxResult<usize> {
-        let mut queue = self.queue.lock();
-        let Some(msg) = queue.front() else {
-            return Err(AxError::WouldBlock);
+        let msg = {
+            let mut queue = self.queue.lock();
+            let Some(msg) = queue.pop_front() else {
+                return Err(AxError::WouldBlock);
+            };
+            msg
         };
         // Cap at the message length; netlink datagrams are not coalesced.
-        let n = dst.write(msg)?;
-        queue.pop_front();
+        let n = dst.write(&msg)?;
         Ok(n)
     }
 }

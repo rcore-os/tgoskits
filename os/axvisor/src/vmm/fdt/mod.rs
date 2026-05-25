@@ -25,10 +25,10 @@ mod vm_fdt;
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
 use axvm::config::{AxVMConfig, AxVMCrateConfig};
 use fdt_parser::Fdt;
-use spin::Mutex;
 
 pub use parser::*;
 // pub use print::print_fdt;

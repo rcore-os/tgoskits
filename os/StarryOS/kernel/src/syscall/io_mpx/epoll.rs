@@ -1,4 +1,7 @@
-use core::{mem::size_of, time::Duration};
+use core::{
+    mem::{MaybeUninit, size_of},
+    time::Duration,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_task::future::{self, block_on, poll_io};
@@ -8,7 +11,7 @@ use linux_raw_sys::general::{
     EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD, epoll_event, timespec,
 };
 use starry_signal::SignalSet;
-use starry_vm::vm_write_slice;
+use starry_vm::{vm_read_slice, vm_write_slice};
 
 use crate::{
     file::{
@@ -30,6 +33,56 @@ fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> 
     let start = events.as_ptr() as usize;
     start.checked_add(len).ok_or(AxError::BadAddress)?;
     check_access(start, len)?;
+    Ok(())
+}
+
+/// Reads a single `epoll_event` from user memory without requiring the user
+/// pointer to satisfy `epoll_event`'s natural alignment.
+///
+/// Linux copies the `struct epoll_event` from user space with `copy_from_user`,
+/// which performs a byte-wise copy and imposes no alignment requirement. On
+/// architectures where `struct epoll_event` is NOT `__attribute__((packed))`
+/// (everything except x86/x86_64), the C struct has 8-byte alignment, but
+/// runtimes are free to back it with a less-strictly-aligned buffer. The Go
+/// runtime, for instance, lays out its `epollevent` with `[8]byte data` and
+/// thus only 4-byte alignment, so `&ev` passed to `epoll_ctl` can land at an
+/// address that is `4 (mod 8)`. Reading through a typed `*const epoll_event`
+/// (which the generic VM helpers reject when the pointer is unaligned) would
+/// then fail with `EFAULT`. Copy at byte granularity to mirror Linux.
+fn read_epoll_event(event: UserConstPtr<epoll_event>) -> AxResult<epoll_event> {
+    let mut buf = MaybeUninit::<epoll_event>::uninit();
+    let dst = unsafe {
+        core::slice::from_raw_parts_mut(
+            buf.as_mut_ptr().cast::<MaybeUninit<u8>>(),
+            size_of::<epoll_event>(),
+        )
+    };
+    vm_read_slice(event.address().as_ptr(), dst)?;
+    // SAFETY: all bytes were just initialized by the copy above and any bit
+    // pattern is a valid `epoll_event` (plain old data).
+    Ok(unsafe { buf.assume_init() })
+}
+
+/// Writes a single `epoll_event` to the user `events` array slot `index`
+/// without requiring the user pointer to satisfy `epoll_event`'s natural
+/// alignment.
+///
+/// See [`read_epoll_event`] for why epoll user buffers may be under-aligned;
+/// Linux's `__put_user` of each field has no alignment requirement, so we copy
+/// at byte granularity to match.
+fn write_epoll_event(
+    events: UserPtr<epoll_event>,
+    index: usize,
+    event: &epoll_event,
+) -> AxResult<()> {
+    let dst = events.as_ptr().wrapping_add(index) as *mut u8;
+    let src = unsafe {
+        core::slice::from_raw_parts(
+            event as *const epoll_event as *const u8,
+            size_of::<epoll_event>(),
+        )
+    };
+    vm_write_slice(dst, src)?;
     Ok(())
 }
 
@@ -59,7 +112,7 @@ pub fn sys_epoll_ctl(
     debug!("sys_epoll_ctl <= epfd: {epfd}, op: {op}, fd: {fd}");
 
     let parse_event = || -> AxResult<(EpollEvent, EpollFlags)> {
-        let event = event.get_as_ref()?;
+        let event = read_epoll_event(event)?;
         let events = IoEvents::from_bits_truncate(event.events);
         let flags =
             EpollFlags::from_bits(event.events & !events.bits()).ok_or(AxError::InvalidInput)?;
@@ -121,10 +174,7 @@ fn do_epoll_wait(
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
                 epoll.poll_events_with(maxevents, |index, event| {
-                    vm_write_slice(
-                        events.as_ptr().wrapping_add(index),
-                        core::slice::from_ref(&event),
-                    )?;
+                    write_epoll_event(events, index, &event)?;
                     Ok(())
                 })
             }),

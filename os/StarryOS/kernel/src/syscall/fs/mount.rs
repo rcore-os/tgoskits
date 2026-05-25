@@ -102,8 +102,6 @@ pub fn sys_mount(
 fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
     use alloc::{boxed::Box, sync::Arc};
 
-    use ax_driver::prelude::BlockDriverOps;
-
     let ctx = FS_CONTEXT.lock();
 
     // Resolve source device path (e.g., "/dev/loop0") to a block device
@@ -131,7 +129,7 @@ fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
     })?;
 
     let num_blocks = block_dev.num_blocks();
-    let region = ax_driver::PartitionRegion::from_num_blocks(num_blocks);
+    let region = ax_fs::BlockRegion::from_num_blocks(num_blocks);
 
     // Create ext4 filesystem from the dynamic block device
     let fs = ax_fs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
@@ -205,9 +203,9 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
 
     target.unmount()?;
 
-    // After unmount the SpinNoPreempt lock inside ext4 is released; safe
-    // to do VFS I/O here.  Propagate writeback errors so userspace sees
-    // EIO when dirty data could not be persisted to the backing file.
+    // After unmount, filesystem block I/O has stopped; it is safe to do VFS
+    // writeback here. Propagate writeback errors so userspace sees EIO when
+    // dirty data could not be persisted to the backing file.
     if let Some(cb) = writeback {
         cb()?;
     }

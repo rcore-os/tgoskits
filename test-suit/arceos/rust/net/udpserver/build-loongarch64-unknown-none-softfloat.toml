@@ -1,4 +1,4 @@
-features = ["ax-std"]
+features = ["ax-std", "ax-hal/loongarch64-qemu-virt", "ax-driver/pci", "ax-driver/virtio-net"]
 log = "Warn"
 max_cpu_num = 4
 

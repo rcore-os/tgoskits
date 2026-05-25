@@ -23,6 +23,7 @@ ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+rdrive.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none"]
