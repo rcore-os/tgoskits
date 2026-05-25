@@ -446,9 +446,19 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // Mark the task as blocked, this has to be done before adding it to the wait queue
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
-        curr.set_in_wait_queue(true);
 
-        wq_guard.push_back(curr.clone());
+        // The task may already be in this wait queue when an async waker
+        // (e.g. AxWaker::wake_by_ref with resched=true) preempts the task
+        // while it is inside WaitQueue::wait_until and re-runs the same
+        // wait_until call before the previous push_back has been
+        // consumed.  Pushing twice would leave a phantom entry that
+        // notify_one_with can later hand mutex ownership to while the
+        // task is running user code, causing a spurious "tried to
+        // acquire mutex it already owns" panic on the next aspace().lock().
+        if !curr.in_wait_queue() {
+            curr.set_in_wait_queue(true);
+            wq_guard.push_back(curr.clone());
+        }
         // Drop the lock of wait queue explictly.
         drop(wq_guard);
 
