@@ -18,6 +18,7 @@ use ax_hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use starry_process::{Pid, Process};
@@ -331,10 +332,12 @@ impl SimpleDirOps for ProcessTaskDir {
 fn task_status(task: &AxTaskRef) -> String {
     let thread = task.as_thread();
     let cred = thread.cred();
+    let num_threads = thread.proc_data.proc.threads().len() as u32;
     render_task_status(
         thread.proc_data.proc.pid(),
         thread.tid() as u64,
         &cred,
+        num_threads,
         task.cpumask(),
         ax_hal::cpu_num(),
     )
@@ -344,13 +347,21 @@ fn render_task_status(
     tgid: u32,
     pid: u64,
     cred: &crate::task::Cred,
+    num_threads: u32,
     cpumask: AxCpuMask,
     cpu_num: usize,
 ) -> String {
     let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
     let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
 
-    render_task_status_fields(tgid, pid, cred, &cpus_allowed, &cpus_allowed_list)
+    render_task_status_fields(
+        tgid,
+        pid,
+        cred,
+        num_threads,
+        &cpus_allowed,
+        &cpus_allowed_list,
+    )
 }
 
 #[rustfmt::skip]
@@ -358,14 +369,23 @@ fn render_task_status_fields(
     tgid: u32,
     pid: u64,
     cred: &crate::task::Cred,
+    num_threads: u32,
     cpus_allowed: &str,
     cpus_allowed_list: &str,
 ) -> String {
+    // NOTE: `Threads:\t<n>` is REQUIRED by psutil. `Process.num_threads()`
+    // does `int(re.compile(br'Threads:\t(\d+)').findall(data)[0])`, which
+    // raises an *uncaught* IndexError (not NoSuchProcess/AccessDenied/
+    // NotImplementedError, the only exceptions `Process.as_dict()` swallows)
+    // when the line is absent. That crashes any psutil/glances `process_iter`.
+    // The tab-separated `Uid:`/`Gid:` lines are likewise mandatory for
+    // `Process.uids()`/`gids()`, which also index `findall(...)[0]` blindly.
     format!(
         "Tgid:\t{tgid}\n\
         Pid:\t{pid}\n\
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
+        Threads:\t{num_threads}\n\
         Cpus_allowed:\t{cpus_allowed}\n\
         Cpus_allowed_list:\t{cpus_allowed_list}\n\
         Mems_allowed:\t1\n\
@@ -560,11 +580,57 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
     Ok(output)
 }
 
+/// Render `/proc/[pid]/statm` (process memory in pages).
+///
+/// Fields (Linux order): `size resident shared text lib data dirty`.
+/// psutil's `Process.memory_info()` parses the first 7 ints and computes
+/// `memory_percent` from them; the file MUST exist and be parseable, or
+/// psutil raises an *uncaught* `FileNotFoundError` (only NoSuchProcess /
+/// AccessDenied / ZombieProcess / NotImplementedError are swallowed by
+/// `Process.as_dict()`), crashing any `process_iter` (glances / top-likes).
+///
+/// `size` (VSS) is summed exactly from the mapped areas. `resident` (RSS) is
+/// reported as the full VSS — an honest upper bound rather than a fabricated
+/// figure; StarryOS' file-backed areas are lazily/cache populated, so a precise
+/// per-page page-table walk for every process on every refresh would be far too
+/// expensive under emulation. `shared`/`lib`/`dirty` are 0 (Linux also reports 0
+/// for `lib`/`dirty` since 2.6); `text` and `data` are derived from the areas'
+/// executable / writable flags.
+fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
+    let task = match task.upgrade() {
+        Some(t) => t,
+        None => return Ok("0 0 0 0 0 0 0\n".into()),
+    };
+
+    let aspace_arc = task.as_thread().proc_data.aspace();
+    let mm = aspace_arc.lock();
+
+    let mut size_pages: u64 = 0;
+    let mut text_pages: u64 = 0;
+    let mut data_pages: u64 = 0;
+    for area in mm.areas() {
+        let pages = (area.size() / PAGE_SIZE_4K) as u64;
+        size_pages += pages;
+        let flags = area.flags();
+        if flags.contains(MappingFlags::EXECUTE) {
+            text_pages += pages;
+        } else if flags.contains(MappingFlags::WRITE) {
+            data_pages += pages;
+        }
+    }
+
+    // size resident shared text lib data dirty
+    Ok(format!(
+        "{size_pages} {size_pages} 0 {text_pages} 0 {data_pages} 0\n"
+    ))
+}
+
 impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             [
                 "stat",
+                "statm",
                 "status",
                 "statm",
                 "oom_score_adj",
@@ -596,16 +662,22 @@ impl SimpleDirOps for ThreadDir {
                 })
                 .into()
             }
+            "statm" => {
+                let task = self.task.clone();
+                SimpleFile::new_regular(fs, move || render_thread_statm(&task)).into()
+            }
             "status" => {
                 let procfs_pid = self.procfs_pid;
                 SimpleFile::new_regular(fs, move || {
                     if let Some(pid) = procfs_pid {
                         let thread = task.as_thread();
                         let cred = thread.cred();
+                        let num_threads = thread.proc_data.proc.threads().len() as u32;
                         Ok(render_task_status(
                             pid,
                             pid as u64,
                             &cred,
+                            num_threads,
                             task.cpumask(),
                             ax_hal::cpu_num(),
                         ))
@@ -977,7 +1049,14 @@ mod tests {
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
 
-        render_task_status_fields(tgid, pid, &Cred::root(), &cpus_allowed, &cpus_allowed_list)
+        render_task_status_fields(
+            tgid,
+            pid,
+            &Cred::root(),
+            1,
+            &cpus_allowed,
+            &cpus_allowed_list,
+        )
     }
 
     #[test]
@@ -1019,5 +1098,21 @@ mod tests {
         assert!(status.contains("Pid:\t84\n"));
         assert!(status.contains("Cpus_allowed:\t0000000a\n"));
         assert!(status.contains("Cpus_allowed_list:\t1,3\n"));
+    }
+
+    #[test]
+    fn task_status_emits_tab_separated_threads_line_for_psutil() {
+        // psutil `Process.num_threads()` parses this line with the regex
+        // `br'Threads:\t(\d+)'` and blindly indexes `[0]`; a missing line
+        // raises an uncaught IndexError that crashes glances' process_iter.
+        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+        let status =
+            render_task_status_fields(1, 1, &Cred::root(), 3, &cpus_allowed, &cpus_allowed_list);
+
+        assert!(status.contains("Threads:\t3\n"));
+        // Tab-separated, exactly as the psutil regex expects (not space).
+        assert!(!status.contains("Threads: 3"));
     }
 }
