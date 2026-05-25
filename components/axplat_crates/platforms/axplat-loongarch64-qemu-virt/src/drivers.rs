@@ -1,22 +1,28 @@
-use ax_plat::drivers::DriversIf;
-use rdrive::probe::static_::{StaticDeviceDesc, StaticPciEcam};
+use rdrive::{PlatformDevice, probe::OnProbeError};
 
 use crate::config::devices;
 
 const PCI_ECAM_SIZE: usize = (devices::PCI_BUS_END + 1) << 20;
 const PCI_LEGACY_IRQS: &[usize] = &[16, 17, 18, 19];
 
-static STATIC_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new("pci-ecam")
-    .with_irqs(PCI_LEGACY_IRQS)
-    .with_pci_ecam(
-        StaticPciEcam::new(devices::PCI_ECAM_BASE, PCI_ECAM_SIZE).with_ranges(devices::PCI_RANGES),
-    )];
+rdrive::module_driver!(
+    name: "Static PCIe ECAM",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Static {
+        on_probe: probe,
+    }],
+);
 
-struct DriversIfImpl;
-
-#[impl_plat_interface]
-impl DriversIf for DriversIfImpl {
-    fn static_devices_fn() -> &'static [StaticDeviceDesc] {
-        STATIC_DEVICES
-    }
+fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    let mem32 = ax_driver::pci::pci_mem32_from_ranges(devices::PCI_RANGES);
+    let mem64 = ax_driver::pci::pci_mem64_from_ranges(devices::PCI_RANGES);
+    ax_driver::pci::register_static_legacy_irq_routes(PCI_LEGACY_IRQS, PCI_ECAM_SIZE);
+    ax_driver::pci::register_ecam_controller(
+        plat_dev,
+        devices::PCI_ECAM_BASE,
+        PCI_ECAM_SIZE,
+        mem32,
+        mem64,
+    )
 }

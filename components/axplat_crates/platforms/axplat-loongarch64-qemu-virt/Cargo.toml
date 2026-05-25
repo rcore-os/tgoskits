@@ -26,7 +26,9 @@ uart_16550 = "0.5"
 
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
+ax-driver = { workspace = true, features = ["pci"] }
 ax-plat = { workspace = true }
+axklib.workspace = true
 rdrive.workspace = true
 
 [package.metadata.docs.rs]

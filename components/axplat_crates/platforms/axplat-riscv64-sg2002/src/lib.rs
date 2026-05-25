@@ -5,9 +5,6 @@
 extern crate alloc;
 
 #[macro_use]
-extern crate rdrive;
-
-#[macro_use]
 extern crate log;
 #[macro_use]
 extern crate ax_plat;
@@ -16,6 +13,7 @@ mod boot;
 mod console;
 mod drivers;
 mod init;
+#[cfg(feature = "irq")]
 mod irq;
 mod mem;
 mod power;

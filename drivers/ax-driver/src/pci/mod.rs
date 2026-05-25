@@ -92,35 +92,7 @@ static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQ
 
 pub const DEVICE_NAME: &str = "pci-ecam";
 
-#[cfg(probe = "static")]
-module_driver!(
-    name: "Static PCIe ECAM",
-    level: ProbeLevel::PreKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_static,
-    }],
-);
-
-#[cfg(probe = "static")]
-fn probe_static(
-    info: rdrive::probe::static_::StaticInfo,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-    let Some(ecam) = info.pci_ecam() else {
-        return Err(OnProbeError::NotMatch);
-    };
-    let mem32 = ecam.mem32.or_else(|| pci_mem32_from_ranges(ecam.ranges));
-    let mem64 = ecam.mem64.or_else(|| pci_mem64_from_ranges(ecam.ranges));
-    register_static_legacy_irq_routes(info.irqs(), ecam.size);
-    register_ecam_controller(plat_dev, ecam.base, ecam.size, mem32, mem64)
-}
-
-#[cfg(probe = "static")]
-fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
+pub fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
     if irqs.is_empty() {
         return;
     }
@@ -130,8 +102,7 @@ fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
     register_legacy_irq_routes(0, bus_end, irqs);
 }
 
-#[cfg(probe = "static")]
-fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
+pub fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
     let (address, size) = ranges.get(1).copied()?;
     if size == 0 {
         return None;
@@ -142,8 +113,7 @@ fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
     })
 }
 
-#[cfg(probe = "static")]
-fn pci_mem64_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem64> {
+pub fn pci_mem64_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem64> {
     let (address, size) = ranges.get(2).copied()?;
     if size == 0 || usize::BITS <= 32 {
         return None;

@@ -6,10 +6,14 @@ use rdrive::{PlatformDevice, probe::OnProbeError};
 use sg200x_bsp::sdmmc::Sdmmc;
 use spin::Mutex;
 
+use crate::config::devices;
+
 const BLOCK_SIZE: usize = 512;
+const SDMMC_SIZE: usize = 0x1000;
+const SYSCON_SIZE: usize = 0x8000;
 pub const DEVICE_NAME: &str = "cvsd";
 
-module_driver!(
+rdrive::module_driver!(
     name: "Static CVSD",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -18,28 +22,13 @@ module_driver!(
     }],
 );
 
-fn probe(
-    info: rdrive::probe::static_::StaticInfo,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-
-    let regs = info.regs();
-    let Some((sdmmc_address, sdmmc_size)) = regs.first().copied() else {
-        return Err(OnProbeError::NotMatch);
-    };
-    let Some((syscon_address, syscon_size)) = regs.get(1).copied() else {
-        return Err(OnProbeError::NotMatch);
-    };
-
+fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     register_mmio(
         plat_dev,
-        sdmmc_address,
-        sdmmc_size,
-        syscon_address,
-        syscon_size,
+        devices::CVSD_PADDR,
+        SDMMC_SIZE,
+        devices::SYSCON_PADDR,
+        SYSCON_SIZE,
     )
 }
 

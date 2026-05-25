@@ -1,28 +1,103 @@
-use ax_plat::drivers::DriversIf;
-use rdrive::probe::static_::{StaticDeviceDesc, StaticPciEcam};
+use alloc::format;
+
+use rdrive::{PlatformDevice, probe::OnProbeError};
 
 use crate::config::devices;
 
 const PCI_ECAM_SIZE: usize = (devices::PCI_BUS_END + 1) << 20;
 const PCI_LEGACY_IRQS: &[usize] = &[35, 36, 37, 38];
 
-static STATIC_DEVICES: &[StaticDeviceDesc] = &[
-    StaticDeviceDesc::new("virtio-mmio")
-        .with_regs(devices::VIRTIO_MMIO_RANGES)
-        .with_probe_each_reg(),
-    StaticDeviceDesc::new("pci-ecam")
-        .with_irqs(PCI_LEGACY_IRQS)
-        .with_pci_ecam(
-            StaticPciEcam::new(devices::PCI_ECAM_BASE, PCI_ECAM_SIZE)
-                .with_ranges(devices::PCI_RANGES),
-        ),
-];
+mod pci_ecam {
+    use super::*;
 
-struct DriversIfImpl;
+    rdrive::module_driver!(
+        name: "Static PCIe ECAM",
+        level: ProbeLevel::PreKernel,
+        priority: ProbePriority::DEFAULT,
+        probe_kinds: &[ProbeKind::Static {
+            on_probe: probe,
+        }],
+    );
 
-#[impl_plat_interface]
-impl DriversIf for DriversIfImpl {
-    fn static_devices_fn() -> &'static [StaticDeviceDesc] {
-        STATIC_DEVICES
+    fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+        let mem32 = ax_driver::pci::pci_mem32_from_ranges(devices::PCI_RANGES);
+        let mem64 = ax_driver::pci::pci_mem64_from_ranges(devices::PCI_RANGES);
+        ax_driver::pci::register_static_legacy_irq_routes(PCI_LEGACY_IRQS, PCI_ECAM_SIZE);
+        ax_driver::pci::register_ecam_controller(
+            plat_dev,
+            devices::PCI_ECAM_BASE,
+            PCI_ECAM_SIZE,
+            mem32,
+            mem64,
+        )
     }
 }
+
+fn register_virtio_mmio(plat_dev: PlatformDevice, index: usize) -> Result<(), OnProbeError> {
+    let Some((base, size)) = devices::VIRTIO_MMIO_RANGES.get(index).copied() else {
+        return Err(OnProbeError::NotMatch);
+    };
+
+    let mmio = axklib::mmio::ioremap_raw(base.into(), size).map_err(|err| {
+        OnProbeError::other(format!("failed to map virtio-mmio {base:#x}: {err:?}"))
+    })?;
+    let Some((ty, transport)) = ax_driver::virtio::probe_mmio_device(mmio.as_ptr(), size) else {
+        return Err(OnProbeError::NotMatch);
+    };
+
+    ax_driver::virtio::register_static_transport(plat_dev, ty, transport)
+}
+
+macro_rules! virtio_mmio_driver {
+    ($mod_name:ident, $driver_name:literal, $index:expr) => {
+        mod $mod_name {
+            use super::*;
+
+            rdrive::module_driver!(
+                name: $driver_name,
+                level: ProbeLevel::PostKernel,
+                priority: ProbePriority::DEFAULT,
+                probe_kinds: &[ProbeKind::Static {
+                    on_probe: probe,
+                }],
+            );
+
+            fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+                register_virtio_mmio(plat_dev, $index)
+            }
+        }
+    };
+}
+
+virtio_mmio_driver!(virtio_mmio_0, "Static VirtIO MMIO 0", 0);
+virtio_mmio_driver!(virtio_mmio_1, "Static VirtIO MMIO 1", 1);
+virtio_mmio_driver!(virtio_mmio_2, "Static VirtIO MMIO 2", 2);
+virtio_mmio_driver!(virtio_mmio_3, "Static VirtIO MMIO 3", 3);
+virtio_mmio_driver!(virtio_mmio_4, "Static VirtIO MMIO 4", 4);
+virtio_mmio_driver!(virtio_mmio_5, "Static VirtIO MMIO 5", 5);
+virtio_mmio_driver!(virtio_mmio_6, "Static VirtIO MMIO 6", 6);
+virtio_mmio_driver!(virtio_mmio_7, "Static VirtIO MMIO 7", 7);
+virtio_mmio_driver!(virtio_mmio_8, "Static VirtIO MMIO 8", 8);
+virtio_mmio_driver!(virtio_mmio_9, "Static VirtIO MMIO 9", 9);
+virtio_mmio_driver!(virtio_mmio_10, "Static VirtIO MMIO 10", 10);
+virtio_mmio_driver!(virtio_mmio_11, "Static VirtIO MMIO 11", 11);
+virtio_mmio_driver!(virtio_mmio_12, "Static VirtIO MMIO 12", 12);
+virtio_mmio_driver!(virtio_mmio_13, "Static VirtIO MMIO 13", 13);
+virtio_mmio_driver!(virtio_mmio_14, "Static VirtIO MMIO 14", 14);
+virtio_mmio_driver!(virtio_mmio_15, "Static VirtIO MMIO 15", 15);
+virtio_mmio_driver!(virtio_mmio_16, "Static VirtIO MMIO 16", 16);
+virtio_mmio_driver!(virtio_mmio_17, "Static VirtIO MMIO 17", 17);
+virtio_mmio_driver!(virtio_mmio_18, "Static VirtIO MMIO 18", 18);
+virtio_mmio_driver!(virtio_mmio_19, "Static VirtIO MMIO 19", 19);
+virtio_mmio_driver!(virtio_mmio_20, "Static VirtIO MMIO 20", 20);
+virtio_mmio_driver!(virtio_mmio_21, "Static VirtIO MMIO 21", 21);
+virtio_mmio_driver!(virtio_mmio_22, "Static VirtIO MMIO 22", 22);
+virtio_mmio_driver!(virtio_mmio_23, "Static VirtIO MMIO 23", 23);
+virtio_mmio_driver!(virtio_mmio_24, "Static VirtIO MMIO 24", 24);
+virtio_mmio_driver!(virtio_mmio_25, "Static VirtIO MMIO 25", 25);
+virtio_mmio_driver!(virtio_mmio_26, "Static VirtIO MMIO 26", 26);
+virtio_mmio_driver!(virtio_mmio_27, "Static VirtIO MMIO 27", 27);
+virtio_mmio_driver!(virtio_mmio_28, "Static VirtIO MMIO 28", 28);
+virtio_mmio_driver!(virtio_mmio_29, "Static VirtIO MMIO 29", 29);
+virtio_mmio_driver!(virtio_mmio_30, "Static VirtIO MMIO 30", 30);
+virtio_mmio_driver!(virtio_mmio_31, "Static VirtIO MMIO 31", 31);

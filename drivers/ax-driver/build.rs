@@ -39,23 +39,12 @@ fn main() {
     let has_virtio_dev = has_any_feature(VIRTIO_DEV_FEATURES);
     let has_pci = has_feature("pci");
     let has_fdt = has_feature("fdt");
-    let has_static = has_any_feature(&[
-        "pci",
-        "virtio-blk",
-        "virtio-gpu",
-        "virtio-input",
-        "virtio-net",
-        "virtio-socket",
-    ]);
 
     if has_pci {
         enable_cfg("probe", "pci");
     }
     if has_fdt {
         enable_cfg("probe", "fdt");
-    }
-    if has_static {
-        enable_cfg("probe", "static");
     }
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
@@ -66,7 +55,7 @@ fn main() {
 
     println!(
         "cargo::rustc-check-cfg=cfg(probe, values({}))",
-        make_cfg_values(&["pci", "fdt", "static"])
+        make_cfg_values(&["pci", "fdt"])
     );
     println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
     println!("cargo::rustc-check-cfg=cfg(sync_block_dev)");
