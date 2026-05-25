@@ -1,6 +1,6 @@
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
 use log::warn;
 use sdmmc_protocol::{
     block::{
@@ -109,8 +109,8 @@ enum BlockRequestKind {
     },
     Read {
         id: RequestId,
-        map: SArrayPtr<u8>,
-        _desc: DArray<IdmacDesc>,
+        map: StreamingMap<u8>,
+        _desc: CoherentArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -119,8 +119,8 @@ enum BlockRequestKind {
     },
     Write {
         id: RequestId,
-        _map: SArrayPtr<u8>,
-        _desc: DArray<IdmacDesc>,
+        _map: StreamingMap<u8>,
+        _desc: CoherentArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -387,18 +387,14 @@ impl DwMmc {
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_read_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::FromDevice,
             )
             .map_err(|err| map_dma_error(err, Phase::DataRead))?;
         let mut desc = dma
-            .array_zero_with_align::<IdmacDesc>(
-                block_count as usize,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataRead))?;
         let cmd = if block_count == 1 {
             cmd17(start_block)
@@ -430,19 +426,15 @@ impl DwMmc {
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_write_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::ToDevice,
             )
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
-        map.confirm_write_all();
+        map.sync_for_device_all();
         let mut desc = dma
-            .array_zero_with_align::<IdmacDesc>(
-                block_count as usize,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
         let cmd = if block_count == 1 {
             cmd24(start_block)
@@ -622,7 +614,7 @@ impl DwMmc {
         cmd: &Command,
         block_count: u32,
         buffer_dma: u64,
-        desc: &mut DArray<IdmacDesc>,
+        desc: &mut CoherentArray<IdmacDesc>,
     ) -> Result<(), Error> {
         if block_count == 0 {
             return Err(Error::InvalidArgument);
@@ -751,7 +743,7 @@ impl DwMmc {
                 stop_after_complete,
                 ..
             } => {
-                map.prepare_read_all();
+                map.sync_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
@@ -1149,6 +1141,8 @@ fn map_dma_error(err: dma_api::DmaError, phase: Phase) -> Error {
         dma_api::DmaError::LayoutError(_)
         | dma_api::DmaError::DmaMaskNotMatch { .. }
         | dma_api::DmaError::AlignMismatch { .. }
+        | dma_api::DmaError::SegmentTooLarge { .. }
+        | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
         | dma_api::DmaError::ZeroSizedBuffer => Error::InvalidArgument,
     }
