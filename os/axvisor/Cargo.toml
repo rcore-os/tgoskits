@@ -33,8 +33,9 @@ name = "xtask"
 path = "xtask/src/main.rs"
 
 [features]
-default = []
+default = ["fs-default"]
 ept-level-4 = []
+fs-default = ["ax-std/fs", "ax-feat/fs-ext4", "ax-feat/fs-fat"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
@@ -66,8 +67,8 @@ ax-timer-list = { workspace = true }
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv", "fs"] }
-ax-feat = { workspace = true, features = ["fs-ext4", "fs-fat"] }
+ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-feat = { workspace = true }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = { workspace = true }

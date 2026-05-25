@@ -26,8 +26,8 @@ extern crate log;
 use ax_fs_vfs::Filesystem;
 
 mod block;
+mod discovery;
 mod fs;
-mod fs_policy;
 mod highlevel;
 
 #[cfg(feature = "devfs")]
@@ -35,13 +35,14 @@ pub use ax_fs_devfs as devfs;
 #[cfg(feature = "ramfs")]
 pub use ax_fs_ramfs as ramfs;
 pub use block::{BlockRegion, FsBlockDevice, SharedBlockDevice, VolumeReader};
+pub use discovery::{
+    DiscoveredFilesystem, RootSelectionPolicy, discovered_filesystems, init_filesystems,
+    init_filesystems_with_policy, mount_discovered_filesystem,
+};
 /// Create a filesystem from a dynamic (boxed) block device.
 pub use fs::{
     FilesystemKind, new_from_dyn as new_filesystem_from_dyn,
     new_from_dyn_by_kind as new_filesystem_from_dyn_by_kind,
-};
-pub use fs_policy::{
-    DiscoveredFilesystem, discovered_filesystems, init_filesystems, mount_discovered_filesystem,
 };
 pub use highlevel::*;
 

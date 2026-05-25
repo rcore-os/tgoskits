@@ -21,6 +21,23 @@ struct RootSpec {
     partlabel: Option<String>,
 }
 
+/// Policy used when no explicit `root=` boot argument selects a filesystem.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootSelectionPolicy {
+    /// Prefer a uniquely labeled partition before generic fallbacks.
+    pub preferred_partlabel: Option<String>,
+    /// Allow a unique supported partition to be selected as root.
+    pub allow_single_supported_partition: bool,
+    /// Allow a unique raw whole-disk filesystem to be selected as root.
+    pub allow_single_raw_device: bool,
+    /// Require an MBR ext4 partition to carry the bootable flag before it can
+    /// be selected by the generic single-partition fallback.
+    pub require_mbr_ext4_bootable: bool,
+    /// Allow an MBR FAT partition to be selected by the generic
+    /// single-partition fallback without requiring the bootable flag.
+    pub allow_mbr_fat_without_bootable: bool,
+}
+
 struct RootCandidate {
     disk_index: usize,
     partition: Option<DetectedPartition>,
@@ -89,6 +106,18 @@ pub struct DiscoveredFilesystem {
 static DISCOVERED_DISKS: Once<Vec<DiscoveredDisk>> = Once::new();
 static ROOT_SELECTION: Once<RootSelection> = Once::new();
 
+impl Default for RootSelectionPolicy {
+    fn default() -> Self {
+        Self {
+            preferred_partlabel: Some("rootfs".to_string()),
+            allow_single_supported_partition: true,
+            allow_single_raw_device: true,
+            require_mbr_ext4_bootable: true,
+            allow_mbr_fat_without_bootable: true,
+        }
+    }
+}
+
 impl RootCandidate {
     fn selection(&self) -> RootSelection {
         RootSelection {
@@ -121,13 +150,24 @@ impl RootCandidate {
     }
 }
 
+/// Initializes the filesystem subsystem by selecting a root device from the
+/// available block devices and optional boot arguments.
 pub fn init_filesystems(block_devs: Vec<Box<dyn FsBlockDevice>>, bootargs: Option<&str>) {
+    init_filesystems_with_policy(block_devs, bootargs, &RootSelectionPolicy::default())
+}
+
+/// Initializes the filesystem subsystem with an explicit root selection policy.
+pub fn init_filesystems_with_policy(
+    block_devs: Vec<Box<dyn FsBlockDevice>>,
+    bootargs: Option<&str>,
+    policy: &RootSelectionPolicy,
+) {
     info!("Select root filesystem...");
 
     let root_spec = parse_root_spec(bootargs);
     let mut disks = collect_disks(block_devs);
     let candidates = collect_root_candidates(&disks);
-    let selection = select_root_candidate(&candidates, &root_spec)
+    let selection = select_root_candidate(&candidates, &root_spec, policy)
         .unwrap_or_else(|| panic!("failed to determine root device from available block devices"));
     let selected_disk_pos = disks
         .iter()
@@ -373,12 +413,16 @@ fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
     candidates
 }
 
-fn select_root_candidate(candidates: &[RootCandidate], spec: &RootSpec) -> Option<RootSelection> {
+fn select_root_candidate(
+    candidates: &[RootCandidate],
+    spec: &RootSpec,
+    policy: &RootSelectionPolicy,
+) -> Option<RootSelection> {
     if let Some(index) = select_explicit_root(candidates, spec) {
         return Some(index);
     }
 
-    select_default_root(candidates)
+    select_default_root(candidates, policy)
 }
 
 fn select_explicit_root(candidates: &[RootCandidate], spec: &RootSpec) -> Option<RootSelection> {
@@ -435,25 +479,32 @@ fn select_explicit_root(candidates: &[RootCandidate], spec: &RootSpec) -> Option
     None
 }
 
-fn select_default_root(candidates: &[RootCandidate]) -> Option<RootSelection> {
-    let rootfs_matches: Vec<_> = candidates
-        .iter()
-        .filter(|candidate| {
-            candidate
-                .partition
-                .as_ref()
-                .and_then(|part| part.info.name.as_deref())
-                == Some("rootfs")
-                && is_supported_filesystem(candidate.filesystem)
-        })
-        .map(RootCandidate::selection)
-        .collect();
-    if rootfs_matches.len() == 1 {
-        info!("  falling back to PARTLABEL=rootfs");
-        return rootfs_matches.into_iter().next();
-    }
-    if rootfs_matches.len() > 1 {
-        panic!("multiple partitions are labeled 'rootfs'; specify root= explicitly");
+fn select_default_root(
+    candidates: &[RootCandidate],
+    policy: &RootSelectionPolicy,
+) -> Option<RootSelection> {
+    if let Some(preferred_partlabel) = policy.preferred_partlabel.as_deref() {
+        let labeled_matches: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .partition
+                    .as_ref()
+                    .and_then(|part| part.info.name.as_deref())
+                    == Some(preferred_partlabel)
+                    && is_supported_filesystem(candidate.filesystem)
+            })
+            .map(RootCandidate::selection)
+            .collect();
+        if labeled_matches.len() == 1 {
+            info!("  falling back to PARTLABEL={preferred_partlabel}");
+            return labeled_matches.into_iter().next();
+        }
+        if labeled_matches.len() > 1 {
+            panic!(
+                "multiple partitions are labeled '{preferred_partlabel}'; specify root= explicitly"
+            );
+        }
     }
 
     let partition_matches: Vec<_> = candidates
@@ -462,11 +513,11 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<RootSelection> {
             candidate
                 .partition
                 .as_ref()
-                .is_some_and(is_default_root_partition)
+                .is_some_and(|partition| is_default_root_partition(partition, policy))
         })
         .map(RootCandidate::selection)
         .collect();
-    if partition_matches.len() == 1 {
+    if policy.allow_single_supported_partition && partition_matches.len() == 1 {
         info!("  only one supported filesystem partition is available; using it as root");
         return partition_matches.into_iter().next();
     }
@@ -476,7 +527,7 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<RootSelection> {
         .filter(|candidate| candidate.partition.is_none())
         .map(RootCandidate::selection)
         .collect();
-    if partition_matches.is_empty() && raw_matches.len() == 1 {
+    if policy.allow_single_raw_device && partition_matches.is_empty() && raw_matches.len() == 1 {
         info!("  only one raw block device is available; using it as root");
         return raw_matches.into_iter().next();
     }
@@ -484,7 +535,10 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<RootSelection> {
     None
 }
 
-fn is_default_root_partition(partition: &DetectedPartition) -> bool {
+fn is_default_root_partition(partition: &DetectedPartition, policy: &RootSelectionPolicy) -> bool {
+    #[cfg(not(any(feature = "ext4", feature = "fat")))]
+    let _ = policy;
+
     if !is_supported_filesystem(partition.filesystem) {
         return false;
     }
@@ -493,11 +547,11 @@ fn is_default_root_partition(partition: &DetectedPartition) -> bool {
         PartitionTableKind::Mbr => {
             #[cfg(feature = "ext4")]
             if partition.filesystem == Some(FilesystemKind::Ext4) {
-                return partition.info.bootable;
+                return !policy.require_mbr_ext4_bootable || partition.info.bootable;
             }
             #[cfg(feature = "fat")]
             if partition.filesystem == Some(FilesystemKind::Fat) {
-                return true;
+                return policy.allow_mbr_fat_without_bootable || partition.info.bootable;
             }
             false
         }
