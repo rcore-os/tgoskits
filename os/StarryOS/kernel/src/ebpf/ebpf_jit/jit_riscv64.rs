@@ -831,7 +831,8 @@ impl JitBackend for Riscv64Backend {
                         0
                     };
                     let zext_size = if class == BPF_JMP32 { 16 } else { 0 };
-                    imm_size + zext_size + 40
+                    let jset_extra = if op == BPF_JSET { 4 } else { 0 };
+                    imm_size + zext_size + 40 + jset_extra
                 }
             }
             BPF_ST | BPF_STX => {
