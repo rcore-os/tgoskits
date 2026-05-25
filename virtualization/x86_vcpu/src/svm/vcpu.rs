@@ -25,6 +25,7 @@ use x86_vlapic::EmulatedLocalApic;
 
 use super::{
     definitions::{SvmExitCode, SvmIntercept},
+    flags::{InterruptType, VmcbIntInfo},
     structs::{IOPm, MSRPm, VmcbFrame},
     vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
@@ -499,6 +500,7 @@ impl SvmVcpu {
             self.launched = true;
 
             self.clear_event_inj();
+            self.reinject_interrupted_event();
 
             let exit_info = self.exit_info()?;
 
@@ -860,23 +862,43 @@ impl SvmVcpu {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
         vmcb.control.event_inj.set(0);
         vmcb.control.event_inj_err.set(0);
+        vmcb.control.clean_bits.set(0);
+    }
+
+    fn reinject_interrupted_event(&mut self) {
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let exit_int_info = vmcb.control.exit_int_info.get();
+        if !exit_int_info.get_bit(31) {
+            return;
+        }
+
+        vmcb.control.event_inj.set(exit_int_info);
+        vmcb.control
+            .event_inj_err
+            .set(if exit_int_info.get_bit(11) {
+                vmcb.control.exit_int_info_err.get()
+            } else {
+                0
+            });
+        vmcb.control.clean_bits.set(0);
     }
 
     fn inject_event(&mut self, vector: u8, err_code: Option<u32>) -> AxResult {
-        const SVM_EVENT_VALID: u32 = 1 << 31;
-        const SVM_EVENT_TYPE_EXCEPTION: u32 = 3 << 8;
-        const SVM_EVENT_ERROR_CODE_VALID: u32 = 1 << 11;
-
         let vmcb = unsafe { self.vmcb.as_vmcb() };
-        let mut event = SVM_EVENT_VALID | vector as u32;
-        if vector < 32 {
-            event |= SVM_EVENT_TYPE_EXCEPTION;
-        }
+        let int_type = if vector < 32 {
+            InterruptType::Exception
+        } else {
+            InterruptType::External
+        };
+        let mut event = VmcbIntInfo::from(int_type, vector).bits();
         if let Some(err_code) = err_code {
-            event |= SVM_EVENT_ERROR_CODE_VALID;
+            event |= VmcbIntInfo::ERROR_CODE.bits();
             vmcb.control.event_inj_err.set(err_code);
+        } else {
+            vmcb.control.event_inj_err.set(0);
         }
         vmcb.control.event_inj.set(event);
+        vmcb.control.clean_bits.set(0);
         Ok(())
     }
 
@@ -1317,10 +1339,12 @@ impl AxArchVCpu for SvmVcpu {
                         }
                     }
                 }
-                // SVM has no VMX-style preemption timer. Use host interrupt and
-                // guest cpu-relax exits as periodic VMM poll points for PIT/serial injection.
-                SvmExitCode::INTR | SvmExitCode::PAUSE => AxVCpuExitReason::VTimer,
-                SvmExitCode::HLT => AxVCpuExitReason::Halt,
+                // SVM has no VMX-style preemption timer. Use host interrupt,
+                // guest cpu-relax, and idle exits as periodic VMM poll points
+                // for PIT/serial injection.
+                SvmExitCode::INTR | SvmExitCode::PAUSE | SvmExitCode::HLT => {
+                    AxVCpuExitReason::VTimer
+                }
                 SvmExitCode::SHUTDOWN => AxVCpuExitReason::SystemDown,
                 _ => {
                     warn!("SVM unsupported VM-exit: {exit_info:#x?}");

@@ -13,13 +13,27 @@ const PIT_PORT_END: u16 = PIT_SPEAKER_CONTROL;
 const PIT_BASE_FREQUENCY_HZ: u64 = 1_193_182;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 const MIN_PERIOD_NS: u64 = 1_000;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessMode {
     LatchCount,
     LowByte,
     HighByte,
     LowThenHigh,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PitMode {
+    InterruptOnTerminalCount,
+    Other(u8),
+}
+
+impl PitMode {
+    fn from_command(command: u8) -> Self {
+        match (command >> 1) & 0b111 {
+            0 => Self::InterruptOnTerminalCount,
+            mode => Self::Other(mode),
+        }
+    }
 }
 
 impl AccessMode {
@@ -36,9 +50,12 @@ impl AccessMode {
 #[derive(Clone, Copy, Debug)]
 struct PitChannel {
     access_mode: AccessMode,
+    mode: PitMode,
     reload_value: u16,
     write_low_latched: Option<u8>,
     read_high_next: bool,
+    latched_count: Option<u16>,
+    start_ns: u64,
     period_ns: Option<u64>,
     next_deadline_ns: u64,
 }
@@ -47,26 +64,35 @@ impl PitChannel {
     const fn new() -> Self {
         Self {
             access_mode: AccessMode::LowThenHigh,
+            mode: PitMode::Other(3),
             reload_value: 0,
             write_low_latched: None,
             read_high_next: false,
+            latched_count: None,
+            start_ns: 0,
             period_ns: None,
             next_deadline_ns: 0,
         }
     }
 
-    fn program_reload(&mut self, reload_value: u16, now_ns: u64) {
-        self.reload_value = reload_value;
-        let divisor = if reload_value == 0 {
+    fn divisor(&self) -> u64 {
+        if self.reload_value == 0 {
             0x1_0000
         } else {
-            reload_value as u64
-        };
+            self.reload_value as u64
+        }
+    }
+
+    fn program_reload(&mut self, reload_value: u16, now_ns: u64) {
+        self.reload_value = reload_value;
+        let divisor = self.divisor();
         let period_ns =
             ((divisor * NANOSECONDS_PER_SECOND) / PIT_BASE_FREQUENCY_HZ).max(MIN_PERIOD_NS);
+        self.start_ns = now_ns;
         self.period_ns = Some(period_ns);
         self.next_deadline_ns = now_ns.saturating_add(period_ns);
         self.read_high_next = false;
+        self.latched_count = None;
         trace!("x86 PIT channel 0 programmed: reload={reload_value:#x}, period_ns={period_ns}");
     }
 
@@ -85,20 +111,57 @@ impl PitChannel {
         }
     }
 
-    fn read_count(&mut self) -> u8 {
-        let value = self.reload_value;
+    fn current_count(&self, now_ns: u64) -> u16 {
+        let Some(_) = self.period_ns else {
+            return self.reload_value;
+        };
+        let divisor = self.divisor();
+        let elapsed_ns = now_ns.saturating_sub(self.start_ns);
+        let elapsed_ticks =
+            elapsed_ns.saturating_mul(PIT_BASE_FREQUENCY_HZ) / NANOSECONDS_PER_SECOND;
+
+        if self.mode == PitMode::InterruptOnTerminalCount && elapsed_ticks >= divisor {
+            return 0;
+        }
+
+        let remaining = divisor - (elapsed_ticks % divisor);
+        if remaining == 0x1_0000 {
+            0
+        } else {
+            remaining as u16
+        }
+    }
+
+    fn latch_count(&mut self, now_ns: u64) {
+        if self.latched_count.is_none() {
+            self.latched_count = Some(self.current_count(now_ns));
+            self.read_high_next = false;
+        }
+    }
+
+    fn read_count(&mut self, now_ns: u64) -> u8 {
+        let value = self
+            .latched_count
+            .unwrap_or_else(|| self.current_count(now_ns));
         match self.access_mode {
-            AccessMode::HighByte => (value >> 8) as u8,
+            AccessMode::HighByte => {
+                self.latched_count = None;
+                (value >> 8) as u8
+            }
             AccessMode::LowThenHigh => {
                 if self.read_high_next {
                     self.read_high_next = false;
+                    self.latched_count = None;
                     (value >> 8) as u8
                 } else {
                     self.read_high_next = true;
                     value as u8
                 }
             }
-            AccessMode::LatchCount | AccessMode::LowByte => value as u8,
+            AccessMode::LatchCount | AccessMode::LowByte => {
+                self.latched_count = None;
+                value as u8
+            }
         }
     }
 }
@@ -155,26 +218,30 @@ impl EmulatedPit {
         true
     }
 
-    fn write_command(state: &mut PitState, command: u8) {
+    fn write_command(state: &mut PitState, command: u8, now_ns: u64) {
         let channel = (command >> 6) & 0b11;
         let access_mode = AccessMode::from_command(command);
+        let mode = PitMode::from_command(command);
+        let pit_channel = match channel {
+            0 => Some(&mut state.channel0),
+            2 => Some(&mut state.channel2),
+            _ => None,
+        };
+        let Some(pit_channel) = pit_channel else {
+            debug!("x86 PIT command for unsupported channel {channel}: {command:#x}");
+            return;
+        };
+
         if access_mode == AccessMode::LatchCount {
+            pit_channel.latch_count(now_ns);
             return;
         }
 
-        match channel {
-            0 => {
-                state.channel0.access_mode = access_mode;
-                state.channel0.write_low_latched = None;
-                state.channel0.read_high_next = false;
-            }
-            2 => {
-                state.channel2.access_mode = access_mode;
-                state.channel2.write_low_latched = None;
-                state.channel2.read_high_next = false;
-            }
-            _ => debug!("x86 PIT command for unsupported channel {channel}: {command:#x}"),
-        }
+        pit_channel.access_mode = access_mode;
+        pit_channel.mode = mode;
+        pit_channel.write_low_latched = None;
+        pit_channel.read_high_next = false;
+        pit_channel.latched_count = None;
     }
 }
 
@@ -198,10 +265,11 @@ impl BaseDeviceOps<PortRange> for EmulatedPit {
             return ax_err!(Unsupported, "x86 PIT only supports byte port reads");
         }
 
+        let now_ns = time::current_time_nanos() as u64;
         let mut state = self.state.lock();
         let value = match port.0 {
-            PIT_CHANNEL0 => state.channel0.read_count(),
-            PIT_CHANNEL2 => state.channel2.read_count(),
+            PIT_CHANNEL0 => state.channel0.read_count(now_ns),
+            PIT_CHANNEL2 => state.channel2.read_count(now_ns),
             PIT_COMMAND => 0,
             PIT_SPEAKER_CONTROL => state.speaker_control,
             _ => return ax_err!(Unsupported, "unsupported x86 PIT read port"),
@@ -219,7 +287,7 @@ impl BaseDeviceOps<PortRange> for EmulatedPit {
         match port.0 {
             PIT_CHANNEL0 => state.channel0.write_count(val as u8, now_ns),
             PIT_CHANNEL2 => state.channel2.write_count(val as u8, now_ns),
-            PIT_COMMAND => Self::write_command(&mut state, val as u8),
+            PIT_COMMAND => Self::write_command(&mut state, val as u8, now_ns),
             PIT_SPEAKER_CONTROL => state.speaker_control = val as u8,
             _ => return ax_err!(Unsupported, "unsupported x86 PIT write port"),
         }
