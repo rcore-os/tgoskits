@@ -38,7 +38,7 @@ use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
 
 use crate::{
     EID_HVC, RISCVVCpuCreateConfig, consts::traps::irq::S_EXT, guest_mem, regs::*, sbi_console::*,
-    vpmu::VirtualPmu,
+    trap::Exception, vpmu::VirtualPmu,
 };
 
 unsafe extern "C" {
@@ -72,6 +72,19 @@ struct RISCVVCpuSbi {
     pmu: VirtualPmu,
     #[rustsbi(console, fence, reset, info, hsm, timer)]
     forward: Forward,
+}
+
+#[cfg(feature = "sstc")]
+/// Result of reading an instruction for virtual-instruction emulation.
+enum VirtualInstructionRead {
+    Instruction(u32),
+    Handled(AxVCpuExitReason),
+}
+
+/// Result of decoding the trapped guest load/store instruction.
+enum InstructionDecode {
+    Decoded(Instruction, usize),
+    Handled(AxVCpuExitReason),
 }
 
 impl Default for RISCVVCpuSbi {
@@ -335,13 +348,81 @@ impl RISCVVCpu {
 }
 
 impl RISCVVCpu {
+    /// Inject a synchronous VS exception so the guest handles a fault that happened during
+    /// hypervisor-side instruction emulation.
+    fn inject_guest_exception(&mut self, exception: Exception, fault_addr: GuestVirtAddr) {
+        let mut vsstatus = vsstatus::read();
+        let hstatus = hstatus::Hstatus::from_bits(self.regs.guest_regs.hstatus);
+        let vstvec = vstvec::read().bits();
+        let trap_pc = vstvec & !0b11;
+
+        vsstatus.set_spie(vsstatus.sie());
+        vsstatus.set_sie(false);
+        vsstatus.set_spp(hstatus.spvp());
+
+        self.regs.vs_csrs.vstvec = vstvec;
+        self.regs.vs_csrs.vsepc = self.regs.guest_regs.sepc;
+        self.regs.vs_csrs.vscause = exception as usize;
+        self.regs.vs_csrs.vstval = fault_addr.as_usize();
+        self.regs.vs_csrs.vsstatus = vsstatus.bits();
+        self.regs.guest_regs.sepc = trap_pc;
+
+        // `run_vcpu()` may re-enter the same bound vCPU without reloading the
+        // cached VS CSR block, so keep the live CSRs in sync with the cache.
+        unsafe {
+            vsstatus.write();
+            vscause::Vscause::from_bits(self.regs.vs_csrs.vscause).write();
+            vstval::write(self.regs.vs_csrs.vstval);
+            vsepc::write(self.regs.vs_csrs.vsepc);
+        }
+    }
+
+    fn handle_guest_instruction_fetch_fault(
+        &mut self,
+        fault: guest_mem::GuestInstructionFetchFault,
+    ) -> AxResult<AxVCpuExitReason> {
+        match fault {
+            // HLVX reports load-class faults, but the emulated operation is a
+            // guest instruction fetch. Convert them before injecting to VS mode.
+            guest_mem::GuestInstructionFetchFault::PageFault { addr } => {
+                self.inject_guest_exception(Exception::InstructionPageFault, addr);
+                Ok(AxVCpuExitReason::Nothing)
+            }
+            guest_mem::GuestInstructionFetchFault::AccessFault { addr } => {
+                self.inject_guest_exception(Exception::InstructionFault, addr);
+                Ok(AxVCpuExitReason::Nothing)
+            }
+            guest_mem::GuestInstructionFetchFault::Misaligned { addr } => {
+                self.inject_guest_exception(Exception::InstructionMisaligned, addr);
+                Ok(AxVCpuExitReason::Nothing)
+            }
+            guest_mem::GuestInstructionFetchFault::GuestPageFault { addr } => {
+                // G-stage faults must stay visible to AxVM so it can populate or
+                // reject the nested mapping.
+                Ok(AxVCpuExitReason::NestedPageFault {
+                    addr,
+                    access_flags: MappingFlags::EXECUTE,
+                })
+            }
+            guest_mem::GuestInstructionFetchFault::Unhandled {
+                scause,
+                stval,
+                htval,
+            } => Err(ax_errno::ax_err_type!(
+                Unsupported,
+                alloc::format!(
+                    "unhandled riscv HLVX fault while fetching guest instruction: \
+                     scause={scause:#x}, stval={stval:#x}, htval={htval:#x}"
+                )
+            )),
+        }
+    }
+
     fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
         self.regs.trap_csrs.load_from_hw();
 
         let scause = scause::read();
         use riscv::interrupt::{Interrupt, Trap};
-
-        use super::trap::Exception;
 
         trace!(
             "vmexit_handler: {:?}, sepc: {:#x}, stval: {:#x}",
@@ -633,7 +714,10 @@ impl RISCVVCpu {
 
     #[cfg(feature = "sstc")]
     fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
-        let instr = self.read_virtual_instruction()?;
+        let instr = match self.read_virtual_instruction()? {
+            VirtualInstructionRead::Instruction(instr) => instr,
+            VirtualInstructionRead::Handled(exit_reason) => return Ok(exit_reason),
+        };
         let csr = ((instr >> 20) & 0xfff) as u16;
 
         if csr != CSR_STIMECMP {
@@ -735,14 +819,19 @@ impl RISCVVCpu {
     }
 
     #[cfg(feature = "sstc")]
-    fn read_virtual_instruction(&self) -> AxResult<u32> {
+    fn read_virtual_instruction(&mut self) -> AxResult<VirtualInstructionRead> {
         let instr = self.regs.trap_csrs.stval as u32;
         if instr & 0x7f == SYSTEM_OPCODE {
-            return Ok(instr);
+            return Ok(VirtualInstructionRead::Instruction(instr));
         }
 
         let guest_pc = GuestVirtAddr::from(self.regs.guest_regs.sepc);
-        guest_mem::fetch_guest_instruction(guest_pc)
+        match guest_mem::fetch_guest_instruction(guest_pc) {
+            Ok(instr) => Ok(VirtualInstructionRead::Instruction(instr)),
+            Err(fault) => self
+                .handle_guest_instruction_fetch_fault(fault)
+                .map(VirtualInstructionRead::Handled),
+        }
     }
 
     #[cfg(feature = "sstc")]
@@ -760,15 +849,22 @@ impl RISCVVCpu {
     }
 
     /// Decode the instruction at the given virtual address. Return the decoded instruction and its
-    /// length in bytes.
-    fn decode_instr_at(&self, vaddr: GuestVirtAddr) -> AxResult<(Instruction, usize)> {
+    /// length in bytes, or an exit reason already produced while fetching it.
+    fn decode_instr_at(&mut self, vaddr: GuestVirtAddr) -> AxResult<InstructionDecode> {
         // The htinst CSR contains "transformed instruction" that caused the page fault. We
         // can use it but we use the sepc to fetch the original instruction instead for now.
         let mut instr = riscv_h::register::htinst::read();
         let instr_len;
         if instr == 0 {
             // Read the instruction from guest memory.
-            instr = guest_mem::fetch_guest_instruction(vaddr)? as _;
+            instr = match guest_mem::fetch_guest_instruction(vaddr) {
+                Ok(instr) => instr as _,
+                Err(fault) => {
+                    return self
+                        .handle_guest_instruction_fetch_fault(fault)
+                        .map(InstructionDecode::Handled);
+                }
+            };
             instr_len = riscv_decode::instruction_length(instr as u16);
             instr = match instr_len {
                 2 => instr & 0xffff,
@@ -801,7 +897,7 @@ impl RISCVVCpu {
                     "risc-v vcpu guest pf handler decoding instruction failed"
                 )
             })
-            .map(|instr| (instr, instr_len))
+            .map(|instr| InstructionDecode::Decoded(instr, instr_len))
     }
 
     /// Handle a guest page fault. Return an exit reason.
@@ -825,7 +921,10 @@ impl RISCVVCpu {
 
         use DecodedOp::*;
 
-        let (decoded_instr, instr_len) = self.decode_instr_at(sepc_vaddr)?;
+        let (decoded_instr, instr_len) = match self.decode_instr_at(sepc_vaddr)? {
+            InstructionDecode::Decoded(instr, instr_len) => (instr, instr_len),
+            InstructionDecode::Handled(exit_reason) => return Ok(exit_reason),
+        };
         let op = match decoded_instr {
             Instruction::Lb(i) => Read {
                 i,
