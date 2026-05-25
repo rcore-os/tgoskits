@@ -23,6 +23,30 @@ use crate::{
     mm::aspace::{AddrSpace, Backend},
 };
 
+#[cfg(target_arch = "riscv64")]
+const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
+    | (1 << (b'M' - b'A'))
+    | (1 << (b'A' - b'A'))
+    | (1 << (b'F' - b'A'))
+    | (1 << (b'D' - b'A'))
+    | (1 << (b'C' - b'A'));
+
+fn arch_aux_entries() -> impl Iterator<Item = AuxEntry> {
+    #[cfg(target_arch = "riscv64")]
+    {
+        [AuxEntry::new(
+            kernel_elf_parser::AuxType::HWCAP,
+            RISCV_COMPAT_HWCAP_IMAFDC,
+        )]
+        .into_iter()
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        core::iter::empty()
+    }
+}
+
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
     AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
@@ -294,6 +318,7 @@ impl ElfLoader {
         );
         let mut auxv = elf
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
+            .chain(arch_aux_entries())
             .collect::<Vec<_>>();
         // `aux_vector()` only emits PHDR/PHENT/PHNUM/PAGESZ/ENTRY (+BASE). Add
         // AT_HWCAP so `getauxval(AT_HWCAP)` returns the CPU capability bits the
@@ -331,7 +356,7 @@ pub fn load_user_app(
     path: Option<&str>,
     args: &[String],
     envs: &[String],
-) -> AxResult<(VirtAddr, VirtAddr)> {
+) -> AxResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     let path = path
         .or_else(|| args.first().map(String::as_str))
         .ok_or(AxError::InvalidInput)?;
@@ -400,5 +425,5 @@ pub fn load_user_app(
         Backend::new_alloc(heap_start, PageSize::Size4K, "[heap]"),
     )?;
 
-    Ok((entry, user_sp))
+    Ok((entry, user_sp, auxv))
 }

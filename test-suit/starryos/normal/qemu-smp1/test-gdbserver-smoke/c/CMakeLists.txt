@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-gdbserver-smoke C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+add_executable(gdbserver-smoke-target src/main.c)
+target_compile_options(gdbserver-smoke-target PRIVATE -Wall -Wextra -Werror -g0)
+target_link_options(gdbserver-smoke-target PRIVATE -s)
+
+install(TARGETS gdbserver-smoke-target RUNTIME DESTINATION usr/bin)
+install(FILES gdbserver-smoke.gdb DESTINATION usr/bin)
+install(PROGRAMS gdbserver-smoke.sh DESTINATION usr/bin)
+
+if(DEFINED STARRY_STAGING_ROOT)
+    install(PROGRAMS "${STARRY_STAGING_ROOT}/usr/bin/gdbserver" DESTINATION usr/bin)
+    install(PROGRAMS "${STARRY_STAGING_ROOT}/usr/bin/gdb" DESTINATION usr/bin)
+    if(EXISTS "${STARRY_STAGING_ROOT}/usr/share/gdb")
+        install(DIRECTORY "${STARRY_STAGING_ROOT}/usr/share/gdb" DESTINATION usr/share)
+    endif()
+    if(EXISTS "${STARRY_STAGING_ROOT}/usr/lib/python3.12")
+        install(DIRECTORY "${STARRY_STAGING_ROOT}/usr/lib/python3.12" DESTINATION usr/lib)
+    endif()
+endif()

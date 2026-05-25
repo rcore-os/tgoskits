@@ -7880,6 +7880,7 @@ version = "0.5.12"
 dependencies = [
  "ax-alloc",
  "ax-config",
+ "ax-cpu",
  "ax-display",
  "ax-dma",
  "ax-driver",
