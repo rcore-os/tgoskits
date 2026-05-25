@@ -22,10 +22,7 @@ pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
 
-    #[cfg(feature = "kprobe")]
-    {
-        crate::kprobe::run_selftest();
-    }
+    crate::kprobe::run_selftest();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
