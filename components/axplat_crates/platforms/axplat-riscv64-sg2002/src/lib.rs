@@ -1,4 +1,10 @@
 #![no_std]
+#![feature(used_with_arg)]
+
+extern crate alloc;
+
+#[macro_use]
+extern crate rdrive;
 
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[macro_use]

@@ -3,6 +3,8 @@ use rdrive::probe::static_::StaticDeviceDesc;
 
 use crate::config::devices;
 
+mod cvsd;
+
 static CVSD_REGS: &[(usize, usize)] = &[
     (devices::CVSD_PADDR, 0x1000),
     (devices::SYSCON_PADDR, 0x8000),
