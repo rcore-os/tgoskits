@@ -3,7 +3,10 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::ffi::c_long;
+use core::{
+    ffi::c_long,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::TimeValue;
@@ -46,6 +49,28 @@ pub fn decode_wait_status(raw: i32) -> (i32, i32) {
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
+
+static BOOT_USER_CPU_NS: AtomicU64 = AtomicU64::new(0);
+static BOOT_SYS_CPU_NS: AtomicU64 = AtomicU64::new(0);
+
+const USER_HZ_NS: u64 = 10_000_000;
+
+fn add_boot_cpu_time(user_delta_ns: usize, sys_delta_ns: usize) {
+    if user_delta_ns != 0 {
+        BOOT_USER_CPU_NS.fetch_add(user_delta_ns as u64, Ordering::Relaxed);
+    }
+    if sys_delta_ns != 0 {
+        BOOT_SYS_CPU_NS.fetch_add(sys_delta_ns as u64, Ordering::Relaxed);
+    }
+}
+
+/// Returns boot-wide CPU time charged to user tasks in USER_HZ jiffies.
+pub fn boot_cpu_time_jiffies() -> (u64, u64) {
+    (
+        BOOT_USER_CPU_NS.load(Ordering::Relaxed) / USER_HZ_NS,
+        BOOT_SYS_CPU_NS.load(Ordering::Relaxed) / USER_HZ_NS,
+    )
+}
 
 /// Per-zombie data retained until `waitpid()` reaps the process.
 ///
@@ -272,7 +297,8 @@ pub fn tick_cpu_time(task: &TaskInner) {
         // Reentrant borrow means the task is mid-state-transition; skip.
         return;
     };
-    time.tick();
+    let (user_delta, sys_delta) = time.tick();
+    add_boot_cpu_time(user_delta, sys_delta);
 }
 
 /// Returns the accumulated `(utime, stime)` for a task without side effects.
@@ -298,7 +324,8 @@ pub fn poll_timer(task: &TaskInner) {
     let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
     };
-    time.poll(emitter);
+    let (user_delta, sys_delta) = time.poll(emitter);
+    add_boot_cpu_time(user_delta, sys_delta);
 }
 
 /// Poll the process-level POSIX timers.
@@ -322,7 +349,8 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
     let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
     };
-    time.poll(emitter);
+    let (user_delta, sys_delta) = time.poll(emitter);
+    add_boot_cpu_time(user_delta, sys_delta);
     time.set_state(state);
 }
 

@@ -31,8 +31,8 @@ use crate::{
         SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
-        AsThread, ProcessData, TaskStat, get_process_data, get_task, processes, tasks,
-        tick_cpu_time,
+        AsThread, ProcessData, TaskStat, boot_cpu_time_jiffies, get_process_data, get_task,
+        processes, tasks, tick_cpu_time,
     },
 };
 
@@ -193,14 +193,9 @@ fn render_stat() -> String {
     // Single snapshot: aggregate CPU time and count task states together
     // to avoid holding the task-table lock twice and getting inconsistent data.
     let all_tasks = tasks();
-    let mut user_ms: u128 = 0;
-    let mut sys_ms: u128 = 0;
     let mut procs_running: u64 = 0;
     let mut procs_blocked: u64 = 0;
     for task in &all_tasks {
-        let (u, s) = crate::task::task_cpu_time(task);
-        user_ms += u.as_millis();
-        sys_ms += s.as_millis();
         match task.state() {
             TaskState::Running | TaskState::Ready => procs_running += 1,
             TaskState::Blocked => procs_blocked += 1,
@@ -208,9 +203,7 @@ fn render_stat() -> String {
         }
     }
     let task_count = all_tasks.len() as u64;
-    // 1 jiffy = 10 ms
-    let user_jiffies = (user_ms / 10) as u64;
-    let sys_jiffies = (sys_ms / 10) as u64;
+    let (user_jiffies, sys_jiffies) = boot_cpu_time_jiffies();
     let idle_jiffies = total_budget
         .saturating_sub(user_jiffies)
         .saturating_sub(sys_jiffies);

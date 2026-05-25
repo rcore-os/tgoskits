@@ -193,22 +193,31 @@ impl TimeManager {
     /// Uses `last_tick_ns` as the exclusive baseline so that `poll()`'s
     /// itimer accounting (which uses the independent `last_wall_ns`) is not
     /// affected.
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> (usize, usize) {
         let now_ns = monotonic_time_nanos() as usize;
         let delta = now_ns.saturating_sub(self.last_tick_ns);
+        let mut user_delta = 0;
+        let mut sys_delta = 0;
         match self.state {
-            TimerState::User => self.utime_ns += delta,
-            TimerState::Kernel => self.stime_ns += delta,
+            TimerState::User => {
+                self.utime_ns += delta;
+                user_delta = delta;
+            }
+            TimerState::Kernel => {
+                self.stime_ns += delta;
+                sys_delta = delta;
+            }
             TimerState::None => {}
         }
         self.last_tick_ns = now_ns;
         // last_wall_ns is intentionally NOT touched here so that poll()
         // continues to see the full wall-clock delta for itimer accounting.
+        (user_delta, sys_delta)
     }
 
     /// Polls the time manager to update the timers and emit signals if
     /// necessary.
-    pub fn poll(&mut self, emitter: impl Fn(Signo)) {
+    pub fn poll(&mut self, emitter: impl Fn(Signo)) -> (usize, usize) {
         let now_ns = monotonic_time_nanos() as usize;
         // itimer_delta: full wall-clock time since the last poll() call.
         // Used for interval-timer accounting so they fire at the right time
@@ -218,14 +227,18 @@ impl TimeManager {
         // in utime_ns / stime_ns.  If tick() was never called, last_tick_ns ==
         // last_wall_ns and remaining == itimer_delta (identical to original).
         let remaining = now_ns.saturating_sub(self.last_tick_ns);
+        let mut user_delta = 0;
+        let mut sys_delta = 0;
         match self.state {
             TimerState::User => {
                 self.utime_ns += remaining;
+                user_delta = remaining;
                 self.update_itimer(ITimerType::Virtual, itimer_delta, &emitter);
                 self.update_itimer(ITimerType::Prof, itimer_delta, &emitter);
             }
             TimerState::Kernel => {
                 self.stime_ns += remaining;
+                sys_delta = remaining;
                 self.update_itimer(ITimerType::Prof, itimer_delta, &emitter);
             }
             TimerState::None => {}
@@ -235,6 +248,7 @@ impl TimeManager {
         // Sync tick baseline with poll baseline so the next tick() starts
         // from a clean slate.
         self.last_tick_ns = now_ns;
+        (user_delta, sys_delta)
     }
 
     /// Updates the timer state.
