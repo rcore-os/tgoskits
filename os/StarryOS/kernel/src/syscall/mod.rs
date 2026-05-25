@@ -498,6 +498,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         // task ops
         Sysno::execve => sys_execve(uctx, uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::set_tid_address => sys_set_tid_address(uctx.arg0()),
+        Sysno::getcpu => sys_getcpu(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2()),
         #[cfg(target_arch = "x86_64")]
         Sysno::arch_prctl => sys_arch_prctl(uctx, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::prctl => sys_prctl(
