@@ -1,60 +1,48 @@
-/*！
+/*
  * bug-ext4-dir-ops.c
  *
- * Verifies POSIX rmdir() and rename() semantics on ext4 (rsext4):
- *
- *   rmdir:
- *     1. rmdir(non_empty_dir) == ENOTEMPTY  -- must not recursively delete
- *     2. rmdir(empty_dir)     == 0          -- must succeed
- *
- *   rename (target already exists):
- *     3. rename(dir, non_empty_dir) == ENOTEMPTY  -- no recursive delete
- *     4. rename(dir, empty_dir)     == 0          -- replace empty dir
- *     5. rename(file, dir)          == ENOTDIR    -- no cross-type overwrite
- *     6. rename(dir, file)          == EISDIR     -- no cross-type overwrite
- *     7. rename(file, file)         == 0          -- overwrite file
- *
- * Previous rmdir bug: DirNodeOps::unlink called rsext4::delete_dir()
- * (recursive rm -rf semantics) instead of checking emptiness first.
- *
- * Previous rename bug: rename() called delete_dir() on non-empty directory
- * targets (same recursive-delete issue), and lacked type cross-checks so
- * file-over-dir and dir-over-file overwrites silently destroyed data.
+ * Verifies POSIX rmdir() and rename() semantics on ext4 (rsext4),
+ * plus VFS dentry cache correctness after rename (stale parent bug).
  *
  * Test path must be on ext4 root filesystem (/root), not /tmp (tmpfs),
  * because tmpfs correctly returns ENOTEMPTY and would mask the rsext4 bug.
  */
 
 #define _GNU_SOURCE
+#include "test_framework.h"
 #include <dirent.h>
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-static int passed;
-static int failed;
-static int bug_count;
+#define BASE "/root/bug-ext4-dir-ops-test"
 
-#define CHECK(cond, msg)                                                \
-    do {                                                                \
-        if (cond) {                                                     \
-            printf("  [OK]   %s\n", (msg));                            \
-            passed++;                                                   \
-        } else {                                                        \
-            printf("  [FAIL] %s (errno=%d %s)\n",                      \
-                   (msg), errno, strerror(errno));                      \
-            failed++;                                                   \
-        }                                                               \
-    } while (0)
+/* ========== 辅助函数 ========== */
 
-/*
- * Manual recursive removal — returns 0 on success, -1 on any failure.
- * Unlike system("rm -rf"), this propagates errors so we can detect
- * if the bug corrupts the filesystem during cleanup.
- */
+static int write_file(const char *path, const char *data)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return -1;
+    size_t len = strlen(data);
+    ssize_t w = write(fd, data, len);
+    close(fd);
+    return (w == (ssize_t)len) ? 0 : -1;
+}
+
+static int read_file(const char *path, char *buf, int bufsz)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    int n = (int)read(fd, buf, bufsz - 1);
+    close(fd);
+    if (n < 0)
+        return -1;
+    buf[n] = '\0';
+    return n;
+}
+
 static int manual_rmdir_recursive(const char *path)
 {
     DIR *d = opendir(path);
@@ -84,11 +72,6 @@ static int manual_rmdir_recursive(const char *path)
     return ret;
 }
 
-/*
- * Remove a file or directory tree at path, ignoring errors.
- * Used for cleanup between test scenarios where the filesystem
- * state may be corrupted by a bug.
- */
 static void force_remove(const char *path)
 {
     struct stat st;
@@ -100,527 +83,534 @@ static void force_remove(const char *path)
         unlink(path);
 }
 
-/*
- * Try rmdir on a non-empty directory and verify ENOTEMPTY + no cascade.
- * Returns 1 if bug detected, 0 if correct behavior.
- */
-static int test_rmdir_nonempty(const char *label, const char *dir_path,
-                               const char *parent_dir, const char *sibling_path)
+static int count_dir_entries(const char *path)
 {
-    printf("\n--- rmdir(non-empty): %s ---\n", label);
-    printf("  target:   %s\n", dir_path);
-    printf("  parent:   %s\n", parent_dir);
-    printf("  sibling:  %s\n", sibling_path);
-
-    /* Verify pre-conditions */
-    CHECK(access(dir_path, F_OK) == 0, "target exists before rmdir");
-    CHECK(access(sibling_path, F_OK) == 0, "sibling exists before rmdir");
-
-    errno = 0;
-    int rc = rmdir(dir_path);
-
-    if (rc == 0) {
-        printf("  [BUG]   rmdir succeeded on non-empty dir — recursive delete!\n");
-        bug_count++;
-        failed++;
-
-        /* Check cascade damage */
-        if (access(dir_path, F_OK) != 0)
-            printf("  [BUG]   target/ was deleted\n");
-        if (access(sibling_path, F_OK) != 0) {
-            printf("  [BUG]   sibling was destroyed (cascading)\n");
-            bug_count++;
-        }
-        if (access(parent_dir, F_OK) != 0) {
-            printf("  [BUG]   parent/ was destroyed (cascading)\n");
-            bug_count++;
-        }
-        return 1; /* bug detected */
+    DIR *d = opendir(path);
+    if (!d)
+        return -1;
+    int count = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") && strcmp(ent->d_name, ".."))
+            count++;
     }
-
-    if (errno == ENOTEMPTY || errno == EEXIST) {
-        printf("  [OK]   returned ENOTEMPTY (rc=%d, errno=%d)\n", rc, errno);
-        passed++;
-    } else {
-        printf("  [FAIL] unexpected errno=%d (%s)\n", errno, strerror(errno));
-        failed++;
-    }
-
-    /* Verify no cascade damage */
-    CHECK(access(dir_path, F_OK) == 0, "target still exists");
-    CHECK(access(sibling_path, F_OK) == 0, "sibling survived");
-    CHECK(access(parent_dir, F_OK) == 0, "parent survived");
-    return 0;
+    closedir(d);
+    return count;
 }
 
-/* ================================================================
- * RENAME TESTS
- *
- * POSIX rename() semantics when destination already exists:
- *   - rename(dir,  non_empty_dir) → ENOTEMPTY  (no recursive delete)
- *   - rename(dir,  empty_dir)     → 0          (replace empty dir)
- *   - rename(file, dir)           → ENOTDIR    (type mismatch)
- *   - rename(dir,  file)          → EISDIR     (type mismatch)
- *   - rename(file, file)          → 0          (overwrite)
- * ================================================================ */
-
-/*
- * Test: rename dir → non-empty dir.
- * Expect: ENOTEMPTY, both directory trees intact.
- * Bug: rsext4 delete_dir() recursively destroys the target tree.
- */
-static void test_rename_dir_to_nonempty_dir(const char *base)
+static int dir_has_entry(const char *dir_path, const char *name)
 {
-    printf("\n--- rename(dir → non-empty dir) ---\n");
+    DIR *d = opendir(dir_path);
+    if (!d)
+        return 0;
+    struct dirent *ent;
+    int found = 0;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, name) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
 
-    char src_dir[256], src_file[256];
-    char dst_dir[256], dst_file[256];
+/* ========== rmdir 测试 ========== */
 
-    snprintf(src_dir, sizeof(src_dir), "%s/rn_src_dir", base);
-    snprintf(src_file, sizeof(src_file), "%s/rn_src_dir/data.txt", base);
-    snprintf(dst_dir, sizeof(dst_dir), "%s/rn_dst_dir", base);
-    snprintf(dst_file, sizeof(dst_file), "%s/rn_dst_dir/keep.txt", base);
+static void test_rmdir_nonempty_mixed(void)
+{
+    char tdir[256], sub[256], f1[256], f2[256], deep[256];
+    char parent[256], sibling[256];
+
+    snprintf(parent, sizeof(parent), "%s/parent", BASE);
+    snprintf(sibling, sizeof(sibling), "%s/parent/sibling.txt", BASE);
+    snprintf(tdir, sizeof(tdir), "%s/parent/target_mixed", BASE);
+    snprintf(sub, sizeof(sub), "%s/parent/target_mixed/sub", BASE);
+    snprintf(f1, sizeof(f1), "%s/parent/target_mixed/file1.txt", BASE);
+    snprintf(f2, sizeof(f2), "%s/parent/target_mixed/file2.txt", BASE);
+    snprintf(deep, sizeof(deep), "%s/parent/target_mixed/sub/deep.txt", BASE);
+
+    CHECK(mkdir(tdir, 0755) == 0, "mkdir target_mixed");
+    CHECK(mkdir(sub, 0755) == 0, "mkdir target_mixed/sub");
+    CHECK(write_file(f1, "hello\n") == 0, "create file1.txt");
+    CHECK(write_file(f2, "world\n") == 0, "create file2.txt");
+    CHECK(write_file(deep, "deep\n") == 0, "create sub/deep.txt");
+
+    CHECK_ERR(rmdir(tdir), ENOTEMPTY, "rmdir(non-empty mixed) -> ENOTEMPTY");
+    CHECK(access(tdir, F_OK) == 0, "target still exists after rmdir");
+    CHECK(access(sibling, F_OK) == 0, "sibling survived");
+    CHECK(access(deep, F_OK) == 0, "sub/deep.txt intact");
+
+    manual_rmdir_recursive(tdir);
+}
+
+static void test_rmdir_nonempty_files(void)
+{
+    char tdir[256], fa[256], fb[256], fc[256];
+
+    snprintf(tdir, sizeof(tdir), "%s/parent/target_files", BASE);
+    snprintf(fa, sizeof(fa), "%s/parent/target_files/a.txt", BASE);
+    snprintf(fb, sizeof(fb), "%s/parent/target_files/b.txt", BASE);
+    snprintf(fc, sizeof(fc), "%s/parent/target_files/c.txt", BASE);
+
+    CHECK(mkdir(tdir, 0755) == 0, "mkdir target_files");
+    CHECK(write_file(fa, "a\n") == 0, "create a.txt");
+    CHECK(write_file(fb, "b\n") == 0, "create b.txt");
+    CHECK(write_file(fc, "c\n") == 0, "create c.txt");
+
+    CHECK_ERR(rmdir(tdir), ENOTEMPTY, "rmdir(non-empty files) -> ENOTEMPTY");
+    CHECK(access(fa, F_OK) == 0, "a.txt intact");
+    CHECK(access(fb, F_OK) == 0, "b.txt intact");
+    CHECK(access(fc, F_OK) == 0, "c.txt intact");
+
+    manual_rmdir_recursive(tdir);
+}
+
+static void test_rmdir_nonempty_subdirs(void)
+{
+    char tdir[256], c1[256], c2[256], d1[256], d2[256];
+
+    snprintf(tdir, sizeof(tdir), "%s/parent/target_subdirs", BASE);
+    snprintf(c1, sizeof(c1), "%s/parent/target_subdirs/child1", BASE);
+    snprintf(c2, sizeof(c2), "%s/parent/target_subdirs/child2", BASE);
+    snprintf(d1, sizeof(d1), "%s/parent/target_subdirs/child1/dummy.txt", BASE);
+    snprintf(d2, sizeof(d2), "%s/parent/target_subdirs/child2/dummy.txt", BASE);
+
+    CHECK(mkdir(tdir, 0755) == 0, "mkdir target_subdirs");
+    CHECK(mkdir(c1, 0755) == 0, "mkdir child1");
+    CHECK(mkdir(c2, 0755) == 0, "mkdir child2");
+    CHECK(write_file(d1, "d1\n") == 0, "create child1/dummy.txt");
+    CHECK(write_file(d2, "d2\n") == 0, "create child2/dummy.txt");
+
+    CHECK_ERR(rmdir(tdir), ENOTEMPTY, "rmdir(non-empty subdirs) -> ENOTEMPTY");
+    CHECK(access(d1, F_OK) == 0, "child1/dummy.txt intact");
+    CHECK(access(d2, F_OK) == 0, "child2/dummy.txt intact");
+
+    manual_rmdir_recursive(tdir);
+}
+
+static void test_rmdir_nonempty_parent(void)
+{
+    char parent[256], sibling[256];
+
+    snprintf(parent, sizeof(parent), "%s/parent", BASE);
+    snprintf(sibling, sizeof(sibling), "%s/parent/sibling.txt", BASE);
+
+    CHECK(access(parent, F_OK) == 0, "parent exists");
+    CHECK(access(sibling, F_OK) == 0, "sibling exists");
+    CHECK_ERR(rmdir(parent), ENOTEMPTY, "rmdir(parent) -> ENOTEMPTY");
+    CHECK(access(parent, F_OK) == 0, "parent still exists");
+    CHECK(access(sibling, F_OK) == 0, "sibling still exists");
+}
+
+static void test_rmdir_empty(void)
+{
+    char empty_dir[256];
+    snprintf(empty_dir, sizeof(empty_dir), "%s/parent/empty", BASE);
+
+    CHECK_RET(rmdir(empty_dir), 0, "rmdir(empty) succeeds");
+    CHECK(access(empty_dir, F_OK) != 0, "empty dir removed");
+
+    /* repeated rmdir should return ENOENT */
+    CHECK_ERR(rmdir(empty_dir), ENOENT, "second rmdir(empty) -> ENOENT");
+}
+
+/* ========== rename 基本语义测试 ========== */
+
+static void test_rename_dir_to_nonempty_dir(void)
+{
+    char src_dir[256], src_file[256], dst_dir[256], dst_file[256];
+
+    snprintf(src_dir, sizeof(src_dir), "%s/rn_src_dir", BASE);
+    snprintf(src_file, sizeof(src_file), "%s/rn_src_dir/data.txt", BASE);
+    snprintf(dst_dir, sizeof(dst_dir), "%s/rn_dst_dir", BASE);
+    snprintf(dst_file, sizeof(dst_file), "%s/rn_dst_dir/keep.txt", BASE);
 
     CHECK(mkdir(src_dir, 0755) == 0, "mkdir src_dir");
     CHECK(mkdir(dst_dir, 0755) == 0, "mkdir dst_dir");
+    CHECK(write_file(src_file, "source\n") == 0, "create src_dir/data.txt");
+    CHECK(write_file(dst_file, "target\n") == 0, "create dst_dir/keep.txt");
 
-    FILE *f = fopen(src_file, "w");
-    CHECK(f != NULL, "create src_dir/data.txt");
-    if (f) { fprintf(f, "source\n"); fclose(f); }
-
-    f = fopen(dst_file, "w");
-    CHECK(f != NULL, "create dst_dir/keep.txt");
-    if (f) { fprintf(f, "target\n"); fclose(f); }
-
-    errno = 0;
-    int rc = rename(src_dir, dst_dir);
-
-    if (rc == 0) {
-        printf("  [BUG]   rename succeeded — recursive delete of non-empty dir!\n");
-        bug_count++;
-        failed++;
-        if (access(dst_file, F_OK) != 0)
-            printf("  [BUG]   dst_dir/keep.txt was destroyed\n");
-        if (access(src_dir, F_OK) != 0)
-            printf("  [BUG]   src_dir was removed\n");
-    } else if (errno == ENOTEMPTY || errno == EEXIST) {
-        printf("  [OK]   returned ENOTEMPTY (rc=%d, errno=%d)\n", rc, errno);
-        passed++;
-        CHECK(access(src_dir, F_OK) == 0, "src_dir still exists");
-        CHECK(access(src_file, F_OK) == 0, "src_dir/data.txt intact");
-        CHECK(access(dst_dir, F_OK) == 0, "dst_dir still exists");
-        CHECK(access(dst_file, F_OK) == 0, "dst_dir/keep.txt intact");
-    } else {
-        printf("  [FAIL] unexpected errno=%d (%s)\n", errno, strerror(errno));
-        failed++;
-    }
+    CHECK_ERR(rename(src_dir, dst_dir), ENOTEMPTY,
+              "rename(dir, non-empty dir) -> ENOTEMPTY");
+    CHECK(access(src_dir, F_OK) == 0, "src_dir still exists");
+    CHECK(access(src_file, F_OK) == 0, "src_dir/data.txt intact");
+    CHECK(access(dst_dir, F_OK) == 0, "dst_dir still exists");
+    CHECK(access(dst_file, F_OK) == 0, "dst_dir/keep.txt intact");
 
     force_remove(src_dir);
     force_remove(dst_dir);
 }
 
-/*
- * Test: rename dir → empty dir.
- * Expect: success, old empty dir replaced by source dir.
- */
-static void test_rename_dir_to_empty_dir(const char *base)
+static void test_rename_dir_to_empty_dir(void)
 {
-    printf("\n--- rename(dir → empty dir) ---\n");
+    char src_dir[256], src_file[256], dst_dir[256], moved_file[256];
 
-    char src_dir[256], src_file[256];
-    char dst_dir[256];
-    char moved_file[256];
-
-    snprintf(src_dir, sizeof(src_dir), "%s/rn_src2", base);
-    snprintf(src_file, sizeof(src_file), "%s/rn_src2/moved.txt", base);
-    snprintf(dst_dir, sizeof(dst_dir), "%s/rn_dst2", base);
-    snprintf(moved_file, sizeof(moved_file), "%s/rn_dst2/moved.txt", base);
+    snprintf(src_dir, sizeof(src_dir), "%s/rn_src2", BASE);
+    snprintf(src_file, sizeof(src_file), "%s/rn_src2/moved.txt", BASE);
+    snprintf(dst_dir, sizeof(dst_dir), "%s/rn_dst2", BASE);
+    snprintf(moved_file, sizeof(moved_file), "%s/rn_dst2/moved.txt", BASE);
 
     CHECK(mkdir(src_dir, 0755) == 0, "mkdir src_dir");
     CHECK(mkdir(dst_dir, 0755) == 0, "mkdir dst_dir (empty)");
+    CHECK(write_file(src_file, "payload\n") == 0, "create src_dir/moved.txt");
 
-    FILE *f = fopen(src_file, "w");
-    CHECK(f != NULL, "create src_dir/moved.txt");
-    if (f) { fprintf(f, "payload\n"); fclose(f); }
-
-    errno = 0;
-    int rc = rename(src_dir, dst_dir);
-
-    CHECK(rc == 0, "rename(dir, empty_dir) succeeded");
-    if (rc == 0) {
-        CHECK(access(src_dir, F_OK) != 0, "src_dir removed");
-        CHECK(access(moved_file, F_OK) == 0, "moved.txt accessible at new path");
-    }
+    CHECK_RET(rename(src_dir, dst_dir), 0, "rename(dir, empty_dir) succeeds");
+    CHECK(access(src_dir, F_OK) != 0, "src_dir removed");
+    CHECK(access(moved_file, F_OK) == 0, "moved.txt accessible at new path");
 
     force_remove(dst_dir);
     force_remove(src_dir);
 }
 
-/*
- * Test: rename file → directory.
- * Expect: ENOTDIR, both source file and target dir intact.
- * Bug: rsext4 rename() deletes the target dir and moves file into its place.
- */
-static void test_rename_file_to_dir(const char *base)
+static void test_rename_file_to_dir(void)
 {
-    printf("\n--- rename(file → dir) ---\n");
-
     char src_file[256], dst_dir[256], dst_child[256];
 
-    snprintf(src_file, sizeof(src_file), "%s/rn_file.txt", base);
-    snprintf(dst_dir, sizeof(dst_dir), "%s/rn_dir_target", base);
-    snprintf(dst_child, sizeof(dst_child), "%s/rn_dir_target/child.txt", base);
+    snprintf(src_file, sizeof(src_file), "%s/rn_file.txt", BASE);
+    snprintf(dst_dir, sizeof(dst_dir), "%s/rn_dir_target", BASE);
+    snprintf(dst_child, sizeof(dst_child), "%s/rn_dir_target/child.txt", BASE);
 
-    FILE *f = fopen(src_file, "w");
-    CHECK(f != NULL, "create source file");
-    if (f) { fprintf(f, "file\n"); fclose(f); }
-
+    CHECK(write_file(src_file, "file\n") == 0, "create source file");
     CHECK(mkdir(dst_dir, 0755) == 0, "mkdir target dir");
-    f = fopen(dst_child, "w");
-    CHECK(f != NULL, "create target dir/child.txt");
-    if (f) { fprintf(f, "child\n"); fclose(f); }
+    CHECK(write_file(dst_child, "child\n") == 0, "create target dir/child.txt");
 
-    errno = 0;
-    int rc = rename(src_file, dst_dir);
-
-    if (rc == 0) {
-        printf("  [BUG]   rename(file, dir) succeeded — dir destroyed!\n");
-        bug_count++;
-        failed++;
-        if (access(dst_child, F_OK) != 0)
-            printf("  [BUG]   target dir contents destroyed\n");
-    } else if (errno == ENOTDIR || errno == EISDIR) {
-        printf("  [OK]   returned ENOTDIR/EISDIR (rc=%d, errno=%d)\n", rc, errno);
-        passed++;
-        CHECK(access(src_file, F_OK) == 0, "source file still exists");
-        CHECK(access(dst_dir, F_OK) == 0, "target dir still exists");
-        CHECK(access(dst_child, F_OK) == 0, "target dir contents intact");
-    } else {
-        printf("  [FAIL] unexpected errno=%d (%s)\n", errno, strerror(errno));
-        failed++;
-    }
+    CHECK(rename(src_file, dst_dir) != 0, "rename(file, dir) fails");
+    CHECK(errno == ENOTDIR || errno == EISDIR,
+          "errno is ENOTDIR or EISDIR");
+    CHECK(access(src_file, F_OK) == 0, "source file still exists");
+    CHECK(access(dst_dir, F_OK) == 0, "target dir still exists");
+    CHECK(access(dst_child, F_OK) == 0, "target dir contents intact");
 
     force_remove(dst_dir);
     force_remove(src_file);
 }
 
-/*
- * Test: rename directory → file.
- * Expect: EISDIR, both source dir and target file intact.
- * Bug: rsext4 rename() deletes the target file and moves dir into its place.
- */
-static void test_rename_dir_to_file(const char *base)
+static void test_rename_dir_to_file(void)
 {
-    printf("\n--- rename(dir → file) ---\n");
-
     char src_dir[256], src_child[256], dst_file[256];
 
-    snprintf(src_dir, sizeof(src_dir), "%s/rn_dir_src", base);
-    snprintf(src_child, sizeof(src_child), "%s/rn_dir_src/inside.txt", base);
-    snprintf(dst_file, sizeof(dst_file), "%s/rn_file_target.txt", base);
+    snprintf(src_dir, sizeof(src_dir), "%s/rn_dir_src", BASE);
+    snprintf(src_child, sizeof(src_child), "%s/rn_dir_src/inside.txt", BASE);
+    snprintf(dst_file, sizeof(dst_file), "%s/rn_file_target.txt", BASE);
 
     CHECK(mkdir(src_dir, 0755) == 0, "mkdir source dir");
+    CHECK(write_file(src_child, "inside\n") == 0, "create source dir/inside.txt");
+    CHECK(write_file(dst_file, "target\n") == 0, "create target file");
 
-    FILE *f = fopen(src_child, "w");
-    CHECK(f != NULL, "create source dir/inside.txt");
-    if (f) { fprintf(f, "inside\n"); fclose(f); }
-
-    f = fopen(dst_file, "w");
-    CHECK(f != NULL, "create target file");
-    if (f) { fprintf(f, "target\n"); fclose(f); }
-
-    errno = 0;
-    int rc = rename(src_dir, dst_file);
-
-    if (rc == 0) {
-        printf("  [BUG]   rename(dir, file) succeeded — dir overwrote file!\n");
-        bug_count++;
-        failed++;
-    } else if (errno == EISDIR || errno == ENOTDIR) {
-        printf("  [OK]   returned EISDIR (rc=%d, errno=%d)\n", rc, errno);
-        passed++;
-        CHECK(access(src_dir, F_OK) == 0, "source dir still exists");
-        CHECK(access(src_child, F_OK) == 0, "source dir contents intact");
-        CHECK(access(dst_file, F_OK) == 0, "target file still exists");
-    } else {
-        printf("  [FAIL] unexpected errno=%d (%s)\n", errno, strerror(errno));
-        failed++;
-    }
+    CHECK(rename(src_dir, dst_file) != 0, "rename(dir, file) fails");
+    CHECK(errno == EISDIR || errno == ENOTDIR,
+          "errno is EISDIR or ENOTDIR");
+    CHECK(access(src_dir, F_OK) == 0, "source dir still exists");
+    CHECK(access(src_child, F_OK) == 0, "source dir contents intact");
+    CHECK(access(dst_file, F_OK) == 0, "target file still exists");
 
     force_remove(src_dir);
     force_remove(dst_file);
 }
 
-/*
- * Test: rename file → file (overwrite).
- * Expect: success, old file replaced by source file.
- */
-static void test_rename_file_to_file(const char *base)
+static void test_rename_file_to_file(void)
 {
-    printf("\n--- rename(file → file) ---\n");
+    char src[256], dst[256], buf[64];
 
-    char src[256], dst[256];
+    snprintf(src, sizeof(src), "%s/rn_f2f_src.txt", BASE);
+    snprintf(dst, sizeof(dst), "%s/rn_f2f_dst.txt", BASE);
 
-    snprintf(src, sizeof(src), "%s/rn_f2f_src.txt", base);
-    snprintf(dst, sizeof(dst), "%s/rn_f2f_dst.txt", base);
+    CHECK(write_file(src, "new-content\n") == 0, "create source file");
+    CHECK(write_file(dst, "old-content\n") == 0, "create destination file");
 
-    FILE *f = fopen(src, "w");
-    CHECK(f != NULL, "create source file");
-    if (f) { fprintf(f, "new-content\n"); fclose(f); }
+    CHECK_RET(rename(src, dst), 0, "rename(file, file) succeeds");
+    CHECK(access(src, F_OK) != 0, "source removed");
+    CHECK(access(dst, F_OK) == 0, "destination exists");
 
-    f = fopen(dst, "w");
-    CHECK(f != NULL, "create destination file");
-    if (f) { fprintf(f, "old-content\n"); fclose(f); }
-
-    errno = 0;
-    int rc = rename(src, dst);
-
-    CHECK(rc == 0, "rename(file, file) succeeded");
-    if (rc == 0) {
-        CHECK(access(src, F_OK) != 0, "source removed");
-        CHECK(access(dst, F_OK) == 0, "destination exists");
-
-        /* Verify content was overwritten */
-        f = fopen(dst, "r");
-        if (f) {
-            char buf[64] = {0};
-            fread(buf, 1, sizeof(buf) - 1, f);
-            fclose(f);
-            CHECK(strstr(buf, "new-content") != NULL, "content is from source file");
-        }
-    }
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(dst, buf, sizeof(buf)) > 0, "read destination");
+    CHECK(strstr(buf, "new-content") != NULL, "content is from source file");
 
     force_remove(src);
     force_remove(dst);
 }
 
-/* ================================================================
- * MAIN
- * ================================================================ */
+/* ========== rename + VFS dentry cache 测试 ========== */
+
+static void test_rename_then_unlink(void)
+{
+    char dir[256], child[256], renamed[256], renamed_child[256];
+
+    snprintf(dir, sizeof(dir), "%s/rnu_old", BASE);
+    snprintf(child, sizeof(child), "%s/rnu_old/data.txt", BASE);
+    snprintf(renamed, sizeof(renamed), "%s/rnu_new", BASE);
+    snprintf(renamed_child, sizeof(renamed_child), "%s/rnu_new/data.txt", BASE);
+
+    CHECK(mkdir(dir, 0755) == 0, "mkdir old dir");
+    CHECK(write_file(child, "hello\n") == 0, "create old/data.txt");
+    CHECK_RET(rename(dir, renamed), 0, "rename old -> ~new");
+
+    /* stale parent bug: unlink via new path should succeed */
+    CHECK_RET(unlink(renamed_child), 0, "unlink ~new/data.txt");
+    CHECK_RET(rmdir(renamed), 0, "rmdir ~new after unlink");
+
+    force_remove(renamed);
+    force_remove(dir);
+}
+
+static void test_rename_file_then_delete_old_path(void)
+{
+    char dir[256], old_path[256], new_path[256];
+
+    snprintf(dir, sizeof(dir), "%s/rnfd_dir", BASE);
+    snprintf(old_path, sizeof(old_path), "%s/rnfd_dir/old_name.txt", BASE);
+    snprintf(new_path, sizeof(new_path), "%s/rnfd_dir/new_name.txt", BASE);
+
+    CHECK(mkdir(dir, 0755) == 0, "mkdir test dir");
+    CHECK(write_file(old_path, "data\n") == 0, "create old_name.txt");
+    CHECK_RET(rename(old_path, new_path), 0, "rename old_name -> new_name");
+
+    /* old path must be gone */
+    CHECK(access(old_path, F_OK) != 0, "old_name.txt no longer accessible");
+    CHECK_ERR(unlink(old_path), ENOENT, "unlink old_name -> ENOENT");
+
+    /* new path must work */
+    CHECK_RET(unlink(new_path), 0, "unlink new_name.txt succeeds");
+    CHECK_RET(rmdir(dir), 0, "rmdir empty dir");
+
+    force_remove(dir);
+}
+
+static void test_rename_dir_then_delete_child_old_path(void)
+{
+    char parent[256], old_dir[256], old_child[256];
+    char new_dir[256], new_child[256];
+
+    snprintf(parent, sizeof(parent), "%s/rndp_parent", BASE);
+    snprintf(old_dir, sizeof(old_dir), "%s/rndp_parent/old_pkg", BASE);
+    snprintf(old_child, sizeof(old_child), "%s/rndp_parent/old_pkg/data.txt", BASE);
+    snprintf(new_dir, sizeof(new_dir), "%s/rndp_parent/~new_pkg", BASE);
+    snprintf(new_child, sizeof(new_child), "%s/rndp_parent/~new_pkg/data.txt", BASE);
+
+    CHECK(mkdir(parent, 0755) == 0, "mkdir parent");
+    CHECK(mkdir(old_dir, 0755) == 0, "mkdir old_pkg");
+    CHECK(write_file(old_child, "content\n") == 0, "create old_pkg/data.txt");
+    CHECK_RET(rename(old_dir, new_dir), 0, "rename old_pkg -> ~new_pkg");
+
+    /* old path must be gone */
+    CHECK(access(old_child, F_OK) != 0, "old_pkg/data.txt no longer accessible");
+    CHECK_ERR(unlink(old_child), ENOENT, "unlink old_pkg/data.txt -> ENOENT");
+
+    /* new path must work */
+    CHECK_RET(unlink(new_child), 0, "unlink ~new_pkg/data.txt succeeds");
+    CHECK_RET(rmdir(new_dir), 0, "rmdir ~new_pkg");
+    CHECK_RET(rmdir(parent), 0, "rmdir parent");
+
+    force_remove(parent);
+}
+
+static void test_rename_then_readdir(void)
+{
+    char dir[256], f1[256], f2[256], renamed[256], rpath[256], buf[64];
+
+    snprintf(dir, sizeof(dir), "%s/rnr_old", BASE);
+    snprintf(f1, sizeof(f1), "%s/rnr_old/a.txt", BASE);
+    snprintf(f2, sizeof(f2), "%s/rnr_old/b.txt", BASE);
+    snprintf(renamed, sizeof(renamed), "%s/rnr_new", BASE);
+
+    CHECK(mkdir(dir, 0755) == 0, "mkdir old dir");
+    CHECK(write_file(f1, "aaa\n") == 0, "create a.txt");
+    CHECK(write_file(f2, "bbb\n") == 0, "create b.txt");
+    CHECK_RET(rename(dir, renamed), 0, "rename old -> ~new");
+
+    /* readdir must see both files */
+    CHECK(dir_has_entry(renamed, "a.txt"), "readdir ~new sees a.txt");
+    CHECK(dir_has_entry(renamed, "b.txt"), "readdir ~new sees b.txt");
+    CHECK(count_dir_entries(renamed) == 2, "readdir ~new sees exactly 2 entries");
+
+    /* read content through renamed path */
+    snprintf(rpath, sizeof(rpath), "%s/a.txt", renamed);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(rpath, buf, sizeof(buf)) > 0, "read ~new/a.txt");
+    CHECK(strcmp(buf, "aaa\n") == 0, "~new/a.txt content correct");
+
+    force_remove(renamed);
+    force_remove(dir);
+}
+
+static void test_rename_create_same_name(void)
+{
+    char old_dir[256], old_child[256];
+    char renamed_dir[256], renamed_child[256];
+    char new_dir[256], new_child[256], buf[64];
+
+    snprintf(old_dir, sizeof(old_dir), "%s/rnc_pkg", BASE);
+    snprintf(old_child, sizeof(old_child), "%s/rnc_pkg/init.py", BASE);
+    snprintf(renamed_dir, sizeof(renamed_dir), "%s/rnc_~pkg", BASE);
+    snprintf(renamed_child, sizeof(renamed_child), "%s/rnc_~pkg/init.py", BASE);
+    snprintf(new_dir, sizeof(new_dir), "%s/rnc_pkg", BASE);
+    snprintf(new_child, sizeof(new_child), "%s/rnc_pkg/main.py", BASE);
+
+    CHECK(mkdir(old_dir, 0755) == 0, "mkdir old pkg");
+    CHECK(write_file(old_child, "old\n") == 0, "create old/init.py");
+    CHECK_RET(rename(old_dir, renamed_dir), 0, "rename pkg -> ~pkg");
+
+    /* create new package with same name */
+    CHECK(mkdir(new_dir, 0755) == 0, "mkdir new pkg (same name)");
+    CHECK(write_file(new_child, "new\n") == 0, "create new/main.py");
+
+    /* unlink inside renamed dir — stale parent bug target */
+    CHECK_RET(unlink(renamed_child), 0, "unlink ~pkg/init.py");
+    CHECK_RET(rmdir(renamed_dir), 0, "rmdir ~pkg");
+
+    /* verify new package intact */
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(new_child, buf, sizeof(buf)) > 0, "read new/main.py");
+    CHECK(strcmp(buf, "new\n") == 0, "new/main.py intact after cleanup");
+    CHECK(dir_has_entry(new_dir, "main.py"), "new pkg readdir sees main.py");
+
+    force_remove(new_dir);
+    force_remove(renamed_dir);
+    force_remove(old_dir);
+}
+
+static void test_pip_upgrade_pattern(void)
+{
+    char pkg[256], init_f[256], main_f[256], sub[256], sub_f[256];
+    char renamed[256], renamed_init[256], renamed_main[256], renamed_sub[256], renamed_sub_f[256];
+    char new_pkg[256], new_init[256], new_main[256], new_cli[256], buf[64];
+
+    snprintf(pkg, sizeof(pkg), "%s/pip", BASE);
+    snprintf(init_f, sizeof(init_f), "%s/pip/__init__.py", BASE);
+    snprintf(main_f, sizeof(main_f), "%s/pip/main.py", BASE);
+    snprintf(sub, sizeof(sub), "%s/pip/cli", BASE);
+    snprintf(sub_f, sizeof(sub_f), "%s/pip/cli/run.py", BASE);
+    snprintf(renamed, sizeof(renamed), "%s/~ip", BASE);
+    snprintf(renamed_init, sizeof(renamed_init), "%s/~ip/__init__.py", BASE);
+    snprintf(renamed_main, sizeof(renamed_main), "%s/~ip/main.py", BASE);
+    snprintf(renamed_sub, sizeof(renamed_sub), "%s/~ip/cli", BASE);
+    snprintf(renamed_sub_f, sizeof(renamed_sub_f), "%s/~ip/cli/run.py", BASE);
+    snprintf(new_pkg, sizeof(new_pkg), "%s/pip", BASE);
+    snprintf(new_init, sizeof(new_init), "%s/pip/__init__.py", BASE);
+    snprintf(new_main, sizeof(new_main), "%s/pip/main.py", BASE);
+    snprintf(new_cli, sizeof(new_cli), "%s/pip/cli", BASE);
+
+    /* old package */
+    CHECK(mkdir(pkg, 0755) == 0, "mkdir pip");
+    CHECK(write_file(init_f, "# old init\n") == 0, "create __init__.py");
+    CHECK(write_file(main_f, "# old main\n") == 0, "create main.py");
+    CHECK(mkdir(sub, 0755) == 0, "mkdir cli");
+    CHECK(write_file(sub_f, "# old cli\n") == 0, "create cli/run.py");
+
+    /* rename pip -> ~ip */
+    CHECK_RET(rename(pkg, renamed), 0, "rename pip -> ~ip");
+
+    /* install new version */
+    CHECK(mkdir(new_pkg, 0755) == 0, "mkdir new pip");
+    CHECK(write_file(new_init, "# new init\n") == 0, "create new __init__.py");
+    CHECK(write_file(new_main, "# new main\n") == 0, "create new main.py");
+    CHECK(mkdir(new_cli, 0755) == 0, "mkdir new cli");
+
+    /* cleanup ~ip */
+    CHECK_RET(unlink(renamed_init), 0, "unlink ~ip/__init__.py");
+    CHECK_RET(unlink(renamed_main), 0, "unlink ~ip/main.py");
+    CHECK_RET(unlink(renamed_sub_f), 0, "unlink ~ip/cli/run.py");
+    CHECK_RET(rmdir(renamed_sub), 0, "rmdir ~ip/cli");
+    CHECK_RET(rmdir(renamed), 0, "rmdir ~ip");
+
+    /* verify new package */
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(new_main, buf, sizeof(buf)) > 0, "read new pip/main.py");
+    CHECK(strcmp(buf, "# new main\n") == 0, "new pip/main.py intact");
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(new_init, buf, sizeof(buf)) > 0, "read new pip/__init__.py");
+    CHECK(strcmp(buf, "# new init\n") == 0, "new pip/__init__.py intact");
+
+    force_remove(new_pkg);
+    force_remove(renamed);
+    force_remove(pkg);
+}
+
+static void test_rename_many_files(void)
+{
+    char dir[256], renamed[256], path[256], content[64];
+
+    snprintf(dir, sizeof(dir), "%s/rnm_pkg", BASE);
+    snprintf(renamed, sizeof(renamed), "%s/rnm_~pkg", BASE);
+
+    CHECK(mkdir(dir, 0755) == 0, "mkdir pkg");
+
+    /* create 20 files */
+    int ok = 1;
+    for (int i = 0; i < 20; i++) {
+        snprintf(path, sizeof(path), "%s/file_%02d.py", dir, i);
+        snprintf(content, sizeof(content), "# file %d\n", i);
+        if (write_file(path, content) < 0)
+            ok = 0;
+    }
+    CHECK(ok, "created 20 files");
+
+    CHECK_RET(rename(dir, renamed), 0, "rename pkg -> ~pkg (20 files)");
+
+    /* readdir must see all 20 files */
+    CHECK(count_dir_entries(renamed) == 20, "readdir ~pkg sees all 20 files");
+
+    /* delete all files, then rmdir */
+    DIR *d = opendir(renamed);
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL) {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+                continue;
+            snprintf(path, sizeof(path), "%s/%s", renamed, ent->d_name);
+            unlink(path);
+        }
+        closedir(d);
+    }
+
+    CHECK_RET(rmdir(renamed), 0, "rmdir ~pkg after unlinking all files");
+    CHECK(access(renamed, F_OK) != 0, "~pkg fully removed");
+
+    force_remove(renamed);
+    force_remove(dir);
+}
+
+/* ========== main ========== */
 
 int main(void)
 {
-    const char *base = "/root/bug-ext4-dir-ops-test";
-    char parent[256], sibling[256], empty_dir[256];
+    TEST_START("bug-ext4-dir-ops: rmdir + rename + stale parent");
 
-    printf("=== bug-ext4-dir-ops ===\n");
+    manual_rmdir_recursive(BASE);
+    CHECK(mkdir(BASE, 0755) == 0, "mkdir base");
 
-    /* Cleanup from previous runs */
-    manual_rmdir_recursive(base);
-
-    /* Create base structure */
-    snprintf(parent, sizeof(parent), "%s/parent", base);
-    snprintf(sibling, sizeof(sibling), "%s/parent/sibling.txt", base);
-    snprintf(empty_dir, sizeof(empty_dir), "%s/parent/empty", base);
-
-    CHECK(mkdir(base, 0755) == 0, "mkdir base");
+    char parent[256], sibling[256];
+    snprintf(parent, sizeof(parent), "%s/parent", BASE);
+    snprintf(sibling, sizeof(sibling), "%s/parent/sibling.txt", BASE);
     CHECK(mkdir(parent, 0755) == 0, "mkdir parent");
+    CHECK(write_file(sibling, "sibling\n") == 0, "create sibling.txt");
+    CHECK(mkdir(parent, 0755) == 0 || errno == EEXIST, "mkdir empty (control)");
 
-    FILE *f = fopen(sibling, "w");
-    CHECK(f != NULL, "create sibling.txt");
-    if (f) { fprintf(f, "sibling\n"); fclose(f); }
+    /* rmdir tests */
+    test_rmdir_nonempty_mixed();
+    test_rmdir_nonempty_files();
+    test_rmdir_nonempty_subdirs();
+    test_rmdir_nonempty_parent();
+    test_rmdir_empty();
 
-    CHECK(mkdir(empty_dir, 0755) == 0, "mkdir empty (control group)");
+    /* rename basic semantics */
+    test_rename_dir_to_nonempty_dir();
+    test_rename_dir_to_empty_dir();
+    test_rename_file_to_dir();
+    test_rename_dir_to_file();
+    test_rename_file_to_file();
 
-    /* ==============================================================
-     * RMDR TESTS
-     * ============================================================== */
+    /* rename + VFS dentry cache (stale parent) */
+    test_rename_then_unlink();
+    test_rename_file_then_delete_old_path();
+    test_rename_dir_then_delete_child_old_path();
+    test_rename_then_readdir();
+    test_rename_create_same_name();
+    test_pip_upgrade_pattern();
+    test_rename_many_files();
 
-    /*
-     * === Test 1: dir with files + subdirectory (mixed) ===
-     *
-     *   parent/
-     *     target_mixed/
-     *       file1.txt
-     *       file2.txt
-     *       sub/
-     *         deep.txt
-     *     sibling.txt
-     */
-    {
-        char tdir[256], sub[256], f1[256], f2[256], deep[256];
-        snprintf(tdir, sizeof(tdir), "%s/parent/target_mixed", base);
-        snprintf(sub, sizeof(sub), "%s/parent/target_mixed/sub", base);
-        snprintf(f1, sizeof(f1), "%s/parent/target_mixed/file1.txt", base);
-        snprintf(f2, sizeof(f2), "%s/parent/target_mixed/file2.txt", base);
-        snprintf(deep, sizeof(deep), "%s/parent/target_mixed/sub/deep.txt", base);
+    manual_rmdir_recursive(BASE);
 
-        CHECK(mkdir(tdir, 0755) == 0, "mkdir target_mixed");
-        CHECK(mkdir(sub, 0755) == 0, "mkdir target_mixed/sub");
-
-        f = fopen(f1, "w");
-        CHECK(f != NULL, "create file1.txt");
-        if (f) { fprintf(f, "hello\n"); fclose(f); }
-        f = fopen(f2, "w");
-        CHECK(f != NULL, "create file2.txt");
-        if (f) { fprintf(f, "world\n"); fclose(f); }
-        f = fopen(deep, "w");
-        CHECK(f != NULL, "create sub/deep.txt");
-        if (f) { fprintf(f, "deep\n"); fclose(f); }
-
-        test_rmdir_nonempty("mixed (files+subdir)", tdir, parent, sibling);
-
-        /* Verify deep content survived */
-        CHECK(access(deep, F_OK) == 0, "sub/deep.txt intact");
-
-        /* Cleanup for next test */
-        manual_rmdir_recursive(tdir);
-    }
-
-    /*
-     * === Test 2: dir with files only (no subdirectories) ===
-     *
-     *   parent/
-     *     target_files/
-     *       a.txt
-     *       b.txt
-     *       c.txt
-     *     sibling.txt
-     */
-    {
-        char tdir[256], fa[256], fb[256], fc[256];
-        snprintf(tdir, sizeof(tdir), "%s/parent/target_files", base);
-        snprintf(fa, sizeof(fa), "%s/parent/target_files/a.txt", base);
-        snprintf(fb, sizeof(fb), "%s/parent/target_files/b.txt", base);
-        snprintf(fc, sizeof(fc), "%s/parent/target_files/c.txt", base);
-
-        CHECK(mkdir(tdir, 0755) == 0, "mkdir target_files");
-
-        f = fopen(fa, "w");
-        CHECK(f != NULL, "create a.txt");
-        if (f) { fprintf(f, "a\n"); fclose(f); }
-        f = fopen(fb, "w");
-        CHECK(f != NULL, "create b.txt");
-        if (f) { fprintf(f, "b\n"); fclose(f); }
-        f = fopen(fc, "w");
-        CHECK(f != NULL, "create c.txt");
-        if (f) { fprintf(f, "c\n"); fclose(f); }
-
-        test_rmdir_nonempty("files only", tdir, parent, sibling);
-        CHECK(access(fa, F_OK) == 0, "a.txt intact");
-        CHECK(access(fb, F_OK) == 0, "b.txt intact");
-        CHECK(access(fc, F_OK) == 0, "c.txt intact");
-
-        manual_rmdir_recursive(tdir);
-    }
-
-    /*
-     * === Test 3: dir with subdirectories only (no files) ===
-     *
-     *   parent/
-     *     target_subdirs/
-     *       child1/
-     *         dummy.txt
-     *       child2/
-     *         dummy.txt
-     *     sibling.txt
-     */
-    {
-        char tdir[256], c1[256], c2[256], d1[256], d2[256];
-        snprintf(tdir, sizeof(tdir), "%s/parent/target_subdirs", base);
-        snprintf(c1, sizeof(c1), "%s/parent/target_subdirs/child1", base);
-        snprintf(c2, sizeof(c2), "%s/parent/target_subdirs/child2", base);
-        snprintf(d1, sizeof(d1), "%s/parent/target_subdirs/child1/dummy.txt", base);
-        snprintf(d2, sizeof(d2), "%s/parent/target_subdirs/child2/dummy.txt", base);
-
-        CHECK(mkdir(tdir, 0755) == 0, "mkdir target_subdirs");
-        CHECK(mkdir(c1, 0755) == 0, "mkdir child1");
-        CHECK(mkdir(c2, 0755) == 0, "mkdir child2");
-
-        f = fopen(d1, "w");
-        CHECK(f != NULL, "create child1/dummy.txt");
-        if (f) { fprintf(f, "d1\n"); fclose(f); }
-        f = fopen(d2, "w");
-        CHECK(f != NULL, "create child2/dummy.txt");
-        if (f) { fprintf(f, "d2\n"); fclose(f); }
-
-        test_rmdir_nonempty("subdirs only", tdir, parent, sibling);
-        CHECK(access(d1, F_OK) == 0, "child1/dummy.txt intact");
-        CHECK(access(d2, F_OK) == 0, "child2/dummy.txt intact");
-
-        manual_rmdir_recursive(tdir);
-    }
-
-    /*
-     * === Test 4: rmdir on parent (which contains sibling.txt) ===
-     *
-     * This tests cascade upward: if delete_dir is truly recursive,
-     * attempting to rmdir parent/ should destroy base/ as well.
-     */
-    {
-        printf("\n--- rmdir(non-empty): parent dir ---\n");
-        CHECK(access(parent, F_OK) == 0, "parent exists");
-        CHECK(access(sibling, F_OK) == 0, "sibling exists");
-
-        errno = 0;
-        int rc = rmdir(parent);
-
-        if (rc == 0) {
-            printf("  [BUG]   rmdir(parent) succeeded — cascade to parent!\n");
-            bug_count++;
-            failed++;
-            if (access(base, F_OK) != 0) {
-                printf("  [BUG]   base/ was also destroyed (cascade upward)\n");
-                bug_count++;
-            }
-        } else if (errno == ENOTEMPTY || errno == EEXIST) {
-            printf("  [OK]   rmdir(parent) correctly returned ENOTEMPTY\n");
-            passed++;
-        } else {
-            printf("  [FAIL] unexpected errno=%d (%s)\n", errno, strerror(errno));
-            failed++;
-        }
-
-        CHECK(access(parent, F_OK) == 0, "parent still exists");
-        CHECK(access(sibling, F_OK) == 0, "sibling still exists");
-        CHECK(access(base, F_OK) == 0, "base still exists");
-    }
-
-    /*
-     * === Test 5: rmdir on empty directory (control group) ===
-     */
-    printf("\n--- rmdir(empty dir) ---\n");
-    {
-        int rc = rmdir(empty_dir);
-        CHECK(rc == 0, "rmdir(empty) succeeded");
-        CHECK(access(empty_dir, F_OK) != 0, "empty dir removed");
-    }
-
-    /*
-     * === Test 6: repeated rmdir on same path ===
-     *
-     * After successful rmdir, calling again should return ENOENT.
-     * If the bug corrupts internal state, this might crash or return
-     * unexpected errors.
-     */
-    printf("\n--- repeated rmdir on removed dir ---\n");
-    {
-        errno = 0;
-        int rc = rmdir(empty_dir);
-        CHECK(rc != 0, "second rmdir(empty) fails");
-        CHECK(errno == ENOENT, "second rmdir returns ENOENT");
-    }
-
-    /* ==============================================================
-     * RENAME TESTS
-     * ============================================================== */
-
-    test_rename_dir_to_nonempty_dir(base);
-    test_rename_dir_to_empty_dir(base);
-    test_rename_file_to_dir(base);
-    test_rename_dir_to_file(base);
-    test_rename_file_to_file(base);
-
-    /* Final cleanup */
-    manual_rmdir_recursive(base);
-
-    /* === Summary === */
-    printf("\n=== result: %d passed, %d failed, %d bugs ===\n",
-           passed, failed, bug_count);
-    if (failed == 0)
-        printf("TEST PASSED\n");
-    else
-        printf("TEST FAILED\n");
-
-    return failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    TEST_DONE();
 }

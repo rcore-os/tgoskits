@@ -344,7 +344,12 @@ impl DirNode {
             {
                 *fresh_entry.user_data().deref_mut() = mem::take(entry.user_data().deref_mut());
                 if let (Ok(src_dir), Ok(dst_dir)) = (entry.as_dir(), fresh_entry.as_dir()) {
-                    *dst_dir.cache.lock().deref_mut() = mem::take(src_dir.cache.lock().deref_mut());
+                    // Do NOT transfer children cache: child DirEntries retain
+                    // stale Reference.parent pointers to the old directory,
+                    // which makes path-based operations (unlink, rename) resolve
+                    // against the old (now-gone) path and fail with ENOENT.
+                    // Children will be lazily re-looked up from disk with correct
+                    // parent references on next access.
                     *dst_dir.mountpoint.lock().deref_mut() =
                         mem::take(src_dir.mountpoint.lock().deref_mut());
                 }
