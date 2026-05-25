@@ -7,6 +7,7 @@ use alloc::{
 };
 
 use ax_io::{Read, Write};
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     Location, Metadata, Mountpoint, NodePermission, NodeType, VfsError, VfsResult,
@@ -29,7 +30,7 @@ pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: spin::Mutex<Vec<Weak<Mutex<FsContext>>>> = spin::Mutex::new(Vec::new());
+static FS_REGISTRY: SpinNoIrq<Vec<Weak<Mutex<FsContext>>>> = SpinNoIrq::new(Vec::new());
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
 fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {

@@ -6,6 +6,7 @@ use ax_driver_base::DeviceType;
 use ax_driver_virtio::pci::{
     ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, HeaderType, PciRoot,
 };
+use ax_kspin::SpinNoIrq as Mutex;
 use rdrive::{
     PlatformDevice, module_driver,
     probe::{
@@ -13,7 +14,6 @@ use rdrive::{
         pci::{Endpoint, EndpointRc},
     },
 };
-use spin::Mutex;
 
 use super::virtio::{VirtIoBlkDevice, register_virtio_block};
 use crate::drivers::virtio::VirtIoHalImpl;

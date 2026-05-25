@@ -17,13 +17,11 @@ use core::{
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use ax_driver_block::BlockDriverOps;
-#[cfg(feature = "irq")]
 use ax_kspin::SpinNoIrq;
 #[cfg(feature = "irq")]
 use ax_plat::irq;
 use rd_block::BlkError;
 use rdrive::Device;
-use spin::Mutex;
 
 use super::DmaImpl;
 
@@ -39,7 +37,7 @@ pub struct Block {
     irq_num: Option<usize>,
     #[cfg(feature = "irq")]
     irq_state: Option<Arc<BlockIrqState>>,
-    queue: Mutex<rd_block::CmdQueue>,
+    queue: SpinNoIrq<rd_block::CmdQueue>,
 }
 
 pub struct PlatformBlockDevice {
@@ -263,7 +261,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
             irq_num,
             #[cfg(feature = "irq")]
             irq_state,
-            queue: Mutex::new(queue),
+            queue: SpinNoIrq::new(queue),
         })
     }
 }

@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::format;
 
+use ax_kspin::SpinNoIrq as Mutex;
 use fdt_edit::{PciRange, PciSpace};
 use heapless::Vec as ArrayVec;
 use rdrive::{
@@ -9,7 +10,6 @@ use rdrive::{
     probe::{OnProbeError, fdt::NodeType, pci::*},
     register::FdtInfo,
 };
-use spin::Mutex;
 
 mod rk3588;
 

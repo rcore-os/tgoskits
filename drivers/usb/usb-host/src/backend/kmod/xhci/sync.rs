@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use spin::{Mutex, RwLock};
+use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
+use spin::RwLock;
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
@@ -40,7 +41,7 @@ impl<T> IrqLock<T> {
 }
 
 pub(crate) struct IrqLockGuard<'a, T> {
-    _guard: spin::MutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
     data: &'a mut T,
     _disable_guard: DisableIrqGuard,
 }

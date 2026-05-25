@@ -18,12 +18,12 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_sync::Mutex as BlockingMutex;
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
 use event_listener::Event as NotifyEvent;
-use spin::Mutex;
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use self::{irq::manager, manager::UsbFsManager, tree::UsbRootDir};

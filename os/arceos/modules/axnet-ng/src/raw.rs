@@ -13,6 +13,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail};
 use ax_io::prelude::*;
+use ax_kspin::SpinNoIrq as Mutex;
 use axpoll::{IoEvents, Pollable};
 pub use smoltcp::wire::{IpProtocol, IpVersion};
 use smoltcp::{
@@ -21,7 +22,7 @@ use smoltcp::{
     storage::PacketMetadata,
     wire::{Icmpv6Packet, IpAddress, IpListenEndpoint, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr},
 };
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,

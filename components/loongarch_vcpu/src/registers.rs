@@ -1,4 +1,4 @@
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 pub const CSR_GSTAT: u16 = 0x50;
 pub const CSR_EENTRY: u16 = 0x0c;
