@@ -74,6 +74,19 @@ fn ax_app_entry() {
 
 struct LogIfImpl;
 
+#[cfg(feature = "paging")]
+fn runtime_page_fault_handler(
+    addr: ax_memory_addr::VirtAddr,
+    flags: ax_hal::trap::PageFaultFlags,
+) -> bool {
+    #[cfg(feature = "stack-guard-page")]
+    if ax_task::diagnose_current_stack_guard_page_fault(addr) {
+        return false;
+    }
+
+    ax_mm::kernel_aspace().lock().handle_page_fault(addr, flags)
+}
+
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
     fn console_write_str(s: &str) {
@@ -215,7 +228,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     );
 
     #[cfg(feature = "paging")]
-    ax_mm::init_memory_management();
+    {
+        ax_mm::init_memory_management();
+        ax_hal::trap::set_page_fault_handler(runtime_page_fault_handler);
+    }
 
     // #[cfg(feature = "plat-dyn")]
     // ax_driver::setup(arg);
@@ -377,6 +393,9 @@ fn init_interrupt() {
 
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();
+
+    #[cfg(feature = "ipi")]
+    ax_ipi::mark_current_cpu_ready();
 }
 
 #[cfg(all(feature = "tls", not(feature = "multitask")))]

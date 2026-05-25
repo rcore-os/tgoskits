@@ -26,9 +26,9 @@ use std::vec::Vec;
 use std::{collections::BTreeMap, string::ToString};
 use std::{print, println};
 
-lazy_static::lazy_static! {
-    pub static ref COMMAND_TREE: BTreeMap<String, CommandNode> = build_command_tree();
-}
+use spin::Lazy;
+
+pub static COMMAND_TREE: Lazy<BTreeMap<String, CommandNode>> = Lazy::new(build_command_tree);
 
 #[derive(Debug, Clone)]
 pub struct CommandNode {

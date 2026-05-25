@@ -67,10 +67,41 @@ impl JobControl {
         Ok(())
     }
 
-    pub fn set_session(&self, session: &Arc<Session>) {
+    pub fn set_session(&self, session: &Arc<Session>) -> AxResult<()> {
         let mut guard = self.session.lock();
-        assert!(guard.upgrade().is_none());
+        if let Some(existing) = guard.upgrade() {
+            if Arc::ptr_eq(&existing, session) {
+                return Ok(());
+            }
+            ax_bail!(
+                ResourceBusy,
+                "Terminal is already associated with another session"
+            );
+        }
         *guard = Arc::downgrade(session);
+        Ok(())
+    }
+
+    pub fn clear_session(&self, session: &Arc<Session>) {
+        {
+            let mut session_guard = self.session.lock();
+            if session_guard
+                .upgrade()
+                .is_some_and(|existing| Arc::ptr_eq(&existing, session))
+            {
+                *session_guard = Weak::new();
+            }
+        }
+
+        let mut foreground_guard = self.foreground.lock();
+        if foreground_guard
+            .upgrade()
+            .is_some_and(|pg| Arc::ptr_eq(&pg.session(), session))
+        {
+            *foreground_guard = Weak::new();
+            drop(foreground_guard);
+            self.poll_fg.wake();
+        }
     }
 }
 

@@ -1,13 +1,5 @@
 use super::*;
 
-fn bitmap_csum_for_desc_size(superblock: &Ext4Superblock, csum: u32) -> u32 {
-    if superblock.get_desc_size() as usize >= Ext4GroupDesc::EXT4_DESC_SIZE_64BIT {
-        csum
-    } else {
-        csum & 0xFFFF
-    }
-}
-
 impl Ext4FileSystem {
     /// Allocates a contiguous run of data blocks anywhere in the filesystem.
     pub fn alloc_blocks<B: BlockDevice>(
@@ -47,17 +39,14 @@ impl Ext4FileSystem {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
-                let expected = bitmap_csum_for_desc_size(
-                    &self.superblock,
-                    ext4_block_bitmap_csum32(&self.superblock, &bm.data),
-                );
-                let stored = desc.block_bitmap_csum(&self.superblock);
-                if expected != stored {
+                let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
+                let stored = desc.block_bitmap_csum();
+                if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     error!(
                         "alloc_blocks: block bitmap checksum mismatch group={group_idx} \
                          expected={expected:#x} stored={stored:#x}"
                     );
-                    return Err(Ext4Error::checksum().with_operation("alloc_blocks:block_bitmap"));
+                    return Err(Ext4Error::checksum());
                 }
             }
 
@@ -191,13 +180,9 @@ impl Ext4FileSystem {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
-                let expected = bitmap_csum_for_desc_size(
-                    &self.superblock,
-                    ext4_inode_bitmap_csum32(&self.superblock, &bm.data),
-                );
-                let stored = desc.inode_bitmap_csum(&self.superblock);
-                if expected != stored {
-                    return Err(Ext4Error::checksum().with_operation("alloc_inode:inode_bitmap"));
+                let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
+                if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
+                    return Err(Ext4Error::checksum());
                 }
             }
 
@@ -342,24 +327,18 @@ impl Ext4FileSystem {
         let mut did_free = true;
 
         if ext4_superblock_has_metadata_csum(&self.superblock) {
-            let (uninit, stored) = {
+            let (uninit, desc) = {
                 let gdesc = self
                     .get_group_desc(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                (
-                    gdesc.is_block_bitmap_uninit(),
-                    gdesc.block_bitmap_csum(&self.superblock),
-                )
+                (gdesc.is_block_bitmap_uninit(), *gdesc)
             };
             if !uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
-                let expected = bitmap_csum_for_desc_size(
-                    &self.superblock,
-                    ext4_block_bitmap_csum32(&self.superblock, &bm.data),
-                );
-                if expected != stored {
+                let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
+                if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }
@@ -430,24 +409,18 @@ impl Ext4FileSystem {
         let mut did_free = true;
 
         if ext4_superblock_has_metadata_csum(&self.superblock) {
-            let (uninit, stored) = {
+            let (uninit, desc) = {
                 let gdesc = self
                     .get_group_desc(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                (
-                    gdesc.is_inode_bitmap_uninit(),
-                    gdesc.inode_bitmap_csum(&self.superblock),
-                )
+                (gdesc.is_inode_bitmap_uninit(), *gdesc)
             };
             if !uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
-                let expected = bitmap_csum_for_desc_size(
-                    &self.superblock,
-                    ext4_inode_bitmap_csum32(&self.superblock, &bm.data),
-                );
-                if expected != stored {
+                let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
+                if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }

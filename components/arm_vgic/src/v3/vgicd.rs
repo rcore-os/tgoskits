@@ -339,4 +339,4 @@ impl VGicD {
 }
 
 // Todo: move this lock to arceos or axvisor
-static GICD_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+static GICD_LOCK: ax_kspin::SpinNoIrq<()> = ax_kspin::SpinNoIrq::new(());

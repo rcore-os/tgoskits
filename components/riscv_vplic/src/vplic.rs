@@ -4,9 +4,9 @@
 
 use core::option::Option;
 
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use bitmaps::Bitmap;
-use spin::Mutex;
 
 use crate::consts::*;
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.14...ax-hal-v0.5.15) - 2026-05-22
+
+### Added
+
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+
+### Fixed
+
+- *(axvisor)* recover riscv guest memory faults ([#788](https://github.com/rcore-os/tgoskits/pull/788))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.13...ax-hal-v0.5.14) - 2026-05-19
 
 ### Other

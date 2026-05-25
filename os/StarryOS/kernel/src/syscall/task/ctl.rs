@@ -47,6 +47,10 @@ pub fn sys_capget(
 ) -> AxResult<isize> {
     let pid = validate_cap_header(header)?;
 
+    if data.is_null() {
+        return Ok(0);
+    }
+
     let cred = cred_for_pid(pid)?;
     let caps = if cred.euid == 0 { u32::MAX } else { 0 };
     let data_struct = __user_cap_data_struct {
@@ -162,8 +166,23 @@ pub fn sys_prctl(
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
+        PR_SET_NO_NEW_PRIVS => {
+            if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_no_new_privs();
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            return Ok(current().as_thread().no_new_privs() as isize);
+        }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings
+            return Err(AxError::InvalidInput);
+        }
+        PR_SET_VMA => {
+            if arg2 == PR_SET_VMA_ANON_NAME as usize {
+                return Ok(0);
+            }
             return Err(AxError::InvalidInput);
         }
         _ => {

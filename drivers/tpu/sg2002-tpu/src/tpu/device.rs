@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 use super::{
     TDMA_PHYS_BASE, TIU_PHYS_BASE, error::TpuError, platform::TpuRuntimeState, tdma::TdmaRegs,
@@ -80,7 +80,7 @@ struct TpuDeviceInner {
 
 /// SG2002 TPU 设备（仅硬件层）
 pub struct Sg2002Tpu {
-    /// 内部状态 (使用 Mutex 保护)
+    /// 内部状态 (使用自旋锁保护)
     inner: Mutex<TpuDeviceInner>,
     /// 序列号计数器
     seq_counter: AtomicU32,

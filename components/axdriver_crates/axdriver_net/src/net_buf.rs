@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::ptr::NonNull;
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 use crate::{DevError, DevResult};
 

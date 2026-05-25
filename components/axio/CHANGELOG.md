@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.5.6...ax-io-v0.5.7) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.5.5...ax-io-v0.5.6) - 2026-05-19
 
 ### Other

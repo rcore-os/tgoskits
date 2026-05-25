@@ -5,13 +5,13 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use core::sync::atomic::{Ordering as AtomicOrdering, fence};
 
+use ax_kspin::SpinNoIrq as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::{DArray, DeviceDma, DmaDirection, DmaOp};
 use log::{debug, info, warn};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use rdif_eth::{Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 use registers::*;
-use spin::Mutex;
 
 mod descriptor;
 mod registers;

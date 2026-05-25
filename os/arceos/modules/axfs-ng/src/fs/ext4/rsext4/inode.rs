@@ -573,8 +573,12 @@ impl DirNodeOps for Inode {
             if inode_info.is_none() {
                 return Err(VfsError::NotFound);
             }
-            let (_, inode) = inode_info.unwrap();
+            let (_ino, inode) = inode_info.unwrap();
             if inode.is_dir() {
+                let mut dir_inode = inode; // Ext4Inode is Copy
+                if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {
+                    return Err(VfsError::DirectoryNotEmpty);
+                }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
             } else {
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;

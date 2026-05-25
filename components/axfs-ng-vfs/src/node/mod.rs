@@ -244,7 +244,7 @@ impl DirEntry {
             node: Node::File(node),
             node_type,
             reference,
-            user_data: Mutex::default(),
+            user_data: Mutex::new(TypeMap::default()),
         }))
     }
 
@@ -253,7 +253,7 @@ impl DirEntry {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
-            user_data: Mutex::default(),
+            user_data: Mutex::new(TypeMap::default()),
         }))
     }
 

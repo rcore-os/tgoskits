@@ -10,10 +10,10 @@ license = "MIT"
 repository.workspace = true
 
 [dependencies]
+ax-kspin.workspace = true
 dma-api.workspace = true
 log.workspace = true
 mmio-api.workspace = true
 rdif-eth.workspace = true
-spin.workspace = true
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"

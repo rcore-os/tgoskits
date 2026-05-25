@@ -15,7 +15,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 use crate::vmm::VMRef;
 

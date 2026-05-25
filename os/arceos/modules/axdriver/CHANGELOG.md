@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.5.15...ax-driver-v0.5.16) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno, ax-driver-block, axplat-dyn, ax-hal, ax-driver-virtio, ax-alloc, ax-dma
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.5.14...ax-driver-v0.5.15) - 2026-05-19
 
 ### Fixed
