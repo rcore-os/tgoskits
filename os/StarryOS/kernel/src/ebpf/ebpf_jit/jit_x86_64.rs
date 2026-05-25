@@ -503,7 +503,7 @@ pub(crate) struct X86_64Backend;
 impl JitBackend for X86_64Backend {
     fn emit_prologue(buf: &mut JitBuffer) -> usize {
         emit_push(buf, X86_RBP);
-        emit_mov_reg64(buf, X86_RSP, X86_RBP);
+        emit_mov_reg64(buf, X86_RBP, X86_RSP);
         emit_push(buf, X86_RBX);
         emit_push(buf, X86_R13);
         emit_push(buf, X86_R14);
@@ -512,11 +512,7 @@ impl JitBackend for X86_64Backend {
         buf.emit_u8(0x81);
         buf.emit_u8(0xEC);
         buf.emit_u32(512);
-        buf.emit_u8(0x48);
-        buf.emit_u8(0x8D);
-        buf.emit_u8(0x65);
-        buf.emit_u8(0x00);
-        emit_mov_reg64(buf, X86_RDI, X86_RBP);
+        emit_mov_reg64(buf, X86_RBP, X86_RDI);
         buf.offset()
     }
 
@@ -835,8 +831,8 @@ impl JitBackend for X86_64Backend {
                     5
                 } else {
                     let imm_size = if use_imm { 10 } else { 0 };
-                let extra = if op == BPF_JSET { 3 } else { 0 };
-                imm_size + 4 + 6 + extra
+                    let extra = if op == BPF_JSET { 3 } else { 0 };
+                    imm_size + 4 + 6 + extra
                 }
             }
             BPF_ST => {
