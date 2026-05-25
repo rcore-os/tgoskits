@@ -556,12 +556,13 @@ impl JitBackend for Aarch64Backend {
             return;
         }
         let off = insn.off as i32;
+        let base = bpf_to_aa(insn.dst_reg());
         if insn.size() == BPF_DW {
             emit_load_imm64(buf, AA_X17, insn.imm as u64);
         } else {
             emit_load_imm32(buf, AA_X17, insn.imm);
         }
-        emit_addi(buf, AA_X16, AA_X29, off);
+        emit_addi(buf, AA_X16, base, off);
         match insn.size() {
             BPF_B => emit_strb(buf, AA_X17, AA_X16, 0),
             BPF_H => emit_strh(buf, AA_X17, AA_X16, 0),
@@ -576,8 +577,9 @@ impl JitBackend for Aarch64Backend {
             return;
         }
         let off = insn.off as i32;
+        let base = bpf_to_aa(insn.dst_reg());
         let src = bpf_to_aa(insn.src_reg());
-        emit_addi(buf, AA_X16, AA_X29, off);
+        emit_addi(buf, AA_X16, base, off);
         match insn.size() {
             BPF_B => emit_strb(buf, src, AA_X16, 0),
             BPF_H => emit_strh(buf, src, AA_X16, 0),
@@ -613,13 +615,21 @@ impl JitBackend for Aarch64Backend {
     }
 
     fn emit_call(buf: &mut JitBuffer, helper_fn: HelperFn) {
-        emit_load_imm64(buf, AA_X16, helper_fn as u64);
+        emit_subi(buf, AA_SP, AA_SP, 32);
+        emit_stp(buf, AA_X7, AA_X9, AA_SP, 0);
+        emit_stp(buf, AA_X15, AA_X16, AA_SP, 16);
+
+        emit_load_imm64(buf, AA_X17, helper_fn as u64);
         emit_mov(buf, AA_X0, AA_X1);
         emit_mov(buf, AA_X1, AA_X2);
         emit_mov(buf, AA_X2, AA_X3);
         emit_mov(buf, AA_X3, AA_X4);
         emit_mov(buf, AA_X4, AA_X5);
-        emit_blr(buf, AA_X16);
+        emit_blr(buf, AA_X17);
+
+        emit_ldp(buf, AA_X7, AA_X9, AA_SP, 0);
+        emit_ldp(buf, AA_X15, AA_X16, AA_SP, 16);
+        emit_addi(buf, AA_SP, AA_SP, 32);
     }
 
     fn insn_size(insn: &BpfInsn) -> usize {
@@ -641,7 +651,7 @@ impl JitBackend for Aarch64Backend {
                 if op == BPF_EXIT {
                     20
                 } else if op == 0x80 {
-                    40
+                    72
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
                     4
                 } else {
