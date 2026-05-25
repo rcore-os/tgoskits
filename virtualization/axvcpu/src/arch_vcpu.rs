@@ -89,7 +89,11 @@ pub trait AxArchVCpu: Sized {
     fn inject_interrupt(&mut self, vector: usize) -> AxResult;
 
     /// Inject an interrupt with architecture-specific trigger mode metadata.
-    fn inject_interrupt_with_trigger(&mut self, vector: usize, _level_triggered: bool) -> AxResult {
+    fn inject_interrupt_with_trigger(&mut self, vector: usize, level_triggered: bool) -> AxResult {
+        debug_assert!(
+            !level_triggered,
+            "level-triggered interrupt injection requires an architecture-specific implementation"
+        );
         self.inject_interrupt(vector)
     }
 

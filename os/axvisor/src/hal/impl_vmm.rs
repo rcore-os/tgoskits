@@ -26,6 +26,7 @@ impl VmmIf for VmmImpl {
             if vcpu_num >= usize::BITS as usize {
                 usize::MAX
             } else {
+                // The VmmIf contract returns an active-vCPU bitmask, not a count.
                 (1usize << vcpu_num) - 1
             }
         })

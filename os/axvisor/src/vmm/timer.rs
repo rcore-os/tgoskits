@@ -59,7 +59,7 @@ static TIMER_LIST: LazyInit<SpinNoIrq<TimerList<VmmTimerEvent>>> = LazyInit::new
 /// Registers a new timer that will execute at the specified deadline
 ///
 /// # Arguments
-/// - `deadline`: The absolute time in nanoseconds when the timer should trigger
+/// - `deadline`: The absolute monotonic time in nanoseconds when the timer should trigger
 /// - `handler`: The callback function to execute when the timer expires
 ///
 /// # Returns
@@ -76,14 +76,17 @@ where
     );
     // SAFETY: Called from a vCPU task pinned to a physical CPU. TIMER_LIST is
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
-    let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
-    let mut timers = timer_list.lock();
     // The token is only an identifier used for cancellation and does not
     // publish any timer data, so relaxed ordering is sufficient.
     let token = TOKEN.fetch_add(1, Ordering::Relaxed);
-    let event = VmmTimerEvent::new(token, handler);
-    timers.set(TimeValue::from_nanos(deadline), event);
-    rearm_host_timer(&timers);
+    let next_deadline = {
+        let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
+        let mut timers = timer_list.lock();
+        let event = VmmTimerEvent::new(token, handler);
+        timers.set(TimeValue::from_nanos(deadline), event);
+        timers.next_deadline()
+    };
+    rearm_host_timer(next_deadline);
     token
 }
 
@@ -94,16 +97,17 @@ where
 pub fn cancel_timer(token: usize) {
     // SAFETY: Called from a vCPU task pinned to a physical CPU. TIMER_LIST is
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
-    let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
-    let mut timers = timer_list.lock();
-    timers.cancel(|event| event.token == token);
-    rearm_host_timer(&timers);
+    let next_deadline = {
+        let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
+        let mut timers = timer_list.lock();
+        timers.cancel(|event| event.token == token);
+        timers.next_deadline()
+    };
+    rearm_host_timer(next_deadline);
 }
 
 /// Check and process any pending timer events
 pub fn check_events() {
-    // info!("Checking timer events...");
-    // info!("now is {:#?}", ax_hal::time::wall_time());
     // SAFETY: Called from a vCPU task pinned to a physical CPU. TIMER_LIST is
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
@@ -114,14 +118,15 @@ pub fn check_events() {
             trace!("pick one {_deadline:#?} to handle!!!");
             event.callback(now);
         } else {
-            rearm_host_timer(&timer_list.lock());
+            let next_deadline = timer_list.lock().next_deadline();
+            rearm_host_timer(next_deadline);
             break;
         }
     }
 }
 
-fn rearm_host_timer(timers: &TimerList<VmmTimerEvent>) {
-    if let Some(deadline) = timers.next_deadline() {
+fn rearm_host_timer(next_deadline: Option<TimeValue>) {
+    if let Some(deadline) = next_deadline {
         ax_hal::time::set_oneshot_timer(deadline.as_nanos() as u64);
     }
 }

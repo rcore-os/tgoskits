@@ -66,21 +66,25 @@ pub fn init() {
     }
 
     #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-    release_host_filesystem_for_guest_passthrough();
+    release_host_filesystem_for_guest_passthrough().expect(
+        "Failed to release host filesystem before guest passthrough devices take ownership",
+    );
 }
 
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn release_host_filesystem_for_guest_passthrough() {
+fn release_host_filesystem_for_guest_passthrough() -> AxResult {
     use std::os::arceos::modules::ax_fs;
 
-    if vm_list::get_vm_list().is_empty() {
-        return;
+    let release_required = vm_list::get_vm_list()
+        .into_iter()
+        .any(|vm| vm.needs_host_filesystem_release_before_boot());
+    if !release_required {
+        return Ok(());
     }
 
-    match ax_fs::shutdown_filesystems() {
-        Ok(()) => info!("Host filesystem cleanly unmounted before guest passthrough devices start"),
-        Err(err) => warn!("Failed to cleanly unmount host filesystem before guest start: {err:?}"),
-    }
+    ax_fs::shutdown_filesystems()?;
+    info!("Host filesystem cleanly unmounted before guest passthrough devices start");
+    Ok(())
 }
 
 /// Start the VMM.

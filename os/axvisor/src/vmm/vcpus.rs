@@ -621,6 +621,9 @@ fn vcpu_run() {
                 vm.set_vm_status(axvm::VMStatus::Stopped);
                 info!("VM[{}] state changed to Stopped", vm_id);
 
+                #[cfg(target_arch = "x86_64")]
+                disable_x86_ioapic_irq_forwarding_for_vm(vm_id);
+
                 sub_running_vm_count(1);
                 ax_wait_queue_wake(&super::VMM, 1);
             }
@@ -734,6 +737,17 @@ fn enable_x86_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         X86_IOAPIC_VECTOR_END - 1,
         registered
     );
+}
+
+#[cfg(target_arch = "x86_64")]
+fn disable_x86_ioapic_irq_forwarding_for_vm(vm_id: usize) {
+    if X86_IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) != vm_id {
+        return;
+    }
+
+    X86_IOAPIC_IRQ_FORWARD_VM_ID.store(usize::MAX, Ordering::Release);
+    X86_IOAPIC_IRQ_FORWARD_VCPU_ID.store(usize::MAX, Ordering::Release);
+    X86_IOAPIC_IRQ_PENDING.store(0, Ordering::Release);
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -51,6 +51,10 @@ const E820_TYPE_RESERVED: u32 = 2;
 const LEGACY_RESERVED_START: usize = 0x000a_0000;
 const LEGACY_RESERVED_SIZE: usize = 0x0006_0000;
 
+// The x86 Linux bring-up path still relies on these default boot parameters to keep the
+// guest on the currently supported surface: ACPI and MSI are disabled, x2APIC and TSC deadline
+// timer are avoided, TSC is marked unstable, and AHCI/i8042 init is skipped until the x86 timer,
+// IRQ routing, and device-topology support are complete.
 pub const DEFAULT_COMMAND_LINE: &str = concat!(
     "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty ",
     "acpi=off pci=conf1 pci=nomsi nox2apic ",

@@ -211,6 +211,15 @@ impl AxVM {
         self.inner_mut.lock().config.interrupt_mode()
     }
 
+    /// Returns whether this VM loads its images from the host filesystem and maps passthrough
+    /// devices that can require exclusive ownership after VM start.
+    pub fn needs_host_filesystem_release_before_boot(&self) -> bool {
+        let inner_mut = self.inner_mut.lock();
+        inner_mut.config.images_loaded_from_filesystem()
+            && (!inner_mut.config.pass_through_devices().is_empty()
+                || !inner_mut.config.pass_through_addresses().is_empty())
+    }
+
     /// Sets up the VM before booting.
     pub fn init(&self) -> AxResult {
         let mut inner_mut = self.inner_mut.lock();
