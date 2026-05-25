@@ -631,8 +631,8 @@ impl JitBackend for Aarch64Backend {
                 let alu_op = insn.alu_op();
                 let imm_size = if use_imm { 16 } else { 4 };
                 match alu_op {
-                    BPF_DIV => imm_size + 12,
-                    BPF_MOD => imm_size + 16,
+                    BPF_DIV => imm_size + 16,
+                    BPF_MOD => imm_size + 20,
                     _ => imm_size,
                 }
             }
@@ -641,13 +641,16 @@ impl JitBackend for Aarch64Backend {
                 if op == BPF_EXIT {
                     20
                 } else if op == 0x80 {
-                    8 + 16 + 4
+                    40
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
                     4
                 } else {
                     let cmp_size = if use_imm { 16 } else { 4 };
-                    let extra = if op == BPF_JSET { 4 } else { 0 };
-                    cmp_size + 4 + extra
+                    if op == BPF_JSET {
+                        cmp_size + 12
+                    } else {
+                        cmp_size + 8
+                    }
                 }
             }
             BPF_ST => {
