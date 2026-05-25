@@ -9,7 +9,7 @@ axbacktrace
 axdevice
 axdevice_base
 ax-errno
-axfs-ng-vfs
+ax-fs-vfs
 axhvc
 ax-io
 axklib
