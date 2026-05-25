@@ -47,33 +47,19 @@ fn workspace_package_names(metadata: &Metadata) -> HashSet<String> {
         .collect()
 }
 
-/// A package entry from the std-crates CSV, with optional feature flags.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TestPackage {
-    name: String,
-    /// Feature names to pass via `--features`. Empty means no `--features` flag.
-    features: Vec<String>,
-}
-
 fn load_std_crates(
     csv_path: &Path,
     known_packages: &HashSet<String>,
-) -> anyhow::Result<Vec<TestPackage>> {
+) -> anyhow::Result<Vec<String>> {
     let contents = fs::read_to_string(csv_path)
         .with_context(|| format!("failed to read {}", csv_path.display()))?;
     parse_std_crates_csv(&contents, known_packages)
 }
 
-/// Parse the std-crates CSV.
-///
-/// Each data line may be either `package` or `package,feat1,feat2,...`.  The
-/// first field must be a known workspace package name; any remaining
-/// comma-separated fields are treated as Cargo feature names passed via
-/// `--features` when the test is run.
 fn parse_std_crates_csv(
     contents: &str,
     known_packages: &HashSet<String>,
-) -> anyhow::Result<Vec<TestPackage>> {
+) -> anyhow::Result<Vec<String>> {
     let mut lines = contents.lines().enumerate().filter_map(|(idx, raw)| {
         let line = raw.trim();
         (!line.is_empty()).then_some((idx + 1, line))
@@ -93,18 +79,7 @@ fn parse_std_crates_csv(
 
     let mut packages = Vec::new();
     let mut seen = HashSet::new();
-    for (line_no, line) in lines {
-        let mut fields = line.splitn(2, ',');
-        let package = fields.next().unwrap_or("").trim();
-        let features: Vec<String> = fields
-            .next()
-            .unwrap_or("")
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect();
-
+    for (line_no, package) in lines {
         if !known_packages.contains(package) {
             bail!(
                 "unknown workspace package `{}` at line {}",
@@ -115,43 +90,35 @@ fn parse_std_crates_csv(
         if !seen.insert(package.to_owned()) {
             bail!("duplicate package `{}` at line {}", package, line_no);
         }
-        packages.push(TestPackage {
-            name: package.to_owned(),
-            features,
-        });
+        packages.push(package.to_owned());
     }
 
     Ok(packages)
 }
 
-fn cargo_test_args(pkg: &TestPackage) -> Vec<String> {
-    let mut args = vec!["test".into(), "-p".into(), pkg.name.clone()];
-    if !pkg.features.is_empty() {
-        args.push("--features".into());
-        args.push(pkg.features.join(","));
-    }
-    args
+fn cargo_test_args(package: &str) -> Vec<String> {
+    vec!["test".into(), "-p".into(), package.into()]
 }
 
 fn run_std_tests<R: CargoRunner>(
     runner: &mut R,
     workspace_root: &Path,
-    packages: &[TestPackage],
+    packages: &[String],
 ) -> anyhow::Result<Vec<String>> {
     let mut failed = Vec::new();
 
-    for (index, pkg) in packages.iter().enumerate() {
+    for (index, package) in packages.iter().enumerate() {
         println!(
             "[{}/{}] cargo {}",
             index + 1,
             packages.len(),
-            cargo_test_args(pkg).join(" ")
+            cargo_test_args(package).join(" ")
         );
-        if runner.run_test(workspace_root, pkg)? {
-            println!("ok: {}", pkg.name);
+        if runner.run_test(workspace_root, package)? {
+            println!("ok: {}", package);
         } else {
-            eprintln!("failed: {}", pkg.name);
-            failed.push(pkg.name.clone());
+            eprintln!("failed: {}", package);
+            failed.push(package.clone());
         }
     }
 
@@ -159,14 +126,14 @@ fn run_std_tests<R: CargoRunner>(
 }
 
 trait CargoRunner {
-    fn run_test(&mut self, workspace_root: &Path, pkg: &TestPackage) -> anyhow::Result<bool>;
+    fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool>;
 }
 
 struct ProcessCargoRunner;
 
 impl CargoRunner for ProcessCargoRunner {
-    fn run_test(&mut self, workspace_root: &Path, pkg: &TestPackage) -> anyhow::Result<bool> {
-        let args = cargo_test_args(pkg);
+    fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool> {
+        let args = cargo_test_args(package);
         run_cargo_status(workspace_root, &args)
     }
 }
@@ -203,24 +170,10 @@ mod tests {
     }
 
     impl CargoRunner for FakeCargoRunner {
-        fn run_test(&mut self, workspace_root: &Path, pkg: &TestPackage) -> anyhow::Result<bool> {
+        fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool> {
             self.invocations
-                .push((workspace_root.to_path_buf(), pkg.name.clone()));
-            Ok(*self.results.get(&pkg.name).unwrap_or(&true))
-        }
-    }
-
-    fn pkg(name: &str) -> TestPackage {
-        TestPackage {
-            name: name.to_string(),
-            features: vec![],
-        }
-    }
-
-    fn pkg_with_features(name: &str, features: &[&str]) -> TestPackage {
-        TestPackage {
-            name: name.to_string(),
-            features: features.iter().map(|s| s.to_string()).collect(),
+                .push((workspace_root.to_path_buf(), package.to_string()));
+            Ok(*self.results.get(package).unwrap_or(&true))
         }
     }
 
@@ -229,7 +182,7 @@ mod tests {
         let packages =
             parse_std_crates_csv("package\nax-feat\nax-hal\n", &known_packages()).unwrap();
 
-        assert_eq!(packages, vec![pkg("ax-feat"), pkg("ax-hal")]);
+        assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
     }
 
     #[test]
@@ -237,24 +190,7 @@ mod tests {
         let packages =
             parse_std_crates_csv("\npackage\n\nax-feat\n\nax-hal\n", &known_packages()).unwrap();
 
-        assert_eq!(packages, vec![pkg("ax-feat"), pkg("ax-hal")]);
-    }
-
-    #[test]
-    fn parses_std_csv_with_features() {
-        let packages = parse_std_crates_csv(
-            "package\nax-feat,feat-a,feat-b\nax-hal\n",
-            &known_packages(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            packages,
-            vec![
-                pkg_with_features("ax-feat", &["feat-a", "feat-b"]),
-                pkg("ax-hal")
-            ]
-        );
+        assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
     }
 
     #[test]
@@ -304,7 +240,11 @@ mod tests {
     #[test]
     fn std_test_runner_collects_all_failures() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec![pkg("ax-feat"), pkg("ax-hal"), pkg("starry-process")];
+        let packages = vec![
+            "ax-feat".to_string(),
+            "ax-hal".to_string(),
+            "starry-process".to_string(),
+        ];
         let mut runner = FakeCargoRunner::new(&[
             ("ax-feat", true),
             ("ax-hal", false),
@@ -330,32 +270,11 @@ mod tests {
     #[test]
     fn std_test_runner_returns_empty_failures_when_all_pass() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec![pkg("ax-feat"), pkg("ax-hal")];
+        let packages = vec!["ax-feat".to_string(), "ax-hal".to_string()];
         let mut runner = FakeCargoRunner::new(&[("ax-feat", true), ("ax-hal", true)]);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert!(failed.is_empty());
-    }
-
-    #[test]
-    fn cargo_test_args_without_features() {
-        let p = pkg("ax-hal");
-        assert_eq!(cargo_test_args(&p), vec!["test", "-p", "ax-hal"]);
-    }
-
-    #[test]
-    fn cargo_test_args_with_features() {
-        let p = pkg_with_features("ax-task", &["multitask", "sched-fifo", "test"]);
-        assert_eq!(
-            cargo_test_args(&p),
-            vec![
-                "test",
-                "-p",
-                "ax-task",
-                "--features",
-                "multitask,sched-fifo,test"
-            ]
-        );
     }
 }
