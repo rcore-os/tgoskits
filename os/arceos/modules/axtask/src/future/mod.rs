@@ -43,7 +43,14 @@ impl Wake for AxWaker {
         if let Some(task) = self.task.upgrade() {
             let mut rq = select_run_queue::<NoPreemptIrqSave>(&task);
             *self.woke.lock() = true;
-            rq.unblock_task(task, false);
+            // Pass resched=true so set_preempt_pending() is called when the
+            // task is moved back to ready.  Without this an async I/O wake
+            // sits behind one full timer tick of the currently running task
+            // before it can run, which manifests as latency spikes on the
+            // user→tty→TUI hop (any extra keystroke-to-redraw step adds
+            // ~10 ms).  Making the wake preemptive collapses that hop to
+            // the scheduler's next safe preemption point (microseconds).
+            rq.unblock_task(task, true);
         }
     }
 }
