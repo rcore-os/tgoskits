@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::VecDeque, format, sync::Arc};
 use core::{alloc::Layout, cmp, ptr::NonNull, time::Duration};
 
-use dma_api::{DmaAddr, DmaHandle, DmaOp};
+use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
 use ixgbe_driver::{
     INTEL_82599, INTEL_VEND, IxgbeDevice, IxgbeError, IxgbeHal, IxgbeNetBuf, MemPool, NicDevice,
     PhysAddr,
@@ -279,8 +279,9 @@ unsafe impl IxgbeHal for IxgbeOsHal {
     fn dma_alloc(size: usize) -> (PhysAddr, NonNull<u8>) {
         let layout =
             Layout::from_size_align(size.max(1), 0x1000).expect("ixgbe DMA layout should be valid");
-        let handle = unsafe { axklib::dma::op().alloc_coherent(DMA_MASK, layout) }
-            .expect("ixgbe DMA allocation failed");
+        let handle =
+            unsafe { axklib::dma::op().alloc_coherent(DmaConstraints::new(DMA_MASK), layout) }
+                .expect("ixgbe DMA allocation failed");
         let paddr = handle.dma_addr().as_u64() as usize;
         let vaddr = handle.as_ptr();
         (paddr, vaddr)
@@ -290,7 +291,7 @@ unsafe impl IxgbeHal for IxgbeOsHal {
         let Ok(layout) = Layout::from_size_align(size.max(1), 0x1000) else {
             return -1;
         };
-        let handle = unsafe { DmaHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
+        let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
         unsafe { axklib::dma::op().dealloc_coherent(handle) };
         0
     }

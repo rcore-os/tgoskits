@@ -6,7 +6,7 @@ use core::time::Duration;
 #[cfg(target_os = "none")]
 use crab_usb::USBHost;
 #[cfg(target_os = "none")]
-use dma_api::{DmaDirection, DmaError, DmaHandle, DmaMapHandle, DmaOp};
+use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
 use rdrive::DriverGeneric;
 
 #[cfg(all(feature = "rockchip-dwc-xhci", target_os = "none"))]
@@ -28,19 +28,42 @@ impl DmaOp for UsbKernel {
         axklib::dma::op().page_size()
     }
 
-    unsafe fn map_single(
+    unsafe fn alloc_contiguous(
         &self,
-        dma_mask: u64,
-        addr: core::ptr::NonNull<u8>,
-        size: core::num::NonZeroUsize,
-        align: usize,
-        direction: DmaDirection,
-    ) -> Result<DmaMapHandle, DmaError> {
-        unsafe { axklib::dma::op().map_single(dma_mask, addr, size, align, direction) }
+        constraints: DmaConstraints,
+        layout: core::alloc::Layout,
+    ) -> Option<DmaAllocHandle> {
+        unsafe { axklib::dma::op().alloc_contiguous(constraints, layout) }
     }
 
-    unsafe fn unmap_single(&self, handle: DmaMapHandle) {
-        unsafe { axklib::dma::op().unmap_single(handle) }
+    unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+        unsafe { axklib::dma::op().dealloc_contiguous(handle) }
+    }
+
+    unsafe fn alloc_coherent(
+        &self,
+        constraints: DmaConstraints,
+        layout: core::alloc::Layout,
+    ) -> Option<DmaAllocHandle> {
+        unsafe { axklib::dma::op().alloc_coherent(constraints, layout) }
+    }
+
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+        unsafe { axklib::dma::op().dealloc_coherent(handle) }
+    }
+
+    unsafe fn map_streaming(
+        &self,
+        constraints: DmaConstraints,
+        addr: core::ptr::NonNull<u8>,
+        size: core::num::NonZeroUsize,
+        direction: DmaDirection,
+    ) -> Result<DmaMapHandle, DmaError> {
+        unsafe { axklib::dma::op().map_streaming(constraints, addr, size, direction) }
+    }
+
+    unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
+        unsafe { axklib::dma::op().unmap_streaming(handle) }
     }
 
     fn flush(&self, addr: core::ptr::NonNull<u8>, size: usize) {
@@ -55,36 +78,44 @@ impl DmaOp for UsbKernel {
         axklib::dma::op().flush_invalidate(addr, size);
     }
 
-    fn prepare_read(
+    fn sync_alloc_for_device(
+        &self,
+        handle: &DmaAllocHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        axklib::dma::op().sync_alloc_for_device(handle, offset, size, direction);
+    }
+
+    fn sync_alloc_for_cpu(
+        &self,
+        handle: &DmaAllocHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        axklib::dma::op().sync_alloc_for_cpu(handle, offset, size, direction);
+    }
+
+    fn sync_map_for_device(
         &self,
         handle: &DmaMapHandle,
         offset: usize,
         size: usize,
         direction: DmaDirection,
     ) {
-        axklib::dma::op().prepare_read(handle, offset, size, direction);
+        axklib::dma::op().sync_map_for_device(handle, offset, size, direction);
     }
 
-    fn confirm_write(
+    fn sync_map_for_cpu(
         &self,
         handle: &DmaMapHandle,
         offset: usize,
         size: usize,
         direction: DmaDirection,
     ) {
-        axklib::dma::op().confirm_write(handle, offset, size, direction);
-    }
-
-    unsafe fn alloc_coherent(
-        &self,
-        dma_mask: u64,
-        layout: core::alloc::Layout,
-    ) -> Option<DmaHandle> {
-        unsafe { axklib::dma::op().alloc_coherent(dma_mask, layout) }
-    }
-
-    unsafe fn dealloc_coherent(&self, handle: DmaHandle) {
-        unsafe { axklib::dma::op().dealloc_coherent(handle) }
+        axklib::dma::op().sync_map_for_cpu(handle, offset, size, direction);
     }
 }
 

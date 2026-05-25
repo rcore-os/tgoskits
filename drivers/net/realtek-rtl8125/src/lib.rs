@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
 use descriptor::{RING_END, RxDesc, TxDesc};
-use dma_api::{DeviceDma, DmaDirection, DmaOp};
+use dma_api::{DeviceDma, DmaOp};
 use log::info;
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
@@ -228,7 +228,7 @@ impl Interface for Rtl8125 {
 
         let mut desc = self
             .dma
-            .array_zero_with_align::<TxDesc>(QUEUE_SIZE, DMA_ALIGN, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, DMA_ALIGN)
             .ok()?;
         desc.set(
             QUEUE_SIZE - 1,
@@ -267,7 +267,7 @@ impl Interface for Rtl8125 {
 
         let desc = self
             .dma
-            .array_zero_with_align::<RxDesc>(QUEUE_SIZE, DMA_ALIGN, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align::<RxDesc>(QUEUE_SIZE, DMA_ALIGN)
             .ok()?;
 
         {

@@ -228,12 +228,15 @@ impl Nvme {
         cmd.cdw0 = CommandSet::cdw0_from_opcode(command::Opcode::IDENTIFY);
         cmd.cdw10 = T::CNS;
 
-        let buff =
-            self.dma
-                .array_zero_with_align::<u8>(0x1000, 0x1000, DmaDirection::FromDevice)?;
+        let buff = self.dma.contiguous_array_zero_with_align::<u8>(
+            0x1000,
+            0x1000,
+            DmaDirection::FromDevice,
+        )?;
         cmd.prp1 = buff.dma_addr().as_u64();
 
         self.admin_queue.command_sync(*cmd)?;
+        buff.sync_for_cpu_all();
 
         let data: Vec<u8> = buff.iter().collect();
         let res = want.parse(&data);
@@ -251,12 +254,13 @@ impl Nvme {
             "buffer size must be multiple of lba size"
         );
 
-        let mut dma_buff = self.dma.array_zero_with_align::<u8>(
+        let mut dma_buff = self.dma.contiguous_array_zero_with_align::<u8>(
             buff.len(),
             ns.lba_size,
             DmaDirection::ToDevice,
         )?;
         dma_buff.copy_from_slice(buff);
+        dma_buff.sync_for_device_all();
 
         let blk_num = dma_buff.len() / ns.lba_size;
 
@@ -283,7 +287,7 @@ impl Nvme {
             "buffer size must be multiple of lba size"
         );
 
-        let dma_buff = self.dma.array_zero_with_align::<u8>(
+        let dma_buff = self.dma.contiguous_array_zero_with_align::<u8>(
             buff.len(),
             ns.lba_size,
             DmaDirection::FromDevice,
@@ -299,6 +303,7 @@ impl Nvme {
         );
 
         self.io_queues[0].command_sync(cmd)?;
+        dma_buff.sync_for_cpu_all();
 
         for (index, value) in dma_buff.iter().enumerate() {
             buff[index] = value;

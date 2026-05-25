@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::mem::size_of;
 
-use dma_api::{DArray, DeviceDma, DmaDirection, DmaOp};
+use dma_api::{CoherentArray, DeviceDma, DmaOp};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use rdif_eth::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 
@@ -84,7 +84,7 @@ impl Interface for E1000 {
 
         let desc = self
             .dma
-            .array_zero_with_align::<TxDesc>(QUEUE_SIZE, 16, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, 16)
             .ok()?;
 
         let desc_base = desc.dma_addr().as_u64();
@@ -121,7 +121,7 @@ impl Interface for E1000 {
 
         let desc = self
             .dma
-            .array_zero_with_align::<RxDesc>(QUEUE_SIZE, 16, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align::<RxDesc>(QUEUE_SIZE, 16)
             .ok()?;
 
         let desc_base = desc.dma_addr().as_u64();
@@ -180,7 +180,7 @@ impl Interface for E1000 {
 
 struct E1000TxQueue {
     regs: Regs,
-    desc: DArray<TxDesc>,
+    desc: CoherentArray<TxDesc>,
     dma_mask: u64,
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,
@@ -239,7 +239,7 @@ impl ITxQueue for E1000TxQueue {
 
 struct E1000RxQueue {
     regs: Regs,
-    desc: DArray<RxDesc>,
+    desc: CoherentArray<RxDesc>,
     dma_mask: u64,
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,

@@ -1,4 +1,4 @@
-use core::{alloc::Layout, cmp::PartialOrd, ops::Deref, ptr::NonNull};
+use core::{alloc::Layout, cmp::PartialOrd, ptr::NonNull};
 
 use derive_more::{
     Add, AddAssign, Debug, Display, Div, From, Into, Mul, MulAssign, Sub, SubAssign,
@@ -49,30 +49,52 @@ impl PartialOrd<u64> for DmaAddr {
     }
 }
 
-/// 物理地址类型
-#[derive(Debug, Display, Clone, Copy, PartialEq, Eq, Hash, From, Into, Add, Mul, Sub)]
-#[debug("{}", format_args!("{_0:#X}"))]
-#[display("{}", format_args!("{_0:#X}"))]
-pub struct PhysAddr(u64);
+/// Device-visible DMA constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaConstraints {
+    pub addr_mask: u64,
+    pub align: usize,
+    pub boundary: Option<usize>,
+    pub max_segment_size: Option<usize>,
+}
 
-impl PhysAddr {
-    pub fn as_u64(&self) -> u64 {
-        self.0
+impl DmaConstraints {
+    pub const fn new(addr_mask: u64) -> Self {
+        Self {
+            addr_mask,
+            align: 1,
+            boundary: None,
+            max_segment_size: None,
+        }
+    }
+
+    pub fn with_align(mut self, align: usize) -> Self {
+        self.align = align.max(1);
+        self
+    }
+
+    pub fn with_boundary(mut self, boundary: usize) -> Self {
+        self.boundary = Some(boundary.max(1));
+        self
+    }
+
+    pub fn with_max_segment_size(mut self, max_segment_size: usize) -> Self {
+        self.max_segment_size = Some(max_segment_size);
+        self
     }
 }
 
-/// DMA 传输方向
+/// DMA transfer direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DmaDirection {
-    /// 数据从 CPU 传输到设备 (DMA_TO_DEVICE)
+    /// CPU writes, device reads.
     ToDevice,
-    /// 数据从设备传输到 CPU (DMA_FROM_DEVICE)
+    /// Device writes, CPU reads.
     FromDevice,
-    /// 双向传输 (DMA_BIDIRECTIONAL)
+    /// CPU and device may both read/write.
     Bidirectional,
 }
 
-/// DMA 错误类型
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum DmaError {
     #[error("DMA allocation failed")]
@@ -83,49 +105,43 @@ pub enum DmaError {
     DmaMaskNotMatch { addr: DmaAddr, mask: u64 },
     #[error("DMA align mismatch: required={required:#X}, but address={address}")]
     AlignMismatch { required: usize, address: DmaAddr },
+    #[error("DMA segment size {size:#X} exceeds max segment size {max:#X}")]
+    SegmentTooLarge { size: usize, max: usize },
+    #[error("DMA address range crosses boundary {boundary:#X}: addr={addr}, size={size:#X}")]
+    BoundaryCross {
+        addr: DmaAddr,
+        size: usize,
+        boundary: usize,
+    },
     #[error("Null pointer provided for DMA mapping")]
     NullPointer,
     #[error("Zero-sized buffer cannot be used for DMA")]
     ZeroSizedBuffer,
 }
 
-/// Handle for DMA memory allocation.
+/// Marker for plain data that can be safely stored in typed DMA buffers.
 ///
-/// Manages DMA memory buffers that may require special alignment or DMA address mask
-/// constraints. When the original virtual address doesn't meet alignment or mask
-/// requirements, an additional aligned buffer is allocated and stored in `alloc_virt`.
+/// # Safety
+///
+/// Implementors must be `Copy`, have no invalid all-zero bit pattern, and must
+/// not own resources or references whose validity can be broken by raw device
+/// writes.
+pub unsafe trait DmaPod: Copy {}
+
+unsafe impl<T: Copy> DmaPod for T {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DmaHandle {
-    /// Original virtual address provided by the user
+pub struct DmaAllocHandle {
     pub(crate) cpu_addr: NonNull<u8>,
-    /// DMA address visible to devices
     pub(crate) dma_addr: DmaAddr,
-    /// Memory layout specification (size and alignment)
     pub(crate) layout: Layout,
-    // /// Additional allocated virtual address if the original doesn't satisfy
-    // /// alignment or DMA mask requirements when mapping for DMA.
-    // pub(crate) map_alloc_virt: Option<NonNull<u8>>,
 }
 
-impl DmaHandle {
-    /// 为 `alloc_coherent` 操作创建 `DmaHandle`。
-    ///
-    /// 此构造函数专门用于 DMA 一致性内存分配场景，其中：
-    /// - 内存是专门为 DMA 分配的（零初始化）
-    /// - CPU 和设备看到同一个虚拟地址
-    /// - 不需要额外的对齐缓冲区
-    ///
-    /// # 特性保证
-    ///
-    /// - 内存已被零初始化
-    ///
+impl DmaAllocHandle {
     /// # Safety
     ///
-    /// 调用者必须确保：
-    /// - `origin_virt` 指向有效内存，生命周期与 handle 相同
-    /// - `dma_addr` 是与 `origin_virt` 对应的设备可访问地址
-    /// - `layout` 正确描述内存的大小和对齐
-    /// - 内存必须保持有效直到被正确释放
+    /// `cpu_addr` must point to a live allocation described by `layout`, and
+    /// `dma_addr` must be the device-visible address for that allocation.
     pub unsafe fn new(cpu_addr: NonNull<u8>, dma_addr: DmaAddr, layout: Layout) -> Self {
         Self {
             cpu_addr,
@@ -134,27 +150,22 @@ impl DmaHandle {
         }
     }
 
-    /// Returns the size of the DMA buffer in bytes.
     pub fn size(&self) -> usize {
         self.layout.size()
     }
 
-    /// Returns the alignment requirement of the DMA buffer in bytes.
     pub fn align(&self) -> usize {
         self.layout.align()
     }
 
-    /// Returns the virtual address to access data.
     pub fn as_ptr(&self) -> NonNull<u8> {
         self.cpu_addr
     }
 
-    /// Returns the DMA address visible to devices.
     pub fn dma_addr(&self) -> DmaAddr {
         self.dma_addr
     }
 
-    /// Returns the memory layout used for this DMA allocation.
     pub fn layout(&self) -> Layout {
         self.layout
     }
@@ -162,57 +173,53 @@ impl DmaHandle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DmaMapHandle {
-    pub(crate) handle: DmaHandle,
-    pub(crate) map_alloc_virt: Option<NonNull<u8>>,
-}
-
-impl Deref for DmaMapHandle {
-    type Target = DmaHandle;
-    fn deref(&self) -> &Self::Target {
-        &self.handle
-    }
+    pub(crate) cpu_addr: NonNull<u8>,
+    pub(crate) dma_addr: DmaAddr,
+    pub(crate) layout: Layout,
+    pub(crate) bounce_ptr: Option<NonNull<u8>>,
 }
 
 impl DmaMapHandle {
-    /// 为 `map_single` 操作创建 `DmaMapHandle`。
-    ///
-    /// 此构造函数用于将现有缓冲区映射为 DMA 可访问的场景，其中：
-    /// - 缓冲区可能已经存在于用户空间
-    /// - 如果原地址不满足对齐或掩码要求，会分配额外的对齐缓冲区
-    /// - `alloc_virt` 存储额外的对齐缓冲区地址（如果分配了）
-    ///
-    /// # 特性保证
-    ///
-    /// - 如果原地址满足要求，`alloc_virt` 为 `None`
-    /// - 如果分配了对齐缓冲区，`alloc_virt` 包含其地址
-    ///
     /// # Safety
     ///
-    /// 调用者必须确保：
-    /// - `cpu_addr` 指向有效内存，生命周期与 handle 相同
-    /// - `dma_addr` 是与 `cpu_addr` 对应的设备可访问地址
-    /// - `layout` 正确描述内存的大小和对齐
-    /// - `alloc_virt`（如果提供）必须指向有效分配的内存
-    /// - 内存必须保持有效直到 `unmap_single` 被调用
-    /// - 必须与 `DmaOp::unmap_single` 配对使用以防止内存泄漏
+    /// `cpu_addr` must point to the caller-owned mapped buffer for the mapping
+    /// lifetime. `bounce_ptr`, when present, must point to a live bounce buffer
+    /// described by `layout`.
     pub unsafe fn new(
         cpu_addr: NonNull<u8>,
         dma_addr: DmaAddr,
         layout: Layout,
-        alloc_virt: Option<NonNull<u8>>,
+        bounce_ptr: Option<NonNull<u8>>,
     ) -> Self {
-        let handle = DmaHandle {
+        Self {
             cpu_addr,
             dma_addr,
             layout,
-        };
-        Self {
-            handle,
-            map_alloc_virt: alloc_virt,
+            bounce_ptr,
         }
     }
 
-    pub fn alloc_virt(&self) -> Option<NonNull<u8>> {
-        self.map_alloc_virt
+    pub fn size(&self) -> usize {
+        self.layout.size()
+    }
+
+    pub fn align(&self) -> usize {
+        self.layout.align()
+    }
+
+    pub fn as_ptr(&self) -> NonNull<u8> {
+        self.cpu_addr
+    }
+
+    pub fn dma_addr(&self) -> DmaAddr {
+        self.dma_addr
+    }
+
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    pub fn bounce_ptr(&self) -> Option<NonNull<u8>> {
+        self.bounce_ptr
     }
 }

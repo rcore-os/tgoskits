@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use dma_api::{DArray, DmaDirection};
+use dma_api::{CoherentArray, DmaDirection};
 use mbarrier::mb;
 use xhci::ring::trb::{Link, command, transfer};
 
@@ -16,7 +16,7 @@ pub(crate) const TRB_SIZE: usize = size_of::<TrbData>();
 pub(crate) const TRBS_PER_SEGMENT: usize = 256;
 const DEFAULT_RING_PAGES: usize = 2;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct TrbData([u32; TRB_LEN]);
 
@@ -42,7 +42,7 @@ impl From<transfer::Allowed> for TrbData {
 
 pub struct Ring {
     link: bool,
-    pub trbs: DArray<TrbData>,
+    pub trbs: CoherentArray<TrbData>,
     pub i: usize,
     pub cycle: bool,
 }
@@ -57,7 +57,8 @@ impl Ring {
         direction: DmaDirection,
         dma: &Kernel,
     ) -> core::result::Result<Self, HostError> {
-        let trbs = dma.array_zero_with_align(len, dma.page_size(), direction)?;
+        let _ = direction;
+        let trbs = dma.coherent_array_zero_with_align(len, dma.page_size())?;
 
         Ok(Self {
             link,

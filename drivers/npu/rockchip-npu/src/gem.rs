@@ -1,6 +1,6 @@
 use alloc::collections::btree_map::BTreeMap;
 
-use dma_api::{DArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 
 use crate::{
     RknpuError,
@@ -9,7 +9,7 @@ use crate::{
 
 pub struct GemPool {
     dma: DeviceDma,
-    pool: BTreeMap<u32, DArray<u8>>,
+    pool: BTreeMap<u32, ContiguousArray<u8>>,
     handle_counter: u32,
 }
 
@@ -25,7 +25,11 @@ impl GemPool {
     pub fn create(&mut self, args: &mut RknpuMemCreate) -> Result<(), RknpuError> {
         let data = self
             .dma
-            .array_zero_with_align::<u8>(args.size as _, 0x1000, DmaDirection::Bidirectional)
+            .contiguous_array_zero_with_align::<u8>(
+                args.size as _,
+                0x1000,
+                DmaDirection::Bidirectional,
+            )
             .map_err(|_| RknpuError::DmaError)?;
 
         let handle = self.handle_counter;
@@ -80,10 +84,10 @@ impl GemPool {
         }
 
         if args.flags & RKNPU_MEM_SYNC_TO_DEVICE != 0 {
-            data.confirm_write(offset, size);
+            data.sync_for_device(offset, size);
         }
         if args.flags & RKNPU_MEM_SYNC_FROM_DEVICE != 0 {
-            data.prepare_read(offset, size);
+            data.sync_for_cpu(offset, size);
         }
         Ok(())
     }
@@ -94,14 +98,14 @@ impl GemPool {
 
     pub fn comfirm_write_all(&mut self) -> Result<(), RknpuError> {
         for data in self.pool.values_mut() {
-            data.confirm_write_all();
+            data.sync_for_device_all();
         }
         Ok(())
     }
 
     pub fn prepare_read_all(&mut self) -> Result<(), RknpuError> {
         for data in self.pool.values_mut() {
-            data.prepare_read_all();
+            data.sync_for_cpu_all();
         }
         Ok(())
     }

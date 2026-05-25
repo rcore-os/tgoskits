@@ -15,31 +15,49 @@ impl dma_api::DmaOp for ExampleDmaOp {
         4096
     }
 
-    unsafe fn map_single(
+    unsafe fn alloc_contiguous(
         &self,
-        _dma_mask: u64,
+        _constraints: dma_api::DmaConstraints,
+        layout: Layout,
+    ) -> Option<dma_api::DmaAllocHandle> {
+        let ptr = unsafe { alloc_zeroed(layout) };
+        let ptr = NonNull::new(ptr)?;
+        let dma_addr = (ptr.as_ptr() as usize as u64).into();
+        Some(unsafe { dma_api::DmaAllocHandle::new(ptr, dma_addr, layout) })
+    }
+
+    unsafe fn dealloc_contiguous(&self, handle: dma_api::DmaAllocHandle) {
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) }
+    }
+
+    unsafe fn alloc_coherent(
+        &self,
+        _constraints: dma_api::DmaConstraints,
+        layout: Layout,
+    ) -> Option<dma_api::DmaAllocHandle> {
+        let ptr = unsafe { alloc_zeroed(layout) };
+        let ptr = NonNull::new(ptr)?;
+        let dma_addr = (ptr.as_ptr() as usize as u64).into();
+        Some(unsafe { dma_api::DmaAllocHandle::new(ptr, dma_addr, layout) })
+    }
+
+    unsafe fn dealloc_coherent(&self, handle: dma_api::DmaAllocHandle) {
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) }
+    }
+
+    unsafe fn map_streaming(
+        &self,
+        constraints: dma_api::DmaConstraints,
         addr: NonNull<u8>,
         size: NonZeroUsize,
-        align: usize,
         _direction: dma_api::DmaDirection,
     ) -> Result<dma_api::DmaMapHandle, dma_api::DmaError> {
-        let layout = Layout::from_size_align(size.get(), align.max(1))?;
+        let layout = Layout::from_size_align(size.get(), constraints.align.max(1))?;
         let dma_addr = (addr.as_ptr() as usize as u64).into();
         Ok(unsafe { dma_api::DmaMapHandle::new(addr, dma_addr, layout, None) })
     }
 
-    unsafe fn unmap_single(&self, _handle: dma_api::DmaMapHandle) {}
-
-    unsafe fn alloc_coherent(&self, _dma_mask: u64, layout: Layout) -> Option<dma_api::DmaHandle> {
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(ptr)?;
-        let dma_addr = (ptr.as_ptr() as usize as u64).into();
-        Some(unsafe { dma_api::DmaHandle::new(ptr, dma_addr, layout) })
-    }
-
-    unsafe fn dealloc_coherent(&self, handle: dma_api::DmaHandle) {
-        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) }
-    }
+    unsafe fn unmap_streaming(&self, _handle: dma_api::DmaMapHandle) {}
 }
 
 static DMA_OP: ExampleDmaOp = ExampleDmaOp;

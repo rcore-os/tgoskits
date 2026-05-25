@@ -19,7 +19,7 @@ use core::{
     task::Poll,
 };
 
-use dma_api::{DArrayPool, DBuff, DeviceDma, DmaDirection, DmaOp};
+use dma_api::{ContiguousBuffer, ContiguousBufferPool, DeviceDma, DmaDirection, DmaOp};
 use futures::task::AtomicWaker;
 pub use rdif_block::*;
 
@@ -129,7 +129,7 @@ impl Block {
         }
         let layout = Layout::from_size_align(config.size, config.align).ok()?;
         let dma = DeviceDma::new(config.dma_mask, self.inner.dma_op);
-        let pool = dma.new_pool(layout, DmaDirection::FromDevice, capacity);
+        let pool = dma.contiguous_buffer_pool(layout, DmaDirection::FromDevice, capacity);
         let waker = self.inner.queue_waker_map.register(queue_id);
         drop(irq_guard);
 
@@ -166,7 +166,7 @@ impl IrqHandler {
 pub struct CmdQueue {
     interface: Box<dyn IQueue>,
     waker: Arc<AtomicWaker>,
-    pool: DArrayPool,
+    pool: ContiguousBufferPool,
     buffer_size: usize,
 }
 
@@ -174,7 +174,7 @@ impl CmdQueue {
     fn new(
         interface: Box<dyn IQueue>,
         waker: Arc<AtomicWaker>,
-        pool: DArrayPool,
+        pool: ContiguousBufferPool,
         buffer_size: usize,
     ) -> Self {
         Self {
@@ -250,14 +250,14 @@ impl CmdQueue {
 
 pub struct BlockData {
     block_id: usize,
-    data: DBuff,
+    data: ContiguousBuffer,
     len: usize,
 }
 
 pub struct ReadFuture<'a> {
     queue: &'a mut CmdQueue,
     req_ls: Vec<(usize, usize)>,
-    requested: BTreeMap<usize, Option<(DBuff, usize)>>,
+    requested: BTreeMap<usize, Option<(ContiguousBuffer, usize)>>,
     map: BTreeMap<usize, RequestId>,
     results: BTreeMap<usize, Result<BlockData, BlkError>>,
 }
@@ -305,6 +305,7 @@ impl<'a> core::future::Future for ReadFuture<'a> {
                         kind,
                     }) {
                         Ok(req_id) => {
+                            buff.sync_for_device_all();
                             this.map.insert(blk_id, req_id);
                             this.requested.insert(blk_id, Some((buff, len)));
                         }
@@ -335,6 +336,7 @@ impl<'a> core::future::Future for ReadFuture<'a> {
                     let (data, len) = buff
                         .take()
                         .expect("DMA read buffer should exist until completion");
+                    data.sync_for_cpu_all();
                     this.results.insert(
                         *blk_id,
                         Ok(BlockData {
@@ -506,7 +508,7 @@ fn block_ranges(
 mod tests {
     use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 
-    use dma_api::{DmaError, DmaHandle, DmaMapHandle};
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaError, DmaMapHandle};
 
     use super::*;
 
@@ -519,29 +521,46 @@ mod tests {
             4096
         }
 
-        unsafe fn map_single(
+        unsafe fn alloc_contiguous(
             &self,
-            _dma_mask: u64,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr)?;
+            Some(unsafe { DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            unsafe { std::alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr)?;
+            Some(unsafe { DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+            unsafe { std::alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            constraints: DmaConstraints,
             addr: NonNull<u8>,
             size: NonZeroUsize,
-            _align: usize,
             _direction: DmaDirection,
         ) -> Result<DmaMapHandle, DmaError> {
-            let layout = Layout::from_size_align(size.get(), 8)?;
+            let layout = Layout::from_size_align(size.get(), constraints.align.max(1))?;
             Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
         }
 
-        unsafe fn unmap_single(&self, _handle: DmaMapHandle) {}
-
-        unsafe fn alloc_coherent(&self, _dma_mask: u64, layout: Layout) -> Option<DmaHandle> {
-            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-            let ptr = NonNull::new(ptr)?;
-            Some(unsafe { DmaHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
-        }
-
-        unsafe fn dealloc_coherent(&self, handle: DmaHandle) {
-            unsafe { std::alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
-        }
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
     }
 
     struct TestBlock {

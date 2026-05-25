@@ -44,7 +44,7 @@ impl rd_block::Interface for SdBlockDevice {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
                 id: 0,
-                dma: axklib::dma::device(u32::MAX as u64),
+                dma: axklib::dma::device_with_mask(u32::MAX as u64),
                 slot: BlockRequestSlot::default(),
                 pending: None,
                 completed: Vec::new(),

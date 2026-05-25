@@ -1,8 +1,6 @@
-//! 测试辅助工具模块
-//!
-//! 提供用于跟踪和验证 DMA 操作的辅助工具
-
 use std::{
+    alloc::{alloc_zeroed, dealloc},
+    collections::HashMap,
     num::NonZeroUsize,
     ptr::NonNull,
     sync::{Arc, Mutex},
@@ -10,210 +8,347 @@ use std::{
 
 use dma_api::*;
 
-/// DMA 操作记录
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DmaOperation {
-    /// Flush 操作 (写回缓存到内存)
-    Flush { addr: usize, size: usize },
-    /// Invalidate 操作 (使缓存无效)
-    Invalidate { addr: usize, size: usize },
-    /// MapSingle 操作
-    MapSingle {
+    AllocContiguous {
+        size: usize,
+        align: usize,
+        mask: u64,
+    },
+    DeallocContiguous {
+        size: usize,
+    },
+    AllocCoherent {
+        size: usize,
+        align: usize,
+        mask: u64,
+    },
+    DeallocCoherent {
+        size: usize,
+    },
+    MapStreaming {
         virt_addr: usize,
+        size: usize,
+        align: usize,
+        direction: DmaDirection,
+        mask: u64,
+    },
+    UnmapStreaming {
+        size: usize,
+    },
+    SyncAllocForDevice {
+        addr: usize,
         size: usize,
         direction: DmaDirection,
     },
-    /// UnmapSingle 操作
-    UnmapSingle { size: usize },
-    /// AllocCoherent 操作
-    AllocCoherent { size: usize, align: usize },
-    /// DeallocCoherent 操作
-    DeallocCoherent { size: usize },
+    SyncAllocForCpu {
+        addr: usize,
+        size: usize,
+        direction: DmaDirection,
+    },
+    SyncMapForDevice {
+        addr: usize,
+        size: usize,
+        direction: DmaDirection,
+    },
+    SyncMapForCpu {
+        addr: usize,
+        size: usize,
+        direction: DmaDirection,
+    },
 }
 
-/// 记录所有 DMA 操作的测试辅助工具
-///
-/// 这个结构体实现了 `DmaOp` trait,可以拦截并记录所有 DMA 操作,
-/// 用于验证地址计算、缓存同步等关键行为。
+#[derive(Clone)]
 pub struct TrackingDmaOp {
     operations: Arc<Mutex<Vec<DmaOperation>>>,
-    base_addr: usize,
+    next_dma_addr: Arc<Mutex<u64>>,
+    forced_dma_addr: Arc<Mutex<Option<u64>>>,
+    map_allocations: Arc<Mutex<HashMap<usize, core::alloc::Layout>>>,
 }
 
 impl TrackingDmaOp {
-    /// 创建新的跟踪器
-    ///
-    /// # 参数
-    ///
-    /// * `base_addr` - DMA 地址的基地址,用于计算相对偏移
-    pub fn new(base_addr: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             operations: Arc::new(Mutex::new(Vec::new())),
-            base_addr,
+            next_dma_addr: Arc::new(Mutex::new(0x1000)),
+            forced_dma_addr: Arc::new(Mutex::new(None)),
+            map_allocations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// 获取所有操作记录的副本
-    pub fn get_operations(&self) -> Vec<DmaOperation> {
+    pub fn with_next_dma_addr(self, dma_addr: u64) -> Self {
+        *self.next_dma_addr.lock().unwrap() = dma_addr;
+        self
+    }
+
+    pub fn force_next_dma_addr(&self, dma_addr: u64) {
+        *self.forced_dma_addr.lock().unwrap() = Some(dma_addr);
+    }
+
+    pub fn operations(&self) -> Vec<DmaOperation> {
         self.operations.lock().unwrap().clone()
     }
 
-    /// 清空所有操作记录
     pub fn clear(&self) {
         self.operations.lock().unwrap().clear();
     }
 
-    /// 统计 flush 操作的次数
-    pub fn count_flush(&self) -> usize {
+    pub fn count_sync_alloc_for_device(&self) -> usize {
         self.operations
             .lock()
             .unwrap()
             .iter()
-            .filter(|op| matches!(op, DmaOperation::Flush { .. }))
+            .filter(|op| matches!(op, DmaOperation::SyncAllocForDevice { .. }))
             .count()
     }
 
-    /// 统计 invalidate 操作的次数
-    pub fn count_invalidate(&self) -> usize {
+    pub fn count_sync_alloc_for_cpu(&self) -> usize {
         self.operations
             .lock()
             .unwrap()
             .iter()
-            .filter(|op| matches!(op, DmaOperation::Invalidate { .. }))
+            .filter(|op| matches!(op, DmaOperation::SyncAllocForCpu { .. }))
             .count()
     }
 
-    /// 查找指定偏移和大小的 flush 操作
-    ///
-    /// # 参数
-    ///
-    /// * `offset` - 相对于 base_addr 的偏移量
-    /// * `size` - 操作大小
-    pub fn find_flush_at(&self, offset: usize, size: usize) -> bool {
-        let expected_addr = self.base_addr + offset;
-        self.operations.lock().unwrap().iter().any(|op| {
-            matches!(op, DmaOperation::Flush { addr, size: s }
-                    if *addr == expected_addr && *s == size)
-        })
+    pub fn count_sync_map_for_device(&self) -> usize {
+        self.operations
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::SyncMapForDevice { .. }))
+            .count()
     }
 
-    /// 查找指定偏移和大小的 invalidate 操作
-    ///
-    /// # 参数
-    ///
-    /// * `offset` - 相对于 base_addr 的偏移量
-    /// * `size` - 操作大小
-    pub fn find_inv_at(&self, offset: usize, size: usize) -> bool {
-        let expected_addr = self.base_addr + offset;
-        self.operations.lock().unwrap().iter().any(|op| {
-            matches!(op, DmaOperation::Invalidate { addr, size: s }
-                    if *addr == expected_addr && *s == size)
-        })
+    pub fn count_sync_map_for_cpu(&self) -> usize {
+        self.operations
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::SyncMapForCpu { .. }))
+            .count()
     }
 
-    /// 获取最后一次 flush 操作的地址和大小
-    pub fn last_flush(&self) -> Option<(usize, usize)> {
-        self.operations.lock().unwrap().iter().rev().find_map(|op| {
-            if let DmaOperation::Flush { addr, size } = op {
-                Some((*addr, *size))
-            } else {
-                None
-            }
-        })
+    fn alloc_dma_addr(&self, layout: core::alloc::Layout, constraints: DmaConstraints) -> u64 {
+        if let Some(addr) = self.forced_dma_addr.lock().unwrap().take() {
+            return addr;
+        }
+
+        let mut next = self.next_dma_addr.lock().unwrap();
+        let align = constraints.align.max(layout.align()).max(1) as u64;
+        *next = next.next_multiple_of(align);
+        let addr = *next;
+        *next = next
+            .saturating_add(layout.size().max(1) as u64)
+            .max(addr + 1);
+        addr
     }
 
-    /// 获取最后一次 invalidate 操作的地址和大小
-    pub fn last_invalidate(&self) -> Option<(usize, usize)> {
-        self.operations.lock().unwrap().iter().rev().find_map(|op| {
-            if let DmaOperation::Invalidate { addr, size } = op {
-                Some((*addr, *size))
-            } else {
-                None
-            }
-        })
+    unsafe fn alloc_handle(
+        &self,
+        constraints: DmaConstraints,
+        layout: core::alloc::Layout,
+    ) -> Option<DmaAllocHandle> {
+        let ptr = unsafe { alloc_zeroed(layout) };
+        let cpu_addr = NonNull::new(ptr)?;
+        let dma_addr = self.alloc_dma_addr(layout, constraints);
+        Some(unsafe { DmaAllocHandle::new(cpu_addr, dma_addr.into(), layout) })
     }
 }
 
-// 实现 DmaOp trait
 impl DmaOp for TrackingDmaOp {
     fn page_size(&self) -> usize {
         0x1000
     }
 
-    unsafe fn map_single(
+    unsafe fn alloc_contiguous(
         &self,
-        _dma_mask: u64,
-        addr: NonNull<u8>,
-        size: NonZeroUsize,
-        _align: usize,
-        direction: DmaDirection,
-    ) -> Result<DmaMapHandle, DmaError> {
+        constraints: DmaConstraints,
+        layout: core::alloc::Layout,
+    ) -> Option<DmaAllocHandle> {
         self.operations
             .lock()
             .unwrap()
-            .push(DmaOperation::MapSingle {
-                virt_addr: addr.as_ptr() as usize,
-                size: size.get(),
-                direction,
+            .push(DmaOperation::AllocContiguous {
+                size: layout.size(),
+                align: layout.align(),
+                mask: constraints.addr_mask,
             });
-
-        let layout = core::alloc::Layout::from_size_align(size.get(), 8)?;
-        Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
+        unsafe { self.alloc_handle(constraints, layout) }
     }
 
-    unsafe fn unmap_single(&self, handle: DmaMapHandle) {
+    unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
         self.operations
             .lock()
             .unwrap()
-            .push(DmaOperation::UnmapSingle {
+            .push(DmaOperation::DeallocContiguous {
                 size: handle.size(),
             });
-    }
-
-    fn flush(&self, addr: NonNull<u8>, size: usize) {
-        self.operations.lock().unwrap().push(DmaOperation::Flush {
-            addr: addr.as_ptr() as usize,
-            size,
-        });
-    }
-
-    fn invalidate(&self, addr: NonNull<u8>, size: usize) {
-        self.operations
-            .lock()
-            .unwrap()
-            .push(DmaOperation::Invalidate {
-                addr: addr.as_ptr() as usize,
-                size,
-            });
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
     }
 
     unsafe fn alloc_coherent(
         &self,
-        _dma_mask: u64,
+        constraints: DmaConstraints,
         layout: core::alloc::Layout,
-    ) -> Option<DmaHandle> {
+    ) -> Option<DmaAllocHandle> {
         self.operations
             .lock()
             .unwrap()
             .push(DmaOperation::AllocCoherent {
                 size: layout.size(),
                 align: layout.align(),
+                mask: constraints.addr_mask,
             });
-
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            return None;
-        }
-        Some(unsafe { DmaHandle::new(NonNull::new(ptr).unwrap(), (ptr as u64).into(), layout) })
+        unsafe { self.alloc_handle(constraints, layout) }
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
         self.operations
             .lock()
             .unwrap()
             .push(DmaOperation::DeallocCoherent {
                 size: handle.size(),
             });
-        unsafe { std::alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+    }
+
+    unsafe fn map_streaming(
+        &self,
+        constraints: DmaConstraints,
+        addr: NonNull<u8>,
+        size: NonZeroUsize,
+        direction: DmaDirection,
+    ) -> Result<DmaMapHandle, DmaError> {
+        let align = constraints.align.max(1);
+        let layout = core::alloc::Layout::from_size_align(size.get(), align)?;
+        self.operations
+            .lock()
+            .unwrap()
+            .push(DmaOperation::MapStreaming {
+                virt_addr: addr.as_ptr() as usize,
+                size: size.get(),
+                align,
+                direction,
+                mask: constraints.addr_mask,
+            });
+
+        let dma_addr = self.alloc_dma_addr(layout, constraints);
+        let bounce_ptr = if dma_addr != addr.as_ptr() as u64 {
+            let ptr = unsafe { alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr).ok_or(DmaError::NoMemory)?;
+            self.map_allocations
+                .lock()
+                .unwrap()
+                .insert(ptr.as_ptr() as usize, layout);
+            Some(ptr)
+        } else {
+            None
+        };
+
+        Ok(unsafe { DmaMapHandle::new(addr, dma_addr.into(), layout, bounce_ptr) })
+    }
+
+    unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
+        self.operations
+            .lock()
+            .unwrap()
+            .push(DmaOperation::UnmapStreaming {
+                size: handle.size(),
+            });
+        if let Some(ptr) = handle.bounce_ptr()
+            && let Some(layout) = self
+                .map_allocations
+                .lock()
+                .unwrap()
+                .remove(&(ptr.as_ptr() as usize))
+        {
+            unsafe { dealloc(ptr.as_ptr(), layout) };
+        }
+    }
+
+    fn sync_alloc_for_device(
+        &self,
+        handle: &DmaAllocHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        self.operations
+            .lock()
+            .unwrap()
+            .push(DmaOperation::SyncAllocForDevice {
+                addr: unsafe { handle.as_ptr().add(offset).as_ptr() as usize },
+                size,
+                direction,
+            });
+    }
+
+    fn sync_alloc_for_cpu(
+        &self,
+        handle: &DmaAllocHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        self.operations
+            .lock()
+            .unwrap()
+            .push(DmaOperation::SyncAllocForCpu {
+                addr: unsafe { handle.as_ptr().add(offset).as_ptr() as usize },
+                size,
+                direction,
+            });
+    }
+
+    fn sync_map_for_device(
+        &self,
+        handle: &DmaMapHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        self.operations
+            .lock()
+            .unwrap()
+            .push(DmaOperation::SyncMapForDevice {
+                addr: unsafe { handle.as_ptr().add(offset).as_ptr() as usize },
+                size,
+                direction,
+            });
+        if let Some(map_virt) = handle.bounce_ptr() {
+            unsafe {
+                map_virt
+                    .add(offset)
+                    .as_ptr()
+                    .copy_from_nonoverlapping(handle.as_ptr().add(offset).as_ptr(), size);
+            }
+        }
+    }
+
+    fn sync_map_for_cpu(
+        &self,
+        handle: &DmaMapHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        self.operations
+            .lock()
+            .unwrap()
+            .push(DmaOperation::SyncMapForCpu {
+                addr: unsafe { handle.as_ptr().add(offset).as_ptr() as usize },
+                size,
+                direction,
+            });
+        if let Some(map_virt) = handle.bounce_ptr() {
+            unsafe {
+                handle
+                    .as_ptr()
+                    .add(offset)
+                    .as_ptr()
+                    .copy_from_nonoverlapping(map_virt.add(offset).as_ptr(), size);
+            }
+        }
     }
 }
