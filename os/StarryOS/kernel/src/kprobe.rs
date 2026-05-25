@@ -11,69 +11,17 @@
 //! conversion to bridge the kernel's trap frame format with the kprobe
 //! crate's portable `PtRegs` type.
 //!
-//! # Feature Gate
-//!
-//! The kprobe module is gated behind the `kprobe` feature (enabled by default).
-//! When disabled, breakpoint and debug exception handlers fall back to stubs
-//! that return `false`.
-//!
 //! # Key Components
 //!
-//! - [`KernelRawMutex`]: CAS-based spinlock implementing `lock_api::RawMutex`
 //! - [`KernelKprobeOps`]: Platform-specific auxiliary operations for the kprobe crate
 //! - [`handle_breakpoint`]: Entry point for breakpoint exceptions (INT3/EBREAK/BRK)
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
-use alloc::alloc::{Layout, alloc, dealloc};
-use core::sync::atomic::{AtomicBool, Ordering};
-
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use kprobe::KprobeAuxiliaryOps;
-use lock_api::RawMutex;
 
 use crate::task::AsThread;
 
-/// A CAS-based spinlock implementing [`RawMutex`] for use with [`kprobe::ProbeManager`].
-///
-/// Uses `compare_exchange_weak` in a busy-wait loop, suitable for interrupt
-/// context where sleeping is not allowed.
-pub struct KernelRawMutex {
-    locked: AtomicBool,
-}
-
-unsafe impl RawMutex for KernelRawMutex {
-    const INIT: Self = KernelRawMutex {
-        locked: AtomicBool::new(false),
-    };
-
-    type GuardMarker = lock_api::GuardNoSend;
-
-    fn lock(&self) {
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn try_lock(&self) -> bool {
-        self.locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-    }
-
-    unsafe fn unlock(&self) {
-        self.locked.store(false, Ordering::Release);
-    }
-}
-
-/// StarryOS-specific implementation of [`KprobeAuxiliaryOps`].
-///
-/// Provides the platform glue that the `kprobe` crate needs: memory copy,
-/// page table manipulation for breakpoint insertion, executable memory
-/// allocation, and per-task kretprobe instance management.
 #[derive(Debug)]
 pub struct KernelKprobeOps;
 
@@ -122,7 +70,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                         original_flags | ax_hal::paging::MappingFlags::WRITE,
                     )
                     .expect("kprobe: set_writeable: protect failed");
-                flush_tlb_range(aligned_addr, aligned_length);
+                crate::mm::flush_tlb_range(aligned_addr, aligned_length);
                 action(addr.as_mut_ptr());
                 #[cfg(target_arch = "aarch64")]
                 ax_hal::asm::clean_dcache_range_to_pou(addr, len);
@@ -131,24 +79,37 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                     .expect("kprobe: set_writeable: restore failed");
             },
             move || {
-                flush_tlb_range(aligned_addr, aligned_length);
+                crate::mm::flush_tlb_range(aligned_addr, aligned_length);
                 ax_hal::asm::flush_icache_all();
             },
         );
     }
 
     fn alloc_kernel_exec_memory() -> *mut u8 {
-        let layout = Layout::from_size_align(PAGE_SIZE_4K, PAGE_SIZE_4K).unwrap();
-        let ptr = unsafe { alloc(layout) };
-        if ptr.is_null() {
-            panic!("kprobe: alloc_kernel_exec_memory failed: OOM");
-        }
-        ptr
+        let mut guard = ax_mm::kernel_aspace().lock();
+        let range = VirtAddrRange::new(guard.base(), guard.end());
+        let vaddr = guard
+            .find_free_area(VirtAddr::from(0), PAGE_SIZE_4K, range)
+            .expect("kprobe: no free virtual address for exec memory");
+        guard
+            .map_alloc(
+                vaddr,
+                PAGE_SIZE_4K,
+                ax_hal::paging::MappingFlags::READ
+                    | ax_hal::paging::MappingFlags::WRITE
+                    | ax_hal::paging::MappingFlags::EXECUTE,
+                true,
+            )
+            .expect("kprobe: map_alloc for exec memory failed");
+        vaddr.as_mut_ptr()
     }
 
     fn free_kernel_exec_memory(ptr: *mut u8) {
-        let layout = Layout::from_size_align(PAGE_SIZE_4K, PAGE_SIZE_4K).unwrap();
-        unsafe { dealloc(ptr, layout) }
+        let vaddr = VirtAddr::from(ptr as usize);
+        let mut guard = ax_mm::kernel_aspace().lock();
+        guard
+            .unmap(vaddr, PAGE_SIZE_4K)
+            .expect("kprobe: unmap exec memory failed");
     }
 
     fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(_pid: Option<i32>, _action: F) -> *mut u8 {
@@ -174,10 +135,9 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 }
 
-type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
+type KprobeManager = kprobe::ProbeManager<spin::Mutex<()>, KernelKprobeOps>;
 
-static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
-    ax_sync::spin::SpinNoIrq::new(None);
+static KPROBE_MANAGER: ax_sync::Mutex<Option<KprobeManager>> = ax_sync::Mutex::new(None);
 
 fn with_manager<F, R>(f: F) -> R
 where
@@ -190,12 +150,6 @@ where
     f(guard.as_mut().expect("kprobe: manager not initialized"))
 }
 
-/// Convert the kernel's [`TrapFrame`](ax_hal::context::TrapFrame) to kprobe's
-/// portable [`PtRegs`](kprobe::PtRegs) format.
-///
-/// Each architecture maps its trap frame registers to the corresponding
-/// `PtRegs` fields. CSRs or status registers that are not available in
-/// `TrapFrame` are set to zero.
 fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
@@ -268,7 +222,6 @@ fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
     {
         kprobe::PtRegs {
             regs: tf.x,
-            // NOTE: aarch64 TrapFrame does not store SP; kprobe handlers relying on SP will get 0.
             sp: 0,
             pc: tf.elr,
             pstate: tf.spsr,
@@ -326,12 +279,6 @@ fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
     }
 }
 
-/// Write back modified [`PtRegs`](kprobe::PtRegs) values to the kernel's
-/// [`TrapFrame`](ax_hal::context::TrapFrame).
-///
-/// This is called after a kprobe handler returns `Some(())` to apply any
-/// register modifications the handler made (e.g., altering return values
-/// or redirecting control flow).
 fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_hal::context::TrapFrame) {
     #[cfg(target_arch = "x86_64")]
     {
@@ -436,12 +383,6 @@ fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_hal::context::TrapFrame) {
     }
 }
 
-/// Handle a breakpoint exception (INT3/EBREAK/BRK) by dispatching to the
-/// kprobe subsystem.
-///
-/// Converts the trap frame to `PtRegs`, runs the kprobe handler, and writes
-/// back any register modifications. Returns `true` if a kprobe was hit and
-/// handled, `false` otherwise.
 pub fn handle_breakpoint(tf: &mut ax_hal::context::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
@@ -452,10 +393,6 @@ pub fn handle_breakpoint(tf: &mut ax_hal::context::TrapFrame) -> bool {
     false
 }
 
-/// Handle a debug exception (single-step) by dispatching to the kprobe subsystem.
-///
-/// Currently only available on x86_64, which is the only architecture that
-/// uses hardware single-step for kprobe execution.
 #[cfg(target_arch = "x86_64")]
 pub fn handle_debug(tf: &mut ax_hal::context::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);
@@ -465,11 +402,4 @@ pub fn handle_debug(tf: &mut ax_hal::context::TrapFrame) -> bool {
         return true;
     }
     false
-}
-
-#[allow(dead_code)]
-fn flush_tlb_range(start: VirtAddr, size: usize) {
-    for offset in (0..size).step_by(PAGE_SIZE_4K) {
-        ax_hal::asm::flush_tlb(Some(start + offset));
-    }
 }
