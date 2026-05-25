@@ -365,6 +365,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // event
         Sysno::eventfd2 => sys_eventfd2(uctx.arg0() as _, uctx.arg1() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::inotify_init => sys_inotify_init1(0),
+        Sysno::inotify_init1 => sys_inotify_init1(uctx.arg0() as _),
+        Sysno::inotify_add_watch => {
+            sys_inotify_add_watch(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::inotify_rm_watch => sys_inotify_rm_watch(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::timerfd_create => sys_timerfd_create(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::timerfd_settime => sys_timerfd_settime(
             uctx.arg0() as _,
@@ -768,7 +775,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
-        Sysno::fanotify_init | Sysno::inotify_init1 => Err(AxError::Unsupported),
+        Sysno::fanotify_init => Err(AxError::Unsupported),
 
         Sysno::timer_create => {
             sys_timer_create(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)

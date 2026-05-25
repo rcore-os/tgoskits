@@ -272,9 +272,21 @@ pub fn sys_openat(
 
     let cred = thread.cred();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
-    with_fs(dirfd, |fs| options.open(fs, path))
-        .and_then(|it| add_to_fd(it, flags as _))
-        .map(|fd| fd as isize)
+    let should_notify_create = uflags & O_CREAT != 0
+        && uflags & O_PATH == 0
+        && with_fs(dirfd, |fs| match fs.resolve_no_follow(&path) {
+            Ok(_) => Ok(false),
+            Err(AxError::NotFound) => Ok(true),
+            Err(err) => Err(err),
+        })?;
+
+    let fd =
+        with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
+    if should_notify_create {
+        let file = get_file_like(fd)?;
+        crate::file::inotify::notify_create_path(file.path().as_ref(), false);
+    }
+    Ok(fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.

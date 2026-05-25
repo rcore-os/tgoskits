@@ -1,4 +1,9 @@
-use alloc::{ffi::CString, vec, vec::Vec};
+use alloc::{
+    ffi::CString,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::{
     ffi::{c_char, c_int},
     mem::offset_of,
@@ -22,6 +27,14 @@ use crate::{
     task::AsThread,
     time::TimeValueLike,
 };
+
+fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
+    with_fs(dirfd, |fs| {
+        let loc = fs.resolve_no_follow(path)?;
+        let is_dir = loc.metadata()?.node_type == NodeType::Directory;
+        Ok((loc.absolute_path()?.to_string(), is_dir))
+    })
+}
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -139,7 +152,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
 
-    with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
+    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -148,7 +161,13 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
             Err(AxError::AlreadyExists)
         }
         Err(err) => Err(err),
-    })
+    });
+    if result.is_ok()
+        && let Ok((path, _)) = path_info_at(dirfd, &path)
+    {
+        crate::file::inotify::notify_create_path(&path, true);
+    }
+    result
 }
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
@@ -343,14 +362,21 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
         return Err(AxError::InvalidInput);
     }
 
-    with_fs(dirfd, |fs| {
+    let deleted = path_info_at(dirfd, &path).ok();
+    let result = with_fs(dirfd, |fs| {
         if flags & AT_REMOVEDIR as usize != 0 {
-            fs.remove_dir(path)?;
+            fs.remove_dir(&path)?;
         } else {
-            fs.remove_file(path)?;
+            fs.remove_file(&path)?;
         }
         Ok(0)
-    })
+    });
+    if result.is_ok()
+        && let Some((path, is_dir)) = deleted
+    {
+        crate::file::inotify::notify_delete_path(&path, is_dir);
+    }
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
