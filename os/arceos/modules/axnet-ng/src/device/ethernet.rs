@@ -118,7 +118,13 @@ fn release_ethernet_irq_slot(slot: usize, state: &Arc<EthernetIrqState>) {
 }
 
 impl EthernetDevice {
-    const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
+    /// Lifetime of a resolved unicast neighbour entry.  Linux uses 5 minutes
+    /// for unicast neighbours; sticking to that value keeps long-running
+    /// streams (e.g. a cold-start API response that takes >60 s to begin
+    /// flowing) from invalidating the gateway entry mid-flow, which would
+    /// otherwise force every queued ACK back into the ARP-pending buffer
+    /// at once.
+    const NEIGHBOR_TTL: Duration = Duration::from_secs(300);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
     pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
@@ -357,39 +363,70 @@ impl EthernetDevice {
                 );
             }
 
-            if self
-                .pending_packets
-                .peek()
-                .is_ok_and(|it| it.0 == &IpAddress::Ipv4(source_protocol_addr))
-            {
-                while let Ok((&next_hop, buf)) = self.pending_packets.peek() {
-                    // TODO: optimize logic such that one long-pending ARP
-                    // request does not block all other packets
+            // Drain every entry in the pending queue and either send it (if
+            // the next-hop is now resolved) or re-queue it in arrival order.
+            // Peeking the head and stopping on the first mismatch would
+            // permanently block packets queued behind an unresolvable
+            // next-hop (e.g. a SYN to a fake IP at the head holds back a
+            // SYN to the gateway behind it).
+            //
+            // The kept buffer is pre-sized so the drain does not have to
+            // grow it through reallocations while a high-priority ARP IRQ
+            // is being processed.
+            let mut kept: Vec<(IpAddress, Vec<u8>)> =
+                Vec::with_capacity(ETHERNET_MAX_PENDING_PACKETS);
+            for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
+                let Ok((&next_hop, buf)) = self.pending_packets.peek() else {
+                    break;
+                };
+                enum Action {
+                    Send(EthernetAddress, Vec<u8>),
+                    Refresh(Vec<u8>),
+                    Keep(Vec<u8>),
+                }
+                let action = match self.neighbors.get(&next_hop) {
+                    Some(neighbor) if neighbor.expires_at > now => {
+                        Action::Send(neighbor.hardware_address, buf.to_vec())
+                    }
+                    Some(_) => Action::Refresh(buf.to_vec()),
+                    None => Action::Keep(buf.to_vec()),
+                };
+                let _ = self.pending_packets.dequeue();
 
-                    let Some(neighbor) = self.neighbors.get(&next_hop) else {
-                        break;
-                    };
-                    if neighbor.expires_at <= now {
-                        // Neighbor is expired, we need to request ARP again
+                match action {
+                    Action::Send(mac, payload) => {
+                        let mut inner = self.inner.driver.lock();
+                        info!(
+                            "{}: sending pending IPv4 packet to {} via {}",
+                            self.name, next_hop, mac
+                        );
+                        Self::send_to(
+                            &mut **inner,
+                            mac,
+                            payload.len(),
+                            |b| b.copy_from_slice(&payload),
+                            EthernetProtocol::Ipv4,
+                        );
+                    }
+                    Action::Refresh(payload) => {
                         self.neighbors.remove(&next_hop);
                         let _ = self.request_arp(next_hop, now);
-                        break;
+                        kept.push((next_hop, payload));
                     }
-
-                    let mut inner = self.inner.driver.lock();
-                    info!(
-                        "{}: sending pending IPv4 packet to {} via {}",
-                        self.name, next_hop, neighbor.hardware_address
-                    );
-                    Self::send_to(
-                        &mut **inner,
-                        neighbor.hardware_address,
-                        buf.len(),
-                        |b| b.copy_from_slice(buf),
-                        EthernetProtocol::Ipv4,
-                    );
-                    let _ = self.pending_packets.dequeue();
+                    Action::Keep(payload) => {
+                        kept.push((next_hop, payload));
+                    }
                 }
+            }
+            for (next_hop, payload) in kept {
+                let Ok(dst) = self.pending_packets.enqueue(payload.len(), next_hop) else {
+                    warn!(
+                        "{}: pending buffer overflow while restoring queue entry to {}",
+                        self.name, next_hop
+                    );
+                    break;
+                };
+                dst.copy_from_slice(&payload);
             }
         }
     }
