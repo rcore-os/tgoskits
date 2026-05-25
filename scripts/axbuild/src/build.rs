@@ -639,6 +639,9 @@ fn normalize_std_feature(feature: &str) -> String {
             .split_once('/')
             .map(|(_, feature)| format!("arceos-rust/{feature}"))
             .unwrap_or_else(|| normalized.clone()),
+        feature if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") => {
+            normalized
+        }
         feature if feature.starts_with("arceos-rust/") => normalized,
         feature => format!("arceos-rust/{feature}"),
     }
@@ -1332,6 +1335,28 @@ mod tests {
                 &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn std_build_runtime_features_are_passed_through_after_normalization() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec![
+                "ax-hal/loongarch64-qemu-virt".to_string(),
+                "dns".to_string(),
+            ],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+        let mut envs = HashMap::new();
+        pass_std_build_nested_features(&mut envs, &mut info.features);
+
+        assert_eq!(info.features, vec!["arceos-rust/dns".to_string()]);
+        assert_eq!(
+            envs.get("ARCEOS_RUST_FEATURES"),
+            Some(&"ax-hal/loongarch64-qemu-virt".to_string())
         );
     }
 
