@@ -448,6 +448,7 @@ dependencies = [
 name = "arceos-stack-guard-page"
 version = "0.3.1"
 dependencies = [
+ "ax-hal",
  "ax-std",
 ]
 
