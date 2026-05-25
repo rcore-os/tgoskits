@@ -26,8 +26,9 @@ ax-percpu.workspace = true
 heapless = "0.9"
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
+ax-driver = { workspace = true, features = ["pci"] }
 ax-plat = { workspace = true }
-rdrive.workspace = true
+axklib.workspace = true
 
 x86 = "0.52"
 x86_64 = "0.15.2"
