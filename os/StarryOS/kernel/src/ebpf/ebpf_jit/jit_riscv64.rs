@@ -329,17 +329,17 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
             emit_addi(buf, rd, rd, lo12);
         }
     } else {
-        let lo32 = val as u32 as i32;
-        let lo32_hi20 = ((lo32 as i64 + 0x800) >> 12) as u32;
-        let lo32_lo12 = (((lo32 as i64) << 52) >> 52) as i32;
-        emit_lui(buf, rd, lo32_hi20);
-        emit_addiw(buf, rd, rd, lo32_lo12);
-        emit_slli(buf, rd, rd, 32);
         let hi32 = (val >> 32) as u32 as i32;
         let hi32_hi20 = ((hi32 as i64 + 0x800) >> 12) as u32;
         let hi32_lo12 = (((hi32 as i64) << 52) >> 52) as i32;
-        emit_lui(buf, RV_T1, hi32_hi20);
-        emit_addiw(buf, RV_T1, RV_T1, hi32_lo12);
+        emit_lui(buf, rd, hi32_hi20);
+        emit_addiw(buf, rd, rd, hi32_lo12);
+        emit_slli(buf, rd, rd, 32);
+        let lo32 = val as u32 as i32;
+        let lo32_hi20 = ((lo32 as i64 + 0x800) >> 12) as u32;
+        let lo32_lo12 = (((lo32 as i64) << 52) >> 52) as i32;
+        emit_lui(buf, RV_T1, lo32_hi20);
+        emit_addiw(buf, RV_T1, RV_T1, lo32_lo12);
         emit_add(buf, rd, rd, RV_T1);
     }
 }
