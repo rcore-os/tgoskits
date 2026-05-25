@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use ax_kspin::SpinNoIrq as Mutex;
 use mbarrier::smp_mb;
+use spin::Mutex;
 
 use crate::{Data, Transport, err::ScmiError};
 

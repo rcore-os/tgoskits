@@ -4,11 +4,11 @@ extern crate alloc;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
 use rdif_block::{
     BlkError, BuffConfig, DriverGeneric, Event, IQueue, IdList, Interface, Request, RequestId,
     RequestKind,
 };
+use spin::Mutex;
 
 struct RamInner {
     storage: Vec<u8>,

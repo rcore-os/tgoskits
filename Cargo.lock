@@ -551,13 +551,13 @@ name = "arm-scmi-rs"
 version = "0.1.2"
 dependencies = [
  "aarch64-cpu-ext",
- "ax-kspin",
  "bitflags 2.11.1",
  "log",
  "mbarrier",
  "nb",
  "num-align",
  "smccc",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -5570,7 +5570,6 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 name = "nvme-driver"
 version = "0.4.2"
 dependencies = [
- "ax-kspin",
  "byte-unit",
  "dma-api",
  "fdt-edit",
@@ -5578,6 +5577,7 @@ dependencies = [
  "mmio-api",
  "pcie",
  "rd-block",
+ "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -6235,10 +6235,10 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramdisk"
 version = "0.1.1"
 dependencies = [
- "ax-kspin",
  "dma-api",
  "rd-block",
  "rdif-block",
+ "spin",
 ]
 
 [[package]]
@@ -6562,11 +6562,11 @@ dependencies = [
 name = "rdif-serial"
 version = "0.7.1"
 dependencies = [
- "ax-kspin",
  "bitflags 2.11.1",
  "futures",
  "heapless 0.9.3",
  "rdif-base",
+ "spin",
  "thiserror 2.0.18",
 ]
 
@@ -6596,7 +6596,6 @@ dependencies = [
 name = "rdrive"
 version = "0.20.1"
 dependencies = [
- "ax-kspin",
  "fdt-edit",
  "fdt-raw",
  "log",
@@ -6625,11 +6624,11 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.2.0"
 dependencies = [
- "ax-kspin",
  "dma-api",
  "log",
  "mmio-api",
  "rdif-eth",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]

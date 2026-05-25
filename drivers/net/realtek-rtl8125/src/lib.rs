@@ -4,7 +4,6 @@ extern crate alloc;
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
-use ax_kspin::SpinNoIrq as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::{DeviceDma, DmaDirection, DmaOp};
 use log::info;
@@ -12,6 +11,7 @@ use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
 use rdif_eth::{Event, IRxQueue, ITxQueue, Interface};
 use registers::*;
+use spin::Mutex;
 
 mod descriptor;
 mod hw;
