@@ -209,6 +209,12 @@ impl OpenOptions {
             return Err(VfsError::IsADirectory);
         }
 
+        if loc.is_readonly()
+            && (flags.intersects(FileFlags::WRITE | FileFlags::APPEND) || self.truncate)
+        {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+
         if self.directory {
             loc.check_is_dir()?;
         }
@@ -1092,6 +1098,11 @@ impl File {
     /// Checks that the file has the required `flags` and returns the backend.
     pub fn access(&self, flags: FileFlags) -> VfsResult<&FileBackend> {
         if self.flags().contains(flags) && !self.is_path() {
+            if self.inner.location().is_readonly()
+                && flags.intersects(FileFlags::WRITE | FileFlags::APPEND)
+            {
+                return Err(VfsError::ReadOnlyFilesystem);
+            }
             Ok(&self.inner)
         } else {
             Err(VfsError::BadFileDescriptor)

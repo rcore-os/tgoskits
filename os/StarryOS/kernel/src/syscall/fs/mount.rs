@@ -16,6 +16,10 @@ const MNT_DETACH: i32 = 2;
 const MNT_EXPIRE: i32 = 4;
 const UMOUNT_NOFOLLOW: i32 = 8;
 
+const MS_RDONLY: i32 = 1;
+const MS_REMOUNT: i32 = 1 << 5;
+const MS_BIND: i32 = 1 << 12;
+const MS_MOVE: i32 = 1 << 13;
 const MS_REC: i32 = 1 << 14;
 const MS_SILENT: i32 = 1 << 15;
 const MS_UNBINDABLE: i32 = 1 << 17;
@@ -80,17 +84,64 @@ pub fn sys_mount(
         if flags & !allowed != 0 {
             return Err(AxError::InvalidInput);
         }
+
+        let target = FS_CONTEXT.lock().resolve(target)?;
+        if !target.is_root_of_mount() {
+            return Err(AxError::InvalidInput);
+        }
+        let mountpoint = target.mountpoint().clone();
+        match propagation {
+            MS_SHARED => mountpoint.set_shared(),
+            MS_PRIVATE => mountpoint.set_private(),
+            MS_SLAVE => mountpoint.set_slave(),
+            MS_UNBINDABLE => mountpoint.set_unbindable(),
+            _ => {}
+        }
+        return Ok(0);
+    }
+
+    if (flags & MS_REMOUNT) != 0 {
+        let target = FS_CONTEXT.lock().resolve(target)?;
+        if !target.is_root_of_mount() {
+            return Err(AxError::InvalidInput);
+        }
+        if (flags & MS_RDONLY) != 0 {
+            target.mountpoint().set_readonly(true);
+        }
+        return Ok(0);
+    }
+
+    if (flags & MS_MOVE) != 0 {
+        let ctx = FS_CONTEXT.lock();
+        let source = ctx.resolve(source)?;
+        let target = ctx.resolve(target)?;
+        source.move_mount(&target)?;
+        return Ok(0);
+    }
+
+    if (flags & MS_BIND) != 0 {
+        let ctx = FS_CONTEXT.lock();
+        let source = ctx.resolve(source)?;
+        let target = ctx.resolve(target)?;
+        let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
+        if (flags & MS_RDONLY) != 0 {
+            mp.set_readonly(true);
+        }
+        return Ok(0);
     }
 
     match fs_type.as_str() {
         "tmpfs" => {
             let fs = MemoryFs::new();
             let target = FS_CONTEXT.lock().resolve(target)?;
-            target.mount(&fs)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
         }
         #[cfg(feature = "ext4")]
         "ext4" => {
-            mount_ext4(&source, &target)?;
+            mount_ext4(&source, &target, (flags & MS_RDONLY) != 0)?;
         }
         _ => return Err(AxError::NoSuchDevice),
     }
@@ -99,7 +150,7 @@ pub fn sys_mount(
 }
 
 #[cfg(feature = "ext4")]
-fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
+fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     use alloc::{boxed::Box, sync::Arc};
 
     let ctx = FS_CONTEXT.lock();
@@ -139,10 +190,11 @@ fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
 
     // Mount at the target location
     let target_loc = ctx.resolve(target)?;
-    target_loc.mount(&fs).map_err(|e| {
+    let mountpoint = target_loc.mount(&fs).map_err(|e| {
         warn!("mount_ext4: failed to mount at {:?}: {:?}", target, e);
         AxError::Io
     })?;
+    mountpoint.set_readonly(readonly);
 
     // Store a writeback callback in the mount root's user_data so that
     // sys_umount2 can flush the loop device's block cache to the backing
@@ -179,11 +231,24 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    let target = FS_CONTEXT.lock().resolve(target)?;
+    let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
+        FS_CONTEXT.lock().resolve_no_follow(target)?
+    } else {
+        FS_CONTEXT.lock().resolve(target)?
+    };
 
     // Linux umount2 returns EINVAL for paths that are not mount points.
     if !target.is_root_of_mount() {
         return Err(AxError::InvalidInput);
+    }
+
+    if (flags & MNT_EXPIRE) != 0 && !target.mountpoint().mark_expired() {
+        return Err(AxError::from(LinuxError::EAGAIN));
+    }
+
+    if (flags & MNT_DETACH) != 0 {
+        target.detach_mount()?;
+        return Ok(0);
     }
 
     // Linux umount2 returns EBUSY if any task has cwd/root or open fd
