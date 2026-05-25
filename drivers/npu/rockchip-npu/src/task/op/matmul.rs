@@ -1,4 +1,4 @@
-use dma_api::{DArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 
 use super::super::def::*;
 use crate::{
@@ -11,9 +11,9 @@ pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
     m: u16,
     k: u16,
     n: u16,
-    input: DArray<T>,
-    weight: DArray<T>,
-    output: DArray<O>,
+    input: ContiguousArray<T>,
+    weight: ContiguousArray<T>,
+    output: ContiguousArray<O>,
 }
 
 impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
@@ -23,21 +23,21 @@ impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
             k: k as _,
             n: n as _,
             input: dma
-                .array_zero_with_align::<T>(
+                .contiguous_array_zero_with_align::<T>(
                     m * k * size_of::<T>(),
                     0x1000,
                     DmaDirection::Bidirectional,
                 )
                 .unwrap(),
             weight: dma
-                .array_zero_with_align::<T>(
+                .contiguous_array_zero_with_align::<T>(
                     k * n * size_of::<T>(),
                     0x1000,
                     DmaDirection::Bidirectional,
                 )
                 .unwrap(),
             output: dma
-                .array_zero_with_align::<O>(
+                .contiguous_array_zero_with_align::<O>(
                     m * n * size_of::<O>(),
                     0x1000,
                     DmaDirection::Bidirectional,
@@ -58,6 +58,7 @@ impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
                 self.input.set(idx, a[src]);
             }
         }
+        self.input.sync_for_device_all();
     }
 
     fn gen_matul(
@@ -417,16 +418,18 @@ impl MatMul<i8, i32> {
                 self.weight.set(idx, b[src]);
             }
         }
+        self.weight.sync_for_device_all();
     }
 
     pub fn get_output(&self, m: usize, n: usize) -> i32 {
+        self.output.sync_for_cpu_all();
         self.output
             .read(feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize)
             .unwrap()
     }
 
     pub fn output_buffer(&self) -> &[i32] {
-        self.output.prepare_read_all();
+        self.output.sync_for_cpu_all();
         unsafe { core::slice::from_raw_parts(self.output.as_ptr().as_ptr(), self.output.len()) }
     }
 }

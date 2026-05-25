@@ -14,14 +14,13 @@
 //!   needed before the device reads CPU-written memory and after the
 //!   device writes CPU-read memory.
 //!
-//! That split keeps the SDHCI logic portable across hosted Linux (where
-//! `DeviceDma` typically calls `dma_map_single`), bare-metal coherent
-//! systems (identity mapping, no cache ops), and bare-metal incoherent
-//! systems (identity mapping + dcache flush/invalidate).
+//! That split keeps the SDHCI logic portable across hosted kernels,
+//! bare-metal coherent systems (identity mapping, no cache ops), and
+//! bare-metal incoherent systems (identity mapping + dcache flush/invalidate).
 
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
 use sdmmc_protocol::{
     block::{
         BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
@@ -122,8 +121,8 @@ enum BlockRequestKind {
     },
     Read {
         id: RequestId,
-        map: SArrayPtr<u8>,
-        _desc: DArray<Adma2Desc32>,
+        map: StreamingMap<u8>,
+        _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -132,8 +131,8 @@ enum BlockRequestKind {
     },
     Write {
         id: RequestId,
-        _map: SArrayPtr<u8>,
-        _desc: DArray<Adma2Desc32>,
+        _map: StreamingMap<u8>,
+        _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -457,18 +456,14 @@ impl Sdhci {
         }
         let block_count = dma_read_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::FromDevice,
             )
             .map_err(map_dma_error)?;
         let mut desc = dma
-            .array_zero_with_align::<Adma2Desc32>(
-                ADMA2_DESC_COUNT,
-                ADMA2_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
         let cmd = if block_count == 1 {
             cmd17(start_block)
@@ -510,19 +505,15 @@ impl Sdhci {
         }
         let block_count = dma_write_block_count(size)?;
         let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+            .map_streaming_slice(
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::ToDevice,
             )
             .map_err(map_dma_error)?;
-        map.confirm_write_all();
+        map.sync_for_device_all();
         let mut desc = dma
-            .array_zero_with_align::<Adma2Desc32>(
-                ADMA2_DESC_COUNT,
-                ADMA2_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
         let cmd = if block_count == 1 {
             cmd24(start_block)
@@ -709,7 +700,7 @@ impl Sdhci {
         cmd: &Command,
         block_count: u32,
         buffer_dma: u64,
-        desc: &mut DArray<Adma2Desc32>,
+        desc: &mut CoherentArray<Adma2Desc32>,
         direction: DataDirection,
         phase: Phase,
     ) -> Result<(), Error> {
@@ -778,7 +769,7 @@ impl Sdhci {
                 stage,
                 ..
             } => {
-                map.prepare_read_all();
+                map.sync_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
@@ -1022,7 +1013,7 @@ impl Sdhci {
 }
 
 fn build_descriptors_into_dma(
-    desc: &mut dma_api::DArray<Adma2Desc32>,
+    desc: &mut CoherentArray<Adma2Desc32>,
     base: u64,
     total_len: usize,
     phase: Phase,
@@ -1167,6 +1158,8 @@ fn map_dma_error(err: dma_api::DmaError) -> Error {
         dma_api::DmaError::LayoutError(_)
         | dma_api::DmaError::DmaMaskNotMatch { .. }
         | dma_api::DmaError::AlignMismatch { .. }
+        | dma_api::DmaError::SegmentTooLarge { .. }
+        | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
         | dma_api::DmaError::ZeroSizedBuffer => Error::InvalidArgument,
     }

@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 use core::{alloc::Layout, cell::UnsafeCell};
 
-use dma_api::{DArrayPool, DBuff, DeviceDma, DmaDirection, DmaOp};
+use dma_api::{ContiguousBuffer, ContiguousBufferPool, DeviceDma, DmaDirection, DmaOp};
 use futures::task::AtomicWaker;
 pub use rdif_eth::*;
 
@@ -159,11 +159,11 @@ fn make_pool(
     dma_op: &'static dyn DmaOp,
     config: QueueConfig,
     direction: DmaDirection,
-) -> Result<DArrayPool, NetError> {
+) -> Result<ContiguousBufferPool, NetError> {
     let layout = Layout::from_size_align(config.buf_size, config.align.max(1))
         .map_err(|_| other_error("invalid queue layout"))?;
     let dma = DeviceDma::new(config.dma_mask, dma_op);
-    Ok(dma.new_pool(layout, direction, config.ring_size))
+    Ok(dma.contiguous_buffer_pool(layout, direction, config.ring_size))
 }
 
 pub struct IrqHandler {
@@ -187,8 +187,8 @@ impl IrqHandler {
 
 pub struct TxQueue {
     interface: Box<dyn ITxQueue>,
-    pool: DArrayPool,
-    inflight: BTreeMap<u64, DBuff>,
+    pool: ContiguousBufferPool,
+    inflight: BTreeMap<u64, ContiguousBuffer>,
     config: QueueConfig,
     _waker: Arc<AtomicWaker>,
 }
@@ -251,7 +251,7 @@ pub struct TxPending<'a> {
     queue: &'a mut TxQueue,
     len: usize,
     bus_addr: u64,
-    buff: Option<DBuff>,
+    buff: Option<ContiguousBuffer>,
 }
 
 impl TxPending<'_> {
@@ -273,6 +273,7 @@ impl TxPending<'_> {
             .buff
             .as_ref()
             .expect("tx pending buffer should exist until submit succeeds");
+        buff.sync_for_device(0, self.len);
         self.queue.interface.submit(DmaBuffer {
             virt: buff.as_ptr(),
             bus_addr: self.bus_addr,
@@ -289,8 +290,8 @@ impl TxPending<'_> {
 
 pub struct RxQueue {
     interface: Box<dyn IRxQueue>,
-    pool: DArrayPool,
-    inflight: BTreeMap<u64, DBuff>,
+    pool: ContiguousBufferPool,
+    inflight: BTreeMap<u64, ContiguousBuffer>,
     config: QueueConfig,
     _waker: Arc<AtomicWaker>,
 }
@@ -313,9 +314,10 @@ impl RxQueue {
         Ok(())
     }
 
-    fn submit_buffer(&mut self, buff: DBuff) -> Result<(), NetError> {
+    fn submit_buffer(&mut self, buff: ContiguousBuffer) -> Result<(), NetError> {
         let bus_addr = buff.dma_addr().as_u64();
         let len = self.config.buf_size.min(buff.len());
+        buff.sync_for_device(0, len);
         self.interface.submit(DmaBuffer {
             virt: buff.as_ptr(),
             bus_addr,
@@ -325,7 +327,7 @@ impl RxQueue {
         Ok(())
     }
 
-    fn reclaim_packet(&mut self) -> Result<Option<(DBuff, usize)>, NetError> {
+    fn reclaim_packet(&mut self) -> Result<Option<(ContiguousBuffer, usize)>, NetError> {
         let Some((bus_addr, len)) = self.interface.reclaim() else {
             return Ok(None);
         };
@@ -333,6 +335,7 @@ impl RxQueue {
             return Err(other_error("reclaimed unknown rx buffer"));
         };
         let packet_len = len.min(self.config.buf_size).min(buff.len());
+        buff.sync_for_cpu(0, packet_len);
         Ok(Some((buff, packet_len)))
     }
 
@@ -364,7 +367,7 @@ impl RxQueue {
 pub struct RxPacket<'a> {
     queue: &'a mut RxQueue,
     len: usize,
-    buff: Option<DBuff>,
+    buff: Option<ContiguousBuffer>,
 }
 
 impl RxPacket<'_> {

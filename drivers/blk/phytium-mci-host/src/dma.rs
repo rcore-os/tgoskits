@@ -1,6 +1,6 @@
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
 use log::warn;
 use sdmmc_protocol::{
     block::{
@@ -49,8 +49,8 @@ struct IdmacDesc {
 }
 
 struct DmaProgress {
-    descriptors: DArray<IdmacDesc>,
-    buffer: SArrayPtr<u8>,
+    descriptors: CoherentArray<IdmacDesc>,
+    buffer: StreamingMap<u8>,
     desc_count: usize,
     complete: bool,
     idmac_done: bool,
@@ -438,20 +438,16 @@ impl PhytiumMci {
             DataDirection::None => return Err(Error::InvalidArgument),
             _ => return Err(Error::InvalidArgument),
         };
-        let slice = unsafe { core::slice::from_raw_parts(buffer.as_ptr(), len) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), len) };
         let mapped = dma
-            .map_single_array(slice, BLOCK_SIZE, dma_direction)
+            .map_streaming_slice(slice, BLOCK_SIZE, dma_direction)
             .map_err(|_| Error::Misaligned)?;
         if matches!(direction, DataDirection::Write) {
-            mapped.confirm_write_all();
+            mapped.sync_for_device_all();
         }
         let desc_count = len.div_ceil(IDMAC_MAX_BUF_SIZE);
         let mut descriptors = dma
-            .array_zero_with_align::<IdmacDesc>(
-                desc_count,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
+            .coherent_array_zero_with_align::<IdmacDesc>(desc_count, IDMAC_DESC_ALIGN)
             .map_err(|_| Error::Misaligned)?;
         let desc_dma = descriptors.dma_addr().as_u64();
         let desc_values = build_idmac_descriptors(
@@ -770,7 +766,7 @@ impl PhytiumMci {
         }
 
         if is_read {
-            progress.buffer.prepare_read_all();
+            progress.buffer.sync_for_cpu_all();
         }
         progress.complete = true;
         Ok(BlockPoll::Complete)
@@ -1239,11 +1235,11 @@ mod tests {
         fn progress() -> DmaProgress {
             let dma = DeviceDma::new(u64::MAX, &TEST_DMA);
             let descriptors = dma
-                .array_zero_with_align::<IdmacDesc>(1, IDMAC_DESC_ALIGN, DmaDirection::ToDevice)
+                .coherent_array_zero_with_align::<IdmacDesc>(1, IDMAC_DESC_ALIGN)
                 .unwrap();
             let backing = Box::leak(Box::new(AlignedBlock([0u8; BLOCK_SIZE])));
             let buffer = dma
-                .map_single_array(&backing.0, BLOCK_SIZE, DmaDirection::FromDevice)
+                .map_streaming_slice(&mut backing.0, BLOCK_SIZE, DmaDirection::FromDevice)
                 .unwrap();
             DmaProgress {
                 descriptors,
@@ -1260,35 +1256,49 @@ mod tests {
     static TEST_DMA: TestDma = TestDma;
 
     impl dma_api::DmaOp for TestDma {
-        unsafe fn alloc_coherent(
+        unsafe fn alloc_contiguous(
             &self,
-            _dma_mask: u64,
+            _constraints: dma_api::DmaConstraints,
             layout: core::alloc::Layout,
-        ) -> Option<dma_api::DmaHandle> {
+        ) -> Option<dma_api::DmaAllocHandle> {
             let ptr = unsafe { alloc::alloc_zeroed(layout) };
             let ptr = NonNull::new(ptr)?;
-            Some(unsafe { dma_api::DmaHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+            Some(unsafe { dma_api::DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
         }
 
-        unsafe fn dealloc_coherent(&self, handle: dma_api::DmaHandle) {
+        unsafe fn dealloc_contiguous(&self, handle: dma_api::DmaAllocHandle) {
             unsafe { alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
         }
 
-        unsafe fn map_single(
+        unsafe fn alloc_coherent(
             &self,
-            _dma_mask: u64,
+            _constraints: dma_api::DmaConstraints,
+            layout: core::alloc::Layout,
+        ) -> Option<dma_api::DmaAllocHandle> {
+            let ptr = unsafe { alloc::alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr)?;
+            Some(unsafe { dma_api::DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: dma_api::DmaAllocHandle) {
+            unsafe { alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            constraints: dma_api::DmaConstraints,
             addr: NonNull<u8>,
             size: NonZeroUsize,
-            align: usize,
             _direction: DmaDirection,
         ) -> Result<dma_api::DmaMapHandle, dma_api::DmaError> {
-            let layout = core::alloc::Layout::from_size_align(size.get(), align).unwrap();
+            let layout =
+                core::alloc::Layout::from_size_align(size.get(), constraints.align.max(1))?;
             Ok(unsafe {
                 dma_api::DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None)
             })
         }
 
-        unsafe fn unmap_single(&self, _handle: dma_api::DmaMapHandle) {}
+        unsafe fn unmap_streaming(&self, _handle: dma_api::DmaMapHandle) {}
 
         fn flush(&self, _addr: NonNull<u8>, _size: usize) {}
         fn invalidate(&self, _addr: NonNull<u8>, _size: usize) {}

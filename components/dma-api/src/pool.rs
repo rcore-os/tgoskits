@@ -6,42 +6,42 @@ use core::ops::{Deref, DerefMut};
 
 use ax_kspin::SpinNoIrq as Mutex;
 
-use crate::{DArray, DeviceDma, DmaDirection, DmaError};
+use crate::{ContiguousArray, DeviceDma, DmaDirection, DmaError};
 
 #[derive(Clone, Debug)]
-pub(crate) struct DArrayConfig {
+pub(crate) struct ContiguousBufferConfig {
     pub size: usize,
     pub align: usize,
     pub direction: DmaDirection,
 }
 
 #[derive(Clone)]
-pub struct DArrayPool {
+pub struct ContiguousBufferPool {
     inner: Arc<Mutex<Inner>>,
 }
 
-pub struct DBuff {
-    data: Option<DArray<u8>>,
+pub struct ContiguousBuffer {
+    data: Option<ContiguousArray<u8>>,
     pool: Weak<Mutex<Inner>>,
 }
 
-unsafe impl Send for DBuff {}
+unsafe impl Send for ContiguousBuffer {}
 
-impl Deref for DBuff {
-    type Target = DArray<u8>;
+impl Deref for ContiguousBuffer {
+    type Target = ContiguousArray<u8>;
 
     fn deref(&self) -> &Self::Target {
         self.data.as_ref().unwrap()
     }
 }
 
-impl DerefMut for DBuff {
+impl DerefMut for ContiguousBuffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data.as_mut().unwrap()
     }
 }
 
-impl Drop for DBuff {
+impl Drop for ContiguousBuffer {
     fn drop(&mut self) {
         if let Some(data) = self.data.take()
             && let Some(pool) = self.pool.upgrade()
@@ -54,50 +54,51 @@ impl Drop for DBuff {
 
 struct Inner {
     dev: DeviceDma,
-    config: DArrayConfig,
-    pool: VecDeque<DArray<u8>>,
+    config: ContiguousBufferConfig,
+    pool: VecDeque<ContiguousArray<u8>>,
 }
 
 impl Inner {
-    fn alloc(&mut self) -> Option<DArray<u8>> {
+    fn alloc(&mut self) -> Option<ContiguousArray<u8>> {
         self.pool.pop_front()
     }
 
-    fn dealloc(&mut self, dvec: DArray<u8>) {
-        self.pool.push_back(dvec);
+    fn dealloc(&mut self, data: ContiguousArray<u8>) {
+        self.pool.push_back(data);
     }
 }
 
-impl DArrayPool {
-    pub(crate) fn new_pool(dev: DeviceDma, config: DArrayConfig, cap: usize) -> DArrayPool {
+impl ContiguousBufferPool {
+    pub(crate) fn with_capacity(
+        dev: DeviceDma,
+        config: ContiguousBufferConfig,
+        cap: usize,
+    ) -> ContiguousBufferPool {
         let mut pool = VecDeque::with_capacity(cap);
         for _ in 0..cap {
-            if let Ok(dvec) =
-                // DArray::zeros(config.dma_mask, config.size, config.align, config.direction)
-                DArray::new_zero_with_align(
-                    &dev,
-                    config.size,
-                    config.align,
-                    config.direction,
-                )
-            {
-                pool.push_back(dvec);
+            if let Ok(data) = ContiguousArray::new_zero_with_align(
+                &dev,
+                config.size,
+                config.align,
+                config.direction,
+            ) {
+                pool.push_back(data);
             }
         }
 
-        DArrayPool {
+        ContiguousBufferPool {
             inner: Arc::new(Mutex::new(Inner { dev, pool, config })),
         }
     }
 
-    pub fn alloc(&self) -> Result<DBuff, DmaError> {
+    pub fn alloc(&self) -> Result<ContiguousBuffer, DmaError> {
         let config;
         let dev;
         {
             let mut inner = self.inner.lock();
-            if let Some(dvec) = inner.alloc() {
-                return Ok(DBuff {
-                    data: Some(dvec),
+            if let Some(data) = inner.alloc() {
+                return Ok(ContiguousBuffer {
+                    data: Some(data),
                     pool: Arc::downgrade(&self.inner),
                 });
             } else {
@@ -106,9 +107,14 @@ impl DArrayPool {
             }
         };
 
-        let dvec = DArray::new_zero_with_align(&dev, config.size, config.align, config.direction)?;
-        Ok(DBuff {
-            data: Some(dvec),
+        let data = ContiguousArray::new_zero_with_align(
+            &dev,
+            config.size,
+            config.align,
+            config.direction,
+        )?;
+        Ok(ContiguousBuffer {
+            data: Some(data),
             pool: Arc::downgrade(&self.inner),
         })
     }

@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use core::sync::atomic::{Ordering as AtomicOrdering, fence};
 
-use dma_api::DArray;
+use dma_api::CoherentArray;
 use log::{debug, info, warn};
 use rdif_eth::{DmaBuffer, IRxQueue, ITxQueue, NetError, QueueConfig};
 use spin::Mutex;
@@ -29,7 +29,7 @@ pub(crate) struct QueueStartState {
 
 pub(crate) struct Rtl8125TxQueue {
     pub(crate) regs: Regs,
-    pub(crate) desc: DArray<TxDesc>,
+    pub(crate) desc: CoherentArray<TxDesc>,
     pub(crate) dma_mask: u64,
     pub(crate) bus_addrs: [Option<u64>; QUEUE_SIZE],
     pub(crate) next_submit: usize,
@@ -155,7 +155,7 @@ impl Rtl8125TxQueue {
 
 pub(crate) struct Rtl8125RxQueue {
     pub(crate) regs: Regs,
-    pub(crate) desc: DArray<RxDesc>,
+    pub(crate) desc: CoherentArray<RxDesc>,
     pub(crate) dma_mask: u64,
     pub(crate) start: QueueStart,
     pub(crate) bus_addrs: [Option<u64>; QUEUE_SIZE],

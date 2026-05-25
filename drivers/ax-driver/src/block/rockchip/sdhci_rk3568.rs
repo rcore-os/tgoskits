@@ -141,7 +141,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     init_dwcmshc_after_reset(mmio_base);
     host.set_power(SDHCI_POWER_330);
     host.enable_interrupts();
-    host.set_dma(axklib::dma::device(u32::MAX as u64));
+    host.set_dma(axklib::dma::device_with_mask(u32::MAX as u64));
 
     info!("rockchip-rk3568-sdhci: initialize card");
     let mut card = SdioSdmmc::new(host);
@@ -399,7 +399,7 @@ impl rd_block::Interface for BlockDevice {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
                 id: 0,
-                dma: axklib::dma::device(u32::MAX as u64),
+                dma: axklib::dma::device_with_mask(u32::MAX as u64),
                 slot: BlockRequestSlot::default(),
                 pending: None,
                 completed: Vec::new(),
