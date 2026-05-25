@@ -26,7 +26,9 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["arm-el2"] }
+ax-driver = { workspace = true, features = ["pci"] }
 ax-plat.workspace = true
+axklib.workspace = true
 bitflags = "2.6"
 heapless = "0.9"
 ax-int-ratio = { workspace = true }
@@ -34,7 +36,6 @@ ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
 ax-percpu.workspace = true
-rdrive.workspace = true
 
 multiboot = "0.8"
 raw-cpuid = "11.5"

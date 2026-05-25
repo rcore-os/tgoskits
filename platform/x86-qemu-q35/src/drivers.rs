@@ -1,18 +1,28 @@
-use ax_plat::drivers::DriversIf;
-use rdrive::probe::static_::{StaticDeviceDesc, StaticPciEcam};
+use ax_driver::{PlatformDevice, probe::OnProbeError};
 
 use crate::config::devices;
 
 const PCI_ECAM_SIZE: usize = (devices::PCI_BUS_END + 1) << 20;
 
-static STATIC_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new("pci-ecam")
-    .with_pci_ecam(StaticPciEcam::new(devices::PCI_ECAM_BASE, PCI_ECAM_SIZE))];
+ax_driver::model_register!(
+    name: "Static PCIe ECAM",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Static {
+        on_probe: probe,
+    }],
+);
 
-struct DriversIfImpl;
-
-#[impl_plat_interface]
-impl DriversIf for DriversIfImpl {
-    fn static_devices_fn() -> &'static [StaticDeviceDesc] {
-        STATIC_DEVICES
+fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    if !ax_driver::pci::has_static_endpoint_drivers() {
+        return Err(OnProbeError::NotMatch);
     }
+
+    ax_driver::pci::register_ecam_controller(
+        plat_dev,
+        devices::PCI_ECAM_BASE,
+        PCI_ECAM_SIZE,
+        None,
+        None,
+    )
 }

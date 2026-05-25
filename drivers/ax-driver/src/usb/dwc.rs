@@ -25,7 +25,7 @@ use crate::{
 const DRIVER_NAME: &str = "usb-dwc-xhci";
 const OPTIONAL_PHP_POWER_DOMAIN: usize = 32;
 
-module_driver!(
+crate::model_register!(
     name: "USB DWC xHCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

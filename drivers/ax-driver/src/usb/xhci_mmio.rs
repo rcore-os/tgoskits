@@ -9,7 +9,7 @@ use super::{PlatformDeviceUsbHost, decode_fdt_irq, usb_kernel};
 
 const DRIVER_NAME: &str = "usb-xhci-mmio";
 
-module_driver!(
+crate::model_register!(
     name: "USB xHCI MMIO",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

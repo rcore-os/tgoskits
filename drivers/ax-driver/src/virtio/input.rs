@@ -15,7 +15,7 @@ use virtio_drivers::{
 use crate::{input::PlatformDeviceInput, virtio::VirtIoHalImpl};
 
 #[cfg(probe = "pci")]
-module_driver!(
+crate::model_register!(
     name: "VirtIO Input",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

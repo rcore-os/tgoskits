@@ -16,7 +16,7 @@ use crate::{block::PlatformDeviceBlock, virtio::VirtIoHalImpl};
 const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 32 * SECTOR_SIZE;
 
 #[cfg(probe = "pci")]
-module_driver!(
+crate::model_register!(
     name: "VirtIO Block",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -35,7 +35,7 @@ fn probe_pci(
 }
 
 #[cfg(probe = "fdt")]
-module_driver!(
+crate::model_register!(
     name: "VirtIO MMIO Block",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

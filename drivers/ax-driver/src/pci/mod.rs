@@ -3,6 +3,7 @@ use alloc::format;
 use alloc::sync::Arc;
 
 use heapless::Vec as ArrayVec;
+use mmio_api::MmioOp;
 #[cfg(virtio_dev)]
 use rdrive::probe::pci::{Endpoint, EndpointRc};
 use rdrive::{
@@ -92,35 +93,23 @@ static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQ
 
 pub const DEVICE_NAME: &str = "pci-ecam";
 
-#[cfg(probe = "static")]
-module_driver!(
-    name: "Static PCIe ECAM",
-    level: ProbeLevel::PreKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_static,
-    }],
-);
-
-#[cfg(probe = "static")]
-fn probe_static(
-    info: rdrive::probe::static_::StaticInfo,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-    let Some(ecam) = info.pci_ecam() else {
-        return Err(OnProbeError::NotMatch);
-    };
-    let mem32 = ecam.mem32.or_else(|| pci_mem32_from_ranges(ecam.ranges));
-    let mem64 = ecam.mem64.or_else(|| pci_mem64_from_ranges(ecam.ranges));
-    register_static_legacy_irq_routes(info.irqs(), ecam.size);
-    register_ecam_controller(plat_dev, ecam.base, ecam.size, mem32, mem64)
+pub const fn has_static_endpoint_drivers() -> bool {
+    cfg!(any(
+        feature = "ahci",
+        feature = "ixgbe",
+        feature = "intel-net",
+        feature = "realtek-rtl8125",
+        feature = "xhci-pci",
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket",
+        feature = "pci-list-devices",
+    ))
 }
 
-#[cfg(probe = "static")]
-fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
+pub fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
     if irqs.is_empty() {
         return;
     }
@@ -130,8 +119,7 @@ fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
     register_legacy_irq_routes(0, bus_end, irqs);
 }
 
-#[cfg(probe = "static")]
-fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
+pub fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
     let (address, size) = ranges.get(1).copied()?;
     if size == 0 {
         return None;
@@ -142,8 +130,7 @@ fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
     })
 }
 
-#[cfg(probe = "static")]
-fn pci_mem64_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem64> {
+pub fn pci_mem64_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem64> {
     let (address, size) = ranges.get(2).copied()?;
     if size == 0 || usize::BITS <= 32 {
         return None;
@@ -161,14 +148,34 @@ pub fn register_ecam_controller(
     mem32: Option<PciMem32>,
     mem64: Option<PciMem64>,
 ) -> Result<(), OnProbeError> {
+    register_ecam_controller_with_mmio_op(
+        plat_dev,
+        ecam_base,
+        ecam_size,
+        mem32,
+        mem64,
+        axklib::mmio::op(),
+    )
+}
+
+pub fn register_ecam_controller_with_mmio_op(
+    plat_dev: PlatformDevice,
+    ecam_base: usize,
+    ecam_size: usize,
+    mem32: Option<PciMem32>,
+    mem64: Option<PciMem64>,
+    mmio_op: &'static dyn MmioOp,
+) -> Result<(), OnProbeError> {
+    if !has_static_endpoint_drivers() {
+        return Err(OnProbeError::NotMatch);
+    }
+
     if ecam_base == 0 || ecam_size == 0 {
         return Err(OnProbeError::NotMatch);
     }
 
-    let mut controller =
-        rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, axklib::mmio::op()).map_err(
-            |err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")),
-        )?;
+    let mut controller = rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, mmio_op)
+        .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
 
     if let Some(mem32) = mem32 {
         controller.set_mem32(mem32, false);

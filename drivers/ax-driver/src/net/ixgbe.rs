@@ -27,7 +27,7 @@ const MEM_POOL_ENTRIES: usize = 4096;
 const MEM_POOL_ENTRY_SIZE: usize = 2048;
 const DMA_MASK: u64 = u64::MAX;
 
-module_driver!(
+crate::model_register!(
     name: "Intel 82599 PCI Network",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

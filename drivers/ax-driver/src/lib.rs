@@ -4,10 +4,39 @@
 #![feature(used_with_arg)]
 
 extern crate alloc;
-#[macro_use]
-extern crate rdrive;
 
-module_driver!(
+pub use rdrive::{DriverGeneric, IrqId, KError, PlatformDevice, ProbeError, probe, register};
+#[doc(hidden)]
+pub use rdrive_macros::__mod_maker;
+
+#[macro_export]
+macro_rules! model_register {
+    (
+        $($i:ident : $t:expr),+,
+    ) => {
+        $crate::__mod_maker! {
+            pub mod some {
+                #[allow(unused_imports)]
+                use super::*;
+                use $crate::register::*;
+
+                /// Static instance of driver registration information.
+                ///
+                /// This static variable is placed in the `.driver.register` linker section
+                /// so that the driver manager can automatically discover and load it during
+                /// system startup.
+                #[unsafe(link_section = ".driver.register")]
+                #[unsafe(no_mangle)]
+                #[used(linker)]
+                pub static DRIVER: DriverRegister = DriverRegister {
+                    $($i : $t),+
+                };
+            }
+        }
+    };
+}
+
+crate::model_register!(
     name: "ax-driver macro placeholder",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

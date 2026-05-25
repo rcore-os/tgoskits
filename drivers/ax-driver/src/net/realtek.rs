@@ -17,7 +17,7 @@ const DRIVER_NAME: &str = "realtek-rtl8125";
 const RTL8125_DMA_MASK: u64 = u32::MAX as u64;
 static REGISTERED_RTL8125: AtomicBool = AtomicBool::new(false);
 
-module_driver!(
+crate::model_register!(
     name: "Realtek RTL8125 PCI Network",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

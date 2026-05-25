@@ -4,7 +4,7 @@ use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
 
 use crate::mmio::iomap;
 
-module_driver!(
+crate::model_register!(
     name: "pl031 rtc",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

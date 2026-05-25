@@ -11,7 +11,7 @@ use virtio_drivers::{Error as VirtIoError, device::gpu::VirtIOGpu, transport::Tr
 use crate::{display::PlatformDeviceDisplay, virtio::VirtIoHalImpl};
 
 #[cfg(probe = "pci")]
-module_driver!(
+crate::model_register!(
     name: "VirtIO GPU",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

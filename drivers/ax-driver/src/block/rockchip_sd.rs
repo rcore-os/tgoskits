@@ -52,7 +52,7 @@ mod phase;
 use block::SdBlockDevice;
 use phase::{init_rk3588_sdmmc_phase, tune_rk3588_sdmmc_sample_phase};
 
-module_driver!(
+crate::model_register!(
     name: "Rockchip SD",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

@@ -1,6 +1,6 @@
 use rdrive::{
     DriverGeneric, Platform, PlatformDevice, PlatformSource, get_one, init_sources,
-    probe::{OnProbeError, acpi::AcpiRoot, static_::StaticDeviceDesc},
+    probe::{OnProbeError, acpi::AcpiRoot},
     probe_all,
     register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
 };
@@ -13,17 +13,7 @@ impl DriverGeneric for MixedSourceDevice {
     }
 }
 
-static FAILED_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new("failed-device")];
-static SUCCESS_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new("success-device")];
-
-fn probe_static(
-    info: rdrive::probe::static_::StaticInfo,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    if info.name() != "success-device" {
-        return Err(OnProbeError::NotMatch);
-    }
-
+fn probe_static(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     plat_dev.register(MixedSourceDevice);
     Ok(())
 }
@@ -40,7 +30,7 @@ static STATIC_REGISTER: DriverRegister = DriverRegister {
 #[test]
 fn unsupported_source_does_not_leave_static_backend_initialized() {
     let err = init_sources(&[
-        PlatformSource::Static(FAILED_DEVICES),
+        PlatformSource::Static,
         PlatformSource::Acpi(AcpiRoot { rsdp: 0 }),
     ])
     .expect_err("acpi should reject the source set before committing static state");
@@ -49,7 +39,7 @@ fn unsupported_source_does_not_leave_static_backend_initialized() {
         rdrive::error::DriverError::Unsupported("acpi")
     ));
 
-    rdrive::init(Platform::Static(SUCCESS_DEVICES)).expect("static platform should init");
+    rdrive::init(Platform::Static).expect("static platform should init");
     rdrive::register_add(STATIC_REGISTER.clone());
     probe_all(true).expect("static probe should succeed");
 

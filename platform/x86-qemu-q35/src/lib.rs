@@ -15,6 +15,9 @@
 #![no_std]
 #![cfg(all(target_arch = "x86_64", target_os = "none"))]
 #![allow(missing_abi)]
+#![feature(used_with_arg)]
+
+extern crate ax_driver as _;
 
 #[macro_use]
 extern crate log;

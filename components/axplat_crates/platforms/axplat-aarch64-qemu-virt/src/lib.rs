@@ -1,4 +1,8 @@
 #![no_std]
+#![feature(used_with_arg)]
+
+extern crate alloc;
+extern crate ax_driver as _;
 
 #[macro_use]
 extern crate ax_plat;
