@@ -202,6 +202,7 @@ impl BuildInfo {
             );
             cargo.env.extend(std_target.env);
             prepare_std_build_env(&mut cargo.env, target, metadata)?;
+            pass_std_build_nested_features(&mut cargo.env, &mut cargo.features);
             cargo.extra_config = Some(std_cargo_config_path()?.display().to_string());
             cargo.to_bin = false;
             return Ok(cargo);
@@ -210,7 +211,7 @@ impl BuildInfo {
         let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
-        self.resolve_features_with_metadata(package, plat_dyn, metadata);
+        self.resolve_features_with_metadata(package, target, plat_dyn, metadata);
         let mut extra_rustflags = toolchain_rustflags(&self.env);
         if self.features.iter().any(|f| f == "kcov") {
             extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-level=3".to_string());
@@ -282,11 +283,13 @@ impl BuildInfo {
     pub(crate) fn resolve_features_with_metadata(
         &mut self,
         package: &str,
+        target: &str,
         plat_dyn: bool,
         metadata: &Metadata,
     ) {
         self.resolve_features_with_prefix_family(
             package,
+            target,
             plat_dyn,
             detect_ax_feature_prefix_family(package, metadata),
         );
@@ -295,16 +298,13 @@ impl BuildInfo {
     fn resolve_features_with_prefix_family(
         &mut self,
         package: &str,
+        target: &str,
         plat_dyn: bool,
         prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
     ) {
         let prefix_family = self.resolve_ax_feature_prefix_family(package, prefix_family);
-        let has_myplat = self.features.iter().any(|feature| {
-            matches!(
-                feature.as_str(),
-                "myplat" | "ax-std/myplat" | "ax-feat/myplat"
-            )
-        });
+        let has_myplat = has_myplat_feature(&self.features);
+        let has_defplat = has_defplat_feature(&self.features);
 
         self.features.retain(|feature| {
             !matches!(
@@ -327,7 +327,7 @@ impl BuildInfo {
         } else if has_myplat {
             self.features
                 .push(format!("{}myplat", prefix_family.prefix()));
-        } else {
+        } else if has_defplat {
             self.features
                 .push(format!("{}defplat", prefix_family.prefix()));
         }
@@ -335,9 +335,23 @@ impl BuildInfo {
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
         }
+        self.push_platform_feature(target, plat_dyn, has_myplat);
 
         self.features.sort();
         self.features.dedup();
+    }
+
+    fn push_platform_feature(&mut self, target: &str, plat_dyn: bool, has_myplat: bool) {
+        if has_myplat || has_ax_hal_platform_feature(&self.features) {
+            return;
+        }
+
+        let feature = if plat_dyn {
+            "ax-hal/plat-dyn"
+        } else {
+            default_ax_hal_platform_feature(target).unwrap_or("ax-hal/defplat")
+        };
+        self.features.push(feature.to_string());
     }
 
     fn resolve_ax_feature_prefix_family(
@@ -381,11 +395,14 @@ impl BuildInfo {
     }
 
     #[cfg(test)]
-    pub(crate) fn resolve_features(&mut self, package: &str, plat_dyn: bool) {
+    pub(crate) fn resolve_features(&mut self, package: &str, target: &str, plat_dyn: bool) {
         match workspace_metadata() {
-            Ok(metadata) => self.resolve_features_with_metadata(package, plat_dyn, &metadata),
+            Ok(metadata) => {
+                self.resolve_features_with_metadata(package, target, plat_dyn, &metadata)
+            }
             Err(err) => self.resolve_features_with_prefix_family(
                 package,
+                target,
                 plat_dyn,
                 Err(err.context("failed to load workspace metadata")),
             ),
@@ -536,6 +553,22 @@ pub(crate) fn prepare_std_build_env(
     Ok(())
 }
 
+fn pass_std_build_nested_features(envs: &mut HashMap<String, String>, features: &mut Vec<String>) {
+    let mut nested = Vec::new();
+    features.retain(|feature| {
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            nested.push(feature.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if nested.is_empty() {
+        return;
+    }
+    envs.insert("ARCEOS_RUST_FEATURES".to_string(), nested.join(","));
+}
+
 fn std_cargo_config_path() -> anyhow::Result<PathBuf> {
     let path = std_build_dir()?.join("config.toml");
     write_if_changed(
@@ -655,6 +688,9 @@ fn normalize_std_feature(feature: &str) -> String {
             .split_once('/')
             .map(|(_, feature)| format!("arceos-rust/{feature}"))
             .unwrap_or_else(|| normalized.clone()),
+        feature if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") => {
+            normalized
+        }
         feature if feature.starts_with("arceos-rust/") => normalized,
         feature => format!("arceos-rust/{feature}"),
     }
@@ -863,6 +899,76 @@ fn detect_ax_feature_prefix_family(
     }
 }
 
+fn has_myplat_feature(features: &[String]) -> bool {
+    features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "myplat" | "ax-std/myplat" | "ax-feat/myplat" | "ax-hal/myplat"
+        )
+    })
+}
+
+fn has_defplat_feature(features: &[String]) -> bool {
+    features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "defplat" | "ax-std/defplat" | "ax-feat/defplat" | "ax-hal/defplat"
+        )
+    })
+}
+
+fn ax_hal_platform_feature_name(feature: &str) -> Option<&str> {
+    let platform = feature.strip_prefix("ax-hal/")?;
+    match platform {
+        "plat-dyn"
+        | "x86-pc"
+        | "aarch64-qemu-virt"
+        | "aarch64-raspi"
+        | "aarch64-bsta1000b"
+        | "aarch64-phytium-pi"
+        | "riscv64-qemu-virt"
+        | "riscv64-sg2002"
+        | "riscv64-visionfive2"
+        | "riscv64-qemu-virt-hv"
+        | "loongarch64-qemu-virt"
+        | "x86-qemu-q35" => Some(platform),
+        _ => None,
+    }
+}
+
+fn has_ax_hal_platform_feature(features: &[String]) -> bool {
+    features
+        .iter()
+        .any(|feature| ax_hal_platform_feature_name(feature).is_some())
+}
+
+fn default_ax_hal_platform_feature(target: &str) -> anyhow::Result<&'static str> {
+    Ok(match target_arch_name(target)? {
+        "x86_64" => "ax-hal/x86-pc",
+        "aarch64" => "ax-hal/aarch64-qemu-virt",
+        "riscv64" => "ax-hal/riscv64-qemu-virt",
+        "loongarch64" => "ax-hal/loongarch64-qemu-virt",
+        _ => unreachable!("unsupported arch"),
+    })
+}
+
+fn ax_hal_platform_package(platform: &str) -> Option<&'static str> {
+    match platform {
+        "x86-pc" => Some("ax-plat-x86-pc"),
+        "aarch64-qemu-virt" => Some("ax-plat-aarch64-qemu-virt"),
+        "aarch64-raspi" => Some("ax-plat-aarch64-raspi"),
+        "aarch64-bsta1000b" => Some("ax-plat-aarch64-bsta1000b"),
+        "aarch64-phytium-pi" => Some("ax-plat-aarch64-phytium-pi"),
+        "riscv64-qemu-virt" => Some("ax-plat-riscv64-qemu-virt"),
+        "riscv64-sg2002" => Some("ax-plat-riscv64-sg2002"),
+        "riscv64-visionfive2" => Some("axplat-riscv64-visionfive2"),
+        "riscv64-qemu-virt-hv" => Some("ax-plat-riscv64-qemu-virt"),
+        "loongarch64-qemu-virt" => Some("ax-plat-loongarch64-qemu-virt"),
+        "x86-qemu-q35" => Some("axplat-x86-qemu-q35"),
+        _ => None,
+    }
+}
+
 fn resolve_platform_package(
     package: &str,
     target: &str,
@@ -871,6 +977,14 @@ fn resolve_platform_package(
 ) -> anyhow::Result<String> {
     let arch = target_arch_name(target)?;
     let package_info = workspace_package(metadata, package)?;
+
+    if let Some(platform) = features
+        .iter()
+        .find_map(|feature| ax_hal_platform_feature_name(feature))
+        .and_then(ax_hal_platform_package)
+    {
+        return Ok(platform.to_string());
+    }
 
     let explicit_platform_features: Vec<_> = features
         .iter()
@@ -888,21 +1002,13 @@ fn resolve_platform_package(
         })
         .collect();
 
-    if let Some(dep) = package_info.dependencies.iter().find(|dep| {
-        (dep.name.starts_with("axplat-") || dep.name.starts_with("ax-plat-"))
-            && explicit_platform_features
-                .iter()
-                .any(|feature| *feature == linker_platform_name(&dep.name))
-    }) {
-        return Ok(dep.name.clone());
+    if let Some(platform) =
+        explicit_platform_package_from_features(package_info, &explicit_platform_features)
+    {
+        return Ok(platform);
     }
 
-    if features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "myplat" | "ax-std/myplat" | "ax-feat/myplat"
-        )
-    }) {
+    if has_myplat_feature(features) {
         if let Some(dep_name) = explicit_myplat_platform_package(package, arch)
             && package_info
                 .dependencies
@@ -954,6 +1060,36 @@ fn explicit_myplat_platform_package(package: &str, arch: &str) -> Option<&'stati
         ("axvisor", "riscv64") => Some("ax-plat-riscv64-qemu-virt"),
         _ => None,
     }
+}
+
+fn explicit_platform_package_from_features(
+    package_info: &Package,
+    explicit_features: &[&str],
+) -> Option<String> {
+    package_info
+        .dependencies
+        .iter()
+        .find(|dep| {
+            dependency_is_platform(&dep.name)
+                && explicit_features.iter().any(|feature| {
+                    *feature == dep.name
+                        || *feature == linker_platform_name(&dep.name)
+                        || feature_enables_dependency(package_info, feature, &dep.name)
+                })
+        })
+        .map(|dep| dep.name.clone())
+}
+
+fn dependency_is_platform(dep_name: &str) -> bool {
+    dep_name.starts_with("axplat-") || dep_name.starts_with("ax-plat-")
+}
+
+fn feature_enables_dependency(package_info: &Package, feature: &str, dep_name: &str) -> bool {
+    package_info.features.get(feature).is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item == dep_name || item == &format!("dep:{dep_name}"))
+    })
 }
 
 fn myplat_dependency_matches_arch(dep_name: &str, arch: &str) -> bool {
@@ -1225,6 +1361,51 @@ mod tests {
                 "-Cstrip=none".to_string(),
                 "-Cforce-frame-pointers=yes".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
+        let mut envs = HashMap::new();
+        let mut features = vec![
+            "ax-hal/riscv64-qemu-virt".to_string(),
+            "ax-driver/pci".to_string(),
+            "ax-driver/virtio-blk".to_string(),
+            "ax-driver/virtio-net".to_string(),
+            "dns".to_string(),
+        ];
+
+        pass_std_build_nested_features(&mut envs, &mut features);
+
+        assert_eq!(features, vec!["dns".to_string()]);
+        assert_eq!(
+            envs.get("ARCEOS_RUST_FEATURES"),
+            Some(
+                &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn std_build_runtime_features_are_passed_through_after_normalization() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec![
+                "ax-hal/loongarch64-qemu-virt".to_string(),
+                "dns".to_string(),
+            ],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+        let mut envs = HashMap::new();
+        pass_std_build_nested_features(&mut envs, &mut info.features);
+
+        assert_eq!(info.features, vec!["arceos-rust/dns".to_string()]);
+        assert_eq!(
+            envs.get("ARCEOS_RUST_FEATURES"),
+            Some(&"ax-hal/loongarch64-qemu-virt".to_string())
         );
     }
 

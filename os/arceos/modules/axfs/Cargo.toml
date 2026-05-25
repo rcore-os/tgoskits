@@ -10,10 +10,9 @@ license.workspace = true
 [features]
 default = []
 times = []
-use-ramdisk = [] # TODO: init ramdisk
+use-ramdisk = []
 
 [dependencies]
-ax-driver = { workspace = true, features = ["block"] }
 ax-errno = { workspace = true }
 ax-hal = { workspace = true }
 ax-fs-devfs = { workspace = true }

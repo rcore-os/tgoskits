@@ -61,14 +61,6 @@ display = []
 # Real Time Clock (RTC) Driver.
 rtc = []
 
-# Device drivers
-bus-mmio = []
-bus-pci = []
-driver-ramdisk = []
-driver-ixgbe = []
-driver-fxmac = []
-driver-bcm2835-sdhci = []
-
 # Logging
 log-level-off = []
 log-level-error = []

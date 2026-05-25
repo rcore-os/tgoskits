@@ -27,6 +27,7 @@ uart_16550 = "0.5"
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+rdrive.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["loongarch64-unknown-none"]

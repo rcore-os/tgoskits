@@ -9,5 +9,7 @@ ax-std = ["dep:ax-std"]
 panic-path = []
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, optional = true, features = ["paging", "backtrace"] }
 axbacktrace = { workspace = true }

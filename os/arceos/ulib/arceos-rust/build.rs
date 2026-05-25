@@ -118,7 +118,8 @@ fn compile_project(lib_dir: &PathBuf, out_dir: &PathBuf, config_path: &PathBuf) 
     let arch = get_arch();
     let target = get_target(&arch);
     let features = env::var("CARGO_CFG_FEATURE").unwrap();
-    let feature_list = features.replace(",", " ");
+    let passthrough_features = env::var("ARCEOS_RUST_FEATURES").unwrap_or_default();
+    let feature_list = resolve_nested_features(&features, &passthrough_features).join(" ");
 
     let mut command = Command::new(cargo());
     command.env("AX_TARGET", target);
@@ -271,4 +272,72 @@ fn get_log_level(feature_list: &str) -> &str {
         }
     }
     level
+}
+
+fn map_nested_feature(feature: &str) -> String {
+    if let Some(rest) = feature.strip_prefix("ax_hal/") {
+        format!("ax-hal/{rest}")
+    } else if let Some(rest) = feature.strip_prefix("ax_driver/") {
+        format!("ax-driver/{rest}")
+    } else {
+        feature.to_string()
+    }
+}
+
+fn resolve_nested_features(features: &str, passthrough_features: &str) -> Vec<String> {
+    let mut feature_list = features
+        .split(',')
+        .chain(passthrough_features.split(','))
+        .map(str::trim)
+        .filter(|feature| !feature.is_empty())
+        .map(map_nested_feature)
+        .collect::<Vec<_>>();
+
+    if !has_platform_feature(&feature_list) {
+        feature_list.push("defplat".to_string());
+    }
+    feature_list.sort();
+    feature_list.dedup();
+    feature_list
+}
+
+fn has_platform_feature(features: &[String]) -> bool {
+    features.iter().any(|feature| {
+        matches!(feature.as_str(), "default" | "defplat" | "myplat")
+            || feature.starts_with("ax-hal/")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_feature_builds_with_default_platform() {
+        assert_eq!(
+            resolve_nested_features("alloc", ""),
+            vec!["alloc".to_string(), "defplat".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_feature_keeps_inner_defaults() {
+        assert_eq!(resolve_nested_features("default", ""), vec!["default"]);
+    }
+
+    #[test]
+    fn explicit_platform_is_preserved_without_defplat() {
+        assert_eq!(
+            resolve_nested_features("alloc", "ax_hal/x86-pc"),
+            vec!["alloc".to_string(), "ax-hal/x86-pc".to_string()]
+        );
+    }
+
+    #[test]
+    fn explicit_myplat_is_preserved_without_defplat() {
+        assert_eq!(
+            resolve_nested_features("alloc,myplat", ""),
+            vec!["alloc".to_string(), "myplat".to_string()]
+        );
+    }
 }

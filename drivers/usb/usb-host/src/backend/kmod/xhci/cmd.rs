@@ -1,8 +1,7 @@
 use alloc::sync::Arc;
 
-use ax_kspin::SpinNoIrq as Mutex;
 use mbarrier::wmb;
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 use usb_if::err::TransferError;
 use xhci::{
     registers::doorbell,

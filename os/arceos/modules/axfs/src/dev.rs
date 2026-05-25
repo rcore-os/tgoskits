@@ -16,22 +16,57 @@
 
 use alloc::sync::Arc;
 
-use ax_driver::prelude::*;
+use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq as Mutex;
 
 const BLOCK_SIZE: usize = 512;
+
+pub trait FsBlockDevice: Send {
+    fn name(&self) -> &str;
+    fn num_blocks(&self) -> u64;
+    fn block_size(&self) -> usize;
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult;
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult;
+    fn flush(&mut self) -> AxResult;
+}
+
+impl<T: FsBlockDevice + ?Sized> FsBlockDevice for alloc::boxed::Box<T> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        (**self).num_blocks()
+    }
+
+    fn block_size(&self) -> usize {
+        (**self).block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+        (**self).read_block(block_id, buf)
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+        (**self).write_block(block_id, buf)
+    }
+
+    fn flush(&mut self) -> AxResult {
+        (**self).flush()
+    }
+}
 
 /// A disk device with a cursor.
 #[derive(Clone)]
 pub struct Disk {
     block_id: u64,
     offset: usize,
-    dev: Arc<Mutex<AxBlockDevice>>,
+    dev: Arc<Mutex<alloc::boxed::Box<dyn FsBlockDevice>>>,
 }
 
 impl Disk {
     /// Create a new disk.
-    pub fn new(dev: AxBlockDevice) -> Self {
+    pub fn new(dev: alloc::boxed::Box<dyn FsBlockDevice>) -> Self {
         assert_eq!(BLOCK_SIZE, dev.block_size());
         Self {
             block_id: 0,
@@ -58,7 +93,7 @@ impl Disk {
     }
 
     /// Read within one block, returns the number of bytes read.
-    pub fn read_one(&mut self, buf: &mut [u8]) -> DevResult<usize> {
+    pub fn read_one(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         let read_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
             // whole block
             let mut dev = self.dev.lock();
@@ -87,7 +122,7 @@ impl Disk {
     }
 
     /// Write within one block, returns the number of bytes written.
-    pub fn write_one(&mut self, buf: &[u8]) -> DevResult<usize> {
+    pub fn write_one(&mut self, buf: &[u8]) -> AxResult<usize> {
         let write_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
             // whole block
             let mut dev = self.dev.lock();
@@ -151,7 +186,7 @@ impl Partition {
     }
 
     /// Read within one block, returns the number of bytes read.
-    pub fn read_one(&mut self, buf: &mut [u8]) -> DevResult<usize> {
+    pub fn read_one(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         if self.position >= self.size() {
             return Ok(0);
         }
@@ -175,7 +210,7 @@ impl Partition {
     }
 
     /// Write within one block, returns the number of bytes written.
-    pub fn write_one(&mut self, buf: &[u8]) -> DevResult<usize> {
+    pub fn write_one(&mut self, buf: &[u8]) -> AxResult<usize> {
         if self.position >= self.size() {
             return Ok(0);
         }

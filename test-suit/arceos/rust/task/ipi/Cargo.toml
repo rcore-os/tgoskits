@@ -7,4 +7,6 @@ description = "An ArceOS IPI callback delivery regression test"
 publish = false
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-std = { workspace = true, features = ["alloc", "multitask", "irq", "ipi"], optional = true }

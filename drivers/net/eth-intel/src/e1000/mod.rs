@@ -5,7 +5,7 @@ use core::mem::size_of;
 
 use dma_api::{DArray, DeviceDma, DmaDirection, DmaOp};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
-use rdif_eth::{Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
+use rdif_eth::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 
 use crate::err::{Error, Result};
 
@@ -201,8 +201,8 @@ impl ITxQueue for E1000TxQueue {
         }
     }
 
-    fn submit(&mut self, bus_addr: u64, len: usize) -> core::result::Result<(), NetError> {
-        if len > MAX_PACKET {
+    fn submit(&mut self, buffer: DmaBuffer) -> core::result::Result<(), NetError> {
+        if buffer.len > MAX_PACKET {
             return Err(NetError::Other(Box::new(Error::InvalidArgument(
                 "tx packet too large",
             ))));
@@ -216,8 +216,9 @@ impl ITxQueue for E1000TxQueue {
             return Err(NetError::Retry);
         }
 
-        self.desc.set(idx, TxDesc::new(bus_addr, len as u16));
-        self.bus_addrs[idx] = Some(bus_addr);
+        self.desc
+            .set(idx, TxDesc::new(buffer.bus_addr, buffer.len as u16));
+        self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.regs.write(TDT, next as u32);
 
@@ -259,8 +260,8 @@ impl IRxQueue for E1000RxQueue {
         }
     }
 
-    fn submit(&mut self, bus_addr: u64, len: usize) -> core::result::Result<(), NetError> {
-        if len > MAX_PACKET {
+    fn submit(&mut self, buffer: DmaBuffer) -> core::result::Result<(), NetError> {
+        if buffer.len > MAX_PACKET {
             return Err(NetError::Other(Box::new(Error::InvalidArgument(
                 "rx buffer too large",
             ))));
@@ -274,8 +275,8 @@ impl IRxQueue for E1000RxQueue {
             return Err(NetError::Retry);
         }
 
-        self.desc.set(idx, RxDesc::new(bus_addr));
-        self.bus_addrs[idx] = Some(bus_addr);
+        self.desc.set(idx, RxDesc::new(buffer.bus_addr));
+        self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.regs.write(RDT, next as u32);
 

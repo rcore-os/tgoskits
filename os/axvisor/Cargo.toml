@@ -40,15 +40,17 @@ vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
-rockchip-soc = ["dep:axplat-dyn", "axplat-dyn/rockchip-soc"]
+rockchip-soc = ["ax-driver/rockchip-soc"]
+rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
+rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
+phytium-mci = ["ax-driver/phytium-mci"]
 sdmmc = [
-    "dep:axplat-dyn",
-    "axplat-dyn/rockchip-sdhci",
-    "axplat-dyn/rockchip-soc",
-    "axplat-dyn/phytium-mci",
+    "ax-driver/rockchip-sdhci",
+    "ax-driver/rockchip-soc",
+    "ax-driver/phytium-mci",
 ]
-rockchip-pm = ["dep:axplat-dyn", "axplat-dyn/rockchip-pm"]
-serial = ["dep:axplat-dyn", "axplat-dyn/serial"]
+rockchip-pm = ["ax-driver/rockchip-pm"]
+serial = ["ax-driver/serial"]
 
 [dependencies]
 spin = { workspace = true }
@@ -90,6 +92,7 @@ ax-page-table-multiarch = { workspace = true }
 ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
+ax-driver.workspace = true
 axplat-dyn = { workspace = true, optional = true, default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

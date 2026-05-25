@@ -3,10 +3,9 @@ use core::ops::{Deref, DerefMut};
 
 use ::pcie::*;
 pub use ::pcie::{Endpoint, PciCapability, PcieGeneric};
-use ax_kspin::SpinNoIrq as Mutex;
 use mmio_api::{MapError, MmioOp};
 pub use rdif_pcie::{DriverGeneric, PciAddress, PciMem32, PciMem64, PcieController};
-use spin::Once;
+use spin::{Mutex, Once};
 
 use crate::{
     Descriptor, Device, PlatformDevice, ProbeError, get_list,
