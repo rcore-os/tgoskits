@@ -63,10 +63,8 @@ fn read_kallsyms() -> KallsymsMapped<'static> {
     let total_size =
         KallsymsMapped::check_total_bytes(kallsyms_sec).expect("Invalid kallsyms format");
 
-    let kallsyms = kallsyms_sec[..total_size as usize].to_vec().leak();
-
-    ax_alloc::global_add_memory(kallsyms_start, kallsyms_sec_size).unwrap();
-
+    let kallsyms = &kallsyms_sec[..total_size as usize];
+    // TODO: recycle unused space in .kallsyms section
     info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
     KallsymsMapped::from_blob(
         kallsyms,
@@ -996,13 +994,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))
     });
 
-    let ksym = read_kallsyms();
     static ALL_SYMS: LazyInit<String> = LazyInit::new();
 
-    ALL_SYMS.init_once(ksym.dump_all_symbols());
+    let ksym = read_kallsyms();
     KALLSYMS.init_once(ksym);
 
     root.add("kallsyms", {
+        if !ALL_SYMS.is_inited() {
+            ALL_SYMS.init_once(KALLSYMS.dump_all_symbols());
+        }
         let seq_obj = SeqObject::new(|| Ok(ALL_SYMS.as_str()));
         SpecialFsFile::new_regular_with_perm(
             fs.clone(),
