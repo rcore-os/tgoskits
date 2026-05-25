@@ -139,6 +139,9 @@ pub struct Thread {
     /// sequences (`rseq(2)`).
     rseq_area: AtomicUsize,
 
+    /// The rseq signature recorded at registration time.
+    rseq_signature: AtomicU32,
+
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
 
@@ -185,6 +188,7 @@ impl Thread {
             exit_event: Arc::default(),
             exit_request: AtomicBool::new(false),
             rseq_area: AtomicUsize::new(0),
+            rseq_signature: AtomicU32::new(0),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
@@ -366,9 +370,26 @@ impl Thread {
         self.rseq_area.load(Ordering::SeqCst)
     }
 
+    /// Get the registered rseq signature.
+    pub fn rseq_signature(&self) -> u32 {
+        self.rseq_signature.load(Ordering::SeqCst)
+    }
+
     /// Set the registered rseq area pointer.
     pub fn set_rseq_area(&self, addr: usize) {
         self.rseq_area.store(addr, Ordering::SeqCst);
+    }
+
+    /// Set the registered rseq area pointer and signature.
+    pub fn set_rseq_state(&self, addr: usize, sig: u32) {
+        self.rseq_area.store(addr, Ordering::SeqCst);
+        self.rseq_signature.store(sig, Ordering::SeqCst);
+    }
+
+    /// Clear the registered rseq state.
+    pub fn clear_rseq_state(&self) {
+        self.rseq_area.store(0, Ordering::SeqCst);
+        self.rseq_signature.store(0, Ordering::SeqCst);
     }
 
     /// Block the next signal check for this thread.
@@ -487,6 +508,9 @@ pub struct ProcessData {
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
 
+    /// Process-local membarrier(2) registration state bitmask.
+    membarrier_state: AtomicU32,
+
     /// PR_GET_DUMPABLE / PR_SET_DUMPABLE value (default 1 = SUID_DUMP_USER).
     /// Cleared to 0 (SUID_DUMP_DISABLE) whenever the effective UID/GID
     /// changes via setuid/setresuid/setreuid (man 2 setuid §NOTES:
@@ -554,6 +578,7 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
@@ -639,6 +664,16 @@ impl ProcessData {
     /// Set the process nice value.
     pub fn set_nice(&self, nice: i32) {
         self.nice.store(nice, Ordering::SeqCst);
+    }
+
+    /// Get the membarrier(2) registration state bitmask.
+    pub fn membarrier_state(&self) -> u32 {
+        self.membarrier_state.load(Ordering::SeqCst)
+    }
+
+    /// Add bits to the membarrier(2) registration state.
+    pub fn register_membarrier_state(&self, state: u32) {
+        self.membarrier_state.fetch_or(state, Ordering::SeqCst);
     }
 
     /// Get the dumpable flag (PR_GET_DUMPABLE).
