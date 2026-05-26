@@ -18,5 +18,5 @@ to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/bug-ext4-dir-ops"
 success_regex = ['(?m)^TEST PASSED\s*$']
-fail_regex = ['(?m)^TEST FAILED\s*$', '(?i)\bpanic(?:ked)?\b']
+fail_regex = ['(?m)^TEST FAILED\s*$', '(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$"]
 timeout = 60
