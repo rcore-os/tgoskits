@@ -11,18 +11,8 @@ use super::{SyncBlockOps, register_sync_block};
 const BLOCK_SIZE: usize = 512;
 pub const DEVICE_NAME: &str = "cvsd";
 
-#[cfg(probe = "static")]
-module_driver!(
-    name: "Static CVSD",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_static,
-    }],
-);
-
 #[cfg(probe = "fdt")]
-module_driver!(
+crate::model_register!(
     name: "FDT CVSD",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -53,31 +43,7 @@ fn probe_fdt(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeE
     )
 }
 
-#[cfg(probe = "static")]
-fn probe_static(
-    info: rdrive::probe::static_::StaticInfo,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-    let regs = info.regs();
-    let Some((sdmmc_address, sdmmc_size)) = regs.first().copied() else {
-        return Err(OnProbeError::NotMatch);
-    };
-    let Some((syscon_address, syscon_size)) = regs.get(1).copied() else {
-        return Err(OnProbeError::NotMatch);
-    };
-    register_mmio(
-        plat_dev,
-        sdmmc_address,
-        sdmmc_size,
-        syscon_address,
-        syscon_size,
-    )
-}
-
-pub fn register_mmio(
+fn register_mmio(
     plat_dev: PlatformDevice,
     sdmmc_paddr: usize,
     sdmmc_size: usize,

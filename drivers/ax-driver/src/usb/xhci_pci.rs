@@ -16,7 +16,7 @@ use super::{PlatformDeviceUsbHost, align_up_4k, pci_irq_or_error, usb_kernel};
 
 const DRIVER_NAME: &str = "usb-xhci-pci";
 
-module_driver!(
+crate::model_register!(
     name: "USB xHCI PCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

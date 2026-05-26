@@ -64,19 +64,25 @@ pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf
         return;
     }
 
-    let mut start = 0;
-    for (i, &byte) in buf.iter().enumerate() {
+    // Collect output with \n -> \r\n translation into a single buffer so the
+    // underlying writer sees exactly one call per write_output_bytes() instead
+    // of one call per newline.  A TUI frame typically contains many cursor-
+    // movement newlines; the per-newline approach forced the UART driver to
+    // acquire/release its lock dozens of times for a single frame and made
+    // terminal emulators render the frame line-by-line (visible flicker).
+    let extra = buf.iter().filter(|&&b| b == b'\n').count();
+    if extra == 0 {
+        writer.write(buf);
+        return;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(buf.len() + extra);
+    for &byte in buf {
         if byte == b'\n' {
-            if start < i {
-                writer.write(&buf[start..i]);
-            }
-            writer.write(b"\r\n");
-            start = i + 1;
+            out.push(b'\r');
         }
+        out.push(byte);
     }
-    if start < buf.len() {
-        writer.write(&buf[start..]);
-    }
+    writer.write(&out);
 }
 
 struct InputReader<R, W> {

@@ -96,7 +96,7 @@ flowchart TB
 
 ```rust
 pub enum PlatformSource {
-    Static(&'static [StaticDeviceDesc]),
+    Static,
     Fdt(core::ptr::NonNull<u8>),
     Acpi(AcpiRoot),
 }
@@ -113,7 +113,7 @@ pub enum ProbeKind {
 
 | backend | 独立状态 | 匹配输入 | probe 输入 | 第一版行为 |
 | --- | --- | --- | --- | --- |
-| `probe::static_` | `System { devices, probed }` | `StaticDeviceDesc` | `StaticInfo` + `PlatformDevice` | 支持静态平台常量注册 |
+| `probe::static_` | `System { probed_names }` | `ProbeKind::Static` register name | `PlatformDevice` | 平台 crate 自己注册静态 model driver 并在回调中使用平台常量 |
 | `probe::fdt` | `System { fdt, phandle_map, probed }` | compatible + node status | `FdtInfo` + `PlatformDevice` | 保留当前 FDT 能力 |
 | `probe::acpi` | `System { root, probed }` | HID/CID + ACPI device | `AcpiInfo` + `PlatformDevice` | API 存在，返回 unsupported |
 | `probe::pci` | PCIe controller enumerator | vendor/device/class | endpoint + `PlatformDevice` | 保留当前 PCIe 二阶段 probe |

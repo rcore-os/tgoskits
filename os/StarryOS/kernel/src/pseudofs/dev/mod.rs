@@ -293,17 +293,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
-    #[cfg(feature = "kcov")]
-    root.add(
-        "kcov",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(10, 57),
-            Arc::new(crate::kcov::KcovDevice),
-        ),
-    );
-
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",

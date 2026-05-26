@@ -25,7 +25,7 @@ const PLACEHOLDER_COMPATIBLES: &[&str] = &[
     "cvitek,cv181x-thermal",
 ];
 
-module_driver!(
+crate::model_register!(
     name: "SG2002 placeholder",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

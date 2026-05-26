@@ -76,6 +76,9 @@ paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",
     "ax-page-table-multiarch/ax-errno",
+    "ax-plat-aarch64-qemu-virt?/paging",
+    "ax-plat-loongarch64-qemu-virt?/paging",
+    "ax-plat-riscv64-qemu-virt?/paging",
 ]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
@@ -87,8 +90,6 @@ hv = [
     "axplat-dyn?/hv",
 ]
 axvisor-linker = []
-
-starry-kcov = []
 
 # Custom or default platforms
 myplat = []

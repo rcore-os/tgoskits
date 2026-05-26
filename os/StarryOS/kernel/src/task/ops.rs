@@ -468,9 +468,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         ax_task::yield_now();
     }
 
-    #[cfg(feature = "kcov")]
-    crate::kcov::disable_for_thread(curr.id().as_u64() as u32);
-
     let process = &thr.proc_data.proc;
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread

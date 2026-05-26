@@ -15,7 +15,7 @@ use crate::mmio::iomap;
 const DRIVER_NAME: &str = "rk3588-pinctrl";
 const GPIO_BANK_COUNT: usize = 5;
 
-module_driver!(
+crate::model_register!(
     name: "Rockchip PinCtrl",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,

@@ -34,8 +34,8 @@ virtio-input = ["input", "virtio"]
 virtio-socket = ["vsock", "virtio"]
 
 ramdisk = ["block", "dep:ramdisk"]
-cvsd = ["block", "dep:sg200x-bsp"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
+cvsd = ["block", "fdt", "dep:sg200x-bsp"]
 ahci = ["block", "pci", "dep:simple-ahci"]
 ixgbe = ["net", "pci", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
@@ -123,6 +123,7 @@ rdif-pcie = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true
+rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }

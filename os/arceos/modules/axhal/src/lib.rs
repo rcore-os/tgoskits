@@ -46,19 +46,6 @@ pub mod mem;
 pub mod percpu;
 pub mod time;
 
-/// Static driver resources exported by the selected platform.
-pub mod drivers {
-    #[cfg(not(feature = "plat-dyn"))]
-    pub fn static_devices() -> &'static [rdrive::probe::static_::StaticDeviceDesc] {
-        ax_plat::drivers::static_devices()
-    }
-
-    #[cfg(feature = "plat-dyn")]
-    pub const fn static_devices() -> &'static [rdrive::probe::static_::StaticDeviceDesc] {
-        &[]
-    }
-}
-
 #[cfg(feature = "tls")]
 pub mod tls;
 
@@ -67,9 +54,6 @@ pub mod irq;
 
 #[cfg(feature = "paging")]
 pub mod paging;
-
-#[cfg(feature = "starry-kcov")]
-pub mod kcov;
 
 /// Console input and output.
 pub mod console {
