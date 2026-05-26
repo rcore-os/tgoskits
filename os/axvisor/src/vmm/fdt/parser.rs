@@ -72,7 +72,7 @@ pub fn setup_guest_fdt_from_vmm(
     // Call the modified function and get the returned device name list
     let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
 
-    let dtb_data = super::create::crate_guest_fdt(&fdt, &passthrough_device_names, crate_config);
+    let dtb_data = super::create::crate_guest_fdt(&fdt, &passthrough_device_names, crate_config)?;
     crate_guest_fdt_with_cache(dtb_data, crate_config);
     Ok(())
 }
@@ -222,9 +222,13 @@ fn should_skip_passthrough_node(
     false
 }
 
-pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]) {
-    let fdt = Fdt::from_bytes(dtb)
-        .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]) -> AxResult {
+    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse DTB image while reading reserved memory: {e:#?}")
+        )
+    })?;
     let all_nodes: Vec<_> = fdt.all_nodes().collect();
     let all_paths = super::build_all_node_paths(&all_nodes);
     let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
@@ -298,6 +302,7 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
             added_count
         );
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -368,7 +373,11 @@ mod tests {
     }
 }
 
-pub fn set_phys_cpu_sets(vm_cfg: &mut AxVMConfig, fdt: &Fdt, crate_config: &AxVMCrateConfig) {
+pub fn set_phys_cpu_sets(
+    vm_cfg: &mut AxVMConfig,
+    fdt: &Fdt,
+    crate_config: &AxVMCrateConfig,
+) -> AxResult {
     // Find and parse CPU information from host DTB
     let host_cpus: Vec<_> = fdt.find_nodes("/cpus/cpu").collect();
     info!("Found {} host CPU nodes", &host_cpus.len());
@@ -377,7 +386,7 @@ pub fn set_phys_cpu_sets(vm_cfg: &mut AxVMConfig, fdt: &Fdt, crate_config: &AxVM
         .base
         .phys_cpu_ids
         .as_ref()
-        .expect("ERROR: phys_cpu_ids not found in config.toml");
+        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
     let cpu_nodes_info: Vec<_> = host_cpus
         .iter()
@@ -437,6 +446,7 @@ pub fn set_phys_cpu_sets(vm_cfg: &mut AxVMConfig, fdt: &Fdt, crate_config: &AxVM
         "vcpu_mappings: {:?}",
         vm_cfg.phys_cpu_ls_mut().get_vcpu_affinities_pcpu_ids()
     );
+    Ok(())
 }
 
 /// Add address mapping configuration for a device
@@ -543,7 +553,7 @@ pub fn parse_passthrough_devices_address(
     vm_cfg: &mut AxVMConfig,
     crate_cfg: &AxVMCrateConfig,
     dtb: &[u8],
-) {
+) -> AxResult {
     let devices = vm_cfg.pass_through_devices().to_vec();
     if !devices.is_empty() && devices[0].length != 0 {
         for (index, device) in devices.iter().enumerate() {
@@ -557,8 +567,12 @@ pub fn parse_passthrough_devices_address(
             );
         }
     } else {
-        let fdt = Fdt::from_bytes(dtb)
-            .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+        let fdt = Fdt::from_bytes(dtb).map_err(|e| {
+            ax_err_type!(
+                InvalidData,
+                format!("Failed to parse DTB image while reading passthrough devices: {e:#?}")
+            )
+        })?;
 
         // Clear existing passthrough device configurations
         vm_cfg.clear_pass_through_devices();
@@ -651,13 +665,18 @@ pub fn parse_passthrough_devices_address(
             vm_cfg.pass_through_devices().len()
         );
     }
+    Ok(())
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
+pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
     const GIC_PHANDLE: usize = 1;
-    let fdt = Fdt::from_bytes(dtb)
-        .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse DTB image while reading interrupts: {e:#?}")
+        )
+    })?;
 
     for node in fdt.all_nodes() {
         let name = node.name();
@@ -735,6 +754,7 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
     //     length: 0x20_0000,
     //     irq_id: 0,
     // });
+    Ok(())
 }
 
 pub fn update_provided_fdt(
@@ -762,7 +782,7 @@ pub fn update_provided_fdt(
                 format!("Failed to parse host DTB image: {e:#?}")
             )
         })?;
-        let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config);
+        let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config)?;
         crate_guest_fdt_with_cache(provided_dtb_data, crate_config);
     }
     Ok(())

@@ -31,8 +31,8 @@ use crate::vmm::fdt::*;
 
 use alloc::sync::Arc;
 
-#[allow(clippy::module_inception, dead_code)]
-pub mod config {
+#[allow(dead_code)]
+pub mod vmcfg {
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -117,20 +117,20 @@ pub mod config {
                             }
                         };
 
-                        if content.contains("[base]")
-                            && content.contains("[kernel]")
-                            && content.contains("[devices]")
-                        {
-                            configs.push(content);
-                            info!(
-                                "TOML config: {} is valid, start the virtual machine directly now. ",
-                                path_str
-                            );
-                        } else {
-                            warn!(
-                                "File {} does not appear to contain valid VM config structure",
-                                path_str
-                            );
+                        match axvm::config::AxVMCrateConfig::from_toml(&content) {
+                            Ok(_) => {
+                                configs.push(content);
+                                info!(
+                                    "TOML config: {} is valid, start the virtual machine directly now. ",
+                                    path_str
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "File {} does not contain a valid VM config: {:?}",
+                                    path_str, e
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -179,11 +179,11 @@ pub fn init_guest_vms() {
     }
 
     // First try to get configs from filesystem if fs feature is enabled
-    let mut gvm_raw_configs = config::filesystem_vm_configs();
+    let mut gvm_raw_configs = vmcfg::filesystem_vm_configs();
 
     // If no filesystem configs found, fallback to static configs
     if gvm_raw_configs.is_empty() {
-        let static_configs = config::static_vm_configs();
+        let static_configs = vmcfg::static_vm_configs();
         if static_configs.is_empty() {
             info!("Static VM configs are empty.");
             info!("Now axvisor will entry the shell...");

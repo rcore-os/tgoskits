@@ -88,8 +88,10 @@ impl HyperCall {
                     self.code,
                     key
                 );
-                let (base_gpa, size) = ivc::unpublish_channel(self.vm.id(), key)?.unwrap();
-                self.vm.unmap_region(base_gpa, size)?;
+                // Ok(None) means channel still has subscribers; memory not freed yet.
+                if let Some((base_gpa, size)) = ivc::unpublish_channel(self.vm.id(), key)? {
+                    self.vm.unmap_region(base_gpa, size)?;
+                }
 
                 Ok(0)
             }

@@ -37,7 +37,7 @@ pub use parser::*;
 pub use create::update_fdt;
 pub use device::build_all_node_paths;
 
-use crate::vmm::config::{config, get_vm_dtb_arc};
+use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
 // DTB cache for generated device trees
 static GENERATED_DTB_CACHE: LazyInit<Mutex<BTreeMap<usize, Vec<u8>>>> = LazyInit::new();
@@ -49,7 +49,13 @@ pub fn init_dtb_cache() {
 
 /// Get reference to the DTB cache
 pub fn dtb_cache() -> &'static Mutex<BTreeMap<usize, Vec<u8>>> {
-    GENERATED_DTB_CACHE.get().unwrap()
+    if let Some(cache) = GENERATED_DTB_CACHE.call_once(|| Mutex::new(BTreeMap::new())) {
+        cache
+    } else {
+        // SAFETY: call_once either initialized the cache in this call or observed
+        // another completed initialization.
+        unsafe { GENERATED_DTB_CACHE.get_unchecked() }
+    }
 }
 
 /// Generate guest FDT cache the result
@@ -71,7 +77,7 @@ pub fn handle_fdt_operations(
     if let Some(host_fdt_bytes) = host_fdt_bytes {
         let host_fdt = Fdt::from_bytes(host_fdt_bytes)
             .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
-        set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config);
+        set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config)?;
 
         if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
             info!("VM[{}] found DTB , parsing...", vm_config.id());
@@ -106,10 +112,10 @@ pub fn handle_fdt_operations(
     // Overlay VM config with the given DTB.
     if let Some(dtb_arc) = get_vm_dtb_arc(vm_config) {
         let dtb = dtb_arc.as_ref();
-        parse_reserved_memory_regions(vm_create_config, dtb);
-        parse_passthrough_devices_address(vm_config, vm_create_config, dtb);
+        parse_reserved_memory_regions(vm_create_config, dtb)?;
+        parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
         #[cfg(target_arch = "aarch64")]
-        parse_vm_interrupt(vm_config, dtb);
+        parse_vm_interrupt(vm_config, dtb)?;
     } else {
         error!(
             "VM[{}] DTB not found in memory, skipping...",
@@ -125,7 +131,7 @@ pub fn get_developer_provided_dtb(
 ) -> AxResult<Option<Vec<u8>>> {
     match crate_config.kernel.image_location.as_deref() {
         Some("memory") => {
-            let vm_imags = config::get_memory_images()
+            let vm_imags = vmcfg::get_memory_images()
                 .iter()
                 .find(|&v| v.id == vm_cfg.id());
 

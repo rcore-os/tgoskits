@@ -76,7 +76,7 @@ where
     );
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     let mut timers = timer_list.lock();
-    let token = TOKEN.fetch_add(1, Ordering::Release);
+    let token = TOKEN.fetch_add(1, Ordering::Relaxed);
     let event = VmmTimerEvent::new(token, handler);
     timers.set(TimeValue::from_nanos(deadline), event);
     token

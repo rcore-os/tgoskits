@@ -21,7 +21,7 @@ use byte_unit::Byte;
 
 use crate::hal::CacheOp;
 use crate::vmm::VMRef;
-use crate::vmm::config::{config, get_vm_dtb_arc};
+use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
@@ -44,15 +44,15 @@ fn with_memory_image<F, R>(config: &AxVMCrateConfig, func: F) -> Option<R>
 where
     F: FnOnce(&[u8]) -> R,
 {
-    let vm_imags = config::get_memory_images()
+    let vm_imags = vmcfg::get_memory_images()
         .iter()
         .find(|&v| v.id == config.base.id)?;
 
     Some(func(vm_imags.kernel))
 }
 
-fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static config::MemoryImage> {
-    config::get_memory_images()
+fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::MemoryImage> {
+    vmcfg::get_memory_images()
         .iter()
         .find(|&v| v.id == config.base.id)
         .ok_or_else(|| {
@@ -136,7 +136,7 @@ impl ImageLoader {
                         _dtb_slice.len(),
                         self.vm.clone(),
                         &self.config,
-                    );
+                    )?;
                 } else {
                     return ax_err!(InvalidData, "Guest DTB pointer is null");
                 }
@@ -439,7 +439,7 @@ pub mod fs {
                     _dtb_slice.len(),
                     loader.vm.clone(),
                     &loader.config,
-                );
+                )?;
             }
             #[cfg(target_arch = "loongarch64")]
             {

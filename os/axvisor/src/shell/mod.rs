@@ -31,6 +31,12 @@ const ESC: u8 = 0x1b; // ESC key
 
 const MAX_LINE_LEN: usize = 256;
 
+enum InputState {
+    Normal,
+    Escape,
+    EscapeSeq,
+}
+
 // Initialize the console shell.
 pub fn console_init() {
     let mut stdin = std::io::stdin();
@@ -40,12 +46,6 @@ pub fn console_init() {
     let mut buf = [0; MAX_LINE_LEN];
     let mut cursor = 0; // cursor position in buffer
     let mut line_len = 0; // actual length of current line
-
-    enum InputState {
-        Normal,
-        Escape,
-        EscapeSeq,
-    }
 
     let mut input_state = InputState::Normal;
 

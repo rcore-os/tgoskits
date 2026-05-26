@@ -176,7 +176,7 @@ pub struct IVCChannel<H: PagingHandler> {
     /// The base address of the shared memory region in guest physical address of the publisher VM.
     /// `None` if the channel has been unpublished (but still has subscribers).
     base_gpa: Option<GuestPhysAddr>,
-    _phatom: core::marker::PhantomData<H>,
+    _phantom: core::marker::PhantomData<H>,
 }
 
 #[repr(C)]
@@ -187,6 +187,10 @@ pub struct IVCChannelHeader {
 
 impl<H: PagingHandler> IVCChannel<H> {
     #[allow(unused)]
+    /// # Safety
+    ///
+    /// The caller must ensure `shared_region_base` is valid, mapped, and aligned
+    /// for `IVCChannelHeader`, and that no mutable reference to this region exists.
     pub fn header(&self) -> &IVCChannelHeader {
         unsafe {
             // Map the shared region base to the header structure.
@@ -194,6 +198,10 @@ impl<H: PagingHandler> IVCChannel<H> {
         }
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure `shared_region_base` is valid, mapped, and aligned
+    /// for `IVCChannelHeader`, and that no other reference to this region exists.
     pub fn header_mut(&mut self) -> &mut IVCChannelHeader {
         unsafe {
             // Map the shared region base to the mutable header structure.
@@ -202,6 +210,11 @@ impl<H: PagingHandler> IVCChannel<H> {
     }
 
     #[allow(unused)]
+    /// # Safety
+    ///
+    /// The caller must ensure `shared_region_base` is valid, mapped, and that the
+    /// returned pointer is only used within the lifetime of `self` and does not alias
+    /// any mutable reference to the same region.
     pub fn data_region(&self) -> *const u8 {
         unsafe {
             // Return a pointer to the data region, which starts after the header.
@@ -245,6 +258,12 @@ impl<H: PagingHandler> IVCChannel<H> {
         base_gpa: GuestPhysAddr,
     ) -> AxResult<Self> {
         // TODO: support larger shared region sizes with alloc_frames API.
+        if shared_region_size > 4096 {
+            warn!(
+                "IVC channel requested size {shared_region_size:#x} > 4096; \
+                 truncating to 4096 (TODO: support larger sizes)"
+            );
+        }
         let shared_region_size = shared_region_size.min(4096);
         let shared_region_base = H::alloc_frame().ok_or_else(|| {
             ax_errno::ax_err_type!(NoMemory, "Failed to allocate shared region frame")
@@ -257,7 +276,7 @@ impl<H: PagingHandler> IVCChannel<H> {
             shared_region_base,
             shared_region_size,
             base_gpa: Some(base_gpa),
-            _phatom: core::marker::PhantomData,
+            _phantom: core::marker::PhantomData,
         };
 
         channel.header_mut().publisher_id = publisher_vm_id as u64;

@@ -16,14 +16,11 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use ax_cpumask::CpuMask;
 
 use ax_kspin::SpinNoIrq as Mutex;
-use core::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
     modules::{
-        ax_hal::{self, time::busy_wait},
+        ax_hal,
         ax_task::{self, AxTaskExt},
     },
 };
@@ -55,8 +52,8 @@ pub struct VMVCpus {
     _vm_id: usize,
     // A wait queue to manage task scheduling for the VCpus.
     wait_queue: WaitQueue,
-    // A list of tasks associated with the VCpus of this VM.
-    vcpu_task_list: Mutex<Vec<AxTaskRef>>,
+    // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
+    vcpu_task_list: Mutex<BTreeMap<usize, AxTaskRef>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -79,7 +76,7 @@ impl VMVCpus {
         Self {
             _vm_id: vm.id(),
             wait_queue: WaitQueue::new(),
-            vcpu_task_list: Mutex::new(Vec::with_capacity(vm.vcpu_num())),
+            vcpu_task_list: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
@@ -89,8 +86,8 @@ impl VMVCpus {
     /// # Arguments
     ///
     /// * `vcpu_task` - A reference to the task associated with a VCpu that is to be added.
-    fn add_vcpu_task(&self, vcpu_task: AxTaskRef) {
-        self.vcpu_task_list.lock().push(vcpu_task);
+    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: AxTaskRef) {
+        self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
     }
 
     /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
@@ -217,7 +214,7 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 /// It will join all VCpu tasks to ensure they are fully cleaned up.
 pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = VM_VCPU_TASKS.lock().remove(&vm_id) {
-        let tasks = vm_vcpus.vcpu_task_list.lock().clone();
+        let tasks: Vec<_> = vm_vcpus.vcpu_task_list.lock().values().cloned().collect();
         let task_count = tasks.len();
 
         info!("VM[{}] Joining {} VCpu tasks...", vm_id, task_count);
@@ -304,7 +301,7 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
             format!("VM[{}] vCPU resources not found", vm.id())
         )
     })?;
-    vm_vcpus.add_vcpu_task(vcpu_task);
+    vm_vcpus.add_vcpu_task(vcpu_id, vcpu_task);
     Ok(())
 }
 
@@ -332,7 +329,7 @@ pub fn setup_vm_primary_vcpu(vm: VMRef) {
         return;
     };
     let primary_vcpu_task = alloc_vcpu_task(&vm, primary_vcpu);
-    vm_vcpus.add_vcpu_task(primary_vcpu_task);
+    vm_vcpus.add_vcpu_task(0, primary_vcpu_task);
 
     VM_VCPU_TASKS.lock().insert(vm_id, vm_vcpus);
 }
@@ -350,7 +347,7 @@ pub fn with_vcpu_task<T, F: FnOnce(&AxTaskRef) -> T>(
     get_vm_vcpus(vm_id)?
         .vcpu_task_list
         .lock()
-        .get(vcpu_id)
+        .get(&vcpu_id)
         .map(f)
 }
 
@@ -407,11 +404,6 @@ fn vcpu_run() {
     let vcpu = curr.as_vcpu_task().vcpu.clone();
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
-
-    // boot delay
-    let boot_delay_sec = (vm_id - 1) * 5;
-    info!("VM[{vm_id}] boot delay: {boot_delay_sec}s");
-    busy_wait(Duration::from_secs(boot_delay_sec as _));
 
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     wait_for(vm_id, || vm.running());
