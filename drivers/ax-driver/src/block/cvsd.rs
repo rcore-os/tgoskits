@@ -1,4 +1,4 @@
-#[cfg(probe = "fdt")]
+#[cfg(plat_dyn)]
 use rdrive::register::FdtInfo;
 use rdrive::{PlatformDevice, probe::OnProbeError};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
@@ -11,7 +11,7 @@ use super::{SyncBlockOps, register_sync_block};
 const BLOCK_SIZE: usize = 512;
 pub const DEVICE_NAME: &str = "cvsd";
 
-#[cfg(probe = "fdt")]
+#[cfg(plat_dyn)]
 crate::model_register!(
     name: "FDT CVSD",
     level: ProbeLevel::PostKernel,
@@ -22,7 +22,7 @@ crate::model_register!(
     }],
 );
 
-#[cfg(probe = "fdt")]
+#[cfg(plat_dyn)]
 fn probe_fdt(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let sdmmc =
         info.node.regs().into_iter().next().ok_or_else(|| {

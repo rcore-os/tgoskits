@@ -1367,7 +1367,7 @@ mod tests {
         let mut envs = HashMap::new();
         let mut features = vec![
             "ax-hal/riscv64-qemu-virt".to_string(),
-            "ax-driver/pci".to_string(),
+            "ax-driver/plat-dyn".to_string(),
             "ax-driver/virtio-blk".to_string(),
             "ax-driver/virtio-net".to_string(),
             "dns".to_string(),
@@ -1379,7 +1379,8 @@ mod tests {
         assert_eq!(
             envs.get("ARCEOS_RUST_FEATURES"),
             Some(
-                &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
+                &"ax-hal/riscv64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
+                  virtio-net"
                     .to_string()
             )
         );

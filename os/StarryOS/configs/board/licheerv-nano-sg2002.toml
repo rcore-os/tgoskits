@@ -1,5 +1,6 @@
 env = { UIMAGE = "y" }
 features = [
+  "ax-driver/plat-dyn",
   "sg2002-dyn",
   "ax-feat/plat-dyn",
   "ax-driver/cvsd",

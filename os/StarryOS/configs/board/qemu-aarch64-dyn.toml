@@ -1,5 +1,6 @@
 env = {}
 features = [
+  "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",

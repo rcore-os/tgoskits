@@ -1,17 +1,16 @@
 use alloc::{format, vec::Vec};
 use core::{num::NonZeroU32, ptr::NonNull};
 
-use ax_riscv_plic::{PLICRegs, Plic};
+use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
 use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
-    DriverGeneric, Phandle, PlatformDevice, module_driver,
+    Device, DriverGeneric, Phandle, PlatformDevice, module_driver,
     probe::{OnProbeError, fdt::NodeType},
     register::FdtInfo,
 };
 use riscv::register::{sie, sip};
 use sbi_rt::HartMask;
-use spin::Mutex;
 
 use crate::{common::ioremap, irq::_handle_irq};
 
@@ -23,7 +22,7 @@ const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
 
-static PLIC: StaticCell<Mutex<RiscvPlic>> = StaticCell::uninit();
+static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -99,10 +98,8 @@ pub fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
 
 pub fn secondary_init_intc() {
     enable_local_interrupts();
-    if PLIC.is_init() {
-        unsafe {
-            PLIC.update(|plic| plic.lock().init_current_context());
-        }
+    if let Some(handler) = get_irq_handler() {
+        handler.init_current_context();
     }
 }
 
@@ -143,16 +140,20 @@ fn probe_plic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError
         .unwrap_or(1024) as usize;
     let contexts = parse_supervisor_contexts(&info);
 
-    let mut plic = RiscvPlic {
+    let irq_handler = RiscvPlicIrqHandler {
+        inner: plic.irq_handler(),
+        context_by_cpu: contexts.clone(),
+    };
+    IRQ_HANDLER.init(irq_handler);
+    IRQ_HANDLER.init_current_context();
+    let plic = RiscvPlic {
         inner: plic,
         context_by_cpu: contexts,
         sources: ndev,
     };
-    plic.init_current_context();
-    PLIC.init(Mutex::new(plic));
     enable_local_interrupts();
 
-    dev.register(rdif_intc::Intc::new(RiscvPlicIntc));
+    dev.register(rdif_intc::Intc::new(plic));
     Ok(())
 }
 
@@ -201,31 +202,59 @@ fn enable_local_interrupts() {
 }
 
 fn set_external_irq_enable(irq: usize, enable: bool) {
-    if !PLIC.is_init() {
-        warn!("PLIC is not initialized when setting IRQ {irq}");
-        return;
-    }
     let Some(source) = NonZeroU32::new(irq as u32) else {
         return;
     };
-    unsafe {
-        PLIC.update(|plic| {
-            let mut plic = plic.lock();
-            if enable {
-                plic.enable_source(source);
-            } else {
-                plic.disable_source(source);
-            }
-        });
-    }
+    with_plic("setting PLIC IRQ enable", |plic| {
+        if enable {
+            plic.enable_source(source);
+        } else {
+            plic.disable_source(source);
+        }
+    });
 }
 
 fn handle_external_irq() -> Option<someboot::irq::IrqId> {
-    if !PLIC.is_init() {
-        warn!("PLIC is not initialized for external IRQ");
+    let Some(handler) = get_irq_handler() else {
+        warn!("RISC-V PLIC IRQ handler is not registered for external IRQ");
+        return None;
+    };
+    let source = handler.claim_current()?;
+    let irq = someboot::irq::IrqId::new(source.get() as usize);
+    _handle_irq(irq.raw().into());
+    handler.complete_current(source);
+    Some(irq)
+}
+
+fn with_plic<R>(op: &str, f: impl FnOnce(&mut RiscvPlic) -> R) -> Option<R> {
+    let Some(intc) = get_plic() else {
+        warn!("RISC-V PLIC is not registered when {op}");
+        return None;
+    };
+    let Ok(mut intc) = intc.lock() else {
+        warn!("failed to lock RISC-V PLIC when {op}");
+        return None;
+    };
+    let Some(plic) = intc.typed_mut::<RiscvPlic>() else {
+        warn!("registered interrupt controller is not RISC-V PLIC when {op}");
+        return None;
+    };
+    Some(f(plic))
+}
+
+fn get_plic() -> Option<Device<rdif_intc::Intc>> {
+    if !rdrive::is_initialized() {
         return None;
     }
-    unsafe { PLIC.update(|plic| plic.lock().handle_external_irq()) }
+    rdrive::get_one()
+}
+
+fn get_irq_handler() -> Option<&'static RiscvPlicIrqHandler> {
+    if IRQ_HANDLER.is_init() {
+        Some(&IRQ_HANDLER)
+    } else {
+        None
+    }
 }
 
 struct RiscvPlic {
@@ -234,13 +263,17 @@ struct RiscvPlic {
     sources: usize,
 }
 
-impl RiscvPlic {
+struct RiscvPlicIrqHandler {
+    inner: PlicIrqHandler,
+    context_by_cpu: Vec<Option<usize>>,
+}
+
+impl RiscvPlicIrqHandler {
     fn current_context(&self) -> Option<usize> {
-        let cpu_idx = someboot::smp::cpu_idx();
-        self.context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx)
+        current_context(&self.context_by_cpu)
     }
 
-    fn init_current_context(&mut self) {
+    fn init_current_context(&self) {
         if let Some(context) = self.current_context() {
             self.inner.init_by_context(context);
             trace!("PLIC context {context} initialized");
@@ -252,13 +285,41 @@ impl RiscvPlic {
         }
     }
 
+    fn claim_current(&self) -> Option<NonZeroU32> {
+        let Some(context) = self.current_context() else {
+            warn!(
+                "PLIC supervisor context for logical CPU {} is not found",
+                someboot::smp::cpu_idx()
+            );
+            return None;
+        };
+        let Some(source) = self.inner.claim(context) else {
+            debug!("Spurious external IRQ");
+            return None;
+        };
+        Some(source)
+    }
+
+    fn complete_current(&self, source: NonZeroU32) {
+        let Some(context) = self.current_context() else {
+            warn!(
+                "PLIC supervisor context for logical CPU {} is not found",
+                someboot::smp::cpu_idx()
+            );
+            return;
+        };
+        self.inner.complete(context, source);
+    }
+}
+
+impl RiscvPlic {
     fn enable_source(&mut self, source: NonZeroU32) {
         if source.get() as usize > self.sources {
             warn!("skip enabling out-of-range PLIC source {}", source.get());
             return;
         }
         self.inner.set_priority(source, DEFAULT_PRIORITY);
-        let current = self.current_context();
+        let current = current_context(&self.context_by_cpu);
         for context in self.context_by_cpu.iter().filter_map(|context| *context) {
             self.inner.enable(source, context);
         }
@@ -275,30 +336,31 @@ impl RiscvPlic {
             self.inner.disable(source, context);
         }
     }
-
-    fn handle_external_irq(&mut self) -> Option<someboot::irq::IrqId> {
-        let context = self.current_context()?;
-        let Some(source) = self.inner.claim(context) else {
-            debug!("Spurious external IRQ");
-            return None;
-        };
-        let irq = someboot::irq::IrqId::new(source.get() as usize);
-        _handle_irq(irq.raw().into());
-        self.inner.complete(context, source);
-        Some(irq)
-    }
 }
 
-struct RiscvPlicIntc;
+fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {
+    let cpu_idx = someboot::smp::cpu_idx();
+    context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx)
+}
 
-impl DriverGeneric for RiscvPlicIntc {
+impl DriverGeneric for RiscvPlic {
     fn name(&self) -> &str {
         "RISC-V PLIC"
     }
 }
 
-impl Interface for RiscvPlicIntc {
+impl Interface for RiscvPlic {
     fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> rdrive::IrqId {
-        (irq_prop.first().copied().unwrap_or(0) as usize).into()
+        let Some(source) = irq_prop.first().copied().map(|source| source as usize) else {
+            warn!("empty PLIC interrupt specifier");
+            return 0usize.into();
+        };
+        if source > self.sources {
+            warn!(
+                "PLIC interrupt source {} exceeds riscv,ndev {}",
+                source, self.sources
+            );
+        }
+        source.into()
     }
 }

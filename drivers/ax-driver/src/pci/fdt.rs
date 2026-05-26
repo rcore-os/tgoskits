@@ -281,7 +281,7 @@ fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
     }
 }
 
-#[cfg(feature = "pci-list-devices")]
+#[cfg(feature = "list-pci-devices")]
 mod pci_list_devices {
     use log::info;
     use rdrive::probe::pci::{EndpointRc, FnOnProbe};

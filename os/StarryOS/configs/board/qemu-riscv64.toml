@@ -2,7 +2,7 @@ env = {}
 features = [
   "ax-feat/plat-dyn",
   "starry-kernel/plat-dyn",
-  "ax-driver/pci-fdt",
+  "ax-driver/plat-dyn",
   "ax-driver/serial",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",

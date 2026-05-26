@@ -2,6 +2,7 @@
 target = "aarch64-unknown-none-softfloat"
 env = {}
 features = [
+  "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
   "ax-driver/rockchip-soc",

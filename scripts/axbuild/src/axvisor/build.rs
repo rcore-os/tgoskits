@@ -398,7 +398,7 @@ mod tests {
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4", "ax-driver/fdt"]
+features = ["ept-level-4", "ax-driver/plat-dyn"]
 log = "Info"
 plat_dyn = true
 vm_configs = []
@@ -413,7 +413,7 @@ vm_configs = []
         .unwrap();
 
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"ax-driver/fdt".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
         assert!(path.exists());
     }
 
@@ -600,7 +600,7 @@ plat_dyn = false
             &config_path,
             r#"
 env = {}
-features = ["ept-level-4", "ax-driver/fdt"]
+features = ["ept-level-4", "ax-driver/plat-dyn"]
 log = "Info"
 "#,
         )

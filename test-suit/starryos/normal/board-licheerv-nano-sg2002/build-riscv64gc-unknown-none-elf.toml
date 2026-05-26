@@ -2,6 +2,7 @@
 target = "riscv64gc-unknown-none-elf"
 env = {}
 features = [
+  "ax-driver/plat-dyn",
     "sg2002-dyn",
     "ax-feat/plat-dyn",
     "ax-driver/cvsd",

@@ -29,10 +29,10 @@ use virtio_drivers::transport::{
 #[cfg(virtio_dev)]
 use crate::virtio::VirtIoHalImpl;
 
-#[cfg(feature = "pci-fdt")]
+#[cfg(plat_dyn)]
 mod fdt;
 #[cfg(all(
-    feature = "pci-fdt",
+    plat_dyn,
     target_os = "none",
     any(
         feature = "intel-net",
@@ -115,7 +115,7 @@ pub const fn has_static_endpoint_drivers() -> bool {
         feature = "virtio-gpu",
         feature = "virtio-input",
         feature = "virtio-socket",
-        feature = "pci-list-devices",
+        feature = "list-pci-devices",
     ))
 }
 

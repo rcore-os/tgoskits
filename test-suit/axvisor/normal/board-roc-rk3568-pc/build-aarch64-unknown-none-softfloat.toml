@@ -1,5 +1,6 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
+  "ax-driver/plat-dyn",
   "rockchip-sdhci",
   "rockchip-soc",
   "fs",
