@@ -120,3 +120,18 @@ pub fn irq_set_enable(raw: usize, enable: bool) {
         gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
     });
 }
+
+pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
+    with_gic(|gic| {
+        let sgi = IntId::sgi(raw as u32);
+        let target = match target {
+            crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
+            crate::irq::IpiTarget::Other { cpu_id } => {
+                let target_cpu = super::hardware_cpu_id(cpu_id);
+                SGITarget::TargetList(TargetList::new(&mut core::iter::once(target_cpu)))
+            }
+            crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
+        };
+        gic.send_sgi(sgi, target);
+    });
+}

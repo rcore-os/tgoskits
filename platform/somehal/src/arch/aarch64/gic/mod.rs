@@ -23,6 +23,19 @@ pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
     v3::irq_set_enable(raw, enable);
 }
 
+pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+    let raw = irq.into();
+    if v3::is_support_icc() {
+        v3::send_ipi(raw, target);
+    } else {
+        v2::send_ipi(raw, target);
+    }
+}
+
+fn hardware_cpu_id(cpu_id: usize) -> usize {
+    someboot::smp::cpu_idx_to_id(cpu_id).unwrap_or(cpu_id)
+}
+
 #[unsafe(no_mangle)]
 fn __aarch64_irq_handler() {
     irq_handler();

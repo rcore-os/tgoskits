@@ -87,6 +87,29 @@ pub fn irq_set_enable(raw: usize, enable: bool) {
     });
 }
 
+pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
+    with_gic(|gic| {
+        let sgi = IntId::sgi(raw as u32);
+        let target = match target {
+            crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::current(),
+            crate::irq::IpiTarget::Other { cpu_id } => {
+                SGITarget::list([affinity_from_mpidr(super::hardware_cpu_id(cpu_id))])
+            }
+            crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::All,
+        };
+        gic.cpu_interface().send_sgi(sgi, target);
+    });
+}
+
+fn affinity_from_mpidr(mpidr: usize) -> Affinity {
+    Affinity {
+        aff0: (mpidr & 0xff) as u8,
+        aff1: ((mpidr >> 8) & 0xff) as u8,
+        aff2: ((mpidr >> 16) & 0xff) as u8,
+        aff3: ((mpidr >> 32) & 0xff) as u8,
+    }
+}
+
 pub fn init_cpu() {
     unsafe {
         CPU_IF.update(|cpu| {
