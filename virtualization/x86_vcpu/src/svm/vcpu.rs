@@ -60,6 +60,12 @@ const X2APIC_MSR_BASE: u32 = 0x800;
 // Match the current VMX/vLAPIC path, which handles x2APIC register offsets 0x00..=0x3f.
 const X2APIC_MSR_END: u32 = 0x83f;
 
+const SVM_INT_CTL_V_IRQ: u32 = 1 << 8;
+const SVM_INT_CTL_V_INTR_PRIO_SHIFT: u32 = 16;
+const SVM_INT_CTL_V_INTR_PRIO_MASK: u32 = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
+const SVM_INT_CTL_V_IGN_TPR: u32 = 1 << 20;
+const SVM_INT_CTL_V_INTR_MASKING: u32 = 1 << 24;
+
 macro_rules! save_regs_no_rax {
     () => {
         "
@@ -278,6 +284,7 @@ impl SvmVcpu {
         for intercept in [
             SvmIntercept::INTR,
             SvmIntercept::NMI,
+            SvmIntercept::RDTSC,
             SvmIntercept::CPUID,
             SvmIntercept::PAUSE,
             SvmIntercept::HLT,
@@ -450,13 +457,27 @@ impl SvmVcpu {
         Ok(())
     }
 
+    fn virtual_interrupt_vector(&self) -> Option<u8> {
+        let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
+        if vmcb.control.int_control.get() & SVM_INT_CTL_V_IRQ != 0 {
+            Some(vmcb.control.int_vector.get() as u8)
+        } else {
+            None
+        }
+    }
+
+    fn has_pending_external_event(&self, vector: u8) -> bool {
+        vector >= 32
+            && (self.virtual_interrupt_vector() == Some(vector)
+                || self
+                    .pending_events
+                    .iter()
+                    .any(|event| event.vector == vector))
+    }
+
     /// Add a virtual interrupt or exception to the pending events list.
     pub fn queue_event(&mut self, vector: u8, err_code: Option<u32>) {
-        self.pending_events.push_back(PendingEvent {
-            vector,
-            err_code,
-            level_triggered: false,
-        });
+        self.queue_event_with_trigger(vector, err_code, false);
     }
 
     /// Add a virtual interrupt or exception with trigger mode metadata.
@@ -466,6 +487,10 @@ impl SvmVcpu {
         err_code: Option<u32>,
         level_triggered: bool,
     ) {
+        if self.has_pending_external_event(vector) {
+            return;
+        }
+
         self.pending_events.push_back(PendingEvent {
             vector,
             err_code,
@@ -501,6 +526,7 @@ impl SvmVcpu {
 
             self.clear_event_inj();
             self.reinject_interrupted_event();
+            self.sync_virtual_interrupt_delivery();
 
             let exit_info = self.exit_info()?;
 
@@ -834,26 +860,56 @@ impl SvmVcpu {
         self.regs_mut().rdx = val >> 32;
     }
 
-    fn allow_interrupt(&self) -> bool {
-        let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
-        vmcb.state.rflags.get() & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0
-            && vmcb.control.int_state.get() == 0
-            && !vmcb.control.event_inj.get().get_bit(31)
+    fn handle_rdtsc(&mut self) -> AxResult {
+        const VM_EXIT_INSTR_LEN_RDTSC: u8 = 2;
+
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let tsc_offset = unsafe { self.vmcb.as_vmcb_ref().control.tsc_offset.get() };
+        self.write_edx_eax(tsc.wrapping_add(tsc_offset));
+        self.advance_rip(VM_EXIT_INSTR_LEN_RDTSC)
+    }
+
+    fn arm_virtual_interrupt(&mut self, event: PendingEvent) {
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let priority = ((event.vector >> 4) as u32) << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
+        let int_control = (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
+            | SVM_INT_CTL_V_IRQ
+            | SVM_INT_CTL_V_IGN_TPR
+            | SVM_INT_CTL_V_INTR_MASKING
+            | priority;
+        vmcb.control.int_vector.set(event.vector as u32);
+        vmcb.control.int_control.set(int_control);
+        vmcb.control.clean_bits.set(0);
+    }
+
+    fn sync_virtual_interrupt_delivery(&mut self) {
+        let Some(event) = self.pending_events.front().copied() else {
+            return;
+        };
+        if event.vector < 32 || self.virtual_interrupt_vector().is_some() {
+            return;
+        }
+
+        self.vlapic
+            .accept_interrupt(event.vector, event.level_triggered);
+        self.pending_events.pop_front();
     }
 
     fn inject_pending_events(&mut self) -> AxResult {
         let Some(event) = self.pending_events.front().copied() else {
             return Ok(());
         };
-        if event.vector >= 32 && !self.allow_interrupt() {
+
+        if event.vector >= 32 {
+            if self.virtual_interrupt_vector() == Some(event.vector) {
+                return Ok(());
+            }
+
+            self.arm_virtual_interrupt(event);
             return Ok(());
         }
 
         self.inject_event(event.vector, event.err_code)?;
-        if event.vector >= 32 {
-            self.vlapic
-                .accept_interrupt(event.vector, event.level_triggered);
-        }
         self.pending_events.pop_front();
         Ok(())
     }
@@ -1283,6 +1339,10 @@ impl AxArchVCpu for SvmVcpu {
                         ],
                     }
                 }
+                SvmExitCode::RDTSC => {
+                    self.handle_rdtsc()?;
+                    AxVCpuExitReason::PreemptionTimer
+                }
                 SvmExitCode::IOIO => {
                     let (is_in, is_string, is_repeat, width, port) =
                         self.svm_io_exit_info(&exit_info)?;
@@ -1342,8 +1402,14 @@ impl AxArchVCpu for SvmVcpu {
                 // SVM has no VMX-style preemption timer. Use host interrupt,
                 // guest cpu-relax, and idle exits as periodic VMM poll points
                 // for PIT/serial injection.
-                SvmExitCode::INTR | SvmExitCode::PAUSE | SvmExitCode::HLT => {
-                    AxVCpuExitReason::VTimer
+                SvmExitCode::INTR => AxVCpuExitReason::PreemptionTimer,
+                SvmExitCode::HLT => {
+                    self.advance_rip(1)?;
+                    AxVCpuExitReason::PreemptionTimer
+                }
+                SvmExitCode::PAUSE => {
+                    self.advance_rip(2)?;
+                    AxVCpuExitReason::PreemptionTimer
                 }
                 SvmExitCode::SHUTDOWN => AxVCpuExitReason::SystemDown,
                 _ => {
@@ -1376,12 +1442,20 @@ impl AxArchVCpu for SvmVcpu {
         Ok(())
     }
 
-    fn inject_interrupt_with_trigger(&mut self, vector: usize, level_triggered: bool) -> AxResult {
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: axvcpu::InterruptTriggerMode,
+    ) -> AxResult {
         if vector == 0 {
             warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
             panic!()
         }
-        self.queue_event_with_trigger(vector as u8, None, level_triggered);
+        self.queue_event_with_trigger(
+            vector as u8,
+            None,
+            trigger == axvcpu::InterruptTriggerMode::LevelTriggered,
+        );
         Ok(())
     }
 

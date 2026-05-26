@@ -73,6 +73,8 @@ passthrough_devices = [
 passthrough_addresses = [
   # QEMU q35 low MMIO window needed by PCI/virtio-blk probing.
   [0xfe00_0000, 0x00c0_0000],
+  # Linux probes a q35/ICH system MMIO page at 0xfed8_03c0 after the PIT/HLT path is fixed.
+  [0xfed8_0000, 0x1000],
 ]
 
 # Devices that are not desired to be passed through to the guest
