@@ -165,6 +165,7 @@ int main(void)
         CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, 0xdeadbeef, &sp), EINVAL, "sched_setscheduler with invalid policy returns EINVAL");
 
         // FIFO | RESET_ON_FORK is valid combination
+        sp.sched_priority = 2;
         CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, 0, policy, &sp), 0, "sched_setscheduler with SCHED_RESET_ON_FORK should succeed");
 
         // SCHED_OTHER with non-zero priority
