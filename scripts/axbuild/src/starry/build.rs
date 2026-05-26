@@ -86,6 +86,7 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         &makefile_features,
         metadata,
     );
+    normalize_starry_platform_features(&mut build_info.features);
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
@@ -99,18 +100,33 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     Ok(cargo)
 }
 
+fn normalize_starry_platform_features(features: &mut Vec<String>) {
+    let has_sg2002 = features.iter().any(|feature| feature == "sg2002");
+    let has_vf2 = features.iter().any(|feature| feature == "vf2");
+
+    if has_sg2002 {
+        features.push("ax-hal/riscv64-sg2002".to_string());
+    }
+    if has_vf2 {
+        features.push("ax-hal/riscv64-visionfive2".to_string());
+    }
+
+    features.sort();
+    features.dedup();
+}
+
 fn patch_starry_cargo_config(
     cargo: &mut Cargo,
     request: &ResolvedStarryRequest,
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
     let platform = crate::context::starry_default_platform_for_arch_checked(&request.arch)?;
-    let static_defplat = uses_static_default_platform(&cargo.features);
+    let uses_default_qemu_platform = uses_default_qemu_platform(&cargo.features);
 
     cargo.package = request.package.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
     remove_qemu_feature_for_dynamic_platform(cargo);
-    if static_defplat {
+    if uses_default_qemu_platform {
         cargo.features.push("qemu".to_string());
         cargo.features.sort();
         cargo.features.dedup();
@@ -122,7 +138,7 @@ fn patch_starry_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    if static_defplat {
+    if uses_default_qemu_platform {
         cargo
             .env
             .entry("AX_PLATFORM".to_string())
@@ -173,14 +189,12 @@ fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
     }
 }
 
-fn uses_static_default_platform(features: &[String]) -> bool {
+fn uses_default_qemu_platform(features: &[String]) -> bool {
     let has_static_platform = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
             "defplat" | "ax-feat/defplat" | "ax-std/defplat"
-        )
-    }) || features.iter().any(|feature| {
-        feature.starts_with("ax-hal/") && feature != "ax-hal/plat-dyn" && feature != "ax-hal/myplat"
+        ) || default_starry_qemu_platform_feature(feature).is_some()
     });
     let has_dynamic = features.iter().any(|feature| {
         matches!(
@@ -196,6 +210,15 @@ fn uses_static_default_platform(features: &[String]) -> bool {
     });
 
     has_static_platform && !has_dynamic && !has_custom
+}
+
+fn default_starry_qemu_platform_feature(feature: &str) -> Option<&str> {
+    match feature.strip_prefix("ax-hal/")? {
+        "x86-pc" | "aarch64-qemu-virt" | "riscv64-qemu-virt" | "loongarch64-qemu-virt" => {
+            Some(feature)
+        }
+        _ => None,
+    }
 }
 
 fn ensure_starry_bin_arg(
@@ -556,6 +579,39 @@ HELLO = "world"
 
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
+    }
+
+    #[test]
+    fn load_cargo_config_treats_sg2002_as_explicit_platform_feature() {
+        let mut request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
+        );
+        request.build_info_override = Some(StarryBuildInfo {
+            features: vec!["sg2002".to_string()],
+            plat_dyn: false,
+            ..default_starry_build_info_for_target("riscv64gc-unknown-none-elf")
+        });
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert!(cargo.features.contains(&"sg2002".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"ax-hal/riscv64-sg2002".to_string())
+        );
+        assert!(
+            !cargo
+                .features
+                .contains(&"ax-hal/riscv64-qemu-virt".to_string())
+        );
+        assert!(!cargo.features.contains(&"qemu".to_string()));
+        assert_eq!(
+            cargo.env.get("AX_PLATFORM").map(String::as_str),
+            Some("riscv64-sg2002")
+        );
     }
 
     #[test]

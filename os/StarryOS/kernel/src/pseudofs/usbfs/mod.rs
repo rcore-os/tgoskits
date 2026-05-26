@@ -1348,7 +1348,7 @@ fn cleanup_submitted_urbs(
     mut submitted_urbs: Vec<SubmittedUrb>,
     timeout: Option<Duration>,
 ) -> Vec<SubmittedUrb> {
-    let deadline = timeout.map(|timeout| ax_hal::time::wall_time() + timeout);
+    let deadline = timeout.map(|timeout| ax_runtime::hal::time::wall_time() + timeout);
     for submitted in &submitted_urbs {
         if let Err(err) = submitted.cancel() {
             debug!(
@@ -1376,7 +1376,7 @@ fn cleanup_submitted_urbs(
         }
 
         if !submitted_urbs.is_empty() {
-            if deadline.is_some_and(|deadline| ax_hal::time::wall_time() >= deadline) {
+            if deadline.is_some_and(|deadline| ax_runtime::hal::time::wall_time() >= deadline) {
                 break;
             }
             ax_task::sleep(Duration::from_millis(1));

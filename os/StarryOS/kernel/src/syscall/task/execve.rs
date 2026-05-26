@@ -7,7 +7,7 @@ use core::{ffi::c_char, future::poll_fn, iter, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
 use starry_process::Pid;

@@ -1,6 +1,6 @@
 use ax_errno::AxResult;
-use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{VirtAddr, align_up_4k};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use ax_task::current;
 use linux_raw_sys::general::RLIMIT_DATA;
 

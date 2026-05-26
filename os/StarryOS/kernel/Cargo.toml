@@ -36,6 +36,7 @@ sg2002 = [
     "dep:tock-registers",
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
+buddy-slab = ["ax-feat/buddy-slab"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [
@@ -60,7 +61,6 @@ ax-alloc = { workspace = true, features = ["default"] }
 ax-config.workspace = true
 ax-display.workspace = true
 ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
-ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true

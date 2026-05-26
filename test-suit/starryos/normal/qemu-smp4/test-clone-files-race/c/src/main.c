@@ -29,7 +29,8 @@
 #include <sched.h>
 #include <unistd.h>
 
-#define N_ITERATIONS 1000
+/* Keep the normal qemu case bounded; larger stress counts belong in stress. */
+#define N_ITERATIONS 64
 #define STACK_SIZE   (64 * 1024)
 
 static int  g_pipefd[2];
