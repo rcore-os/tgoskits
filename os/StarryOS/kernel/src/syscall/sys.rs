@@ -625,7 +625,6 @@ pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
     }
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
-    // SAFETY: vm_read_slice filled buf with valid data from user space.
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
     let mut domainname: [c_char; 65] = [0; 65];
     unsafe {
