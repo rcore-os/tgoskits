@@ -93,6 +93,15 @@ cargo xtask starry qemu \
 
 See `jcode/README.md` for interactive usage and troubleshooting.
 
+## Nginx
+
+The `nginx` case is a QEMU app integration workflow. It installs Alpine nginx
+packages in a staging root during prebuild, injects runtime artifacts to the
+app overlay, then runs smoke tests inside StarryOS.
+
+```bash
+cargo xtask starry app run -t nginx --arch x86_64
+```
 
 ## Orange Pi 5 Plus UVC
 
