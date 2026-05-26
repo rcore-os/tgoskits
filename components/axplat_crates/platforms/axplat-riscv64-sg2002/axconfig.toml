@@ -81,4 +81,3 @@ uart-irq = 0x2c                     # uint
 syscon-paddr = 0x0300_0000          # uint
 cvsd-paddr = 0x0431_0000            # uint
 root-partition-name = "rootfs"      # str
-bootargs = "root=/dev/mmcblk0p2"    # str

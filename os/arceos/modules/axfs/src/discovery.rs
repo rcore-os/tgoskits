@@ -30,12 +30,6 @@ pub struct RootSelectionPolicy {
     pub allow_single_supported_partition: bool,
     /// Allow a unique raw whole-disk filesystem to be selected as root.
     pub allow_single_raw_device: bool,
-    /// Require an MBR ext4 partition to carry the bootable flag before it can
-    /// be selected by the generic single-partition fallback.
-    pub require_mbr_ext4_bootable: bool,
-    /// Allow an MBR FAT partition to be selected by the generic
-    /// single-partition fallback without requiring the bootable flag.
-    pub allow_mbr_fat_without_bootable: bool,
 }
 
 struct RootCandidate {
@@ -112,8 +106,6 @@ impl Default for RootSelectionPolicy {
             preferred_partlabel: Some("rootfs".to_string()),
             allow_single_supported_partition: true,
             allow_single_raw_device: true,
-            require_mbr_ext4_bootable: true,
-            allow_mbr_fat_without_bootable: true,
         }
     }
 }
@@ -292,55 +284,8 @@ fn collect_disks(block_devs: Vec<Box<dyn FsBlockDevice>>) -> Vec<DiscoveredDisk>
         let mut reader = VolumeReader::new(&mut scan_dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
             Ok(volumes) => {
-                let raw_region = volumes
-                    .iter()
-                    .find(|volume| volume.table_kind == VolumeTableKind::Raw)
-                    .map(region_from_volume)
-                    .unwrap_or_else(|| full_region(&dev));
-                let partitions: Vec<DetectedPartition> = volumes
-                    .into_iter()
-                    .filter(|volume| volume.table_kind != VolumeTableKind::Raw)
-                    .map(|volume| {
-                        let partition = partition_info_from_volume(&volume);
-                        let mut detect_dev = dev.clone();
-                        let filesystem = detect_filesystem(&mut detect_dev, partition.region);
-                        info!(
-                            "    partition {} name={:?} fs={:?} lba {}..{}",
-                            partition.index + 1,
-                            partition.name,
-                            filesystem,
-                            partition.region.start_lba,
-                            partition.region.end_lba
-                        );
-                        DetectedPartition {
-                            info: partition,
-                            filesystem,
-                        }
-                    })
-                    .collect();
-                let raw_filesystem = if partitions.is_empty() {
-                    let mut detect_dev = dev.clone();
-                    let raw_fs = detect_filesystem(&mut detect_dev, raw_region);
-                    info!("    raw device fs={:?}", raw_fs);
-                    raw_fs
-                } else {
-                    None
-                };
-                if let Some(first) = partitions.first() {
-                    info!(
-                        "  block device {} ({}) has {:?} partition table with {} partitions",
-                        disk_index,
-                        device_name,
-                        first.info.table_kind,
-                        partitions.len()
-                    );
-                } else {
-                    info!(
-                        "  block device {} ({}) has no usable partition table; treating the whole \
-                         disk as a candidate",
-                        disk_index, device_name
-                    );
-                }
+                let (partitions, raw_filesystem) = collect_partitions(&dev, volumes);
+                log_disk(disk_index, &device_name, raw_filesystem, &partitions);
                 disks.push(DiscoveredDisk {
                     disk_index,
                     dev,
@@ -358,6 +303,60 @@ fn collect_disks(block_devs: Vec<Box<dyn FsBlockDevice>>) -> Vec<DiscoveredDisk>
     }
 
     disks
+}
+
+fn collect_partitions(
+    dev: &SharedBlockDevice,
+    volumes: Vec<BlockVolume>,
+) -> (Vec<DetectedPartition>, Option<FilesystemKind>) {
+    let mut partitions = Vec::new();
+    let mut raw_filesystem = None;
+    for volume in volumes {
+        if volume.table_kind == VolumeTableKind::Raw {
+            let region = region_from_volume(&volume);
+            let mut detect_dev = dev.clone();
+            raw_filesystem = detect_filesystem(&mut detect_dev, region);
+            info!("    raw device fs={:?}", raw_filesystem);
+            continue;
+        }
+
+        let info = partition_info_from_volume(&volume);
+        let mut detect_dev = dev.clone();
+        let filesystem = detect_filesystem(&mut detect_dev, info.region);
+        info!(
+            "    partition {} name={:?} fs={:?} lba {}..{}",
+            info.index + 1,
+            info.name,
+            filesystem,
+            info.region.start_lba,
+            info.region.end_lba
+        );
+        partitions.push(DetectedPartition { info, filesystem });
+    }
+
+    (partitions, raw_filesystem)
+}
+
+fn log_disk(
+    disk_index: usize,
+    device_name: &str,
+    raw_filesystem: Option<FilesystemKind>,
+    partitions: &[DetectedPartition],
+) {
+    if let Some(first) = partitions.first() {
+        info!(
+            "  block device {} ({}) has {:?} partition table with {} partitions",
+            disk_index,
+            device_name,
+            first.info.table_kind,
+            partitions.len()
+        );
+    } else {
+        info!(
+            "  block device {} ({}) has no usable partition table; raw fs={:?}",
+            disk_index, device_name, raw_filesystem
+        );
+    }
 }
 
 fn partition_info_from_volume(volume: &BlockVolume) -> PartitionInfo {
@@ -513,7 +512,7 @@ fn select_default_root(
             candidate
                 .partition
                 .as_ref()
-                .is_some_and(|partition| is_default_root_partition(partition, policy))
+                .is_some_and(is_default_root_partition)
         })
         .map(RootCandidate::selection)
         .collect();
@@ -535,28 +534,8 @@ fn select_default_root(
     None
 }
 
-fn is_default_root_partition(partition: &DetectedPartition, policy: &RootSelectionPolicy) -> bool {
-    #[cfg(not(any(feature = "ext4", feature = "fat")))]
-    let _ = policy;
-
-    if !is_supported_filesystem(partition.filesystem) {
-        return false;
-    }
-
-    match partition.info.table_kind {
-        PartitionTableKind::Mbr => {
-            #[cfg(feature = "ext4")]
-            if partition.filesystem == Some(FilesystemKind::Ext4) {
-                return !policy.require_mbr_ext4_bootable || partition.info.bootable;
-            }
-            #[cfg(feature = "fat")]
-            if partition.filesystem == Some(FilesystemKind::Fat) {
-                return policy.allow_mbr_fat_without_bootable || partition.info.bootable;
-            }
-            false
-        }
-        PartitionTableKind::Gpt | PartitionTableKind::Raw => true,
-    }
+fn is_default_root_partition(partition: &DetectedPartition) -> bool {
+    is_supported_filesystem(partition.filesystem)
 }
 
 fn discovered_region(

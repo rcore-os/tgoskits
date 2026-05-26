@@ -4,6 +4,8 @@ arch = "unknown"            # str
 platform = "dummy"          # str
 # Platform package.
 package = "dummy"           # str
+# Kernel boot arguments.
+bootargs = ""               # str
 # Stack size of each task.
 task-stack-size = 0x40000   # uint
 # Number of timer ticks per second (Hz). A timer tick may contain several timer
