@@ -176,7 +176,7 @@ fn vm_create(cmd: &ParsedCommand) {
 #[cfg(feature = "fs")]
 fn vm_start(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let detach = cmd.flags.get("detach").unwrap_or(&false);
+    let detach = cmd.flags.contains("detach");
 
     if args.is_empty() {
         // start all VMs
@@ -218,7 +218,7 @@ fn vm_start(cmd: &ParsedCommand) {
         }
     }
 
-    if *detach {
+    if detach {
         println!("VMs started in background mode");
     }
 }
@@ -269,7 +269,7 @@ fn start_vm_by_id(vm_id: usize) {
 
 fn vm_stop(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let force = cmd.flags.get("force").unwrap_or(&false);
+    let force = cmd.flags.contains("force");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -279,7 +279,7 @@ fn vm_stop(cmd: &ParsedCommand) {
 
     for vm_name in args {
         if let Ok(vm_id) = vm_name.parse::<usize>() {
-            stop_vm_by_id(vm_id, *force);
+            stop_vm_by_id(vm_id, force);
         } else {
             println!("Error: Invalid VM ID: {}", vm_name);
         }
@@ -348,7 +348,7 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
 /// Restart a VM by stopping it (if running) and then starting it again.(functionality incomplete)
 fn vm_restart(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let force = cmd.flags.get("force").unwrap_or(&false);
+    let force = cmd.flags.contains("force");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -358,7 +358,7 @@ fn vm_restart(cmd: &ParsedCommand) {
 
     for vm_name in args {
         if let Ok(vm_id) = vm_name.parse::<usize>() {
-            restart_vm_by_id(vm_id, *force);
+            restart_vm_by_id(vm_id, force);
         } else {
             println!("Error: Invalid VM ID: {}", vm_name);
         }
@@ -597,8 +597,8 @@ fn resume_vm_by_id(vm_id: usize) {
 
 fn vm_delete(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let force = cmd.flags.get("force").unwrap_or(&false);
-    let keep_data = cmd.flags.get("keep-data").unwrap_or(&false);
+    let force = cmd.flags.contains("force");
+    let keep_data = cmd.flags.contains("keep-data");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -648,7 +648,7 @@ fn vm_delete(cmd: &ParsedCommand) {
             }
         }
 
-        delete_vm_by_id(vm_id, *keep_data);
+        delete_vm_by_id(vm_id, keep_data);
     } else {
         println!("Error: Invalid VM ID: {}", vm_name);
     }
@@ -849,9 +849,9 @@ fn vm_list(cmd: &ParsedCommand) {
 
 fn vm_show(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let show_config = cmd.flags.get("config").unwrap_or(&false);
-    let show_stats = cmd.flags.get("stats").unwrap_or(&false);
-    let show_full = cmd.flags.get("full").unwrap_or(&false);
+    let show_config = cmd.flags.contains("config");
+    let show_stats = cmd.flags.contains("stats");
+    let show_full = cmd.flags.contains("full");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -869,10 +869,10 @@ fn vm_show(cmd: &ParsedCommand) {
     // Show specific VM details
     let vm_name = &args[0];
     if let Ok(vm_id) = vm_name.parse::<usize>() {
-        if *show_full {
+        if show_full {
             show_vm_full_details(vm_id);
         } else {
-            show_vm_basic_details(vm_id, *show_config, *show_stats);
+            show_vm_basic_details(vm_id, show_config, show_stats);
         }
     } else {
         println!("Error: Invalid VM ID: {}", vm_name);

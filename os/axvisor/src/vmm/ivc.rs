@@ -51,10 +51,7 @@ pub fn insert_channel(
 /// (by setting its base GPA to None).
 /// If the channel is successfully unpublished, it will return the base GPA and size of the channel.
 /// If the channel does not exist, it will return an error.
-pub fn unpublish_channel(
-    publisher_vm_id: usize,
-    key: usize,
-) -> AxResult<Option<(GuestPhysAddr, usize)>> {
+pub fn unpublish_channel(publisher_vm_id: usize, key: usize) -> AxResult<(GuestPhysAddr, usize)> {
     let mut channels = IVC_CHANNELS.lock();
     if let Some(mut channel) = channels.remove(&(publisher_vm_id, key)) {
         let base_gpa = channel.base_gpa_in_publisher().ok_or_else(|| {
@@ -67,12 +64,13 @@ pub fn unpublish_channel(
             )
         })?;
         let size = channel.size();
-        if !channel.subscribers().is_empty() {
-            channel.base_gpa = None; // Mark the channel as removed.
-            // If there are still subscribers, just return None.
+        if channel.has_subscribers() {
+            channel.mark_unpublished(); // Mark the channel as removed.
+            // Publisher's GPA mapping will be unmapped; the shared HPA frame
+            // is freed when the last subscriber unsubscribes.
             channels.insert((publisher_vm_id, key), channel);
         }
-        Ok(Some((base_gpa, size)))
+        Ok((base_gpa, size))
     } else {
         Err(ax_errno::ax_err_type!(
             NotFound,
@@ -85,18 +83,19 @@ pub fn unpublish_channel(
 }
 
 pub fn get_channel_size(publisher_vm_id: usize, key: usize) -> AxResult<usize> {
-    let channels = IVC_CHANNELS.lock();
-    if let Some(channel) = channels.get(&(publisher_vm_id, key)) {
-        Ok(channel.size())
-    } else {
-        Err(ax_errno::ax_err_type!(
-            NotFound,
-            format!(
-                "IVC channel for publisher VM {} with key {} not found",
-                publisher_vm_id, key
+    IVC_CHANNELS
+        .lock()
+        .get(&(publisher_vm_id, key))
+        .map(|channel| channel.size())
+        .ok_or_else(|| {
+            ax_errno::ax_err_type!(
+                NotFound,
+                format!(
+                    "IVC channel for publisher VM {} with key {} not found",
+                    publisher_vm_id, key
+                )
             )
-        ))
-    }
+        })
 }
 
 /// Subcribe to a channel of a publisher VM with the given key,
@@ -108,19 +107,18 @@ pub fn subscribe_to_channel_of_publisher(
     subscriber_gpa: GuestPhysAddr,
 ) -> AxResult<(HostPhysAddr, usize)> {
     let mut channels = IVC_CHANNELS.lock();
-    if let Some(channel) = channels.get_mut(&(publisher_vm_id, key)) {
-        // Add the subscriber VM ID to the channel.
-        channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
-        Ok((channel.base_hpa(), channel.size()))
-    } else {
-        Err(ax_errno::ax_err_type!(
+    let channel = channels.get_mut(&(publisher_vm_id, key)).ok_or_else(|| {
+        ax_errno::ax_err_type!(
             NotFound,
             format!(
                 "IVC channel for publisher VM [{}] key {:#x} not found",
                 publisher_vm_id, key
             )
-        ))
-    }
+        )
+    })?;
+    // Add the subscriber VM ID to the channel.
+    channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
+    Ok((channel.base_hpa(), channel.size()))
 }
 
 /// Unsubscribe from a channel of a publisher VM with the given key,
@@ -156,7 +154,7 @@ pub fn unsubscribe_from_channel_of_publisher(
     // remove it from the global map.
     if channels
         .get(&(publisher_vm_id, key))
-        .is_some_and(|c| c.subscribers().is_empty() && c.base_gpa.is_none())
+        .is_some_and(|c| c.subscribers().is_empty() && c.is_unpublished())
     {
         channels.remove(&(publisher_vm_id, key));
     }
@@ -279,8 +277,11 @@ impl<H: PagingHandler> IVCChannel<H> {
             _phantom: core::marker::PhantomData,
         };
 
-        channel.header_mut().publisher_id = publisher_vm_id as u64;
-        channel.header_mut().key = key as u64;
+        {
+            let header = channel.header_mut();
+            header.publisher_id = publisher_vm_id as u64;
+            header.key = key as u64;
+        }
 
         debug!("Allocated IVCChannel: {channel:?}");
 
@@ -314,5 +315,17 @@ impl<H: PagingHandler> IVCChannel<H> {
             .iter()
             .map(|(vm_id, gpa)| (*vm_id, *gpa))
             .collect()
+    }
+
+    pub fn has_subscribers(&self) -> bool {
+        !self.subscriber_vms.is_empty()
+    }
+
+    pub fn mark_unpublished(&mut self) {
+        self.base_gpa = None;
+    }
+
+    pub fn is_unpublished(&self) -> bool {
+        self.base_gpa.is_none()
     }
 }

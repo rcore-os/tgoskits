@@ -74,6 +74,8 @@ where
         deadline,
         TimeValue::from_nanos(deadline)
     );
+    // SAFETY: Called from a vCPU task pinned to a physical CPU. TIMER_LIST is
+    // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     let mut timers = timer_list.lock();
     let token = TOKEN.fetch_add(1, Ordering::Relaxed);
@@ -87,6 +89,8 @@ where
 /// # Parameters
 /// - `token`: The unique token of the timer to cancel.
 pub fn cancel_timer(token: usize) {
+    // SAFETY: Called from a vCPU task pinned to a physical CPU. TIMER_LIST is
+    // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     let mut timers = timer_list.lock();
     timers.cancel(|event| event.token == token);
@@ -96,6 +100,8 @@ pub fn cancel_timer(token: usize) {
 pub fn check_events() {
     // info!("Checking timer events...");
     // info!("now is {:#?}", ax_hal::time::wall_time());
+    // SAFETY: Called from a vCPU task pinned to a physical CPU. TIMER_LIST is
+    // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
         let now = ax_hal::time::wall_time();
@@ -121,6 +127,8 @@ pub fn check_events() {
 /// Initialize the hypervisor timer system
 pub fn init_percpu() {
     info!("Initing HV Timer...");
+    // SAFETY: Called once per CPU during hypervisor initialisation, before
+    // any vCPU task starts. No other code accesses this CPU's TIMER_LIST yet.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     timer_list.init_once(SpinNoIrq::new(TimerList::new()));
 }

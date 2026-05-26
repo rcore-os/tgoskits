@@ -307,7 +307,11 @@ pub fn load_vm_image_from_memory(
         let region_len = region.len();
         let bytes_to_write = region_len.min(image_size - buffer_pos);
 
-        // copy data from memory
+        // SAFETY: `region` is valid writable guest memory obtained from
+        // `vm.get_image_load_region()`; `bytes_to_write <= region.len()` is
+        // guaranteed by `region_len.min(image_size - buffer_pos)`; and
+        // `image_buffer[buffer_pos..]` has at least `bytes_to_write` bytes.
+        // The source and destination do not overlap (guest HPA vs host image buffer).
         unsafe {
             core::ptr::copy_nonoverlapping(
                 image_buffer[buffer_pos..].as_ptr(),

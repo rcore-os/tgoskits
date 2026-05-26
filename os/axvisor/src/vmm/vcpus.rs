@@ -418,7 +418,7 @@ fn vcpu_run() {
                     debug!("Hypercall [{nr}] args {args:x?}");
                     use crate::vmm::hvc::HyperCall;
 
-                    match HyperCall::new(vcpu.clone(), vm.clone(), nr, args) {
+                    match HyperCall::new(vm.clone(), nr, args) {
                         Ok(hypercall) => {
                             let ret_val = match hypercall.execute() {
                                 Ok(ret_val) => ret_val as isize,
@@ -536,7 +536,6 @@ fn vcpu_run() {
             },
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
-                // wait(vm_id)
                 if let Err(err) = vm.shutdown() {
                     warn!("VM[{vm_id}] shutdown failed after vCPU error: {err:?}");
                 }

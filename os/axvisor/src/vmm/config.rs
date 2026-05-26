@@ -109,7 +109,7 @@ pub mod vmcfg {
                             buffer.len()
                         );
                         // Convert to string
-                        let content = match alloc::string::String::from_utf8(buffer) {
+                        let content = match String::from_utf8(buffer) {
                             Ok(content) => content,
                             Err(e) => {
                                 error!("Config file {} is not valid UTF-8: {:?}", path_str, e);
@@ -203,19 +203,8 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    #[allow(unused_mut)]
     let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
-        .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    )))]
-    let vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
@@ -225,19 +214,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         );
     }
 
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    #[allow(unused_mut)]
     let mut vm_config = AxVMConfig::from(vm_create_config.clone());
-
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    )))]
-    let vm_config = AxVMConfig::from(vm_create_config.clone());
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
     #[cfg(any(
@@ -298,54 +276,47 @@ fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &VM) -> AxRes
     const MB: usize = 1024 * 1024;
     const ALIGN: usize = 2 * MB;
 
+    let make_layout = |memory: &axvm::config::VmMemConfig| {
+        Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
+            ax_err_type!(
+                InvalidInput,
+                format!("Invalid VM memory layout {:?}: {e:?}", memory)
+            )
+        })
+    };
+
     for memory in &vm_create_config.kernel.memory_regions {
         match memory.map_type {
             VmMemMappingType::MapAlloc => {
-                vm.alloc_memory_region(
-                    Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
+                vm.alloc_memory_region(make_layout(memory)?, Some(GuestPhysAddr::from(memory.gpa)))
+                    .map_err(|e| {
                         ax_err_type!(
-                            InvalidInput,
-                            format!("Invalid VM memory layout {:?}: {e:?}", memory)
+                            NoMemory,
+                            format!("Failed to allocate memory region for VM: {e:?}")
                         )
-                    })?,
+                    })?;
+            }
+            VmMemMappingType::MapIdentical => {
+                vm.alloc_memory_region(make_layout(memory)?, None)
+                    .map_err(|e| {
+                        ax_err_type!(
+                            NoMemory,
+                            format!("Failed to allocate memory region for VM: {e:?}")
+                        )
+                    })?;
+            }
+            VmMemMappingType::MapReserved => {
+                debug!("VM[{}] map same region: {:#x?}", vm.id(), memory);
+                vm.map_reserved_memory_region(
+                    make_layout(memory)?,
                     Some(GuestPhysAddr::from(memory.gpa)),
                 )
                 .map_err(|e| {
                     ax_err_type!(
                         NoMemory,
-                        format!("Failed to allocate memory region for VM: {e:?}")
+                        format!("Failed to map memory region for VM: {e:?}")
                     )
                 })?;
-            }
-            VmMemMappingType::MapIdentical => {
-                let layout = Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
-                    ax_err_type!(
-                        InvalidInput,
-                        format!("Invalid VM memory layout {:?}: {e:?}", memory)
-                    )
-                })?;
-                vm.alloc_memory_region(layout, None).map_err(|e| {
-                    ax_err_type!(
-                        NoMemory,
-                        format!("Failed to allocate memory region for VM: {e:?}")
-                    )
-                })?;
-            }
-            VmMemMappingType::MapReserved => {
-                debug!("VM[{}] map same region: {:#x?}", vm.id(), memory);
-                let layout = Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
-                    ax_err_type!(
-                        InvalidInput,
-                        format!("Invalid VM memory layout {:?}: {e:?}", memory)
-                    )
-                })?;
-                vm.map_reserved_memory_region(layout, Some(GuestPhysAddr::from(memory.gpa)))
-                    .map_err(|e| {
-                        ax_err_type!(
-                            NoMemory,
-                            format!("Failed to map memory region for VM: {e:?}")
-                        )
-                    })?;
             }
         }
     }

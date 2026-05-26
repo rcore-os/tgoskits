@@ -85,7 +85,7 @@ pub fn start() {
         &VMM,
         || {
             let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
-            info!("a VM exited, current running VM count: {vm_count}");
+            debug!("a VM exited, current running VM count: {vm_count}");
             vm_count == 0
         },
         None,
@@ -144,10 +144,6 @@ pub fn with_vm_and_vcpu_on_pcpu(
         Unsupported,
         "cross-CPU vCPU closure dispatch is not implemented"
     )
-    // use std::os::arceos::modules::axipi;
-    // Ok(ax_ipi::send_ipi_event_to_one(pcpu_id as usize, move || {
-    // with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, f);
-    // }))
 }
 
 pub fn add_running_vm_count(count: usize) {
