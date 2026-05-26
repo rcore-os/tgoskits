@@ -8,6 +8,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_task::current;
 use axnet::{
     RecvOptions, SendOptions, Socket as SocketInner, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -24,7 +25,10 @@ use linux_raw_sys::{
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
 use super::{FileLike, Kstat};
-use crate::file::{IoDst, IoSrc, get_file_like};
+use crate::{
+    file::{IoDst, IoSrc, get_file_like},
+    task::AsThread,
+};
 
 const ETH0_NAME: &[u8] = b"eth0";
 const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -102,10 +106,21 @@ fn read_ifreq_interface(arg: usize) -> AxResult<NetInterface> {
     let name = read_user_bytes::<IFREQ_NAME_LEN>(arg as *const u8)?;
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     match &name[..end] {
-        ETH0_NAME => Ok(NetInterface::Eth0),
+        ETH0_NAME => {
+            if !in_root_net_ns() {
+                return Err(AxError::NoSuchDevice);
+            }
+            Ok(NetInterface::Eth0)
+        }
         LO_NAME => Ok(NetInterface::Loopback),
         _ => Err(AxError::NoSuchDevice),
     }
+}
+
+fn in_root_net_ns() -> bool {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    nsproxy.net_ns.lock().ns_id == 0
 }
 
 fn write_ifreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
@@ -146,7 +161,7 @@ fn write_eth0_ifconf(arg: usize) -> AxResult<()> {
 
     if buf != 0 {
         let mut written = 0;
-        if ifc_len >= IFREQ_COMPAT_LEN as i32 {
+        if in_root_net_ns() && ifc_len >= IFREQ_COMPAT_LEN as i32 {
             write_ifconf_entry(buf, written, ETH0_NAME, configured_eth0_ipv4())?;
             written += IFREQ_COMPAT_LEN;
         }

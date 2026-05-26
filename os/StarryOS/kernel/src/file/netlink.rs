@@ -33,7 +33,10 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_task::future::{block_on, poll_io};
+use ax_task::{
+    current,
+    future::{block_on, poll_io},
+};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -230,6 +233,12 @@ const ADDRS: &[AddrInfo] = &[
     },
 ];
 
+fn in_root_net_ns() -> bool {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    nsproxy.net_ns.lock().ns_id == 0
+}
+
 #[derive(Clone, Copy, Default)]
 struct NetlinkState {
     addr: Option<sockaddr_nl>,
@@ -394,15 +403,22 @@ impl NetlinkSocket {
 
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let pid = self.local_pid();
+        let in_root = in_root_net_ns();
         let mut response = Vec::new();
         match header.ty {
             RTM_GETLINK => {
                 for link in LINKS {
+                    if !in_root && link.index != 1 {
+                        continue;
+                    }
                     push_link_message(&mut response, header.seq, pid, link);
                 }
             }
             RTM_GETADDR => {
                 for addr in ADDRS {
+                    if !in_root && addr.index != 1 {
+                        continue;
+                    }
                     push_addr_message(&mut response, header.seq, pid, addr);
                 }
             }
