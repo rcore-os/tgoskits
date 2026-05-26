@@ -26,6 +26,8 @@ const IPC_STAT: i32 = 2;
 const IPC_INFO: i32 = 3;
 const MSG_STAT: i32 = 11;
 const MSG_INFO: i32 = 12;
+const SHM_STAT: i32 = 13;
+const SHM_INFO: i32 = 14;
 
 // Permission bits
 const USER_READ: u32 = 0o400;
