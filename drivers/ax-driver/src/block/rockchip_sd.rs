@@ -136,8 +136,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         raw: Some(raw.clone()),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
         irq_enabled: core::sync::atomic::AtomicBool::new(false),
-        read_queue_created: false,
-        write_queue_created: false,
+        queue_created: false,
         irq_handler_taken: false,
     };
     plat_dev.register_block_with_irq(dev, irq_num);

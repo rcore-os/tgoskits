@@ -161,7 +161,7 @@ sequenceDiagram
 
 ## Capability Boundary
 
-`rdif-*` 是能力边界，只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载 submit/poll 风格的 block capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+`rdif-*` 是能力边界，只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载设备 LBA 语义的 submit/poll block capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
 
 | 能力 | interface crate | runtime crate | 上层消费 |
 | --- | --- | --- | --- |
@@ -171,6 +171,12 @@ sequenceDiagram
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
 | vsock | `rdif-vsock` | `rd-vsock` | vsock service |
 | 平台设备 | `rdif-intc`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial` | 按需 | HAL、Axvisor backend、平台 glue |
+
+`rdif-block` 的块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
+
+块 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回可用 IRQ source 列表，每个 `IrqSourceInfo { id, queues }` 描述该 source 可能影响的 queue mask；`take_irq_handler(source_id)` 只能取走对应 handler。单 INTx/legacy 设备使用 source `0`，未来 NVMe MSI-X 可以把不同 vector 暴露为不同 source。当前 ArceOS `ax-driver` / `ax-runtime` glue 仍只消费 legacy source `0`，保持一个 block 设备一个 IRQ handler 的注册方式。
+
+`IrqHandler::handle_irq()` 只确认中断源并返回可 poll 的 queue mask，不做 OS wake、不阻塞、不持有 OS 锁，也不在中断上下文推进慢路径完成。收到事件后，runtime 或 task-side wrapper 再对相应 queue 调用 `poll_request()`。
 
 新增接口按多文件拆分：
 

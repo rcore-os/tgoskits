@@ -10,8 +10,8 @@ use ax_kspin::SpinNoIrq;
 use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
-    BlkError, Buffer, IReadQueue, IWriteQueue, Interface, QueueInfo, RequestId, RequestRead,
-    RequestStatus, RequestWrite,
+    BlkError, Buffer, IQueue, Interface, QueueConfig, QueueInfo, QueueMode, QueueTopology, Request,
+    RequestFlags, RequestId, RequestOp, RequestStatus,
 };
 use rdrive::Device;
 
@@ -26,8 +26,7 @@ pub struct Block {
 }
 
 struct BlockQueues {
-    read: Box<dyn IReadQueue>,
-    write: Box<dyn IWriteQueue>,
+    queue: Box<dyn IQueue>,
     pool: BlockBufferPool,
 }
 
@@ -115,33 +114,51 @@ impl Block {
     }
 
     pub fn num_blocks(&self) -> u64 {
-        self.queues.lock().read.num_blocks() as _
+        self.queues.lock().queue.info().device.num_blocks
     }
 
     pub fn block_size(&self) -> usize {
-        self.queues.lock().read.block_size()
+        self.queues.lock().queue.info().device.logical_block_size
     }
 
     pub fn flush(&mut self) -> AxResult {
-        Ok(())
+        let mut queues = self.queues.lock();
+        let mut segments = [];
+        let request = Request {
+            op: RequestOp::Flush,
+            lba: 0,
+            block_count: 0,
+            segments: &mut segments,
+            flags: RequestFlags::NONE,
+        };
+        let request_id = match queues.queue.submit_request(request) {
+            Ok(request_id) => request_id,
+            Err(BlkError::NotSupported) => return Ok(()),
+            Err(err) => return Err(map_blk_err_to_ax_err(err)),
+        };
+        queues.poll_until_complete(request_id)
     }
 
     pub fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
         let mut queues = self.queues.lock();
-        validate_io(&*queues.read, block_id, buf.len())?;
+        validate_io(queues.queue.info(), block_id, buf.len())?;
 
-        let block_size = queues.read.block_size();
+        let block_size = queues.queue.info().device.logical_block_size;
         for (offset, block_buf) in buf.chunks_exact_mut(block_size).enumerate() {
             let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
-            let request = RequestRead {
-                block_id: checked_block_id(block_id, offset)?,
-                buffer: buffer_from_dma(&mut dma_buffer, block_size),
-            };
+            let segment = buffer_from_dma(&mut dma_buffer, block_size);
+            let mut segments = [segment];
             let request_id = queues
-                .read
-                .submit_read(request)
+                .queue
+                .submit_request(Request {
+                    op: RequestOp::Read,
+                    lba: checked_lba(block_id, offset)?,
+                    block_count: 1,
+                    segments: &mut segments,
+                    flags: RequestFlags::NONE,
+                })
                 .map_err(map_blk_err_to_ax_err)?;
-            queues.poll_read_until_complete(request_id)?;
+            queues.poll_until_complete(request_id)?;
             dma_buffer.sync_for_cpu(0, block_size);
             dma_buffer.read_with(block_size, |data| block_buf.copy_from_slice(data));
         }
@@ -150,68 +167,62 @@ impl Block {
 
     pub fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
         let mut queues = self.queues.lock();
-        validate_io(&*queues.write, block_id, buf.len())?;
+        validate_io(queues.queue.info(), block_id, buf.len())?;
 
-        let block_size = queues.write.block_size();
+        let block_size = queues.queue.info().device.logical_block_size;
         for (offset, block_buf) in buf.chunks_exact(block_size).enumerate() {
             let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
             dma_buffer.write_with(block_size, |data| data.copy_from_slice(block_buf));
             dma_buffer.sync_for_device(0, block_size);
-            let request = RequestWrite {
-                block_id: checked_block_id(block_id, offset)?,
-                buffer: buffer_from_dma(&mut dma_buffer, block_size),
-            };
+            let segment = buffer_from_dma(&mut dma_buffer, block_size);
+            let mut segments = [segment];
             let request_id = queues
-                .write
-                .submit_write(request)
+                .queue
+                .submit_request(Request {
+                    op: RequestOp::Write,
+                    lba: checked_lba(block_id, offset)?,
+                    block_count: 1,
+                    segments: &mut segments,
+                    flags: RequestFlags::NONE,
+                })
                 .map_err(map_blk_err_to_ax_err)?;
-            queues.poll_write_until_complete(request_id)?;
+            queues.poll_until_complete(request_id)?;
         }
         Ok(())
     }
 }
 
 impl BlockQueues {
-    fn new(read: Box<dyn IReadQueue>, write: Box<dyn IWriteQueue>) -> AxResult<Self> {
-        if read.block_size() != write.block_size() || read.num_blocks() != write.num_blocks() {
+    fn new(queue: Box<dyn IQueue>) -> AxResult<Self> {
+        let info = queue.info();
+        let block_size = info.device.logical_block_size;
+        if block_size == 0 {
             return Err(AxError::BadState);
         }
-        let config = read.buffer_config();
-        let block_size = read.block_size();
-        if block_size == 0 || config.size < block_size {
+        let size = info
+            .limits
+            .max_segment_size
+            .min(block_size.max(info.limits.dma_alignment));
+        if size < block_size {
             return Err(AxError::BadState);
         }
-        let layout = Layout::from_size_align(config.size, config.align.max(1))
+        let layout = Layout::from_size_align(size, info.limits.dma_alignment.max(1))
             .map_err(|_| AxError::BadState)?;
         Ok(Self {
-            read,
-            write,
+            queue,
             pool: BlockBufferPool {
-                dma: DeviceDma::new(config.dma_mask, axklib::dma::op()),
+                dma: DeviceDma::new(info.limits.dma_mask, axklib::dma::op()),
                 size: layout.size(),
                 align: layout.align(),
             },
         })
     }
 
-    fn poll_read_until_complete(&mut self, request: RequestId) -> AxResult {
+    fn poll_until_complete(&mut self, request: RequestId) -> AxResult {
         loop {
             match self
-                .read
-                .poll_read(request)
-                .map_err(map_blk_err_to_ax_err)?
-            {
-                RequestStatus::Complete => return Ok(()),
-                RequestStatus::Pending => core::hint::spin_loop(),
-            }
-        }
-    }
-
-    fn poll_write_until_complete(&mut self, request: RequestId) -> AxResult {
-        loop {
-            match self
-                .write
-                .poll_write(request)
+                .queue
+                .poll_request(request)
                 .map_err(map_blk_err_to_ax_err)?
             {
                 RequestStatus::Complete => return Ok(()),
@@ -238,13 +249,15 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
         let name = dev.name.clone();
         let irq_num = dev.irq_num;
         let mut interface = dev.interface.take().ok_or(AxError::BadState)?;
-        let read = interface.create_read_queue().ok_or(AxError::BadState)?;
-        let write = interface.create_write_queue().ok_or(AxError::BadState)?;
-        let queues = BlockQueues::new(read, write)?;
+        let topology = interface.queue_topology();
+        let queue = interface
+            .create_queue(default_queue_config(topology))
+            .ok_or(AxError::BadState)?;
+        let queues = BlockQueues::new(queue)?;
 
         #[cfg(feature = "irq")]
         let irq_handler = irq_num
-            .and_then(|_| interface.take_irq_handler())
+            .and_then(|_| take_legacy_irq_handler(interface.as_mut()))
             .map(BlockIrqHandler::new);
         drop(dev);
 
@@ -316,8 +329,30 @@ pub fn take_block_devices() -> Vec<Block> {
         .collect()
 }
 
-fn validate_io(queue: &dyn QueueInfo, block_id: u64, len: usize) -> AxResult {
-    let block_size = queue.block_size();
+fn default_queue_config(topology: QueueTopology) -> QueueConfig {
+    QueueConfig {
+        id_hint: Some(0),
+        depth: topology.default_queue_depth.max(1),
+        mode: if topology.poll_queue_count > 0 {
+            QueueMode::Polled
+        } else {
+            QueueMode::Interrupt
+        },
+    }
+}
+
+#[cfg(feature = "irq")]
+fn take_legacy_irq_handler(
+    interface: &mut dyn Interface,
+) -> Option<Box<dyn rdif_block::IrqHandler>> {
+    let has_legacy_source = interface.irq_sources().iter().any(|source| source.id == 0);
+    has_legacy_source
+        .then(|| interface.take_irq_handler(0))
+        .flatten()
+}
+
+fn validate_io(info: QueueInfo, block_id: u64, len: usize) -> AxResult {
+    let block_size = info.device.logical_block_size;
     if block_size == 0 || !len.is_multiple_of(block_size) {
         return Err(AxError::InvalidInput);
     }
@@ -325,17 +360,16 @@ fn validate_io(queue: &dyn QueueInfo, block_id: u64, len: usize) -> AxResult {
     let end = block_id
         .checked_add(block_count as u64)
         .ok_or(AxError::InvalidInput)?;
-    if end > queue.num_blocks() as u64 {
+    if end > info.device.num_blocks {
         return Err(AxError::InvalidInput);
     }
     Ok(())
 }
 
-fn checked_block_id(start: u64, offset: usize) -> AxResult<usize> {
-    let block_id = start
+fn checked_lba(start: u64, offset: usize) -> AxResult<u64> {
+    start
         .checked_add(offset as u64)
-        .ok_or(AxError::InvalidInput)?;
-    usize::try_from(block_id).map_err(|_| AxError::InvalidInput)
+        .ok_or(AxError::InvalidInput)
 }
 
 fn buffer_from_dma(buffer: &mut ContiguousArray<u8>, len: usize) -> Buffer<'_> {
@@ -347,7 +381,8 @@ fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
         BlkError::NotSupported => AxError::Unsupported,
         BlkError::Retry => AxError::WouldBlock,
         BlkError::NoMemory => AxError::NoMemory,
-        BlkError::InvalidBlockIndex(_) => AxError::InvalidInput,
+        BlkError::InvalidBlockIndex(_) | BlkError::InvalidRequest => AxError::InvalidInput,
+        BlkError::Io => AxError::Io,
         BlkError::Other(error) => {
             error!("Block device error: {error}");
             AxError::Io

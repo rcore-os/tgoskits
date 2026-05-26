@@ -21,7 +21,7 @@ const DEFAULT_RING_PAGES: usize = 2;
 pub struct TrbData([u32; TRB_LEN]);
 
 impl TrbData {
-    pub fn to_raw(&self) -> [u32; TRB_LEN] {
+    pub fn to_raw(self) -> [u32; TRB_LEN] {
         self.0
     }
 }

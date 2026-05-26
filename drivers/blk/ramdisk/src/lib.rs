@@ -6,25 +6,23 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rdif_block::{
-    BlkError, BuffConfig, DriverGeneric, Event, IReadQueue, IWriteQueue, Interface, IrqHandler,
-    QueueInfo, RequestId, RequestRead, RequestStatus, RequestWrite,
+    BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
+    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueMode, QueueTopology,
+    Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
 };
 use spin::Mutex;
 
 struct RamInner {
     storage: Vec<u8>,
-    completed_reads: Vec<RequestId>,
-    completed_writes: Vec<RequestId>,
+    completed: Vec<RequestId>,
     next_req_id: usize,
-    next_read_queue_id: usize,
-    next_write_queue_id: usize,
+    next_queue_id: usize,
 }
 
 struct RamIrqState {
     enabled: AtomicBool,
     handler_taken: AtomicBool,
-    read: AtomicU64,
-    write: AtomicU64,
+    queues: AtomicU64,
 }
 
 pub struct RamDisk {
@@ -51,17 +49,14 @@ impl RamDisk {
 
         let inner = RamInner {
             storage,
-            completed_reads: Vec::new(),
-            completed_writes: Vec::new(),
+            completed: Vec::new(),
             next_req_id: 1,
-            next_read_queue_id: 0,
-            next_write_queue_id: 0,
+            next_queue_id: 0,
         };
         let irq = RamIrqState {
             enabled: AtomicBool::new(true),
             handler_taken: AtomicBool::new(false),
-            read: AtomicU64::new(0),
-            write: AtomicU64::new(0),
+            queues: AtomicU64::new(0),
         };
 
         Self {
@@ -84,6 +79,17 @@ impl RamDisk {
     pub fn storage_len(&self) -> usize {
         self.inner.lock().storage.len()
     }
+
+    fn device_info_for(&self) -> DeviceInfo {
+        DeviceInfo {
+            name: Some(self.name),
+            ..DeviceInfo::new(self.num_blocks as u64, self.block_size)
+        }
+    }
+
+    fn limits_for(&self) -> QueueLimits {
+        QueueLimits::simple(self.block_size, u64::MAX)
+    }
 }
 
 impl DriverGeneric for RamDisk {
@@ -101,29 +107,40 @@ impl DriverGeneric for RamDisk {
 }
 
 impl Interface for RamDisk {
-    fn create_read_queue(&mut self) -> Option<Box<dyn IReadQueue>> {
-        let mut guard = self.inner.lock();
-        let id = guard.next_read_queue_id;
-        guard.next_read_queue_id += 1;
-
-        Some(Box::new(RamReadQueue {
-            id,
-            block_size: self.block_size,
-            num_blocks: self.num_blocks,
-            inner: Arc::clone(&self.inner),
-            irq: Arc::clone(&self.irq),
-        }))
+    fn device_info(&self) -> DeviceInfo {
+        self.device_info_for()
     }
 
-    fn create_write_queue(&mut self) -> Option<Box<dyn IWriteQueue>> {
-        let mut guard = self.inner.lock();
-        let id = guard.next_write_queue_id;
-        guard.next_write_queue_id += 1;
+    fn queue_limits(&self) -> QueueLimits {
+        self.limits_for()
+    }
 
-        Some(Box::new(RamWriteQueue {
+    fn queue_topology(&self) -> QueueTopology {
+        QueueTopology {
+            max_queues: 64,
+            default_queue_depth: 64,
+            poll_queue_count: 0,
+        }
+    }
+
+    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
+        let mut guard = self.inner.lock();
+        let id = config.id_hint.unwrap_or_else(|| {
+            let id = guard.next_queue_id;
+            guard.next_queue_id += 1;
+            id
+        });
+
+        if id >= 64 {
+            return None;
+        }
+
+        Some(Box::new(RamQueue {
             id,
-            block_size: self.block_size,
-            num_blocks: self.num_blocks,
+            depth: config.depth.max(1),
+            mode: config.mode,
+            device: self.device_info_for(),
+            limits: self.limits_for(),
             inner: Arc::clone(&self.inner),
             irq: Arc::clone(&self.irq),
         }))
@@ -141,7 +158,14 @@ impl Interface for RamDisk {
         self.irq.enabled.load(Ordering::Acquire)
     }
 
-    fn take_irq_handler(&mut self) -> Option<Box<dyn IrqHandler>> {
+    fn irq_sources(&self) -> IrqSourceList {
+        alloc::vec![IrqSourceInfo::legacy(IdList::from_bits(u64::MAX))]
+    }
+
+    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+        if source_id != 0 {
+            return None;
+        }
         self.irq
             .handler_taken
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -163,87 +187,65 @@ impl IrqHandler for RamIrqHandler {
             return Event::none();
         }
 
-        let mut ev = Event::none();
-        insert_event_bits(&mut ev.read_queue, self.irq.read.swap(0, Ordering::AcqRel));
-        insert_event_bits(
-            &mut ev.write_queue,
-            self.irq.write.swap(0, Ordering::AcqRel),
-        );
-        ev
+        Event::from_queue_bits(self.irq.queues.swap(0, Ordering::AcqRel))
     }
 }
 
-struct RamReadQueue {
+struct RamQueue {
     id: usize,
-    block_size: usize,
-    num_blocks: usize,
+    depth: usize,
+    mode: QueueMode,
+    device: DeviceInfo,
+    limits: QueueLimits,
     inner: Arc<Mutex<RamInner>>,
     irq: Arc<RamIrqState>,
 }
 
-struct RamWriteQueue {
-    id: usize,
-    block_size: usize,
-    num_blocks: usize,
-    inner: Arc<Mutex<RamInner>>,
-    irq: Arc<RamIrqState>,
-}
-
-impl QueueInfo for RamReadQueue {
+impl IQueue for RamQueue {
     fn id(&self) -> usize {
         self.id
     }
 
-    fn num_blocks(&self) -> usize {
-        self.num_blocks
-    }
-
-    fn block_size(&self) -> usize {
-        self.block_size
-    }
-
-    fn buffer_config(&self) -> BuffConfig {
-        BuffConfig {
-            dma_mask: !0u64,
-            align: 1,
-            size: self.block_size,
+    fn info(&self) -> QueueInfo {
+        QueueInfo {
+            id: self.id,
+            depth: self.depth,
+            mode: self.mode,
+            device: self.device,
+            limits: self.limits,
         }
     }
-}
 
-impl IReadQueue for RamReadQueue {
-    fn submit_read(&mut self, request: RequestRead<'_>) -> Result<RequestId, BlkError> {
-        let block_id = request.block_id;
-        if block_id >= self.num_blocks {
-            return Err(BlkError::InvalidBlockIndex(block_id));
-        }
+    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
+        validate_request_shape(self.device, self.limits, &request)?;
 
         let mut guard = self.inner.lock();
         let req_id = RequestId::new(guard.next_req_id);
         guard.next_req_id += 1;
 
-        let offset = block_id * self.block_size;
-        let buff = request.buffer;
-        if buff.size < self.block_size {
-            return Err(BlkError::NotSupported);
+        match request.op {
+            RequestOp::Read => {
+                copy_from_storage(&guard.storage, self.device.logical_block_size, &request)?;
+            }
+            RequestOp::Write => {
+                if self.device.read_only {
+                    return Err(BlkError::NotSupported);
+                }
+                copy_to_storage(&mut guard.storage, self.device.logical_block_size, &request)?;
+            }
+            RequestOp::Flush => {}
+            RequestOp::Discard | RequestOp::WriteZeroes => return Err(BlkError::NotSupported),
         }
 
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                guard.storage.as_ptr().add(offset),
-                buff.virt,
-                self.block_size,
-            );
-        }
-        guard.completed_reads.push(req_id);
-        insert_irq_bit(&self.irq.read, self.id);
+        guard.completed.push(req_id);
+        insert_irq_bit(&self.irq.queues, self.id);
         Ok(req_id)
     }
 
-    fn poll_read(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
+    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
         let mut guard = self.inner.lock();
-        if let Some(pos) = guard.completed_reads.iter().position(|r| *r == request) {
-            guard.completed_reads.remove(pos);
+        if let Some(pos) = guard.completed.iter().position(|r| *r == request) {
+            guard.completed.remove(pos);
             Ok(RequestStatus::Complete)
         } else {
             Ok(RequestStatus::Pending)
@@ -251,78 +253,42 @@ impl IReadQueue for RamReadQueue {
     }
 }
 
-impl QueueInfo for RamWriteQueue {
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn num_blocks(&self) -> usize {
-        self.num_blocks
-    }
-
-    fn block_size(&self) -> usize {
-        self.block_size
-    }
-
-    fn buffer_config(&self) -> BuffConfig {
-        BuffConfig {
-            dma_mask: !0u64,
-            align: 1,
-            size: self.block_size,
+fn copy_from_storage(
+    storage: &[u8],
+    block_size: usize,
+    request: &Request<'_>,
+) -> Result<(), BlkError> {
+    let mut offset = request.lba as usize * block_size;
+    for segment in request.segments.iter() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(storage.as_ptr().add(offset), segment.virt, segment.len);
         }
+        offset += segment.len;
     }
+    Ok(())
 }
 
-impl IWriteQueue for RamWriteQueue {
-    fn submit_write(&mut self, request: RequestWrite<'_>) -> Result<RequestId, BlkError> {
-        let block_id = request.block_id;
-        if block_id >= self.num_blocks {
-            return Err(BlkError::InvalidBlockIndex(block_id));
-        }
-
-        let mut guard = self.inner.lock();
-        let req_id = RequestId::new(guard.next_req_id);
-        guard.next_req_id += 1;
-
-        let offset = block_id * self.block_size;
-        let buff = request.buffer;
-        if buff.size < self.block_size {
-            return Err(BlkError::NotSupported);
-        }
-
+fn copy_to_storage(
+    storage: &mut [u8],
+    block_size: usize,
+    request: &Request<'_>,
+) -> Result<(), BlkError> {
+    let mut offset = request.lba as usize * block_size;
+    for segment in request.segments.iter() {
         unsafe {
             core::ptr::copy_nonoverlapping(
-                buff.virt,
-                guard.storage.as_mut_ptr().add(offset),
-                self.block_size,
+                segment.virt,
+                storage.as_mut_ptr().add(offset),
+                segment.len,
             );
         }
-        guard.completed_writes.push(req_id);
-        insert_irq_bit(&self.irq.write, self.id);
-        Ok(req_id)
+        offset += segment.len;
     }
-
-    fn poll_write(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        let mut guard = self.inner.lock();
-        if let Some(pos) = guard.completed_writes.iter().position(|r| *r == request) {
-            guard.completed_writes.remove(pos);
-            Ok(RequestStatus::Complete)
-        } else {
-            Ok(RequestStatus::Pending)
-        }
-    }
+    Ok(())
 }
 
 fn insert_irq_bit(bits: &AtomicU64, id: usize) {
     if id < u64::BITS as usize {
         bits.fetch_or(1 << id, Ordering::AcqRel);
-    }
-}
-
-fn insert_event_bits(list: &mut rdif_block::IdList, bits: u64) {
-    for id in 0..u64::BITS as usize {
-        if bits & (1 << id) != 0 {
-            list.insert(id);
-        }
     }
 }

@@ -23,9 +23,7 @@ impl Bcm2835Sdhci {
         if ctrl.init() == 0 {
             Ok(Self(ctrl))
         } else {
-            Err(rdif_block::BlkError::Other(
-                "BCM2835 SDHCI init failed".into(),
-            ))
+            Err(rdif_block::BlkError::Other("BCM2835 SDHCI init failed"))
         }
     }
 }
@@ -77,6 +75,6 @@ fn map_sdhci_err(err: SDHCIError) -> rdif_block::BlkError {
         SDHCIError::Again => rdif_block::BlkError::Retry,
         SDHCIError::NoMemory => rdif_block::BlkError::NoMemory,
         SDHCIError::Unsupported => rdif_block::BlkError::NotSupported,
-        _ => rdif_block::BlkError::Other("BCM2835 SDHCI I/O error".into()),
+        _ => rdif_block::BlkError::Other("BCM2835 SDHCI I/O error"),
     }
 }

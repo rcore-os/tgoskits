@@ -121,8 +121,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         raw: Some(raw.clone()),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
         irq_enabled: AtomicBool::new(false),
-        read_queue_created: false,
-        write_queue_created: false,
+        queue_created: false,
         irq_handler_taken: false,
     };
     plat_dev.register_block_with_irq(dev, irq_num);
@@ -233,17 +232,8 @@ struct BlockDevice {
     raw: Option<SharedDriver<RockchipSdhci>>,
     capacity_blocks: u64,
     irq_enabled: AtomicBool,
-    read_queue_created: bool,
-    write_queue_created: bool,
+    queue_created: bool,
     irq_handler_taken: bool,
-}
-
-struct BlockReadQueue {
-    inner: BlockQueue,
-}
-
-struct BlockWriteQueue {
-    inner: BlockQueue,
 }
 
 struct BlockQueue {
@@ -263,27 +253,44 @@ impl DriverGeneric for BlockDevice {
 }
 
 impl rdif_block::Interface for BlockDevice {
-    fn create_read_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IReadQueue>> {
-        if self.read_queue_created {
-            return None;
+    fn device_info(&self) -> rdif_block::DeviceInfo {
+        rdif_block::DeviceInfo {
+            name: Some("rockchip-sdhci"),
+            ..rdif_block::DeviceInfo::new(self.capacity_blocks, BLOCK_SIZE)
         }
-        self.raw.as_ref().map(|dev| {
-            self.read_queue_created = true;
-            alloc::boxed::Box::new(BlockReadQueue {
-                inner: BlockQueue::new(dev.clone(), self.capacity_blocks, 0),
-            }) as _
-        })
     }
 
-    fn create_write_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IWriteQueue>> {
-        if self.write_queue_created {
+    fn queue_limits(&self) -> rdif_block::QueueLimits {
+        rdif_block::QueueLimits {
+            dma_mask: u32::MAX as u64,
+            dma_alignment: BLOCK_SIZE,
+            max_blocks_per_request: u16::MAX as u32 + 1,
+            max_segments: 1,
+            max_segment_size: usize::MAX,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        }
+    }
+
+    fn queue_topology(&self) -> rdif_block::QueueTopology {
+        rdif_block::QueueTopology::single(1)
+    }
+
+    fn create_queue(
+        &mut self,
+        config: rdif_block::QueueConfig,
+    ) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
+        if self.queue_created {
             return None;
         }
         self.raw.as_ref().map(|dev| {
-            self.write_queue_created = true;
-            alloc::boxed::Box::new(BlockWriteQueue {
-                inner: BlockQueue::new(dev.clone(), self.capacity_blocks, 0),
-            }) as _
+            self.queue_created = true;
+            alloc::boxed::Box::new(BlockQueue::new(
+                dev.clone(),
+                self.capacity_blocks,
+                config.id_hint.unwrap_or(0),
+            )) as _
         })
     }
 
@@ -316,7 +323,19 @@ impl rdif_block::Interface for BlockDevice {
         self.irq_enabled.load(Ordering::Acquire)
     }
 
-    fn take_irq_handler(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IrqHandler>> {
+    fn irq_sources(&self) -> rdif_block::IrqSourceList {
+        alloc::vec![rdif_block::IrqSourceInfo::legacy(
+            rdif_block::IdList::from_bits(1),
+        )]
+    }
+
+    fn take_irq_handler(
+        &mut self,
+        source_id: usize,
+    ) -> Option<alloc::boxed::Box<dyn rdif_block::IrqHandler>> {
+        if source_id != 0 {
+            return None;
+        }
         if self.irq_handler_taken {
             return None;
         }
@@ -346,100 +365,51 @@ fn block_event_from_sdhci_irq(irq_event: sdhci_host::Event) -> rdif_block::Event
         | sdhci_host::Event::Error { .. }
         | sdhci_host::Event::Other { .. } => {
             let mut event = rdif_block::Event::none();
-            event.read_queue.insert(0);
-            event.write_queue.insert(0);
+            event.queues.insert(0);
             event
         }
     }
 }
 
-impl rdif_block::QueueInfo for BlockQueue {
-    fn num_blocks(&self) -> usize {
-        self.capacity_blocks as usize
-    }
-
-    fn block_size(&self) -> usize {
-        BLOCK_SIZE
-    }
-
+impl rdif_block::IQueue for BlockQueue {
     fn id(&self) -> usize {
         self.id
     }
 
-    fn buffer_config(&self) -> rdif_block::BuffConfig {
-        rdif_block::BuffConfig {
-            dma_mask: self.dma.dma_mask(),
-            align: BLOCK_SIZE,
-            size: BLOCK_SIZE,
+    fn info(&self) -> rdif_block::QueueInfo {
+        rdif_block::QueueInfo {
+            id: self.id,
+            depth: 1,
+            mode: rdif_block::QueueMode::Interrupt,
+            device: rdif_block::DeviceInfo {
+                name: Some("rockchip-sdhci"),
+                ..rdif_block::DeviceInfo::new(self.capacity_blocks, BLOCK_SIZE)
+            },
+            limits: rdif_block::QueueLimits {
+                dma_mask: self.dma.dma_mask(),
+                dma_alignment: BLOCK_SIZE,
+                max_blocks_per_request: u16::MAX as u32 + 1,
+                max_segments: 1,
+                max_segment_size: usize::MAX,
+                supports_flush: false,
+                supports_discard: false,
+                supports_write_zeroes: false,
+            },
         }
     }
-}
 
-impl rdif_block::QueueInfo for BlockReadQueue {
-    fn num_blocks(&self) -> usize {
-        self.inner.num_blocks()
-    }
-
-    fn block_size(&self) -> usize {
-        self.inner.block_size()
-    }
-
-    fn id(&self) -> usize {
-        self.inner.id()
-    }
-
-    fn buffer_config(&self) -> rdif_block::BuffConfig {
-        self.inner.buffer_config()
-    }
-}
-
-impl rdif_block::QueueInfo for BlockWriteQueue {
-    fn num_blocks(&self) -> usize {
-        self.inner.num_blocks()
-    }
-
-    fn block_size(&self) -> usize {
-        self.inner.block_size()
-    }
-
-    fn id(&self) -> usize {
-        self.inner.id()
-    }
-
-    fn buffer_config(&self) -> rdif_block::BuffConfig {
-        self.inner.buffer_config()
-    }
-}
-
-impl rdif_block::IReadQueue for BlockReadQueue {
-    fn submit_read(
+    fn submit_request(
         &mut self,
-        request: rdif_block::RequestRead<'_>,
+        request: rdif_block::Request<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        self.inner.submit_read(request)
+        self.submit_request_inner(request)
     }
 
-    fn poll_read(
+    fn poll_request(
         &mut self,
         request: rdif_block::RequestId,
     ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
-        self.inner.poll_request(request)
-    }
-}
-
-impl rdif_block::IWriteQueue for BlockWriteQueue {
-    fn submit_write(
-        &mut self,
-        request: rdif_block::RequestWrite<'_>,
-    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        self.inner.submit_write(request)
-    }
-
-    fn poll_write(
-        &mut self,
-        request: rdif_block::RequestId,
-    ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
-        self.inner.poll_request(request)
+        self.poll_request_inner(request)
     }
 }
 
@@ -456,73 +426,65 @@ impl BlockQueue {
         }
     }
 
-    fn submit_read(
+    fn queue_info(&self) -> rdif_block::QueueInfo {
+        rdif_block::IQueue::info(self)
+    }
+
+    fn submit_request_inner(
         &mut self,
-        request: rdif_block::RequestRead<'_>,
+        request: rdif_block::Request<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
+        let info = self.queue_info();
+        rdif_block::validate_request_shape(info.device, info.limits, &request)?;
         self.reap_pending_request()?;
         let raw = self.raw.clone();
         raw.with_mut(|raw| {
-            let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
+            let start_block = block_addr_for_card(request.lba, raw.is_high_capacity())?;
             // Block I/O uses the host crate's submit/poll request API so
             // completions can be driven by IRQ wakeups. Protocol data commands
             // use the same submit/poll contract through SdioHost.
-            let buffer = request.buffer;
+            let buffer = request
+                .segments
+                .first()
+                .copied()
+                .ok_or(rdif_block::BlkError::InvalidRequest)?;
             if !buffer.len().is_multiple_of(BLOCK_SIZE) {
-                return Err(rdif_block::BlkError::Other(
-                    "read buffer is not block aligned".into(),
-                ));
+                return Err(rdif_block::BlkError::Other("buffer is not block aligned"));
             }
             let ptr = NonNull::new(buffer.virt)
-                .ok_or_else(|| rdif_block::BlkError::Other("read buffer pointer is null".into()))?;
+                .ok_or(rdif_block::BlkError::Other("buffer pointer is null"))?;
             let size = NonZeroUsize::new(buffer.len())
-                .ok_or_else(|| rdif_block::BlkError::Other("read buffer is empty".into()))?;
-            let id = submit_read_request(
-                raw.host_mut(),
-                start_block,
-                ptr,
-                size,
-                &self.dma,
-                &mut self.slot,
-                &mut self.pending,
-            )?;
+                .ok_or(rdif_block::BlkError::Other("buffer is empty"))?;
+            let id = match request.op {
+                rdif_block::RequestOp::Read => submit_read_request(
+                    raw.host_mut(),
+                    start_block,
+                    ptr,
+                    size,
+                    &self.dma,
+                    &mut self.slot,
+                    &mut self.pending,
+                )?,
+                rdif_block::RequestOp::Write => submit_write_request(
+                    raw.host_mut(),
+                    start_block,
+                    ptr,
+                    size,
+                    &self.dma,
+                    &mut self.slot,
+                    &mut self.pending,
+                )?,
+                rdif_block::RequestOp::Flush
+                | rdif_block::RequestOp::Discard
+                | rdif_block::RequestOp::WriteZeroes => {
+                    return Err(rdif_block::BlkError::NotSupported);
+                }
+            };
             Ok(rdif_block::RequestId::new(usize::from(id)))
         })
     }
 
-    fn submit_write(
-        &mut self,
-        request: rdif_block::RequestWrite<'_>,
-    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        self.reap_pending_request()?;
-        let raw = self.raw.clone();
-        raw.with_mut(|raw| {
-            let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
-            let buffer = request.buffer;
-            if !buffer.len().is_multiple_of(BLOCK_SIZE) {
-                return Err(rdif_block::BlkError::Other(
-                    "write buffer is not block aligned".into(),
-                ));
-            }
-            let ptr = NonNull::new(buffer.virt).ok_or_else(|| {
-                rdif_block::BlkError::Other("write buffer pointer is null".into())
-            })?;
-            let size = NonZeroUsize::new(buffer.len())
-                .ok_or_else(|| rdif_block::BlkError::Other("write buffer is empty".into()))?;
-            let id = submit_write_request(
-                raw.host_mut(),
-                start_block,
-                ptr,
-                size,
-                &self.dma,
-                &mut self.slot,
-                &mut self.pending,
-            )?;
-            Ok(rdif_block::RequestId::new(usize::from(id)))
-        })
-    }
-
-    fn poll_request(
+    fn poll_request_inner(
         &mut self,
         request: rdif_block::RequestId,
     ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
@@ -548,7 +510,7 @@ impl BlockQueue {
             Ok(BlockPoll::Complete) => Ok(rdif_block::RequestStatus::Complete),
             Ok(BlockPoll::Pending) => Ok(rdif_block::RequestStatus::Pending),
             Ok(_) => Err(rdif_block::BlkError::Other(
-                "SDHCI returned an unknown poll state".into(),
+                "SDHCI returned an unknown poll state",
             )),
             Err(err) => Err(map_dev_err_to_blk_err(err)),
         }
@@ -657,7 +619,7 @@ fn can_fallback_to_fifo(err: Error) -> bool {
     )
 }
 
-fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rdif_block::BlkError> {
+fn block_addr_for_card(block_id: u64, high_capacity: bool) -> Result<u32, rdif_block::BlkError> {
     let block_id =
         u32::try_from(block_id).map_err(|_| rdif_block::BlkError::InvalidBlockIndex(block_id))?;
     if high_capacity {
@@ -665,7 +627,7 @@ fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rdif
     } else {
         block_id
             .checked_mul(BLOCK_SIZE as u32)
-            .ok_or(rdif_block::BlkError::InvalidBlockIndex(block_id as usize))
+            .ok_or(rdif_block::BlkError::InvalidBlockIndex(block_id as u64))
     }
 }
 
@@ -675,9 +637,9 @@ fn map_dev_err_to_blk_err(err: Error) -> rdif_block::BlkError {
             rdif_block::BlkError::NotSupported
         }
         Error::Misaligned | Error::InvalidArgument => {
-            rdif_block::BlkError::Other("SD/MMC request is not block aligned".into())
+            rdif_block::BlkError::Other("SD/MMC request is not block aligned")
         }
-        _ => rdif_block::BlkError::Other("SDHCI I/O error".into()),
+        _ => rdif_block::BlkError::Io,
     }
 }
 

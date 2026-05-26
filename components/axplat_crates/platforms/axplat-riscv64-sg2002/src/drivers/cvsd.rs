@@ -6,8 +6,8 @@ use core::{
 
 use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rdif_block::{
-    BlkError, BuffConfig, DriverGeneric, IReadQueue, IWriteQueue, Interface, QueueInfo, RequestId,
-    RequestRead, RequestStatus, RequestWrite,
+    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
+    QueueMode, QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
 };
 use sg200x_bsp::sdmmc::Sdmmc;
 
@@ -156,8 +156,8 @@ impl CvsdDriver {
     fn checked_lba(block_id: u64, offset: usize) -> Result<u32, BlkError> {
         let lba = block_id
             .checked_add(offset as u64)
-            .ok_or(BlkError::InvalidBlockIndex(block_id as usize))?;
-        u32::try_from(lba).map_err(|_| BlkError::InvalidBlockIndex(block_id as usize))
+            .ok_or(BlkError::InvalidBlockIndex(block_id))?;
+        u32::try_from(lba).map_err(|_| BlkError::InvalidBlockIndex(block_id))
     }
 
     fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), BlkError> {
@@ -168,7 +168,7 @@ impl CvsdDriver {
         for (i, block) in buf.chunks_exact_mut(BLOCK_SIZE).enumerate() {
             self.0
                 .read_block(Self::checked_lba(block_id, i)?, block)
-                .map_err(|_| BlkError::Other("CVSD read failed".into()))?;
+                .map_err(|_| BlkError::Other("CVSD read failed"))?;
         }
         Ok(())
     }
@@ -181,7 +181,7 @@ impl CvsdDriver {
         for (i, block) in buf.chunks_exact(BLOCK_SIZE).enumerate() {
             self.0
                 .write_block(Self::checked_lba(block_id, i)?, block)
-                .map_err(|_| BlkError::Other("CVSD write failed".into()))?;
+                .map_err(|_| BlkError::Other("CVSD write failed"))?;
         }
         Ok(())
     }
@@ -189,16 +189,14 @@ impl CvsdDriver {
 
 struct CvsdBlock {
     inner: SharedCvsdDriver,
-    read_queue_created: bool,
-    write_queue_created: bool,
+    queue_created: bool,
 }
 
 impl CvsdBlock {
     fn new(driver: CvsdDriver) -> Self {
         Self {
             inner: SharedCvsdDriver::new(driver),
-            read_queue_created: false,
-            write_queue_created: false,
+            queue_created: false,
         }
     }
 }
@@ -210,103 +208,108 @@ impl DriverGeneric for CvsdBlock {
 }
 
 impl Interface for CvsdBlock {
-    fn create_read_queue(&mut self) -> Option<Box<dyn IReadQueue>> {
-        if self.read_queue_created {
+    fn device_info(&self) -> DeviceInfo {
+        DeviceInfo {
+            name: Some(DEVICE_NAME),
+            ..DeviceInfo::new(
+                self.inner.with_mut(|driver| driver.num_blocks()),
+                BLOCK_SIZE,
+            )
+        }
+    }
+
+    fn queue_limits(&self) -> QueueLimits {
+        QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 0x1000,
+            max_blocks_per_request: 1,
+            max_segments: 1,
+            max_segment_size: BLOCK_SIZE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        }
+    }
+
+    fn queue_topology(&self) -> QueueTopology {
+        QueueTopology::single(1)
+    }
+
+    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
+        if self.queue_created {
             return None;
         }
-        self.read_queue_created = true;
-        Some(Box::new(CvsdReadQueue {
-            id: 0,
+        self.queue_created = true;
+        Some(Box::new(CvsdQueue {
+            id: config.id_hint.unwrap_or(0),
+            depth: config.depth.max(1),
+            mode: config.mode,
             inner: self.inner.clone(),
         }))
     }
-
-    fn create_write_queue(&mut self) -> Option<Box<dyn IWriteQueue>> {
-        if self.write_queue_created {
-            return None;
-        }
-        self.write_queue_created = true;
-        Some(Box::new(CvsdWriteQueue {
-            id: 0,
-            inner: self.inner.clone(),
-        }))
-    }
 }
 
-struct CvsdReadQueue {
+struct CvsdQueue {
     id: usize,
+    depth: usize,
+    mode: QueueMode,
     inner: SharedCvsdDriver,
 }
 
-struct CvsdWriteQueue {
-    id: usize,
-    inner: SharedCvsdDriver,
-}
-
-impl QueueInfo for CvsdReadQueue {
+impl IQueue for CvsdQueue {
     fn id(&self) -> usize {
         self.id
     }
 
-    fn num_blocks(&self) -> usize {
-        self.inner.with_mut(|driver| driver.num_blocks() as usize)
-    }
-
-    fn block_size(&self) -> usize {
-        BLOCK_SIZE
-    }
-
-    fn buffer_config(&self) -> BuffConfig {
-        BuffConfig {
-            dma_mask: u64::MAX,
-            align: 0x1000,
-            size: self.block_size(),
+    fn info(&self) -> QueueInfo {
+        QueueInfo {
+            id: self.id,
+            depth: self.depth,
+            mode: self.mode,
+            device: DeviceInfo {
+                name: Some(DEVICE_NAME),
+                ..DeviceInfo::new(
+                    self.inner.with_mut(|driver| driver.num_blocks()),
+                    BLOCK_SIZE,
+                )
+            },
+            limits: QueueLimits {
+                dma_mask: u64::MAX,
+                dma_alignment: 0x1000,
+                max_blocks_per_request: 1,
+                max_segments: 1,
+                max_segment_size: BLOCK_SIZE,
+                supports_flush: false,
+                supports_discard: false,
+                supports_write_zeroes: false,
+            },
         }
     }
-}
 
-impl IReadQueue for CvsdReadQueue {
-    fn submit_read(&mut self, mut request: RequestRead<'_>) -> Result<RequestId, BlkError> {
-        self.inner
-            .with_mut(|driver| driver.read_blocks(request.block_id as u64, &mut request.buffer))?;
+    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
+        validate_request_shape(self.info().device, self.info().limits, &request)?;
+        match request.op {
+            RequestOp::Read => {
+                let segment = request
+                    .segments
+                    .first_mut()
+                    .ok_or(BlkError::InvalidRequest)?;
+                self.inner
+                    .with_mut(|driver| driver.read_blocks(request.lba, segment))?;
+            }
+            RequestOp::Write => {
+                let segment = request.segments.first().ok_or(BlkError::InvalidRequest)?;
+                self.inner
+                    .with_mut(|driver| driver.write_blocks(request.lba, segment))?;
+            }
+            RequestOp::Flush | RequestOp::Discard | RequestOp::WriteZeroes => {
+                return Err(BlkError::NotSupported);
+            }
+        }
         Ok(RequestId::new(0))
     }
 
-    fn poll_read(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
-        Ok(RequestStatus::Complete)
-    }
-}
-
-impl QueueInfo for CvsdWriteQueue {
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn num_blocks(&self) -> usize {
-        self.inner.with_mut(|driver| driver.num_blocks() as usize)
-    }
-
-    fn block_size(&self) -> usize {
-        BLOCK_SIZE
-    }
-
-    fn buffer_config(&self) -> BuffConfig {
-        BuffConfig {
-            dma_mask: u64::MAX,
-            align: 0x1000,
-            size: self.block_size(),
-        }
-    }
-}
-
-impl IWriteQueue for CvsdWriteQueue {
-    fn submit_write(&mut self, request: RequestWrite<'_>) -> Result<RequestId, BlkError> {
-        self.inner
-            .with_mut(|driver| driver.write_blocks(request.block_id as u64, &request.buffer))?;
-        Ok(RequestId::new(0))
-    }
-
-    fn poll_write(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+    fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
         Ok(RequestStatus::Complete)
     }
 }

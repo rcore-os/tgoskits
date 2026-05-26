@@ -23,7 +23,6 @@ memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
     "dep:ax-driver",
-    "ax-driver/usb",
     "dep:crab-usb",
     "dep:rdrive",
 ]

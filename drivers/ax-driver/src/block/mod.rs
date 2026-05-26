@@ -1,6 +1,5 @@
 mod binding;
 #[cfg(any(
-    feature = "irq",
     feature = "virtio-blk",
     feature = "phytium-mci",
     feature = "rockchip-dwmmc",
@@ -12,6 +11,8 @@ mod shared;
 pub mod ahci;
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835;
+#[cfg(feature = "nvme")]
+pub mod nvme;
 #[cfg(feature = "phytium-mci")]
 pub mod phytium_mci;
 #[cfg(feature = "ramdisk")]
@@ -29,11 +30,10 @@ use alloc::{boxed::Box, sync::Arc};
 pub use binding::*;
 #[cfg(sync_block_dev)]
 use rdif_block::{
-    BlkError, BuffConfig, DriverGeneric, IReadQueue, IWriteQueue, Interface, QueueInfo, RequestId,
-    RequestRead, RequestStatus, RequestWrite,
+    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
+    QueueMode, QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
 };
 #[cfg(any(
-    feature = "irq",
     feature = "virtio-blk",
     feature = "phytium-mci",
     feature = "rockchip-dwmmc",
@@ -60,8 +60,7 @@ pub(crate) fn register_sync_block<D: SyncBlockOps>(plat_dev: rdrive::PlatformDev
 #[cfg(sync_block_dev)]
 struct SyncBlockDevice<D> {
     inner: Arc<Mutex<D>>,
-    read_queue_created: bool,
-    write_queue_created: bool,
+    queue_created: bool,
 }
 
 #[cfg(sync_block_dev)]
@@ -69,8 +68,7 @@ impl<D> SyncBlockDevice<D> {
     fn new(driver: D) -> Self {
         Self {
             inner: Arc::new(Mutex::new(driver)),
-            read_queue_created: false,
-            write_queue_created: false,
+            queue_created: false,
         }
     }
 }
@@ -84,111 +82,97 @@ impl<D: SyncBlockOps> DriverGeneric for SyncBlockDevice<D> {
 
 #[cfg(sync_block_dev)]
 impl<D: SyncBlockOps> Interface for SyncBlockDevice<D> {
-    fn create_read_queue(&mut self) -> Option<Box<dyn IReadQueue>> {
-        if self.read_queue_created {
-            return None;
+    fn device_info(&self) -> DeviceInfo {
+        let guard = self.inner.lock();
+        DeviceInfo {
+            name: Some(guard.name()),
+            ..DeviceInfo::new(guard.num_blocks(), guard.block_size())
         }
-        self.read_queue_created = true;
-        Some(Box::new(SyncBlockReadQueue {
-            id: 0,
-            inner: Arc::clone(&self.inner),
-        }))
     }
 
-    fn create_write_queue(&mut self) -> Option<Box<dyn IWriteQueue>> {
-        if self.write_queue_created {
+    fn queue_limits(&self) -> QueueLimits {
+        QueueLimits::simple(self.inner.lock().block_size(), u64::MAX)
+    }
+
+    fn queue_topology(&self) -> QueueTopology {
+        QueueTopology::single(1)
+    }
+
+    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
+        if self.queue_created {
             return None;
         }
-        self.write_queue_created = true;
-        Some(Box::new(SyncBlockWriteQueue {
-            id: 0,
+        self.queue_created = true;
+        Some(Box::new(SyncBlockQueue {
+            id: config.id_hint.unwrap_or(0),
+            depth: config.depth.max(1),
+            mode: config.mode,
             inner: Arc::clone(&self.inner),
         }))
     }
 }
 
 #[cfg(sync_block_dev)]
-struct SyncBlockReadQueue<D> {
+struct SyncBlockQueue<D> {
     id: usize,
+    depth: usize,
+    mode: QueueMode,
     inner: Arc<Mutex<D>>,
 }
 
 #[cfg(sync_block_dev)]
-struct SyncBlockWriteQueue<D> {
-    id: usize,
-    inner: Arc<Mutex<D>>,
+impl<D: SyncBlockOps> SyncBlockQueue<D> {
+    fn device_info(&self) -> DeviceInfo {
+        let guard = self.inner.lock();
+        DeviceInfo {
+            name: Some(guard.name()),
+            ..DeviceInfo::new(guard.num_blocks(), guard.block_size())
+        }
+    }
+
+    fn limits(&self) -> QueueLimits {
+        QueueLimits::simple(self.inner.lock().block_size(), u64::MAX)
+    }
 }
 
 #[cfg(sync_block_dev)]
-impl<D: SyncBlockOps> QueueInfo for SyncBlockReadQueue<D> {
+impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
     fn id(&self) -> usize {
         self.id
     }
 
-    fn num_blocks(&self) -> usize {
-        self.inner.lock().num_blocks() as usize
-    }
-
-    fn block_size(&self) -> usize {
-        self.inner.lock().block_size()
-    }
-
-    fn buffer_config(&self) -> BuffConfig {
-        BuffConfig {
-            dma_mask: u64::MAX,
-            align: 0x1000,
-            size: self.block_size(),
+    fn info(&self) -> QueueInfo {
+        QueueInfo {
+            id: self.id,
+            depth: self.depth,
+            mode: self.mode,
+            device: self.device_info(),
+            limits: self.limits(),
         }
     }
-}
 
-#[cfg(sync_block_dev)]
-impl<D: SyncBlockOps> IReadQueue for SyncBlockReadQueue<D> {
-    fn submit_read(&mut self, mut request: RequestRead<'_>) -> Result<RequestId, BlkError> {
-        self.inner
-            .lock()
-            .read_blocks(request.block_id as u64, &mut request.buffer)?;
+    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
+        let info = self.device_info();
+        validate_request_shape(info, self.limits(), &request)?;
+        match request.op {
+            RequestOp::Read => {
+                let segment = request
+                    .segments
+                    .first_mut()
+                    .ok_or(BlkError::InvalidRequest)?;
+                self.inner.lock().read_blocks(request.lba, segment)?;
+            }
+            RequestOp::Write => {
+                let segment = request.segments.first().ok_or(BlkError::InvalidRequest)?;
+                self.inner.lock().write_blocks(request.lba, segment)?;
+            }
+            RequestOp::Flush => {}
+            RequestOp::Discard | RequestOp::WriteZeroes => return Err(BlkError::NotSupported),
+        }
         Ok(RequestId::new(0))
     }
 
-    fn poll_read(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
-        Ok(RequestStatus::Complete)
-    }
-}
-
-#[cfg(sync_block_dev)]
-impl<D: SyncBlockOps> QueueInfo for SyncBlockWriteQueue<D> {
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn num_blocks(&self) -> usize {
-        self.inner.lock().num_blocks() as usize
-    }
-
-    fn block_size(&self) -> usize {
-        self.inner.lock().block_size()
-    }
-
-    fn buffer_config(&self) -> BuffConfig {
-        BuffConfig {
-            dma_mask: u64::MAX,
-            align: 0x1000,
-            size: self.block_size(),
-        }
-    }
-}
-
-#[cfg(sync_block_dev)]
-impl<D: SyncBlockOps> IWriteQueue for SyncBlockWriteQueue<D> {
-    fn submit_write(&mut self, request: RequestWrite<'_>) -> Result<RequestId, BlkError> {
-        self.inner
-            .lock()
-            .write_blocks(request.block_id as u64, &request.buffer)?;
-        Ok(RequestId::new(0))
-    }
-
-    fn poll_write(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+    fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
         Ok(RequestStatus::Complete)
     }
 }

@@ -885,6 +885,7 @@ dependencies = [
  "ixgbe-driver",
  "log",
  "mmio-api",
+ "nvme-driver",
  "pcie",
  "phytium-mci-host",
  "ramdisk",

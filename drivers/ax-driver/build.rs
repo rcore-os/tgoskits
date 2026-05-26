@@ -37,12 +37,9 @@ fn enable_cfg_flag(key: &str) {
 fn main() {
     let has_virtio_core = has_feature("virtio-core");
     let has_virtio_dev = has_any_feature(VIRTIO_DEV_FEATURES);
-    let has_pci = has_feature("pci");
     let has_fdt = has_feature("fdt");
 
-    if has_pci {
-        enable_cfg("probe", "pci");
-    }
+    enable_cfg("probe", "pci");
     if has_fdt {
         enable_cfg("probe", "fdt");
     }

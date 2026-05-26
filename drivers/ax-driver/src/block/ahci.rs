@@ -88,7 +88,7 @@ impl SyncBlockOps for AhciBlock {
         if self.0.read(block_id, buf) {
             Ok(())
         } else {
-            Err(rdif_block::BlkError::Other("AHCI read failed".into()))
+            Err(rdif_block::BlkError::Other("AHCI read failed"))
         }
     }
 
@@ -101,7 +101,7 @@ impl SyncBlockOps for AhciBlock {
         if self.0.write(block_id, buf) {
             Ok(())
         } else {
-            Err(rdif_block::BlkError::Other("AHCI write failed".into()))
+            Err(rdif_block::BlkError::Other("AHCI write failed"))
         }
     }
 }

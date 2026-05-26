@@ -70,8 +70,7 @@ pub fn register_transport<T: Transport + 'static>(
     plat_dev.register_block(BlockDevice {
         dev: Some(SharedDriver::new(dev)),
         irq_enabled: AtomicBool::new(false),
-        read_queue_created: false,
-        write_queue_created: false,
+        queue_created: false,
     });
     log::info!("registered virtio block device");
     Ok(())
@@ -94,8 +93,7 @@ impl<T: Transport + 'static> VirtIoBlkDevice<T> {
 struct BlockDevice<T: Transport + 'static> {
     dev: Option<SharedDriver<VirtIoBlkDevice<T>>>,
     irq_enabled: AtomicBool,
-    read_queue_created: bool,
-    write_queue_created: bool,
+    queue_created: bool,
 }
 
 impl<T: Transport + 'static> DriverGeneric for BlockDevice<T> {
@@ -105,23 +103,50 @@ impl<T: Transport + 'static> DriverGeneric for BlockDevice<T> {
 }
 
 impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
-    fn create_read_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IReadQueue>> {
-        if self.read_queue_created {
-            return None;
+    fn device_info(&self) -> rdif_block::DeviceInfo {
+        let blocks = self
+            .dev
+            .as_ref()
+            .map(|dev| dev.with_mut(|raw| raw.raw.capacity()))
+            .unwrap_or(0);
+        rdif_block::DeviceInfo {
+            name: Some("virtio-blk"),
+            ..rdif_block::DeviceInfo::new(blocks, SECTOR_SIZE)
         }
-        self.dev.as_ref().map(|dev| {
-            self.read_queue_created = true;
-            alloc::boxed::Box::new(BlockReadQueue { raw: dev.clone() }) as _
-        })
     }
 
-    fn create_write_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IWriteQueue>> {
-        if self.write_queue_created {
+    fn queue_limits(&self) -> rdif_block::QueueLimits {
+        rdif_block::QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 0x1000,
+            max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
+            max_segments: 1,
+            max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        }
+    }
+
+    fn queue_topology(&self) -> rdif_block::QueueTopology {
+        rdif_block::QueueTopology::single(1)
+    }
+
+    fn create_queue(
+        &mut self,
+        config: rdif_block::QueueConfig,
+    ) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
+        if self.queue_created {
             return None;
         }
         self.dev.as_ref().map(|dev| {
-            self.write_queue_created = true;
-            alloc::boxed::Box::new(BlockWriteQueue { raw: dev.clone() }) as _
+            self.queue_created = true;
+            alloc::boxed::Box::new(BlockQueue {
+                id: config.id_hint.unwrap_or(0),
+                depth: config.depth.max(1),
+                mode: config.mode,
+                raw: dev.clone(),
+            }) as _
         })
     }
 
@@ -144,89 +169,74 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
     }
 }
 
-struct BlockReadQueue<T: Transport + 'static> {
+struct BlockQueue<T: Transport + 'static> {
+    id: usize,
+    depth: usize,
+    mode: rdif_block::QueueMode,
     raw: SharedDriver<VirtIoBlkDevice<T>>,
 }
 
-struct BlockWriteQueue<T: Transport + 'static> {
-    raw: SharedDriver<VirtIoBlkDevice<T>>,
-}
-
-impl<T: Transport + 'static> rdif_block::QueueInfo for BlockReadQueue<T> {
+impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
     fn id(&self) -> usize {
-        0
+        self.id
     }
 
-    fn num_blocks(&self) -> usize {
-        self.raw.with_mut(|raw| raw.raw.capacity() as _)
-    }
-
-    fn block_size(&self) -> usize {
-        SECTOR_SIZE
-    }
-
-    fn buffer_config(&self) -> rdif_block::BuffConfig {
-        rdif_block::BuffConfig {
-            dma_mask: u64::MAX,
-            align: 0x1000,
-            size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+    fn info(&self) -> rdif_block::QueueInfo {
+        let blocks = self.raw.with_mut(|raw| raw.raw.capacity());
+        rdif_block::QueueInfo {
+            id: self.id,
+            depth: self.depth,
+            mode: self.mode,
+            device: rdif_block::DeviceInfo {
+                name: Some("virtio-blk"),
+                ..rdif_block::DeviceInfo::new(blocks, SECTOR_SIZE)
+            },
+            limits: rdif_block::QueueLimits {
+                dma_mask: u64::MAX,
+                dma_alignment: 0x1000,
+                max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
+                max_segments: 1,
+                max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+                supports_flush: false,
+                supports_discard: false,
+                supports_write_zeroes: false,
+            },
         }
     }
-}
 
-impl<T: Transport + 'static> rdif_block::IReadQueue for BlockReadQueue<T> {
-    fn submit_read(
+    fn submit_request(
         &mut self,
-        mut request: rdif_block::RequestRead<'_>,
+        request: rdif_block::Request<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        self.raw
-            .with_mut(|raw| raw.raw.read_blocks(request.block_id, &mut request.buffer))
-            .map_err(map_virtio_err_to_blk_err)?;
+        rdif_block::validate_request_shape(self.info().device, self.info().limits, &request)?;
+        match request.op {
+            rdif_block::RequestOp::Read => {
+                let mut segment = request
+                    .segments
+                    .first()
+                    .copied()
+                    .ok_or(rdif_block::BlkError::InvalidRequest)?;
+                self.raw
+                    .with_mut(|raw| raw.raw.read_blocks(request.lba as usize, &mut segment))
+                    .map_err(map_virtio_err_to_blk_err)?;
+            }
+            rdif_block::RequestOp::Write => {
+                let segment = request
+                    .segments
+                    .first()
+                    .ok_or(rdif_block::BlkError::InvalidRequest)?;
+                self.raw
+                    .with_mut(|raw| raw.raw.write_blocks(request.lba as usize, segment))
+                    .map_err(map_virtio_err_to_blk_err)?;
+            }
+            rdif_block::RequestOp::Flush
+            | rdif_block::RequestOp::Discard
+            | rdif_block::RequestOp::WriteZeroes => return Err(rdif_block::BlkError::NotSupported),
+        }
         Ok(rdif_block::RequestId::new(0))
     }
 
-    fn poll_read(
-        &mut self,
-        _request: rdif_block::RequestId,
-    ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
-        Ok(rdif_block::RequestStatus::Complete)
-    }
-}
-
-impl<T: Transport + 'static> rdif_block::QueueInfo for BlockWriteQueue<T> {
-    fn id(&self) -> usize {
-        0
-    }
-
-    fn num_blocks(&self) -> usize {
-        self.raw.with_mut(|raw| raw.raw.capacity() as _)
-    }
-
-    fn block_size(&self) -> usize {
-        SECTOR_SIZE
-    }
-
-    fn buffer_config(&self) -> rdif_block::BuffConfig {
-        rdif_block::BuffConfig {
-            dma_mask: u64::MAX,
-            align: 0x1000,
-            size: VIRTIO_BLK_DMA_BUFFER_SIZE,
-        }
-    }
-}
-
-impl<T: Transport + 'static> rdif_block::IWriteQueue for BlockWriteQueue<T> {
-    fn submit_write(
-        &mut self,
-        request: rdif_block::RequestWrite<'_>,
-    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        self.raw
-            .with_mut(|raw| raw.raw.write_blocks(request.block_id, &request.buffer))
-            .map_err(map_virtio_err_to_blk_err)?;
-        Ok(rdif_block::RequestId::new(0))
-    }
-
-    fn poll_write(
+    fn poll_request(
         &mut self,
         _request: rdif_block::RequestId,
     ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
@@ -239,14 +249,12 @@ fn map_virtio_err_to_blk_err(err: VirtIoError) -> rdif_block::BlkError {
         VirtIoError::QueueFull | VirtIoError::NotReady => rdif_block::BlkError::Retry,
         VirtIoError::WrongToken
         | VirtIoError::ConfigSpaceTooSmall
-        | VirtIoError::ConfigSpaceMissing => {
-            rdif_block::BlkError::Other("bad internal state".into())
-        }
-        VirtIoError::AlreadyUsed => rdif_block::BlkError::Other("already exists".into()),
-        VirtIoError::InvalidParam => rdif_block::BlkError::Other("invalid parameter".into()),
+        | VirtIoError::ConfigSpaceMissing => rdif_block::BlkError::Other("bad internal state"),
+        VirtIoError::AlreadyUsed => rdif_block::BlkError::Other("already exists"),
+        VirtIoError::InvalidParam => rdif_block::BlkError::InvalidRequest,
         VirtIoError::DmaError => rdif_block::BlkError::NoMemory,
-        VirtIoError::IoError => rdif_block::BlkError::Other("I/O error".into()),
+        VirtIoError::IoError => rdif_block::BlkError::Io,
         VirtIoError::Unsupported => rdif_block::BlkError::NotSupported,
-        VirtIoError::SocketDeviceError(_) => rdif_block::BlkError::Other("socket error".into()),
+        VirtIoError::SocketDeviceError(_) => rdif_block::BlkError::Other("socket error"),
     }
 }

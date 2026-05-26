@@ -2,7 +2,6 @@ env = {}
 features = [
   "ax-hal/riscv64-qemu-virt",
   "qemu",
-  "ax-driver/pci",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
