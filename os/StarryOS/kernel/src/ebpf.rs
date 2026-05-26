@@ -22,6 +22,11 @@ use ax_sync::spin::SpinNoIrq;
 
 use crate::task::AsThread;
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+))]
 mod ebpf_jit;
 
 #[allow(dead_code)]
@@ -535,6 +540,11 @@ struct BpfProg {
     insns: Vec<bpf_insn::BpfInsn>,
     meta: BpfProgMeta,
     id: u32,
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "aarch64"
+    ))]
     jitted: Option<ebpf_jit::JitBuffer>,
 }
 
@@ -847,10 +857,20 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
     }
     let mut guard = BPF_GLOBAL.lock();
     let id = guard.progs.len() as u32;
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "aarch64"
+    ))]
     let jitted = {
         let helpers = init_helper_functions();
         ebpf_jit::try_jit_compile(&insns, &helpers)
     };
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "aarch64"
+    ))]
     if jitted.is_some() {
         info!("bpf: JIT compilation successful for prog_{id}");
     } else {
@@ -868,6 +888,11 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
             expected_attach_type: 0,
         },
         id,
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "riscv64",
+            target_arch = "aarch64"
+        ))]
         jitted,
     };
     let fd = guard.insert_prog(prog);
@@ -1390,33 +1415,57 @@ impl BpfVm {
 }
 
 pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
-    let (insns, prog_type, has_jit, jit_entry) = {
-        let guard = BPF_GLOBAL.lock();
-        let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
-        let entry = prog.jitted.as_ref().map(|j| j.entry());
-        (
-            prog.insns.clone(),
-            prog.prog_type,
-            prog.jitted.is_some(),
-            entry,
-        )
-    };
-    let _ = prog_type;
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "aarch64"
+    ))]
+    {
+        let (insns, prog_type, has_jit, jit_entry) = {
+            let guard = BPF_GLOBAL.lock();
+            let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
+            let entry = prog.jitted.as_ref().map(|j| j.entry());
+            (
+                prog.insns.clone(),
+                prog.prog_type,
+                prog.jitted.is_some(),
+                entry,
+            )
+        };
+        let _ = prog_type;
 
-    if has_jit && let Some(entry) = jit_entry {
-        let result: u64;
-        unsafe {
-            let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
-            result = jit_fn(ctx);
+        if has_jit && let Some(entry) = jit_entry {
+            let result: u64;
+            unsafe {
+                let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
+                result = jit_fn(ctx);
+            }
+            return Ok(result);
         }
-        return Ok(result);
-    }
 
-    let vm = BpfVm::new();
-    vm.execute(&insns, ctx).map_err(|e| {
-        warn!("bpf: program execution failed: {e}");
-        AxError::Io
-    })
+        let vm = BpfVm::new();
+        vm.execute(&insns, ctx).map_err(|e| {
+            warn!("bpf: program execution failed: {e}");
+            AxError::Io
+        })
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "aarch64"
+    )))]
+    {
+        let insns = {
+            let guard = BPF_GLOBAL.lock();
+            let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
+            prog.insns.clone()
+        };
+        let vm = BpfVm::new();
+        vm.execute(&insns, ctx).map_err(|e| {
+            warn!("bpf: program execution failed: {e}");
+            AxError::Io
+        })
+    }
 }
 
 fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
