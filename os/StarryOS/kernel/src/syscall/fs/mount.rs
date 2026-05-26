@@ -85,13 +85,17 @@ pub fn sys_mount(
             return Err(AxError::InvalidInput);
         }
 
-        let _ = (MS_SHARED, MS_PRIVATE, MS_SLAVE);
         let target = FS_CONTEXT.lock().resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
-        if propagation == MS_UNBINDABLE {
-            target.mountpoint().set_unbindable();
+        let mountpoint = target.mountpoint().clone();
+        match propagation {
+            MS_SHARED => mountpoint.set_shared(),
+            MS_PRIVATE => mountpoint.set_private(),
+            MS_SLAVE => mountpoint.set_slave(),
+            MS_UNBINDABLE => mountpoint.set_unbindable(),
+            _ => {}
         }
         return Ok(0);
     }
@@ -119,7 +123,7 @@ pub fn sys_mount(
         let ctx = FS_CONTEXT.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
-        let mp = target.bind_mount(&source)?;
+        let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
         if (flags & MS_RDONLY) != 0 {
             mp.set_readonly(true);
         }
@@ -178,11 +182,11 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     let num_blocks = block_dev.num_blocks();
     let region = ax_fs::BlockRegion::from_num_blocks(num_blocks);
 
-    // Create ext4 filesystem from the dynamic block device
-    let fs = ax_fs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
-        warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
-        AxError::Io
-    })?;
+    let fs = ax_fs::new_filesystem_from_dyn_by_kind(block_dev, region, ax_fs::FilesystemKind::Ext4)
+        .map_err(|e| {
+            warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
+            AxError::Io
+        })?;
 
     // Mount at the target location
     let target_loc = ctx.resolve(target)?;
