@@ -30,7 +30,7 @@ impl Ext4FileSystem {
         self.block_allocator = BlockAllocator::new(&self.superblock);
         self.inode_allocator = InodeAllocator::new(&self.superblock);
         self.bitmap_cache = BitmapCache::create_default();
-        self.inodetable_cahce =
+        self.inodetable_cache =
             InodeCache::new(INODE_CACHE_MAX, Self::inode_cache_size(&self.superblock));
         self.datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
         Ok(())
@@ -145,7 +145,7 @@ impl Ext4FileSystem {
             inode_allocator,
             bitmap_cache,
             root_inode: InodeNumber::new(2)?,
-            inodetable_cahce: inode_cache,
+            inodetable_cache: inode_cache,
             datablock_cache,
             group_count,
             mounted: true,

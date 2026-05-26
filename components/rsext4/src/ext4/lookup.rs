@@ -32,14 +32,14 @@ impl Ext4FileSystem {
             Some(desc) => AbsoluteBN::new(desc.inode_table()),
             None => return Err(Ext4Error::corrupted()),
         };
-        let (block_num, offset, _group_idx) = self.inodetable_cahce.calc_inode_location(
+        let (block_num, offset, _group_idx) = self.inodetable_cache.calc_inode_location(
             self.root_inode,
             self.superblock.s_inodes_per_group,
             inode_table_start,
             BLOCK_SIZE,
         )?;
         let result =
-            self.inodetable_cahce
+            self.inodetable_cache
                 .get_or_load(block_dev, self.root_inode, block_num, offset)?;
         debug!("Root inode i_mode: {}", result.inode.i_mode);
         debug!("Root inode detail: {:?}", result.inode);

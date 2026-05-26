@@ -165,9 +165,14 @@ pub fn init_filesystems_with_policy(
         .iter()
         .position(|disk| disk.disk_index == selection.disk_index)
         .unwrap_or_else(|| panic!("selected root disk disappeared during initialization"));
-    DISCOVERED_DISKS.call_once(|| disks.clone());
+    let selected = disks.remove(selected_disk_pos);
+    let discovered_disks = {
+        let mut discovered = disks;
+        discovered.insert(selected_disk_pos, selected.clone());
+        discovered
+    };
+    DISCOVERED_DISKS.call_once(|| discovered_disks);
     ROOT_SELECTION.call_once(|| selection);
-    let selected = disks.swap_remove(selected_disk_pos);
     let (description, region) = {
         let selected_partition_info = selection.partition_index.and_then(|part_index| {
             selected

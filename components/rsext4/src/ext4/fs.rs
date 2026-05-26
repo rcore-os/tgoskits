@@ -16,7 +16,7 @@ pub struct Ext4FileSystem {
     /// Bitmap cache with lazy loading and eviction.
     pub bitmap_cache: BitmapCache,
     /// Inode-table cache.
-    pub inodetable_cahce: InodeCache,
+    pub inodetable_cache: InodeCache,
     /// Data-block cache.
     pub datablock_cache: DataBlockCache,
     /// Root inode number, normally inode 2.
@@ -158,7 +158,7 @@ impl Ext4FileSystem {
             .ok_or(Ext4Error::corrupted())?
             .inode_table();
 
-        let (block_num, offset, _g) = self.inodetable_cahce.calc_inode_location(
+        let (block_num, offset, _g) = self.inodetable_cache.calc_inode_location(
             inode_num,
             self.superblock.s_inodes_per_group,
             AbsoluteBN::new(inode_table_start),
@@ -176,7 +176,7 @@ impl Ext4FileSystem {
             }
         };
 
-        self.inodetable_cahce
+        self.inodetable_cache
             .modify(block_dev, inode_num, block_num, offset, wrapped_f)
     }
 
@@ -194,7 +194,7 @@ impl Ext4FileSystem {
             .ok_or(Ext4Error::corrupted())?
             .inode_table();
 
-        let (block_num, offset, _g) = self.inodetable_cahce.calc_inode_location(
+        let (block_num, offset, _g) = self.inodetable_cache.calc_inode_location(
             inode_num,
             self.superblock.s_inodes_per_group,
             AbsoluteBN::new(inode_table_start),
@@ -202,7 +202,7 @@ impl Ext4FileSystem {
         )?;
 
         let cached = self
-            .inodetable_cahce
+            .inodetable_cache
             .get_or_load(block_dev, inode_num, block_num, offset)?;
         Ok(cached.inode)
     }

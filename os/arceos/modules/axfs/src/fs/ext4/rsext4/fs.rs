@@ -20,9 +20,7 @@ pub(crate) struct Ext4State {
 
 impl Ext4State {
     pub(crate) fn split(&mut self) -> (&mut rsext4::Ext4FileSystem, &mut Jbd2Dev<Ext4Disk>) {
-        let fs = &mut self.fs as *mut _;
-        let dev = &mut self.dev as *mut _;
-        unsafe { (&mut *fs, &mut *dev) }
+        (&mut self.fs, &mut self.dev)
     }
 }
 
@@ -87,7 +85,7 @@ impl Ext4Filesystem {
                 let (fs, dev) = state.split();
                 fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
                 fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;
-                fs.inodetable_cahce.flush_all(dev).map_err(into_vfs_err)?;
+                fs.inodetable_cache.flush_all(dev).map_err(into_vfs_err)?;
                 // Mark the filesystem clean before writing the superblock so the
                 // on-disk state reflects a clean sync / unmount.
                 fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;

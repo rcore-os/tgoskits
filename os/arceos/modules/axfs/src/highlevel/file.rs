@@ -390,7 +390,7 @@ impl OpenOptions {
             (false, true, true) => FileFlags::WRITE | FileFlags::APPEND,
             (true, true, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
             (false, false, true) => FileFlags::APPEND, // RDONLY-equivalent + APPEND: pure status
-            (false, false, false) => return Err(VfsError::InvalidInput),
+            (false, false, false) => FileFlags::empty(),
         } | if self.path {
             FileFlags::PATH
         } else {
@@ -399,7 +399,7 @@ impl OpenOptions {
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        if !self.read && !self.write && !self.append {
+        if !self.read && !self.write && !self.append && !self.path {
             return false;
         }
         // Linux multi-fs: RDONLY|TRUNC truncates the file (POSIX VERSIONS
@@ -460,7 +460,7 @@ impl PageCache {
 impl Drop for PageCache {
     fn drop(&mut self) {
         if self.dirty {
-            warn!("dirty page dropped without flushing");
+            error!("dirty page dropped without flushing");
         }
         global_allocator().dealloc_pages(self.addr.as_usize(), 1, UsageKind::PageCache);
     }
@@ -478,6 +478,8 @@ intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { li
 struct CachedFileShared {
     page_cache: Mutex<LruCache<u32, PageCache>>,
     evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
+    /// Serializes append-offset selection for all handles of the same inode.
+    append_lock: RwLock<()>,
 }
 
 impl CachedFileShared {
@@ -485,6 +487,7 @@ impl CachedFileShared {
         Self {
             page_cache: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
             evict_listeners: Mutex::new(LinkedList::default()),
+            append_lock: RwLock::new(()),
         }
     }
 
@@ -492,6 +495,7 @@ impl CachedFileShared {
         Self {
             page_cache: Mutex::new(LruCache::unbounded()),
             evict_listeners: Mutex::new(LinkedList::default()),
+            append_lock: RwLock::new(()),
         }
     }
 }
@@ -501,9 +505,6 @@ pub struct CachedFile {
     inner: Location,
     shared: Arc<CachedFileShared>,
     in_memory: bool,
-    /// Only one thread can append to the file at a time, while multiple writers
-    /// are permitted.
-    append_lock: RwLock<()>,
 }
 
 impl Clone for CachedFile {
@@ -512,7 +513,6 @@ impl Clone for CachedFile {
             inner: self.inner.clone(),
             shared: self.shared.clone(),
             in_memory: self.in_memory,
-            append_lock: RwLock::new(()),
         }
     }
 }
@@ -557,7 +557,6 @@ impl CachedFile {
             inner: location,
             shared,
             in_memory,
-            append_lock: RwLock::new(()),
         }
     }
 
@@ -732,13 +731,13 @@ impl CachedFile {
 
     /// Writes `buf` to the file at `offset`.
     pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        let _guard = self.append_lock.read();
+        let _guard = self.shared.append_lock.read();
         self.write_at_locked(buf, offset)
     }
 
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
-        let _guard = self.append_lock.write();
+        let _guard = self.shared.append_lock.write();
         let file = self.inner.entry().as_file()?;
         let len = file.len()?;
         self.write_at_locked(buf, len)
