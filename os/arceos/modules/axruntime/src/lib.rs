@@ -252,7 +252,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
     if !rdrive::is_initialized() {
-        rdrive::init(rdrive::Platform::Static(ax_hal::drivers::static_devices()))
+        rdrive::init(rdrive::Platform::Static)
             .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
     }
     registers::append_linker_registers();

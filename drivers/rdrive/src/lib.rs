@@ -37,7 +37,7 @@ static CONTAINER: Once<Mutex<Manager>> = Once::new();
 
 #[derive(Debug, Clone)]
 pub enum Platform {
-    Static(&'static [probe::static_::StaticDeviceDesc]),
+    Static,
     Fdt { addr: NonNull<u8> },
     Acpi(probe::acpi::AcpiRoot),
 }
@@ -46,7 +46,7 @@ unsafe impl Send for Platform {}
 
 #[derive(Debug, Clone, Copy)]
 pub enum PlatformSource {
-    Static(&'static [probe::static_::StaticDeviceDesc]),
+    Static,
     Fdt(NonNull<u8>),
     Acpi(probe::acpi::AcpiRoot),
 }
@@ -63,7 +63,7 @@ pub fn is_initialized() -> bool {
 
 pub fn init(platform: Platform) -> Result<(), DriverError> {
     match platform {
-        Platform::Static(devices) => init_sources(&[PlatformSource::Static(devices)])?,
+        Platform::Static => init_sources(&[PlatformSource::Static])?,
         Platform::Fdt { addr } => init_sources(&[PlatformSource::Fdt(addr)])?,
         Platform::Acpi(root) => init_sources(&[PlatformSource::Acpi(root)])?,
     }
@@ -73,7 +73,7 @@ pub fn init(platform: Platform) -> Result<(), DriverError> {
 pub fn init_sources(sources: &[PlatformSource]) -> Result<(), DriverError> {
     for source in sources {
         match source {
-            PlatformSource::Static(_) => {}
+            PlatformSource::Static => {}
             PlatformSource::Fdt(addr) => probe::fdt::check_addr(*addr)?,
             PlatformSource::Acpi(root) => probe::acpi::check_root(*root)?,
         }
@@ -81,7 +81,7 @@ pub fn init_sources(sources: &[PlatformSource]) -> Result<(), DriverError> {
 
     for source in sources {
         match source {
-            PlatformSource::Static(devices) => probe::static_::init(devices)?,
+            PlatformSource::Static => probe::static_::init()?,
             PlatformSource::Fdt(addr) => probe::fdt::init(*addr)?,
             PlatformSource::Acpi(root) => probe::acpi::init(*root)?,
         }

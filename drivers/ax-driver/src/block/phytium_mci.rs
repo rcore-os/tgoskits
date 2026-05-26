@@ -21,7 +21,7 @@ const BLOCK_SIZE: usize = 512;
 
 type PhytiumSdMmc = SdioSdmmc<PhytiumMci>;
 
-module_driver!(
+crate::model_register!(
     name: "Phytium MCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

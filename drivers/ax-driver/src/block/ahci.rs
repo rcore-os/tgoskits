@@ -16,7 +16,7 @@ use super::{SyncBlockOps, register_sync_block};
 
 pub const DEVICE_NAME: &str = "ahci";
 
-module_driver!(
+crate::model_register!(
     name: "AHCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

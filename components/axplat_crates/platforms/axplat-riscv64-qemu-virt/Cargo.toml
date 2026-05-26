@@ -13,6 +13,7 @@ license = "Apache-2.0"
 fp-simd = ["ax-cpu/fp-simd"]
 hypervisor = ["irq", "smp"]
 irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
+paging = ["dep:axklib"]
 rtc = ["dep:riscv_goldfish"]
 smp = ["ax-plat/smp"]
 
@@ -28,8 +29,10 @@ some-serial.workspace = true
 
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
+ax-driver = { workspace = true, features = ["pci", "virtio"] }
 ax-plat = { workspace = true }
-rdrive.workspace = true
+axklib = { workspace = true, optional = true }
+mmio-api.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]
