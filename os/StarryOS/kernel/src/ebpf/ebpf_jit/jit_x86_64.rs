@@ -392,18 +392,18 @@ fn emit_ret(buf: &mut JitBuffer) {
 fn emit_store_mem(buf: &mut JitBuffer, base: u8, off: i32, src: u8, size: u8) {
     match size {
         BPF_B => {
-            emit_rex_if(buf, 0, src);
+            emit_rex_if(buf, src, base);
             buf.emit_u8(0x88);
             emit_modrm_disp(buf, src, base, off);
         }
         BPF_H => {
             buf.emit_u8(0x66);
-            emit_rex_if(buf, 0, src);
+            emit_rex_if(buf, src, base);
             buf.emit_u8(0x89);
             emit_modrm_disp(buf, src, base, off);
         }
         BPF_W => {
-            emit_rex_if(buf, 0, src);
+            emit_rex_if(buf, src, base);
             buf.emit_u8(0x89);
             emit_modrm_disp(buf, src, base, off);
         }
@@ -419,19 +419,19 @@ fn emit_store_mem(buf: &mut JitBuffer, base: u8, off: i32, src: u8, size: u8) {
 fn emit_load_mem(buf: &mut JitBuffer, dst: u8, base: u8, off: i32, size: u8) {
     match size {
         BPF_B => {
-            emit_rex_if(buf, 0, dst);
+            emit_rex_if(buf, dst, base);
             buf.emit_u8(0x0F);
             buf.emit_u8(0xB6);
             emit_modrm_disp(buf, dst, base, off);
         }
         BPF_H => {
-            emit_rex_if(buf, 0, dst);
+            emit_rex_if(buf, dst, base);
             buf.emit_u8(0x0F);
             buf.emit_u8(0xB7);
             emit_modrm_disp(buf, dst, base, off);
         }
         BPF_W => {
-            emit_rex_if(buf, 0, dst);
+            emit_rex_if(buf, dst, base);
             buf.emit_u8(0x8B);
             emit_modrm_disp(buf, dst, base, off);
         }
@@ -445,7 +445,7 @@ fn emit_load_mem(buf: &mut JitBuffer, dst: u8, base: u8, off: i32, size: u8) {
 }
 
 fn emit_zext32(buf: &mut JitBuffer, r: u8) {
-    emit_rex_if(buf, 0, r);
+    emit_rex_if(buf, r, r);
     buf.emit_u8(0x23);
     buf.emit_u8(0xC0 | ((r & 7) << 3) | (r & 7));
 }
@@ -537,7 +537,7 @@ impl JitBackend for X86_64Backend {
             bpf_to_x86(insn.src_reg())
         };
 
-        if use_imm && insn.alu_op() != BPF_MOV {
+        if use_imm && insn.alu_op() != BPF_MOV && insn.alu_op() != BPF_NEG {
             let imm = insn.imm;
             if is_64 {
                 emit_mov_imm64(buf, X86_RCX, insn.imm as u64);
