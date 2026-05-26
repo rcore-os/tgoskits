@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec::Vec};
 use core::ops::Deref;
 
 use ax_errno::AxResult;
-use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor};
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 
 use super::{AddrSpace, Backend, BackendOps, alloc_frame, dealloc_frame, divide_page, pages_in};
@@ -96,7 +96,11 @@ impl BackendOps for SharedBackend {
     fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
         debug!("Shared::unmap: {:?}", range);
         for vaddr in pages_in(range, self.pages.size)? {
-            pt.unmap(vaddr)?;
+            match pt.unmap(vaddr) {
+                Ok((_, _, page_size)) => debug_assert_eq!(page_size, self.pages.size),
+                Err(PagingError::NotMapped) => {}
+                Err(err) => return Err(err.into()),
+            }
         }
         Ok(())
     }

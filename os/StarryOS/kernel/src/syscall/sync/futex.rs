@@ -1,7 +1,7 @@
 use core::mem::align_of;
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{TimeValue, monotonic_time, wall_time};
+use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_task::current;
 use linux_raw_sys::general::{
     FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET,

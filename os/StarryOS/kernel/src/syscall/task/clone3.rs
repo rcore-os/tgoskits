@@ -1,7 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use bytemuck::AnyBitPattern;
 use starry_vm::vm_read_slice;
 

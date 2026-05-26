@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
 use ax_errno::AxResult;
-use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor};
 use ax_memory_addr::{PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 
-use super::{AddrSpace, Backend, BackendOps};
+use super::{AddrSpace, Backend, BackendOps, pages_in};
 
 /// Linear mapping backend.
 ///
@@ -59,7 +59,13 @@ impl BackendOps for LinearBackend {
     fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
         let pa_range = PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
-        pt.unmap_region(range.start, range.size())?;
+        for vaddr in pages_in(range, PageSize::Size4K)? {
+            match pt.unmap(vaddr) {
+                Ok((_, _, page_size)) => debug_assert_eq!(page_size, PageSize::Size4K),
+                Err(PagingError::NotMapped) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
         Ok(())
     }
 

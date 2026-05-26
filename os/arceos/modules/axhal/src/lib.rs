@@ -55,9 +55,6 @@ pub mod irq;
 #[cfg(feature = "paging")]
 pub mod paging;
 
-#[cfg(feature = "starry-kcov")]
-pub mod kcov;
-
 /// Console input and output.
 pub mod console {
     #[cfg(feature = "irq")]
@@ -92,6 +89,7 @@ pub mod context {
     pub use ax_cpu::{TaskContext, TrapFrame};
 }
 
+pub use ax_cpu as cpu;
 pub use ax_cpu::asm;
 #[cfg(feature = "uspace")]
 pub use ax_cpu::uspace;

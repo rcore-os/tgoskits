@@ -17,8 +17,8 @@ pub fn input_device_count() -> u32 {
 }
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::wall_time;
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
+use ax_runtime::hal::time::wall_time;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, Pollable};

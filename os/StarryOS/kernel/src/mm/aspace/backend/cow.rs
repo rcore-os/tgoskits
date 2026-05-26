@@ -7,12 +7,12 @@ use core::slice;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FileBackend;
-use ax_hal::{
+use ax_kspin::SpinNoIrq;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
+use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
-use ax_kspin::SpinNoIrq;
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_sync::Mutex;
 
 use super::{

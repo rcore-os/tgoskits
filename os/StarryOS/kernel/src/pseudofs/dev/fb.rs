@@ -1,8 +1,8 @@
 use core::{any::Any, slice};
 
 use ax_errno::AxError;
-use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PhysAddrRange, VirtAddr};
+use ax_runtime::hal::mem::virt_to_phys;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use starry_vm::VmMutPtr;
 

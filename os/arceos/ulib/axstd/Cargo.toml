@@ -43,6 +43,7 @@ alloc = ["ax-api/alloc", "ax-feat/alloc", "ax-io/alloc"]
 alloc-tlsf = ["ax-feat/alloc-tlsf"]
 alloc-slab = ["ax-feat/alloc-slab"]
 alloc-buddy = ["ax-feat/alloc-buddy"]
+buddy-slab = ["ax-feat/buddy-slab"]
 page-alloc-64g = ["ax-feat/page-alloc-64g"]                 # Support up to 64G memory capacity
 page-alloc-4g = ["ax-feat/page-alloc-4g"]                   # Support up to 4G memory capacity
 paging = ["ax-feat/paging", "alloc"]

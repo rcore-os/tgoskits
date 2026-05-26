@@ -6,7 +6,7 @@ use alloc::{
 use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -467,9 +467,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         }
         ax_task::yield_now();
     }
-
-    #[cfg(feature = "kcov")]
-    crate::kcov::disable_for_thread(curr.id().as_u64() as u32);
 
     let process = &thr.proc_data.proc;
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
