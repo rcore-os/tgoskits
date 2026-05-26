@@ -51,6 +51,8 @@ mod klib;
 mod devices;
 mod registers;
 
+pub use ax_hal as hal;
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 

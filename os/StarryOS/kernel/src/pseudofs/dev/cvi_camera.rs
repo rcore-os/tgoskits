@@ -3,9 +3,9 @@ use alloc::{collections::vec_deque::VecDeque, vec::Vec};
 use core::{any::Any, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
-use ax_hal::mem::phys_to_virt;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
+use ax_runtime::hal::mem::phys_to_virt;
 use ax_task::sleep;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
@@ -219,7 +219,7 @@ impl<T: UartTransport> CameraProtocol<T> {
     fn read_slip_frame(&mut self, timeout_ms: u64) -> Result<Vec<u8>, CameraError> {
         use core::time::Duration;
 
-        use ax_hal::time::wall_time;
+        use ax_runtime::hal::time::wall_time;
         let deadline = wall_time() + Duration::from_millis(timeout_ms);
         let mut tmp = [0u8; 0x1200];
         loop {
@@ -321,7 +321,7 @@ impl UartTransport for Uart3 {
 
     fn read_bytes(&mut self, buf: &mut [u8], _timeout_ms: u64) -> Result<usize, CameraError> {
         sleep(Duration::from_millis(3));
-        ax_hal::irq::set_enable(47, false);
+        ax_runtime::hal::irq::set_enable(47, false);
         let n = {
             let mut cache_buf = CAMERA_UART_BUF.lock();
             let n = cache_buf.len().min(buf.len());
@@ -336,7 +336,7 @@ impl UartTransport for Uart3 {
         // Always re-enable the IRQ before returning, otherwise the ESP32's
         // reply traffic stops landing in CAMERA_UART_BUF and every subsequent
         // poll sees an empty queue forever.
-        ax_hal::irq::set_enable(47, true);
+        ax_runtime::hal::irq::set_enable(47, true);
         if n == 0 {
             sleep(Duration::from_millis(1));
         }
@@ -373,7 +373,7 @@ impl CviCamera {
             dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
         uart3.init_with_baud(1500000);
         uart3.set_ier(true);
-        ax_hal::irq::register(47, |_irq| {
+        ax_runtime::hal::irq::register(47, |_irq| {
             let mut uart3 =
                 dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
             let mut buf = CAMERA_UART_BUF.lock();
@@ -386,7 +386,7 @@ impl CviCamera {
             }
             uart3.set_ier(true);
         });
-        ax_hal::irq::set_enable(47, true);
+        ax_runtime::hal::irq::set_enable(47, true);
         Self {
             inner: Mutex::new(CameraProtocol::new_default(Uart3)),
         }

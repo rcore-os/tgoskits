@@ -7,9 +7,9 @@ use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use core::{num::NonZero, ops::Deref};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
+use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_sync::Mutex;
 use ax_task::current;
 use axfs_ng_vfs::NodePermission;

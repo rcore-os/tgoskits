@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::mem::{MaybeUninit, offset_of};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_task::{
     current,
     future::{self, block_on, poll_io},

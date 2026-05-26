@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
-use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;

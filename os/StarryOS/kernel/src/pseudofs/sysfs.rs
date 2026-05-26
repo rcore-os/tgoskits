@@ -396,7 +396,7 @@ impl SimpleDirOps for SystemCpuDir {
             Cow::Borrowed("possible"),
             Cow::Borrowed("present"),
         ];
-        names.extend((0..ax_hal::cpu_num()).map(|cpu| Cow::Owned(format!("cpu{cpu}"))));
+        names.extend((0..ax_runtime::hal::cpu_num()).map(|cpu| Cow::Owned(format!("cpu{cpu}"))));
         Box::new(names.into_iter())
     }
 
@@ -411,7 +411,7 @@ impl SimpleDirOps for SystemCpuDir {
                     .strip_prefix("cpu")
                     .and_then(|s| s.parse::<usize>().ok())
                     .ok_or(VfsError::NotFound)?;
-                if cpu >= ax_hal::cpu_num() {
+                if cpu >= ax_runtime::hal::cpu_num() {
                     return Err(VfsError::NotFound);
                 }
                 NodeOpsMux::Dir(SimpleDir::new_maker(
@@ -436,7 +436,7 @@ impl SimpleDirOps for SystemCpuEntryDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
             "online" => {
-                let online = if self.cpu < ax_hal::cpu_num() {
+                let online = if self.cpu < ax_runtime::hal::cpu_num() {
                     "1\n"
                 } else {
                     "0\n"
@@ -449,7 +449,7 @@ impl SimpleDirOps for SystemCpuEntryDir {
 }
 
 fn cpu_range_string() -> String {
-    let cpu_num = ax_hal::cpu_num();
+    let cpu_num = ax_runtime::hal::cpu_num();
     if cpu_num <= 1 {
         "0".to_owned()
     } else {
