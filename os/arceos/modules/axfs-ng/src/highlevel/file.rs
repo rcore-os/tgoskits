@@ -5,7 +5,6 @@ use alloc::{
 };
 use core::{
     num::NonZeroUsize,
-    ops::Range,
     sync::atomic::{AtomicU8, Ordering},
     task::Context,
 };
@@ -663,71 +662,74 @@ impl CachedFile {
         f(page, evicted)
     }
 
-    fn with_pages<T>(
-        &self,
-        range: Range<u64>,
-        page_initial: impl FnOnce(&FileNode) -> VfsResult<T>,
-        mut page_each: impl FnMut(T, &mut PageCache, Range<usize>) -> VfsResult<T>,
-    ) -> VfsResult<T> {
-        let file = self.inner.entry().as_file()?;
-        let mut initial = page_initial(file)?;
-        let start_page = (range.start / PAGE_SIZE as u64) as u32;
-        let end_page = range.end.div_ceil(PAGE_SIZE as u64) as u32;
-        let mut page_offset = (range.start % PAGE_SIZE as u64) as usize;
-        for pn in start_page..end_page {
-            let page_start = pn as u64 * PAGE_SIZE as u64;
-
-            let mut guard = self.shared.page_cache.lock();
-            let page = self.page_or_insert(file, &mut guard, pn)?.0;
-
-            initial = page_each(
-                initial,
-                page,
-                page_offset..(range.end - page_start).min(PAGE_SIZE as u64) as usize,
-            )?;
-            page_offset = 0;
-        }
-
-        Ok(initial)
-    }
-
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
         let len = self.inner.len()?;
-        let end = (offset + dst.remaining_mut() as u64).min(len);
+        let end = offset.saturating_add(dst.remaining_mut() as u64).min(len);
         if end <= offset {
             return Ok(0);
         }
-        self.with_pages(
-            offset..end,
-            |_| Ok(0),
-            |read, page, range| {
-                let len = range.end - range.start;
-                dst.write(&page.data()[range.start..range.end])?;
-                Ok(read + len)
-            },
-        )
+
+        let file = self.inner.entry().as_file()?;
+        let mut scratch = PageCache::new()?;
+        let mut read = 0;
+        let mut current = offset;
+        while current < end {
+            let pn = (current / PAGE_SIZE as u64) as u32;
+            let page_start = pn as u64 * PAGE_SIZE as u64;
+            let page_offset = (current - page_start) as usize;
+            let chunk_len = (end - page_start).min(PAGE_SIZE as u64) as usize - page_offset;
+
+            {
+                let mut guard = self.shared.page_cache.lock();
+                let page = self.page_or_insert(file, &mut guard, pn)?.0;
+                scratch.data()[..chunk_len]
+                    .copy_from_slice(&page.data()[page_offset..page_offset + chunk_len]);
+            }
+
+            dst.write_all(&scratch.data()[..chunk_len])?;
+            read += chunk_len;
+            current += chunk_len as u64;
+        }
+
+        Ok(read)
     }
 
     fn write_at_locked(&self, mut buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        let end = offset + buf.remaining() as u64;
-        self.with_pages(
-            offset..end,
-            |file| {
-                if end > file.len()? {
-                    file.set_len(end)?;
-                }
-                Ok(0)
-            },
-            |written, page, range| {
-                let len = range.end - range.start;
-                buf.read(&mut page.data()[range.start..range.end])?;
+        let file = self.inner.entry().as_file()?;
+        let end = offset.saturating_add(buf.remaining() as u64);
+        if end > file.len()? {
+            file.set_len(end)?;
+        }
+
+        let mut scratch = PageCache::new()?;
+        let mut written = 0;
+        let mut current = offset;
+        while current < end && buf.remaining() > 0 {
+            let pn = (current / PAGE_SIZE as u64) as u32;
+            let page_start = pn as u64 * PAGE_SIZE as u64;
+            let page_offset = (current - page_start) as usize;
+            let chunk_len =
+                ((PAGE_SIZE - page_offset).min(buf.remaining())).min((end - current) as usize);
+            let n = buf.read(&mut scratch.data()[..chunk_len])?;
+            if n == 0 {
+                break;
+            }
+
+            {
+                let mut guard = self.shared.page_cache.lock();
+                let page = self.page_or_insert(file, &mut guard, pn)?.0;
+                page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
                 if !self.in_memory {
                     page.dirty = true;
                 }
-                Ok(written + len)
-            },
-        )
+            }
+
+            written += n;
+            current += n as u64;
+        }
+
+        Ok(written)
     }
 
     /// Writes `buf` to the file at `offset`.
