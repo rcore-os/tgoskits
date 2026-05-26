@@ -5,6 +5,28 @@ pub use someboot::irq::*;
 
 use crate::{arch::Plat, common::PlatOp};
 
+/// Target specification for inter-processor interrupts.
+#[derive(Clone, Copy, Debug)]
+pub enum IpiTarget {
+    /// Send to the current CPU.
+    Current {
+        /// The logical CPU ID of the current CPU.
+        cpu_id: usize,
+    },
+    /// Send to a specific CPU.
+    Other {
+        /// The logical CPU ID of the target CPU.
+        cpu_id: usize,
+    },
+    /// Send to all other CPUs.
+    AllExceptCurrent {
+        /// The logical CPU ID of the current CPU.
+        cpu_id: usize,
+        /// The total number of CPUs.
+        cpu_num: usize,
+    },
+}
+
 pub fn irq_setup_by_fdt(irq_parent: DeviceId, irq_cell: &[u32]) -> IrqId {
     let mut intc = rdrive::get::<Intc>(irq_parent).unwrap().lock().unwrap();
     debug!("Setting up IRQ {:?}", irq_cell);
@@ -15,6 +37,10 @@ pub fn irq_setup_by_fdt(irq_parent: DeviceId, irq_cell: &[u32]) -> IrqId {
 pub fn irq_set_enable(irq: IrqId, enable: bool) {
     debug!("Setting IRQ {:?} enable to {}", irq, enable);
     Plat::irq_set_enable(irq, enable);
+}
+
+pub fn send_ipi(irq: IrqId, target: IpiTarget) {
+    Plat::send_ipi(irq, target);
 }
 
 pub fn systick_irq() -> IrqId {

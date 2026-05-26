@@ -1,5 +1,5 @@
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_task::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
 use starry_process::Pid;

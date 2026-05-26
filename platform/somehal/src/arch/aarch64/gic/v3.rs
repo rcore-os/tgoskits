@@ -51,6 +51,7 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
     gic.init();
     let cpu = gic.cpu_interface();
     CPU_IF.init(cpu);
+    super::set_backend(super::GicBackend::V3);
 
     init_cpu();
 
@@ -85,6 +86,27 @@ pub fn irq_set_enable(raw: usize, enable: bool) {
     with_gic(|gic| {
         gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
     });
+}
+
+pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
+    let sgi = IntId::sgi(raw as u32);
+    let target = match target {
+        crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::current(),
+        crate::irq::IpiTarget::Other { cpu_id } => {
+            SGITarget::list([affinity_from_mpidr(super::hardware_cpu_id(cpu_id))])
+        }
+        crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::All,
+    };
+    CPU_IF.send_sgi(sgi, target);
+}
+
+fn affinity_from_mpidr(mpidr: usize) -> Affinity {
+    Affinity {
+        aff0: (mpidr & 0xff) as u8,
+        aff1: ((mpidr >> 8) & 0xff) as u8,
+        aff2: ((mpidr >> 16) & 0xff) as u8,
+        aff3: ((mpidr >> 32) & 0xff) as u8,
+    }
 }
 
 pub fn init_cpu() {

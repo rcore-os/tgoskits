@@ -2,8 +2,8 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::wall_time;
 use ax_io::prelude::*;
+use ax_runtime::hal::time::wall_time;
 use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::{
     general::timespec,

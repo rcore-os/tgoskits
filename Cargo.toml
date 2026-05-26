@@ -38,6 +38,7 @@ members = [
     "components/axvm",
     "components/axvmconfig",
     "components/bitmap-allocator",
+    "components/buddy-slab-allocator",
     "components/cap_access",
     "components/cpumask",
     "components/crate_interface",
@@ -371,7 +372,7 @@ bitflags = "2.11"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
 derive_more = { version = "2.1", default-features = false, features = ["full"] }
 bindgen = "0.72"
-buddy-slab-allocator = "0.4"
+buddy-slab-allocator = { version = "0.4", path = "components/buddy-slab-allocator" }
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 enum_dispatch = "0.3"

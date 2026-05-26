@@ -11,7 +11,7 @@ mod task;
 mod time;
 
 use ax_errno::{AxError, LinuxError};
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use syscalls::Sysno;
 
 pub use self::{

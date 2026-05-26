@@ -6,6 +6,10 @@ use crate::setup::MmioRaw;
 pub trait PlatOp {
     fn irq_set_enable(irq: IrqId, enable: bool);
 
+    fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
+        panic!("IPI is not implemented for this dynamic platform");
+    }
+
     fn irq_handler() -> someboot::irq::IrqId;
 
     fn systick_irq() -> IrqId;

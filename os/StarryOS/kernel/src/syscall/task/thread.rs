@@ -30,7 +30,7 @@ pub fn sys_gettid() -> AxResult<isize> {
 /// current CPU id and node 0 (single NUMA node); the obsolete `tcache` arg is
 /// ignored. Either pointer may be NULL.
 pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: usize) -> AxResult<isize> {
-    use ax_hal::percpu::this_cpu_id;
+    use ax_runtime::hal::percpu::this_cpu_id;
     use starry_vm::VmMutPtr;
 
     if !cpu.is_null() {
@@ -77,7 +77,7 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> AxResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_arch_prctl(
-    uctx: &mut ax_hal::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
     code: i32,
     addr: usize,
 ) -> AxResult<isize> {

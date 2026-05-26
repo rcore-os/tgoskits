@@ -51,8 +51,17 @@ impl IrqIf for IrqIfImpl {
         Some(irq.raw())
     }
 
-    fn send_ipi(_id: usize, _target: ax_plat::irq::IpiTarget) {
-        todo!()
+    fn send_ipi(id: usize, target: ax_plat::irq::IpiTarget) {
+        let target = match target {
+            ax_plat::irq::IpiTarget::Current { cpu_id } => {
+                somehal::irq::IpiTarget::Current { cpu_id }
+            }
+            ax_plat::irq::IpiTarget::Other { cpu_id } => somehal::irq::IpiTarget::Other { cpu_id },
+            ax_plat::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
+                somehal::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num }
+            }
+        };
+        somehal::irq::send_ipi(id.into(), target);
     }
 }
 

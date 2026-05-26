@@ -92,7 +92,7 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
                     irq_num, slot.bus_num, slot.device_id
                 );
             }
-            if !ax_hal::irq::register(irq_num, usbfs_irq_handler) {
+            if !ax_runtime::hal::irq::register(irq_num, usbfs_irq_handler) {
                 warn!("usbfs: failed to register IRQ callback for IRQ {}", irq_num);
             }
         }

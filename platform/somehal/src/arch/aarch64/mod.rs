@@ -10,6 +10,10 @@ impl PlatOp for Plat {
         gic::irq_set_enable(irq, enable);
     }
 
+    fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+        gic::send_ipi(irq, target);
+    }
+
     fn systick_irq() -> rdrive::IrqId {
         systick::systick_irq()
     }

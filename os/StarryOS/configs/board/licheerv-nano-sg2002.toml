@@ -1,7 +1,6 @@
 env = { UIMAGE = "y" }
 features = [
   "sg2002",
-  "myplat",
 ]
 log = "Info"
 plat_dyn = false
