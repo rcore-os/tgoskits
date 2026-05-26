@@ -15,6 +15,20 @@ use super::{
 };
 use crate::task::{AsThread, WaitQueue as MsgWaitQueue};
 
+fn current_ipc_ns_id() -> u64 {
+    let curr = current();
+    let thr = curr.as_thread();
+    thr.proc_data.nsproxy.lock().ipc_ns.lock().ns_id
+}
+
+fn msg_ns_check(queue: &MessageQueue) -> AxResult<()> {
+    let ns_id = current_ipc_ns_id();
+    if queue.ns_id != ns_id {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+    Ok(())
+}
+
 /// Data structure describing a message queue.
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern)]
@@ -93,11 +107,13 @@ pub struct MessageQueue {
     pub recv_wait_queue: Arc<MsgWaitQueue>,
     /// Marked for removal
     pub mark_removed: bool,
+    /// IPC namespace id that owns this queue.
+    pub ns_id: u64,
 }
 
 impl MessageQueue {
     /// Creates a new [`MessageQueue`].
-    pub fn new(key: i32, mode: __kernel_mode_t, pid: Pid, uid: u32, gid: u32) -> Self {
+    pub fn new(key: i32, mode: __kernel_mode_t, pid: Pid, uid: u32, gid: u32, ns_id: u64) -> Self {
         MessageQueue {
             msqid_ds: msqid_ds::new(key, mode, pid as __kernel_pid_t, uid, gid),
             messages: BTreeMap::new(),
@@ -106,6 +122,7 @@ impl MessageQueue {
             send_wait_queue: Arc::new(MsgWaitQueue::new()),
             recv_wait_queue: Arc::new(MsgWaitQueue::new()),
             mark_removed: false,
+            ns_id,
         }
     }
 
@@ -335,16 +352,6 @@ impl MsgManager {
         self.key_msqid.retain(|_, &mut v| v != msqid);
         self.msqid_queues.remove(&msqid);
     }
-
-    /// get total bytes in all queues
-    pub fn total_bytes(&self) -> usize {
-        self.iter_active_queues()
-            .map(|(_, queue)| {
-                let guard = queue.lock();
-                guard.total_bytes
-            })
-            .sum()
-    }
 }
 
 /// System limits
@@ -408,12 +415,14 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     // Handle IPC_PRIVATE (always create new queue)
     if key == IPC_PRIVATE {
         let msqid = next_ipc_id();
+        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
             key,
             (msgflg & 0o777) as _,
             current_pid,
             current_uid,
             current_gid,
+            ns_id,
         )));
 
         msg_manager.insert_msqid_queues(msqid, msg_queue);
@@ -457,12 +466,14 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     }
 
     let msqid = next_ipc_id();
+    let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
     let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
         key,
         (msgflg & 0o777) as _,
         current_pid,
         current_uid,
         current_gid,
+        ns_id,
     )));
 
     msg_manager.insert_key_msqid(key, msqid);
@@ -773,7 +784,17 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     // MSG_INFO (put before looking up the queue!)
     if cmd == MSG_INFO {
         let msg_manager = MSG_MANAGER.lock();
-        // Manually create IpcPerm
+        let ns_id = current_ipc_ns_id();
+        let (count, bytes) = msg_manager
+            .iter_active_queues()
+            .filter(|(_, q)| {
+                let guard = q.lock();
+                guard.ns_id == ns_id && !guard.mark_removed
+            })
+            .fold((0u64, 0u64), |(c, b), (_, q)| {
+                let guard = q.lock();
+                (c + 1, b + guard.total_bytes as u64)
+            });
         let msg_perm = IpcPerm {
             key: 0,
             uid: current_uid,
@@ -787,34 +808,33 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             unused1: 0,
         };
 
-        // Create a temporary msqid_ds to return information
         let info_ds = msqid_ds {
             msg_perm,
             msg_stime: 0,
             msg_rtime: 0,
             msg_ctime: 0,
-            msg_cbytes: msg_manager.total_bytes() as u64,
-            // Use msg_qnum to return the number of allocated queues
-            msg_qnum: msg_manager.queue_count() as u64,
-            // Use msg_qbytes to return system limits or usage
+            msg_cbytes: bytes,
+            msg_qnum: count,
             msg_qbytes: MSGMNB as u64,
             msg_lspid: Pid::from(0u32) as _,
             msg_lrpid: Pid::from(0u32) as _,
         };
 
-        // Copy to user space
         let ptr = buf as *mut msqid_ds;
         ptr.vm_write(info_ds)?;
-
-        // Return the current number of allocated queues
-        return Ok(msg_manager.queue_count() as isize);
+        return Ok(count as isize);
     }
     // MSG_STAT handling
     if cmd == MSG_STAT {
+        let ns_id = current_ipc_ns_id();
         let msg_manager = MSG_MANAGER.lock();
 
         let result = msg_manager
             .iter_active_queues()
+            .filter(|(_, q)| {
+                let guard = q.lock();
+                guard.ns_id == ns_id
+            })
             .nth(msqid as usize)
             .ok_or(AxError::from(LinuxError::EINVAL))
             .and_then(|(actual_msqid, queue)| {
@@ -847,6 +867,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
 
     // Lock the internal structure of the queue
     let mut msg_queue = msg_queue.lock();
+    msg_ns_check(&msg_queue)?;
     // Check if the queue is marked as removed
     if msg_queue.mark_removed {
         return Err(AxError::from(LinuxError::EIDRM)); // EIDRM - Queue has been removed
