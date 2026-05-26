@@ -311,7 +311,8 @@ fn emit_ret(buf: &mut JitBuffer) {
 pub(crate) struct Aarch64Backend;
 
 const BPF_STACK_SIZE: usize = 512;
-const FRAME_SIZE: usize = BPF_STACK_SIZE + 8 * 6;
+const CALLEE_SAVED_SIZE: usize = 48;
+const FRAME_SIZE: usize = BPF_STACK_SIZE + CALLEE_SAVED_SIZE;
 
 impl JitBackend for Aarch64Backend {
     fn emit_prologue(buf: &mut JitBuffer) -> usize {
@@ -574,12 +575,17 @@ impl JitBackend for Aarch64Backend {
         }
         let off = insn.off as i32;
         let base = bpf_to_aa(insn.dst_reg());
+        let adjusted_off = if base == AA_X29 {
+            off - CALLEE_SAVED_SIZE as i32
+        } else {
+            off
+        };
         if insn.size() == BPF_DW {
             emit_load_imm64(buf, AA_X17, insn.imm as u64);
         } else {
             emit_load_imm32(buf, AA_X17, insn.imm);
         }
-        emit_addi(buf, AA_X16, base, off);
+        emit_addi(buf, AA_X16, base, adjusted_off);
         match insn.size() {
             BPF_B => emit_strb(buf, AA_X17, AA_X16, 0),
             BPF_H => emit_strh(buf, AA_X17, AA_X16, 0),
@@ -596,7 +602,12 @@ impl JitBackend for Aarch64Backend {
         let off = insn.off as i32;
         let base = bpf_to_aa(insn.dst_reg());
         let src = bpf_to_aa(insn.src_reg());
-        emit_addi(buf, AA_X16, base, off);
+        let adjusted_off = if base == AA_X29 {
+            off - CALLEE_SAVED_SIZE as i32
+        } else {
+            off
+        };
+        emit_addi(buf, AA_X16, base, adjusted_off);
         match insn.size() {
             BPF_B => emit_strb(buf, src, AA_X16, 0),
             BPF_H => emit_strh(buf, src, AA_X16, 0),
@@ -613,7 +624,12 @@ impl JitBackend for Aarch64Backend {
         let off = insn.off as i32;
         let base = bpf_to_aa(insn.src_reg());
         let dst = bpf_to_aa(insn.dst_reg());
-        emit_addi(buf, AA_X16, base, off);
+        let adjusted_off = if base == AA_X29 {
+            off - CALLEE_SAVED_SIZE as i32
+        } else {
+            off
+        };
+        emit_addi(buf, AA_X16, base, adjusted_off);
         match insn.size() {
             BPF_B => emit_ldrb(buf, dst, AA_X16, 0),
             BPF_H => emit_ldrh(buf, dst, AA_X16, 0),
