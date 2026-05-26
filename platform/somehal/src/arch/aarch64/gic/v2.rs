@@ -75,6 +75,7 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
     let trap = cpu.trap_operations();
     CPU_IF.init(cpu);
     TRAP.init(trap);
+    super::set_backend(super::GicBackend::V2);
 
     init_cpu();
 
@@ -122,16 +123,14 @@ pub fn irq_set_enable(raw: usize, enable: bool) {
 }
 
 pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
-    with_gic(|gic| {
-        let sgi = IntId::sgi(raw as u32);
-        let target = match target {
-            crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
-            crate::irq::IpiTarget::Other { cpu_id } => {
-                let target_cpu = super::hardware_cpu_id(cpu_id);
-                SGITarget::TargetList(TargetList::new(&mut core::iter::once(target_cpu)))
-            }
-            crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
-        };
-        gic.send_sgi(sgi, target);
-    });
+    let sgi = IntId::sgi(raw as u32);
+    let target = match target {
+        crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
+        crate::irq::IpiTarget::Other { cpu_id } => {
+            let target_cpu = super::hardware_cpu_id(cpu_id);
+            SGITarget::TargetList(TargetList::new(&mut core::iter::once(target_cpu)))
+        }
+        crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
+    };
+    CPU_IF.send_sgi(sgi, target);
 }

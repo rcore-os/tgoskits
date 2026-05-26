@@ -526,6 +526,24 @@ impl CpuInterface {
         self.gicd().ISPENDR.get_irq_bit(id.into())
     }
 
+    /// Send a Software Generated Interrupt (SGI) to target CPUs.
+    pub fn send_sgi(&self, sgi_id: IntId, target: SGITarget) {
+        let sgi_id = sgi_id.to_u32();
+        assert!(sgi_id < 16, "Invalid SGI ID: {sgi_id}");
+        let (filter, target_list) = match target {
+            SGITarget::TargetList(list) => (
+                gicd::SGIR::TargetListFilter::TargetList,
+                list.as_u8() as u32,
+            ),
+            SGITarget::AllOther => (gicd::SGIR::TargetListFilter::AllOther, 0),
+            SGITarget::Current => (gicd::SGIR::TargetListFilter::Current, 0),
+        };
+
+        self.gicd().SGIR.write(
+            gicd::SGIR::SGIINTID.val(sgi_id) + gicd::SGIR::CPUTargetList.val(target_list) + filter,
+        );
+    }
+
     pub fn set_cfg(&self, id: IntId, trigger: Trigger) {
         self.gicd().set_cfg(id, trigger);
     }
