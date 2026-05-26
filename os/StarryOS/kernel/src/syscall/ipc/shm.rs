@@ -497,13 +497,14 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
-    // Lock SHM_MANAGER first, then shm_inner, then aspace. This matches
-    // the ordering used by sys_shmget and avoids the AB/BA deadlock that
-    // the old code caused by locking shm_inner before SHM_MANAGER.
-    let mut shm_manager = SHM_MANAGER.lock();
-    let shm_inner_arc = shm_manager
-        .get_inner_by_shmid(shmid)
-        .ok_or(AxError::InvalidInput)?;
+    // Grab the shm_inner Arc under SHM_MANAGER, then drop it before
+    // mapping work to avoid holding the global lock across aspace ops.
+    let shm_inner_arc = {
+        let shm_manager = SHM_MANAGER.lock();
+        shm_manager
+            .get_inner_by_shmid(shmid)
+            .ok_or(AxError::InvalidInput)?
+    };
     let mut shm_inner = shm_inner_arc.lock();
     let aspace_arc = proc_data.aspace();
     let mut aspace = aspace_arc.lock();
@@ -541,7 +542,6 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let end_addr = VirtAddr::from(start_addr.as_usize() + length);
     let va_range = VirtAddrRange::new(start_addr, end_addr);
 
-    shm_manager.insert_shmid_vaddr(pid, shm_inner.shmid, start_addr);
     info!(
         "Process {} alloc shm virt addr start: {:#x}, size: {}, mapping_flags: {:#x?}",
         pid,
@@ -566,6 +566,11 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     }
 
     shm_inner.attach_process(pid, va_range)?;
+    drop(aspace);
+    drop(shm_inner);
+
+    let mut shm_manager = SHM_MANAGER.lock();
+    shm_manager.insert_shmid_vaddr(pid, shmid, start_addr);
     Ok(start_addr.as_usize() as isize)
 }
 
