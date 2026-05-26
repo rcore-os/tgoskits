@@ -19,8 +19,6 @@ pub mod entry;
 
 mod config;
 mod file;
-#[cfg(feature = "kcov")]
-mod kcov;
 mod kprobe;
 mod mm;
 mod pseudofs;
