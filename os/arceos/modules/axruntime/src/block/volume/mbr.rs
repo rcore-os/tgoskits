@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeSet, format, vec::Vec};
 
-use crate::{
+use super::{
     BlockReader, BlockRegion, BlockVolume, DiskId, Error, PartitionId, PartitionTableKind,
     PartitionUuid, Result,
 };

@@ -137,7 +137,7 @@ graph LR
 - `ax-alloc`：在页表/虚拟化路径下承担帧或内存块来源。
 
 ### 间接依赖
-- 各类驱动能力接口，如 `rdrive`、`rd-block` 和 `rdif-*`，会通过平台与上层模块间接参与 bring-up。
+- 各类驱动能力接口，如 `rdrive`、`rdif-block` 和其它 `rdif-*`，会通过平台与上层模块间接参与 bring-up。
 - `ax-percpu`、`kernel_guard`、`memory_addr` 等基础组件通过 `ax-cpu`、`axplat` 或 `paging` 路径提供底层支持。
 
 ### 3.3 关键直接消费者

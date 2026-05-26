@@ -96,8 +96,8 @@ impl<T: Transport + 'static> DriverGeneric for BlockDevice<T> {
     }
 }
 
-impl<T: Transport + 'static> rd_block::Interface for BlockDevice<T> {
-    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
+impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
         self.dev
             .take()
             .map(|dev| alloc::boxed::Box::new(BlockQueue { raw: dev }) as _)
@@ -115,8 +115,8 @@ impl<T: Transport + 'static> rd_block::Interface for BlockDevice<T> {
         self.irq_enabled
     }
 
-    fn handle_irq(&mut self) -> rd_block::Event {
-        rd_block::Event::none()
+    fn handle_irq(&mut self) -> rdif_block::Event {
+        rdif_block::Event::none()
     }
 }
 
@@ -124,7 +124,7 @@ struct BlockQueue<T: Transport + 'static> {
     raw: VirtIoBlkDevice<T>,
 }
 
-impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
+impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
     fn id(&self) -> usize {
         0
     }
@@ -137,8 +137,8 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
         SECTOR_SIZE
     }
 
-    fn buff_config(&self) -> rd_block::BuffConfig {
-        rd_block::BuffConfig {
+    fn buffer_config(&self) -> rdif_block::BuffConfig {
+        rdif_block::BuffConfig {
             dma_mask: u64::MAX,
             align: 0x1000,
             size: VIRTIO_BLK_DMA_BUFFER_SIZE,
@@ -147,41 +147,46 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
 
     fn submit_request(
         &mut self,
-        request: rd_block::Request<'_>,
-    ) -> Result<rd_block::RequestId, rd_block::BlkError> {
+        request: rdif_block::Request<'_>,
+    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
         match request.kind {
-            rd_block::RequestKind::Read(mut buffer) => {
+            rdif_block::RequestKind::Read(mut buffer) => {
                 self.raw
                     .raw
                     .read_blocks(request.block_id, &mut buffer)
                     .map_err(map_virtio_err_to_blk_err)?;
             }
-            rd_block::RequestKind::Write(items) => {
+            rdif_block::RequestKind::Write(items) => {
                 self.raw
                     .raw
-                    .write_blocks(request.block_id, items)
+                    .write_blocks(request.block_id, &items)
                     .map_err(map_virtio_err_to_blk_err)?;
             }
         }
-        Ok(rd_block::RequestId::new(0))
+        Ok(rdif_block::RequestId::new(0))
     }
 
-    fn poll_request(&mut self, _request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
-        Ok(())
+    fn poll_request(
+        &mut self,
+        _request: rdif_block::RequestId,
+    ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
+        Ok(rdif_block::RequestStatus::Complete)
     }
 }
 
-fn map_virtio_err_to_blk_err(err: VirtIoError) -> rd_block::BlkError {
+fn map_virtio_err_to_blk_err(err: VirtIoError) -> rdif_block::BlkError {
     match err {
-        VirtIoError::QueueFull | VirtIoError::NotReady => rd_block::BlkError::Retry,
+        VirtIoError::QueueFull | VirtIoError::NotReady => rdif_block::BlkError::Retry,
         VirtIoError::WrongToken
         | VirtIoError::ConfigSpaceTooSmall
-        | VirtIoError::ConfigSpaceMissing => rd_block::BlkError::Other("bad internal state".into()),
-        VirtIoError::AlreadyUsed => rd_block::BlkError::Other("already exists".into()),
-        VirtIoError::InvalidParam => rd_block::BlkError::Other("invalid parameter".into()),
-        VirtIoError::DmaError => rd_block::BlkError::NoMemory,
-        VirtIoError::IoError => rd_block::BlkError::Other("I/O error".into()),
-        VirtIoError::Unsupported => rd_block::BlkError::NotSupported,
-        VirtIoError::SocketDeviceError(_) => rd_block::BlkError::Other("socket error".into()),
+        | VirtIoError::ConfigSpaceMissing => {
+            rdif_block::BlkError::Other("bad internal state".into())
+        }
+        VirtIoError::AlreadyUsed => rdif_block::BlkError::Other("already exists".into()),
+        VirtIoError::InvalidParam => rdif_block::BlkError::Other("invalid parameter".into()),
+        VirtIoError::DmaError => rdif_block::BlkError::NoMemory,
+        VirtIoError::IoError => rdif_block::BlkError::Other("I/O error".into()),
+        VirtIoError::Unsupported => rdif_block::BlkError::NotSupported,
+        VirtIoError::SocketDeviceError(_) => rdif_block::BlkError::Other("socket error".into()),
     }
 }

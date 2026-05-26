@@ -5,9 +5,38 @@ use alloc::{
     vec::Vec,
 };
 
-use rd_block_volume::{BlockVolume, DiskId, PartitionTableKind as VolumeTableKind, scan_volumes};
+use ax_fs_ng::{BlockRegion, FilesystemKind, FsBlockDevice};
 
-use crate::block::{BlockRegion, FsBlockDevice, VolumeReader};
+use super::volume::{
+    BlockReader, BlockVolume, DiskId, Error as VolumeError, PartitionTableKind as VolumeTableKind,
+    scan_volumes,
+};
+
+struct VolumeReader<'a, T: FsBlockDevice + ?Sized> {
+    inner: &'a mut T,
+}
+
+impl<'a, T: FsBlockDevice + ?Sized> VolumeReader<'a, T> {
+    const fn new(inner: &'a mut T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<T: FsBlockDevice + ?Sized> BlockReader for VolumeReader<'_, T> {
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.inner.num_blocks()
+    }
+
+    fn read_block(&mut self, block: u64, buf: &mut [u8]) -> super::volume::Result<()> {
+        self.inner
+            .read_block(block, buf)
+            .map_err(|_| VolumeError::Reader)
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct RootSpec {
@@ -49,14 +78,6 @@ pub(crate) enum PartitionTableKind {
     Raw,
     Gpt,
     Mbr,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FilesystemKind {
-    #[cfg(feature = "ext4")]
-    Ext4,
-    #[cfg(feature = "fat")]
-    Fat,
 }
 
 impl RootCandidate {
@@ -107,13 +128,13 @@ fn collect_partitions(
     for volume in volumes {
         if volume.table_kind == VolumeTableKind::Raw {
             let region = region_from_volume(&volume);
-            let raw_fs = super::detect_filesystem(dev, region);
+            let raw_fs = ax_fs_ng::detect_filesystem(dev, region);
             info!("    raw device fs={:?}", raw_fs);
             continue;
         }
 
         let info = partition_info_from_volume(&volume);
-        let filesystem = super::detect_filesystem(dev, info.region);
+        let filesystem = ax_fs_ng::detect_filesystem(dev, info.region);
         info!(
             "    partition {} name={:?} fs={:?} lba {}..{}",
             info.index + 1,
@@ -342,39 +363,7 @@ fn supported_filesystem_partition_matches(
 }
 
 fn supported_default_root_partition(partition: &DetectedPartition) -> bool {
-    if !partition.filesystem.is_some() {
-        return false;
-    }
-    match partition.info.table_kind {
-        PartitionTableKind::Mbr => {
-            #[cfg(feature = "ext4")]
-            {
-                partition.filesystem == Some(FilesystemKind::Ext4)
-            }
-            #[cfg(all(not(feature = "ext4"), feature = "fat"))]
-            {
-                partition.filesystem == Some(FilesystemKind::Fat)
-            }
-            #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
-            {
-                false
-            }
-        }
-        PartitionTableKind::Gpt | PartitionTableKind::Raw => {
-            #[cfg(feature = "ext4")]
-            {
-                partition.filesystem == Some(FilesystemKind::Ext4)
-            }
-            #[cfg(all(not(feature = "ext4"), feature = "fat"))]
-            {
-                partition.filesystem == Some(FilesystemKind::Fat)
-            }
-            #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
-            {
-                false
-            }
-        }
-    }
+    partition.filesystem.is_some()
 }
 
 pub(crate) fn describe_selection(
@@ -488,9 +477,7 @@ fn parse_sd_path(path: &str) -> RootSpec {
 
 const fn filesystem_name(fs: FilesystemKind) -> &'static str {
     match fs {
-        #[cfg(feature = "ext4")]
         FilesystemKind::Ext4 => "ext4",
-        #[cfg(feature = "fat")]
         FilesystemKind::Fat => "fat",
     }
 }
@@ -521,7 +508,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ext4")]
     fn default_root_uses_only_supported_mbr_filesystem_partition_without_boot_flag() {
         let candidates = [
             mbr_partition(0, None, false),
@@ -532,7 +518,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ext4")]
     fn default_root_prefers_only_bootable_mbr_filesystem_partition() {
         let candidates = [
             mbr_partition(0, Some(FilesystemKind::Ext4), false),

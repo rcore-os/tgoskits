@@ -641,6 +641,7 @@ impl Axvisor {
 
     fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
         request.smp = None;
+        request.vmconfigs.clear();
         request
     }
 
@@ -946,6 +947,22 @@ mod tests {
         let request = Axvisor::qemu_test_request(request);
 
         assert_eq!(request.smp, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_vmconfigs() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request
+            .vmconfigs
+            .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert!(request.vmconfigs.is_empty());
     }
 
     #[test]

@@ -22,7 +22,10 @@ use alloc::{boxed::Box, sync::Arc};
 
 pub use binding::*;
 #[cfg(sync_block_dev)]
-use rd_block::{BlkError, BuffConfig, DriverGeneric, Event, IQueue, Interface, Request, RequestId};
+use rdif_block::{
+    BlkError, BuffConfig, DriverGeneric, Event, IQueue, Interface, Request, RequestId,
+    RequestStatus,
+};
 #[cfg(sync_block_dev)]
 use spin::Mutex;
 
@@ -115,7 +118,7 @@ impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
         self.inner.lock().block_size()
     }
 
-    fn buff_config(&self) -> BuffConfig {
+    fn buffer_config(&self) -> BuffConfig {
         BuffConfig {
             dma_mask: u64::MAX,
             align: 0x1000,
@@ -125,19 +128,19 @@ impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
         match request.kind {
-            rd_block::RequestKind::Read(mut buffer) => self
+            rdif_block::RequestKind::Read(mut buffer) => self
                 .inner
                 .lock()
                 .read_blocks(request.block_id as u64, &mut buffer)?,
-            rd_block::RequestKind::Write(items) => self
+            rdif_block::RequestKind::Write(buffer) => self
                 .inner
                 .lock()
-                .write_blocks(request.block_id as u64, items)?,
+                .write_blocks(request.block_id as u64, &buffer)?,
         }
         Ok(RequestId::new(0))
     }
 
-    fn poll_request(&mut self, _request: RequestId) -> Result<(), BlkError> {
-        Ok(())
+    fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+        Ok(RequestStatus::Complete)
     }
 }

@@ -19,7 +19,7 @@ pci = ["dep:pcie", "dep:heapless", "dep:rdif-pcie", "dep:spin"]
 pci-fdt = ["pci", "fdt", "dep:rdif-intc"]
 irq = []
 
-block = ["dep:ax-errno", "dep:ax-kspin", "dep:rd-block", "dep:spin"]
+block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block", "dep:spin"]
 net = ["dep:rd-net", "dep:spin"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
@@ -112,8 +112,8 @@ log.workspace = true
 mmio-api.workspace = true
 pcie = { workspace = true, optional = true }
 ramdisk = { workspace = true, optional = true }
-rd-block = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
+rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }

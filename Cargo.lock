@@ -888,8 +888,8 @@ dependencies = [
  "pcie",
  "phytium-mci-host",
  "ramdisk",
- "rd-block",
  "rd-net",
+ "rdif-block",
  "rdif-clk",
  "rdif-display",
  "rdif-input",
@@ -989,7 +989,6 @@ dependencies = [
  "log",
  "lru 0.16.4",
  "lwext4_rust",
- "rd-block-volume",
  "rsext4",
  "scope-local",
  "slab",
@@ -1540,7 +1539,6 @@ dependencies = [
  "cfg-if",
  "chrono",
  "indoc",
- "rd-block",
  "rd-net",
  "rdrive",
  "spin",
@@ -5576,7 +5574,7 @@ dependencies = [
  "log",
  "mmio-api",
  "pcie",
- "rd-block",
+ "rdif-block",
  "spin",
  "tock-registers 0.10.1",
 ]
@@ -5898,12 +5896,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pin-utils"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pkg-config"
@@ -6236,7 +6228,6 @@ name = "ramdisk"
 version = "0.1.1"
 dependencies = [
  "dma-api",
- "rd-block",
  "rdif-block",
  "spin",
 ]
@@ -6449,20 +6440,6 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
 ]
-
-[[package]]
-name = "rd-block"
-version = "0.1.2"
-dependencies = [
- "dma-api",
- "futures",
- "rdif-block",
- "spin_on",
-]
-
-[[package]]
-name = "rd-block-volume"
-version = "0.1.0"
 
 [[package]]
 name = "rd-net"
@@ -7799,15 +7776,6 @@ version = "0.10.0"
 dependencies = [
  "lock_api",
  "portable-atomic",
-]
-
-[[package]]
-name = "spin_on"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "076e103ed41b9864aa838287efe5f4e3a7a0362dd00671ae62a212e5e4612da2"
-dependencies = [
- "pin-utils",
 ]
 
 [[package]]

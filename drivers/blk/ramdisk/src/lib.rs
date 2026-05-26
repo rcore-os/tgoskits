@@ -6,7 +6,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use rdif_block::{
     BlkError, BuffConfig, DriverGeneric, Event, IQueue, IdList, Interface, Request, RequestId,
-    RequestKind,
+    RequestKind, RequestStatus,
 };
 use spin::Mutex;
 
@@ -144,7 +144,7 @@ impl IQueue for RamQueue {
         self.block_size
     }
 
-    fn buff_config(&self) -> BuffConfig {
+    fn buffer_config(&self) -> BuffConfig {
         BuffConfig {
             dma_mask: !0u64,
             align: 1,
@@ -178,14 +178,14 @@ impl IQueue for RamQueue {
                 }
                 guard.completed_reads.push(req_id);
             }
-            RequestKind::Write(slice) => {
-                if slice.len() != self.block_size {
+            RequestKind::Write(buff) => {
+                if buff.size < self.block_size {
                     return Err(BlkError::NotSupported);
                 }
 
                 unsafe {
                     core::ptr::copy_nonoverlapping(
-                        slice.as_ptr(),
+                        buff.virt,
                         guard.storage.as_mut_ptr().add(offset),
                         self.block_size,
                     );
@@ -198,16 +198,16 @@ impl IQueue for RamQueue {
         Ok(req_id)
     }
 
-    fn poll_request(&mut self, request: RequestId) -> Result<(), BlkError> {
+    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
         let mut guard = self.inner.lock();
         if let Some(pos) = guard.completed_reads.iter().position(|r| *r == request) {
             guard.completed_reads.remove(pos);
-            Ok(())
+            Ok(RequestStatus::Complete)
         } else if let Some(pos) = guard.completed_writes.iter().position(|r| *r == request) {
             guard.completed_writes.remove(pos);
-            Ok(())
+            Ok(RequestStatus::Complete)
         } else {
-            Err(BlkError::Retry)
+            Ok(RequestStatus::Pending)
         }
     }
 }

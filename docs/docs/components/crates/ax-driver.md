@@ -11,7 +11,7 @@
 `ax-driver` 负责把平台发现结果转成上层可消费的设备能力：
 
 - 向下连接 FDT、PCI、VirtIO、SoC/板级驱动和 MMIO/DMA 能力。
-- 向上通过 `rdrive` 注册表和 `rd-block`、`rd-net`、`rdif-display`、`rdif-input`、`rdif-vsock` 暴露设备。
+- 向上通过 `rdrive` 注册表和 `rdif-block`、`rd-net`、`rdif-display`、`rdif-input`、`rdif-vsock` 暴露设备。
 - 在 ArceOS、StarryOS、Axvisor 之间复用驱动 core，同时把 OS glue 限定在 probe、iomap、IRQ 注册和运行时适配层。
 
 ## 主要模块
@@ -29,13 +29,13 @@ graph LR
     dma["dma-api / mmio-api / axklib"] --> ax_driver
     concrete["virtio-drivers / pcie / board driver crates"] --> ax_driver
     ax_driver --> rdrive["rdrive"]
-    rdrive --> rdif["rd-block / rd-net / rdif-*"]
+    rdrive --> rdif["rdif-block / rd-net / rdif-*"]
     rdif --> upper["ax-fs / ax-net / ax-display / ax-input / starry-kernel"]
 ```
 
 ### 直接依赖
 
-- `rdrive`、`rd-block`、`rd-net`、`rdif-*`：设备注册、查询和领域能力接口。
+- `rdrive`、`rdif-block`、`rd-net`、`rdif-*`：设备注册、查询和领域能力接口。
 - `dma-api`、`mmio-api`、`axklib`：DMA、MMIO 和内核映射能力边界。
 - `virtio-drivers`、`pcie`、SoC/板级驱动 crate：具体硬件协议或平台 glue。
 - `ax-alloc`、`ax-errno`、`ax-kspin` 等：分配、错误映射和同步路径。

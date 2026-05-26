@@ -3,7 +3,10 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::ops::{Deref, DerefMut};
+use core::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 pub use dma_api;
 pub use rdif_base::{DriverGeneric, KError, io};
@@ -208,14 +211,40 @@ impl From<RequestId> for usize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestStatus {
+    Pending,
+    Complete,
+}
+
 #[derive(Clone, Copy)]
-pub struct Buffer {
+pub struct Buffer<'a> {
     pub virt: *mut u8,
     pub bus: u64,
     pub size: usize,
+    _marker: PhantomData<&'a mut [u8]>,
 }
 
-impl Deref for Buffer {
+impl<'a> Buffer<'a> {
+    /// Creates a block I/O buffer from caller-owned CPU and DMA addresses.
+    ///
+    /// # Safety
+    ///
+    /// `virt` must be valid for reads and writes of `size` bytes for the
+    /// whole request lifetime, and `bus` must be the DMA/bus address for the
+    /// same storage. The caller must keep the buffer and DMA mapping alive
+    /// until `poll_request` reports `RequestStatus::Complete`.
+    pub unsafe fn from_raw_parts(virt: *mut u8, bus: u64, size: usize) -> Self {
+        Self {
+            virt,
+            bus,
+            size,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl Deref for Buffer<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -223,7 +252,7 @@ impl Deref for Buffer {
     }
 }
 
-impl DerefMut for Buffer {
+impl DerefMut for Buffer<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { core::slice::from_raw_parts_mut(self.virt, self.size) }
     }
@@ -241,12 +270,12 @@ pub trait IQueue: Send + 'static {
     fn block_size(&self) -> usize;
 
     /// Get the buffer configuration for this queue.
-    fn buff_config(&self) -> BuffConfig;
+    fn buffer_config(&self) -> BuffConfig;
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError>;
 
     /// Poll the status of a previously submitted request.
-    fn poll_request(&mut self, request: RequestId) -> Result<(), BlkError>;
+    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
 }
 
 #[derive(Clone)]
@@ -257,6 +286,35 @@ pub struct Request<'a> {
 
 #[derive(Clone)]
 pub enum RequestKind<'a> {
-    Read(Buffer),
-    Write(&'a [u8]),
+    Read(Buffer<'a>),
+    Write(Buffer<'a>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_status_distinguishes_pending_from_errors() {
+        assert_eq!(RequestStatus::Pending, RequestStatus::Pending);
+        assert_ne!(RequestStatus::Pending, RequestStatus::Complete);
+    }
+
+    #[test]
+    fn write_request_uses_dma_buffer_shape() {
+        let mut bytes = [0x5a_u8; 4];
+        let buffer = unsafe { Buffer::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+        let request = Request {
+            block_id: 7,
+            kind: RequestKind::Write(buffer),
+        };
+
+        let RequestKind::Write(buffer) = request.kind else {
+            panic!("write request should carry a block buffer");
+        };
+
+        assert_eq!(request.block_id, 7);
+        assert_eq!(buffer.bus, 0x1000);
+        assert_eq!(&*buffer, &[0x5a; 4]);
+    }
 }

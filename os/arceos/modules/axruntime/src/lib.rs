@@ -48,6 +48,8 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
+#[cfg(any(feature = "fs", feature = "fs-ng", test))]
+mod block;
 mod devices;
 mod registers;
 
@@ -61,7 +63,8 @@ pub use self::mp::rust_main_secondary;
     feature = "net-ng",
     feature = "display",
     feature = "input",
-    feature = "vsock"
+    feature = "vsock",
+    test
 ))]
 extern crate alloc;
 
@@ -275,12 +278,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     cfg_if::cfg_if! {
         if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {
-            ax_fs_ng::init_filesystems(
-                devices::take_dyn_fs_ng_block_devices(),
-                ax_hal::dtb::get_chosen_bootargs(),
-            );
+            block::init_dyn_fs_ng(ax_hal::dtb::get_chosen_bootargs());
         } else if #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))] {
-            ax_fs_ng::init_filesystems(devices::take_static_fs_ng_block_devices(), None);
+            block::init_static_fs_ng();
         } else if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
             ax_fs::init_filesystems(
                 devices::take_dyn_fs_block_devices(),

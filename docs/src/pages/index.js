@@ -745,7 +745,7 @@ function DriverSection() {
   ];
 
   const driverSubsystems = [
-    { name: 'rd-block', label: '块设备' },
+    { name: 'rdif-block', label: '块设备' },
     { name: 'rd-net', label: '网络' },
     { name: 'rdif-display', label: '显示' },
     { name: 'rdif-input', label: '输入' },

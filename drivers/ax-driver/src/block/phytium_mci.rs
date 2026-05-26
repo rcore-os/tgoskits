@@ -168,7 +168,7 @@ struct MciBlockQueue {
     dma: DeviceDma,
     slot: BlockRequestSlot,
     pending: Option<BlockRequest>,
-    completed: Vec<rd_block::RequestId>,
+    completed: Vec<rdif_block::RequestId>,
 }
 
 impl DriverGeneric for MciBlockDevice {
@@ -177,8 +177,8 @@ impl DriverGeneric for MciBlockDevice {
     }
 }
 
-impl rd_block::Interface for MciBlockDevice {
-    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
+impl rdif_block::Interface for MciBlockDevice {
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
         if self.queue_created {
             return None;
         }
@@ -221,32 +221,32 @@ impl rd_block::Interface for MciBlockDevice {
         self.irq_enabled
     }
 
-    fn handle_irq(&mut self) -> rd_block::Event {
+    fn handle_irq(&mut self) -> rdif_block::Event {
         let Some(raw) = &self.raw else {
-            return rd_block::Event::none();
+            return rdif_block::Event::none();
         };
         let irq_event = raw.lock().host_mut().handle_irq();
         block_event_from_mci_irq(irq_event)
     }
 }
 
-fn block_event_from_mci_irq(irq_event: phytium_mci_host::Event) -> rd_block::Event {
+fn block_event_from_mci_irq(irq_event: phytium_mci_host::Event) -> rdif_block::Event {
     match irq_event {
-        phytium_mci_host::Event::None => rd_block::Event::none(),
+        phytium_mci_host::Event::None => rdif_block::Event::none(),
         phytium_mci_host::Event::CommandComplete
         | phytium_mci_host::Event::TransferComplete
         | phytium_mci_host::Event::ReceiveReady
         | phytium_mci_host::Event::TransmitReady
         | phytium_mci_host::Event::Error { .. }
         | phytium_mci_host::Event::Other { .. } => {
-            let mut event = rd_block::Event::none();
+            let mut event = rdif_block::Event::none();
             event.queue.insert(0);
             event
         }
     }
 }
 
-impl rd_block::IQueue for MciBlockQueue {
+impl rdif_block::IQueue for MciBlockQueue {
     fn num_blocks(&self) -> usize {
         self.capacity_blocks as usize
     }
@@ -259,8 +259,8 @@ impl rd_block::IQueue for MciBlockQueue {
         self.id
     }
 
-    fn buff_config(&self) -> rd_block::BuffConfig {
-        rd_block::BuffConfig {
+    fn buffer_config(&self) -> rdif_block::BuffConfig {
+        rdif_block::BuffConfig {
             dma_mask: self.dma.dma_mask(),
             align: BLOCK_SIZE,
             size: BLOCK_SIZE,
@@ -269,23 +269,23 @@ impl rd_block::IQueue for MciBlockQueue {
 
     fn submit_request(
         &mut self,
-        request: rd_block::Request<'_>,
-    ) -> Result<rd_block::RequestId, rd_block::BlkError> {
+        request: rdif_block::Request<'_>,
+    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
         self.reap_pending_request()?;
         let mut raw = self.raw.lock();
         let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
         match request.kind {
-            rd_block::RequestKind::Read(buffer) => {
+            rdif_block::RequestKind::Read(buffer) => {
                 if !buffer.len().is_multiple_of(BLOCK_SIZE) {
-                    return Err(rd_block::BlkError::Other(
+                    return Err(rdif_block::BlkError::Other(
                         "read buffer is not block aligned".into(),
                     ));
                 }
                 let ptr = NonNull::new(buffer.virt).ok_or_else(|| {
-                    rd_block::BlkError::Other("read buffer pointer is null".into())
+                    rdif_block::BlkError::Other("read buffer pointer is null".into())
                 })?;
                 let size = NonZeroUsize::new(buffer.len())
-                    .ok_or_else(|| rd_block::BlkError::Other("read buffer is empty".into()))?;
+                    .ok_or_else(|| rdif_block::BlkError::Other("read buffer is empty".into()))?;
                 let id = submit_read_request(
                     raw.host_mut(),
                     start_block,
@@ -295,19 +295,19 @@ impl rd_block::IQueue for MciBlockQueue {
                     &mut self.slot,
                     &mut self.pending,
                 )?;
-                Ok(rd_block::RequestId::new(usize::from(id)))
+                Ok(rdif_block::RequestId::new(usize::from(id)))
             }
-            rd_block::RequestKind::Write(items) => {
+            rdif_block::RequestKind::Write(items) => {
                 if !items.len().is_multiple_of(BLOCK_SIZE) {
-                    return Err(rd_block::BlkError::Other(
+                    return Err(rdif_block::BlkError::Other(
                         "write buffer is not block aligned".into(),
                     ));
                 }
-                let ptr = NonNull::new(items.as_ptr() as *mut u8).ok_or_else(|| {
-                    rd_block::BlkError::Other("write buffer pointer is null".into())
+                let ptr = NonNull::new(items.virt).ok_or_else(|| {
+                    rdif_block::BlkError::Other("write buffer pointer is null".into())
                 })?;
                 let size = NonZeroUsize::new(items.len())
-                    .ok_or_else(|| rd_block::BlkError::Other("write buffer is empty".into()))?;
+                    .ok_or_else(|| rdif_block::BlkError::Other("write buffer is empty".into()))?;
                 let id = submit_write_request(
                     raw.host_mut(),
                     start_block,
@@ -317,15 +317,18 @@ impl rd_block::IQueue for MciBlockQueue {
                     &mut self.slot,
                     &mut self.pending,
                 )?;
-                Ok(rd_block::RequestId::new(usize::from(id)))
+                Ok(rdif_block::RequestId::new(usize::from(id)))
             }
         }
     }
 
-    fn poll_request(&mut self, request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
+    fn poll_request(
+        &mut self,
+        request: rdif_block::RequestId,
+    ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
         if let Some(index) = self.completed.iter().position(|id| *id == request) {
             self.completed.swap_remove(index);
-            return Ok(());
+            return Ok(rdif_block::RequestStatus::Complete);
         }
         self.poll_active_request(request)
     }
@@ -334,16 +337,16 @@ impl rd_block::IQueue for MciBlockQueue {
 impl MciBlockQueue {
     fn poll_active_request(
         &mut self,
-        request: rd_block::RequestId,
-    ) -> Result<(), rd_block::BlkError> {
+        request: rdif_block::RequestId,
+    ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
         match self.raw.lock().host_mut().poll_block_request(
             &mut self.pending,
             RequestId::new(usize::from(request)),
             &mut self.slot,
         ) {
-            Ok(BlockPoll::Complete) => Ok(()),
-            Ok(BlockPoll::Pending) => Err(rd_block::BlkError::Retry),
-            Ok(_) => Err(rd_block::BlkError::Other(
+            Ok(BlockPoll::Complete) => Ok(rdif_block::RequestStatus::Complete),
+            Ok(BlockPoll::Pending) => Ok(rdif_block::RequestStatus::Pending),
+            Ok(_) => Err(rdif_block::BlkError::Other(
                 "Phytium MCI returned an unknown poll state".into(),
             )),
             Err(err) => Err(map_dev_err_to_blk_err(err)),
@@ -354,17 +357,17 @@ impl MciBlockQueue {
         self.pending.as_ref().map(BlockRequest::id)
     }
 
-    fn reap_pending_request(&mut self) -> Result<(), rd_block::BlkError> {
+    fn reap_pending_request(&mut self) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
         let Some(active) = self.pending_id() else {
-            return Ok(());
+            return Ok(rdif_block::RequestStatus::Complete);
         };
-        let id = rd_block::RequestId::new(usize::from(active));
+        let id = rdif_block::RequestId::new(usize::from(active));
         match self.poll_active_request(id) {
-            Ok(()) => {
+            Ok(rdif_block::RequestStatus::Complete) => {
                 self.completed.push(id);
-                Ok(())
+                Ok(rdif_block::RequestStatus::Complete)
             }
-            Err(rd_block::BlkError::Retry) => Err(rd_block::BlkError::Retry),
+            Ok(rdif_block::RequestStatus::Pending) => Err(rdif_block::BlkError::Retry),
             Err(err) => Err(err),
         }
     }
@@ -378,9 +381,9 @@ fn submit_read_request(
     dma: &DeviceDma,
     slot: &mut BlockRequestSlot,
     pending: &mut Option<BlockRequest>,
-) -> Result<RequestId, rd_block::BlkError> {
+) -> Result<RequestId, rdif_block::BlkError> {
     if pending.is_some() {
-        return Err(rd_block::BlkError::Retry);
+        return Err(rdif_block::BlkError::Retry);
     }
     let request = match host.submit_read_blocks(
         start_block,
@@ -421,9 +424,9 @@ fn submit_write_request(
     dma: &DeviceDma,
     slot: &mut BlockRequestSlot,
     pending: &mut Option<BlockRequest>,
-) -> Result<RequestId, rd_block::BlkError> {
+) -> Result<RequestId, rdif_block::BlkError> {
     if pending.is_some() {
-        return Err(rd_block::BlkError::Retry);
+        return Err(rdif_block::BlkError::Retry);
     }
     let request = match host.submit_write_blocks(
         start_block,
@@ -463,27 +466,27 @@ fn can_fallback_to_fifo(err: Error) -> bool {
     )
 }
 
-fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rd_block::BlkError> {
+fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rdif_block::BlkError> {
     let block_id =
-        u32::try_from(block_id).map_err(|_| rd_block::BlkError::InvalidBlockIndex(block_id))?;
+        u32::try_from(block_id).map_err(|_| rdif_block::BlkError::InvalidBlockIndex(block_id))?;
     if high_capacity {
         Ok(block_id)
     } else {
         block_id
             .checked_mul(BLOCK_SIZE as u32)
-            .ok_or(rd_block::BlkError::InvalidBlockIndex(block_id as usize))
+            .ok_or(rdif_block::BlkError::InvalidBlockIndex(block_id as usize))
     }
 }
 
-fn map_dev_err_to_blk_err(err: Error) -> rd_block::BlkError {
+fn map_dev_err_to_blk_err(err: Error) -> rdif_block::BlkError {
     match err {
         Error::NoCard | Error::UnsupportedCommand | Error::CardLocked => {
-            rd_block::BlkError::NotSupported
+            rdif_block::BlkError::NotSupported
         }
         Error::Misaligned | Error::InvalidArgument => {
-            rd_block::BlkError::Other("Phytium MCI request is not block aligned".into())
+            rdif_block::BlkError::Other("Phytium MCI request is not block aligned".into())
         }
-        _ => rd_block::BlkError::Other("Phytium MCI I/O error".into()),
+        _ => rdif_block::BlkError::Other("Phytium MCI I/O error".into()),
     }
 }
 

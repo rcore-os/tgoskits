@@ -10,7 +10,7 @@
 //!   timing tables, 1-bit / 4-bit / 8-bit bus selection, command response
 //!   decoding, FIFO block transfers, and stable IRQ event extraction.
 //! - **Out of scope for this crate**: FDT/ACPI probe, MMIO remapping, IRQ
-//!   registration, pad-controller programming, OS sleeps/wakeups, and rd-block
+//!   registration, pad-controller programming, OS sleeps/wakeups, and rdif-block
 //!   registration.
 //! - **Implemented for block I/O**: IDMAC descriptor setup, DMA buffer mapping,
 //!   DMA block read/write polling, and FIFO fallback at the platform adapter.

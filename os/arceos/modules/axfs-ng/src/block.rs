@@ -3,7 +3,6 @@ use alloc::boxed::Box;
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use ax_errno::AxError;
 use ax_errno::AxResult;
-use rd_block_volume::{BlockReader, Error as VolumeError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockRegion {
@@ -130,31 +129,5 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
 
     fn flush(&mut self) -> AxResult {
         self.inner.flush()
-    }
-}
-
-pub struct VolumeReader<'a, T: FsBlockDevice + ?Sized> {
-    inner: &'a mut T,
-}
-
-impl<'a, T: FsBlockDevice + ?Sized> VolumeReader<'a, T> {
-    pub const fn new(inner: &'a mut T) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T: FsBlockDevice + ?Sized> BlockReader for VolumeReader<'_, T> {
-    fn block_size(&self) -> usize {
-        self.inner.block_size()
-    }
-
-    fn num_blocks(&self) -> u64 {
-        self.inner.num_blocks()
-    }
-
-    fn read_block(&mut self, block: u64, buf: &mut [u8]) -> rd_block_volume::Result<()> {
-        self.inner
-            .read_block(block, buf)
-            .map_err(|_| VolumeError::Reader)
     }
 }

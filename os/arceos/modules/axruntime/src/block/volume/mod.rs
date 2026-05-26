@@ -1,12 +1,10 @@
-#![no_std]
-
-extern crate alloc;
-
 mod error;
 mod gpt;
 mod mbr;
 mod reader;
 mod scan;
+#[cfg(test)]
+mod tests;
 mod types;
 
 pub use error::{Error, Result};

@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use super::{Error, Result};
 
 pub trait BlockReader {
     fn block_size(&self) -> usize;

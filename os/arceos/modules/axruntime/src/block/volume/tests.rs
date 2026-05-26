@@ -1,4 +1,4 @@
-use rd_block_volume::{
+use super::{
     BlockReader, BlockRegion, DiskId, Error, PartitionId, PartitionTableKind, Result, scan_volumes,
 };
 
@@ -77,6 +77,11 @@ fn raw_disk_fallback_covers_entire_reader() {
     assert!(!volumes[0].bootable);
     assert_eq!(volumes[0].partuuid, None);
     assert_eq!(volumes[0].partlabel, None);
+}
+
+#[test]
+fn reader_error_variant_is_available_to_runtime_adapters() {
+    assert_eq!(Error::Reader, Error::Reader);
 }
 
 #[test]

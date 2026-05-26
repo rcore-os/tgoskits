@@ -49,7 +49,7 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 
 Use `&mut self` APIs where exclusive access is the natural contract. Do not require callers to provide an OS lock as part of the portable abstraction.
 
-For block-device integration in `axplat-dyn`, wrap the portable driver with `rd_block::Interface` and `rd_block::IQueue`, then register it through the existing `PlatformDeviceBlock::register_block` path. Keep `rd-block`/`rdrive` adapter code in platform glue or behind an explicit adapter feature unless the crate's purpose is to expose that interface.
+For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, DMA/wait policy, and IRQ registration in OS glue/runtime layers; the portable boundary should be submit/poll requests plus `handle_irq() -> Event`.
 
 Prefer small interfaces:
 

@@ -22,6 +22,7 @@ mod tests {
         CommandRegister, DeviceType, PciMem32, PciMem64, PcieController, PcieGeneric,
         enumerate_by_controller,
     };
+    use rdif_block::{Buffer, Interface, Request, RequestKind, RequestStatus};
 
     #[test]
     fn test_framework_boot() {
@@ -58,8 +59,7 @@ mod tests {
         println!("namespace query ok");
 
         let ns = namespace_list[0];
-        let mut block =
-            NvmeBlockDriver::with_namespace("nvme", nvme, ns).into_block(kernel_dma_op());
+        let mut block = NvmeBlockDriver::with_namespace("nvme", nvme, ns).into_interface();
         let mut queue = block.create_queue().unwrap();
 
         assert_eq!(queue.block_size(), ns.lba_size);
@@ -72,11 +72,10 @@ mod tests {
 
             write_buf[..message_bytes.len()].copy_from_slice(message_bytes);
 
-            let write_result = queue.write_blocks_blocking(block, &write_buf);
-            assert!(write_result.into_iter().all(|entry| entry.is_ok()));
+            submit_write(&mut *queue, block, &mut write_buf);
 
-            let mut read_result = queue.read_blocks_blocking(block, 1).into_iter();
-            let read_buf = read_result.next().unwrap().unwrap();
+            let mut read_buf = vec![0u8; ns.lba_size];
+            submit_read(&mut *queue, block, &mut read_buf);
 
             assert_eq!(&read_buf[..message_bytes.len()], message_bytes);
 
@@ -86,6 +85,36 @@ mod tests {
         }
 
         println!("nvme io ok");
+    }
+
+    fn submit_read(queue: &mut dyn rdif_block::IQueue, block_id: usize, data: &mut [u8]) {
+        let id = queue
+            .submit_request(Request {
+                block_id,
+                kind: RequestKind::Read(unsafe {
+                    Buffer::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len())
+                }),
+            })
+            .expect("read submit should succeed");
+        poll_complete(queue, id);
+    }
+
+    fn submit_write(queue: &mut dyn rdif_block::IQueue, block_id: usize, data: &mut [u8]) {
+        let id = queue
+            .submit_request(Request {
+                block_id,
+                kind: RequestKind::Write(unsafe {
+                    Buffer::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len())
+                }),
+            })
+            .expect("write submit should succeed");
+        poll_complete(queue, id);
+    }
+
+    fn poll_complete(queue: &mut dyn rdif_block::IQueue, id: rdif_block::RequestId) {
+        while queue.poll_request(id).expect("poll should succeed") == RequestStatus::Pending {
+            core::hint::spin_loop();
+        }
     }
 
     fn get_nvme() -> Nvme {

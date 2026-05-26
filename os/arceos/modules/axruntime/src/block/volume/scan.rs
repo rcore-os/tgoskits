@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{
+use super::{
     BlockReader, BlockRegion, BlockVolume, DiskId, Error, PartitionId, PartitionTableKind, Result,
     gpt, mbr,
 };

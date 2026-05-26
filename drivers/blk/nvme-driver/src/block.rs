@@ -1,9 +1,9 @@
 use alloc::{boxed::Box, collections::BTreeSet, sync::Arc};
 use core::any::Any;
 
-use rd_block::{
-    BlkError, Block as RdBlock, BuffConfig, DriverGeneric, Event, IQueue, IdList, Interface,
-    Request, RequestId, RequestKind,
+use rdif_block::{
+    BlkError, BuffConfig, DriverGeneric, Event, IQueue, IdList, Interface, Request, RequestId,
+    RequestKind, RequestStatus,
 };
 use spin::Mutex;
 
@@ -54,8 +54,8 @@ impl NvmeBlockDriver {
         self.inner.lock().namespace
     }
 
-    pub fn into_block(self, dma_op: &'static dyn dma_api::DmaOp) -> RdBlock {
-        RdBlock::new(self, dma_op)
+    pub fn into_interface(self) -> Self {
+        self
     }
 }
 
@@ -127,7 +127,7 @@ impl IQueue for NvmeRequestQueue {
         self.inner.lock().namespace.lba_size
     }
 
-    fn buff_config(&self) -> BuffConfig {
+    fn buffer_config(&self) -> BuffConfig {
         let inner = self.inner.lock();
         BuffConfig {
             dma_mask: inner.nvme.dma_mask(),
@@ -170,7 +170,7 @@ impl IQueue for NvmeRequestQueue {
 
                 inner
                     .nvme
-                    .block_write_sync(&namespace, request.block_id as u64, buffer)
+                    .block_write_sync(&namespace, request.block_id as u64, &buffer)
                     .map_err(|err| BlkError::Other(Box::new(err)))?;
             }
         }
@@ -183,12 +183,15 @@ impl IQueue for NvmeRequestQueue {
         Ok(req_id)
     }
 
-    fn poll_request(&mut self, request: RequestId) -> core::result::Result<(), BlkError> {
+    fn poll_request(
+        &mut self,
+        request: RequestId,
+    ) -> core::result::Result<RequestStatus, BlkError> {
         let mut inner = self.inner.lock();
         if inner.completed.remove(&request) {
-            Ok(())
+            Ok(RequestStatus::Complete)
         } else {
-            Err(BlkError::Retry)
+            Ok(RequestStatus::Pending)
         }
     }
 }

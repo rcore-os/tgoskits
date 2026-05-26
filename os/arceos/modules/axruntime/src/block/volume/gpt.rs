@@ -1,6 +1,6 @@
 use alloc::{format, string::String, vec::Vec};
 
-use crate::{
+use super::{
     BlockReader, BlockRegion, BlockVolume, DiskId, Error, PartitionId, PartitionLabel,
     PartitionTableKind, PartitionUuid, Result, mbr,
 };

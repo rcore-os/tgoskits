@@ -19,10 +19,6 @@ impl BlockRegion {
             num_blocks,
         }
     }
-
-    pub const fn is_empty(self) -> bool {
-        self.num_blocks == 0
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
