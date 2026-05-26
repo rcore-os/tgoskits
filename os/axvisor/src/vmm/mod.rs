@@ -76,10 +76,10 @@ pub fn init() {
 fn release_host_filesystem_for_guest_passthrough() -> AxResult {
     use std::os::arceos::modules::ax_fs;
 
-    let release_required = vm_list::get_vm_list()
+    let has_conflicting_guest_ownership = vm_list::get_vm_list()
         .into_iter()
-        .any(|vm| vm.needs_host_filesystem_release_before_boot());
-    if !release_required {
+        .any(|vm| vm.has_host_fs_passthrough_conflict());
+    if !has_conflicting_guest_ownership {
         return Ok(());
     }
 

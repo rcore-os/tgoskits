@@ -829,6 +829,10 @@ impl VmxVcpu {
     }
 }
 
+// The current VMX APIC-access decode path is used only with Axvisor's
+// identity-mapped guest RAM layout, so the guest physical address is also
+// the host physical address. A non-identity guest memory backend should
+// replace this helper with an explicit GPA-to-HVA translation.
 fn read_guest_phys_u64(gpa: usize) -> u64 {
     let hva = memory::phys_to_virt(PhysAddr::from(gpa));
     unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) }
@@ -1637,7 +1641,7 @@ impl AxArchVCpu for VmxVcpu {
                     }
                     VmxExitReason::PREEMPTION_TIMER => {
                         self.handle_vmx_preemption_timer()?;
-                        AxVCpuExitReason::VTimer
+                        AxVCpuExitReason::PreemptionTimer
                     }
                     VmxExitReason::VIRTUALIZED_EOI => AxVCpuExitReason::InterruptEnd {
                         vector: self.vlapic.handle_eoi(),
@@ -1721,12 +1725,20 @@ impl AxArchVCpu for VmxVcpu {
         Ok(())
     }
 
-    fn inject_interrupt_with_trigger(&mut self, vector: usize, level_triggered: bool) -> AxResult {
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: axvcpu::InterruptTriggerMode,
+    ) -> AxResult {
         if vector == 0 {
             warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
             panic!()
         }
-        self.queue_event_with_trigger(vector as u8, None, level_triggered);
+        self.queue_event_with_trigger(
+            vector as u8,
+            None,
+            trigger == axvcpu::InterruptTriggerMode::LevelTriggered,
+        );
         Ok(())
     }
 

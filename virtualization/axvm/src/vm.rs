@@ -212,8 +212,8 @@ impl AxVM {
     }
 
     /// Returns whether this VM loads its images from the host filesystem and maps passthrough
-    /// devices that can require exclusive ownership after VM start.
-    pub fn needs_host_filesystem_release_before_boot(&self) -> bool {
+    /// devices or address ranges that can require exclusive ownership after VM start.
+    pub fn has_host_fs_passthrough_conflict(&self) -> bool {
         let inner_mut = self.inner_mut.lock();
         inner_mut.config.images_loaded_from_filesystem()
             && (!inner_mut.config.pass_through_devices().is_empty()

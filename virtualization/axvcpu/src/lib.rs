@@ -40,7 +40,7 @@ mod test; // Unit tests for VCpu functionality
 mod vcpu; // Main VCpu implementation and state management
 
 // Public API exports
-pub use arch_vcpu::AxArchVCpu; // Architecture-specific VCpu trait
+pub use arch_vcpu::{AxArchVCpu, InterruptTriggerMode}; // Architecture-specific VCpu trait
 pub use exit::AxVCpuExitReason;
 pub use percpu::*; // Per-CPU state management types
 pub use vcpu::*; // Main VCpu types and functions // VM exit reasons

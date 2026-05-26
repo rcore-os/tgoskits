@@ -19,7 +19,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvisor_api::vmm::{VCpuId, VMId};
 
-use super::{AxArchVCpu, AxVCpuExitReason};
+use super::{AxArchVCpu, AxVCpuExitReason, InterruptTriggerMode};
 
 /// Immutable configuration data for a virtual CPU.
 ///
@@ -306,10 +306,14 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.get_arch_vcpu().inject_interrupt(vector)
     }
 
-    /// Inject an interrupt with architecture-specific trigger mode metadata.
-    pub fn inject_interrupt_with_trigger(&self, vector: usize, level_triggered: bool) -> AxResult {
+    /// Inject an interrupt with trigger mode metadata.
+    pub fn inject_interrupt_with_trigger(
+        &self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> AxResult {
         self.get_arch_vcpu()
-            .inject_interrupt_with_trigger(vector, level_triggered)
+            .inject_interrupt_with_trigger(vector, trigger)
     }
 
     /// Process a guest EOI and return the vector for an external EOI broadcast.

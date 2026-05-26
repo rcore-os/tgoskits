@@ -237,7 +237,7 @@ pub enum AxVCpuExitReason {
     ///
     /// This gives the VMM a chance to poll virtual device timers without relying on an unrelated
     /// host interrupt or guest I/O exit.
-    VTimer,
+    PreemptionTimer,
 
     /// The guest completed interrupt service with EOI.
     InterruptEnd {

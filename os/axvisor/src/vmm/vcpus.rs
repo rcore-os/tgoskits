@@ -466,7 +466,7 @@ fn vcpu_run() {
                         vcpu.get_arch_vcpu().latch_hvip_from_hw();
                     }
                 }
-                AxVCpuExitReason::VTimer => {
+                AxVCpuExitReason::PreemptionTimer => {
                     #[cfg(target_arch = "x86_64")]
                     super::devices::x86::inject_due_pit_irq0(&vm, &vcpu);
                     #[cfg(target_arch = "x86_64")]

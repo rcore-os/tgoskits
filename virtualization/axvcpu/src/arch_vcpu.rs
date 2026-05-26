@@ -18,6 +18,19 @@ use axvisor_api::vmm::{VCpuId, VMId};
 
 use crate::exit::AxVCpuExitReason;
 
+/// Interrupt trigger mode.
+///
+/// Represents the trigger mode of an interrupt in a platform-neutral way.
+/// Architectures that do not distinguish between edge and level triggering
+/// can ignore this parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptTriggerMode {
+    /// Edge-triggered interrupt.
+    EdgeTriggered,
+    /// Level-triggered interrupt.
+    LevelTriggered,
+}
+
 /// Architecture-specific virtual CPU trait definition.
 ///
 /// This trait provides an abstraction layer for implementing virtual CPUs across
@@ -88,10 +101,14 @@ pub trait AxArchVCpu: Sized {
     /// until the VCpu is running.
     fn inject_interrupt(&mut self, vector: usize) -> AxResult;
 
-    /// Inject an interrupt with architecture-specific trigger mode metadata.
-    fn inject_interrupt_with_trigger(&mut self, vector: usize, level_triggered: bool) -> AxResult {
+    /// Inject an interrupt with trigger mode metadata.
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> AxResult {
         debug_assert!(
-            !level_triggered,
+            trigger == InterruptTriggerMode::EdgeTriggered,
             "level-triggered interrupt injection requires an architecture-specific implementation"
         );
         self.inject_interrupt(vector)

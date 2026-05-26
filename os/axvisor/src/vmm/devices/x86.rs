@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use std::os::arceos::modules::ax_hal::{irq, time};
 
+use axvcpu::InterruptTriggerMode;
 use axvm::config::VMInterruptMode;
 
 use crate::vmm::{VCpuRef, VMRef};
@@ -41,8 +42,15 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
     };
 
     trace!("Injecting x86 PIT IRQ0 vector {:#x}", irq.vector);
-    vcpu.inject_interrupt_with_trigger(irq.vector as _, irq.level_triggered)
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        irq.vector as _,
+        if irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .unwrap();
 }
 
 pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
@@ -60,8 +68,15 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
     };
 
     trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.inject_interrupt_with_trigger(irq.vector as _, irq.level_triggered)
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        irq.vector as _,
+        if irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .unwrap();
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
@@ -77,8 +92,15 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    vcpu.inject_interrupt_with_trigger(irq.vector as _, irq.level_triggered)
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        irq.vector as _,
+        if irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .unwrap();
 }
 
 pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -172,8 +194,15 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
          {:#x}",
         guest_irq.vector
     );
-    vcpu.inject_interrupt_with_trigger(guest_irq.vector as _, guest_irq.level_triggered)
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        guest_irq.vector as _,
+        if guest_irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .unwrap();
 }
 
 fn ioapic_irq_forwarding_hook(vector: usize) {
