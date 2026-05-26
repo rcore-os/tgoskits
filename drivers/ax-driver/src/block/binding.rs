@@ -1,13 +1,9 @@
-#[cfg(feature = "irq")]
-use alloc::sync::Arc;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
     vec::Vec,
 };
 use core::alloc::Layout;
-#[cfg(feature = "irq")]
-use core::cell::UnsafeCell;
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
@@ -17,6 +13,9 @@ use rdif_block::{
     BlkError, Buffer, IQueue, Interface, Request, RequestId, RequestKind, RequestStatus,
 };
 use rdrive::Device;
+
+#[cfg(feature = "irq")]
+use super::SharedDriver;
 
 pub struct Block {
     name: String,
@@ -60,48 +59,24 @@ impl rdrive::DriverGeneric for PlatformBlockDevice {
 }
 
 #[cfg(feature = "irq")]
-struct BlockInterfaceOwner(UnsafeCell<Box<dyn Interface>>);
-
-#[cfg(feature = "irq")]
-// SAFETY: ax-driver creates the queue before exporting the handler. After that,
-// task-side block I/O only touches the queue object; the shared interface owner
-// is used exclusively for IRQ control and IRQ event extraction.
-unsafe impl Send for BlockInterfaceOwner {}
-#[cfg(feature = "irq")]
-// SAFETY: See the `Send` impl. The IRQ callback path uses no lock in this owner.
-unsafe impl Sync for BlockInterfaceOwner {}
-
-#[cfg(feature = "irq")]
-impl BlockInterfaceOwner {
-    fn new(interface: Box<dyn Interface>) -> Self {
-        Self(UnsafeCell::new(interface))
-    }
-
-    fn with_mut<R>(&self, f: impl FnOnce(&mut dyn Interface) -> R) -> R {
-        // SAFETY: The owner is constructed before queue creation and then only
-        // accessed by the IRQ control path. The queue itself is independent.
-        let interface = unsafe { &mut *self.0.get() };
-        f(&mut **interface)
-    }
-}
-
-#[cfg(feature = "irq")]
 pub struct BlockIrqHandler {
-    interface: Arc<BlockInterfaceOwner>,
+    interface: SharedDriver<Box<dyn Interface>>,
 }
 
 #[cfg(feature = "irq")]
 impl BlockIrqHandler {
-    fn new(interface: Arc<BlockInterfaceOwner>) -> Self {
+    fn new(interface: SharedDriver<Box<dyn Interface>>) -> Self {
         Self { interface }
     }
 
     pub fn enable_irq(&self) {
-        self.interface.with_mut(|interface| interface.enable_irq());
+        self.interface
+            .with_mut(|interface| interface.as_mut().enable_irq());
     }
 
     pub fn handle(&self) -> rdif_block::Event {
-        self.interface.with_mut(|interface| interface.handle_irq())
+        self.interface
+            .with_mut(|interface| interface.as_mut().handle_irq())
     }
 }
 
@@ -240,11 +215,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
 
         #[cfg(feature = "irq")]
         let (queue, irq_handler) = {
-            let interface = Arc::new(BlockInterfaceOwner::new(interface));
+            let interface = SharedDriver::new(interface);
             let queue = interface.with_mut(|interface| {
-                BlockQueue::new(interface.create_queue().ok_or(AxError::BadState)?)
+                BlockQueue::new(interface.as_mut().create_queue().ok_or(AxError::BadState)?)
             })?;
-            let irq_handler = irq_num.map(|_| BlockIrqHandler::new(interface));
+            let irq_handler = irq_num.map(|_| BlockIrqHandler::new(interface.clone()));
             (queue, irq_handler)
         };
         #[cfg(not(feature = "irq"))]

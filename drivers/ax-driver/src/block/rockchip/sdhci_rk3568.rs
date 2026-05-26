@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString, sync::Arc, vec::Vec};
+use alloc::{format, string::ToString, vec::Vec};
 use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
-use ax_kspin::SpinNoIrq;
 use dma_api::DeviceDma;
 use log::{info, warn};
 use rdif_clk::ClockId;
@@ -29,7 +28,7 @@ use sdmmc_protocol::{
 use spin::Once;
 
 use crate::{
-    block::{PlatformDeviceBlock, decode_fdt_irq},
+    block::{PlatformDeviceBlock, SharedDriver, decode_fdt_irq},
     mmio::iomap,
 };
 
@@ -160,7 +159,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     );
 
     let irq_num = decode_fdt_irq(&info.interrupts());
-    let raw = Arc::new(SpinNoIrq::new(card));
+    let raw = SharedDriver::new(card);
     let dev = BlockDevice {
         raw: Some(raw.clone()),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
@@ -366,14 +365,14 @@ fn clock_error() -> Error {
 }
 
 struct BlockDevice {
-    raw: Option<Arc<SpinNoIrq<RockchipSdhci>>>,
+    raw: Option<SharedDriver<RockchipSdhci>>,
     capacity_blocks: u64,
     irq_enabled: bool,
     queue_created: bool,
 }
 
 struct BlockQueue {
-    raw: Arc<SpinNoIrq<RockchipSdhci>>,
+    raw: SharedDriver<RockchipSdhci>,
     capacity_blocks: u64,
     id: usize,
     dma: DeviceDma,
@@ -409,27 +408,33 @@ impl rdif_block::Interface for BlockDevice {
 
     fn enable_irq(&mut self) {
         if let Some(raw) = &self.raw {
-            let mut raw = raw.lock();
-            if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
-                warn!(
-                    "rockchip-rk3568-sdhci: enable completion IRQ failed: {:?}",
-                    err
-                );
-                return;
+            let mut enabled = false;
+            raw.with_mut(|raw| {
+                if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
+                    warn!(
+                        "rockchip-rk3568-sdhci: enable completion IRQ failed: {:?}",
+                        err
+                    );
+                    return;
+                }
+                enabled = true;
+            });
+            if enabled {
+                self.irq_enabled = true;
             }
-            self.irq_enabled = true;
         }
     }
 
     fn disable_irq(&mut self) {
         if let Some(raw) = &self.raw {
-            let mut raw = raw.lock();
-            if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
-                warn!(
-                    "rockchip-rk3568-sdhci: disable completion IRQ failed: {:?}",
-                    err
-                );
-            }
+            raw.with_mut(|raw| {
+                if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
+                    warn!(
+                        "rockchip-rk3568-sdhci: disable completion IRQ failed: {:?}",
+                        err
+                    );
+                }
+            });
         }
         self.irq_enabled = false;
     }
@@ -442,7 +447,7 @@ impl rdif_block::Interface for BlockDevice {
         let Some(raw) = &self.raw else {
             return rdif_block::Event::none();
         };
-        let irq_event = raw.lock().host_mut().handle_irq();
+        let irq_event = raw.with_mut(|raw| raw.host_mut().handle_irq());
         block_event_from_sdhci_irq(irq_event)
     }
 }
@@ -487,57 +492,61 @@ impl rdif_block::IQueue for BlockQueue {
         request: rdif_block::Request<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
         self.reap_pending_request()?;
-        let mut raw = self.raw.lock();
-        let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
-        // Block I/O uses the host crate's submit/poll request API so
-        // completions can be driven by IRQ wakeups. Protocol data commands
-        // use the same submit/poll contract through SdioHost.
-        match request.kind {
-            rdif_block::RequestKind::Read(buffer) => {
-                if !buffer.len().is_multiple_of(BLOCK_SIZE) {
-                    return Err(rdif_block::BlkError::Other(
-                        "read buffer is not block aligned".into(),
-                    ));
+        let raw = self.raw.clone();
+        raw.with_mut(|raw| {
+            let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
+            // Block I/O uses the host crate's submit/poll request API so
+            // completions can be driven by IRQ wakeups. Protocol data commands
+            // use the same submit/poll contract through SdioHost.
+            match request.kind {
+                rdif_block::RequestKind::Read(buffer) => {
+                    if !buffer.len().is_multiple_of(BLOCK_SIZE) {
+                        return Err(rdif_block::BlkError::Other(
+                            "read buffer is not block aligned".into(),
+                        ));
+                    }
+                    let ptr = NonNull::new(buffer.virt).ok_or_else(|| {
+                        rdif_block::BlkError::Other("read buffer pointer is null".into())
+                    })?;
+                    let size = NonZeroUsize::new(buffer.len()).ok_or_else(|| {
+                        rdif_block::BlkError::Other("read buffer is empty".into())
+                    })?;
+                    let id = submit_read_request(
+                        raw.host_mut(),
+                        start_block,
+                        ptr,
+                        size,
+                        &self.dma,
+                        &mut self.slot,
+                        &mut self.pending,
+                    )?;
+                    Ok(rdif_block::RequestId::new(usize::from(id)))
                 }
-                let ptr = NonNull::new(buffer.virt).ok_or_else(|| {
-                    rdif_block::BlkError::Other("read buffer pointer is null".into())
-                })?;
-                let size = NonZeroUsize::new(buffer.len())
-                    .ok_or_else(|| rdif_block::BlkError::Other("read buffer is empty".into()))?;
-                let id = submit_read_request(
-                    raw.host_mut(),
-                    start_block,
-                    ptr,
-                    size,
-                    &self.dma,
-                    &mut self.slot,
-                    &mut self.pending,
-                )?;
-                Ok(rdif_block::RequestId::new(usize::from(id)))
-            }
-            rdif_block::RequestKind::Write(items) => {
-                if !items.len().is_multiple_of(BLOCK_SIZE) {
-                    return Err(rdif_block::BlkError::Other(
-                        "write buffer is not block aligned".into(),
-                    ));
+                rdif_block::RequestKind::Write(items) => {
+                    if !items.len().is_multiple_of(BLOCK_SIZE) {
+                        return Err(rdif_block::BlkError::Other(
+                            "write buffer is not block aligned".into(),
+                        ));
+                    }
+                    let ptr = NonNull::new(items.virt).ok_or_else(|| {
+                        rdif_block::BlkError::Other("write buffer pointer is null".into())
+                    })?;
+                    let size = NonZeroUsize::new(items.len()).ok_or_else(|| {
+                        rdif_block::BlkError::Other("write buffer is empty".into())
+                    })?;
+                    let id = submit_write_request(
+                        raw.host_mut(),
+                        start_block,
+                        ptr,
+                        size,
+                        &self.dma,
+                        &mut self.slot,
+                        &mut self.pending,
+                    )?;
+                    Ok(rdif_block::RequestId::new(usize::from(id)))
                 }
-                let ptr = NonNull::new(items.virt).ok_or_else(|| {
-                    rdif_block::BlkError::Other("write buffer pointer is null".into())
-                })?;
-                let size = NonZeroUsize::new(items.len())
-                    .ok_or_else(|| rdif_block::BlkError::Other("write buffer is empty".into()))?;
-                let id = submit_write_request(
-                    raw.host_mut(),
-                    start_block,
-                    ptr,
-                    size,
-                    &self.dma,
-                    &mut self.slot,
-                    &mut self.pending,
-                )?;
-                Ok(rdif_block::RequestId::new(usize::from(id)))
             }
-        }
+        })
     }
 
     fn poll_request(
@@ -557,11 +566,14 @@ impl BlockQueue {
         &mut self,
         request: rdif_block::RequestId,
     ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
-        match self.raw.lock().host_mut().poll_block_request(
-            &mut self.pending,
-            RequestId::new(usize::from(request)),
-            &mut self.slot,
-        ) {
+        let raw = self.raw.clone();
+        match raw.with_mut(|raw| {
+            raw.host_mut().poll_block_request(
+                &mut self.pending,
+                RequestId::new(usize::from(request)),
+                &mut self.slot,
+            )
+        }) {
             Ok(BlockPoll::Complete) => Ok(rdif_block::RequestStatus::Complete),
             Ok(BlockPoll::Pending) => Ok(rdif_block::RequestStatus::Pending),
             Ok(_) => Err(rdif_block::BlkError::Other(

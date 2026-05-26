@@ -1,4 +1,11 @@
 mod binding;
+#[cfg(any(
+    feature = "irq",
+    feature = "phytium-mci",
+    feature = "rockchip-dwmmc",
+    feature = "rockchip-sdhci"
+))]
+mod shared;
 
 #[cfg(feature = "ahci")]
 pub mod ahci;
@@ -24,6 +31,13 @@ use rdif_block::{
     BlkError, BuffConfig, DriverGeneric, Event, IQueue, Interface, Request, RequestId,
     RequestStatus,
 };
+#[cfg(any(
+    feature = "irq",
+    feature = "phytium-mci",
+    feature = "rockchip-dwmmc",
+    feature = "rockchip-sdhci"
+))]
+pub(crate) use shared::SharedDriver;
 #[cfg(sync_block_dev)]
 use spin::Mutex;
 
