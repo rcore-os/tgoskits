@@ -5,21 +5,23 @@ use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
 
 use super::{ff, fs::FatFilesystemInner};
 
-pub fn dos_to_unix(date: fatfs::DateTime) -> Duration {
+pub fn dos_to_unix(dos_time: fatfs::DateTime) -> Duration {
     // let date: NaiveDateTime = date.into();
-    let date = NaiveDate::from_ymd_opt(
-        date.date.year as _,
-        date.date.month as _,
-        date.date.day as _,
-    )
-    .unwrap()
-    .and_hms_milli_opt(
-        date.time.hour as _,
-        date.time.min as _,
-        date.time.sec as _,
-        date.time.millis as _,
-    )
-    .unwrap();
+    let Some(date) = NaiveDate::from_ymd_opt(
+        dos_time.date.year as _,
+        dos_time.date.month as _,
+        dos_time.date.day as _,
+    ) else {
+        return Duration::default();
+    };
+    let Some(date) = date.and_hms_milli_opt(
+        dos_time.time.hour as _,
+        dos_time.time.min as _,
+        dos_time.time.sec as _,
+        dos_time.time.millis as _,
+    ) else {
+        return Duration::default();
+    };
     let Some(datetime) = Utc.from_local_datetime(&date).single() else {
         return Duration::default();
     };

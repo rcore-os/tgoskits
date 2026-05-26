@@ -360,17 +360,25 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = DirBuffer::new(out);
 
-        for entry in dir.by_ref() {
-            let entry = entry?;
-            let d_type = file_type_to_d_type(entry.node_type);
-            // Linux style: d_ino, d_off both present
-            if !dir_buf.write_entry(
-                entry.ino,
-                entry.offset as i64,
-                d_type,
-                entry.name.as_bytes(),
-            ) {
-                return Ok(dir_buf.used_len() as ctypes::ssize_t);
+        loop {
+            match dir.next() {
+                Some(Ok(entry)) => {
+                    let d_type = file_type_to_d_type(entry.node_type);
+                    // Linux style: d_ino, d_off both present
+                    if !dir_buf.write_entry(
+                        entry.ino,
+                        entry.offset as i64,
+                        d_type,
+                        entry.name.as_bytes(),
+                    ) {
+                        return Ok(dir_buf.used_len() as ctypes::ssize_t);
+                    }
+                }
+                Some(Err(err)) if dir_buf.used_len() == 0 => return Err(err.into()),
+                Some(Err(_)) => {
+                    return Ok(dir_buf.used_len() as ctypes::ssize_t);
+                }
+                None => break,
             }
         }
 
@@ -411,12 +419,20 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = HermitDirBuffer::new(out);
 
-        for entry in dir.by_ref() {
-            let entry = entry?;
-            let d_type = file_type_to_d_type(entry.node_type);
-            // Hermit style: only d_ino and d_type, d_off is not meaningful
-            if !dir_buf.write_entry(entry.ino, d_type, entry.name.as_bytes()) {
-                return Ok(dir_buf.used_len() as ctypes::ssize_t);
+        loop {
+            match dir.next() {
+                Some(Ok(entry)) => {
+                    let d_type = file_type_to_d_type(entry.node_type);
+                    // Hermit style: only d_ino and d_type, d_off is not meaningful
+                    if !dir_buf.write_entry(entry.ino, d_type, entry.name.as_bytes()) {
+                        return Ok(dir_buf.used_len() as ctypes::ssize_t);
+                    }
+                }
+                Some(Err(err)) if dir_buf.used_len() == 0 => return Err(err.into()),
+                Some(Err(_)) => {
+                    return Ok(dir_buf.used_len() as ctypes::ssize_t);
+                }
+                None => break,
             }
         }
 

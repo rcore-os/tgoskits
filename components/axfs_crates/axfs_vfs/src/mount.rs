@@ -708,13 +708,14 @@ impl Location {
         self.mountpoint.clear_expired();
 
         self.entry.as_dir()?.forget();
-        if let Some(parent_loc) = self.mountpoint.location.lock().as_ref() {
+        let parent_loc = self.mountpoint.location.lock().clone();
+        if let Some(parent_loc) = parent_loc {
+            *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
             parent_loc
                 .mountpoint
                 .children
                 .lock()
                 .remove(&parent_loc.entry.key());
-            *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
         }
         Ok(())
     }

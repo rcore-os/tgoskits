@@ -168,14 +168,17 @@ pub fn ax_file_attr(file: &AxFileHandle) -> AxResult<AxFileAttr> {
 pub fn ax_read_dir(dir: &mut AxDirHandle, dirents: &mut [AxDirEntry]) -> AxResult<usize> {
     let mut count = 0;
     for slot in dirents {
-        let Some(entry) = dir.0.next().transpose()? else {
-            break;
-        };
-        *slot = AxDirEntry {
-            name: entry.name,
-            entry_type: entry.node_type,
-        };
-        count += 1;
+        match dir.0.next() {
+            Some(Ok(entry)) => {
+                *slot = AxDirEntry {
+                    name: entry.name,
+                    entry_type: entry.node_type,
+                };
+                count += 1;
+            }
+            Some(Err(err)) if count == 0 => return Err(err),
+            Some(Err(_)) | None => break,
+        }
     }
     Ok(count)
 }
@@ -183,7 +186,7 @@ pub fn ax_read_dir(dir: &mut AxDirHandle, dirents: &mut [AxDirEntry]) -> AxResul
 pub fn ax_create_dir(path: &str) -> AxResult {
     ax_fs::FS_CONTEXT
         .lock()
-        .create_dir(path, NodePermission::default())
+        .create_dir(path, NodePermission::from_bits_truncate(0o755))
         .map(|_| ())
 }
 

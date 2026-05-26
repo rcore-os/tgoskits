@@ -60,7 +60,7 @@ pub mod sync;
 pub mod thread;
 pub mod time;
 
-#[cfg(feature = "fs")]
+#[cfg(any(feature = "fs", feature = "fs-api"))]
 pub mod fs;
 #[cfg(feature = "net")]
 pub mod net;
