@@ -269,12 +269,7 @@ impl DirEntry {
         node_fn: impl FnOnce(WeakDirEntry) -> DirNode,
         reference: Reference,
     ) -> Self {
-        Self(Arc::new_cyclic(|this| Inner {
-            node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
-            node_type: NodeType::Directory,
-            reference,
-            user_data: Mutex::new(TypeMap::default()),
-        }))
+        Self::new_dir(node_fn, reference)
     }
 
     pub fn metadata(&self) -> VfsResult<Metadata> {

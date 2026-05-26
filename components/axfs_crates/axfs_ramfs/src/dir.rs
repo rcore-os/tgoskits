@@ -90,14 +90,20 @@ impl RamDirNode {
             },
             reference,
         );
-        old_dir.rebind_children_to(&rebound)?;
         Ok(rebound)
     }
 
-    fn rebind_children_to(&self, parent: &DirEntry) -> VfsResult<()> {
-        let mut children = self.children.lock();
-        for (name, child) in children.iter_mut() {
-            *child = self.rebind_entry(child, Some(parent.clone()), name)?;
+    fn rebind_children_to(root: Arc<Self>, parent: &DirEntry) -> VfsResult<()> {
+        let mut stack = alloc::vec![(root, parent.clone())];
+        while let Some((dir, parent)) = stack.pop() {
+            let mut children = dir.children.lock();
+            for (name, child) in children.iter_mut() {
+                *child = dir.rebind_entry(child, Some(parent.clone()), name)?;
+                if child.is_dir() {
+                    let child_dir = child.as_dir()?.downcast::<Self>()?;
+                    stack.push((child_dir, child.clone()));
+                }
+            }
         }
         Ok(())
     }
@@ -242,6 +248,10 @@ impl DirNodeOps for RamDirNode {
             let entry = children.get(src_name).cloned().ok_or(VfsError::NotFound)?;
             Self::check_replace_target(&children, dst_name)?;
             let rebound = self.rebind_entry(&entry, self.this.lock().upgrade(), dst_name)?;
+            if rebound.is_dir() {
+                let dir = rebound.as_dir()?.downcast::<Self>()?;
+                Self::rebind_children_to(dir, &rebound)?;
+            }
             children.remove(src_name);
             children.insert(dst_name.into(), rebound);
             return Ok(());
@@ -253,6 +263,10 @@ impl DirNodeOps for RamDirNode {
             Self::check_replace_target(&dst_children, dst_name)?;
         }
         let rebound = dst.rebind_entry(&entry, dst.this.lock().upgrade(), dst_name)?;
+        if rebound.is_dir() {
+            let dir = rebound.as_dir()?.downcast::<Self>()?;
+            Self::rebind_children_to(dir, &rebound)?;
+        }
         self.children.lock().remove(src_name);
         dst.children.lock().insert(dst_name.into(), rebound);
         Ok(())

@@ -336,13 +336,17 @@ impl Mountpoint {
             for component in &path_components {
                 location = location.lookup_no_follow(component)?;
             }
+            if location.is_mountpoint() {
+                return Err(VfsError::ResourceBusy);
+            }
+            let replica = Self::bind(&child.root_location(), location.clone(), true);
             let inserted_key = location.entry.key();
-            Self::attach_child(&target_parent, location, child)?;
+            Self::attach_child(&target_parent, location, &replica)?;
             let mut resolved = target_parent.root_location();
             for component in &path_components {
                 resolved = resolved.lookup_no_follow(component)?;
             }
-            if !Arc::ptr_eq(resolved.mountpoint(), child) {
+            if !Arc::ptr_eq(resolved.mountpoint(), &replica) {
                 warn!(
                     "mount propagation mismatch path={:?} inserted_key={:?} resolved_key={:?} \
                      resolved_is_root={} resolved_mp_device={} replicated_device={}",
@@ -351,7 +355,7 @@ impl Mountpoint {
                     resolved.entry.key(),
                     resolved.is_root_of_mount(),
                     resolved.mountpoint().device(),
-                    child.device(),
+                    replica.device(),
                 );
             }
         }

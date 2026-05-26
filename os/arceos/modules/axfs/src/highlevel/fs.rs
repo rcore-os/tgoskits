@@ -479,6 +479,13 @@ impl ReadDir {
     pub fn location(&self) -> &Location {
         &self.dir
     }
+
+    /// Resets the directory stream to the first entry.
+    pub fn rewind(&mut self) {
+        self.buf.clear();
+        self.offset = 0;
+        self.ended = false;
+    }
 }
 
 impl Iterator for ReadDir {

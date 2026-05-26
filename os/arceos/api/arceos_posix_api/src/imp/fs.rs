@@ -1,7 +1,5 @@
 use alloc::sync::Arc;
 use core::ffi::{c_char, c_int};
-#[cfg(not(feature = "use-hermit-types"))]
-use core::mem::size_of;
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_fs::{OpenOptions, ReadDir};
@@ -25,22 +23,11 @@ pub struct Directory {
 // Linux-style getdents64 implementation (for normal Linux targets)
 // ============================================================================
 
-#[cfg(not(feature = "use-hermit-types"))]
-#[repr(C, packed)]
-struct LinuxDirent64Head {
-    d_ino: u64,
-    d_off: i64,
-    d_reclen: u16,
-    d_type: u8,
-}
-
-#[cfg(not(feature = "use-hermit-types"))]
 struct DirBuffer<'a> {
     buf: &'a mut [u8],
     offset: usize,
 }
 
-#[cfg(not(feature = "use-hermit-types"))]
 impl<'a> DirBuffer<'a> {
     fn new(buf: &'a mut [u8]) -> Self {
         Self { buf, offset: 0 }
@@ -55,7 +42,7 @@ impl<'a> DirBuffer<'a> {
     }
 
     fn write_entry(&mut self, d_ino: u64, d_off: i64, d_type: u8, name: &[u8]) -> bool {
-        const NAME_OFFSET: usize = size_of::<LinuxDirent64Head>();
+        const NAME_OFFSET: usize = 19;
 
         let name_len = name.len().min(255);
         let reclen = (NAME_OFFSET + name_len + 1).next_multiple_of(8);
@@ -65,14 +52,13 @@ impl<'a> DirBuffer<'a> {
 
         unsafe {
             let entry_ptr = self.buf.as_mut_ptr().add(self.offset);
+            entry_ptr.cast::<u64>().write_unaligned(d_ino);
+            entry_ptr.add(8).cast::<i64>().write_unaligned(d_off);
             entry_ptr
-                .cast::<LinuxDirent64Head>()
-                .write_unaligned(LinuxDirent64Head {
-                    d_ino,
-                    d_off,
-                    d_reclen: reclen as _,
-                    d_type,
-                });
+                .add(16)
+                .cast::<u16>()
+                .write_unaligned(reclen as u16);
+            entry_ptr.add(18).write(d_type);
 
             let name_ptr = entry_ptr.add(NAME_OFFSET);
             name_ptr.copy_from_nonoverlapping(name.as_ptr(), name_len);
@@ -85,89 +71,11 @@ impl<'a> DirBuffer<'a> {
 }
 
 // ============================================================================
-// Hermit-style getdents64 implementation (for hermit targets)
-// ============================================================================
-
-#[cfg(feature = "use-hermit-types")]
-use core::mem;
-
-#[cfg(feature = "use-hermit-types")]
-struct HermitDirBuffer<'a> {
-    buf: &'a mut [u8],
-    offset: usize,
-}
-
-#[cfg(feature = "use-hermit-types")]
-impl<'a> HermitDirBuffer<'a> {
-    fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, offset: 0 }
-    }
-
-    fn used_len(&self) -> usize {
-        self.offset
-    }
-
-    fn remaining_space(&self) -> usize {
-        self.buf.len().saturating_sub(self.offset)
-    }
-
-    fn write_entry(&mut self, d_ino: u64, d_type: u8, name: &[u8]) -> bool {
-        // Hermit dirent64 structure layout:
-        // offset 0: d_ino (u64, 8 bytes)
-        // offset 8: d_off (i64, 8 bytes)
-        // offset 16: d_reclen (u16, 2 bytes)
-        // offset 18: d_type (u8, 1 byte)
-        // offset 19: d_name (variable-length null-terminated c_char array)
-        const NAME_OFFSET: usize = 19;
-
-        let name_len = name.len().min(255);
-        // Total size: fixed header (19 bytes) + name + null terminator
-        let dirent_len = NAME_OFFSET + name_len + 1;
-        // Align to dirent64 struct alignment (8 bytes for u64)
-        let reclen = dirent_len.next_multiple_of(mem::align_of::<ctypes::dirent64>());
-
-        if self.remaining_space() < reclen {
-            return false;
-        }
-
-        unsafe {
-            let entry_ptr = self.buf.as_mut_ptr().add(self.offset);
-
-            // Write fixed fields
-            let d_ino_ptr = entry_ptr.cast::<u64>();
-            d_ino_ptr.write_unaligned(d_ino);
-
-            let d_off_ptr = entry_ptr.add(8).cast::<i64>();
-            d_off_ptr.write_unaligned(0); // d_off is not meaningful in Hermit
-
-            let d_reclen_ptr = entry_ptr.add(16).cast::<u16>();
-            d_reclen_ptr.write_unaligned(reclen as u16);
-
-            let d_type_ptr = entry_ptr.add(18);
-            d_type_ptr.write(d_type);
-
-            // Write d_name (starting at offset 19)
-            let name_ptr = entry_ptr.add(NAME_OFFSET);
-            name_ptr.copy_from_nonoverlapping(name.as_ptr(), name_len);
-            name_ptr.add(name_len).write(0); // null terminator
-        }
-
-        self.offset += reclen;
-        true
-    }
-}
-
-// ============================================================================
 // Common file type conversion
 // ============================================================================
 
 fn file_type_to_d_type(ty: NodeType) -> u8 {
-    match ty {
-        NodeType::Directory => 4,   // DT_DIR
-        NodeType::RegularFile => 8, // DT_REG
-        NodeType::Symlink => 10,    // DT_LNK
-        _ => 0,                     // DT_UNKNOWN
-    }
+    ty as u8
 }
 
 fn metadata_to_stat(metadata: Metadata) -> ctypes::stat {
@@ -417,14 +325,14 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let mut dir = dir.inner.lock();
 
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-        let mut dir_buf = HermitDirBuffer::new(out);
+        let mut dir_buf = DirBuffer::new(out);
 
         loop {
             match dir.next() {
                 Some(Ok(entry)) => {
                     let d_type = file_type_to_d_type(entry.node_type);
                     // Hermit style: only d_ino and d_type, d_off is not meaningful
-                    if !dir_buf.write_entry(entry.ino, d_type, entry.name.as_bytes()) {
+                    if !dir_buf.write_entry(entry.ino, 0, d_type, entry.name.as_bytes()) {
                         return Ok(dir_buf.used_len() as ctypes::ssize_t);
                     }
                 }
@@ -452,10 +360,19 @@ pub fn sys_lseek(fd: c_int, offset: ctypes::off_t, whence: c_int) -> ctypes::off
             2 => SeekFrom::End(offset as _),
             _ => return Err(LinuxError::EINVAL),
         };
-        let file = File::from_fd(fd)?;
-        let file = file.inner.lock();
-        let off = (&*file).seek(pos)?;
-        Ok(off)
+        if let Ok(file) = File::from_fd(fd) {
+            let file = file.inner.lock();
+            let off = (&*file).seek(pos)?;
+            return Ok(off);
+        }
+        let dir = Directory::from_fd(fd).map_err(|_| LinuxError::EBADF)?;
+        match pos {
+            SeekFrom::Start(0) => {
+                dir.inner.lock().rewind();
+                Ok(0)
+            }
+            _ => Err(LinuxError::EINVAL),
+        }
     })
 }
 

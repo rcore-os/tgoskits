@@ -351,9 +351,9 @@ impl DirNode {
                 && let Ok(fresh_entry) = dst_dir.ops.lookup(dst_name)
             {
                 *fresh_entry.user_data().deref_mut() = mem::take(entry.user_data().deref_mut());
-                if let (Ok(src_dir), Ok(dst_dir)) = (entry.as_dir(), fresh_entry.as_dir()) {
-                    *dst_dir.cache.lock().deref_mut() = mem::take(src_dir.cache.lock().deref_mut());
-                    *dst_dir.mountpoint.lock().deref_mut() =
+                if let (Ok(src_dir), Ok(fresh_dir)) = (entry.as_dir(), fresh_entry.as_dir()) {
+                    *src_dir.cache.lock().deref_mut() = DirChildren::default();
+                    *fresh_dir.mountpoint.lock().deref_mut() =
                         mem::take(src_dir.mountpoint.lock().deref_mut());
                 }
                 dst_children_ref.insert(dst_name.to_owned(), fresh_entry);
