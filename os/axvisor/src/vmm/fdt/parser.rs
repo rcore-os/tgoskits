@@ -17,9 +17,9 @@
 use alloc::{string::ToString, vec::Vec};
 use ax_hal::{dtb, mem};
 use axaddrspace::MappingFlags;
-#[cfg(target_arch = "aarch64")]
-use axvm::config::PassThroughDeviceConfig;
-use axvm::config::{AxVMConfig, AxVMCrateConfig, VmMemConfig, VmMemMappingType};
+use axvm::config::{
+    AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType,
+};
 use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 use crate::vmm::fdt::crate_guest_fdt_with_cache;
@@ -27,10 +27,6 @@ use crate::vmm::fdt::crate_guest_fdt_with_cache;
 use crate::vmm::fdt::create::update_cpu_node;
 
 const PAGE_SIZE_4K: usize = 0x1000;
-
-pub fn get_host_fdt() -> &'static [u8] {
-    try_get_host_fdt().expect("Failed to get host FDT from boot context")
-}
 
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
@@ -382,66 +378,43 @@ pub fn set_phys_cpu_sets(vm_cfg: &mut AxVMConfig, fdt: &Fdt, crate_config: &AxVM
         .as_ref()
         .expect("ERROR: phys_cpu_ids not found in config.toml");
 
-    // Collect all CPU node information into Vec to avoid using iterators multiple times
     let cpu_nodes_info: Vec<_> = host_cpus
         .iter()
         .filter_map(|cpu_node| {
-            if let Some(mut cpu_reg) = cpu_node.reg() {
-                if let Some(r) = cpu_reg.next() {
-                    info!(
-                        "CPU node: {}, phys_cpu_id: 0x{:x}",
-                        cpu_node.name(),
-                        r.address
-                    );
-                    Some((cpu_node.name().to_string(), r.address as usize))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            let node_id = cpu_node
+                .name()
+                .strip_prefix("cpu@")
+                .and_then(|id| usize::from_str_radix(id, 16).ok())?;
+            let cpu_reg = cpu_node.reg().and_then(|mut reg| reg.next())?;
+            let guest_cpu_id = cpu_reg.address as usize;
+            info!(
+                "CPU node: {}, node_id: 0x{:x}, guest_cpu_id: 0x{:x}",
+                cpu_node.name(),
+                node_id,
+                guest_cpu_id
+            );
+            Some((node_id, guest_cpu_id))
         })
         .collect();
-    // Create mapping from phys_cpu_id to physical CPU index
-    // Collect all unique CPU addresses, maintaining the order of appearance in the device tree
-    let mut unique_cpu_addresses = Vec::new();
-    for (_, cpu_address) in &cpu_nodes_info {
-        if !unique_cpu_addresses.contains(cpu_address) {
-            unique_cpu_addresses.push(*cpu_address);
-        } else {
-            panic!("Duplicate CPU address found");
-        }
-    }
 
-    // Assign index to each CPU address in the device tree and print detailed information
-    for (index, &cpu_address) in unique_cpu_addresses.iter().enumerate() {
-        // Find all CPU nodes using this address
-        for (cpu_name, node_address) in &cpu_nodes_info {
-            if *node_address == cpu_address {
-                debug!(
-                    "  CPU node: {cpu_name}, address: 0x{cpu_address:x}, assigned index: {index}"
-                );
-                break; // Print each address only once
-            }
-        }
-    }
-
-    // Calculate phys_cpu_sets based on phys_cpu_ids in vcpu_mappings
     let mut new_phys_cpu_sets = Vec::new();
+    let mut guest_phys_cpu_ids = Vec::new();
     for phys_cpu_id in phys_cpu_ids {
-        // Find the index corresponding to phys_cpu_id in unique_cpu_addresses
-        if let Some(cpu_index) = unique_cpu_addresses
+        if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
             .iter()
-            .position(|&addr| addr == *phys_cpu_id)
+            .enumerate()
+            .find(|(_, (node_id, _))| node_id == phys_cpu_id)
         {
-            let cpu_mask = 1usize << cpu_index; // Convert index to mask bit
+            let cpu_mask = 1usize << cpu_index;
             new_phys_cpu_sets.push(cpu_mask);
+            guest_phys_cpu_ids.push(*guest_cpu_id);
             debug!(
-                "vCPU {} with phys_cpu_id 0x{:x} mapped to CPU index {} (mask: 0x{:x})",
+                "vCPU {} with phys_cpu_id 0x{:x} mapped to CPU index {} (mask: 0x{:x}), guest CPU ID 0x{:x}",
                 vm_cfg.id(),
                 phys_cpu_id,
                 cpu_index,
-                cpu_mask
+                cpu_mask,
+                guest_cpu_id
             );
         } else {
             error!(
@@ -452,12 +425,12 @@ pub fn set_phys_cpu_sets(vm_cfg: &mut AxVMConfig, fdt: &Fdt, crate_config: &AxVM
         }
     }
 
-    // Update phys_cpu_sets in VM configuration (if VM configuration supports setting)
     info!("Calculated phys_cpu_sets: {new_phys_cpu_sets:?}");
+    info!("Calculated guest phys_cpu_ids: {guest_phys_cpu_ids:?}");
 
-    vm_cfg
-        .phys_cpu_ls_mut()
-        .set_guest_cpu_sets(new_phys_cpu_sets);
+    let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
+    phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
+    phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
 
     debug!(
         "vcpu_mappings: {:?}",
@@ -515,7 +488,7 @@ fn add_device_address_config(
     };
 
     // Add new device configuration
-    let pt_dev = axvm::config::PassThroughDeviceConfig {
+    let pt_dev = PassThroughDeviceConfig {
         name: device_name,
         base_gpa: base_address,
         base_hpa: base_address,
@@ -550,7 +523,7 @@ fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRa
     };
 
     // Add new device configuration
-    let pt_dev = axvm::config::PassThroughDeviceConfig {
+    let pt_dev = PassThroughDeviceConfig {
         name: device_name,
         base_gpa: base_address,
         base_hpa: base_address,

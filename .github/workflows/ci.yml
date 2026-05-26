@@ -334,18 +334,7 @@ jobs:
           - name: Test axvisor loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: |
-              set -eux
-              cargo xtask arceos build --arch loongarch64 -p ax-helloworld --smp 1
-              vmconfig=tmp/ci-arceos-loongarch64-qemu-smp1.toml
-              cp os/axvisor/configs/vms/arceos-loongarch64-qemu-smp1.toml "${vmconfig}"
-              sed -i 's|^image_location = "fs"|image_location = "memory"|' "${vmconfig}"
-              sed -i 's|^kernel_path = .*|kernel_path = "'"${GITHUB_WORKSPACE}"'/target/loongarch64-unknown-none-softfloat/release/ax-helloworld.bin"|' "${vmconfig}"
-              cargo xtask axvisor qemu \
-                --arch loongarch64 \
-                --config os/axvisor/configs/board/qemu-loongarch64.toml \
-                --vmconfigs "${vmconfig}" \
-                --qemu-config os/axvisor/configs/qemu/qemu-loongarch64.toml
+            command: cargo xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
             limit_to_owner: ""
@@ -494,6 +483,22 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted board roc-rk3568-pc-linux
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board --board roc-rk3568-pc-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted board phytiumpi-linux
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board --board phytiumpi-linux
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

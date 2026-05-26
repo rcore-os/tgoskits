@@ -1,9 +1,10 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-    "fs",
-    "rockchip-sdhci",
+  "rockchip-sdhci",
+  "rockchip-soc",
+  "fs",
 ]
 log = "Info"
 plat_dyn = true
 target = "aarch64-unknown-none-softfloat"
-vm_configs = []
+vm_configs = ["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"]
