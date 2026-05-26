@@ -31,7 +31,17 @@ use crate::virtio::VirtIoHalImpl;
 
 #[cfg(feature = "pci-fdt")]
 mod fdt;
-#[cfg(all(feature = "pci-fdt", target_os = "none"))]
+#[cfg(all(
+    feature = "pci-fdt",
+    target_os = "none",
+    any(
+        feature = "intel-net",
+        feature = "ixgbe",
+        feature = "realtek-rtl8125",
+        feature = "virtio-net",
+        feature = "xhci-pci",
+    )
+))]
 pub(crate) use fdt::fdt_irq_for_endpoint;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;

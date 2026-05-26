@@ -157,7 +157,7 @@ impl Build {
     fn prepare_riscv64(&mut self) {
         let ld_src = "src/arch/riscv64/link.ld";
 
-        if self.uspace {
+        if self.uspace || self.hv {
             self.kernel_vaddr = 0xffff_ffff_8000_0000;
         } else {
             self.kernel_vaddr = 0x8020_0000;

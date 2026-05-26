@@ -21,7 +21,7 @@ use crate::{
     mem::{PageTableInfo, mmu},
     power::CpuOnError,
 };
-#[cfg(uspace)]
+#[cfg(any(uspace, hv))]
 use crate::{mem::__kimage_va_to_pa, smp::percpu_va_range};
 
 const KERNEL_LOAD_ADDRESS: usize = 0x8020_0000;
@@ -226,7 +226,7 @@ impl ArchTrait for Arch {
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
         let vaddr = vaddr as usize;
-        #[cfg(uspace)]
+        #[cfg(any(uspace, hv))]
         {
             if mmu::is_mmu_enabled() {
                 if percpu_va_range().contains(&vaddr) {
