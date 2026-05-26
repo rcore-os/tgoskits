@@ -318,7 +318,7 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
 }
 
 pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> AxResult<isize> {
-    debug!("sys_sync_file_range <= fd: {fd}");
+    debug!("sys_sync_file_range <= fd: {fd}, flags: {flags:#x}");
     const SYNC_FILE_RANGE_WAIT_BEFORE: u32 = 1;
     const SYNC_FILE_RANGE_WRITE: u32 = 2;
     const SYNC_FILE_RANGE_WAIT_AFTER: u32 = 4;
@@ -336,10 +336,11 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> A
     // stronger whole-file fdatasync-style flush (matches the advisory
     // nature documented in the man page). Invalid fds still surface the
     // underlying error (EBADF). Directory fds are accepted to match fsync.
-    match File::from_fd(fd) {
-        Ok(_) | Err(AxError::IsADirectory) => Ok(0),
-        Err(e) => Err(e),
+    let any = get_file_like(fd)?;
+    if any.downcast_ref::<File>().is_none() && any.downcast_ref::<Directory>().is_none() {
+        return Err(AxError::from(LinuxError::ESPIPE));
     }
+    Ok(0)
 }
 
 pub fn sys_fadvise64(
