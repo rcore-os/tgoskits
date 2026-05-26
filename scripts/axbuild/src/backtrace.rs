@@ -282,6 +282,38 @@ fn captured_blocks_to_text(blocks: &[Vec<String>]) -> String {
     text
 }
 
+pub(crate) fn symbolize_captured_blocks_to_string(
+    elf_path: &Path,
+    case_name: &str,
+    blocks: &[Vec<String>],
+) -> anyhow::Result<Option<String>> {
+    symbolize_text_to_string(elf_path, case_name, &captured_blocks_to_text(blocks))
+}
+
+pub(crate) fn symbolize_text_to_string(
+    elf_path: &Path,
+    case_name: &str,
+    text: &str,
+) -> anyhow::Result<Option<String>> {
+    if !text.contains("BACKTRACE_BEGIN") {
+        return Ok(None);
+    }
+
+    let blocks = parse_blocks(text)?;
+    if blocks.is_empty() {
+        return Ok(None);
+    }
+
+    let loader = addr2line::Loader::new(elf_path).map_err(|err| {
+        anyhow::anyhow!("failed to load symbols from {}: {err}", elf_path.display())
+    })?;
+    let mut out = Vec::new();
+    writeln!(&mut out, "{HOST_SYMBOLIZE_HEADER}")?;
+    let kind_filter = infer_kind_filter(case_name, &blocks);
+    write_symbolized_blocks(&mut out, &loader, &blocks, kind_filter.as_deref(), true, 0)?;
+    Ok(Some(String::from_utf8(out)?))
+}
+
 /// Write in-memory raw backtrace blocks to `log_path` (creates parent dirs).
 pub(crate) fn write_captured_blocks_to_log(
     log_path: &Path,
