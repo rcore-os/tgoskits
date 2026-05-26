@@ -397,3 +397,6 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
+
+[patch.crates-io]
+ostool = { path = "scripts/ostool-patched" }
