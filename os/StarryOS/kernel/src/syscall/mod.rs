@@ -547,6 +547,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::fork => sys_fork(uctx),
         #[cfg(target_arch = "x86_64")]
         Sysno::vfork => sys_vfork(uctx),
+        Sysno::unshare => sys_unshare(uctx.arg0() as _),
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -629,6 +630,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::setgroups => sys_setgroups(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setfsuid => sys_setfsuid(uctx.arg0() as _),
         Sysno::setfsgid => sys_setfsgid(uctx.arg0() as _),
+        Sysno::sethostname => sys_sethostname(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setdomainname => sys_setdomainname(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::uname => sys_uname(uctx.arg0() as _),
         Sysno::sysinfo => sys_sysinfo(uctx.arg0() as _),
         Sysno::syslog => sys_syslog(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
