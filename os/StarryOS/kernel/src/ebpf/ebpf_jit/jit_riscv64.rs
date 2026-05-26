@@ -794,7 +794,12 @@ impl JitBackend for Riscv64Backend {
         }
         let off = insn.off as i32;
         let base = bpf_to_rv(insn.dst_reg());
-        emit_add_offset(buf, RV_T1, base, off);
+        let adjusted_off = if base == RV_S5 {
+            off - CALLEE_SAVED_SIZE as i32
+        } else {
+            off
+        };
+        emit_add_offset(buf, RV_T1, base, adjusted_off);
         let val = insn.imm as u64;
         match insn.size() {
             BPF_B => {
@@ -824,7 +829,12 @@ impl JitBackend for Riscv64Backend {
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
         let base = bpf_to_rv(insn.dst_reg());
-        emit_add_offset(buf, RV_T1, base, off);
+        let adjusted_off = if base == RV_S5 {
+            off - CALLEE_SAVED_SIZE as i32
+        } else {
+            off
+        };
+        emit_add_offset(buf, RV_T1, base, adjusted_off);
         match insn.size() {
             BPF_B => emit_sb(buf, src, RV_T1, 0),
             BPF_H => emit_sh(buf, src, RV_T1, 0),
@@ -841,7 +851,12 @@ impl JitBackend for Riscv64Backend {
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
         let dst = bpf_to_rv(insn.dst_reg());
-        emit_add_offset(buf, RV_T1, src, off);
+        let adjusted_off = if src == RV_S5 {
+            off - CALLEE_SAVED_SIZE as i32
+        } else {
+            off
+        };
+        emit_add_offset(buf, RV_T1, src, adjusted_off);
         match insn.size() {
             BPF_B => {
                 emit_lbu(buf, dst, RV_T1, 0);
