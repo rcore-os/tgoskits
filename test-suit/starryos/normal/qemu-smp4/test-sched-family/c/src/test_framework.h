@@ -2,6 +2,30 @@
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+
+#endif
+#if defined(__x86_64__)
+    #define SYS_SCHED_GETPARAM      143
+    #define SYS_SCHED_GETSCHEDULER  145
+    #define SYS_SCHED_SETSCHEDULER  144
+
+#elif defined(__riscv)
+    #define SYS_SCHED_GETPARAM      121
+    #define SYS_SCHED_GETSCHEDULER  120
+    #define SYS_SCHED_SETSCHEDULER  119
+
+#elif defined(__aarch64__)
+    #define SYS_SCHED_GETPARAM      121
+    #define SYS_SCHED_GETSCHEDULER  120
+    #define SYS_SCHED_SETSCHEDULER  119
+
+#elif defined(__loongarch64)
+    #define SYS_SCHED_GETPARAM      121
+    #define SYS_SCHED_GETSCHEDULER  120
+    #define SYS_SCHED_SETSCHEDULER  119
+
+#else
+    #error "unsupported architecture for sched syscalls"
 #endif
 
 #include <stdio.h>

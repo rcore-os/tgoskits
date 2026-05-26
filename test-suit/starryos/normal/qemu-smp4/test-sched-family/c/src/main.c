@@ -150,27 +150,27 @@ int main(void)
         sp.sched_priority = 0;
 
         // 负 pid -> EINVAL
-        CHECK_ERR(syscall(144, -5, SCHED_OTHER, &sp), EINVAL, "sched_setscheduler with negative pid returns EINVAL");
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, -5, SCHED_OTHER, &sp), EINVAL, "sched_setscheduler with negative pid returns EINVAL");
 
-        CHECK_ERR(syscall(145, -5), EINVAL, "sched_getscheduler with negative pid returns EINVAL");
+        CHECK_ERR(syscall(SYS_SCHED_GETSCHEDULER, -5), EINVAL, "sched_getscheduler with negative pid returns EINVAL");
 
         // NULL param -> EINVAL
-        CHECK_ERR(syscall(144, 0, SCHED_OTHER, NULL), EINVAL, "sched_setscheduler with NULL param returns EINVAL");
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_OTHER, NULL), EINVAL, "sched_setscheduler with NULL param returns EINVAL");
 
         // invalid policy
-        CHECK_ERR(syscall(144, 0, 0xdeadbeef, &sp), EINVAL, "sched_setscheduler with invalid policy returns EINVAL");
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, 0xdeadbeef, &sp), EINVAL, "sched_setscheduler with invalid policy returns EINVAL");
 
         // SCHED_OTHER with non-zero priority
         sp.sched_priority = 1;
-        CHECK_ERR(syscall(144, 0, SCHED_OTHER, &sp), EINVAL, "sched_setscheduler SCHED_OTHER with nonzero priority returns EINVAL");
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_OTHER, &sp), EINVAL, "sched_setscheduler SCHED_OTHER with nonzero priority returns EINVAL");
         sp.sched_priority = 0;
 
         // sched_getscheduler(0)
-        CHECK(syscall(145, 0) >= 0, "sched_getscheduler(0) returns non-negative policy");
+        CHECK(syscall(SYS_SCHED_GETSCHEDULER, 0) >= 0, "sched_getscheduler(0) returns non-negative policy");
 
         // fake pid -> ESRCH
-        CHECK_ERR(syscall(145, 999999), ESRCH, "sched_getscheduler for non-existent pid returns ESRCH");
-        CHECK_ERR(syscall(144, 999999, SCHED_OTHER, &sp), ESRCH, "sched_setscheduler for non-existent pid returns ESRCH");
+        CHECK_ERR(syscall(SYS_SCHED_GETSCHEDULER, 999999), ESRCH, "sched_getscheduler for non-existent pid returns ESRCH");
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 999999, SCHED_OTHER, &sp), ESRCH, "sched_setscheduler for non-existent pid returns ESRCH");
     }
 
     {
@@ -178,9 +178,9 @@ int main(void)
         memset(&gp, 0, sizeof(gp));
 
         int pol, prio;
-        CHECK_RET(syscall(143, 0, &gp), 0, "sched_getparam for current pid returns 0");
+        CHECK_RET(syscall(SYS_SCHED_GETPARAM, 0, &gp), 0, "sched_getparam for current pid returns 0");
 
-        pol = syscall(145, 0);
+        pol = syscall(SYS_SCHED_GETSCHEDULER, 0);
         prio = gp.sched_priority;
 
         if (pol == SCHED_FIFO || pol == SCHED_RR) {
@@ -190,7 +190,7 @@ int main(void)
         }
 
         // fake pid
-        CHECK_ERR(syscall(143, 999999, &gp), ESRCH, "sched_getparam for non-existent pid returns ESRCH");
+        CHECK_ERR(syscall(SYS_SCHED_GETPARAM, 999999, &gp), ESRCH, "sched_getparam for non-existent pid returns ESRCH");
 
         // 3. EPERM / 权限测试（fork-based）
         pid_t target = fork();
@@ -205,11 +205,11 @@ int main(void)
         uid_t target_euid = my_euid;
         if (my_euid == target_ruid || my_euid == target_euid || has_cap_sys_nice()) {
             // 有权限：必须成功
-            CHECK_RET(syscall(143, target, &gp2), 0,
+            CHECK_RET(syscall(SYS_SCHED_GETPARAM, target, &gp2), 0,
                 "sched_getparam forked child allowed returns 0");
         } else {
             // 无权限：必须 EPERM
-            CHECK_ERR(syscall(143, target, &gp2), EPERM,
+            CHECK_ERR(syscall(SYS_SCHED_GETPARAM, target, &gp2), EPERM,
                 "sched_getparam forked child without privilege returns EPERM");
         }
         kill(target, SIGKILL);
