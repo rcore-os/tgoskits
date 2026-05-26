@@ -526,6 +526,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-wait-queue-remote-wake"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-yield"
 version = "0.3.1"
 dependencies = [

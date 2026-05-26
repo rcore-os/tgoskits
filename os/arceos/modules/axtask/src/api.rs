@@ -12,7 +12,7 @@ use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
-pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
+pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
