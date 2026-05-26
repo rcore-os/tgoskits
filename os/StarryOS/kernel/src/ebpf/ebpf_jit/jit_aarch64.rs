@@ -311,14 +311,14 @@ fn emit_ret(buf: &mut JitBuffer) {
 pub(crate) struct Aarch64Backend;
 
 const BPF_STACK_SIZE: usize = 512;
-const FRAME_SIZE: usize = BPF_STACK_SIZE + 8 * 5;
+const FRAME_SIZE: usize = BPF_STACK_SIZE + 8 * 6;
 
 impl JitBackend for Aarch64Backend {
     fn emit_prologue(buf: &mut JitBuffer) -> usize {
         emit_subi(buf, AA_SP, AA_SP, FRAME_SIZE as i32);
         emit_stp(buf, AA_X29, AA_X7, AA_SP, BPF_STACK_SIZE as i32);
         emit_stp(buf, AA_X9, AA_X15, AA_SP, (BPF_STACK_SIZE + 16) as i32);
-        emit_str(buf, AA_X16, AA_SP, (BPF_STACK_SIZE + 32) as i32);
+        emit_stp(buf, AA_X16, AA_LR, AA_SP, (BPF_STACK_SIZE + 32) as i32);
         emit_addi(buf, AA_X29, AA_SP, FRAME_SIZE as i32);
         emit_mov(buf, AA_X1, AA_X0);
         buf.offset()
@@ -327,7 +327,7 @@ impl JitBackend for Aarch64Backend {
     fn emit_epilogue(buf: &mut JitBuffer) {
         emit_ldp(buf, AA_X29, AA_X7, AA_SP, BPF_STACK_SIZE as i32);
         emit_ldp(buf, AA_X9, AA_X15, AA_SP, (BPF_STACK_SIZE + 16) as i32);
-        emit_ldr(buf, AA_X16, AA_SP, (BPF_STACK_SIZE + 32) as i32);
+        emit_ldp(buf, AA_X16, AA_LR, AA_SP, (BPF_STACK_SIZE + 32) as i32);
         emit_addi(buf, AA_SP, AA_SP, FRAME_SIZE as i32);
         emit_ret(buf);
     }
@@ -335,6 +335,45 @@ impl JitBackend for Aarch64Backend {
     fn emit_alu(buf: &mut JitBuffer, insn: &BpfInsn, is_64: bool) {
         let dst = bpf_to_aa(insn.dst_reg());
         let use_imm = (insn.code & BPF_X) == 0;
+        let alu_op = insn.alu_op();
+
+        if alu_op == BPF_MOV && use_imm {
+            if is_64 {
+                emit_load_imm64(buf, dst, insn.imm as u64);
+            } else {
+                emit_load_imm32(buf, dst, insn.imm);
+            }
+            return;
+        }
+
+        if use_imm && matches!(alu_op, BPF_LSH | BPF_RSH | BPF_ARSH) {
+            let shamt = (insn.imm as u32) & (if is_64 { 63 } else { 31 });
+            match alu_op {
+                BPF_LSH => {
+                    if is_64 {
+                        emit_lsl_imm(buf, dst, dst, shamt);
+                    } else {
+                        emit_lsl_immw(buf, dst, dst, shamt);
+                    }
+                }
+                BPF_RSH => {
+                    if is_64 {
+                        emit_lsr_imm(buf, dst, dst, shamt);
+                    } else {
+                        emit_lsr_immw(buf, dst, dst, shamt);
+                    }
+                }
+                _ => {
+                    if is_64 {
+                        emit_asr_imm(buf, dst, dst, shamt);
+                    } else {
+                        emit_asr_immw(buf, dst, dst, shamt);
+                    }
+                }
+            }
+            return;
+        }
+
         let src = if use_imm {
             AA_X17
         } else {
@@ -349,7 +388,7 @@ impl JitBackend for Aarch64Backend {
             }
         }
 
-        match insn.alu_op() {
+        match alu_op {
             BPF_ADD => {
                 if is_64 {
                     emit_add(buf, dst, dst, src);
@@ -399,28 +438,14 @@ impl JitBackend for Aarch64Backend {
                 }
             }
             BPF_LSH => {
-                if use_imm {
-                    let shamt = (insn.imm as u32) & (if is_64 { 63 } else { 31 });
-                    if is_64 {
-                        emit_lsl_imm(buf, dst, dst, shamt);
-                    } else {
-                        emit_lsl_immw(buf, dst, dst, shamt);
-                    }
-                } else if is_64 {
+                if is_64 {
                     emit_lsl(buf, dst, dst, src);
                 } else {
                     emit_lslw(buf, dst, dst, src);
                 }
             }
             BPF_RSH => {
-                if use_imm {
-                    let shamt = (insn.imm as u32) & (if is_64 { 63 } else { 31 });
-                    if is_64 {
-                        emit_lsr_imm(buf, dst, dst, shamt);
-                    } else {
-                        emit_lsr_immw(buf, dst, dst, shamt);
-                    }
-                } else if is_64 {
+                if is_64 {
                     emit_lsr(buf, dst, dst, src);
                 } else {
                     emit_lsrw(buf, dst, dst, src);
@@ -456,27 +481,14 @@ impl JitBackend for Aarch64Backend {
                 }
             }
             BPF_MOV => {
-                if use_imm {
-                    if is_64 {
-                        emit_load_imm64(buf, dst, insn.imm as u64);
-                    } else {
-                        emit_load_imm32(buf, dst, insn.imm);
-                    }
-                } else if is_64 {
+                if is_64 {
                     emit_mov(buf, dst, src);
                 } else {
                     emit_movw(buf, dst, src);
                 }
             }
             BPF_ARSH => {
-                if use_imm {
-                    let shamt = (insn.imm as u32) & (if is_64 { 63 } else { 31 });
-                    if is_64 {
-                        emit_asr_imm(buf, dst, dst, shamt);
-                    } else {
-                        emit_asr_immw(buf, dst, dst, shamt);
-                    }
-                } else if is_64 {
+                if is_64 {
                     emit_asr(buf, dst, dst, src);
                 } else {
                     emit_asrw(buf, dst, dst, src);
@@ -640,15 +652,34 @@ impl JitBackend for Aarch64Backend {
     fn insn_size(insn: &BpfInsn) -> usize {
         let class = insn.class();
         let use_imm = (insn.code & BPF_X) == 0;
+        let is_64 = class == BPF_ALU64;
 
         match class {
             BPF_ALU | BPF_ALU64 => {
                 let alu_op = insn.alu_op();
-                let imm_size = if use_imm { 16 } else { 4 };
+                let load = if use_imm {
+                    if is_64 { 16 } else { 8 }
+                } else {
+                    0
+                };
                 match alu_op {
-                    BPF_DIV => imm_size + 16,
-                    BPF_MOD => imm_size + 20,
-                    _ => imm_size,
+                    BPF_MOV => {
+                        if use_imm {
+                            if is_64 { 16 } else { 8 }
+                        } else {
+                            4
+                        }
+                    }
+                    BPF_LSH | BPF_RSH | BPF_ARSH => {
+                        if use_imm {
+                            4
+                        } else {
+                            4
+                        }
+                    }
+                    BPF_DIV => load + 16,
+                    BPF_MOD => load + 20,
+                    _ => load + 4,
                 }
             }
             BPF_JMP | BPF_JMP32 => {
