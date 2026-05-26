@@ -529,6 +529,8 @@ dependencies = [
 name = "arceos-wait-queue-remote-wake"
 version = "0.3.1"
 dependencies = [
+ "ax-driver",
+ "ax-hal",
  "ax-std",
 ]
 
