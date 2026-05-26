@@ -43,12 +43,29 @@ pub struct GeneralRegisters {
     pub s8: usize,
 }
 
-/// Floating-point registers of LoongArch64
+/// Floating-point / LSX vector registers of LoongArch64.
+///
+/// The platform enables the LSX 128-bit vector extension at boot (see
+/// `axplat-loongarch64-qemu-virt` `enable_lsx`), so user code (e.g. the JVM)
+/// uses the full 128-bit vector registers `vr0`-`vr31`. The scalar FP registers
+/// `f0`-`f31` alias the low 64 bits of `vr0`-`vr31`. To correctly save/restore
+/// the live FP/vector state across a context switch or a signal delivery we must
+/// preserve all 128 bits of each register, not just the low 64.
+///
+/// `fp` holds the low 64 bits (`vr[63:0]`, i.e. the scalar `fN` view) and
+/// `fp_high` holds the high 64 bits (`vr[127:64]`). Keeping `fp` first and with
+/// its original layout means any consumer that treated `fp[i]` as the scalar
+/// double `fN` still observes the same value; `fp_high` is purely additive.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FpuState {
-    /// Floating-point registers (f0-f31)
+    /// Low 64 bits of the vector registers `vr0`-`vr31` (the scalar `f0`-`f31`).
     pub fp: [u64; 32],
+    /// High 64 bits of the vector registers `vr0`-`vr31` (`vr[127:64]`).
+    ///
+    /// Saved/restored via LSX so an async signal (or preemptive switch)
+    /// interrupting a thread mid-LSX-op does not clobber these on resume.
+    pub fp_high: [u64; 32],
     /// Floating-point Condition Code register
     pub fcc: [u8; 8],
     /// Floating-point Control and Status register
@@ -291,11 +308,14 @@ unsafe extern "C" fn save_fp_registers(fpu: &mut FpuState) {
         include_fp_asm_macros!(),
         "
         SAVE_FP $a0
+        addi.d $t8, $a0, {fp_high_offset}
+        SAVE_FP_HIGH $t8
         addi.d $t8, $a0, {fcc_offset}
         SAVE_FCC $t8
         addi.d $t8, $a0, {fcsr_offset}
         SAVE_FCSR $t8
         ret",
+        fp_high_offset = const offset_of!(FpuState, fp_high),
         fcc_offset = const offset_of!(FpuState, fcc),
         fcsr_offset = const offset_of!(FpuState, fcsr),
     )
@@ -308,11 +328,14 @@ unsafe extern "C" fn restore_fp_registers(fpu: &FpuState) {
         include_fp_asm_macros!(),
         "
         RESTORE_FP $a0
+        addi.d $t8, $a0, {fp_high_offset}
+        RESTORE_FP_HIGH $t8
         addi.d $t8, $a0, {fcc_offset}
         RESTORE_FCC $t8
         addi.d $t8, $a0, {fcsr_offset}
         RESTORE_FCSR $t8
         ret",
+        fp_high_offset = const offset_of!(FpuState, fp_high),
         fcc_offset = const offset_of!(FpuState, fcc),
         fcsr_offset = const offset_of!(FpuState, fcsr),
     )
