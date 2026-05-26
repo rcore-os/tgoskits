@@ -132,6 +132,15 @@ pub struct ShmInner {
     pub ns_id: u64,
 }
 
+/// Parameters passed to [`ShmInner::new`] that identify the creating process
+/// and the namespace the segment belongs to.
+pub struct ShmCreateInfo {
+    pub pid: Pid,
+    pub uid: u32,
+    pub gid: u32,
+    pub ns_id: u64,
+}
+
 impl ShmInner {
     /// Creates a new [`ShmInner`].
     pub fn new(
@@ -139,10 +148,7 @@ impl ShmInner {
         shmid: i32,
         size: usize,
         mapping_flags: MappingFlags,
-        pid: Pid,
-        uid: u32,
-        gid: u32,
-        ns_id: u64,
+        info: ShmCreateInfo,
     ) -> Self {
         ShmInner {
             shmid,
@@ -155,11 +161,11 @@ impl ShmInner {
                 key,
                 size,
                 mapping_flags.bits() as __kernel_mode_t,
-                pid as __kernel_pid_t,
-                uid,
-                gid,
+                info.pid as __kernel_pid_t,
+                info.uid,
+                info.gid,
             ),
-            ns_id,
+            ns_id: info.ns_id,
         }
     }
 
@@ -524,10 +530,12 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         shmid,
         size,
         mapping_flags,
-        cur_pid,
-        cred.euid,
-        cred.egid,
-        ns_id,
+        ShmCreateInfo {
+            pid: cur_pid,
+            uid: cred.euid,
+            gid: cred.egid,
+            ns_id,
+        },
     )));
     shm_manager.insert_key_shmid(key, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);

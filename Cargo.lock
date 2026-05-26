@@ -1790,6 +1790,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axnsproxy"
+version = "0.1.0"
+dependencies = [
+ "ax-config",
+ "ax-errno",
+ "ax-kspin",
+ "linux-raw-sys 0.12.1",
+ "log",
+ "spin",
+]
+
+[[package]]
 name = "axpanic"
 version = "0.1.0"
 
@@ -7875,6 +7887,7 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
+ "axnsproxy",
  "axplat-dyn",
  "axpoll",
  "bitflags 2.11.1",
