@@ -6,7 +6,6 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
-#include <stdio.h>
 #include <signal.h>
 
 
@@ -68,10 +67,8 @@ int main(void)
 
             CPU_ZERO(&mask);
             CPU_SET(0, &mask);
-
-            CHECK_RET(sched_setaffinity(0, sizeof(mask), &mask), 0, "setaffinity current pid to cpu0");
-
             memset(&readback, 0, sizeof(readback));
+            CHECK_RET(sched_setaffinity(0, sizeof(mask), &mask), 0, "setaffinity current pid to cpu0");
             CHECK_RET(sched_getaffinity(0, sizeof(readback), &readback), 0, "getaffinity current pid");
             CHECK(CPU_ISSET(0, &readback), "getaffinity result contains cpu0");
         } 
@@ -144,10 +141,15 @@ int main(void)
         CHECK_RET(sched_yield(), 0, "sched_yield returns 0");
     }
 
+    // 测试 sched_setscheduler() / sched_getscheduler 
     {
         struct sched_param sp;
         memset(&sp, 0, sizeof(sp));
         sp.sched_priority = 0;
+
+        // 正常情况测试
+        CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_OTHER, &sp), 0, "sched_setscheduler with valid parameters returns 0");
+        CHECK_RET(syscall(SYS_SCHED_GETSCHEDULER, 0), SCHED_OTHER, "sched_getscheduler for current pid returns SCHED_OTHER");
 
         // 负 pid -> EINVAL
         CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, -5, SCHED_OTHER, &sp), EINVAL, "sched_setscheduler with negative pid returns EINVAL");
@@ -165,14 +167,54 @@ int main(void)
         CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_OTHER, &sp), EINVAL, "sched_setscheduler SCHED_OTHER with nonzero priority returns EINVAL");
         sp.sched_priority = 0;
 
+        // SCHED_BATCH with non-zero priority
+        sp.sched_priority = 1;
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_BATCH, &sp), EINVAL, "sched_setscheduler SCHED_BATCH with nonzero priority returns EINVAL");
+        sp.sched_priority = 0;
+
+        // SCHED_IDLE with non-zero priority
+        sp.sched_priority = 1;
+        CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_IDLE, &sp), EINVAL, "sched_setscheduler SCHED_IDLE with nonzero priority returns EINVAL");
+        sp.sched_priority = 0;
+
         // sched_getscheduler(0)
         CHECK(syscall(SYS_SCHED_GETSCHEDULER, 0) >= 0, "sched_getscheduler(0) returns non-negative policy");
 
         // fake pid -> ESRCH
         CHECK_ERR(syscall(SYS_SCHED_GETSCHEDULER, 999999), ESRCH, "sched_getscheduler for non-existent pid returns ESRCH");
         CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 999999, SCHED_OTHER, &sp), ESRCH, "sched_setscheduler for non-existent pid returns ESRCH");
+
+        // ==== EPERM: sched_setscheduler permission test (fork-based) ====
+        {
+            pid_t target = fork();
+            if (target == 0) {
+                while (1) pause(); // child stays alive
+            }
+
+            cpu_set_t mask;
+            CPU_ZERO(&mask);
+            CPU_SET(0, &mask);
+
+            uid_t my_euid = geteuid();
+
+            // fork child: uid/euid == parent (no /proc parsing needed)
+            uid_t target_ruid = my_euid;
+            uid_t target_euid = my_euid;
+
+            if (my_euid == target_ruid || my_euid == target_euid || has_cap_sys_nice()) {
+                CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, target, SCHED_OTHER, &sp), 0,
+                    "sched_setscheduler forked child allowed returns 0");
+            } else {
+                CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, target, SCHED_OTHER, &sp), EPERM,
+                    "sched_setscheduler forked child returns EPERM");
+            }
+
+            kill(target, SIGKILL);
+            waitpid(target, NULL, 0);
+        }
     }
 
+    // 测试 sched_getparam() 边界条件和权限
     {
         struct sched_param gp;
         memset(&gp, 0, sizeof(gp));
@@ -189,31 +231,33 @@ int main(void)
             CHECK(prio == 0, "non-RT priority must be 0");
         }
 
-        // fake pid
+        // fake pid -> ESRCH
         CHECK_ERR(syscall(SYS_SCHED_GETPARAM, 999999, &gp), ESRCH, "sched_getparam for non-existent pid returns ESRCH");
 
-        // 3. EPERM / 权限测试（fork-based）
-        pid_t target = fork();
-        if (target == 0) {
-            // 子进程存活
-            while (1) pause();
+        // 3. EPERM / 权限测试（fork-based)
+        {
+            pid_t target = fork();
+            if (target == 0) {
+                // 子进程存活
+                while (1) pause();
+            }
+            struct sched_param gp2;
+            memset(&gp2, 0, sizeof(gp2));
+            uid_t my_euid = geteuid();
+            uid_t target_ruid = my_euid;
+            uid_t target_euid = my_euid;
+            if (my_euid == target_ruid || my_euid == target_euid || has_cap_sys_nice()) {
+                // 有权限：必须成功
+                CHECK_RET(syscall(SYS_SCHED_GETPARAM, target, &gp2), 0,
+                    "sched_getparam forked child allowed returns 0");
+            } else {
+                // 无权限：必须 EPERM
+                CHECK_ERR(syscall(SYS_SCHED_GETPARAM, target, &gp2), EPERM,
+                    "sched_getparam forked child without privilege returns EPERM");
+            }
+            kill(target, SIGKILL);
+            waitpid(target, NULL, 0);
         }
-        struct sched_param gp2;
-        memset(&gp2, 0, sizeof(gp2));
-        uid_t my_euid = geteuid();
-        uid_t target_ruid = my_euid;
-        uid_t target_euid = my_euid;
-        if (my_euid == target_ruid || my_euid == target_euid || has_cap_sys_nice()) {
-            // 有权限：必须成功
-            CHECK_RET(syscall(SYS_SCHED_GETPARAM, target, &gp2), 0,
-                "sched_getparam forked child allowed returns 0");
-        } else {
-            // 无权限：必须 EPERM
-            CHECK_ERR(syscall(SYS_SCHED_GETPARAM, target, &gp2), EPERM,
-                "sched_getparam forked child without privilege returns EPERM");
-        }
-        kill(target, SIGKILL);
-        waitpid(target, NULL, 0);
     }
 
     // ==== getpriority 边界条件测试 ====
