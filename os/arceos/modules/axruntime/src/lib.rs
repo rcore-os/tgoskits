@@ -282,7 +282,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         } else if #[cfg(all(feature = "fs", not(feature = "plat-dyn")))] {
             ax_fs::init_filesystems(
                 devices::take_static_fs_block_devices(),
-                Some(ax_config::BOOTARGS),
+                ax_hal::dtb::get_chosen_bootargs(),
             );
         }
     }
