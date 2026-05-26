@@ -1,0 +1,124 @@
+# Example only: this online flow is opt-in and is not part of test-suit or CI.
+# Prepare tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img with
+# prepare_deepseek_rootfs.sh --api-key ... before running it.
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "2G",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-snapshot",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+export HOME=/root
+export USER=root
+export SHELL=/bin/sh
+export TERM=xterm-256color
+export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+if [ -f "$HOME/.deepseek/starry-online-env" ]; then
+    . "$HOME/.deepseek/starry-online-env"
+fi
+set -e
+
+echo "STARRY_DEEPSEEK_PRIME_TEST_ENV_READY"
+
+command -v deepseek
+command -v deepseek-tui
+command -v gcc
+
+deepseek --version
+
+if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+    echo "STARRY_DEEPSEEK_PRIME_TEST_MISSING_API_KEY"
+    echo "Run prepare_deepseek_rootfs.sh with --api-key first."
+    exit 1
+fi
+
+echo "DEEPSEEK_API_KEY is set" | head -c 30
+echo ""
+
+mkdir -p /tmp/deepseek-prime-test
+cd /tmp/deepseek-prime-test
+
+cat > /tmp/deepseek-prime-prompt.txt <<'PROMPT_EOF'
+Write a C program to /tmp/deepseek-prime-test/a.c using your write_file tool, then compile and run it.
+
+Requirements for a.c:
+1. Define a function is_prime(int n) that checks if n is prime.
+2. Find the smallest prime number strictly greater than 998244352.
+3. Print only the result number (nothing else).
+
+Steps:
+1. Use write_file to create /tmp/deepseek-prime-test/a.c with the program.
+2. Use exec_shell to compile: gcc -O2 -o /tmp/deepseek-prime-test/a /tmp/deepseek-prime-test/a.c
+3. Use exec_shell to run it: /tmp/deepseek-prime-test/a
+
+Do not output the code in your reply — just create, compile, and run.
+PROMPT_EOF
+
+deepseek \
+  --approval-policy never \
+  --sandbox-mode workspace-write \
+  --model deepseek-v4-flash \
+  exec \
+  --auto \
+  "$(cat /tmp/deepseek-prime-prompt.txt)" 2>&1 | tee /tmp/deepseek-exec-output.txt || true
+
+echo "===== CHECKING OUTPUT FILES ====="
+ls -la /tmp/deepseek-prime-test/ 2>/dev/null || echo "No files in test directory"
+
+if [ -f /tmp/deepseek-prime-test/a ]; then
+    echo "===== RUNNING COMPILED BINARY ====="
+    result=$(/tmp/deepseek-prime-test/a 2>&1)
+    echo "Result: $result"
+
+    if [ "$result" = "998244353" ]; then
+        echo "STARRY_DEEPSEEK_PRIME_TEST_DONE"
+        echo "STARRY_DEEPSEEK_PRIME_TEST_PASSED"
+    else
+        echo "STARRY_DEEPSEEK_PRIME_TEST_WRONG_OUTPUT"
+        echo "Expected: 998244353, Got: $result"
+    fi
+elif [ -f /tmp/deepseek-prime-test/a.c ]; then
+    echo "===== COMPILING AND RUNNING A.C ====="
+    cat /tmp/deepseek-prime-test/a.c
+    gcc -O2 -o /tmp/deepseek-prime-test/a /tmp/deepseek-prime-test/a.c && \
+      result=$(/tmp/deepseek-prime-test/a) && \
+      echo "Result: $result"
+    if [ "$result" = "998244353" ]; then
+        echo "STARRY_DEEPSEEK_PRIME_TEST_DONE"
+        echo "STARRY_DEEPSEEK_PRIME_TEST_PASSED"
+    else
+        echo "STARRY_DEEPSEEK_PRIME_TEST_WRONG_OUTPUT"
+        echo "Expected: 998244353, Got: $result"
+    fi
+else
+    echo "STARRY_DEEPSEEK_PRIME_TEST_NO_FILE"
+    echo "deepseek exec output file:"
+    cat /tmp/deepseek-exec-output.txt 2>/dev/null || true
+fi
+'''
+success_regex = ["(?m)^STARRY_DEEPSEEK_PRIME_TEST_PASSED\\s*$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "No such process \\(os error 3\\)",
+    "sys_prctl: unsupported option 23",
+    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_MISSING_API_KEY\\s*$",
+    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_WRONG_OUTPUT\\s*$",
+    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_NO_FILE\\s*$",
+]
+timeout = 2400
