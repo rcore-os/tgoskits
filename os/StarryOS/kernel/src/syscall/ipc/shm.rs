@@ -8,10 +8,15 @@ use ax_runtime::hal::{
 };
 use ax_sync::Mutex;
 use ax_task::current;
+use bytemuck::AnyBitPattern;
 use linux_raw_sys::{ctypes::c_ushort, general::*};
 use starry_process::Pid;
+use starry_vm::VmMutPtr;
 
-use super::{IPC_CREAT, IPC_EXCL, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id};
+use super::{
+    IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm,
+    SHM_INFO, SHM_STAT, has_ipc_permission, next_ipc_id,
+};
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
     task::AsThread,
@@ -83,6 +88,30 @@ impl ShmidDs {
             shm_nattch: 0,
         }
     }
+}
+
+/// System-wide shared memory info returned by IPC_INFO.
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern)]
+struct ShmInfo64 {
+    shmmax: u64,
+    shmmin: u64,
+    shmmni: u64,
+    shmseg: u64,
+    shmall: u64,
+}
+
+/// Shared memory usage info returned by SHM_INFO.
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern)]
+struct ShmInfo {
+    used_ids: i32,
+    _pad: i32,
+    shm_tot: u64,
+    shm_rss: u64,
+    shm_swp: u64,
+    swap_attempts: u64,
+    swap_successes: u64,
 }
 
 /// This struct is used to maintain the shmem in kernel.
@@ -583,6 +612,66 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
 
 pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize> {
     let cmd = cmd as i32;
+
+    // IPC_INFO: system-wide shared memory limits (no segment lookup).
+    if cmd == IPC_INFO {
+        let shm_manager = SHM_MANAGER.lock();
+        let info = ShmInfo64 {
+            shmmax: usize::MAX as u64,
+            shmmin: 1,
+            shmmni: 4096,
+            shmseg: 4096,
+            shmall: usize::MAX as u64 / PAGE_SIZE_4K as u64,
+        };
+        let ptr = buf.as_ptr() as *mut ShmInfo64;
+        ptr.vm_write(info)?;
+        let max_idx = shm_manager.shmid_inner.len().saturating_sub(1) as isize;
+        return Ok(max_idx);
+    }
+
+    // SHM_INFO: shared memory usage statistics.
+    if cmd == SHM_INFO {
+        let shm_manager = SHM_MANAGER.lock();
+        let used_ids = shm_manager.shmid_inner.len() as i32;
+        let mut shm_tot: u64 = 0;
+        for inner in shm_manager.shmid_inner.values() {
+            shm_tot += inner.lock().page_num as u64;
+        }
+        let info = ShmInfo {
+            used_ids,
+            _pad: 0,
+            shm_tot,
+            shm_rss: shm_tot,
+            shm_swp: 0,
+            swap_attempts: 0,
+            swap_successes: 0,
+        };
+        let ptr = buf.as_ptr() as *mut ShmInfo;
+        ptr.vm_write(info)?;
+        let max_idx = shm_manager.shmid_inner.len().saturating_sub(1) as isize;
+        return Ok(max_idx);
+    }
+
+    // SHM_STAT: return the shmid_ds for the shmid at the given index.
+    if cmd == SHM_STAT {
+        let cred = current().as_thread().cred();
+        let shm_manager = SHM_MANAGER.lock();
+        let result = shm_manager
+            .shmid_inner
+            .iter()
+            .nth(shmid as usize)
+            .ok_or(AxError::InvalidInput)
+            .and_then(|(actual_shmid, inner)| {
+                let guard = inner.lock();
+                if !has_ipc_permission(&guard.shmid_ds.shm_perm, cred.euid, cred.egid, false) {
+                    return Err(AxError::PermissionDenied);
+                }
+                let ptr = buf.as_ptr() as *mut ShmidDs;
+                ptr.vm_write(guard.shmid_ds)?;
+                Ok(*actual_shmid as isize)
+            });
+        return result;
+    }
 
     if cmd == IPC_RMID {
         // If no processes are attached, destroy the segment immediately.
