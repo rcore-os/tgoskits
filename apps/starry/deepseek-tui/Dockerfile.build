@@ -1,0 +1,37 @@
+FROM alpine:latest AS builder
+
+RUN apk add --no-cache \
+    dbus-dev \
+    pkgconfig \
+    gcc \
+    musl-dev \
+    git \
+    rustup
+
+ENV RUSTUP_HOME=/root/.rustup \
+    CARGO_HOME=/root/.cargo
+
+RUN rustup-init -y --default-toolchain nightly-2026-04-27
+ENV PATH=/root/.cargo/bin:$PATH
+
+RUN rustup target add x86_64-unknown-linux-musl
+
+ARG TAG=v0.8.18
+RUN git clone --depth 1 --branch "$TAG" https://github.com/Hmbown/DeepSeek-TUI.git /src
+
+WORKDIR /src
+
+# Dynamic linking so we can link against Alpine's libdbus-1.so
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl --bin deepseek
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl --bin deepseek-tui
+
+RUN strip /src/target/x86_64-unknown-linux-musl/release/deepseek \
+    /src/target/x86_64-unknown-linux-musl/release/deepseek-tui
+
+FROM alpine:latest AS export
+RUN apk add --no-cache tar
+COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/deepseek /
+COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/deepseek-tui /
+COPY --from=builder /usr/lib/libdbus-1.so.3* /usr/lib/
+COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/

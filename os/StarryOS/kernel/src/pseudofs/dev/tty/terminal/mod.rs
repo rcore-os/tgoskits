@@ -30,8 +30,10 @@ impl Default for Terminal {
         Self {
             job_control: job::JobControl::new(),
             window_size: SpinNoIrq::new(WindowSize {
-                ws_row: 28,
-                ws_col: 110,
+                // 24x80 is the standard VT100 fallback that applications
+                // expect when TIOCGWINSZ reports a "default" terminal.
+                ws_row: 24,
+                ws_col: 80,
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             }),

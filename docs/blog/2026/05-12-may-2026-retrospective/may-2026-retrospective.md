@@ -212,7 +212,7 @@ SD/MMC 方向开始抽象可复用 host backend，相关工作已经有部分提
 
 ### 运行时覆盖率与 SG2002 适配
 
-运行时覆盖率方面，Linux 兼容 KCOV 接口仍在 PR 中尝试。SG2002 方向目前主要体现为 PR #554 中的开发板支持草案，尚未进入当前 dev/doc 分支。
+运行时覆盖率方面，Linux 兼容 KCOV 接口已有尝试，但由于改动范围和多核语义成本较高，当前暂不纳入 StarryOS。SG2002 方向目前主要体现为 PR #554 中的开发板支持草案，尚未进入当前 dev/doc 分支。
 
 - [PR #425](https://github.com/rcore-os/tgoskits/pull/425) — StarryOS Linux 兼容 KCOV 尝试（flying-mice987，未完成）
 - [PR #554](https://github.com/rcore-os/tgoskits/pull/554) — SG2002 平台支持（周睿，未完成）

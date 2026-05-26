@@ -62,7 +62,6 @@ members = [
     "components/scope-local",
     "components/someboot",
     "components/somehal-macros",
-    "components/spin",
     "components/starry-process",
     "components/starry-signal",
     "components/starry-vm",
@@ -386,7 +385,7 @@ dma-api = { version = "0.7.3", path = "components/dma-api" }
 mmio-api = { version = "0.2.2", path = "components/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = { version = "0.10", path = "components/spin" }
+spin = "0.10"
 ostool = { version = "0.19" }
 uefi = "0.36"
 fdt-edit = "0.2.3"
@@ -398,6 +397,3 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
-
-[patch.crates-io]
-spin = { path = "components/spin" }
