@@ -14,13 +14,12 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_lazyinit::LazyInit;
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_lazyinit::LazyInit;
-use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use ksym::KallsymsMapped;
