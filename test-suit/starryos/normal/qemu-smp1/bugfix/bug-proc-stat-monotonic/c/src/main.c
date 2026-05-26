@@ -1,5 +1,5 @@
 /*
- * test-proc-stat-monotonic: /proc/stat CPU counters must not go backwards
+ * bug-proc-stat-monotonic: /proc/stat CPU counters must not go backwards
  * after a short-lived CPU-bound child exits.
  *
  * Old behavior: /proc/stat recomputed aggregate user/system time from the
@@ -72,7 +72,7 @@ static void burn_cpu_for_ms(uint64_t duration_ms)
 
 int main(void)
 {
-    printf("=== test-proc-stat-monotonic ===\n");
+    printf("=== bug-proc-stat-monotonic ===\n");
 
     uint64_t before = 0;
     if (read_proc_stat_total(&before) != 0) {
