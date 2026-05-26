@@ -1,6 +1,8 @@
 env = {}
 features = [
   "ax-hal/plat-dyn",
+  "ax-feat/rtc",
+  "ax-driver/rtc",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "starry-kernel/input",

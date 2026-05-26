@@ -303,13 +303,19 @@ struct BusDir {
 
 impl SimpleDirOps for BusDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["platform"].into_iter().map(Cow::Borrowed))
+        #[cfg(feature = "plat-dyn")]
+        let names: &'static [&'static str] = &["platform", "usb"];
+        #[cfg(not(feature = "plat-dyn"))]
+        let names: &'static [&'static str] = &["platform"];
+        Box::new(names.iter().copied().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir)),
+            #[cfg(feature = "plat-dyn")]
+            "usb" => SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
             _ => return Err(VfsError::NotFound),
         }))
     }

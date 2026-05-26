@@ -42,6 +42,21 @@ impl DriverGeneric for PlatformNetDevice {
 }
 
 pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
+    #[cfg(all(feature = "pci-fdt", target_os = "none"))]
+    {
+        let interrupt_pin = endpoint.interrupt_pin();
+        if interrupt_pin != 0 {
+            match crate::pci::fdt_irq_for_endpoint(endpoint.address(), interrupt_pin) {
+                Ok(Some(irq)) => return Some(irq),
+                Ok(None) => {}
+                Err(err) => log::warn!(
+                    "failed to resolve FDT IRQ for net endpoint {}: {err}",
+                    endpoint.address()
+                ),
+            }
+        }
+    }
+
     #[cfg(feature = "pci")]
     if let Some(irq) =
         crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
