@@ -1,14 +1,14 @@
 extern crate alloc;
 
 use alloc::format;
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(target_os = "none")]
 use alloc::vec::Vec;
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(target_os = "none")]
 use fdt_edit::Fdt;
 use fdt_edit::{NodeType, PciRange, PciSpace};
 use log::{debug, trace, warn};
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(target_os = "none")]
 use rdrive::probe::pci::PciAddress;
 use rdrive::{
     PlatformDevice,
@@ -131,7 +131,7 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     super::register_legacy_irq_route(0, logical_bus_end, irq);
 }
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(target_os = "none")]
 pub fn fdt_irq_for_endpoint(
     address: PciAddress,
     interrupt_pin: u8,
@@ -144,7 +144,7 @@ pub fn fdt_irq_for_endpoint(
     result.map(Some)
 }
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(target_os = "none")]
 fn resolve_pci_irq_from_fdt(
     fdt: &Fdt,
     address: PciAddress,
@@ -214,7 +214,7 @@ fn resolve_pci_irq_from_fdt(
     })
 }
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(target_os = "none")]
 fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
     match specifier {
         [irq] => Some(*irq as usize),

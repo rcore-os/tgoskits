@@ -69,8 +69,8 @@ pub(crate) fn new_usbfs() -> LinuxResult<Filesystem> {
     Ok(create_filesystem(manager))
 }
 
-pub(crate) fn new_sysfs() -> Filesystem {
-    sysfs::new_sysfs()
+pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
+    sysfs::new_bus_usb_sysfs()
 }
 
 pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
