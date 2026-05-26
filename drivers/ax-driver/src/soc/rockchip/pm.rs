@@ -18,7 +18,7 @@ use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
 
 use crate::mmio::iomap;
 
-module_driver!(
+crate::model_register!(
     name: "Rockchip Pm",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,

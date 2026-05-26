@@ -2,7 +2,7 @@ use log::info;
 use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use some_serial::{BSerial, ns16550, pl011};
 
-module_driver!(
+crate::model_register!(
     name: "common serial",
     level: ProbeLevel::PreKernel,
     priority: ProbePriority::DEFAULT,

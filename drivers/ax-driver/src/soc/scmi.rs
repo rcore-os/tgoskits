@@ -5,11 +5,8 @@ use arm_scmi_rs::{Scmi, Shmem, Smc};
 use ax_kspin::SpinNoIrq as Mutex;
 use fdt_edit::Phandle;
 use log::{info, warn};
-use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
-};
 
-use crate::mmio::iomap;
+use crate::{DriverGeneric, PlatformDevice, mmio::iomap, probe::OnProbeError, register::FdtInfo};
 
 const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
@@ -17,7 +14,7 @@ const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
 static SCMI: Mutex<Option<Scmi<Smc>>> = Mutex::new(None);
 static SCMI_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-module_driver!(
+crate::model_register!(
     name: "ARM SCMI SMC",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
