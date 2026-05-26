@@ -14,8 +14,8 @@ use starry_process::Pid;
 use starry_vm::VmMutPtr;
 
 use super::{
-    IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm,
-    SHM_INFO, SHM_STAT, has_ipc_permission, next_ipc_id,
+    IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, SHM_INFO,
+    SHM_STAT, has_ipc_permission, next_ipc_id,
 };
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
