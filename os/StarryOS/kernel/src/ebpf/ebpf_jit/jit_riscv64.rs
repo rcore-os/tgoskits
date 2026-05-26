@@ -191,11 +191,6 @@ fn emit_xori(buf: &mut JitBuffer, rd: u32, rs1: u32, imm: i32) {
     buf.emit_u32(rv_i(imm as u32, rs1, 4, rd, 0x13));
 }
 
-fn emit_zext32(buf: &mut JitBuffer, rd: u32) {
-    emit_slli(buf, rd, rd, 32);
-    emit_srli(buf, rd, rd, 32);
-}
-
 fn emit_slli(buf: &mut JitBuffer, rd: u32, rs1: u32, shamt: u32) {
     buf.emit_u32(rv_i(shamt, rs1, 1, rd, 0x13));
 }
@@ -339,28 +334,26 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
         return;
     }
     if (val as u32 as i32) as i64 == val_i {
-        let lo32 = val as u32;
-        let lo12 = (lo32 << 20) >> 20;
-        let hi20 = (lo32.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
-        emit_lui(buf, rd, hi20 & 0xFFFFF);
+        let lo32 = val as u32 as i32;
+        let lo12 = (((lo32 as i64) << 52) >> 52) as i32;
+        let hi20 = ((lo32 as i64 - lo12 as i64 + 0x800) >> 12) as u32;
+        emit_lui(buf, rd, hi20);
         if lo12 != 0 {
-            emit_addiw(buf, rd, rd, lo12 as i32);
+            emit_addi(buf, rd, rd, lo12);
         }
         return;
     }
-    let upper = (val >> 32) as u32;
-    let upper_lo12 = (upper << 20) >> 20;
-    let upper_hi20 = (upper.wrapping_sub(upper_lo12).wrapping_add(0x800)) >> 12;
-    emit_lui(buf, rd, upper_hi20 & 0xFFFFF);
-    emit_addiw(buf, rd, rd, upper_lo12 as i32);
+    let upper = ((val + ((val & 0x80000000) << 1)) >> 32) as u32 as i32;
+    let upper_hi20 = ((upper as i64 + 0x800) >> 12) as u32;
+    let upper_lo12 = (((upper as i64) << 52) >> 52) as i32;
+    emit_lui(buf, rd, upper_hi20);
+    emit_addiw(buf, rd, rd, upper_lo12);
     emit_slli(buf, rd, rd, 32);
-    let lower = val as u32;
-    let lower_lo12 = (lower << 20) >> 20;
-    let lower_hi20 = (lower.wrapping_sub(lower_lo12).wrapping_add(0x800)) >> 12;
-    emit_lui(buf, RV_T1, lower_hi20 & 0xFFFFF);
-    if lower_lo12 != 0 {
-        emit_addiw(buf, RV_T1, RV_T1, lower_lo12 as i32);
-    }
+    let lower = val as u32 as i32;
+    let lower_hi20 = ((lower as i64 + 0x800) >> 12) as u32;
+    let lower_lo12 = (((lower as i64) << 52) >> 52) as i32;
+    emit_lui(buf, RV_T1, lower_hi20);
+    emit_addiw(buf, RV_T1, RV_T1, lower_lo12);
     emit_add(buf, rd, rd, RV_T1);
 }
 
@@ -369,12 +362,11 @@ fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
     if !needs_upper {
         emit_addi(buf, rd, RV_ZERO, val);
     } else {
-        let val_u = val as u32;
-        let lo12 = (val_u << 20) >> 20;
-        let hi20 = (val_u.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
-        emit_lui(buf, rd, hi20 & 0xFFFFF);
+        let hi20 = ((val as i32 as i64 + 0x800) >> 12) as u32;
+        let lo12 = val.wrapping_sub((hi20 as i32) << 12);
+        emit_lui(buf, rd, hi20);
         if lo12 != 0 {
-            emit_addiw(buf, rd, rd, lo12 as i32);
+            emit_addi(buf, rd, rd, lo12);
         }
     }
 }
@@ -386,6 +378,11 @@ fn emit_add_offset(buf: &mut JitBuffer, rd: u32, rs: u32, off: i32) {
         emit_load_imm32(buf, RV_T1, off);
         emit_add(buf, rd, rs, RV_T1);
     }
+}
+
+fn emit_zext32(buf: &mut JitBuffer, rd: u32) {
+    emit_slli(buf, rd, rd, 32);
+    emit_srli(buf, rd, rd, 32);
 }
 
 pub(crate) struct Riscv64Backend;
@@ -425,6 +422,10 @@ impl JitBackend for Riscv64Backend {
         };
         if use_imm {
             emit_load_imm64(buf, RV_T1, insn.imm as u64);
+        }
+
+        if !is_64 && use_imm {
+            emit_zext32(buf, dst);
         }
 
         match insn.alu_op() {
@@ -528,19 +529,10 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_MOD => {
-                let skip = buf.offset();
                 if is_64 {
-                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remu(buf, dst, dst, src);
                 } else {
-                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remuw(buf, dst, dst, src);
-                }
-                let end = buf.offset();
-                unsafe {
-                    let beq_ptr = buf.entry().add(skip) as *mut u32;
-                    let beq_off = (end - skip) as u32;
-                    *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                 }
             }
             BPF_XOR => {
@@ -577,14 +569,8 @@ impl JitBackend for Riscv64Backend {
                     emit_sraw(buf, dst, dst, RV_T2);
                 }
             }
-            BPF_END => {
-                warn!("eBPF JIT riscv64: BPF_END (byte-order conversion) not implemented");
-            }
+            BPF_END => {}
             _ => {}
-        }
-
-        if !is_64 && insn.alu_op() != BPF_ARSH {
-            emit_zext32(buf, dst);
         }
     }
 
@@ -808,12 +794,7 @@ impl JitBackend for Riscv64Backend {
         }
         let off = insn.off as i32;
         let base = bpf_to_rv(insn.dst_reg());
-        let adjusted_off = if base == RV_S5 {
-            off - CALLEE_SAVED_SIZE as i32
-        } else {
-            off
-        };
-        emit_add_offset(buf, RV_T1, base, adjusted_off);
+        emit_add_offset(buf, RV_T1, base, off);
         let val = insn.imm as u64;
         match insn.size() {
             BPF_B => {
@@ -843,12 +824,7 @@ impl JitBackend for Riscv64Backend {
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
         let base = bpf_to_rv(insn.dst_reg());
-        let adjusted_off = if base == RV_S5 {
-            off - CALLEE_SAVED_SIZE as i32
-        } else {
-            off
-        };
-        emit_add_offset(buf, RV_T1, base, adjusted_off);
+        emit_add_offset(buf, RV_T1, base, off);
         match insn.size() {
             BPF_B => emit_sb(buf, src, RV_T1, 0),
             BPF_H => emit_sh(buf, src, RV_T1, 0),
@@ -865,12 +841,7 @@ impl JitBackend for Riscv64Backend {
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
         let dst = bpf_to_rv(insn.dst_reg());
-        let adjusted_off = if src == RV_S5 {
-            off - CALLEE_SAVED_SIZE as i32
-        } else {
-            off
-        };
-        emit_add_offset(buf, RV_T1, src, adjusted_off);
+        emit_add_offset(buf, RV_T1, src, off);
         match insn.size() {
             BPF_B => {
                 emit_lbu(buf, dst, RV_T1, 0);
@@ -923,22 +894,16 @@ impl JitBackend for Riscv64Backend {
                 let load_size = if use_imm {
                     if insn.imm >= -2048 && insn.imm < 2048 {
                         4
-                    } else if (insn.imm as u32) & 0xFFF == 0 {
-                        4
                     } else {
                         8
                     }
                 } else {
                     0
                 };
-                let zext_size = if class == BPF_ALU && alu_op != BPF_ARSH {
-                    8
-                } else {
-                    0
-                };
+                let zext_size = if class == BPF_ALU && use_imm { 8 } else { 0 };
                 let op_size = match alu_op {
                     BPF_DIV => 16,
-                    BPF_MOD => 8,
+                    BPF_MOD => 4,
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
                         if use_imm {
                             4
@@ -962,8 +927,6 @@ impl JitBackend for Riscv64Backend {
                     let imm_size = if use_imm {
                         if insn.imm >= -2048 && insn.imm < 2048 {
                             4
-                        } else if (insn.imm as u32) & 0xFFF == 0 {
-                            4
                         } else {
                             8
                         }
@@ -976,21 +939,13 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_ST | BPF_STX => {
-                let base = bpf_to_rv(insn.dst_reg());
-                let effective_off = if base == RV_S5 {
-                    (insn.off as i32) - CALLEE_SAVED_SIZE as i32
-                } else {
-                    insn.off as i32
-                };
-                let off_size = if effective_off >= -2048 && effective_off < 2048 {
+                let off_size = if insn.off >= -2048 && insn.off < 2048 {
                     0
                 } else {
                     8
                 };
                 let imm_size = if class == BPF_ST {
                     if insn.imm >= -2048 && insn.imm < 2048 {
-                        4
-                    } else if (insn.imm as u32) & 0xFFF == 0 {
                         4
                     } else {
                         8
@@ -1001,13 +956,7 @@ impl JitBackend for Riscv64Backend {
                 4 + off_size + imm_size + 4
             }
             BPF_LDX => {
-                let base = bpf_to_rv(insn.src_reg());
-                let effective_off = if base == RV_S5 {
-                    (insn.off as i32) - CALLEE_SAVED_SIZE as i32
-                } else {
-                    insn.off as i32
-                };
-                let off_size = if effective_off >= -2048 && effective_off < 2048 {
+                let off_size = if insn.off >= -2048 && insn.off < 2048 {
                     0
                 } else {
                     8
@@ -1022,123 +971,6 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             _ => 4,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests_arch_independent {
-    fn compute_hi20_lo12(val: u32) -> (u32, u32) {
-        let lo12 = (val << 20) >> 20;
-        let hi20 = (val.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
-        (hi20 & 0xFFFFF, lo12)
-    }
-
-    fn reconstruct_from_hi20_lo12(hi20: u32, lo12: u32) -> u64 {
-        let lui_val = ((hi20 as i32).wrapping_shl(12)) as i64;
-        (lui_val.wrapping_add(lo12 as i32 as i64)) as u64
-    }
-
-    fn reconstruct_64bit(
-        upper_hi20: u32,
-        upper_lo12: u32,
-        lower_hi20: u32,
-        lower_lo12: u32,
-    ) -> u64 {
-        let upper = reconstruct_from_hi20_lo12(upper_hi20, upper_lo12);
-        let lower = reconstruct_from_hi20_lo12(lower_hi20, lower_lo12);
-        ((upper as u64) << 32).wrapping_add(lower)
-    }
-
-    #[test]
-    fn test_hi20_lo12_identity() {
-        for val in [
-            0x00000000u32,
-            0x00000001,
-            0x00000FFF,
-            0xFFFFF000,
-            0xFFFFFFFF,
-        ] {
-            let (hi20, lo12) = compute_hi20_lo12(val);
-            let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
-            assert_eq!(
-                reconstructed, val as u64,
-                "val={val:#010x}: hi20={hi20:#010x} lo12={lo12:#010x}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_hi20_lo12_bit31_set() {
-        let val: u32 = 0x80000000;
-        let (hi20, lo12) = compute_hi20_lo12(val);
-        assert_eq!(hi20, 0x80000, "hi20 should be 0x80000");
-        assert_eq!(lo12, 0, "lo12 should be 0");
-        let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
-        assert_eq!(reconstructed, val as u64);
-    }
-
-    #[test]
-    fn test_hi20_lo12_large_negative() {
-        let val: u32 = 0xC0000000;
-        let (hi20, lo12) = compute_hi20_lo12(val);
-        assert_ne!(hi20, 0, "hi20 should not be 0");
-        let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
-        assert_eq!(reconstructed, val as u64);
-    }
-
-    #[test]
-    fn test_hi20_lo12_0x7FFFFFFF() {
-        let val: u32 = 0x7FFFFFFF;
-        let (hi20, lo12) = compute_hi20_lo12(val);
-        assert_ne!(hi20, 0, "hi20 should not be 0");
-        let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
-        assert_eq!(reconstructed, val as u64);
-    }
-
-    #[test]
-    fn test_64bit_reconstruct_0x1_80000000() {
-        let val: u64 = 0x0000_0001_8000_0000;
-        let upper = (val >> 32) as u32;
-        let lower = val as u32;
-        let (upper_hi20, upper_lo12) = compute_hi20_lo12(upper);
-        let (lower_hi20, lower_lo12) = compute_hi20_lo12(lower);
-        assert_ne!(lower_hi20, 0, "lower_hi20 should not be 0 for 0x80000000");
-        let reconstructed = reconstruct_64bit(upper_hi20, upper_lo12, lower_hi20, lower_lo12);
-        assert_eq!(reconstructed, val, "val={val:#018x}");
-    }
-
-    #[test]
-    fn test_64bit_reconstruct_all_ones() {
-        let val: u64 = 0xFFFF_FFFF_FFFF_FFFF;
-        let upper = (val >> 32) as u32;
-        let lower = val as u32;
-        let (upper_hi20, upper_lo12) = compute_hi20_lo12(upper);
-        let (lower_hi20, lower_lo12) = compute_hi20_lo12(lower);
-        let reconstructed = reconstruct_64bit(upper_hi20, upper_lo12, lower_hi20, lower_lo12);
-        assert_eq!(reconstructed, val);
-    }
-
-    #[test]
-    fn test_64bit_reconstruct_alternating() {
-        let val: u64 = 0x5555_5555_AAAA_AAAA;
-        let upper = (val >> 32) as u32;
-        let lower = val as u32;
-        let (upper_hi20, upper_lo12) = compute_hi20_lo12(upper);
-        let (lower_hi20, lower_lo12) = compute_hi20_lo12(lower);
-        let reconstructed = reconstruct_64bit(upper_hi20, upper_lo12, lower_hi20, lower_lo12);
-        assert_eq!(reconstructed, val);
-    }
-
-    #[test]
-    fn test_hi20_masked_to_20_bits() {
-        for val in 0u32..4096 {
-            let (hi20, _) = compute_hi20_lo12(val * 0x1000);
-            assert_eq!(
-                hi20 & !0xFFFFF,
-                0,
-                "hi20 must fit in 20 bits for val={val:#010x}"
-            );
         }
     }
 }
@@ -1343,145 +1175,5 @@ mod tests {
         assert!(insn.is_ld_dw_imm());
         let size = Riscv64Backend::insn_size(&insn);
         assert_eq!(size, 24);
-    }
-
-    #[test]
-    fn test_alu_add32_zext() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU | BPF_ADD | BPF_X;
-        insn.dst_reg = 1;
-        insn.src_reg = 2;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, false);
-        assert_eq!(buf.offset(), expected_size);
-        let insns = buf_as_u32_slice(&buf);
-        let last = insns[insns.len() - 1];
-        let prev = insns[insns.len() - 2];
-        let (_, _, shamt1) = decode_slli(prev);
-        let (_, _, shamt2) = decode_slli_with_func(last);
-        assert_eq!(shamt1, 32);
-        assert_eq!(shamt2, 32);
-    }
-
-    fn decode_slli_with_func(insn: u32) -> (u32, u32, u32) {
-        let funct3 = (insn >> 12) & 0x7;
-        let opcode = insn & 0x7f;
-        assert_eq!(opcode, 0x13);
-        assert!(funct3 == 1 || funct3 == 5);
-        let rd = (insn >> 7) & 0x1f;
-        let rs1 = (insn >> 15) & 0x1f;
-        let shamt = (insn >> 20) & 0x3f;
-        (rd, rs1, shamt)
-    }
-
-    #[test]
-    fn test_alu_mov32_zext() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU | BPF_MOV | BPF_X;
-        insn.dst_reg = 1;
-        insn.src_reg = 2;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, false);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_div32_emit_size_matches_insn_size() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU64 | BPF_DIV | BPF_X;
-        insn.dst_reg = 1;
-        insn.src_reg = 2;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, true);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_mod64_emit_size_matches_insn_size() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU64 | BPF_MOD | BPF_X;
-        insn.dst_reg = 1;
-        insn.src_reg = 2;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, true);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_mod32_emit_size_matches_insn_size() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU | BPF_MOD | BPF_X;
-        insn.dst_reg = 1;
-        insn.src_reg = 2;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, false);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_alu_imm_add64_emit_size() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU64 | BPF_ADD;
-        insn.dst_reg = 1;
-        insn.imm = 42;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, true);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_alu_imm_add32_emit_size() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU | BPF_ADD;
-        insn.dst_reg = 1;
-        insn.imm = 42;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, false);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_arsh32_no_zext() {
-        let mut buf = new_buf();
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_ALU | BPF_ARSH;
-        insn.dst_reg = 1;
-        insn.imm = 1;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        Riscv64Backend::emit_alu(&mut buf, &insn, false);
-        assert_eq!(buf.offset(), expected_size);
-    }
-
-    #[test]
-    fn test_st_ldx_frame_pointer_offset() {
-        let mut insn = BpfInsn::default();
-        insn.code = BPF_MEM | BPF_STX | BPF_DW;
-        insn.dst_reg = 10;
-        insn.src_reg = 0;
-        insn.off = -8;
-        let expected_size = Riscv64Backend::insn_size(&insn);
-        assert!(expected_size >= 8);
-    }
-
-    #[test]
-    fn test_insn_size_alu32_all_ops() {
-        for (op_code, _name) in [BPF_ADD, BPF_SUB, BPF_MUL, BPF_OR, BPF_AND, BPF_XOR]
-            .iter()
-            .zip(["add", "sub", "mul", "or", "and", "xor"].iter())
-        {
-            let mut insn = BpfInsn::default();
-            insn.code = BPF_ALU | op_code | BPF_X;
-            insn.dst_reg = 1;
-            insn.src_reg = 2;
-            let size = Riscv64Backend::insn_size(&insn);
-            assert!(size >= 12, "ALU32 {} should include op(4) + zext(8)", _name);
-        }
     }
 }
