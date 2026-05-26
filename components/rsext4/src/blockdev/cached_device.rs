@@ -107,12 +107,13 @@ impl<B: BlockDevice> BlockDev<B> {
         // Cache miss — find a victim via clock.
         let idx = self.clock_evict()?;
 
-        // Read into the victim slot.
+        // Read into the victim slot and make it the active entry.
         self.dev
             .read(self.entries[idx].buffer.as_mut_slice(), block_id, 1)?;
         self.entries[idx].block_id = Some(block_id);
         self.entries[idx].dirty = false;
         self.entries[idx].referenced = true;
+        self.active = idx;
         Ok(())
     }
 
