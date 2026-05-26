@@ -17,13 +17,17 @@ use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     ioctl::{
         FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
-        SIOCGIFHWADDR, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK, SIOCGIFTXQLEN,
+        SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
+        SIOCGIFTXQLEN,
     },
     net::{AF_INET, ifreq},
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
-use super::{FileLike, Kstat};
+use super::{
+    FileLike, Kstat,
+    packet::{ETH0_IFINDEX, LO_IFINDEX},
+};
 use crate::file::{IoDst, IoSrc, get_file_like};
 
 const ETH0_NAME: &[u8] = b"eth0";
@@ -156,7 +160,12 @@ fn write_eth0_ifconf(arg: usize) -> AxResult<()> {
         }
         len = (written as i32).to_ne_bytes();
     } else {
-        len = 0i32.to_ne_bytes();
+        // SIOCGIFCONF sizing call (ifc_buf == NULL): Linux's dev_ifconf returns
+        // the number of bytes needed to hold all interfaces so the caller can
+        // size its buffer. Returning 0 made OpenJDK's
+        // NetworkInterface.enumIPv4Interfaces malloc a 0-byte buffer and find no
+        // interfaces. Report space for eth0 + lo.
+        len = (2 * IFREQ_COMPAT_LEN as i32).to_ne_bytes();
     }
     vm_write_slice((arg + IFCONF_LEN_OFFSET) as *mut u8, &len)?;
     Ok(())
@@ -299,6 +308,13 @@ impl FileLike for Socket {
                 read_ifreq_interface(arg)?;
                 let qlen_ptr = (arg + offset_of!(ifreq, ifr_ifru)) as *mut i32;
                 qlen_ptr.vm_write(1000)?;
+            }
+            SIOCGIFINDEX => {
+                let idx = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => ETH0_IFINDEX,
+                    NetInterface::Loopback => LO_IFINDEX,
+                };
+                write_ifreq_data(arg, &idx.to_ne_bytes())?;
             }
             _ => return Err(AxError::NotATty),
         }
