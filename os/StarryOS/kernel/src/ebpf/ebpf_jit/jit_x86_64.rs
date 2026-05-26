@@ -1,9 +1,9 @@
 use super::{
     super::bpf_insn::{
-        BPF_ADD, BPF_AND, BPF_ARSH, BPF_B, BPF_DIV, BPF_DW, BPF_H, BPF_JA, BPF_JEQ, BPF_JGE,
-        BPF_JGT, BPF_JLE, BPF_JLT, BPF_JNE, BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT,
-        BPF_LSH, BPF_MEM, BPF_MOD, BPF_MOV, BPF_MUL, BPF_NEG, BPF_OR, BPF_RSH, BPF_SUB, BPF_W,
-        BPF_X, BPF_XOR,
+        BPF_ADD, BPF_AND, BPF_ARSH, BPF_B, BPF_DIV, BPF_DW, BPF_END, BPF_H, BPF_JA, BPF_JEQ,
+        BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JNE, BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE,
+        BPF_JSLT, BPF_LSH, BPF_MEM, BPF_MOD, BPF_MOV, BPF_MUL, BPF_NEG, BPF_OR, BPF_RSH, BPF_SUB,
+        BPF_W, BPF_X, BPF_XOR,
     },
     BPF_ALU, BPF_ALU64, BPF_EXIT, BPF_JMP, BPF_JMP32, BPF_LD, BPF_LDX, BPF_ST, BPF_STX, BpfInsn,
     HelperFn, JitBackend, JitBuffer,
@@ -679,6 +679,7 @@ impl JitBackend for X86_64Backend {
                     emit_zext32(buf, dst);
                 }
             }
+            BPF_END => {}
             _ => {}
         }
     }
@@ -758,12 +759,13 @@ impl JitBackend for X86_64Backend {
         let off = insn.off as i32;
         let imm = insn.imm as i64;
         let base = bpf_to_x86(insn.dst_reg());
+        let adjusted_off = if base == X86_RBP { off - 40 } else { off };
         if insn.size() == BPF_DW {
             emit_mov_imm64(buf, X86_RCX, imm as u64);
-            emit_store_mem(buf, base, off, X86_RCX, BPF_DW);
+            emit_store_mem(buf, base, adjusted_off, X86_RCX, BPF_DW);
         } else {
             emit_mov_imm32(buf, X86_RCX, imm as i32);
-            emit_store_mem(buf, base, off, X86_RCX, insn.size());
+            emit_store_mem(buf, base, adjusted_off, X86_RCX, insn.size());
         }
     }
 
@@ -779,7 +781,8 @@ impl JitBackend for X86_64Backend {
         } else {
             insn.size()
         };
-        emit_store_mem(buf, base, off, src, sz);
+        let adjusted_off = if base == X86_RBP { off - 40 } else { off };
+        emit_store_mem(buf, base, adjusted_off, src, sz);
     }
 
     fn emit_ldx(buf: &mut JitBuffer, insn: &BpfInsn) {
@@ -789,7 +792,8 @@ impl JitBackend for X86_64Backend {
         let off = insn.off as i32;
         let base = bpf_to_x86(insn.src_reg());
         let dst = bpf_to_x86(insn.dst_reg());
-        emit_load_mem(buf, dst, base, off, insn.size());
+        let adjusted_off = if base == X86_RBP { off - 40 } else { off };
+        emit_load_mem(buf, dst, base, adjusted_off, insn.size());
     }
 
     fn emit_ld_imm64(buf: &mut JitBuffer, insn: &BpfInsn, next_imm: i32) {

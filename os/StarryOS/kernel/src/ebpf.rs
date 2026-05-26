@@ -856,7 +856,7 @@ impl PerCpuArrayMap {
     }
 
     fn current_cpu(&self) -> usize {
-        let cpu = ax_hal::percpu::this_cpu_id();
+        let cpu = ax_runtime::hal::percpu::this_cpu_id();
         if cpu < self.cpu_count { cpu } else { 0 }
     }
 }
@@ -986,7 +986,7 @@ impl UnifiedMap {
     }
 
     fn detect_cpu_count() -> usize {
-        ax_hal::cpu_num()
+        ax_runtime::hal::cpu_num()
     }
 }
 
@@ -1757,11 +1757,11 @@ fn helper_probe_read_kernel_str(dst: u64, size: u64, src: u64, _a4: u64, _a5: u6
 }
 
 fn helper_ktime_get_ns(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    ax_hal::time::monotonic_time_nanos()
+    ax_runtime::hal::time::monotonic_time_nanos()
 }
 
 fn helper_get_smp_processor_id(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    ax_hal::percpu::this_cpu_id() as u64
+    ax_runtime::hal::percpu::this_cpu_id() as u64
 }
 
 fn helper_get_current_pid_tgid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
@@ -1784,7 +1784,7 @@ fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u
     static SEED: AtomicU32 = AtomicU32::new(0);
     static INITIALIZED: AtomicBool = AtomicBool::new(false);
     if !INITIALIZED.load(Ordering::Acquire) {
-        let ts = ax_hal::time::monotonic_time_nanos() as u32;
+        let ts = ax_runtime::hal::time::monotonic_time_nanos() as u32;
         SEED.store(ts.wrapping_add(12345), Ordering::Relaxed);
         INITIALIZED.store(true, Ordering::Release);
     }
