@@ -56,6 +56,28 @@ const EFER_LMA: u64 = 1 << 10;
 const EFER_LME: u64 = 1 << 8;
 const CR0_PG: u64 = 1 << 31;
 const CR0_PE: u64 = 1 << 0;
+// Keep the first SVM Linux guest model conservative. These optional CR4
+// features are not required by the smoke path and can make nested SVM VMRUN
+// validation fail on some hosted AMD/KVM runners when exposed directly from
+// the host CPU model.
+const CR4_UMIP: u64 = 1 << 11;
+const CR4_LA57: u64 = 1 << 12;
+const CR4_FSGSBASE: u64 = 1 << 16;
+const CR4_PCIDE: u64 = 1 << 17;
+const CR4_SMEP: u64 = 1 << 20;
+const CR4_SMAP: u64 = 1 << 21;
+const CR4_PKE: u64 = 1 << 22;
+const CR4_CET: u64 = 1 << 23;
+const CR4_PKS: u64 = 1 << 24;
+const SVM_UNSUPPORTED_GUEST_CR4: u64 = CR4_UMIP
+    | CR4_LA57
+    | CR4_FSGSBASE
+    | CR4_PCIDE
+    | CR4_SMEP
+    | CR4_SMAP
+    | CR4_PKE
+    | CR4_CET
+    | CR4_PKS;
 const X2APIC_MSR_BASE: u32 = 0x800;
 // Match the current VMX/vLAPIC path, which handles x2APIC register offsets 0x00..=0x3f.
 const X2APIC_MSR_END: u32 = 0x83f;
@@ -449,7 +471,7 @@ impl SvmVcpu {
                 self.flush_guest_tlb();
             }
             4 => {
-                vmcb.state.cr4.set(val);
+                vmcb.state.cr4.set(val & !SVM_UNSUPPORTED_GUEST_CR4);
                 self.flush_guest_tlb();
             }
             _ => return ax_err!(InvalidInput, format_args!("Unsupported CR{}", cr_idx)),
@@ -700,6 +722,7 @@ impl SvmVcpu {
         let res = match function {
             LEAF_FEATURE_INFO => {
                 const FEATURE_VMX: u32 = 1 << 5;
+                const FEATURE_PCID: u32 = 1 << 17;
                 const FEATURE_HYPERVISOR: u32 = 1 << 31;
                 const FEATURE_MCE: u32 = 1 << 7;
                 const FEATURE_X2APIC: u32 = 1 << 21;
@@ -710,6 +733,7 @@ impl SvmVcpu {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 // Do not expose nested hardware virtualization to the guest.
                 res.ecx &= !FEATURE_VMX;
+                res.ecx &= !FEATURE_PCID;
                 res.ecx |= FEATURE_X2APIC;
                 res.ecx &= !FEATURE_TSC_DEADLINE;
                 res.ecx |= FEATURE_HYPERVISOR;
@@ -728,8 +752,27 @@ impl SvmVcpu {
             LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if regs_clone.rcx == 0 {
-                    res.ecx.set_bit(5, false);
-                    res.ecx.set_bit(16, false);
+                    const FEATURE_FSGSBASE: u32 = 1 << 0;
+                    const FEATURE_SMEP: u32 = 1 << 7;
+                    const FEATURE_SMAP: u32 = 1 << 20;
+                    const FEATURE_UMIP: u32 = 1 << 2;
+                    const FEATURE_PKU: u32 = 1 << 3;
+                    const FEATURE_OSPKE: u32 = 1 << 4;
+                    const FEATURE_WAITPKG: u32 = 1 << 5;
+                    const FEATURE_CET_SS: u32 = 1 << 7;
+                    const FEATURE_LA57: u32 = 1 << 16;
+                    const FEATURE_PKS: u32 = 1 << 31;
+                    const FEATURE_IBT: u32 = 1 << 20;
+
+                    res.ebx &= !(FEATURE_FSGSBASE | FEATURE_SMEP | FEATURE_SMAP);
+                    res.ecx &= !(FEATURE_UMIP
+                        | FEATURE_PKU
+                        | FEATURE_OSPKE
+                        | FEATURE_WAITPKG
+                        | FEATURE_CET_SS
+                        | FEATURE_LA57
+                        | FEATURE_PKS);
+                    res.edx &= !FEATURE_IBT;
                 }
                 res
             }
