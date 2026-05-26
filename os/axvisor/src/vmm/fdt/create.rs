@@ -241,43 +241,35 @@ fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: 
 }
 
 /// Determine if CPU node is needed
+fn cpu_node_id(node_path: &str) -> Option<usize> {
+    node_path
+        .strip_prefix("/cpus/cpu@")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|id| usize::from_str_radix(id, 16).ok())
+}
+
+fn cpu_reg_address(node: &Node) -> Option<usize> {
+    node.reg()
+        .and_then(|mut reg| reg.next())
+        .map(|reg_entry| reg_entry.address as usize)
+}
+
 fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
     if !node_path.starts_with("/cpus/cpu@") {
         return true;
     }
 
-    if let Some(cpu_id) = node_path
-        .strip_prefix("/cpus/cpu@")
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|id| usize::from_str_radix(id, 16).ok())
-        && phys_cpu_ids.contains(&cpu_id)
-    {
-        return true;
+    if let Some(cpu_id) = cpu_node_id(node_path) {
+        return phys_cpu_ids.contains(&cpu_id);
     }
 
-    if let Some(mut cpu_reg) = node.reg()
-        && let Some(reg_entry) = cpu_reg.next()
-    {
-        let cpu_address = reg_entry.address as usize;
+    if let Some(cpu_address) = cpu_reg_address(node) {
         debug!(
             "Checking CPU node {} with address 0x{:x}",
             node.name(),
             cpu_address
         );
-        if phys_cpu_ids.contains(&cpu_address) {
-            debug!(
-                "CPU node {} with address 0x{:x} is in phys_cpu_ids, including in guest FDT",
-                node.name(),
-                cpu_address
-            );
-            return true;
-        }
-
-        debug!(
-            "CPU node {} with address 0x{:x} is NOT in phys_cpu_ids, skipping",
-            node.name(),
-            cpu_address
-        );
+        return phys_cpu_ids.contains(&cpu_address);
     }
 
     false
@@ -521,12 +513,15 @@ pub fn update_fdt(
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| format!("Failed to parse cached guest FDT: {e:#?}"))
         .expect("Failed to parse cached guest FDT");
-    // Keep boot metadata such as /chosen from the host FDT.
-    let host_fdt = Fdt::from_bytes(super::get_host_fdt())
-        .map_err(|e| format!("Failed to parse host FDT while updating guest FDT: {e:#?}"))
-        .expect("Failed to parse host FDT while updating guest FDT");
+    // Keep boot metadata such as /chosen from the host FDT when it is available.
+    let host_fdt_bytes = super::try_get_host_fdt();
+    let host_fdt = host_fdt_bytes.map(|bytes| {
+        Fdt::from_bytes(bytes)
+            .map_err(|e| format!("Failed to parse host FDT while updating guest FDT: {e:#?}"))
+            .expect("Failed to parse host FDT while updating guest FDT")
+    });
     let new_fdt_bytes =
-        patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, &host_fdt);
+        patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, host_fdt.as_ref());
     // Recompute the DTB load address from the runtime memory layout.
     let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len());
 
@@ -535,9 +530,52 @@ pub fn update_fdt(
 
 #[cfg(test)]
 mod tests {
-    use super::{initrd_range_from_image_config, sanitize_bootargs};
+    use super::{cpu_node_id, initrd_range_from_image_config, need_cpu_node, sanitize_bootargs};
     use axaddrspace::GuestPhysAddr;
     use axvm::config::RamdiskInfo;
+    use fdt_parser::Fdt;
+
+    fn test_fdt(dts: &str) -> Fdt<'static> {
+        let mut writer = super::FdtWriter::new().unwrap();
+        let root = writer.begin_node("").unwrap();
+        let cpus = writer.begin_node("cpus").unwrap();
+        writer.property_u32("#address-cells", 2).unwrap();
+        writer.property_u32("#size-cells", 0).unwrap();
+
+        for line in dts.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let (name, reg) = line.split_once('=').unwrap();
+            let node = writer.begin_node(name).unwrap();
+            writer.property_u32("device_type", 0).unwrap();
+            let reg = usize::from_str_radix(reg, 16).unwrap();
+            writer.property_array_u32("reg", &[0, reg as u32]).unwrap();
+            writer.end_node(node).unwrap();
+        }
+
+        writer.end_node(cpus).unwrap();
+        writer.end_node(root).unwrap();
+        let bytes = writer.finish().unwrap().leak();
+        Fdt::from_bytes(bytes).unwrap()
+    }
+
+    #[test]
+    fn cpu_node_selection_uses_node_id_when_reg_differs() {
+        let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
+        let nodes: Vec<_> = fdt.all_nodes().collect();
+        let paths = crate::vmm::fdt::build_all_node_paths(&nodes);
+        let selected: Vec<_> = nodes
+            .iter()
+            .zip(paths.iter())
+            .filter(|(_, path)| path.starts_with("/cpus/cpu@"))
+            .filter_map(|(node, path)| need_cpu_node(&[0x100], node, path).then(|| path.clone()))
+            .collect();
+
+        assert_eq!(selected, ["/cpus/cpu@100"]);
+    }
+
+    #[test]
+    fn cpu_node_id_parses_hex_unit_address() {
+        assert_eq!(cpu_node_id("/cpus/cpu@100"), Some(0x100));
+    }
 
     #[test]
     fn initrd_range_requires_both_address_and_size() {
@@ -616,7 +654,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     fdt: &Fdt,
     memory_regions: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
-    host_fdt: &Fdt,
+    host_fdt: Option<&Fdt>,
 ) -> Vec<u8> {
     let mut new_fdt = FdtWriter::new().unwrap();
     let mut previous_node_level = 0usize;
@@ -660,7 +698,10 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     assert_eq!(node_stack.len(), 1);
 
     // Restore /chosen from the host FDT when it is missing.
-    if !has_chosen && let Some(chosen_node) = host_fdt.find_nodes("/chosen").next() {
+    if !has_chosen
+        && let Some(host_fdt) = host_fdt
+        && let Some(chosen_node) = host_fdt.find_nodes("/chosen").next()
+    {
         let chosen = new_fdt.begin_node("chosen").unwrap();
         for prop in chosen_node.propertys() {
             new_fdt.property(prop.name, prop.raw_value()).unwrap();

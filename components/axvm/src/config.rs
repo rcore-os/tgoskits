@@ -368,6 +368,11 @@ impl PhysCpuList {
     pub fn set_guest_cpu_sets(&mut self, phys_cpu_sets: Vec<usize>) {
         self.phys_cpu_sets = Some(phys_cpu_sets);
     }
+
+    /// Sets the CPU IDs exposed to the guest.
+    pub fn set_guest_phys_cpu_ids(&mut self, phys_cpu_ids: Vec<usize>) {
+        self.phys_cpu_ids = Some(phys_cpu_ids);
+    }
 }
 
 #[cfg(test)]
