@@ -497,6 +497,8 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
+    info!("shmat pid={pid} shmid={shmid} enter");
+
     // Grab the shm_inner Arc under SHM_MANAGER, then drop it before
     // mapping work to avoid holding the global lock across aspace ops.
     let shm_inner_arc = {
@@ -505,8 +507,10 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
             .get_inner_by_shmid(shmid)
             .ok_or(AxError::InvalidInput)?
     };
+    info!("shmat pid={pid} shmid={shmid} lock shm_inner");
     let mut shm_inner = shm_inner_arc.lock();
     let aspace_arc = proc_data.aspace();
+    info!("shmat pid={pid} shmid={shmid} lock aspace");
     let mut aspace = aspace_arc.lock();
 
     let mut mapping_flags = shm_inner.mapping_flags;
@@ -565,12 +569,15 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         shm_inner.map_to_phys(pages);
     }
 
+    info!("shmat pid={pid} shmid={shmid} mapped; attach_process");
     shm_inner.attach_process(pid, va_range)?;
     drop(aspace);
     drop(shm_inner);
 
+    info!("shmat pid={pid} shmid={shmid} lock shm_manager for vaddr");
     let mut shm_manager = SHM_MANAGER.lock();
     shm_manager.insert_shmid_vaddr(pid, shmid, start_addr);
+    info!("shmat pid={pid} shmid={shmid} done");
     Ok(start_addr.as_usize() as isize)
 }
 
@@ -646,6 +653,8 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
+    info!("shmdt pid={pid} addr={shmaddr:?} enter");
+
     // Look up shmid and grab the inner Arc while holding SHM_MANAGER.
     let (shmid, shm_inner_arc) = {
         let shm_manager = SHM_MANAGER.lock();
@@ -660,12 +669,14 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
 
     // Snapshot the mapped range for this process.
     let va_range = {
+        info!("shmdt pid={pid} lock shm_inner for range");
         let shm_inner = shm_inner_arc.lock();
         shm_inner.get_addr_range(pid).ok_or(AxError::InvalidInput)?
     };
 
     // Unmap while only holding the aspace lock.
     {
+        info!("shmdt pid={pid} lock aspace for unmap");
         let aspace_arc = proc_data.aspace();
         let mut aspace = aspace_arc.lock();
         aspace.unmap(va_range.start, va_range.size())?;
@@ -673,6 +684,7 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
 
     // Reacquire SHM_MANAGER then shm_inner for bookkeeping, matching
     // the global lock ordering.
+    info!("shmdt pid={pid} lock shm_manager for bookkeeping");
     let mut shm_manager = SHM_MANAGER.lock();
     shm_manager.remove_shmaddr(pid, shmaddr);
     let mut shm_inner = shm_inner_arc.lock();

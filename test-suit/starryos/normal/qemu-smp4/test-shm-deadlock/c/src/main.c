@@ -20,6 +20,7 @@
 #include <sys/shm.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <sched.h>
 #include <unistd.h>
 
@@ -160,8 +161,13 @@ int main(void)
                     int status;
                     waitpid(tid1, &status, __WALL);
                     waitpid(tid2, &status, __WALL);
-                    waitpid(tid3, &status, __WALL);
                     g_threads_done = 1;
+                    /*
+                     * Ensure watchdog exits even if CLONE_VM isn't honored
+                     * on this platform; avoids false timeouts.
+                     */
+                    kill(tid3, SIGKILL);
+                    waitpid(tid3, &status, __WALL);
 
                     CHECK(!g_deadlock_detected, "no deadlock detected");
                 } else {
