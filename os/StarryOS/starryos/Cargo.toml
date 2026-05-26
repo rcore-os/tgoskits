@@ -15,7 +15,6 @@ version = "0.5.12"
 
 [features]
 default = []
-kcov = ["starry-kernel/kcov"]
 myplat = ["ax-feat/myplat"]
 qemu = [
   "ax-feat/defplat",
