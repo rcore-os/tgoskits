@@ -13,6 +13,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail};
 use ax_io::prelude::*;
+use ax_kspin::SpinNoIrq as Mutex;
 use axpoll::{IoEvents, Pollable};
 pub use smoltcp::wire::{IpProtocol, IpVersion};
 use smoltcp::{
@@ -21,7 +22,7 @@ use smoltcp::{
     storage::PacketMetadata,
     wire::{Icmpv6Packet, IpAddress, IpListenEndpoint, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr},
 };
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
@@ -61,7 +62,7 @@ impl RawSocket {
     /// Creates a raw socket for the given IP version and protocol.
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
         let handle = SOCKET_SET.add(new_raw_socket(ip_version, ip_protocol));
-        let general = GeneralOptions::new();
+        let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
         general.set_device_mask(u32::MAX);
         Self {
             handle,

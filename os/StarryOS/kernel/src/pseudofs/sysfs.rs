@@ -85,6 +85,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "dev",
         SimpleDir::new_maker(fs.clone(), Arc::new(DevDir { fs: fs.clone() })),
     );
+    root.add("kernel", {
+        let mut kernel = DirMapping::new();
+        kernel.add(
+            "debug",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+    });
     SimpleDir::new_maker(fs.clone(), Arc::new(root))
 }
 
@@ -295,13 +303,19 @@ struct BusDir {
 
 impl SimpleDirOps for BusDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["platform"].into_iter().map(Cow::Borrowed))
+        #[cfg(feature = "plat-dyn")]
+        let names: &'static [&'static str] = &["platform", "usb"];
+        #[cfg(not(feature = "plat-dyn"))]
+        let names: &'static [&'static str] = &["platform"];
+        Box::new(names.iter().copied().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir)),
+            #[cfg(feature = "plat-dyn")]
+            "usb" => SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -329,16 +343,117 @@ struct DevicesDir {
 
 impl SimpleDirOps for DevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["platform", "virtual"].into_iter().map(Cow::Borrowed))
+        Box::new(
+            ["platform", "system", "virtual"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusDir { fs })),
+            "system" => SimpleDir::new_maker(fs.clone(), Arc::new(SystemDir { fs })),
             "virtual" => SimpleDir::new_maker(fs.clone(), Arc::new(VirtualDir { fs })),
             _ => return Err(VfsError::NotFound),
         }))
+    }
+}
+
+/// `/sys/devices/system/` — kernel topology subsystems.
+struct SystemDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SystemDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["cpu"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "cpu" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                self.fs.clone(),
+                Arc::new(SystemCpuDir {
+                    fs: self.fs.clone(),
+                }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/devices/system/cpu/` — enough CPU topology for userspace to size pools.
+struct SystemCpuDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SystemCpuDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let mut names: Vec<Cow<'a, str>> = alloc::vec![
+            Cow::Borrowed("online"),
+            Cow::Borrowed("possible"),
+            Cow::Borrowed("present"),
+        ];
+        names.extend((0..ax_hal::cpu_num()).map(|cpu| Cow::Owned(format!("cpu{cpu}"))));
+        Box::new(names.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(match name {
+            "online" | "possible" | "present" => {
+                SimpleFile::new_regular(fs, || Ok(format!("{}\n", cpu_range_string()))).into()
+            }
+            _ => {
+                let cpu = name
+                    .strip_prefix("cpu")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or(VfsError::NotFound)?;
+                if cpu >= ax_hal::cpu_num() {
+                    return Err(VfsError::NotFound);
+                }
+                NodeOpsMux::Dir(SimpleDir::new_maker(
+                    fs.clone(),
+                    Arc::new(SystemCpuEntryDir { fs, cpu }),
+                ))
+            }
+        })
+    }
+}
+
+struct SystemCpuEntryDir {
+    fs: Arc<SimpleFs>,
+    cpu: usize,
+}
+
+impl SimpleDirOps for SystemCpuEntryDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["online"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "online" => {
+                let online = if self.cpu < ax_hal::cpu_num() {
+                    "1\n"
+                } else {
+                    "0\n"
+                };
+                Ok(SimpleFile::new_regular(self.fs.clone(), move || Ok(online.to_owned())).into())
+            }
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+fn cpu_range_string() -> String {
+    let cpu_num = ax_hal::cpu_num();
+    if cpu_num <= 1 {
+        "0".to_owned()
+    } else {
+        format!("0-{}", cpu_num - 1)
     }
 }
 

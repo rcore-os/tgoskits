@@ -1,6 +1,6 @@
 [package]
 name = "axplat-x86-qemu-q35"
-version = "0.4.7"
+version = "0.4.8"
 edition.workspace = true
 authors = ["The Axvisor Team"]
 description = "Hardware platform implementation for x86_64 QEMU Q35 chipset, supporting multiboot boot protocol"
@@ -26,7 +26,9 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["arm-el2"] }
+ax-driver = { workspace = true, features = ["pci"] }
 ax-plat.workspace = true
+axklib.workspace = true
 bitflags = "2.6"
 heapless = "0.9"
 ax-int-ratio = { workspace = true }

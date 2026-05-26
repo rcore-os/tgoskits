@@ -1,27 +1,40 @@
-use alloc::{ffi::CString, vec, vec::Vec};
+use alloc::{
+    ffi::CString,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::{
     ffi::{c_char, c_int},
     mem::offset_of,
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
+    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
     task::AsThread,
     time::TimeValueLike,
 };
+
+fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
+    with_fs(dirfd, |fs| {
+        let loc = fs.resolve_no_follow(path)?;
+        let is_dir = loc.metadata()?.node_type == NodeType::Directory;
+        Ok((loc.absolute_path()?.to_string(), is_dir))
+    })
+}
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -31,6 +44,11 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     if cmd == FIONBIO {
         let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
+        return Ok(0);
+    }
+    if cmd == FIOASYNC {
+        let val: i32 = (arg as *const i32).vm_read()?;
+        f.set_async_mode(val != 0)?;
         return Ok(0);
     }
     f.ioctl(cmd, arg)
@@ -89,14 +107,52 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     Ok(0)
 }
 
+ktracepoint::define_event_trace!(
+    sys_mkdirat,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(syscalls),
+    TP_PROTO(path:&str, mode: u16),
+    TP_STRUCT__entry {
+        mode: u16,
+        path: [u8;64],
+    },
+    TP_fast_assign {
+        mode: mode,
+        path: {
+            let mut buf = [0u8; 64];
+            let bytes = path.as_bytes();
+            let mut len = bytes.len().min(63);
+            while !path.is_char_boundary(len) {
+                len -= 1;
+            }
+            buf[..len].copy_from_slice(&bytes[..len]);
+            buf[len] = 0; // null-terminate
+            buf
+        },
+    },
+    TP_ident(__entry),
+    TP_printk({
+        let nul = __entry.path.iter().position(|&b| b == 0).unwrap_or(__entry.path.len());
+        let path = core::str::from_utf8(&__entry.path[..nul]).unwrap_or("invalid utf8");
+        let mode = __entry.mode;
+        let mode = NodePermission::from_bits_truncate(mode);
+        alloc::format!("mkdir at {path} with mode {mode:?}")
+    })
+);
+
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
-    let mode = mode & !current().as_thread().proc_data.umask();
+    let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
 
-    with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
+    // call tp:trace_sys_mkdirat
+    trace_sys_mkdirat(&path, mode.bits());
+
+    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -105,10 +161,18 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
             Err(AxError::AlreadyExists)
         }
         Err(err) => Err(err),
-    })
+    });
+    if result.is_ok()
+        && let Ok((path, _)) = path_info_at(dirfd, &path)
+    {
+        crate::file::inotify::notify_create_path(&path, true);
+    }
+    result
 }
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!(
         "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
@@ -119,7 +183,7 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     let ftype = mode & S_IFMT;
     let mut perm = mode & !S_IFMT;
     // apply umask like mkdir
-    perm &= !current().as_thread().proc_data.umask();
+    perm &= !thread.proc_data.umask();
 
     // Linux mknod semantics: S_IFDIR → EPERM, unknown type bits → EINVAL.
     let node_type = match ftype {
@@ -298,14 +362,21 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
         return Err(AxError::InvalidInput);
     }
 
-    with_fs(dirfd, |fs| {
+    let deleted = path_info_at(dirfd, &path).ok();
+    let result = with_fs(dirfd, |fs| {
         if flags & AT_REMOVEDIR as usize != 0 {
-            fs.remove_dir(path)?;
+            fs.remove_dir(&path)?;
         } else {
-            fs.remove_file(path)?;
+            fs.remove_file(&path)?;
         }
         Ok(0)
-    })
+    });
+    if result.is_ok()
+        && let Some((path, is_dir)) = deleted
+    {
+        crate::file::inotify::notify_delete_path(&path, is_dir);
+    }
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -485,6 +556,31 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
     }
 
     let path = path.nullable().map(vm_load_string).transpose()?;
+
+    // man 2 open §"O_PATH": "other file operations (e.g., read(2), write(2),
+    // fchmod(2), fchown(2), fgetxattr(2), ioctl(2), mmap(2)) fail with the
+    // error EBADF." Fixes bug-open-path-fchmod-bypass.
+    //
+    // Three paths reach fchmod on a PATH fd; all three must be rejected to
+    // match Linux:
+    //   (1) Direct: SYS_fchmod(fd) — implemented as fchmodat(fd, NULL,
+    //       mode, AT_EMPTY_PATH).
+    //   (2) musl libc fallback: when (1) returns EBADF, musl re-tries
+    //       fchmodat(AT_FDCWD, "/proc/self/fd/<n>", mode, 0). Linux's procfs
+    //       propagates the PATH-handle restriction through the symlink.
+    //   (3) (theoretical) Direct user use of /proc/self/fd/<n>.
+    let path_is_empty = path.as_deref().is_none_or(|s| s.is_empty());
+    if path_is_empty && flags & AT_EMPTY_PATH != 0 && fd_is_path(dirfd) {
+        return Err(AxError::BadFileDescriptor); // (1)
+    }
+    if let Some(p) = path.as_deref()
+        && let Some(rest) = p.strip_prefix("/proc/self/fd/")
+        && let Ok(n) = rest.parse::<i32>()
+        && fd_is_path(n)
+    {
+        return Err(AxError::BadFileDescriptor); // (2) and (3)
+    }
+
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
@@ -681,6 +777,130 @@ pub fn sys_renameat2(
     Ok(0)
 }
 
+// xattr syscall stubs.
+//
+// rsext4 does not support extended attributes, so these are minimal stubs
+// that satisfy the POSIX contract without touching the filesystem.
+//
+// This is required for pip uninstall: when /tmp is a separate tmpfs,
+// os.rename() returns EXDEV (cross-device), forcing shutil.copy2() to
+// fall back to a copy path that calls listxattr/getxattr/setxattr via
+// copystat() → _copyxattr(). Since listxattr returns 0 (empty), the
+// copy loop body never executes, so setxattr/removexattr are never called.
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// listxattr(path, list, size) — returns 0 (no extended attributes).
+pub fn sys_listxattr(path: *const c_char, _list: *mut u8, _size: usize) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Ok(0)
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// llistxattr(path, list, size) — same as listxattr but does not follow symlinks.
+pub fn sys_llistxattr(path: *const c_char, _list: *mut u8, _size: usize) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Ok(0)
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// flistxattr(fd, list, size) — fd-based variant, returns 0.
+pub fn sys_flistxattr(_fd: i32, _list: *mut u8, _size: usize) -> AxResult<isize> {
+    Ok(0)
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// getxattr(path, name, value, size) — returns ENODATA (no such attribute).
+pub fn sys_getxattr(
+    path: *const c_char,
+    _name: *const c_char,
+    _value: *mut u8,
+    _size: usize,
+) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Err(AxError::from(LinuxError::ENODATA))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// lgetxattr — same as getxattr but does not follow symlinks.
+pub fn sys_lgetxattr(
+    path: *const c_char,
+    _name: *const c_char,
+    _value: *mut u8,
+    _size: usize,
+) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Err(AxError::from(LinuxError::ENODATA))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// fgetxattr — fd-based variant, returns ENODATA.
+pub fn sys_fgetxattr(
+    _fd: i32,
+    _name: *const c_char,
+    _value: *mut u8,
+    _size: usize,
+) -> AxResult<isize> {
+    Err(AxError::from(LinuxError::ENODATA))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// setxattr — returns EOPNOTSUPP (filesystem does not support xattr).
+pub fn sys_setxattr(
+    path: *const c_char,
+    _name: *const c_char,
+    _value: *const u8,
+    _size: usize,
+    _flags: i32,
+) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Err(AxError::from(LinuxError::EOPNOTSUPP))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// lsetxattr — same as setxattr but does not follow symlinks.
+pub fn sys_lsetxattr(
+    path: *const c_char,
+    _name: *const c_char,
+    _value: *const u8,
+    _size: usize,
+    _flags: i32,
+) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Err(AxError::from(LinuxError::EOPNOTSUPP))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// fsetxattr — fd-based variant, returns EOPNOTSUPP.
+pub fn sys_fsetxattr(
+    _fd: i32,
+    _name: *const c_char,
+    _value: *const u8,
+    _size: usize,
+    _flags: i32,
+) -> AxResult<isize> {
+    Err(AxError::from(LinuxError::EOPNOTSUPP))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// removexattr — returns EOPNOTSUPP (filesystem does not support xattr).
+pub fn sys_removexattr(path: *const c_char, _name: *const c_char) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Err(AxError::from(LinuxError::EOPNOTSUPP))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// lremovexattr — same as removexattr but does not follow symlinks.
+pub fn sys_lremovexattr(path: *const c_char, _name: *const c_char) -> AxResult<isize> {
+    let _path = vm_load_string(path)?;
+    Err(AxError::from(LinuxError::EOPNOTSUPP))
+}
+
+// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
+/// fremovexattr — fd-based variant, returns EOPNOTSUPP.
+pub fn sys_fremovexattr(_fd: i32, _name: *const c_char) -> AxResult<isize> {
+    Err(AxError::from(LinuxError::EOPNOTSUPP))
+}
+
 pub fn sys_sync() -> AxResult<isize> {
     debug!("sys_sync");
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
@@ -692,8 +912,11 @@ pub fn sys_sync() -> AxResult<isize> {
 
 pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
     debug!("sys_syncfs <= fd: {fd}");
-    // TODO: File::from_fd only accepts regular file fds; Linux syncfs(2) accepts any fd type.
-    let f = crate::file::File::from_fd(fd)?;
-    f.inner().location().filesystem().flush()?;
+    let any = get_file_like(fd)?;
+    if let Some(f) = any.downcast_ref::<crate::file::File>() {
+        f.inner().location().filesystem().flush()?;
+    } else if let Some(d) = any.downcast_ref::<Directory>() {
+        d.inner().filesystem().flush()?;
+    }
     Ok(0)
 }

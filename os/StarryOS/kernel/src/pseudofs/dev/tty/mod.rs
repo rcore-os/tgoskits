@@ -13,6 +13,7 @@ use ax_task::current;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
+use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use self::terminal::{
@@ -28,7 +29,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceOps,
-    task::{AsThread, get_process_group},
+    task::{AsThread, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
@@ -64,10 +65,12 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         if pg.session().sid() != proc.pid() {
             return Err(AxError::OperationNotPermitted);
         }
-        assert!(pg.session().set_terminal_with(|| {
-            self.terminal.job_control.set_session(&pg.session());
-            self.clone()
-        }));
+        if !pg.session().try_set_terminal_with(|| {
+            self.terminal.job_control.set_session(&pg.session())?;
+            Ok::<_, AxError>(self.clone() as Arc<dyn Any + Send + Sync>)
+        })? {
+            return Err(AxError::ResourceBusy);
+        }
 
         self.terminal.job_control.set_foreground(&pg).unwrap();
         Ok(())
@@ -115,7 +118,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TCSETS | TCSETSF | TCSETSW => {
                 // TODO: drain output?
-                // Note: vm_read() must complete before acquiring the SpinNoPreempt lock.
+                // Note: vm_read() must complete before acquiring the terminal lock.
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
@@ -151,7 +154,22 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TIOCSWINSZ => {
                 let window_size = (arg as *const WindowSize).vm_read()?;
-                *self.terminal.window_size.lock() = window_size;
+                let old = {
+                    let mut guard = self.terminal.window_size.lock();
+                    let old = *guard;
+                    *guard = window_size;
+                    old
+                };
+                // Match Linux tty_do_resize(): notify the foreground process
+                // group via SIGWINCH so TUI applications (e.g. ratatui) can
+                // re-layout when the user resizes the host terminal.
+                let changed = old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col;
+                if changed && let Some(pg) = self.terminal.job_control.foreground() {
+                    let _ = send_signal_to_process_group(
+                        pg.pgid(),
+                        Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
+                    );
+                }
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {
@@ -164,6 +182,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .bind_to(&current().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
+                let session = current().as_thread().proc_data.proc.group().session();
                 if current()
                     .as_thread()
                     .proc_data
@@ -172,6 +191,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .session()
                     .unset_terminal(&(self.this.upgrade().unwrap() as _))
                 {
+                    self.terminal.job_control.clear_session(&session);
                     // TODO: If the process was session leader, send SIGHUP and
                     // SIGCONT to the foreground process group and all processes
                     // in the current session lose their

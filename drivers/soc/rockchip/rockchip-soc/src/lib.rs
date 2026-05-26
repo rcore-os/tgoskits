@@ -25,7 +25,9 @@ pub use clock::{
     ClkId, ClockError, ClockResult, Cru, CruOp,
     pll::{PllClock, PllRateParams, PllRateTable, RockchipPllType},
 };
-pub use pinctrl::{GpioDirection, PinConfig, PinCtrl, PinCtrlOp, PinctrlResult, Pull, id::*};
+pub use pinctrl::{
+    GpioDirection, Iomux, PinConfig, PinCtrl, PinCtrlOp, PinctrlResult, Pull, id::*,
+};
 pub use rst::{ResetRockchip, RstId};
 pub use variants::*;
 
@@ -33,5 +35,6 @@ pub type Mmio = NonNull<u8>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocType {
+    Rk3568,
     Rk3588,
 }

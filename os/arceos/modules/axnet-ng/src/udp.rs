@@ -68,7 +68,7 @@ impl UdpSocket {
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
 
-            general: GeneralOptions::new(),
+            general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
             cork: Mutex::new(None),
         }
     }

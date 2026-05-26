@@ -15,6 +15,9 @@
 #![no_std]
 #![cfg(all(target_arch = "x86_64", target_os = "none"))]
 #![allow(missing_abi)]
+#![feature(used_with_arg)]
+
+extern crate ax_driver as _;
 
 #[macro_use]
 extern crate log;
@@ -24,6 +27,7 @@ extern crate ax_plat;
 mod apic;
 mod boot;
 mod console;
+mod drivers;
 mod init;
 mod mem;
 mod power;
@@ -40,6 +44,8 @@ pub mod config {
 
     pub mod devices {
         pub const TIMER_FREQUENCY: usize = 4_000_000_000; // 100 MHz
+        pub const PCI_ECAM_BASE: usize = 0xb000_0000;
+        pub const PCI_BUS_END: usize = 0xff;
     }
 }
 

@@ -71,7 +71,7 @@ graph LR
 - `ax-display`
 - `ax-dma`
 - `ax-driver`
-- `ax-driver-base`
+- `rdrive`
 - 另外还有 `52` 个同类项未在此展开
 
 ### 3.3 被依赖情况

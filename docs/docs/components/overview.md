@@ -124,15 +124,7 @@ flowchart TB
 | `ax-ctor-bare-macros` | 组件层 | `components/ctor_bare/ctor_bare_macros` | 0 | 1 | [查看](crates/ax-ctor-bare-macros) |
 | `ax-display` | ArceOS 层 | `os/arceos/modules/axdisplay` | 3 | 4 | [查看](crates/ax-display) |
 | `ax-dma` | ArceOS 层 | `os/arceos/modules/axdma` | 7 | 2 | [查看](crates/ax-dma) |
-| `ax-driver` | ArceOS 层 | `os/arceos/modules/axdriver` | 15 | 10 | [查看](crates/ax-driver) |
-| `ax-driver-base` | 组件层 | `components/axdriver_crates/axdriver_base` | 0 | 8 | [查看](crates/ax-driver-base) |
-| `ax-driver-block` | 组件层 | `components/axdriver_crates/axdriver_block` | 1 | 3 | [查看](crates/ax-driver-block) |
-| `ax-driver-display` | 组件层 | `components/axdriver_crates/axdriver_display` | 1 | 2 | [查看](crates/ax-driver-display) |
-| `ax-driver-input` | 组件层 | `components/axdriver_crates/axdriver_input` | 1 | 2 | [查看](crates/ax-driver-input) |
-| `ax-driver-net` | 组件层 | `components/axdriver_crates/axdriver_net` | 2 | 2 | [查看](crates/ax-driver-net) |
-| `ax-driver-pci` | 组件层 | `components/axdriver_crates/axdriver_pci` | 0 | 1 | [查看](crates/ax-driver-pci) |
-| `ax-driver-virtio` | 组件层 | `components/axdriver_crates/axdriver_virtio` | 6 | 2 | [查看](crates/ax-driver-virtio) |
-| `ax-driver-vsock` | 组件层 | `components/axdriver_crates/axdriver_vsock` | 1 | 2 | [查看](crates/ax-driver-vsock) |
+| `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](crates/ax-driver) |
 | `ax-errno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](crates/ax-errno) |
 | `ax-feat` | ArceOS 层 | `os/arceos/api/axfeat` | 16 | 7 | [查看](crates/ax-feat) |
 | `ax-fs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](crates/ax-fs) |
@@ -174,7 +166,6 @@ flowchart TB
 | `ax-plat-loongarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
 | `ax-plat-macros` | 组件层 | `components/axplat_crates/axplat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
 | `ax-plat-riscv64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-riscv64-qemu-virt` | 6 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
-| `axplat-riscv64-qemu-virt-hv` | Axvisor 层 | `platform/riscv64-qemu-virt` | 8 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
 | `ax-plat-x86-pc` | 组件层 | `components/axplat_crates/platforms/axplat-x86-pc` | 7 | 5 | [查看](crates/ax-plat-x86-pc) |
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |

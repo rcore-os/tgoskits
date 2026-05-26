@@ -1,5 +1,6 @@
 //! Basic virtual filesystem support
 
+pub mod debug;
 pub mod dev;
 mod device;
 mod dir;
@@ -7,13 +8,12 @@ mod dyn_debug;
 mod file;
 mod fs;
 mod proc;
-#[cfg(not(feature = "plat-dyn"))]
 mod sysfs;
 mod tmp;
 #[cfg(feature = "plat-dyn")]
 pub(crate) mod usbfs;
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::LinuxResult;
 use ax_fs::{FS_CONTEXT, FsContext};
@@ -35,6 +35,11 @@ pub enum NodeOpsMux {
     Dir(DirMaker),
     /// A file node.
     File(Arc<dyn FileNodeOps>),
+}
+
+enum NodeOpsMuxTy {
+    Static(NodeOpsMux),
+    Dynamic(Box<dyn Fn() -> NodeOpsMux + Send + Sync>),
 }
 
 impl From<DirMaker> for NodeOpsMux {
@@ -90,10 +95,11 @@ pub fn mount_all() -> LinuxResult<()> {
 
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
-    #[cfg(feature = "plat-dyn")]
-    mount_at(&fs, "/sys", usbfs::new_sysfs())?;
-    #[cfg(not(feature = "plat-dyn"))]
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+    #[cfg(feature = "plat-dyn")]
+    mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
+
+    mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs())?;
 
     drop(fs);
 

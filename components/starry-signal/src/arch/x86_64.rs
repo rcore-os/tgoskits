@@ -16,7 +16,18 @@ signal_trampoline:
 "
 );
 
-#[repr(C, align(16))]
+// Linux x86-64 `mcontext_t` (`struct sigcontext`) has NATURAL 8-byte alignment,
+// NOT 16. In `ucontext_t`, `uc_mcontext` sits in the MIDDLE of the struct (offset
+// 40, after uc_flags/uc_link/uc_stack); forcing `align(16)` here inserts 8 bytes
+// of padding and pushes `uc_mcontext` to offset 48 — shifting every general
+// register (RSP@160, RIP@168), the fpregs pointer and `uc_sigmask` 8 bytes off
+// the Linux ABI. Runtimes that read the context by raw ABI offset — notably Go's
+// async preemption, which reads/writes `uc_mcontext.gregs[REG_RSP/REG_RIP]` and
+// expects `rt_sigreturn` to honor those writes — then corrupt RSP/RIP (observed:
+// `sp` loaded with adjacent non-pointer bytes -> `unsafe.Slice: len out of range`).
+// The 16-byte alignment the signal frame itself requires is provided by the outer
+// `UContext` (see below), not by over-aligning this inner struct.
+#[repr(C)]
 #[derive(Clone)]
 pub struct MContext {
     r8: usize,
@@ -108,7 +119,13 @@ impl MContext {
     }
 }
 
-#[repr(C)]
+// `align(16)` keeps the whole signal frame 16-byte aligned on the user stack (the
+// x86-64 signal ABI requires the handler to observe `RSP % 16 == 8` after its
+// return address is pushed). This frame alignment was previously (incorrectly)
+// supplied by over-aligning the inner `MContext`, which corrupted `uc_mcontext`'s
+// offset; aligning the outer `UContext` instead keeps `uc_mcontext` at the Linux
+// ABI offset 40 while still guaranteeing frame alignment.
+#[repr(C, align(16))]
 #[derive(Clone)]
 pub struct UContext {
     pub flags: usize,
@@ -129,3 +146,11 @@ impl UContext {
         }
     }
 }
+
+const _: () = {
+    // Lock the Linux/musl x86-64 `ucontext_t` ABI offsets (compile-time regression
+    // guard for the alignment trap documented on `MContext`): `uc_mcontext`@40,
+    // `uc_sigmask`@296.
+    assert!(core::mem::offset_of!(UContext, mcontext) == 40);
+    assert!(core::mem::offset_of!(UContext, sigmask) == 296);
+};

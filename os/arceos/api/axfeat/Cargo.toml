@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -22,7 +22,7 @@ hv = ["ax-hal/hv"]
 
 # Interrupts
 irq = ["alloc", "ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi"]
+ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
 
 # Custom or default platforms
 myplat = ["ax-hal/myplat"]
@@ -66,30 +66,42 @@ task-ext = ["ax-task/task-ext"]
 sched-fifo = ["ax-task/sched-fifo"]
 sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]
+stack-guard-page = [
+    "ipi",
+    "multitask",
+    "paging",
+    "ax-task/stack-guard-page",
+    "ax-runtime/stack-guard-page",
+]
 
 # File system
 fs = [
     "alloc",
     "paging",
-    "ax-driver/virtio-blk",
     "dep:ax-fs",
     "ax-runtime/fs",
 ] # TODO: try to remove "paging"
-fs-ng = ["fs", "ax-runtime/fs-ng"]
+fs-ng = ["alloc", "paging", "dep:ax-fs-ng", "ax-runtime/fs-ng"]
 fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4"]
 fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 fs-ng-times = ["fs-ng", "ax-fs-ng/times"]
 
 # Networking
-net = ["alloc", "paging", "ax-driver/virtio-net", "dep:ax-net", "ax-runtime/net"]
-net-ng = ["net", "irq", "multitask", "ax-runtime/net-ng"]
+net = [
+    "alloc",
+    "paging",
+    "irq",
+    "multitask",
+    "dep:ax-net",
+    "ax-runtime/net",
+]
+net-ng = ["alloc", "paging", "irq", "multitask", "dep:ax-net-ng", "ax-runtime/net-ng"]
 vsock = ["ax-runtime/vsock"]
 
 # Display
 display = [
     "alloc",
     "paging",
-    "ax-driver/virtio-gpu",
     "dep:ax-display",
     "ax-runtime/display",
 ]
@@ -98,7 +110,6 @@ display = [
 input = [
     "alloc",
     "paging",
-    "ax-driver/virtio-input",
     "dep:ax-input",
     "ax-runtime/input",
 ]
@@ -106,27 +117,16 @@ input = [
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-hal/rtc", "ax-runtime/rtc"]
 
-# Device drivers
-bus-mmio = ["ax-driver?/bus-mmio"]
-bus-pci = ["ax-driver?/bus-pci"]
-driver-ramdisk = ["ax-driver?/ramdisk", "ax-fs?/use-ramdisk"]
-driver-sdmmc = ["ax-driver?/sdmmc"]
-driver-cvsd = ["ax-driver?/cvsd"]
-driver-ixgbe = ["ax-driver?/ixgbe"]
-driver-fxmac = ["ax-driver?/fxmac"]                          # fxmac ethernet driver for PhytiumPi
-driver-bcm2835-sdhci = ["ax-driver?/bcm2835-sdhci"]
-driver-ahci = ["ax-driver?/ahci"]
-
 # Backtrace
 backtrace = ["alloc", "axbacktrace/alloc"]
 dwarf = ["alloc", "axbacktrace/dwarf"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 axbacktrace.workspace = true
 ax-config = { workspace = true, optional = true }
-ax-display = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
+ax-display = { workspace = true, optional = true }
 ax-fs = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
@@ -134,6 +134,7 @@ ax-input = { workspace = true, optional = true }
 ax-ipi = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
+ax-net-ng = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync = { workspace = true, optional = true }
 ax-task = { workspace = true, optional = true }

@@ -63,16 +63,16 @@ impl MappingBackend for MockBackend {
 }
 
 macro_rules! assert_ok {
-    ($expr: expr) => {
+    ($expr:expr) => {
         assert!(($expr).is_ok())
     };
 }
 
 macro_rules! assert_err {
-    ($expr: expr) => {
+    ($expr:expr) => {
         assert!(($expr).is_err())
     };
-    ($expr: expr, $err: ident) => {
+    ($expr:expr, $err:ident) => {
         assert_eq!(($expr).err(), Some(MappingError::$err))
     };
 }

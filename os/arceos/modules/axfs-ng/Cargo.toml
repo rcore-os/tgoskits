@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.5.14"
+version = "0.5.15"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -16,8 +16,7 @@ times = []
 std = ["lwext4_rust?/std"]
 
 [dependencies]
-ax-alloc = { workspace = true }
-ax-driver = { workspace = true, features = ["block"] }
+ax-alloc = { workspace = true, features = ["default"] }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-hal = { workspace = true }
@@ -31,6 +30,7 @@ intrusive-collections = "0.9"
 ax-kspin = { workspace = true }
 log = { workspace = true }
 lru = "0.16"
+rd-block-volume = { workspace = true }
 scope-local = { workspace = true }
 slab = { version = "0.4", default-features = false }
 spin = { workspace = true }

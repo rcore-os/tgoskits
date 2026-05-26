@@ -1,0 +1,14 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Driver Interface vsock definition."
+edition.workspace = true
+keywords = ["os", "driver"]
+license = "MIT"
+name = "rdif-vsock"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+rdif-base = { workspace = true }
+thiserror = { version = "2", default-features = false }

@@ -40,13 +40,77 @@ pub enum GprIndex {
 }
 
 #[repr(C)]
+#[repr(align(16))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LoongArchContextFrame {
     pub x: [usize; 32],
     pub sepc: usize,
-    pub crmd: usize,
-    pub prmd: usize,
-    pub estat: usize,
+    pub gcsr_crmd: usize,
+    pub gcsr_prmd: usize,
+    pub gcsr_euen: usize,
+    pub gcsr_misc: usize,
+    pub gcsr_ectl: usize,
+    pub gcsr_estat: usize,
+    pub gcsr_era: usize,
+    pub gcsr_badv: usize,
+    pub gcsr_badi: usize,
+    pub gcsr_eentry: usize,
+    pub gcsr_tlbidx: usize,
+    pub gcsr_tlbehi: usize,
+    pub gcsr_tlbelo0: usize,
+    pub gcsr_tlbelo1: usize,
+    pub gcsr_asid: usize,
+    pub gcsr_pgdl: usize,
+    pub gcsr_pgdh: usize,
+    pub gcsr_pgd: usize,
+    pub gcsr_pwcl: usize,
+    pub gcsr_pwch: usize,
+    pub gcsr_stlbps: usize,
+    pub gcsr_ravcfg: usize,
+    pub gcsr_cpuid: usize,
+    pub gcsr_prcfg1: usize,
+    pub gcsr_prcfg2: usize,
+    pub gcsr_prcfg3: usize,
+    pub gcsr_save0: usize,
+    pub gcsr_save1: usize,
+    pub gcsr_save2: usize,
+    pub gcsr_save3: usize,
+    pub gcsr_save4: usize,
+    pub gcsr_save5: usize,
+    pub gcsr_save6: usize,
+    pub gcsr_save7: usize,
+    pub gcsr_save8: usize,
+    pub gcsr_save9: usize,
+    pub gcsr_save10: usize,
+    pub gcsr_save11: usize,
+    pub gcsr_save12: usize,
+    pub gcsr_save13: usize,
+    pub gcsr_save14: usize,
+    pub gcsr_save15: usize,
+    pub gcsr_tid: usize,
+    pub gcsr_tcfg: usize,
+    pub gcsr_tval: usize,
+    pub gcsr_cntc: usize,
+    pub gcsr_ticlr: usize,
+    pub gcsr_llbctl: usize,
+    pub gcsr_tlbrentry: usize,
+    pub gcsr_tlbrbadv: usize,
+    pub gcsr_tlbrera: usize,
+    pub gcsr_tlbrsave: usize,
+    pub gcsr_tlbrelo0: usize,
+    pub gcsr_tlbrelo1: usize,
+    pub gcsr_tlbrehi: usize,
+    pub gcsr_tlbrprmd: usize,
+    pub gcsr_dmw0: usize,
+    pub gcsr_dmw1: usize,
+    pub gcsr_dmw2: usize,
+    pub gcsr_dmw3: usize,
+    pub host_estat: usize,
+    pub host_era: usize,
+    pub host_badv: usize,
+    pub host_badi: usize,
+    pub host_tlbrbadv: usize,
+    pub host_tlbrera: usize,
 }
 
 impl LoongArchContextFrame {
@@ -54,18 +118,14 @@ impl LoongArchContextFrame {
         self.x[4] = arg;
     }
 
+    pub fn set_a1(&mut self, val: usize) {
+        self.x[5] = val;
+    }
+
     pub fn set_gpr(&mut self, index: usize, val: usize) {
         match index {
             0 => {}
             1..=31 => self.x[index] = val,
-            _ => panic!("invalid general-purpose register index {index}"),
-        }
-    }
-
-    pub fn gpr(&self, index: usize) -> usize {
-        match index {
-            0 => 0,
-            1..=31 => self.x[index],
             _ => panic!("invalid general-purpose register index {index}"),
         }
     }
@@ -112,86 +172,46 @@ impl fmt::Display for LoongArchContextFrame {
             }
         }
         writeln!(f, "sepc: {:016x}", self.sepc)?;
-        writeln!(f, "crmd: {:016x}", self.crmd)?;
-        writeln!(f, "prmd: {:016x}", self.prmd)?;
-        write!(f, "estat: {:016x}", self.estat)
-    }
-}
-
-#[repr(C)]
-#[repr(align(16))]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LoongArchGuestSystemRegisters {
-    pub gpgd: usize,
-    pub gpgdl: usize,
-    pub gpgdh: usize,
-    pub gasid: usize,
-    pub gtcfg: usize,
-    pub gtval: usize,
-    pub gticlr: usize,
-    pub gtlbehi: usize,
-    pub gtlbelo0: usize,
-    pub gtlbelo1: usize,
-    pub gtlbidx: usize,
-    pub gstat: usize,
-    pub gctl: usize,
-    pub geentry: usize,
-    pub gera: usize,
-    pub gbadv: usize,
-    pub gbadi: usize,
-}
-
-impl LoongArchGuestSystemRegisters {
-    /// Stores guest system registers into this software snapshot.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the current CPU is in the correct host context to
-    /// access guest system-register state.
-    pub unsafe fn store(&mut self) {
-        use crate::registers::*;
-
-        self.gpgd = gcsr_read::<GCSR_PGD>();
-        self.gpgdl = gcsr_read::<GCSR_PGDL>();
-        self.gpgdh = gcsr_read::<GCSR_PGDH>();
-        self.gasid = gcsr_read::<GCSR_ASID>();
-        self.gtcfg = gcsr_read::<GCSR_TCFG>();
-        self.gtval = gcsr_read::<GCSR_TVAL>();
-        self.gticlr = gcsr_read::<GCSR_TICLR>();
-        self.gtlbehi = gcsr_read::<GCSR_TLBEHI>();
-        self.gtlbelo0 = gcsr_read::<GCSR_TLBELO0>();
-        self.gtlbelo1 = gcsr_read::<GCSR_TLBELO1>();
-        self.gtlbidx = gcsr_read::<GCSR_TLBIDX>();
-        self.gstat = gstat_read();
-        self.gera = gcsr_read::<GCSR_ERA>();
-        self.geentry = gcsr_read::<GCSR_EENTRY>();
-        self.gbadv = gcsr_read::<GCSR_BADV>();
-        self.gbadi = gcsr_read::<GCSR_BADI>();
-        self.gctl = csr_read::<CSR_GCTL>();
-    }
-
-    /// Restores guest system registers from this software snapshot.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the current CPU is ready to accept guest
-    /// system-register state before invoking this routine.
-    pub unsafe fn restore(&self) {
-        use crate::registers::*;
-
-        gcsr_write::<GCSR_PGD>(self.gpgd);
-        gcsr_write::<GCSR_PGDL>(self.gpgdl);
-        gcsr_write::<GCSR_PGDH>(self.gpgdh);
-        gcsr_write::<GCSR_ASID>(self.gasid);
-        gcsr_write::<GCSR_TCFG>(self.gtcfg);
-        gcsr_write::<GCSR_TVAL>(self.gtval);
-        gcsr_write::<GCSR_TICLR>(self.gticlr);
-        gcsr_write::<GCSR_TLBEHI>(self.gtlbehi);
-        gcsr_write::<GCSR_TLBELO0>(self.gtlbelo0);
-        gcsr_write::<GCSR_TLBELO1>(self.gtlbelo1);
-        gcsr_write::<GCSR_TLBIDX>(self.gtlbidx);
-        gcsr_write::<GCSR_ERA>(self.gera);
-        gcsr_write::<GCSR_EENTRY>(self.geentry);
-        csr_write::<CSR_GCTL>(self.gctl);
+        writeln!(f, "gcsr_crmd: {:016x}", self.gcsr_crmd)?;
+        writeln!(f, "gcsr_prmd: {:016x}", self.gcsr_prmd)?;
+        writeln!(f, "gcsr_euen: {:016x}", self.gcsr_euen)?;
+        writeln!(f, "gcsr_misc: {:016x}", self.gcsr_misc)?;
+        writeln!(f, "gcsr_ectl: {:016x}", self.gcsr_ectl)?;
+        writeln!(f, "gcsr_estat: {:016x}", self.gcsr_estat)?;
+        writeln!(f, "gcsr_era: {:016x}", self.gcsr_era)?;
+        writeln!(f, "gcsr_badv: {:016x}", self.gcsr_badv)?;
+        writeln!(f, "gcsr_badi: {:016x}", self.gcsr_badi)?;
+        writeln!(f, "gcsr_eentry: {:016x}", self.gcsr_eentry)?;
+        writeln!(f, "gcsr_tlbidx: {:016x}", self.gcsr_tlbidx)?;
+        writeln!(f, "gcsr_tlbehi: {:016x}", self.gcsr_tlbehi)?;
+        writeln!(f, "gcsr_tlbelo0: {:016x}", self.gcsr_tlbelo0)?;
+        writeln!(f, "gcsr_tlbelo1: {:016x}", self.gcsr_tlbelo1)?;
+        writeln!(f, "gcsr_asid: {:016x}", self.gcsr_asid)?;
+        writeln!(f, "gcsr_pgd: {:016x}", self.gcsr_pgd)?;
+        writeln!(f, "gcsr_pgdl: {:016x}", self.gcsr_pgdl)?;
+        writeln!(f, "gcsr_pgdh: {:016x}", self.gcsr_pgdh)?;
+        writeln!(f, "gcsr_pwcl: {:016x}", self.gcsr_pwcl)?;
+        writeln!(f, "gcsr_pwch: {:016x}", self.gcsr_pwch)?;
+        writeln!(f, "gcsr_stlbps: {:016x}", self.gcsr_stlbps)?;
+        writeln!(f, "gcsr_tcfg: {:016x}", self.gcsr_tcfg)?;
+        writeln!(f, "gcsr_tval: {:016x}", self.gcsr_tval)?;
+        writeln!(f, "gcsr_ticlr: {:016x}", self.gcsr_ticlr)?;
+        writeln!(f, "gcsr_tlbrentry: {:016x}", self.gcsr_tlbrentry)?;
+        writeln!(f, "gcsr_tlbrbadv: {:016x}", self.gcsr_tlbrbadv)?;
+        writeln!(f, "gcsr_tlbrera: {:016x}", self.gcsr_tlbrera)?;
+        writeln!(f, "gcsr_tlbrelo0: {:016x}", self.gcsr_tlbrelo0)?;
+        writeln!(f, "gcsr_tlbrelo1: {:016x}", self.gcsr_tlbrelo1)?;
+        writeln!(f, "gcsr_tlbrehi: {:016x}", self.gcsr_tlbrehi)?;
+        writeln!(f, "gcsr_tlbrprmd: {:016x}", self.gcsr_tlbrprmd)?;
+        writeln!(f, "gcsr_dmw0: {:016x}", self.gcsr_dmw0)?;
+        writeln!(f, "gcsr_dmw1: {:016x}", self.gcsr_dmw1)?;
+        writeln!(f, "gcsr_dmw2: {:016x}", self.gcsr_dmw2)?;
+        writeln!(f, "gcsr_dmw3: {:016x}", self.gcsr_dmw3)?;
+        writeln!(f, "host_estat: {:016x}", self.host_estat)?;
+        writeln!(f, "host_era: {:016x}", self.host_era)?;
+        writeln!(f, "host_badv: {:016x}", self.host_badv)?;
+        writeln!(f, "host_badi: {:016x}", self.host_badi)?;
+        writeln!(f, "host_tlbrbadv: {:016x}", self.host_tlbrbadv)?;
+        write!(f, "host_tlbrera: {:016x}", self.host_tlbrera)
     }
 }

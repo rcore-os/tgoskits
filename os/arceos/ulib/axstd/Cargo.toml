@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.14"
+version = "0.5.15"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -56,6 +56,7 @@ task-ext = ["ax-feat/task-ext"]
 sched-fifo = ["ax-feat/sched-fifo"]
 sched-rr = ["ax-feat/sched-rr"]
 sched-cfs = ["ax-feat/sched-cfs"]
+stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
 fs = ["ax-api/fs", "ax-feat/fs"]
@@ -74,16 +75,6 @@ input = ["ax-feat/input"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-feat/rtc"]
-
-# Device drivers
-bus-mmio = ["ax-feat/bus-mmio"]
-bus-pci = ["ax-feat/bus-pci"]
-driver-ramdisk = ["ax-feat/driver-ramdisk"]
-driver-sdmmc = ["ax-feat/driver-sdmmc"]
-driver-ixgbe = ["ax-feat/driver-ixgbe"]
-driver-fxmac = ["ax-feat/driver-fxmac"]
-driver-bcm2835-sdhci = ["ax-feat/driver-bcm2835-sdhci"]
-driver-ahci = ["ax-feat/driver-ahci"]
 
 # Backtrace
 backtrace = ["ax-feat/backtrace"]

@@ -59,6 +59,9 @@ pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
 
 const LOONGARCH64_HERMIT_JSON: &str =
     include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
+const TARGET_JSON_ROOT: &str = "scripts/targets";
+const NO_PIE_TARGET_DIR: &str = "no-pie";
+const PIE_TARGET_DIR: &str = "pie";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -137,14 +140,31 @@ impl BuildInfo {
         target: String,
         args: Vec<String>,
     ) -> Cargo {
-        let to_bin = default_to_bin_for_target(&target);
+        self.into_base_cargo_config_with_to_bin(
+            package,
+            target.clone(),
+            args,
+            default_to_bin_for_target(&target),
+        )
+    }
+
+    fn into_base_cargo_config_with_to_bin(
+        self,
+        package: String,
+        target: String,
+        args: Vec<String>,
+        to_bin: bool,
+    ) -> Cargo {
         Cargo {
             env: self.env,
             target,
             package,
+            bin: None,
             features: self.features,
             log: Some(self.log),
             extra_config: None,
+            profile: None,
+            disable_someboot_build_config: true,
             args,
             pre_build_cmds: vec![],
             post_build_cmds: vec![],
@@ -173,6 +193,7 @@ impl BuildInfo {
     ) -> anyhow::Result<Cargo> {
         if self.std_build {
             self.validated_max_cpu_num()?;
+            self.resolve_std_features();
             let std_target = std_build_target_for(target)?;
             let mut cargo = self.into_base_cargo_config_with_log(
                 package.to_string(),
@@ -181,6 +202,7 @@ impl BuildInfo {
             );
             cargo.env.extend(std_target.env);
             prepare_std_build_env(&mut cargo.env, target, metadata)?;
+            pass_std_build_nested_features(&mut cargo.env, &mut cargo.features);
             cargo.extra_config = Some(std_cargo_config_path()?.display().to_string());
             cargo.to_bin = false;
             return Ok(cargo);
@@ -189,16 +211,35 @@ impl BuildInfo {
         let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
-        self.resolve_features_with_metadata(package, plat_dyn, metadata);
-        let mut extra_rustflags = toolchain_rustflags(&self.env);
-        if self.features.iter().any(|f| f == "kcov") {
-            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-level=3".to_string());
-            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
-            extra_rustflags.push("-Cpasses=sancov-module".to_string());
-        }
-        let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
+        self.resolve_features_with_metadata(package, target, plat_dyn, metadata);
+        let extra_rustflags = toolchain_rustflags(&self.env);
+        let cargo_target = cargo_target_json_path(target, plat_dyn)?;
+        let cargo_target = cargo_target.display().to_string();
+        let args = Self::build_cargo_args(&cargo_target, &extra_rustflags);
+        self.env.insert(
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+            "true".to_string(),
+        );
 
-        Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
+        self.prepare_log_env();
+        self.prepare_max_cpu_num_env()
+            .expect("max_cpu_num validation should run before cargo config generation");
+        Ok(self.into_base_cargo_config_with_to_bin(
+            package.to_string(),
+            cargo_target,
+            args,
+            default_to_bin_for_target(target),
+        ))
+    }
+
+    fn resolve_std_features(&mut self) {
+        self.features = self
+            .features
+            .iter()
+            .map(|feature| normalize_std_feature(feature))
+            .collect();
+        self.features.sort();
+        self.features.dedup();
     }
 
     pub(crate) fn prepare_non_dynamic_platform_for(
@@ -237,11 +278,13 @@ impl BuildInfo {
     pub(crate) fn resolve_features_with_metadata(
         &mut self,
         package: &str,
+        target: &str,
         plat_dyn: bool,
         metadata: &Metadata,
     ) {
         self.resolve_features_with_prefix_family(
             package,
+            target,
             plat_dyn,
             detect_ax_feature_prefix_family(package, metadata),
         );
@@ -250,16 +293,13 @@ impl BuildInfo {
     fn resolve_features_with_prefix_family(
         &mut self,
         package: &str,
+        target: &str,
         plat_dyn: bool,
         prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
     ) {
         let prefix_family = self.resolve_ax_feature_prefix_family(package, prefix_family);
-        let has_myplat = self.features.iter().any(|feature| {
-            matches!(
-                feature.as_str(),
-                "myplat" | "ax-std/myplat" | "ax-feat/myplat"
-            )
-        });
+        let has_myplat = has_myplat_feature(&self.features);
+        let has_defplat = has_defplat_feature(&self.features);
 
         self.features.retain(|feature| {
             !matches!(
@@ -282,7 +322,7 @@ impl BuildInfo {
         } else if has_myplat {
             self.features
                 .push(format!("{}myplat", prefix_family.prefix()));
-        } else {
+        } else if has_defplat {
             self.features
                 .push(format!("{}defplat", prefix_family.prefix()));
         }
@@ -290,9 +330,23 @@ impl BuildInfo {
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
         }
+        self.push_platform_feature(target, plat_dyn, has_myplat);
 
         self.features.sort();
         self.features.dedup();
+    }
+
+    fn push_platform_feature(&mut self, target: &str, plat_dyn: bool, has_myplat: bool) {
+        if has_myplat || has_ax_hal_platform_feature(&self.features) {
+            return;
+        }
+
+        let feature = if plat_dyn {
+            "ax-hal/plat-dyn"
+        } else {
+            default_ax_hal_platform_feature(target).unwrap_or("ax-hal/defplat")
+        };
+        self.features.push(feature.to_string());
     }
 
     fn resolve_ax_feature_prefix_family(
@@ -336,11 +390,14 @@ impl BuildInfo {
     }
 
     #[cfg(test)]
-    pub(crate) fn resolve_features(&mut self, package: &str, plat_dyn: bool) {
+    pub(crate) fn resolve_features(&mut self, package: &str, target: &str, plat_dyn: bool) {
         match workspace_metadata() {
-            Ok(metadata) => self.resolve_features_with_metadata(package, plat_dyn, &metadata),
+            Ok(metadata) => {
+                self.resolve_features_with_metadata(package, target, plat_dyn, &metadata)
+            }
             Err(err) => self.resolve_features_with_prefix_family(
                 package,
+                target,
                 plat_dyn,
                 Err(err.context("failed to load workspace metadata")),
             ),
@@ -355,32 +412,26 @@ impl BuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(
-        target: &str,
-        plat_dyn: bool,
-        extra_rustflags: &[String],
-    ) -> Vec<String> {
-        let mut args = Vec::new();
-        args.push("--config".to_string());
-        let mut rustflags: Vec<String> = Vec::new();
-        rustflags.extend(extra_rustflags.iter().cloned());
-        if plat_dyn {
-            rustflags.push("-Clink-arg=-Taxplat.x".to_string());
-        } else {
-            rustflags.push("-Clink-arg=-Tlinker.x".to_string());
-            rustflags.push("-Clink-arg=-no-pie".to_string());
-            rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
-        }
+    pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
+        let mut args = vec![
+            "-Z".to_string(),
+            "json-target-spec".to_string(),
+            "-Z".to_string(),
+            "build-std=core,alloc".to_string(),
+        ];
 
-        let mut rendered = format!("target.{target}.rustflags=[");
-        for (i, flag) in rustflags.iter().enumerate() {
-            if i > 0 {
-                rendered.push(',');
-            }
-            rendered.push_str(&format!("{flag:?}"));
+        if !extra_rustflags.is_empty() {
+            args.push("--config".to_string());
+            let rustflags_toml = toml::Value::Array(
+                extra_rustflags
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            )
+            .to_string();
+            args.push(format!("target.'{target}'.rustflags={rustflags_toml}"));
         }
-        rendered.push(']');
-        args.push(rendered);
         args
     }
 }
@@ -400,6 +451,29 @@ impl Default for BuildInfo {
             plat_dyn: false,
             std_build: false,
         }
+    }
+}
+
+pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Result<PathBuf> {
+    let target_file = match target {
+        "aarch64-unknown-none-softfloat"
+        | "riscv64gc-unknown-none-elf"
+        | "x86_64-unknown-none"
+        | "loongarch64-unknown-none-softfloat" => format!("{target}.json"),
+        _ => bail!("unsupported target triple `{target}`"),
+    };
+
+    if plat_dyn {
+        if target != "aarch64-unknown-none-softfloat" {
+            bail!("unsupported PIE target `{target}`");
+        }
+        Ok(Path::new(TARGET_JSON_ROOT)
+            .join(PIE_TARGET_DIR)
+            .join(target_file))
+    } else {
+        Ok(Path::new(TARGET_JSON_ROOT)
+            .join(NO_PIE_TARGET_DIR)
+            .join(target_file))
     }
 }
 
@@ -472,6 +546,22 @@ pub(crate) fn prepare_std_build_env(
         out_config.display().to_string(),
     );
     Ok(())
+}
+
+fn pass_std_build_nested_features(envs: &mut HashMap<String, String>, features: &mut Vec<String>) {
+    let mut nested = Vec::new();
+    features.retain(|feature| {
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            nested.push(feature.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if nested.is_empty() {
+        return;
+    }
+    envs.insert("ARCEOS_RUST_FEATURES".to_string(), nested.join(","));
 }
 
 fn std_cargo_config_path() -> anyhow::Result<PathBuf> {
@@ -585,6 +675,22 @@ fn normalize_legacy_feature_alias(feature: &str) -> String {
     }
 }
 
+fn normalize_std_feature(feature: &str) -> String {
+    let normalized = normalize_legacy_feature_alias(feature);
+    match normalized.as_str() {
+        "ax-std" | "ax-feat" => normalized,
+        feature if feature.starts_with("ax-std/") || feature.starts_with("ax-feat/") => feature
+            .split_once('/')
+            .map(|(_, feature)| format!("arceos-rust/{feature}"))
+            .unwrap_or_else(|| normalized.clone()),
+        feature if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") => {
+            normalized
+        }
+        feature if feature.starts_with("arceos-rust/") => normalized,
+        feature => format!("arceos-rust/{feature}"),
+    }
+}
+
 pub(crate) fn parse_makefile_features(input: &str) -> Vec<String> {
     let mut features = Vec::new();
     for feature in input.split(|ch: char| ch == ',' || ch.is_whitespace()) {
@@ -646,6 +752,11 @@ fn apply_makefile_features_with_prefix_family(
         return;
     }
 
+    if build_info.std_build {
+        apply_std_makefile_features(build_info, makefile_features);
+        return;
+    }
+
     let prefix_family = build_info.resolve_ax_feature_prefix_family(package, prefix_family);
 
     for feature in makefile_features {
@@ -657,6 +768,19 @@ fn apply_makefile_features_with_prefix_family(
                 format!("{}{}", prefix_family.prefix(), normalized)
             };
 
+        if !build_info
+            .features
+            .iter()
+            .any(|existing| existing == &mapped)
+        {
+            build_info.features.push(mapped);
+        }
+    }
+}
+
+fn apply_std_makefile_features(build_info: &mut BuildInfo, makefile_features: &[String]) {
+    for feature in makefile_features {
+        let mapped = normalize_std_feature(feature);
         if !build_info
             .features
             .iter()
@@ -770,6 +894,76 @@ fn detect_ax_feature_prefix_family(
     }
 }
 
+fn has_myplat_feature(features: &[String]) -> bool {
+    features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "myplat" | "ax-std/myplat" | "ax-feat/myplat" | "ax-hal/myplat"
+        )
+    })
+}
+
+fn has_defplat_feature(features: &[String]) -> bool {
+    features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "defplat" | "ax-std/defplat" | "ax-feat/defplat" | "ax-hal/defplat"
+        )
+    })
+}
+
+fn ax_hal_platform_feature_name(feature: &str) -> Option<&str> {
+    let platform = feature.strip_prefix("ax-hal/")?;
+    match platform {
+        "plat-dyn"
+        | "x86-pc"
+        | "aarch64-qemu-virt"
+        | "aarch64-raspi"
+        | "aarch64-bsta1000b"
+        | "aarch64-phytium-pi"
+        | "riscv64-qemu-virt"
+        | "riscv64-sg2002"
+        | "riscv64-visionfive2"
+        | "riscv64-qemu-virt-hv"
+        | "loongarch64-qemu-virt"
+        | "x86-qemu-q35" => Some(platform),
+        _ => None,
+    }
+}
+
+fn has_ax_hal_platform_feature(features: &[String]) -> bool {
+    features
+        .iter()
+        .any(|feature| ax_hal_platform_feature_name(feature).is_some())
+}
+
+fn default_ax_hal_platform_feature(target: &str) -> anyhow::Result<&'static str> {
+    Ok(match target_arch_name(target)? {
+        "x86_64" => "ax-hal/x86-pc",
+        "aarch64" => "ax-hal/aarch64-qemu-virt",
+        "riscv64" => "ax-hal/riscv64-qemu-virt",
+        "loongarch64" => "ax-hal/loongarch64-qemu-virt",
+        _ => unreachable!("unsupported arch"),
+    })
+}
+
+fn ax_hal_platform_package(platform: &str) -> Option<&'static str> {
+    match platform {
+        "x86-pc" => Some("ax-plat-x86-pc"),
+        "aarch64-qemu-virt" => Some("ax-plat-aarch64-qemu-virt"),
+        "aarch64-raspi" => Some("ax-plat-aarch64-raspi"),
+        "aarch64-bsta1000b" => Some("ax-plat-aarch64-bsta1000b"),
+        "aarch64-phytium-pi" => Some("ax-plat-aarch64-phytium-pi"),
+        "riscv64-qemu-virt" => Some("ax-plat-riscv64-qemu-virt"),
+        "riscv64-sg2002" => Some("ax-plat-riscv64-sg2002"),
+        "riscv64-visionfive2" => Some("axplat-riscv64-visionfive2"),
+        "riscv64-qemu-virt-hv" => Some("ax-plat-riscv64-qemu-virt"),
+        "loongarch64-qemu-virt" => Some("ax-plat-loongarch64-qemu-virt"),
+        "x86-qemu-q35" => Some("axplat-x86-qemu-q35"),
+        _ => None,
+    }
+}
+
 fn resolve_platform_package(
     package: &str,
     target: &str,
@@ -778,6 +972,14 @@ fn resolve_platform_package(
 ) -> anyhow::Result<String> {
     let arch = target_arch_name(target)?;
     let package_info = workspace_package(metadata, package)?;
+
+    if let Some(platform) = features
+        .iter()
+        .find_map(|feature| ax_hal_platform_feature_name(feature))
+        .and_then(ax_hal_platform_package)
+    {
+        return Ok(platform.to_string());
+    }
 
     let explicit_platform_features: Vec<_> = features
         .iter()
@@ -795,21 +997,13 @@ fn resolve_platform_package(
         })
         .collect();
 
-    if let Some(dep) = package_info.dependencies.iter().find(|dep| {
-        (dep.name.starts_with("axplat-") || dep.name.starts_with("ax-plat-"))
-            && explicit_platform_features
-                .iter()
-                .any(|feature| *feature == linker_platform_name(&dep.name))
-    }) {
-        return Ok(dep.name.clone());
+    if let Some(platform) =
+        explicit_platform_package_from_features(package_info, &explicit_platform_features)
+    {
+        return Ok(platform);
     }
 
-    if features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "myplat" | "ax-std/myplat" | "ax-feat/myplat"
-        )
-    }) {
+    if has_myplat_feature(features) {
         if let Some(dep_name) = explicit_myplat_platform_package(package, arch)
             && package_info
                 .dependencies
@@ -858,9 +1052,39 @@ fn default_platform_package(arch: &str) -> &'static str {
 fn explicit_myplat_platform_package(package: &str, arch: &str) -> Option<&'static str> {
     match (package, arch) {
         ("axvisor", "x86_64") => Some("axplat-x86-qemu-q35"),
-        ("axvisor", "riscv64") => Some("axplat-riscv64-qemu-virt-hv"),
+        ("axvisor", "riscv64") => Some("ax-plat-riscv64-qemu-virt"),
         _ => None,
     }
+}
+
+fn explicit_platform_package_from_features(
+    package_info: &Package,
+    explicit_features: &[&str],
+) -> Option<String> {
+    package_info
+        .dependencies
+        .iter()
+        .find(|dep| {
+            dependency_is_platform(&dep.name)
+                && explicit_features.iter().any(|feature| {
+                    *feature == dep.name
+                        || *feature == linker_platform_name(&dep.name)
+                        || feature_enables_dependency(package_info, feature, &dep.name)
+                })
+        })
+        .map(|dep| dep.name.clone())
+}
+
+fn dependency_is_platform(dep_name: &str) -> bool {
+    dep_name.starts_with("axplat-") || dep_name.starts_with("ax-plat-")
+}
+
+fn feature_enables_dependency(package_info: &Package, feature: &str, dep_name: &str) -> bool {
+    package_info.features.get(feature).is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item == dep_name || item == &format!("dep:{dep_name}"))
+    })
 }
 
 fn myplat_dependency_matches_arch(dep_name: &str, arch: &str) -> bool {
@@ -1136,6 +1360,132 @@ mod tests {
     }
 
     #[test]
+    fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
+        let mut envs = HashMap::new();
+        let mut features = vec![
+            "ax-hal/riscv64-qemu-virt".to_string(),
+            "ax-driver/pci".to_string(),
+            "ax-driver/virtio-blk".to_string(),
+            "ax-driver/virtio-net".to_string(),
+            "dns".to_string(),
+        ];
+
+        pass_std_build_nested_features(&mut envs, &mut features);
+
+        assert_eq!(features, vec!["dns".to_string()]);
+        assert_eq!(
+            envs.get("ARCEOS_RUST_FEATURES"),
+            Some(
+                &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn std_build_runtime_features_are_passed_through_after_normalization() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec![
+                "ax-hal/loongarch64-qemu-virt".to_string(),
+                "dns".to_string(),
+            ],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+        let mut envs = HashMap::new();
+        pass_std_build_nested_features(&mut envs, &mut info.features);
+
+        assert_eq!(info.features, vec!["arceos-rust/dns".to_string()]);
+        assert_eq!(
+            envs.get("ARCEOS_RUST_FEATURES"),
+            Some(&"ax-hal/loongarch64-qemu-virt".to_string())
+        );
+    }
+
+    #[test]
+    fn cargo_target_json_path_maps_no_pie_targets() {
+        let cases = [
+            "aarch64-unknown-none-softfloat",
+            "riscv64gc-unknown-none-elf",
+            "x86_64-unknown-none",
+            "loongarch64-unknown-none-softfloat",
+        ];
+
+        for target in cases {
+            let path = cargo_target_json_path(target, false).unwrap();
+            assert!(path.ends_with(format!("scripts/targets/no-pie/{target}.json")));
+        }
+    }
+
+    #[test]
+    fn cargo_target_json_path_maps_aarch64_pie_target() {
+        let path = cargo_target_json_path("aarch64-unknown-none-softfloat", true).unwrap();
+
+        assert!(path.ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json"));
+    }
+
+    #[test]
+    fn cargo_target_json_path_rejects_unsupported_pie_target() {
+        let err = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported PIE target"));
+    }
+
+    #[test]
+    fn build_cargo_args_uses_json_target_spec_and_build_std() {
+        let args = BuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &[],
+        );
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
+        assert!(!args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(!args.iter().any(|arg| arg.contains("-Taxplat.x")));
+    }
+
+    #[test]
+    fn build_cargo_args_quotes_json_target_rustflags_key() {
+        let args = BuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &["-Cdebuginfo=2".to_string()],
+        );
+
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--config"
+                && pair[1].starts_with(
+                    "target.'scripts/targets/no-pie/aarch64-unknown-none-softfloat.json'.\
+                     rustflags=",
+                )
+                && pair[1].contains("\"-Cdebuginfo=2\"")
+        }));
+    }
+
+    #[test]
+    fn x86_64_no_pie_target_preserves_pic_codegen_without_pie_link() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!(
+            "../../targets/no-pie/x86_64-unknown-none.json"
+        ))
+        .unwrap();
+
+        assert_eq!(spec["relocation-model"], "pic");
+        assert_eq!(spec.get("position-independent-executables"), None);
+        assert_eq!(spec.get("static-position-independent-executables"), None);
+
+        let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
+        assert!(link_args.iter().any(|arg| arg == "-no-pie"));
+        assert!(!link_args.iter().any(|arg| arg == "-pie"));
+    }
+
+    #[test]
     fn detects_axfeat_direct_dependency_via_metadata() {
         let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
 
@@ -1143,6 +1493,45 @@ mod tests {
         let family = detect_ax_feature_prefix_family("ax-feat-app", &metadata).unwrap();
 
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
+    }
+
+    #[test]
+    fn std_build_maps_arceos_features_to_arceos_rust_dependency() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec![
+                "ax-std".to_string(),
+                "lockdep".to_string(),
+                "axstd/smp".to_string(),
+            ],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+
+        assert!(info.features.contains(&"ax-std".to_string()));
+        assert!(info.features.contains(&"arceos-rust/lockdep".to_string()));
+        assert!(info.features.contains(&"arceos-rust/smp".to_string()));
+        assert!(!info.features.contains(&"ax-std/lockdep".to_string()));
+        assert!(!info.features.contains(&"lockdep".to_string()));
+    }
+
+    #[test]
+    fn makefile_features_use_arceos_rust_prefix_for_std_build() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: Vec::new(),
+            ..BuildInfo::default()
+        };
+
+        apply_makefile_features_with_prefix_family(
+            &mut info,
+            "test-arceos-std-app",
+            &[String::from("lockdep")],
+            Err(anyhow::anyhow!("std test packages do not depend on ax-std")),
+        );
+
+        assert_eq!(info.features, vec!["arceos-rust/lockdep".to_string()]);
     }
 
     #[test]
@@ -1162,11 +1551,13 @@ mod tests {
     #[test]
     fn find_local_platform_config_path_resolves_workspace_platform_dir() {
         let metadata = repo_metadata();
-        let path = find_local_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata)
+        let path = find_local_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata)
             .unwrap()
             .expect("workspace platform config should exist");
 
-        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]
@@ -1174,10 +1565,12 @@ mod tests {
         let metadata = repo_metadata();
         let deps_metadata = workspace_metadata_with_deps().unwrap();
         let path =
-            resolve_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata, &deps_metadata)
+            resolve_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata, &deps_metadata)
                 .unwrap();
 
-        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]

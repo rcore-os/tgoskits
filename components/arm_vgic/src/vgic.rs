@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use ax_errno::AxResult;
+use ax_kspin::SpinNoIrq as Mutex;
 use axvisor_api::vmm::current_vcpu_id;
-use spin::Mutex;
 
 use crate::{interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
 

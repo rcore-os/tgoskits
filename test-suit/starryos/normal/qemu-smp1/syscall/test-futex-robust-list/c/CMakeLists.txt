@@ -10,4 +10,4 @@ target_include_directories(test-futex-robust-list PRIVATE src)
 target_compile_options(test-futex-robust-list PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(test-futex-robust-list PRIVATE pthread)
 
-install(TARGETS test-futex-robust-list RUNTIME DESTINATION usr/bin)
+install(TARGETS test-futex-robust-list RUNTIME DESTINATION usr/bin/starry-test-suit)

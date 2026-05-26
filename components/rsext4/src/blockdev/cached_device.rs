@@ -127,6 +127,23 @@ impl<B: BlockDevice> BlockDev<B> {
         self.buffer.as_mut_slice()
     }
 
+    /// Replaces the cached block contents without writing to the device.
+    ///
+    /// The caller supplies the exact bytes that should now be considered the
+    /// authoritative content of `block_id` (e.g. a journal-side update or a
+    /// freshly written block). The buffer is overwritten with `data`, the
+    /// cache key is set to `block_id`, and the block is marked clean so that
+    /// no flush is triggered.
+    pub(crate) fn cache_clean_block(
+        &mut self,
+        block_id: AbsoluteBN,
+        data: &[u8; crate::config::BLOCK_SIZE],
+    ) {
+        self.buffer.as_mut_slice().copy_from_slice(data);
+        self.cached_block = Some(block_id);
+        self.is_dirty = false;
+    }
+
     /// Flushes a dirty cached block and the underlying device.
     pub fn flush(&mut self) -> Ext4Result<()> {
         if self.is_dirty

@@ -974,6 +974,58 @@ config = "configs/custom-starry.toml"
 }
 
 #[test]
+fn prepare_starry_request_explicit_config_target_overrides_snapshot_target() {
+    let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
+    let config = root.path().join("configs/sg2002.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        r#"
+target = "riscv64gc-unknown-none-elf"
+env = {}
+features = ["sg2002"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
+        r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_starry_request(
+        &app,
+        StarryCliArgs {
+            config: Some(config.clone()),
+            arch: None,
+            target: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(request.build_info_path, config);
+    assert_eq!(snapshot.arch.as_deref(), Some("riscv64"));
+    assert_eq!(
+        snapshot.target.as_deref(),
+        Some("riscv64gc-unknown-none-elf")
+    );
+}
+
+#[test]
 fn prepare_starry_request_rejects_mismatched_arch_and_target() {
     let root = tempdir().unwrap();
     prepare_starry_workspace(root.path());

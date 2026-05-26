@@ -7,8 +7,8 @@ use ax_task::{
     future::{self, block_on},
 };
 use linux_raw_sys::general::{
-    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE,
-    kernel_sigaction, siginfo, timespec,
+    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE, SS_FLAG_BITS,
+    SS_ONSTACK, kernel_sigaction, siginfo, timespec,
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
@@ -23,11 +23,9 @@ use crate::{
 };
 
 pub(crate) fn check_sigset_size(size: usize) -> AxResult<()> {
-    // Accept the kernel sigset size and any larger libc/ABI sigset size,
-    // since the kernel only uses the low `size_of::<SignalSet>()` bytes
-    // (glibc uses 8, musl uses 16). Keep accepting 0 for callers that use
-    // it to mean "no mask".
-    if size != 0 && size < size_of::<SignalSet>() {
+    // Align with Linux raw syscall semantics (for ABI param 'sigmask'): when sigsetsize is checked,
+    // it must exactly match the kernel SignalSet size (8 bytes).
+    if size != size_of::<SignalSet>() {
         return Err(AxError::InvalidInput);
     }
     Ok(())
@@ -366,7 +364,13 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
 
     if let Some(ss) = ss.nullable() {
         let ss = unsafe { ss.vm_read_uninit()?.assume_init() };
-        if ss.flags != SS_DISABLE && ss.size < MINSIGSTKSZ as usize {
+        if sig.stack_active() {
+            return Err(AxError::OperationNotPermitted);
+        }
+        if ss.flags & !(SS_DISABLE | SS_ONSTACK | SS_FLAG_BITS) != 0 {
+            return Err(AxError::InvalidInput);
+        }
+        if ss.flags & SS_DISABLE == 0 && ss.size < MINSIGSTKSZ as usize {
             return Err(AxError::NoMemory);
         }
         sig.set_stack(ss);

@@ -104,6 +104,15 @@ static int read_first_line(const char *path, char *buf, int bufsz)
     return len;
 }
 
+static void cleanup_umount_all(const char *path)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        if (umount(path) != 0)
+            break;
+    }
+}
+
 static void check(int ok, const char *name)
 {
     if (ok) { printf("  PASS | %s\n", name); pass++; }
@@ -1036,6 +1045,861 @@ int main(void)
     }
 
     /* ================================================================
+     *  Tier 4k0a: mount EINVAL for propagation flags mixed with
+     *             unsupported extra mount flags
+     *
+     *  Linux mount(2) allows only MS_REC and MS_SILENT alongside a
+     *  propagation type flag.  Other bits such as MS_BIND must be
+     *  rejected with EINVAL, and the failed mount must leave no side
+     *  effect behind.
+     * ================================================================ */
+    {
+        const char *invalid_mount_point = "/tmp/ul-mnt-invalid-propagation-extra";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-mnt-invalid-propagation-extra");
+        check(rc == 0, "mkdir invalid-propagation-extra mount point");
+
+        errno = 0;
+        rc = mount(
+            "none",
+            invalid_mount_point,
+            "tmpfs",
+            MS_SHARED | MS_BIND,
+            NULL
+        );
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "mount EINVAL for propagation flag with unsupported extra flag");
+
+        errno = 0;
+        rc = umount(invalid_mount_point);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "mount invalid propagation-extra flags has no mount side effect");
+    }
+
+    /* ================================================================
+     *  Tier 4k0b: mount MS_PRIVATE updates an existing mount instead
+     *             of creating a fresh filesystem
+     *
+     *  Linux treats propagation flags as operations on an existing
+     *  mount. Existing contents must remain visible after the call.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-mnt-propagation-op";
+
+        rc = run("mkdir -p /tmp/ul-mnt-propagation-op");
+        check(rc == 0, "mkdir propagation-op mount point");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for propagation-op test");
+
+        rc = write_file("/tmp/ul-mnt-propagation-op/keep.txt", "keep\n");
+        check(rc == 0, "write file before MS_PRIVATE");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_PRIVATE, NULL);
+        check(rc == 0, "mount MS_PRIVATE on existing mount succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line(
+                "/tmp/ul-mnt-propagation-op/keep.txt",
+                content,
+                sizeof(content)
+            );
+            check(len > 0 && strcmp(content, "keep") == 0,
+                  "mount MS_PRIVATE preserves existing mount contents");
+        }
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b1: mount MS_SHARED updates an existing mount instead
+     *              of replacing it
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-mnt-shared-op";
+
+        rc = run("mkdir -p /tmp/ul-mnt-shared-op");
+        check(rc == 0, "mkdir shared-op mount point");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for shared-op test");
+
+        rc = write_file("/tmp/ul-mnt-shared-op/keep.txt", "keep shared\n");
+        check(rc == 0, "write file before MS_SHARED");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_SHARED, NULL);
+        check(rc == 0, "mount MS_SHARED on existing mount succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-mnt-shared-op/keep.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "keep shared") == 0,
+                  "mount MS_SHARED preserves existing mount contents");
+        }
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b2: mount MS_SLAVE updates an existing mount instead
+     *              of replacing it
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-mnt-slave-op";
+
+        rc = run("mkdir -p /tmp/ul-mnt-slave-op");
+        check(rc == 0, "mkdir slave-op mount point");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for slave-op test");
+
+        rc = write_file("/tmp/ul-mnt-slave-op/keep.txt", "keep slave\n");
+        check(rc == 0, "write file before MS_SLAVE");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_SLAVE, NULL);
+        check(rc == 0, "mount MS_SLAVE on existing mount succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-mnt-slave-op/keep.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "keep slave") == 0,
+                  "mount MS_SLAVE preserves existing mount contents");
+        }
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b3: mount MS_UNBINDABLE updates an existing mount
+     *              instead of replacing it
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-mnt-unbindable-op";
+
+        rc = run("mkdir -p /tmp/ul-mnt-unbindable-op");
+        check(rc == 0, "mkdir unbindable-op mount point");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for unbindable-op test");
+
+        rc = write_file("/tmp/ul-mnt-unbindable-op/keep.txt", "keep unbindable\n");
+        check(rc == 0, "write file before MS_UNBINDABLE");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_UNBINDABLE, NULL);
+        check(rc == 0, "mount MS_UNBINDABLE on existing mount succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-mnt-unbindable-op/keep.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "keep unbindable") == 0,
+                  "mount MS_UNBINDABLE preserves existing mount contents");
+        }
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b4: mount MS_SHARED causes child mounts to propagate to
+     *              a bind peer
+     *
+     *  In Linux, a bind mount created from a shared mount joins the
+     *  same peer group. A new child mount under one peer must appear
+     *  under the other peer.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-shared-src";
+        const char *dst = "/tmp/ul-shared-dst";
+
+        rc = run("mkdir -p /tmp/ul-shared-src /tmp/ul-shared-dst");
+        check(rc == 0, "mkdir shared-propagation test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for shared-propagation source");
+
+        rc = mount("none", src, "tmpfs", MS_SHARED, NULL);
+        check(rc == 0, "mount MS_SHARED on propagation source succeeds");
+
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "bind mount from shared source succeeds");
+
+        rc = run("mkdir -p /tmp/ul-shared-src/submnt");
+        check(rc == 0, "mkdir child mountpoint under shared source");
+
+        rc = mount("tmpfs", "/tmp/ul-shared-src/submnt", "tmpfs", 0, NULL);
+        check(rc == 0, "mount child tmpfs under shared source");
+
+        rc = write_file("/tmp/ul-shared-src/submnt/peer.txt", "shared peer\n");
+        check(rc == 0, "write file inside propagated shared child mount");
+
+        {
+            char content[256] = {0};
+            int saved_errno;
+            int len = read_first_line("/tmp/ul-shared-dst/submnt/peer.txt",
+                                      content, sizeof(content));
+            saved_errno = errno;
+            if (!(len > 0 && strcmp(content, "shared peer") == 0)) {
+                printf("  INFO | shared peer read len=%d errno=%d content='%s'\n",
+                       len, saved_errno, content);
+            }
+            check(len > 0 && strcmp(content, "shared peer") == 0,
+                  "mount MS_SHARED propagates child mount to bind peer");
+        }
+
+        cleanup_umount_all("/tmp/ul-shared-dst/submnt");
+        cleanup_umount_all(dst);
+        cleanup_umount_all("/tmp/ul-shared-src/submnt");
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b5: mount MS_PRIVATE stops further propagation from a
+     *              previously shared peer
+     *
+     *  After converting one peer to private, new child mounts created
+     *  under the remaining shared peer must no longer appear there.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-private-src";
+        const char *dst = "/tmp/ul-private-dst";
+        int nested_fd;
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-private-src /tmp/ul-private-dst");
+        check(rc == 0, "mkdir private-propagation test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for private-propagation source");
+
+        rc = mount("none", src, "tmpfs", MS_SHARED, NULL);
+        check(rc == 0, "mount MS_SHARED before private conversion succeeds");
+
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "bind mount peer before private conversion succeeds");
+
+        rc = mount("none", dst, "tmpfs", MS_PRIVATE, NULL);
+        check(rc == 0, "mount MS_PRIVATE on bind peer succeeds");
+
+        rc = run("mkdir -p /tmp/ul-private-src/submnt");
+        check(rc == 0, "mkdir child mountpoint under shared master");
+
+        rc = mount("tmpfs", "/tmp/ul-private-src/submnt", "tmpfs", 0, NULL);
+        check(rc == 0, "mount child tmpfs under shared master");
+
+        errno = 0;
+        nested_fd = open("/tmp/ul-private-dst/submnt/probe.txt", O_RDONLY);
+        saved_errno = errno;
+        if (nested_fd >= 0)
+            close(nested_fd);
+        check(nested_fd == -1 && saved_errno == ENOENT,
+              "mount MS_PRIVATE stops future propagation to bind peer");
+
+        cleanup_umount_all("/tmp/ul-private-dst/submnt");
+        cleanup_umount_all(dst);
+        cleanup_umount_all("/tmp/ul-private-src/submnt");
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b6: mount MS_SLAVE receives propagation from master but
+     *              does not send it back
+     *
+     *  A slave mount should receive new child mounts from its shared
+     *  master, but mounts created under the slave must not propagate
+     *  back to the master.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-slave-src";
+        const char *dst = "/tmp/ul-slave-dst";
+        int nested_fd;
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-slave-src /tmp/ul-slave-dst");
+        check(rc == 0, "mkdir slave-propagation test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for slave-propagation source");
+
+        rc = mount("none", src, "tmpfs", MS_SHARED, NULL);
+        check(rc == 0, "mount MS_SHARED for slave-propagation source succeeds");
+
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "bind mount peer for slave-propagation succeeds");
+
+        rc = mount("none", dst, "tmpfs", MS_SLAVE, NULL);
+        check(rc == 0, "mount MS_SLAVE on bind peer succeeds");
+
+        rc = run("mkdir -p /tmp/ul-slave-src/from-master");
+        check(rc == 0, "mkdir master child mountpoint for slave test");
+
+        rc = mount("tmpfs", "/tmp/ul-slave-src/from-master", "tmpfs", 0, NULL);
+        check(rc == 0, "mount child tmpfs under master for slave test");
+
+        rc = write_file("/tmp/ul-slave-src/from-master/master.txt", "master to slave\n");
+        check(rc == 0, "write file inside master child mount for slave test");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-slave-dst/from-master/master.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "master to slave") == 0,
+                  "mount MS_SLAVE receives propagation from master");
+        }
+
+        rc = run("mkdir -p /tmp/ul-slave-dst/from-slave");
+        check(rc == 0, "mkdir slave child mountpoint for reverse propagation test");
+
+        rc = mount("tmpfs", "/tmp/ul-slave-dst/from-slave", "tmpfs", 0, NULL);
+        check(rc == 0, "mount child tmpfs under slave");
+
+        errno = 0;
+        nested_fd = open("/tmp/ul-slave-src/from-slave/probe.txt", O_RDONLY);
+        saved_errno = errno;
+        if (nested_fd >= 0)
+            close(nested_fd);
+        check(nested_fd == -1 && saved_errno == ENOENT,
+              "mount MS_SLAVE does not propagate back to master");
+
+        cleanup_umount_all("/tmp/ul-slave-dst/from-master");
+        cleanup_umount_all("/tmp/ul-slave-dst/from-slave");
+        cleanup_umount_all(dst);
+        cleanup_umount_all("/tmp/ul-slave-src/from-master");
+        cleanup_umount_all("/tmp/ul-slave-src/from-slave");
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0b7: mount MS_UNBINDABLE rejects direct bind mounts
+     *
+     *  Linux rejects bind mounts whose source mount is unbindable.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-unbindable-src";
+        const char *dst = "/tmp/ul-unbindable-dst";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-unbindable-src /tmp/ul-unbindable-dst");
+        check(rc == 0, "mkdir unbindable-bind test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for unbindable-bind source");
+
+        rc = mount("none", src, "tmpfs", MS_UNBINDABLE, NULL);
+        check(rc == 0, "mount MS_UNBINDABLE before bind test succeeds");
+
+        errno = 0;
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "mount MS_UNBINDABLE source rejects bind mount");
+
+        cleanup_umount_all(dst);
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0c: mount MS_BIND shares the same filesystem view
+     *
+     *  A bind mount should expose the source tree at the destination,
+     *  and writes through the destination must appear in the source.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-bind-src";
+        const char *dst = "/tmp/ul-bind-dst";
+
+        rc = run("mkdir -p /tmp/ul-bind-src /tmp/ul-bind-dst");
+        check(rc == 0, "mkdir bind-mount test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for bind-mount source");
+
+        rc = write_file("/tmp/ul-bind-src/source.txt", "bind source\n");
+        check(rc == 0, "write source file before bind mount");
+
+        errno = 0;
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "mount MS_BIND succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-bind-dst/source.txt", content, sizeof(content));
+            check(len > 0 && strcmp(content, "bind source") == 0,
+                  "bind mount exposes source contents at destination");
+        }
+
+        rc = write_file("/tmp/ul-bind-dst/dst-write.txt", "bind mirror\n");
+        check(rc == 0, "write through bind-mount destination");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-bind-src/dst-write.txt", content, sizeof(content));
+            check(len > 0 && strcmp(content, "bind mirror") == 0,
+                  "bind mount mirrors destination writes back to source");
+        }
+
+        cleanup_umount_all(dst);
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0c0: mount MS_BIND can bind a non-root subdirectory
+     *
+     *  Linux bind mounts are not restricted to the root of an existing
+     *  mount; a subdirectory bind must also succeed.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-bind-sub-src";
+        const char *dst = "/tmp/ul-bind-sub-dst";
+
+        rc = run("mkdir -p /tmp/ul-bind-sub-src /tmp/ul-bind-sub-dst");
+        check(rc == 0, "mkdir bind-subdir test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for bind-subdir source");
+
+        rc = run("mkdir -p /tmp/ul-bind-sub-src/sub");
+        check(rc == 0, "mkdir source subdirectory for bind-subdir test");
+
+        rc = write_file("/tmp/ul-bind-sub-src/sub/sub.txt", "bind subdir\n");
+        check(rc == 0, "write file in bind-subdir source subdirectory");
+
+        errno = 0;
+        rc = mount("/tmp/ul-bind-sub-src/sub", dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "mount MS_BIND on source subdirectory succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-bind-sub-dst/sub.txt", content, sizeof(content));
+            check(len > 0 && strcmp(content, "bind subdir") == 0,
+                  "bind mount on source subdirectory exposes contents");
+        }
+
+        cleanup_umount_all(dst);
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0c1: mount MS_BIND without MS_REC does not clone submounts
+     *
+     *  Linux bind-mounts only the top mount by default. Nested mounts
+     *  remain absent unless MS_REC is also specified.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-bind-tree-src";
+        const char *dst = "/tmp/ul-bind-tree-dst";
+        int nested_fd;
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-bind-tree-src /tmp/ul-bind-tree-dst");
+        check(rc == 0, "mkdir bind-tree test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for bind-tree source");
+
+        rc = run("mkdir -p /tmp/ul-bind-tree-src/submnt");
+        check(rc == 0, "mkdir bind-tree nested mountpoint");
+
+        rc = mount("tmpfs", "/tmp/ul-bind-tree-src/submnt", "tmpfs", 0, NULL);
+        check(rc == 0, "mount nested tmpfs under bind-tree source");
+
+        rc = write_file("/tmp/ul-bind-tree-src/submnt/nested.txt", "nested mount\n");
+        check(rc == 0, "write file inside nested source mount");
+
+        errno = 0;
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "mount MS_BIND without MS_REC succeeds");
+
+        errno = 0;
+        nested_fd = open("/tmp/ul-bind-tree-dst/submnt/nested.txt", O_RDONLY);
+        saved_errno = errno;
+        if (nested_fd >= 0)
+            close(nested_fd);
+        check(nested_fd == -1 && saved_errno == ENOENT,
+              "mount MS_BIND without MS_REC leaves nested mount absent");
+
+        cleanup_umount_all(dst);
+        cleanup_umount_all("/tmp/ul-bind-tree-src/submnt");
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0c2: mount MS_BIND|MS_REC clones nested submounts
+     *
+     *  A recursive bind mount should expose submount contents at the
+     *  destination subtree.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-rbind-src";
+        const char *dst = "/tmp/ul-rbind-dst";
+
+        rc = run("mkdir -p /tmp/ul-rbind-src /tmp/ul-rbind-dst");
+        check(rc == 0, "mkdir recursive-bind test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for recursive-bind source");
+
+        rc = run("mkdir -p /tmp/ul-rbind-src/submnt");
+        check(rc == 0, "mkdir recursive-bind nested mountpoint");
+
+        rc = mount("tmpfs", "/tmp/ul-rbind-src/submnt", "tmpfs", 0, NULL);
+        check(rc == 0, "mount nested tmpfs under recursive-bind source");
+
+        rc = write_file("/tmp/ul-rbind-src/submnt/nested.txt", "recursive bind\n");
+        check(rc == 0, "write file inside recursive-bind nested mount");
+
+        errno = 0;
+        rc = mount(src, dst, "tmpfs", MS_BIND | MS_REC, NULL);
+        check(rc == 0, "mount MS_BIND|MS_REC succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-rbind-dst/submnt/nested.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "recursive bind") == 0,
+                  "mount MS_BIND|MS_REC exposes nested mount contents");
+        }
+
+        cleanup_umount_all("/tmp/ul-rbind-dst/submnt");
+        cleanup_umount_all(dst);
+        cleanup_umount_all("/tmp/ul-rbind-src/submnt");
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0c3: recursive bind prunes unbindable child mounts
+     *
+     *  Linux prunes unbindable submounts when replicating a subtree via
+     *  MS_BIND|MS_REC.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-rbind-unbind-src";
+        const char *dst = "/tmp/ul-rbind-unbind-dst";
+        int nested_fd;
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-rbind-unbind-src /tmp/ul-rbind-unbind-dst");
+        check(rc == 0, "mkdir recursive-bind-unbindable test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for recursive-bind-unbindable source");
+
+        rc = run("mkdir -p /tmp/ul-rbind-unbind-src/submnt");
+        check(rc == 0, "mkdir recursive-bind-unbindable child mountpoint");
+
+        rc = mount("tmpfs", "/tmp/ul-rbind-unbind-src/submnt", "tmpfs", 0, NULL);
+        check(rc == 0, "mount child tmpfs for recursive-bind-unbindable test");
+
+        rc = mount("none", "/tmp/ul-rbind-unbind-src/submnt", "tmpfs", MS_UNBINDABLE, NULL);
+        check(rc == 0, "mount MS_UNBINDABLE on child mount succeeds");
+
+        errno = 0;
+        rc = mount(src, dst, "tmpfs", MS_BIND | MS_REC, NULL);
+        check(rc == 0, "mount MS_BIND|MS_REC with unbindable child succeeds");
+
+        errno = 0;
+        nested_fd = open("/tmp/ul-rbind-unbind-dst/submnt/probe.txt", O_RDONLY);
+        saved_errno = errno;
+        if (nested_fd >= 0)
+            close(nested_fd);
+        check(nested_fd == -1 && saved_errno == ENOENT,
+              "mount MS_BIND|MS_REC prunes unbindable child mount");
+
+        cleanup_umount_all("/tmp/ul-rbind-unbind-dst/submnt");
+        cleanup_umount_all(dst);
+        cleanup_umount_all("/tmp/ul-rbind-unbind-src/submnt");
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0d: mount MS_MOVE relocates an existing mount
+     *
+     *  After a move mount, the mounted tree should appear only at the
+     *  new path and disappear from the old path.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-move-src";
+        const char *dst = "/tmp/ul-move-dst";
+
+        rc = run("mkdir -p /tmp/ul-move-src /tmp/ul-move-dst");
+        check(rc == 0, "mkdir move-mount test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for move-mount source");
+
+        rc = write_file("/tmp/ul-move-src/move.txt", "move payload\n");
+        check(rc == 0, "write source file before move mount");
+
+        errno = 0;
+        rc = mount(src, dst, "tmpfs", MS_MOVE, NULL);
+        check(rc == 0, "mount MS_MOVE succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-move-dst/move.txt", content, sizeof(content));
+            check(len > 0 && strcmp(content, "move payload") == 0,
+                  "move mount exposes source contents at new path");
+        }
+
+        {
+            int old_fd;
+            int saved_errno;
+            errno = 0;
+            old_fd = open("/tmp/ul-move-src/move.txt", O_RDONLY);
+            saved_errno = errno;
+            if (old_fd >= 0)
+                close(old_fd);
+            check(old_fd == -1 && saved_errno == ENOENT,
+                  "move mount removes old mounted path");
+        }
+
+        cleanup_umount_all(dst);
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0d1: mount MS_MOVE rejects moving a mount beneath itself
+     *
+     *  Linux returns ELOOP if the move target is a descendant of the
+     *  source mount.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-move-loop";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-move-loop");
+        check(rc == 0, "mkdir move-loop test directory");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for move-loop test");
+
+        rc = run("mkdir -p /tmp/ul-move-loop/subdir");
+        check(rc == 0, "mkdir descendant target for move-loop test");
+
+        errno = 0;
+        rc = mount(src, "/tmp/ul-move-loop/subdir", "tmpfs", MS_MOVE, NULL);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == ELOOP,
+              "mount MS_MOVE rejects descendant target with ELOOP");
+
+        {
+            char content[256] = {0};
+            rc = write_file("/tmp/ul-move-loop/still-there.txt", "move loop keep\n");
+            check(rc == 0, "move-loop source mount remains usable after failed move");
+            rc = read_first_line("/tmp/ul-move-loop/still-there.txt", content, sizeof(content));
+            check(rc > 0 && strcmp(content, "move loop keep") == 0,
+                  "failed MS_MOVE leaves original mount in place");
+        }
+
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0e: mount MS_REMOUNT keeps the existing mount tree
+     *
+     *  A remount operates on the existing mount rather than replacing
+     *  it, so existing files should still be visible afterwards.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-remount";
+
+        rc = run("mkdir -p /tmp/ul-remount");
+        check(rc == 0, "mkdir remount test directory");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for remount test");
+
+        rc = write_file("/tmp/ul-remount/remount.txt", "remount keep\n");
+        check(rc == 0, "write file before remount");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_REMOUNT, NULL);
+        check(rc == 0, "mount MS_REMOUNT succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-remount/remount.txt", content, sizeof(content));
+            check(len > 0 && strcmp(content, "remount keep") == 0,
+                  "mount MS_REMOUNT preserves existing mount contents");
+        }
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0e1: mount MS_REMOUNT|MS_BIND|MS_RDONLY makes a bind
+     *              mount read-only without freezing the source mount
+     *
+     *  Linux uses bind-remount to toggle per-mount-point flags such as
+     *  read-only on a bind mount.
+     * ================================================================ */
+    {
+        const char *src = "/tmp/ul-bind-ro-src";
+        const char *dst = "/tmp/ul-bind-ro-dst";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-bind-ro-src /tmp/ul-bind-ro-dst");
+        check(rc == 0, "mkdir bind-remount-rdonly test directories");
+
+        rc = mount("tmpfs", src, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for bind-remount-rdonly source");
+
+        rc = write_file("/tmp/ul-bind-ro-src/base.txt", "bind ro base\n");
+        check(rc == 0, "write source file before bind-remount-rdonly");
+
+        rc = mount(src, dst, "tmpfs", MS_BIND, NULL);
+        check(rc == 0, "mount MS_BIND for bind-remount-rdonly test");
+
+        errno = 0;
+        rc = mount("none", dst, "tmpfs", MS_REMOUNT | MS_BIND | MS_RDONLY, NULL);
+        saved_errno = errno;
+        check(rc == 0, "mount MS_REMOUNT|MS_BIND|MS_RDONLY succeeds");
+
+        errno = 0;
+        rc = write_file("/tmp/ul-bind-ro-dst/deny.txt", "must fail\n");
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "bind-remount-rdonly rejects writes through bind mount");
+
+        rc = write_file("/tmp/ul-bind-ro-src/still-writable.txt", "source writable\n");
+        check(rc == 0, "bind-remount-rdonly leaves source mount writable");
+
+        cleanup_umount_all(dst);
+        cleanup_umount_all(src);
+    }
+
+    /* ================================================================
+     *  Tier 4k0f: mount MS_RDONLY creates a read-only mount
+     *
+     *  A read-only mount must reject write attempts with EROFS.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-rdonly";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-rdonly");
+        check(rc == 0, "mkdir rdonly test directory");
+
+        errno = 0;
+        rc = mount("tmpfs", mount_point, "tmpfs", MS_RDONLY, NULL);
+        saved_errno = errno;
+        check(rc == 0, "mount MS_RDONLY succeeds");
+
+        errno = 0;
+        rc = write_file("/tmp/ul-rdonly/ro.txt", "must fail\n");
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "mount MS_RDONLY rejects writes with EROFS");
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0g: mount MS_REMOUNT|MS_RDONLY preserves contents and
+     *             turns an existing mount read-only
+     *
+     *  Linux remounts apply to the existing mount. Existing files must
+     *  remain visible and subsequent writes must fail with EROFS.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-remount-rdonly";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-remount-rdonly");
+        check(rc == 0, "mkdir remount-rdonly test directory");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for remount-rdonly test");
+
+        rc = write_file("/tmp/ul-remount-rdonly/keep.txt", "keep ro\n");
+        check(rc == 0, "write file before remount-rdonly");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_REMOUNT | MS_RDONLY, NULL);
+        saved_errno = errno;
+        check(rc == 0, "mount MS_REMOUNT|MS_RDONLY succeeds");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-remount-rdonly/keep.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "keep ro") == 0,
+                  "mount MS_REMOUNT|MS_RDONLY preserves existing contents");
+        }
+
+        errno = 0;
+        rc = write_file("/tmp/ul-remount-rdonly/new.txt", "must fail\n");
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "mount MS_REMOUNT|MS_RDONLY rejects new writes");
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k0g1: remounted read-only mounts reject metadata and
+     *              directory entry changes with EROFS
+     *
+     *  Linux applies MS_REMOUNT|MS_RDONLY to the mountpoint, so chmod,
+     *  rename, unlink, and mkdir under that mount should fail with
+     *  EROFS.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-remount-rdonly-meta";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-remount-rdonly-meta");
+        check(rc == 0, "mkdir remount-rdonly-meta test directory");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for remount-rdonly-meta test");
+
+        rc = write_file("/tmp/ul-remount-rdonly-meta/file.txt", "meta ro\n");
+        check(rc == 0, "write file before remount-rdonly-meta");
+
+        errno = 0;
+        rc = mount("none", mount_point, "tmpfs", MS_REMOUNT | MS_RDONLY, NULL);
+        saved_errno = errno;
+        check(rc == 0, "mount MS_REMOUNT|MS_RDONLY for metadata test succeeds");
+
+        errno = 0;
+        rc = chmod("/tmp/ul-remount-rdonly-meta/file.txt", 0600);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "mount MS_REMOUNT|MS_RDONLY rejects chmod with EROFS");
+
+        errno = 0;
+        rc = rename("/tmp/ul-remount-rdonly-meta/file.txt",
+                    "/tmp/ul-remount-rdonly-meta/file2.txt");
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "mount MS_REMOUNT|MS_RDONLY rejects rename with EROFS");
+
+        errno = 0;
+        rc = unlink("/tmp/ul-remount-rdonly-meta/file.txt");
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "mount MS_REMOUNT|MS_RDONLY rejects unlink with EROFS");
+
+        errno = 0;
+        rc = mkdir("/tmp/ul-remount-rdonly-meta/newdir", 0755);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EROFS,
+              "mount MS_REMOUNT|MS_RDONLY rejects mkdir with EROFS");
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
      *  Tier 4k1: umount2 EINVAL for invalid flags
      *
      *  Linux umount2 must reject unsupported flag bits with EINVAL.
@@ -1082,6 +1946,180 @@ int main(void)
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
             run(cmd);
         }
+    }
+
+    /* ================================================================
+     *  Tier 4k2: umount2 EINVAL for invalid supported-flag combo
+     *
+     *  Linux umount2 rejects MNT_EXPIRE combined with MNT_DETACH or
+     *  MNT_FORCE.  The rejected operation must not unmount the target.
+     * ================================================================ */
+
+    /* Attach ext4 image */
+    if (loopdev[0]) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
+        rc = run(cmd);
+        check(rc == 0, "losetup attach for umount2-invalid-combo test");
+    } else {
+        check(0, "losetup attach for umount2-invalid-combo test");
+    }
+
+    /* Mount ext4 */
+    if (loopdev[0]) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt 2>&1", loopdev);
+        rc = run(cmd);
+        check(rc == 0, "mount for umount2-invalid-combo test");
+    } else {
+        check(0, "mount for umount2-invalid-combo test");
+    }
+
+    /* umount2 with invalid supported-flag combo must fail with EINVAL */
+    {
+        int saved_errno;
+        errno = 0;
+        rc = (int)syscall(SYS_umount2, "/tmp/ul-mnt", MNT_EXPIRE | MNT_DETACH);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "umount2 EINVAL for MNT_EXPIRE|MNT_DETACH");
+    }
+
+    /* Cleanup: normal umount then detach */
+    {
+        rc = umount("/tmp/ul-mnt");
+        check(rc == 0, "umount cleanup after umount2-invalid-combo test");
+        if (loopdev[0]) {
+            char cmd[256];
+            snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
+            run(cmd);
+        }
+    }
+
+    /* ================================================================
+     *  Tier 4k3: umount2 MNT_EXPIRE is a two-step expire operation
+     *
+     *  The first MNT_EXPIRE call should return EAGAIN and mark the
+     *  mount expired. A second call should then unmount it.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-expire";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-expire");
+        check(rc == 0, "mkdir expire test directory");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for MNT_EXPIRE test");
+
+        errno = 0;
+        rc = (int)syscall(SYS_umount2, mount_point, MNT_EXPIRE);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EAGAIN,
+              "umount2 MNT_EXPIRE first call returns EAGAIN");
+
+        errno = 0;
+        rc = (int)syscall(SYS_umount2, mount_point, MNT_EXPIRE);
+        saved_errno = errno;
+        check(rc == 0,
+              "umount2 MNT_EXPIRE second call unmounts expired mount");
+
+        cleanup_umount_all(mount_point);
+    }
+
+    /* ================================================================
+     *  Tier 4k4: umount2 UMOUNT_NOFOLLOW does not follow symlinks
+     *
+     *  With UMOUNT_NOFOLLOW, passing a symlink path must not unmount
+     *  the mount behind that symlink.
+     * ================================================================ */
+    {
+        const char *real_mount = "/tmp/ul-nofollow-real";
+        const char *link_mount = "/tmp/ul-nofollow-link";
+        int saved_errno;
+
+        run("mkdir -p /tmp/ul-nofollow-real");
+        unlink(link_mount);
+        rc = symlink(real_mount, link_mount);
+        check(rc == 0, "create symlink for UMOUNT_NOFOLLOW test");
+
+        rc = mount("tmpfs", real_mount, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for UMOUNT_NOFOLLOW test");
+
+        rc = write_file("/tmp/ul-nofollow-real/nofollow.txt", "nofollow keep\n");
+        check(rc == 0, "write file before UMOUNT_NOFOLLOW");
+
+        errno = 0;
+        rc = (int)syscall(SYS_umount2, link_mount, UMOUNT_NOFOLLOW);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "umount2 UMOUNT_NOFOLLOW rejects symlink target");
+
+        {
+            char content[256] = {0};
+            int len = read_first_line("/tmp/ul-nofollow-real/nofollow.txt",
+                                      content, sizeof(content));
+            check(len > 0 && strcmp(content, "nofollow keep") == 0,
+                  "UMOUNT_NOFOLLOW leaves real mount in place");
+        }
+
+        cleanup_umount_all(real_mount);
+        unlink(link_mount);
+    }
+
+    /* ================================================================
+     *  Tier 4k5: umount2 MNT_DETACH lazily detaches a busy mount
+     *
+     *  The detach should succeed even while an open file descriptor
+     *  keeps the mount busy. New path lookups must see the underlying
+     *  directory, while the existing file descriptor remains usable.
+     * ================================================================ */
+    {
+        const char *mount_point = "/tmp/ul-detach";
+        int detach_fd;
+
+        rc = run("mkdir -p /tmp/ul-detach");
+        check(rc == 0, "mkdir detach test directory");
+
+        rc = mount("tmpfs", mount_point, "tmpfs", 0, NULL);
+        check(rc == 0, "mount tmpfs for MNT_DETACH test");
+
+        rc = write_file("/tmp/ul-detach/detach.txt", "detach payload\n");
+        check(rc == 0, "write file before MNT_DETACH");
+
+        detach_fd = open("/tmp/ul-detach/detach.txt", O_RDONLY);
+        check(detach_fd >= 0, "open fd before MNT_DETACH");
+
+        if (detach_fd >= 0) {
+            int saved_errno;
+            char content[256] = {0};
+            ssize_t nread;
+            int reopened_fd;
+
+            errno = 0;
+            rc = (int)syscall(SYS_umount2, mount_point, MNT_DETACH);
+            saved_errno = errno;
+            check(rc == 0, "umount2 MNT_DETACH succeeds on busy mount");
+
+            errno = 0;
+            reopened_fd = open("/tmp/ul-detach/detach.txt", O_RDONLY);
+            saved_errno = errno;
+            if (reopened_fd >= 0)
+                close(reopened_fd);
+            check(reopened_fd == -1 && saved_errno == ENOENT,
+                  "MNT_DETACH hides mount from new lookups");
+
+            lseek(detach_fd, 0, SEEK_SET);
+            nread = read(detach_fd, content, sizeof(content) - 1);
+            if (nread >= 0)
+                content[nread] = '\0';
+            check(nread > 0 && strstr(content, "detach payload") != NULL,
+                  "MNT_DETACH keeps existing fd usable");
+
+            close(detach_fd);
+        }
+
+        cleanup_umount_all(mount_point);
     }
 
     /* ================================================================

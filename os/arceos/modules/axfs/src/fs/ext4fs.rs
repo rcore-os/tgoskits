@@ -24,15 +24,15 @@ use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeRef, VfsNodeType, VfsOps,
     VfsResult,
 };
+use ax_kspin::SpinNoIrq as Mutex;
 use rsext4::{
     Ext4Error, Ext4FileSystem as Rsext4FileSystem, Ext4Result, Ext4Timestamp, Jbd2Dev,
     api::{OpenFile, fs_mount, lseek, open, read_at},
     dir::{get_inode_with_num, mkdir},
     entries::classic_dir::list_entries,
-    file::{delete_dir, mkfile, mv, truncate, unlink, write_file},
+    file::{delete_dir, is_dir_empty, mkfile, mv, truncate, unlink, write_file},
     loopfile::resolve_inode_block_allextend,
 };
-use spin::Mutex;
 
 use crate::dev::{Disk, Partition};
 
@@ -268,17 +268,29 @@ impl VfsNodeOps for FileWrapper {
             Ext4Inner::Disk(ref inner) => {
                 let mut inner = inner.lock();
                 if inode.is_dir() {
-                    let _ = delete_dir(&mut fs, &mut inner, &fpath);
+                    let mut dir_inode = inode;
+                    if !is_dir_empty(&mut fs, &mut inner, &mut dir_inode)
+                        .map_err(|_| VfsError::Io)?
+                    {
+                        return Err(VfsError::DirectoryNotEmpty);
+                    }
+                    delete_dir(&mut fs, &mut inner, &fpath).map_err(|_| VfsError::Io)?;
                 } else {
-                    let _ = unlink(&mut fs, &mut inner, &fpath);
+                    unlink(&mut fs, &mut inner, &fpath).map_err(|_| VfsError::Io)?;
                 }
             }
             Ext4Inner::Partition(ref inner) => {
                 let mut inner = inner.lock();
                 if inode.is_dir() {
-                    let _ = delete_dir(&mut fs, &mut inner, &fpath);
+                    let mut dir_inode = inode;
+                    if !is_dir_empty(&mut fs, &mut inner, &mut dir_inode)
+                        .map_err(|_| VfsError::Io)?
+                    {
+                        return Err(VfsError::DirectoryNotEmpty);
+                    }
+                    delete_dir(&mut fs, &mut inner, &fpath).map_err(|_| VfsError::Io)?;
                 } else {
-                    let _ = unlink(&mut fs, &mut inner, &fpath);
+                    unlink(&mut fs, &mut inner, &fpath).map_err(|_| VfsError::Io)?;
                 }
             }
         }
