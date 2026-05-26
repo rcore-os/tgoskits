@@ -40,7 +40,6 @@ fn main() {
     } else if build.uspace {
         println!("cargo:rustc-cfg=uspace");
     }
-
     if build.page_size == 4096 {
         println!("cargo:rustc-cfg=page_size_4k");
     } else if build.page_size == 16384 {

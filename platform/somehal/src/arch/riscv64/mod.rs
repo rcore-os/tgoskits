@@ -1,27 +1,35 @@
 use crate::common::PlatOp;
 
+mod plic;
+
 pub struct Plat;
 
 impl PlatOp for Plat {
     fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
-        let raw: usize = irq.into();
-        let irq = someboot::irq::IrqId::new(raw);
-        if irq == someboot::irq::systimer_irq() {
-            someboot::irq::irq_set_enable(irq, enable);
-        }
+        plic::irq_set_enable(irq, enable);
     }
 
     fn irq_handler() -> someboot::irq::IrqId {
-        someboot::irq::systimer_irq()
+        someboot::irq::IrqId::new(plic::systick_irq().raw())
+    }
+
+    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
+        plic::irq_handler_with_raw(raw)
     }
 
     fn systick_irq() -> rdrive::IrqId {
-        someboot::irq::systimer_irq().raw().into()
+        plic::systick_irq()
     }
 
     fn secondary_init() {}
 
-    fn secondary_init_intc() {}
+    fn secondary_init_intc() {
+        plic::secondary_init_intc();
+    }
 
     fn secondary_init_systick() {}
+
+    fn send_ipi_to_cpu(cpu_id: usize) {
+        plic::send_ipi_to_cpu(cpu_id);
+    }
 }

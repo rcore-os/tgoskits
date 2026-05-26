@@ -411,6 +411,11 @@ AX_IP = "10.0.2.15"
             true,
             Some(false)
         ));
+        assert!(build::resolve_effective_plat_dyn(
+            "riscv64gc-unknown-none-elf",
+            true,
+            None
+        ));
         assert!(!build::resolve_effective_plat_dyn(
             "x86_64-unknown-none",
             true,

@@ -2,7 +2,7 @@ pub mod epoll;
 pub mod event;
 mod fs;
 pub mod inotify;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod ion;
 pub mod memfd;
 mod net;

@@ -3,13 +3,13 @@ use crate::TrapFrame;
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
 struct ExceptionTableEntry {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     from: i32,
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     to: i32,
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     from: usize,
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     to: usize,
 }
 
@@ -22,7 +22,13 @@ impl ExceptionTableEntry {
             (base + self.from as isize) as usize
         }
 
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(target_arch = "riscv64")]
+        {
+            let base = unsafe { _ex_table_start.as_ptr() } as isize;
+            (base + self.from as isize) as usize
+        }
+
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
         {
             self.from
         }
@@ -36,7 +42,13 @@ impl ExceptionTableEntry {
             (base + self.to as isize) as usize
         }
 
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(target_arch = "riscv64")]
+        {
+            let base = unsafe { _ex_table_start.as_ptr() } as isize;
+            (base + self.to as isize) as usize
+        }
+
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
         {
             self.to
         }

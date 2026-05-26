@@ -1,3 +1,5 @@
+#[cfg(probe = "fdt")]
+use rdrive::register::FdtInfo;
 use rdrive::{PlatformDevice, probe::OnProbeError};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 use {alloc::format, sg200x_bsp::sdmmc::Sdmmc};
@@ -18,6 +20,38 @@ module_driver!(
         on_probe: probe_static,
     }],
 );
+
+#[cfg(probe = "fdt")]
+module_driver!(
+    name: "FDT CVSD",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["cvitek,cv181x-sd"],
+        on_probe: probe_fdt,
+    }],
+);
+
+#[cfg(probe = "fdt")]
+fn probe_fdt(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    let sdmmc =
+        info.node.regs().into_iter().next().ok_or_else(|| {
+            OnProbeError::other(alloc::format!("[{}] has no reg", info.node.name()))
+        })?;
+    let syscon = info
+        .find_compatible(&["syscon"])
+        .into_iter()
+        .find_map(|node| node.regs().into_iter().next())
+        .ok_or_else(|| OnProbeError::other("CVSD syscon node not found in FDT"))?;
+
+    register_mmio(
+        plat_dev,
+        sdmmc.address as usize,
+        sdmmc.size.unwrap_or(0x1000) as usize,
+        syscon.address as usize,
+        syscon.size.unwrap_or(0x1000) as usize,
+    )
+}
 
 #[cfg(probe = "static")]
 fn probe_static(

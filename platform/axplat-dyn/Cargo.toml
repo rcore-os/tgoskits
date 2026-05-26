@@ -17,6 +17,7 @@ rtc = []
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]
+thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }

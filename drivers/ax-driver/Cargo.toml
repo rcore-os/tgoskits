@@ -47,6 +47,7 @@ rockchip-dwc-xhci = ["usb", "fdt", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb", "fdt"]
 xhci-pci = ["usb", "pci"]
 serial = ["fdt", "dep:some-serial"]
+sg2002-placeholder = ["fdt"]
 rtc = ["fdt", "dep:ax-arm-pl031"]
 rknpu = ["fdt", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rockchip-sdhci = [

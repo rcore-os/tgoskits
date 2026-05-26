@@ -146,31 +146,51 @@ fn uimg_arch_for(arch: &str) -> String {
 
 fn inject_uimage_post_build_cmd(cargo: &mut Cargo, arch: &str) -> anyhow::Result<()> {
     let uimg_arch = uimg_arch_for(arch);
-    let config_path = cargo
-        .env
-        .get("AX_CONFIG_PATH")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("AX_CONFIG_PATH is required for UIMAGE generation"))?;
+    let paddr = uimage_load_paddr_expr(cargo, arch)?;
 
     let cmd = format!(
-        "paddr=$(ax-config-gen {config_path} -r plat.kernel-base-paddr | tr -d _) && \
-         bin=${{KERNEL_ELF%.elf}}.bin && mkimage -A {uimg_arch} -O linux -T kernel -C none -a \
-         \"$paddr\" -d \"$bin\" \"${{bin%.bin}}.uimg\""
+        "paddr={paddr} && bin=${{KERNEL_ELF%.elf}}.bin && mkimage -A {uimg_arch} -O linux -T \
+         kernel -C none -a \"$paddr\" -d \"$bin\" \"${{bin%.bin}}.uimg\""
     );
     cargo.post_build_cmds.push(cmd);
     Ok(())
 }
 
+fn uimage_load_paddr_expr(cargo: &Cargo, arch: &str) -> anyhow::Result<String> {
+    if let Some(config_path) = cargo.env.get("AX_CONFIG_PATH") {
+        return Ok(format!(
+            "$(ax-config-gen {config_path} -r plat.kernel-base-paddr | tr -d _)"
+        ));
+    }
+
+    if !uses_dynamic_platform(&cargo.features) {
+        return Err(anyhow::anyhow!(
+            "AX_CONFIG_PATH is required for UIMAGE generation"
+        ));
+    }
+
+    match arch {
+        "aarch64" => Ok("0x200000".to_string()),
+        "riscv64" => Ok("0x80200000".to_string()),
+        other => Err(anyhow::anyhow!(
+            "AX_CONFIG_PATH is required for UIMAGE generation on {other}"
+        )),
+    }
+}
+
 fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
-    let uses_dynamic_platform = cargo.features.iter().any(|feature| {
+    if uses_dynamic_platform(&cargo.features) {
+        cargo.features.retain(|feature| feature != "qemu");
+    }
+}
+
+fn uses_dynamic_platform(features: &[String]) -> bool {
+    features.iter().any(|feature| {
         matches!(
             feature.as_str(),
             "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
         )
-    });
-    if uses_dynamic_platform {
-        cargo.features.retain(|feature| feature != "qemu");
-    }
+    })
 }
 
 fn uses_static_default_platform(features: &[String]) -> bool {
@@ -182,12 +202,7 @@ fn uses_static_default_platform(features: &[String]) -> bool {
     }) || features.iter().any(|feature| {
         feature.starts_with("ax-hal/") && feature != "ax-hal/plat-dyn" && feature != "ax-hal/myplat"
     });
-    let has_dynamic = features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
-        )
-    });
+    let has_dynamic = uses_dynamic_platform(features);
     let has_custom = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
@@ -556,6 +571,62 @@ HELLO = "world"
 
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
+    }
+
+    #[test]
+    fn uimage_load_paddr_uses_dynamic_riscv64_fallback_without_axconfig() {
+        let cargo = Cargo {
+            env: HashMap::new(),
+            target: "scripts/targets/pie/riscv64gc-unknown-none-elf.json".to_string(),
+            package: STARRY_PACKAGE.to_string(),
+            bin: None,
+            features: vec!["ax-feat/plat-dyn".to_string()],
+            log: None,
+            extra_config: None,
+            profile: None,
+            disable_someboot_build_config: true,
+            args: Vec::new(),
+            pre_build_cmds: Vec::new(),
+            post_build_cmds: Vec::new(),
+            to_bin: true,
+        };
+
+        assert_eq!(
+            uimage_load_paddr_expr(&cargo, "riscv64").unwrap(),
+            "0x80200000"
+        );
+    }
+
+    #[test]
+    fn uimage_load_paddr_prefers_axconfig_when_available() {
+        let mut cargo = Cargo {
+            env: HashMap::from([(
+                "AX_CONFIG_PATH".to_string(),
+                "/tmp/generated.axconfig.toml".to_string(),
+            )]),
+            target: "riscv64gc-unknown-none-elf".to_string(),
+            package: STARRY_PACKAGE.to_string(),
+            bin: None,
+            features: vec!["ax-feat/plat-dyn".to_string()],
+            log: None,
+            extra_config: None,
+            profile: None,
+            disable_someboot_build_config: true,
+            args: Vec::new(),
+            pre_build_cmds: Vec::new(),
+            post_build_cmds: Vec::new(),
+            to_bin: true,
+        };
+
+        assert_eq!(
+            uimage_load_paddr_expr(&cargo, "riscv64").unwrap(),
+            "$(ax-config-gen /tmp/generated.axconfig.toml -r plat.kernel-base-paddr | tr -d _)"
+        );
+
+        inject_uimage_post_build_cmd(&mut cargo, "riscv64").unwrap();
+        assert!(
+            cargo.post_build_cmds[0].contains("paddr=$(ax-config-gen /tmp/generated.axconfig.toml")
+        );
     }
 
     #[test]

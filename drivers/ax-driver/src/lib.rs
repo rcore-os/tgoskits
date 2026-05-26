@@ -20,6 +20,7 @@ pub mod error;
     all(feature = "rtc", feature = "fdt"),
     all(feature = "rockchip-soc", feature = "fdt"),
     all(feature = "rockchip-pm", feature = "fdt"),
+    all(feature = "sg2002-placeholder", feature = "fdt"),
     all(feature = "rockchip-dwmmc", feature = "fdt"),
     all(feature = "rockchip-sdhci", feature = "fdt"),
     all(feature = "phytium-mci", feature = "fdt"),
@@ -51,6 +52,7 @@ pub mod serial;
 #[cfg(any(
     feature = "rockchip-soc",
     feature = "rockchip-pm",
+    feature = "sg2002-placeholder",
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;

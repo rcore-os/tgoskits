@@ -40,6 +40,10 @@ vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
+riscv64-qemu-virt-hv = [
+    "dep:ax-plat-riscv64-qemu-virt",
+    "ax-plat-riscv64-qemu-virt/hypervisor",
+]
 rockchip-soc = ["ax-driver/rockchip-soc"]
 rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
 rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
@@ -105,7 +109,7 @@ arm-gic-driver = { workspace = true, features = ["rdif"] }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-plat-loongarch64-qemu-virt = { workspace = true, default-features = false, features = ["irq", "smp"] }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-qemu-virt = { workspace = true, features = ["hypervisor"] }
+ax-plat-riscv64-qemu-virt = { workspace = true, optional = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)

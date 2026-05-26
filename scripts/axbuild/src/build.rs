@@ -469,7 +469,10 @@ pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Re
     };
 
     if plat_dyn {
-        if target != "aarch64-unknown-none-softfloat" {
+        if !matches!(
+            target,
+            "aarch64-unknown-none-softfloat" | "riscv64gc-unknown-none-elf"
+        ) {
             bail!("unsupported PIE target `{target}`");
         }
         Ok(Path::new(TARGET_JSON_ROOT)
@@ -659,7 +662,7 @@ pub(crate) fn resolve_effective_plat_dyn(
 }
 
 fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-")
+    target.starts_with("aarch64-") || target.starts_with("riscv64")
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
@@ -1432,10 +1435,10 @@ mod tests {
     }
 
     #[test]
-    fn cargo_target_json_path_rejects_unsupported_pie_target() {
-        let err = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap_err();
+    fn cargo_target_json_path_maps_riscv64_pie_target() {
+        let path = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap();
 
-        assert!(err.to_string().contains("unsupported PIE target"));
+        assert!(path.ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json"));
     }
 
     #[test]

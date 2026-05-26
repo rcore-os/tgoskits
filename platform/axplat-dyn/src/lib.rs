@@ -1,6 +1,5 @@
 #![no_std]
 #![cfg(not(any(windows, unix)))]
-#![feature(used_with_arg)]
 
 extern crate alloc;
 extern crate ax_driver as _;
@@ -28,6 +27,8 @@ fn somehal_handle_irq(_irq: somehal::irq::IrqId) {}
 
 pub use boot::boot_stack_bounds;
 pub use generic_timer::try_init_epoch_offset;
+#[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
+pub use irq::register_virtual_irq_injector;
 
 // pub mod config {
 //     //! Platform configuration module.

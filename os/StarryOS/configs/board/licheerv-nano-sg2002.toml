@@ -1,9 +1,10 @@
 env = { UIMAGE = "y" }
 features = [
-  "sg2002",
-  "myplat",
+  "sg2002-dyn",
+  "ax-feat/plat-dyn",
   "ax-driver/cvsd",
+  "ax-driver/serial",
 ]
 log = "Info"
-plat_dyn = false
+plat_dyn = true
 target = "riscv64gc-unknown-none-elf"
