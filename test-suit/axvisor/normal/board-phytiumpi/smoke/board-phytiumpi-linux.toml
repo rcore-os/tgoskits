@@ -1,0 +1,11 @@
+board_type = "PhytiumPi"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+success_regex = [
+  "(?m)^phytiumpi login:",
+]
+timeout = 300
