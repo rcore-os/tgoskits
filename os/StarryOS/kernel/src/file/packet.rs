@@ -9,7 +9,10 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
+use ax_task::{
+    current,
+    future::{block_on, poll_io},
+};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -19,7 +22,10 @@ use linux_raw_sys::{
 use starry_vm::{vm_read_slice, vm_write_slice};
 
 use super::{FileLike, Kstat};
-use crate::file::{IoDst, IoSrc, get_file_like};
+use crate::{
+    file::{IoDst, IoSrc, get_file_like},
+    task::AsThread,
+};
 
 pub(super) const ETH0_IFINDEX: i32 = 2;
 const ETH0_NAME: &[u8] = b"eth0";
@@ -256,6 +262,12 @@ fn write_ifreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
     Ok(vm_write_slice((arg + IFREQ_DATA_OFFSET) as *mut u8, data)?)
 }
 
+fn in_root_net_ns() -> bool {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    nsproxy.net_ns.lock().ns_id == 0
+}
+
 impl FileLike for PacketSocket {
     fn stat(&self) -> AxResult<Kstat> {
         Ok(Kstat {
@@ -283,7 +295,7 @@ impl FileLike for PacketSocket {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        if !ifreq_name_is_eth0(arg)? {
+        if !in_root_net_ns() || !ifreq_name_is_eth0(arg)? {
             return Err(AxError::NoSuchDevice);
         }
 

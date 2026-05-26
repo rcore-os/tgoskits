@@ -131,7 +131,7 @@ pub fn sys_mount(
     }
 
     match fs_type.as_str() {
-        "tmpfs" => {
+        "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = FS_CONTEXT.lock().resolve(target)?;
             let mp = target.mount(&fs)?;

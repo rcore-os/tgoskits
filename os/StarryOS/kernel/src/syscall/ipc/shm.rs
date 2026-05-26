@@ -8,10 +8,17 @@ use ax_hal::{
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
 use ax_task::current;
-use linux_raw_sys::{ctypes::c_ushort, general::*};
+use bytemuck::AnyBitPattern;
+use linux_raw_sys::{
+    ctypes::{c_ulong, c_ushort},
+    general::*,
+};
 use starry_process::Pid;
+use starry_vm::VmMutPtr;
 
-use super::{IPC_CREAT, IPC_EXCL, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id};
+use super::{
+    IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id,
+};
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
     task::AsThread,
@@ -85,6 +92,27 @@ impl ShmidDs {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern)]
+struct ShmInfo64 {
+    shmmax: c_ulong,
+    shmmin: c_ulong,
+    shmmni: c_ulong,
+    shmseg: c_ulong,
+    shmall: c_ulong,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern)]
+struct ShmInfo {
+    used_ids: i32,
+    shm_tot: c_ulong,
+    shm_rss: c_ulong,
+    shm_swp: c_ulong,
+    swap_attempts: c_ulong,
+    swap_successes: c_ulong,
+}
+
 /// This struct is used to maintain the shmem in kernel.
 pub struct ShmInner {
     /// Shared memory segment identifier.
@@ -100,6 +128,8 @@ pub struct ShmInner {
     pub mapping_flags: MappingFlags,
     /// c type struct, used in shm_ctl
     pub shmid_ds: ShmidDs,
+    /// IPC namespace id that owns this segment.
+    pub ns_id: u64,
 }
 
 impl ShmInner {
@@ -112,6 +142,7 @@ impl ShmInner {
         pid: Pid,
         uid: u32,
         gid: u32,
+        ns_id: u64,
     ) -> Self {
         ShmInner {
             shmid,
@@ -128,6 +159,7 @@ impl ShmInner {
                 uid,
                 gid,
             ),
+            ns_id,
         }
     }
 
@@ -263,7 +295,7 @@ pub struct ShmManager {
     /// key <-> shm_id
     key_shmid: BiBTreeMap<i32, i32>,
     /// shm_id -> shm_inner
-    shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
+    pub(crate) shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
     /// pid -> shm_id <-> vaddr
     pid_shmid_vaddr: BTreeMap<Pid, BiBTreeMap<i32, VirtAddr>>,
 }
@@ -445,19 +477,31 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     let cred = thread.cred();
     let mut shm_manager = SHM_MANAGER.lock();
 
+    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+
     if key != IPC_PRIVATE {
         // A segment already exists for this key.
         if let Some(shmid) = shm_manager.get_shmid_by_key(key) {
-            // IPC_CREAT | IPC_EXCL requires the creation to fail when the
-            // segment is already present. See Linux ipcget_public().
-            if shmflg & IPC_CREAT as usize != 0 && shmflg & IPC_EXCL as usize != 0 {
-                return Err(AxError::AlreadyExists);
-            }
             let shm_inner = shm_manager
                 .get_inner_by_shmid(shmid)
                 .ok_or(AxError::NotFound)?;
-            let mut shm_inner = shm_inner.lock();
-            return shm_inner.try_update(size, cur_pid);
+            let shm_inner = shm_inner.lock();
+            // Only match if the segment lives in our IPC namespace.
+            if shm_inner.ns_id == ns_id {
+                // IPC_CREAT | IPC_EXCL requires the creation to fail when the
+                // segment is already present. See Linux ipcget_public().
+                if shmflg & IPC_CREAT as usize != 0 && shmflg & IPC_EXCL as usize != 0 {
+                    return Err(AxError::AlreadyExists);
+                }
+                drop(shm_inner);
+                let shm_inner = shm_manager
+                    .get_inner_by_shmid(shmid)
+                    .ok_or(AxError::NotFound)?;
+                let mut shm_inner = shm_inner.lock();
+                return shm_inner.try_update(size, cur_pid);
+            }
+            // Key exists in a different namespace — fall through and
+            // create a new segment in the current namespace.
         }
 
         // No segment exists for this key: create one only when IPC_CREAT
@@ -483,6 +527,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         cur_pid,
         cred.euid,
         cred.egid,
+        ns_id,
     )));
     shm_manager.insert_key_shmid(key, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);
@@ -569,35 +614,82 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     Ok(start_addr.as_usize() as isize)
 }
 
+fn current_ipc_ns_id() -> u64 {
+    let curr = current();
+    let thr = curr.as_thread();
+    thr.proc_data.nsproxy.lock().ipc_ns.lock().ns_id
+}
+
+fn shm_ns_check(shm_inner: &ShmInner) -> AxResult<()> {
+    let ns_id = current_ipc_ns_id();
+    if shm_inner.ns_id != ns_id {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(())
+}
+
 pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize> {
     let cmd = cmd as i32;
+    let ns_id = current_ipc_ns_id();
+
+    // IPC_INFO and SHM_INFO don't use shmid.
+    if cmd == IPC_INFO {
+        let _shm_manager = SHM_MANAGER.lock();
+        let info = ShmInfo64 {
+            shmmax: 0x2000000,
+            shmmin: 1,
+            shmmni: 4096,
+            shmseg: 4096,
+            shmall: 0x2000000,
+        };
+        (buf.as_ptr() as *mut ShmInfo64).vm_write(info)?;
+        return Ok(0);
+    }
+
+    if cmd == 14 {
+        // SHM_INFO = 14 (Linux)
+        let shm_manager = SHM_MANAGER.lock();
+        let mut used_ids = 0i32;
+        let mut shm_tot = 0u64;
+        for inner_arc in shm_manager.shmid_inner.values() {
+            let inner = inner_arc.lock();
+            if inner.ns_id == ns_id {
+                used_ids += 1;
+                shm_tot += inner.page_num as u64;
+            }
+        }
+        let shm_info = ShmInfo {
+            used_ids,
+            shm_tot,
+            shm_rss: shm_tot,
+            shm_swp: 0,
+            swap_attempts: 0,
+            swap_successes: 0,
+        };
+        (buf.as_ptr() as *mut ShmInfo).vm_write(shm_info)?;
+        return Ok(0);
+    }
 
     if cmd == IPC_RMID {
-        // If no processes are attached, destroy the segment immediately.
-        // Otherwise mark it for deferred destruction and remove the key
-        // mapping so future shmget() calls won't find it. See Linux
-        // do_shm_rmid() in ipc/shm.c.
         let mut shm_manager = SHM_MANAGER.lock();
         let shm_inner_arc = shm_manager
             .get_inner_by_shmid(shmid)
             .ok_or(AxError::InvalidInput)?;
         let mut shm_inner = shm_inner_arc.lock();
+        shm_ns_check(&shm_inner)?;
 
         shm_inner.rmid = true;
         shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
-
-        // Make private so no new shmget() finds it by key.
         shm_manager.make_private(shmid);
 
         if shm_inner.attach_count() == 0 {
             drop(shm_inner);
             shm_manager.remove_shmid(shmid);
         }
-
         return Ok(0);
     }
 
-    // IPC_SET and IPC_STAT only need shm_inner.
+    // IPC_SET and IPC_STAT
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
         shm_manager
@@ -605,6 +697,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
             .ok_or(AxError::InvalidInput)?
     };
     let mut shm_inner = shm_inner_arc.lock();
+    shm_ns_check(&shm_inner)?;
 
     if cmd == IPC_SET {
         shm_inner.shmid_ds = *buf.get_as_mut()?;
