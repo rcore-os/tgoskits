@@ -23,6 +23,15 @@ pub struct Directory {
 // Linux-style getdents64 implementation (for normal Linux targets)
 // ============================================================================
 
+#[repr(C, packed)]
+struct Dirent64Header {
+    d_ino: u64,
+    d_off: i64,
+    d_reclen: u16,
+    d_type: u8,
+    // d_name: [u8] follows at offset size_of::<Self>()
+}
+
 struct DirBuffer<'a> {
     buf: &'a mut [u8],
     offset: usize,
@@ -42,7 +51,7 @@ impl<'a> DirBuffer<'a> {
     }
 
     fn write_entry(&mut self, d_ino: u64, d_off: i64, d_type: u8, name: &[u8]) -> bool {
-        const NAME_OFFSET: usize = 19;
+        const NAME_OFFSET: usize = core::mem::size_of::<Dirent64Header>();
 
         let name_len = name.len().min(255);
         let reclen = (NAME_OFFSET + name_len + 1).next_multiple_of(8);
@@ -51,16 +60,17 @@ impl<'a> DirBuffer<'a> {
         }
 
         unsafe {
-            let entry_ptr = self.buf.as_mut_ptr().add(self.offset);
-            entry_ptr.cast::<u64>().write_unaligned(d_ino);
-            entry_ptr.add(8).cast::<i64>().write_unaligned(d_off);
-            entry_ptr
-                .add(16)
-                .cast::<u16>()
-                .write_unaligned(reclen as u16);
-            entry_ptr.add(18).write(d_type);
-
-            let name_ptr = entry_ptr.add(NAME_OFFSET);
+            self.buf
+                .as_mut_ptr()
+                .add(self.offset)
+                .cast::<Dirent64Header>()
+                .write_unaligned(Dirent64Header {
+                    d_ino,
+                    d_off,
+                    d_reclen: reclen as u16,
+                    d_type,
+                });
+            let name_ptr = self.buf.as_mut_ptr().add(self.offset + NAME_OFFSET);
             name_ptr.copy_from_nonoverlapping(name.as_ptr(), name_len);
             name_ptr.add(name_len).write(0);
         }

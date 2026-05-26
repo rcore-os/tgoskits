@@ -290,17 +290,13 @@ impl FsContext {
         let entry = self.resolve_no_follow(path.as_ref())?;
         entry
             .parent()
-            .ok_or(VfsError::IsADirectory)?
+            .ok_or(VfsError::PermissionDenied)?
             .unlink(&entry.name(), false)
     }
 
     /// Removes a directory from the filesystem.
     pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
         let entry = self.resolve_no_follow(path.as_ref())?;
-        let dir = entry.entry().as_dir()?;
-        if dir.has_children()? {
-            return Err(VfsError::DirectoryNotEmpty);
-        }
         entry
             .parent()
             .ok_or(VfsError::ResourceBusy)?
@@ -359,9 +355,6 @@ impl FsContext {
         link_path: impl AsRef<Path>,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_nonexistent(link_path.as_ref())?;
-        if dir.lookup_no_follow(name).is_ok() {
-            return Err(VfsError::AlreadyExists);
-        }
         let symlink = dir.create(name, NodeType::Symlink, NodePermission::default())?;
         symlink.entry().as_file()?.set_symlink(target.as_ref())?;
         Ok(symlink)

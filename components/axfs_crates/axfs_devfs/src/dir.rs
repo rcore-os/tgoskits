@@ -104,14 +104,35 @@ impl NodeOps for DevDirNode {
 impl DirNodeOps for DevDirNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut count = 0;
+        let mut off = offset;
+
+        if off == 0 {
+            if !sink.accept(".", self.inode, NodeType::Directory, 1) {
+                return Ok(0);
+            }
+            count += 1;
+            off = 1;
+        }
+        if off == 1 {
+            let parent_inode = self
+                .this
+                .upgrade()
+                .and_then(|e| e.parent())
+                .map_or(self.inode, |p| p.inode());
+            if !sink.accept("..", parent_inode, NodeType::Directory, 2) {
+                return Ok(count);
+            }
+            count += 1;
+            off = 2;
+        }
         for (index, (name, entry)) in self
             .children
             .lock()
             .iter()
             .enumerate()
-            .skip(offset as usize)
+            .skip((off - 2) as usize)
         {
-            if !sink.accept(name, entry.inode(), entry.node_type(), (index + 1) as u64) {
+            if !sink.accept(name, entry.inode(), entry.node_type(), (index + 3) as u64) {
                 break;
             }
             count += 1;
