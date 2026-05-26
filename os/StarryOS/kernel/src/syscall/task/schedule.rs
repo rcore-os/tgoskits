@@ -173,6 +173,7 @@ pub fn sys_sched_getscheduler(_pid: i32) -> AxResult<isize> {
 pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxResult<isize> {
     check_sched_permission(_pid)?;
     let task = get_task_by_sched_pid(_pid)?;
+    let caller = current().as_thread().cred();
     if _param.is_null() {
         return Err(AxError::InvalidInput);
     }
@@ -196,6 +197,9 @@ pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxR
         SCHED_FIFO | SCHED_RR => {
             if !(1..=99).contains(&prio) {
                 return Err(AxError::InvalidInput);
+            }
+            if !caller.has_cap_sys_nice() {
+                return Err(AxError::OperationNotPermitted);
             }
         }
         _ => unreachable!(),
