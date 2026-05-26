@@ -856,7 +856,7 @@ impl PerCpuArrayMap {
     }
 
     fn current_cpu(&self) -> usize {
-        let cpu = ax_runtime::hal::percpu::this_cpu_id();
+        let cpu = ax_hal::percpu::this_cpu_id();
         if cpu < self.cpu_count { cpu } else { 0 }
     }
 }
@@ -986,7 +986,7 @@ impl UnifiedMap {
     }
 
     fn detect_cpu_count() -> usize {
-        ax_runtime::hal::cpu_num()
+        ax_hal::cpu_num()
     }
 }
 
@@ -1757,11 +1757,11 @@ fn helper_probe_read_kernel_str(dst: u64, size: u64, src: u64, _a4: u64, _a5: u6
 }
 
 fn helper_ktime_get_ns(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    ax_runtime::hal::time::monotonic_time_nanos()
+    ax_hal::time::monotonic_time_nanos()
 }
 
 fn helper_get_smp_processor_id(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    ax_runtime::hal::percpu::this_cpu_id() as u64
+    ax_hal::percpu::this_cpu_id() as u64
 }
 
 fn helper_get_current_pid_tgid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
@@ -1784,7 +1784,7 @@ fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u
     static SEED: AtomicU32 = AtomicU32::new(0);
     static INITIALIZED: AtomicBool = AtomicBool::new(false);
     if !INITIALIZED.load(Ordering::Acquire) {
-        let ts = ax_runtime::hal::time::monotonic_time_nanos() as u32;
+        let ts = ax_hal::time::monotonic_time_nanos() as u32;
         SEED.store(ts.wrapping_add(12345), Ordering::Relaxed);
         INITIALIZED.store(true, Ordering::Release);
     }
@@ -2347,58 +2347,59 @@ impl BpfVm {
     }
 }
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+))]
 pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
-    #[cfg(any(
-        target_arch = "x86_64",
-        target_arch = "riscv64",
-        target_arch = "aarch64"
-    ))]
-    {
-        let (insns, prog_type, has_jit, jit_entry) = {
-            let guard = BPF_GLOBAL.lock();
-            let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
-            let entry = prog.jitted.as_ref().map(|j| j.entry());
-            (
-                prog.insns.clone(),
-                prog.prog_type,
-                prog.jitted.is_some(),
-                entry,
-            )
-        };
-        let _ = prog_type;
+    let (insns, prog_type, has_jit, jit_entry) = {
+        let guard = BPF_GLOBAL.lock();
+        let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
+        let entry = prog.jitted.as_ref().map(|j| j.entry());
+        (
+            prog.insns.clone(),
+            prog.prog_type,
+            prog.jitted.is_some(),
+            entry,
+        )
+    };
+    let _ = prog_type;
 
-        if has_jit && let Some(entry) = jit_entry {
-            let result: u64;
-            unsafe {
-                let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
-                result = jit_fn(ctx);
-            }
-            return Ok(result);
+    if has_jit && let Some(entry) = jit_entry {
+        let result: u64;
+        unsafe {
+            let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
+            result = jit_fn(ctx);
         }
+        Ok(result)
+    } else {
+        let vm = BpfVm::new();
+        vm.execute(&insns, ctx).map_err(|e| {
+            warn!("bpf: program execution failed: {e}");
+            AxError::Io
+        })
+    }
+}
 
-        let vm = BpfVm::new();
-        vm.execute(&insns, ctx).map_err(|e| {
-            warn!("bpf: program execution failed: {e}");
-            AxError::Io
-        })
-    }
-    #[cfg(not(any(
-        target_arch = "x86_64",
-        target_arch = "riscv64",
-        target_arch = "aarch64"
-    )))]
-    {
-        let insns = {
-            let guard = BPF_GLOBAL.lock();
-            let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
-            prog.insns.clone()
-        };
-        let vm = BpfVm::new();
-        vm.execute(&insns, ctx).map_err(|e| {
-            warn!("bpf: program execution failed: {e}");
-            AxError::Io
-        })
-    }
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+)))]
+pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
+    let (insns, prog_type) = {
+        let guard = BPF_GLOBAL.lock();
+        let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
+        (prog.insns.clone(), prog.prog_type)
+    };
+    let _ = prog_type;
+
+    let vm = BpfVm::new();
+    vm.execute(&insns, ctx).map_err(|e| {
+        warn!("bpf: program execution failed: {e}");
+        AxError::Io
+    })
 }
 
 fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
