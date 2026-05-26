@@ -108,11 +108,8 @@ impl<B: BlockDevice> BlockDev<B> {
         let idx = self.clock_evict()?;
 
         // Read into the victim slot.
-        self.dev.read(
-            self.entries[idx].buffer.as_mut_slice(),
-            block_id,
-            1,
-        )?;
+        self.dev
+            .read(self.entries[idx].buffer.as_mut_slice(), block_id, 1)?;
         self.entries[idx].block_id = Some(block_id);
         self.entries[idx].dirty = false;
         self.entries[idx].referenced = true;
@@ -199,7 +196,7 @@ impl<B: BlockDevice> BlockDev<B> {
         &mut self,
         block_id: AbsoluteBN,
         data: &[u8; crate::config::BLOCK_SIZE],
-    ) {
+    ) -> Ext4Result<()> {
         // Reuse an existing slot for this block, or pick a victim.
         for (i, entry) in self.entries.iter_mut().enumerate() {
             if !entry.is_empty() && entry.block_id == Some(block_id) {
@@ -207,28 +204,28 @@ impl<B: BlockDevice> BlockDev<B> {
                 entry.dirty = false;
                 entry.referenced = true;
                 self.active = i;
-                return;
+                return Ok(());
             }
         }
 
         // Not found — allocate a fresh slot via clock.
-        if let Ok(idx) = self.clock_evict() {
-            self.entries[idx].buffer.as_mut_slice().copy_from_slice(data);
-            self.entries[idx].block_id = Some(block_id);
-            self.entries[idx].dirty = false;
-            self.entries[idx].referenced = true;
-        }
+        let idx = self.clock_evict()?;
+        self.entries[idx]
+            .buffer
+            .as_mut_slice()
+            .copy_from_slice(data);
+        self.entries[idx].block_id = Some(block_id);
+        self.entries[idx].dirty = false;
+        self.entries[idx].referenced = true;
+        Ok(())
     }
 
     /// Flushes all dirty cached blocks and the underlying device.
     pub fn flush(&mut self) -> Ext4Result<()> {
         for entry in self.entries.iter_mut() {
             if entry.dirty && !entry.is_empty() {
-                self.dev.write(
-                    entry.buffer.as_slice(),
-                    entry.block_id.unwrap(),
-                    1,
-                )?;
+                self.dev
+                    .write(entry.buffer.as_slice(), entry.block_id.unwrap(), 1)?;
                 entry.dirty = false;
             }
         }
@@ -282,7 +279,8 @@ impl<B: BlockDevice> BlockDev<B> {
             // Unreferenced — flush if dirty, then recycle.
             if self.entries[idx].dirty {
                 let bid = self.entries[idx].block_id.unwrap();
-                self.dev.write(self.entries[idx].buffer.as_slice(), bid, 1)?;
+                self.dev
+                    .write(self.entries[idx].buffer.as_slice(), bid, 1)?;
                 self.entries[idx].dirty = false;
             }
 
@@ -297,7 +295,8 @@ impl<B: BlockDevice> BlockDev<B> {
         self.clock = (self.clock + 1) % CACHE_ENTRIES;
         if self.entries[idx].dirty {
             let bid = self.entries[idx].block_id.unwrap();
-            self.dev.write(self.entries[idx].buffer.as_slice(), bid, 1)?;
+            self.dev
+                .write(self.entries[idx].buffer.as_slice(), bid, 1)?;
             self.entries[idx].dirty = false;
         }
         self.entries[idx].block_id = None;

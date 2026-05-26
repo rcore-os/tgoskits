@@ -37,22 +37,24 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         system: &mut JBD2DEVSYSTEM,
         raw_dev: &mut B,
         update: Jbd2Update,
-    ) -> Ext4Result<()> {
+    ) -> Ext4Result<bool> {
         if let Some(existing) = system
             .commit_queue
             .iter_mut()
             .find(|queued| queued.0 == update.0)
         {
             *existing = update;
-            return Ok(());
+            return Ok(false);
         }
 
+        let mut committed = false;
         if system.commit_queue.len() >= JBD2_BUFFER_MAX {
             system.commit_transaction(raw_dev)?;
+            committed = true;
         }
 
         system.commit_queue.push(update);
-        Ok(())
+        Ok(committed)
     }
 
     fn make_system(
@@ -158,6 +160,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             system
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
+            self.inner.invalidate_cache();
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -183,7 +186,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        Self::enqueue_journal_update(system, raw_dev, updates)?;
+        let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
+        if committed {
+            self.inner.invalidate_cache();
+        }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
     }
@@ -197,7 +203,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
                 .iter()
                 .find(|queued| queued.0 == block_id)
         {
-            self.inner.cache_clean_block(block_id, &update.1);
+            self.inner.cache_clean_block(block_id, &update.1)?;
             return Ok(());
         }
 
@@ -255,7 +261,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            Self::enqueue_journal_update(system, raw_dev, updates)?;
+            let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
+            if committed {
+                self.inner.invalidate_cache();
+            }
         }
 
         Ok(())
