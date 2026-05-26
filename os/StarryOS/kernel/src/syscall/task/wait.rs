@@ -92,6 +92,18 @@ fn stopped_wait_status(data: &ProcessData, signo: Signo) -> i32 {
     (event << 16) | (wait_signo << 8) | 0x7f
 }
 
+fn child_uid(child: &Process) -> u32 {
+    get_zombie_cred(child.pid())
+        .map(|cred| cred.uid)
+        .or_else(|| {
+            child
+                .threads()
+                .into_iter()
+                .find_map(|tid| get_task(tid).ok().map(|task| task.as_thread().cred().uid))
+        })
+        .unwrap_or(0)
+}
+
 fn waitable_processes(proc: &Process, target: WaitTarget, tracer_pid: Pid) -> Vec<Arc<Process>> {
     let mut candidates = proc
         .children()
@@ -288,13 +300,7 @@ pub fn sys_waitid(
             })
         {
             let child_pid = child.pid();
-            let child_uid = get_zombie_cred(child_pid)
-                .map(|c| c.uid)
-                .unwrap_or_else(|| {
-                    get_process_data(child_pid)
-                        .map(|d| d.proc.pid())
-                        .unwrap_or(0)
-                });
+            let child_uid = child_uid(child);
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(
@@ -319,7 +325,7 @@ pub fn sys_waitid(
         {
             let child_pid = child.pid();
             let (code, status) = decode_wait_status(child.exit_code());
-            let child_uid = get_zombie_cred(child_pid).map(|c| c.uid).unwrap_or(0);
+            let child_uid = child_uid(child);
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);

@@ -161,6 +161,10 @@ static int wait_stop(pid_t pid, int expected_sig)
         printf("FAIL: waitid returned pid=%d, expected %d\n", si.si_pid, pid);
         return -1;
     }
+    if (si.si_uid != 0) {
+        printf("FAIL: waitid returned uid=%d, expected 0\n", si.si_uid);
+        return -1;
+    }
     if (si.si_code == CLD_EXITED) {
         printf("FAIL: child exited prematurely, status=%d\n", si.si_status);
         return -1;
@@ -451,6 +455,10 @@ static int test_waitid_wstopped(void)
     }
     if (si.si_code != CLD_TRAPPED || si.si_status != SIGSTOP) {
         printf("FAIL: waitid si_code=%d si_status=%d\n", si.si_code, si.si_status);
+        return 1;
+    }
+    if (si.si_uid != 0) {
+        printf("FAIL: waitid si_uid=%d, expected 0\n", si.si_uid);
         return 1;
     }
 

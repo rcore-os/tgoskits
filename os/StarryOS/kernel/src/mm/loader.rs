@@ -31,22 +31,6 @@ const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
     | (1 << (b'D' - b'A'))
     | (1 << (b'C' - b'A'));
 
-fn arch_aux_entries() -> impl Iterator<Item = AuxEntry> {
-    #[cfg(target_arch = "riscv64")]
-    {
-        [AuxEntry::new(
-            kernel_elf_parser::AuxType::HWCAP,
-            RISCV_COMPAT_HWCAP_IMAFDC,
-        )]
-        .into_iter()
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    {
-        core::iter::empty()
-    }
-}
-
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
     AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
@@ -210,10 +194,9 @@ impl ElfCacheEntry {
 ///   import unless `HWCAP_LOONGARCH_LSX` (bit 4) is set. LASX (256-bit, bit 5)
 ///   is intentionally *not* set because the kernel does not enable `EUEN.ASXE`;
 ///   claiming it could trap when userspace executes 256-bit ops.
-/// - **x86_64 / aarch64 / riscv64**: 0. glibc/musl on these arches do not gate
-///   numpy on `AT_HWCAP` (x86 uses CPUID; aarch64 ASIMD/NEON is mandatory), and
-///   numpy already imports successfully there today with `AT_HWCAP` absent.
-///   Reporting 0 preserves the current (passing) behavior.
+/// - **riscv64**: report the baseline ISA bits expected by Linux-compatible
+///   user space (`IMAFDC`).
+/// - **x86_64 / aarch64**: 0. x86 uses CPUID; aarch64 ASIMD/NEON is mandatory.
 const fn hwcap_value() -> usize {
     #[cfg(target_arch = "loongarch64")]
     {
@@ -229,7 +212,11 @@ const fn hwcap_value() -> usize {
             | HWCAP_LOONGARCH_FPU
             | HWCAP_LOONGARCH_LSX
     }
-    #[cfg(not(target_arch = "loongarch64"))]
+    #[cfg(target_arch = "riscv64")]
+    {
+        RISCV_COMPAT_HWCAP_IMAFDC
+    }
+    #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
     {
         0
     }
@@ -318,7 +305,6 @@ impl ElfLoader {
         );
         let mut auxv = elf
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
-            .chain(arch_aux_entries())
             .collect::<Vec<_>>();
         // `aux_vector()` only emits PHDR/PHENT/PHNUM/PAGESZ/ENTRY (+BASE). Add
         // AT_HWCAP so `getauxval(AT_HWCAP)` returns the CPU capability bits the
