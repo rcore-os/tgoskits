@@ -28,8 +28,8 @@ const RV_S5: u32 = 21;
 const RV_T6: u32 = 31;
 
 const BPF_STACK_SIZE: usize = 512;
-const CALLEE_SAVED_COUNT: usize = 5;
-const FRAME_SIZE: usize = BPF_STACK_SIZE + CALLEE_SAVED_COUNT * 8 + 8;
+const CALLEE_SAVED_SIZE: usize = 48;
+const FRAME_SIZE: usize = BPF_STACK_SIZE + CALLEE_SAVED_SIZE;
 
 fn bpf_to_rv(r: u8) -> u32 {
     match r {
@@ -314,6 +314,10 @@ fn emit_mv(buf: &mut JitBuffer, rd: u32, rs: u32) {
     emit_addi(buf, rd, rs, 0);
 }
 
+fn emit_nop(buf: &mut JitBuffer) {
+    buf.emit_u32(0x00000013);
+}
+
 fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
     let val_i = val as i64;
     if val_i >= -2048 && val_i < 2048 {
@@ -328,20 +332,22 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
         if lo12 != 0 {
             emit_addi(buf, rd, rd, lo12);
         }
-    } else {
-        let hi32 = (val >> 32) as u32 as i32;
-        let hi32_hi20 = ((hi32 as i64 + 0x800) >> 12) as u32;
-        let hi32_lo12 = (((hi32 as i64) << 52) >> 52) as i32;
-        emit_lui(buf, rd, hi32_hi20);
-        emit_addiw(buf, rd, rd, hi32_lo12);
-        emit_slli(buf, rd, rd, 32);
-        let lo32 = val as u32 as i32;
-        let lo32_hi20 = ((lo32 as i64 + 0x800) >> 12) as u32;
-        let lo32_lo12 = (((lo32 as i64) << 52) >> 52) as i32;
-        emit_lui(buf, RV_T1, lo32_hi20);
-        emit_addiw(buf, RV_T1, RV_T1, lo32_lo12);
-        emit_add(buf, rd, rd, RV_T1);
+        return;
     }
+    let hi32 = ((val >> 32) as u32) as i32;
+    let lo32_u = val as u32;
+    let adjusted_hi32 = hi32.wrapping_add((lo32_u >> 31) as i32);
+    let adj_hi20 = ((adjusted_hi32 as i64 + 0x800) >> 12) as u32;
+    let adj_lo12 = (((adjusted_hi32 as i64) << 52) >> 52) as i32;
+    emit_lui(buf, rd, adj_hi20);
+    emit_addiw(buf, rd, rd, adj_lo12);
+    emit_slli(buf, rd, rd, 32);
+    let lo32 = lo32_u as i32;
+    let lo32_hi20 = ((lo32 as i64 + 0x800) >> 12) as u32;
+    let lo32_lo12 = (((lo32 as i64) << 52) >> 52) as i32;
+    emit_lui(buf, RV_T1, lo32_hi20);
+    emit_addiw(buf, RV_T1, RV_T1, lo32_lo12);
+    emit_add(buf, rd, rd, RV_T1);
 }
 
 fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
@@ -377,22 +383,24 @@ pub(crate) struct Riscv64Backend;
 impl JitBackend for Riscv64Backend {
     fn emit_prologue(buf: &mut JitBuffer) -> usize {
         emit_addi(buf, RV_SP, RV_SP, -(FRAME_SIZE as i32));
-        emit_sd(buf, RV_S1, RV_SP, (BPF_STACK_SIZE) as i32);
-        emit_sd(buf, RV_S2, RV_SP, (BPF_STACK_SIZE + 8) as i32);
-        emit_sd(buf, RV_S3, RV_SP, (BPF_STACK_SIZE + 16) as i32);
-        emit_sd(buf, RV_S4, RV_SP, (BPF_STACK_SIZE + 24) as i32);
-        emit_sd(buf, RV_S5, RV_SP, (BPF_STACK_SIZE + 32) as i32);
+        emit_sd(buf, RV_RA, RV_SP, 0);
+        emit_sd(buf, RV_S1, RV_SP, 8);
+        emit_sd(buf, RV_S2, RV_SP, 16);
+        emit_sd(buf, RV_S3, RV_SP, 24);
+        emit_sd(buf, RV_S4, RV_SP, 32);
+        emit_sd(buf, RV_S5, RV_SP, 40);
         emit_addi(buf, RV_S5, RV_SP, FRAME_SIZE as i32);
         emit_mv(buf, RV_A1, RV_A0);
         buf.offset()
     }
 
     fn emit_epilogue(buf: &mut JitBuffer) {
-        emit_ld(buf, RV_S1, RV_SP, BPF_STACK_SIZE as i32);
-        emit_ld(buf, RV_S2, RV_SP, (BPF_STACK_SIZE + 8) as i32);
-        emit_ld(buf, RV_S3, RV_SP, (BPF_STACK_SIZE + 16) as i32);
-        emit_ld(buf, RV_S4, RV_SP, (BPF_STACK_SIZE + 24) as i32);
-        emit_ld(buf, RV_S5, RV_SP, (BPF_STACK_SIZE + 32) as i32);
+        emit_ld(buf, RV_RA, RV_SP, 0);
+        emit_ld(buf, RV_S1, RV_SP, 8);
+        emit_ld(buf, RV_S2, RV_SP, 16);
+        emit_ld(buf, RV_S3, RV_SP, 24);
+        emit_ld(buf, RV_S4, RV_SP, 32);
+        emit_ld(buf, RV_S5, RV_SP, 40);
         emit_addi(buf, RV_SP, RV_SP, FRAME_SIZE as i32);
         emit_ret(buf);
     }
@@ -605,8 +613,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JEQ => {
                 let start = buf.offset();
                 emit_bne(buf, dst, src, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -619,8 +628,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JGT => {
                 let start = buf.offset();
                 emit_bgeu(buf, src, dst, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -633,8 +643,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JGE => {
                 let start = buf.offset();
                 emit_bltu(buf, dst, src, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -648,8 +659,9 @@ impl JitBackend for Riscv64Backend {
                 emit_and(buf, RV_T2, dst, src);
                 let start = buf.offset();
                 emit_beq(buf, RV_T2, RV_ZERO, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -662,8 +674,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JNE => {
                 let start = buf.offset();
                 emit_beq(buf, dst, src, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -676,8 +689,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JSGT => {
                 let start = buf.offset();
                 emit_bge(buf, src, dst, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -690,8 +704,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JSGE => {
                 let start = buf.offset();
                 emit_blt(buf, dst, src, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -704,8 +719,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JLT => {
                 let start = buf.offset();
                 emit_bgeu(buf, dst, src, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -718,8 +734,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JLE => {
                 let start = buf.offset();
                 emit_bltu(buf, src, dst, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -732,8 +749,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JSLT => {
                 let start = buf.offset();
                 emit_bge(buf, dst, src, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -746,8 +764,9 @@ impl JitBackend for Riscv64Backend {
             BPF_JSLE => {
                 let start = buf.offset();
                 emit_blt(buf, src, dst, 0);
+                let auipc_pos = buf.offset();
                 emit_auipc(buf, RV_T6, 0);
-                let branch_off = (offsets[target_pc] as isize - buf.offset() as isize) as i32;
+                let branch_off = (offsets[target_pc] as isize - auipc_pos as isize) as i32;
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
                 emit_jalr(buf, RV_ZERO, RV_T6, 0);
@@ -837,7 +856,12 @@ impl JitBackend for Riscv64Backend {
         let imm_lo = insn.imm as u64;
         let imm_hi = next_imm as u64;
         let val = (imm_hi << 32) | (imm_lo & 0xffffffff);
+        let start = buf.offset();
         emit_load_imm64(buf, dst, val);
+        let emitted = buf.offset() - start;
+        for _ in 0..((24 - emitted) / 4) {
+            emit_nop(buf);
+        }
     }
 
     fn emit_call(buf: &mut JitBuffer, helper_fn: HelperFn) {
@@ -886,7 +910,7 @@ impl JitBackend for Riscv64Backend {
             BPF_JMP | BPF_JMP32 => {
                 let op = insn.code & 0xf0;
                 if op == BPF_EXIT {
-                    28
+                    32
                 } else if op == 0x80 {
                     24 + 24 + 4 + 4
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
