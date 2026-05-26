@@ -771,7 +771,7 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
 
         if node_path.starts_with("/cpus") {
             // For CPU nodes, apply filtering based on host_fdt nodes
-            let need = need_cpu_node(&phys_cpu_ids, node, &node_path);
+            let need = need_cpu_node(&phys_cpu_ids, node, node_path);
             if need {
                 handle_node_level_change(
                     &mut new_fdt,

@@ -1984,6 +1984,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "log",
  "prettyplease",
+ "proc-macro2",
  "quote",
  "rdif-intc",
  "rdrive",

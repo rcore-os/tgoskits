@@ -130,7 +130,7 @@ pub fn with_vm_and_vcpu_on_pcpu(
 
     // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {
-        with_vm_and_vcpu(vm_id, vcpu_id, f).unwrap(); // unwrap is safe here
+        with_vm_and_vcpu(vm_id, vcpu_id, f).ok_or_else(|| ax_err_type!(NotFound))?;
         return Ok(());
     }
 
@@ -140,7 +140,10 @@ pub fn with_vm_and_vcpu_on_pcpu(
     let _pcpu_id = vcpus::with_vcpu_task(vm_id, vcpu_id, |task| task.cpu_id())
         .ok_or_else(|| ax_err_type!(NotFound))?;
 
-    unimplemented!();
+    ax_errno::ax_err!(
+        Unsupported,
+        "cross-CPU vCPU closure dispatch is not implemented"
+    )
     // use std::os::arceos::modules::axipi;
     // Ok(ax_ipi::send_ipi_event_to_one(pcpu_id as usize, move || {
     // with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, f);

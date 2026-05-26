@@ -369,13 +369,10 @@ fn restart_vm_by_id(vm_id: usize, force: bool) {
     println!("Restarting VM[{}]...", vm_id);
 
     // Check current status
-    let current_status = with_vm(vm_id, |vm| vm.vm_status());
-    if current_status.is_none() {
+    let Some(status) = with_vm(vm_id, |vm| vm.vm_status()) else {
         println!("✗ VM[{}] not found", vm_id);
         return;
-    }
-
-    let status = current_status.unwrap();
+    };
     match status {
         VMStatus::Stopped | VMStatus::Loaded => {
             // VM is already stopped, just start it
@@ -613,14 +610,10 @@ fn vm_delete(cmd: &ParsedCommand) {
 
     if let Ok(vm_id) = vm_name.parse::<usize>() {
         // Check if VM exists and get its status first
-        let vm_status = with_vm(vm_id, |vm| vm.vm_status());
-
-        if vm_status.is_none() {
+        let Some(status) = with_vm(vm_id, |vm| vm.vm_status()) else {
             println!("✗ VM[{}] not found", vm_id);
             return;
-        }
-
-        let status = vm_status.unwrap();
+        };
 
         // Check if VM is running
         match status {
@@ -685,25 +678,19 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
             _ => {}
         }
 
-        use alloc::sync::Arc;
-        let count = Arc::strong_count(&vm);
-        println!("  [Debug] VM Arc strong_count: {}", count);
-
         status
     });
 
-    if vm_status.is_none() {
+    let Some(status) = vm_status else {
         println!("✗ VM[{}] not found or already removed", vm_id);
         return;
-    }
-
-    let status = vm_status.unwrap();
+    };
 
     // Remove VM from global list
     // Note: This drops the reference from the global list, but the VM object
     // will only be fully destroyed when all vCPU threads exit and drop their references
     match crate::vmm::vm_list::remove_vm(vm_id) {
-        Some(vm) => {
+        Some(_vm) => {
             println!("✓ VM[{}] removed from VM list", vm_id);
 
             // Wait for vCPU threads to exit if VM has VCpu tasks
@@ -714,22 +701,9 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
                 | VMStatus::Stopped => {
                     println!("  Waiting for vCPU threads to exit...");
 
-                    // Debug: Check Arc count before cleanup
-                    use alloc::sync::Arc;
-                    println!(
-                        "  [Debug] VM Arc count before cleanup: {}",
-                        Arc::strong_count(&vm)
-                    );
-
                     // Clean up VCpu resources after threads have exited
                     println!("  Cleaning up VCpu resources...");
                     vcpus::cleanup_vm_vcpus(vm_id);
-
-                    // Debug: Check Arc count after final wait
-                    println!(
-                        "  [Debug] VM Arc count after final wait: {}",
-                        Arc::strong_count(&vm)
-                    );
                 }
                 _ => {
                     // VM not running, no vCPU threads to wait for
@@ -743,30 +717,11 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
             } else {
                 println!("✓ VM[{}] deleted completely", vm_id);
 
-                // Debug: Check Arc count - should be 1 now (only this variable)
-                // TaskExt uses Weak reference, so it doesn't count
-                use alloc::sync::Arc;
-                let count = Arc::strong_count(&vm);
-                println!("  [Debug] VM Arc strong_count: {}", count);
-
-                if count == 1 {
-                    println!("  ✓ Perfect! VM will be freed immediately when function returns");
-                } else {
-                    println!(
-                        "  ⚠ Warning: Unexpected Arc count {}, possible reference leak!",
-                        count
-                    );
-                }
-
                 // TODO: Clean up VM-related data files
                 // - Remove disk images
                 // - Remove configuration files
                 // - Remove log files
             }
-
-            // When function returns, the 'vm' variable is dropped
-            // Since Arc count is 1, AxVM::drop() is called immediately
-            println!("  VM[{}] will be freed now", vm_id);
         }
         None => {
             println!(
@@ -776,8 +731,6 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
         }
     }
 
-    // When function returns, the 'vm' Arc is dropped
-    // If all vCPU threads have exited (ref_count was 1), AxVM::drop() is called here
     println!("✓ VM[{}] deletion completed", vm_id);
 }
 

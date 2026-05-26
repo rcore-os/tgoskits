@@ -50,8 +50,6 @@ fn do_ls(cmd: &ParsedCommand) {
     let show_long = cmd.flags.get("long").unwrap_or(&false);
     let show_all = cmd.flags.get("all").unwrap_or(&false);
 
-    let _current_dir = std::env::current_dir().unwrap();
-
     fn show_entry_info(path: &str, entry: &str, show_long: bool) -> io::Result<()> {
         if show_long {
             let metadata = fs::metadata(path)?;
@@ -296,8 +294,12 @@ fn do_cd(cmd: &ParsedCommand) {
 fn do_pwd(cmd: &ParsedCommand) {
     let _logical = cmd.flags.get("logical").unwrap_or(&false);
 
-    let pwd = std::env::current_dir().unwrap();
-    println!("{}", pwd);
+    match std::env::current_dir() {
+        Ok(pwd) => println!("{}", pwd),
+        Err(e) => {
+            print_err!("pwd", e);
+        }
+    }
 }
 
 fn do_uname(cmd: &ParsedCommand) {
@@ -392,18 +394,7 @@ fn do_mv(cmd: &ParsedCommand) {
             && dest_meta.is_dir()
         {
             // Move source into destination directory
-            let mut file_dir = fs::read_dir(dest).unwrap();
-            let source_name = match file_dir.next() {
-                Some(name) => {
-                    let dir_name = name.expect("Failed to read directory");
-                    let file = dir_name.file_name();
-                    format!("{dest}/{file}")
-                }
-                None => {
-                    print_err!("mv", format_args!("invalid source path '{source}'"));
-                    return;
-                }
-            };
+            let source_name = path_basename(source);
             let dest_path = format!("{dest}/{source_name}");
             if let Err(e) = move_file_or_dir(source, &dest_path) {
                 print_err!(
@@ -429,18 +420,7 @@ fn do_mv(cmd: &ParsedCommand) {
             Ok(meta) if meta.is_dir() => {
                 // Move each source into destination directory
                 for source in sources {
-                    let mut file_dir = fs::read_dir(source).unwrap();
-                    let source_name = match file_dir.next() {
-                        Some(name) => {
-                            let dir_name = name.expect("Failed to read directory");
-                            let file = dir_name.file_name();
-                            format!("{dest}/{file}")
-                        }
-                        None => {
-                            print_err!("mv", format_args!("invalid source path '{source}'"));
-                            return;
-                        }
-                    };
+                    let source_name = path_basename(source);
                     let dest_path = format!("{dest}/{source_name}");
                     if let Err(e) = move_file_or_dir(source, &dest_path) {
                         print_err!(
@@ -459,6 +439,15 @@ fn do_mv(cmd: &ParsedCommand) {
             }
         }
     }
+}
+
+#[cfg(feature = "fs")]
+fn path_basename(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
 }
 
 // Helper function to move file or directory (handles cross-filesystem moves)

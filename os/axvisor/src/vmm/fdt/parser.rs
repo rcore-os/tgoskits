@@ -15,6 +15,7 @@
 //! FDT parsing and processing functionality.
 
 use alloc::{string::ToString, vec::Vec};
+use ax_errno::{AxResult, ax_err_type};
 use ax_hal::{dtb, mem};
 use axaddrspace::MappingFlags;
 use axvm::config::{
@@ -64,16 +65,16 @@ pub fn setup_guest_fdt_from_vmm(
     fdt_bytes: &[u8],
     vm_cfg: &mut AxVMConfig,
     crate_config: &AxVMCrateConfig,
-) {
+) -> AxResult {
     let fdt = Fdt::from_bytes(fdt_bytes)
-        .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
-        .expect("Failed to parse FDT");
+        .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
 
     // Call the modified function and get the returned device name list
     let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
 
     let dtb_data = super::create::crate_guest_fdt(&fdt, &passthrough_device_names, crate_config);
     crate_guest_fdt_with_cache(dtb_data, crate_config);
+    Ok(())
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {
@@ -736,7 +737,11 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
     // });
 }
 
-pub fn update_provided_fdt(provided_dtb: &[u8], host_dtb: &[u8], crate_config: &AxVMCrateConfig) {
+pub fn update_provided_fdt(
+    provided_dtb: &[u8],
+    host_dtb: &[u8],
+    crate_config: &AxVMCrateConfig,
+) -> AxResult {
     #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
     {
         let _ = host_dtb;
@@ -745,11 +750,20 @@ pub fn update_provided_fdt(provided_dtb: &[u8], host_dtb: &[u8], crate_config: &
 
     #[cfg(target_arch = "aarch64")]
     {
-        let provided_fdt = Fdt::from_bytes(provided_dtb)
-            .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
-        let host_fdt = Fdt::from_bytes(host_dtb)
-            .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+        let provided_fdt = Fdt::from_bytes(provided_dtb).map_err(|e| {
+            ax_err_type!(
+                InvalidData,
+                format!("Failed to parse provided DTB image: {e:#?}")
+            )
+        })?;
+        let host_fdt = Fdt::from_bytes(host_dtb).map_err(|e| {
+            ax_err_type!(
+                InvalidData,
+                format!("Failed to parse host DTB image: {e:#?}")
+            )
+        })?;
         let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config);
         crate_guest_fdt_with_cache(provided_dtb_data, crate_config);
     }
+    Ok(())
 }

@@ -480,11 +480,22 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 }
 
 pub fn print_prompt() {
+    print!("{}", prompt_string());
+    std::io::stdout().flush().ok();
+}
+
+pub fn prompt_string() -> String {
     #[cfg(feature = "fs")]
-    print!("axvisor:{}$ ", std::env::current_dir().unwrap());
+    {
+        match std::env::current_dir() {
+            Ok(dir) => format!("axvisor:{dir}$ "),
+            Err(_) => "axvisor:$ ".to_string(),
+        }
+    }
     #[cfg(not(feature = "fs"))]
-    print!("axvisor:$ ");
-    std::io::stdout().flush().unwrap();
+    {
+        "axvisor:$ ".to_string()
+    }
 }
 
 pub fn run_cmd_bytes(cmd_bytes: &[u8]) {
