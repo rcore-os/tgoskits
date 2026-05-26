@@ -355,6 +355,39 @@ pub fn might_sleep() {
     }
 }
 
+/// Wakes a task that may be sleeping, ensuring it can observe a newly-
+/// delivered signal.
+///
+/// `TaskInner::interrupt()` sets the task's interrupt flag and fires the
+/// interrupt waker, which unblocks the task via `AxWaker::wake_by_ref`. This
+/// covers the common case where the task is blocked in `block_on` with
+/// `interruptible` wrapping. For tasks blocked on raw `WaitQueue` objects
+/// (which do not register an interrupt waker), this function provides an
+/// escape hatch by additionally force-unblocking when the task appears to
+/// be parked on a wait queue.
+pub fn wake_task(task: &AxTaskRef) {
+    // Fire the interrupt: sets the flag and wakes the interrupt_waker.
+    // For tasks in block_on (the common case), AxWaker::wake_by_ref already
+    // unblocks the task via the registered waker callback.
+    task.interrupt();
+
+    // For tasks blocked on a raw WaitQueue, interrupt_waker.wake() is a
+    // no-op (no waker registered). Force-unblock by transitioning the task
+    // from Blocked to Ready and placing it on the run queue of its
+    // affinity CPU.
+    //
+    // SAFETY: unblock_task uses a CAS on the task state (Blocked → Ready),
+    // so if the task is concurrently being woken by its WaitQueue, the CAS
+    // fails and this is a harmless no-op. The stale entry in the WaitQueue
+    // is benign: when WaitQueue::notify_one eventually pops it, the
+    // subsequent unblock_task call will again CAS-fail (task already Ready
+    // or Running).
+    if task.state() == TaskState::Blocked {
+        let mut rq = select_run_queue::<NoPreemptIrqSave>(task);
+        rq.unblock_task(task.clone(), false);
+    }
+}
+
 /// The idle task routine.
 ///
 /// It runs an infinite loop that keeps trying to hand over the CPU before

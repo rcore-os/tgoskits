@@ -36,7 +36,7 @@ bitflags::bitflags! {
 
 impl From<MmapProt> for MappingFlags {
     fn from(value: MmapProt) -> Self {
-        let mut flags = MappingFlags::USER;
+        let mut flags = MappingFlags::empty();
         if value.contains(MmapProt::READ) {
             flags |= MappingFlags::READ;
         }
@@ -51,6 +51,15 @@ impl From<MmapProt> for MappingFlags {
         }
         if value.contains(MmapProt::EXEC) {
             flags |= MappingFlags::EXECUTE;
+        }
+        // PROT_NONE must yield empty flags so the PTE is non-present and any
+        // access faults. Tagging it USER would, on x86_64, still set the PRESENT
+        // bit (present implies readable on x86) and silently defeat the
+        // protection — breaking guard pages such as JVM thread-stack guards,
+        // letting a stack overflow corrupt adjacent memory instead of trapping.
+        // Only accessible mappings get the USER tag.
+        if !flags.is_empty() {
+            flags |= MappingFlags::USER;
         }
         flags
     }
@@ -181,8 +190,6 @@ pub fn sys_mmap(
                     .expect("file-backed mmap has cached device_mmap")
                 {
                     Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::SharedPages(_)) | Ok(DeviceMmap::NotConfigured) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
             }
@@ -302,10 +309,6 @@ pub fn sys_mmap(
                         )
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::NotConfigured) => return Err(AxError::InvalidInput),
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::SharedPages(pages)) => Backend::new_shared(start, pages),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
@@ -343,10 +346,6 @@ pub fn sys_mmap(
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }
-                                    #[cfg(feature = "kcov")]
-                                    DeviceMmap::NotConfigured => {
-                                        return Err(AxError::InvalidInput);
-                                    }
                                     DeviceMmap::Physical(range) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
@@ -369,10 +368,6 @@ pub fn sys_mmap(
                                         &curr.as_thread().proc_data.aspace(),
                                         true,
                                     ),
-                                    #[cfg(feature = "kcov")]
-                                    DeviceMmap::SharedPages(pages) => {
-                                        Backend::new_shared(start, pages)
-                                    }
                                 }
                             }
                         }

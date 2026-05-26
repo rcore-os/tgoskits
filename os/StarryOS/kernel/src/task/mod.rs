@@ -34,8 +34,6 @@ pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
     timer::*, user::*,
 };
-#[cfg(feature = "kcov")]
-use crate::kcov::KcovThreadState;
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -139,6 +137,9 @@ pub struct Thread {
     /// sequences (`rseq(2)`).
     rseq_area: AtomicUsize,
 
+    /// The rseq signature recorded at registration time.
+    rseq_signature: AtomicU32,
+
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
 
@@ -147,10 +148,6 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
-
-    /// KCOV coverage state for this thread.
-    #[cfg(feature = "kcov")]
-    kcov: AssumeSync<RefCell<Option<KcovThreadState>>>,
 
     /// Signo (as u8) of the synchronous user-mode fault that
     /// [`raise_signal_fatal`] last force-delivered to this thread, or 0
@@ -185,11 +182,10 @@ impl Thread {
             exit_event: Arc::default(),
             exit_request: AtomicBool::new(false),
             rseq_area: AtomicUsize::new(0),
+            rseq_signature: AtomicU32::new(0),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
-            #[cfg(feature = "kcov")]
-            kcov: AssumeSync(RefCell::new(None)),
 
             fault_dump_signo: AtomicU8::new(0),
         })
@@ -303,26 +299,6 @@ impl Thread {
         self.no_new_privs.store(true, Ordering::Relaxed);
     }
 
-    /// Run a closure with a borrow of the current KCOV state for this thread.
-    ///
-    /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
-    /// `borrow_mut` does not panic when the instrumented hot path
-    /// re-enters here. Avoids cloning the `Arc<SharedPages>` on every
-    /// hot-path invocation.
-    #[cfg(feature = "kcov")]
-    pub fn with_kcov<R>(&self, f: impl FnOnce(Option<&KcovThreadState>) -> R) -> R {
-        match self.kcov.0.try_borrow() {
-            Ok(borrow) => f(borrow.as_ref()),
-            Err(_) => f(None),
-        }
-    }
-
-    /// Set the KCOV state for this thread.
-    #[cfg(feature = "kcov")]
-    pub fn set_kcov(&self, state: Option<KcovThreadState>) {
-        *self.kcov.0.borrow_mut() = state;
-    }
-
     /// Get a snapshot of the current credentials (clones the `Arc`).
     pub fn cred(&self) -> Arc<Cred> {
         self.cred.lock().clone()
@@ -366,9 +342,26 @@ impl Thread {
         self.rseq_area.load(Ordering::SeqCst)
     }
 
+    /// Get the registered rseq signature.
+    pub fn rseq_signature(&self) -> u32 {
+        self.rseq_signature.load(Ordering::SeqCst)
+    }
+
     /// Set the registered rseq area pointer.
     pub fn set_rseq_area(&self, addr: usize) {
         self.rseq_area.store(addr, Ordering::SeqCst);
+    }
+
+    /// Set the registered rseq area pointer and signature.
+    pub fn set_rseq_state(&self, addr: usize, sig: u32) {
+        self.rseq_area.store(addr, Ordering::SeqCst);
+        self.rseq_signature.store(sig, Ordering::SeqCst);
+    }
+
+    /// Clear the registered rseq state.
+    pub fn clear_rseq_state(&self) {
+        self.rseq_area.store(0, Ordering::SeqCst);
+        self.rseq_signature.store(0, Ordering::SeqCst);
     }
 
     /// Block the next signal check for this thread.
@@ -402,6 +395,7 @@ pub trait AsThread {
     fn try_as_thread(&self) -> Option<&Thread>;
 
     /// Get the thread from the task, panicking if it is a kernel task.
+    #[track_caller]
     fn as_thread(&self) -> &Thread {
         self.try_as_thread().expect("kernel task")
     }
@@ -434,6 +428,46 @@ impl VforkDone {
     pub fn new(poll: Arc<PollSet>) -> Self {
         Self { done: false, poll }
     }
+}
+
+/// A pending job-control status change awaiting report to the parent's
+/// `waitpid(WUNTRACED | WCONTINUED)`.
+#[derive(Clone, Copy)]
+pub enum JobStatus {
+    /// The process stopped after receiving the given job-control signal
+    /// (`SIGSTOP`/`SIGTSTP`/`SIGTTIN`/`SIGTTOU`).
+    Stopped(Signo),
+    /// The process continued after receiving `SIGCONT`.
+    Continued,
+}
+
+/// Job-control state for a process, kept under a single lock so the stop flag
+/// and the pending parent report are updated atomically (a concurrent
+/// stop/continue on another CPU must not split the two).
+///
+/// `stopped` and `status` are **intentionally independent** and may legitimately
+/// diverge — do not collapse them into one field. `stopped` is the live parked
+/// state (cleared only by continue/kill); `status` is a one-shot report the
+/// parent's `waitpid` consumes (so `stopped == Some` with `status == None` is
+/// valid once the report has been reaped).
+#[derive(Default)]
+struct JobControl {
+    /// `None` = running, `Some(signo)` = stopped by the given job-control
+    /// signal. A stopped process parks its threads in the kernel until
+    /// `SIGCONT` (or `SIGKILL`) is delivered.
+    stopped: Option<Signo>,
+    /// Pending status change for the parent's `waitpid`, consumed once
+    /// reported. Single-slot: a new stop/continue before the parent reaps the
+    /// previous one overwrites it (unlike Linux, which queues each SIGCHLD).
+    /// Adequate for the single-threaded job-control this targets.
+    status: Option<JobStatus>,
+    /// Bumped on every continue. A thread about to park (`set_job_stopped`)
+    /// snapshots this; if it changed by the time the thread checks before
+    /// parking, a `SIGCONT` raced in after the stop was recorded and the park
+    /// is skipped. This closes the STOP-immediately-followed-by-CONT race
+    /// (e.g. busybox `killall5 -STOP` then `-CONT`) without having to scrub the
+    /// pending-signal queue.
+    continue_generation: u64,
 }
 
 /// [`Process`]-shared data.
@@ -486,6 +520,9 @@ pub struct ProcessData {
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
 
+    /// Process-local membarrier(2) registration state bitmask.
+    membarrier_state: AtomicU32,
+
     /// PR_GET_DUMPABLE / PR_SET_DUMPABLE value (default 1 = SUID_DUMP_USER).
     /// Cleared to 0 (SUID_DUMP_DISABLE) whenever the effective UID/GID
     /// changes via setuid/setresuid/setreuid (man 2 setuid §NOTES:
@@ -513,6 +550,13 @@ pub struct ProcessData {
     /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
     /// double-decrement [`AddrSpace::process_slots`].
     aspace_slot_released: AtomicBool,
+
+    /// Job-control state (stop flag + pending parent report) under one lock.
+    job_control: SpinNoIrq<JobControl>,
+
+    /// Woken to release threads parked in a job-control stop. Fired by
+    /// `SIGCONT` (continue) and `SIGKILL` (force-resume so the kill proceeds).
+    cont_event: Arc<PollSet>,
 }
 
 impl ProcessData {
@@ -553,6 +597,7 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
@@ -561,6 +606,9 @@ impl ProcessData {
 
             vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
             aspace_slot_released: AtomicBool::new(false),
+
+            job_control: SpinNoIrq::new(JobControl::default()),
+            cont_event: Arc::default(),
         });
         // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
         // from `lock()` lives until the end of the statement, so calling
@@ -640,6 +688,16 @@ impl ProcessData {
         self.nice.store(nice, Ordering::SeqCst);
     }
 
+    /// Get the membarrier(2) registration state bitmask.
+    pub fn membarrier_state(&self) -> u32 {
+        self.membarrier_state.load(Ordering::SeqCst)
+    }
+
+    /// Add bits to the membarrier(2) registration state.
+    pub fn register_membarrier_state(&self, state: u32) {
+        self.membarrier_state.fetch_or(state, Ordering::SeqCst);
+    }
+
     /// Get the dumpable flag (PR_GET_DUMPABLE).
     pub fn dumpable(&self) -> i32 {
         self.dumpable.load(Ordering::SeqCst)
@@ -650,6 +708,105 @@ impl ProcessData {
     /// (SUID_DUMP_USER). Callers must validate before storing.
     pub fn set_dumpable(&self, dumpable: i32) {
         self.dumpable.store(dumpable, Ordering::SeqCst);
+    }
+
+    /// Returns true if the process is currently job-control stopped.
+    pub fn is_job_stopped(&self) -> bool {
+        self.job_control.lock().stopped.is_some()
+    }
+
+    /// Mark the process stopped by `signo` and queue a `Stopped` report for the
+    /// parent's `waitpid(WUNTRACED)`. Returns `true` if the caller should park.
+    ///
+    /// Returns `false` (and records nothing) when a `SIGCONT` arrived after the
+    /// stop signal was dequeued but before this call — see
+    /// [`Self::set_job_continued`] / `continue_generation`. Closing this race at
+    /// the stop site lets us avoid scrubbing the pending-signal queue (which
+    /// would require modifying `starry-signal`).
+    pub fn set_job_stopped(&self, signo: Signo, continue_gen_snapshot: u64) -> bool {
+        let mut jc = self.job_control.lock();
+        if jc.continue_generation != continue_gen_snapshot {
+            // A continue raced in after we observed `continue_gen_snapshot`;
+            // honor it and do not stop.
+            return false;
+        }
+        jc.stopped = Some(signo);
+        jc.status = Some(JobStatus::Stopped(signo));
+        true
+    }
+
+    /// Snapshot the continue generation. Taken right after a stop signal is
+    /// dequeued and passed to [`Self::set_job_stopped`]; any intervening
+    /// `SIGCONT` advances the generation and cancels the stop.
+    pub fn continue_generation(&self) -> u64 {
+        self.job_control.lock().continue_generation
+    }
+
+    /// Continue a stopped process: clear the stop, queue a `Continued` report,
+    /// and wake parked threads. Returns true if it had been stopped.
+    ///
+    /// Always advances `continue_generation` so a concurrent stop in progress
+    /// (signal already dequeued, not yet parked) observes the continue and
+    /// skips parking.
+    pub fn set_job_continued(&self) -> bool {
+        let mut jc = self.job_control.lock();
+        jc.continue_generation = jc.continue_generation.wrapping_add(1);
+        let was_stopped = jc.stopped.take().is_some();
+        if was_stopped {
+            jc.status = Some(JobStatus::Continued);
+            drop(jc);
+            // Wake only when a thread was actually parked; avoids spurious
+            // wakeups on SIGCONT to an already-running process.
+            self.cont_event.wake();
+        }
+        was_stopped
+    }
+
+    /// Force-clear the stop (for `SIGKILL`) so a parked thread re-checks and
+    /// proceeds to terminate. Does not queue a `Continued` report.
+    pub fn clear_job_stop_for_kill(&self) {
+        let was_stopped = self.job_control.lock().stopped.take().is_some();
+        if was_stopped {
+            self.cont_event.wake();
+        }
+    }
+
+    /// The wait queue woken when the process is continued or killed.
+    pub fn cont_event(&self) -> Arc<PollSet> {
+        self.cont_event.clone()
+    }
+
+    /// Peek the pending job-control status report (without consuming it) if it
+    /// matches a kind the caller's `waitpid` flags allow (`WUNTRACED` for
+    /// stopped, `WCONTINUED` for continued).
+    pub fn peek_job_status_if(
+        &self,
+        want_stopped: bool,
+        want_continued: bool,
+    ) -> Option<JobStatus> {
+        let jc = self.job_control.lock();
+        match jc.status {
+            Some(s @ JobStatus::Stopped(_)) if want_stopped => Some(s),
+            Some(s @ JobStatus::Continued) if want_continued => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Consume the pending job-control status report if it matches a kind the
+    /// caller's `waitpid` flags allow. Mirrors [`Self::peek_job_status_if`] but
+    /// clears the slot; call it only after the status has been published to
+    /// userspace so a faulting copy leaves the report intact to retry.
+    pub fn take_job_status_if(
+        &self,
+        want_stopped: bool,
+        want_continued: bool,
+    ) -> Option<JobStatus> {
+        let mut jc = self.job_control.lock();
+        match jc.status {
+            Some(JobStatus::Stopped(_)) if want_stopped => jc.status.take(),
+            Some(JobStatus::Continued) if want_continued => jc.status.take(),
+            _ => None,
+        }
     }
 
     /// Get the accumulated CPU time of waited children.

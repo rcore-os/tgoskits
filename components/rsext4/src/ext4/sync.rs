@@ -31,6 +31,7 @@ impl Ext4FileSystem {
         // Mark clean in memory first so that sync_filesystem writes the
         // superblock with s_state = EXT4_VALID_FS through the journal.
         self.superblock.s_state = Self::clean_state(&self.superblock);
+        self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
 
         self.sync_filesystem(block_dev)?;
 

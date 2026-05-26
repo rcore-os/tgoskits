@@ -31,7 +31,7 @@ impl VsockStreamTransport {
             conn_id: Mutex::new(None),
             connection: Mutex::new(None),
             state: StateLock::new(State::Idle),
-            general: GeneralOptions::new(),
+            general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
         }
     }
 
@@ -122,7 +122,7 @@ impl VsockTransportOps for VsockStreamTransport {
                 conn_id: Mutex::new(Some(conn_id)),
                 connection: Mutex::new(Some(conn)),
                 state: StateLock::new(State::Connected),
-                general: GeneralOptions::default(),
+                general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
             };
 
             Ok((VsockTransport::Stream(new_transport), peer_addr))

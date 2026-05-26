@@ -64,6 +64,9 @@ define_options! {
     SendBufferForce(usize),
     PassCredentials(bool),
     PeerCredentials(UnixCredentials),
+    SocketType(i32),
+    SocketProtocol(i32),
+    SocketDomain(i32),
 
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),

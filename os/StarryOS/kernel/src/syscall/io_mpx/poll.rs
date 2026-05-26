@@ -157,7 +157,9 @@ pub fn sys_ppoll(
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> AxResult<isize> {
-    check_sigset_size(sigsetsize)?;
+    if !sigmask.is_null() {
+        check_sigset_size(sigsetsize)?;
+    }
     let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
     let mut poll_fds = read_poll_fds(fds, nfds)?;
     let timeout = nullable!(timeout.get_as_ref())?

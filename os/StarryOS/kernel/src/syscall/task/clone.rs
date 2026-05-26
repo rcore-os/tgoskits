@@ -155,6 +155,12 @@ impl CloneArgs {
             None
         };
 
+        // Linux blocks the parent for every CLONE_VFORK clone until the child
+        // execs or exits, regardless of whether the caller passed a child stack.
+        // BusyBox shell/timeout paths rely on that ordering when they combine
+        // CLONE_VM, CLONE_VFORK, and a private child stack.
+        let needs_vfork_block = flags.contains(CloneFlags::VFORK);
+
         let mut new_uctx = *uctx;
         new_uctx.prepare_clone_child_return_state();
         if stack != 0 {
@@ -286,10 +292,10 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-        // CLONE_VFORK: wire a shared `PollSet` to the child so it can wake us
-        // (PollSet, not WaitQueue, so the parent's wait is interruptible by
-        // `task.interrupt()` — see `wait_vfork_done`).
-        if flags.contains(CloneFlags::VFORK) {
+        // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
+        // execs or exits. Use PollSet so the parent's wait remains
+        // interruptible by task.interrupt().
+        if needs_vfork_block {
             let poll = Arc::new(axpoll::PollSet::new());
             new_proc_data.set_vfork_done(poll);
         }
@@ -297,15 +303,8 @@ impl CloneArgs {
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 
-        // Linux kcov(1): coverage collection is disabled in the child after
-        // fork().  The child's Thread is always created with kcov: None and a
-        // new TID not present in the KCOV state table, but we clean up
-        // explicitly for consistency and future-proofing.
-        #[cfg(feature = "kcov")]
-        crate::kcov::on_fork(tid);
-
         // Block the parent until the child exec's or exits.
-        if flags.contains(CloneFlags::VFORK) {
+        if needs_vfork_block {
             new_proc_data.wait_vfork_done();
         }
 

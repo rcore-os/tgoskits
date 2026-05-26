@@ -1639,6 +1639,7 @@ mod tests {
                 log: None,
                 extra_config: None,
                 profile: None,
+                disable_someboot_build_config: true,
                 args: Vec::new(),
                 pre_build_cmds: Vec::new(),
                 post_build_cmds: Vec::new(),

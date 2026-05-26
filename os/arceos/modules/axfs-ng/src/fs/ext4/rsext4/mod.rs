@@ -4,7 +4,6 @@ mod util;
 
 use alloc::boxed::Box;
 
-use ax_driver::{PartitionBlockDevice, PartitionRegion, prelude::BlockDriverOps};
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
@@ -15,11 +14,13 @@ use rsext4::{
     error::{Ext4Error, Ext4Result},
 };
 
-pub(crate) struct Ext4Disk(PartitionBlockDevice<Box<dyn BlockDriverOps>>);
+use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
+
+pub(crate) struct Ext4Disk(RegionBlockDevice<Box<dyn FsBlockDevice>>);
 
 impl Ext4Disk {
-    pub fn new(dev: Box<dyn BlockDriverOps>, region: PartitionRegion) -> Self {
-        Self(PartitionBlockDevice::new(dev, region))
+    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> Self {
+        Self(RegionBlockDevice::new(dev, region))
     }
 }
 

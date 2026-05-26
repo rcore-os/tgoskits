@@ -16,8 +16,6 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 
 use super::{FileLike, Kstat, get_file_like};
-#[cfg(feature = "kcov")]
-use crate::pseudofs::DeviceMmap;
 use crate::{
     file::{IoDst, IoSrc},
     pseudofs::Device,
@@ -119,57 +117,25 @@ pub struct File {
     open_flags: u32,
     nonblock: AtomicBool,
     append: AtomicBool,
-    /// Per-fd kcov state, created when opening `/dev/kcov`.
-    #[cfg(feature = "kcov")]
-    kcov_state: Option<Arc<crate::kcov::KcovFdState>>,
 }
 
 impl File {
     pub fn new(inner: ax_fs::File, open_flags: u32) -> Self {
-        #[cfg(feature = "kcov")]
-        let kcov_state = Self::detect_kcov(&inner);
         Self {
             inner,
             open_flags,
             nonblock: AtomicBool::new(false),
             append: AtomicBool::new(open_flags & O_APPEND != 0),
-            #[cfg(feature = "kcov")]
-            kcov_state,
         }
     }
 
     pub fn inner(&self) -> &ax_fs::File {
         &self.inner
     }
-
-    /// Detect if this file is backed by the kcov device and create per-fd state.
-    #[cfg(feature = "kcov")]
-    fn detect_kcov(inner: &ax_fs::File) -> Option<Arc<crate::kcov::KcovFdState>> {
-        let backend = inner.backend().ok()?;
-        let FileBackend::Direct(loc) = backend else {
-            return None;
-        };
-        let device = loc.entry().downcast::<Device>().ok()?;
-        if device
-            .inner()
-            .as_any()
-            .downcast_ref::<crate::kcov::KcovDevice>()
-            .is_some()
-        {
-            Some(Arc::new(crate::kcov::KcovFdState::new()))
-        } else {
-            None
-        }
-    }
 }
 
 impl Drop for File {
     fn drop(&mut self) {
-        #[cfg(feature = "kcov")]
-        if let Some(ref kcov_state) = self.kcov_state {
-            kcov_state.on_close();
-        }
-
         if let Ok(device) = self.inner.location().entry().downcast::<Device>() {
             device.inner().close(self.open_flags & O_EXCL != 0);
         }
@@ -204,13 +170,20 @@ impl FileLike for File {
         if self.append() {
             inner.seek(SeekFrom::End(0))?;
         }
-        if likely(self.is_blocking()) {
+        let result = if likely(self.is_blocking()) {
             inner.write(src)
         } else {
             block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
                 inner.write(&mut *src)
             }))
+        };
+        if let Ok(bytes) = result
+            && bytes > 0
+        {
+            let path = path_for(inner.location()).into_owned();
+            crate::file::inotify::notify_modify_path(&path);
         }
+        result
     }
 
     fn stat(&self) -> AxResult<Kstat> {
@@ -223,19 +196,7 @@ impl FileLike for File {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        #[cfg(feature = "kcov")]
-        if let Some(ref kcov_state) = self.kcov_state {
-            return kcov_state.ioctl(cmd, arg);
-        }
         self.inner().backend()?.location().ioctl(cmd, arg)
-    }
-
-    #[cfg(feature = "kcov")]
-    fn device_mmap(&self, offset: u64) -> AxResult<DeviceMmap> {
-        if let Some(ref kcov_state) = self.kcov_state {
-            return Ok(kcov_state.mmap(offset));
-        }
-        Err(AxError::BadFileDescriptor)
     }
 
     fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {

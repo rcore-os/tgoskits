@@ -25,7 +25,7 @@ pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
     (nanos * freq) / ax_plat::time::NANOS_PER_SEC
 }
 
-pub(crate) fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
+pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
     let boot_offset = epoch_time_nanos.saturating_sub(ticks_to_nanos(current_ticks()));
     EPOCH_OFFSET_NANOS
         .compare_exchange(

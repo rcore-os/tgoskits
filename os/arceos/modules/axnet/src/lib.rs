@@ -24,6 +24,9 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[cfg(feature = "smoltcp")]
+use alloc::{boxed::Box, vec::Vec};
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "smoltcp")] {
         mod smoltcp_impl;
@@ -32,7 +35,10 @@ cfg_if::cfg_if! {
 }
 
 #[cfg(feature = "smoltcp")]
-use ax_driver::{AxDeviceContainer, AxNetDevice};
+pub use ax_net_ng::{
+    EthernetDriver, NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer,
+    RdNetDriver,
+};
 
 #[cfg(feature = "smoltcp")]
 pub use self::net_impl::{
@@ -41,12 +47,10 @@ pub use self::net_impl::{
 
 /// Initializes the network subsystem by NIC devices.
 #[cfg(feature = "smoltcp")]
-pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
-    use ax_driver::prelude::*;
-
+pub fn init_network(mut net_devs: Vec<Box<dyn EthernetDriver>>) {
     info!("Initialize network subsystem...");
 
-    if let Some(dev) = net_devs.take_one() {
+    if let Some(dev) = net_devs.pop() {
         info!("  use NIC 0: {:?}", dev.device_name());
         net_impl::init(dev);
     } else {

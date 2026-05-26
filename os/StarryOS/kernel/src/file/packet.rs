@@ -22,6 +22,7 @@ use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
 
 pub(super) const ETH0_IFINDEX: i32 = 2;
+pub(super) const LO_IFINDEX: i32 = 1;
 const ETH0_NAME: &[u8] = b"eth0";
 pub(super) const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const SYNTHETIC_PEER_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
@@ -160,8 +161,12 @@ impl PacketSocket {
 
     pub fn recv_packet(&self, dst: &mut IoDst) -> AxResult<(usize, SockAddrLl)> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let Some(frame) = self.state.lock().pending.take() else {
-                return Err(AxError::WouldBlock);
+            let frame = {
+                let mut state = self.state.lock();
+                let Some(frame) = state.pending.take() else {
+                    return Err(AxError::WouldBlock);
+                };
+                frame
             };
             let written = dst.write(&frame.data)?;
             Ok((written, frame.from))

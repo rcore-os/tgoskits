@@ -13,6 +13,8 @@ mod fb;
 mod log;
 mod r#loop;
 #[cfg(feature = "ext4")]
+mod loop_block;
+#[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
 pub mod ion;
@@ -288,17 +290,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(10, 1024),
             Arc::new(CpuDmaLatency),
-        ),
-    );
-
-    #[cfg(feature = "kcov")]
-    root.add(
-        "kcov",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(10, 57),
-            Arc::new(crate::kcov::KcovDevice),
         ),
     );
 

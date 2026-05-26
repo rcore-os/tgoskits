@@ -8,6 +8,7 @@ extern crate ax_plat;
 
 mod boot;
 mod console;
+mod drivers;
 mod init;
 #[cfg(feature = "irq")]
 mod irq;

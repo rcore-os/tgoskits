@@ -22,6 +22,7 @@ pub mod config {
 }
 
 mod boot;
+mod drivers;
 mod init;
 mod mem;
 mod power;
