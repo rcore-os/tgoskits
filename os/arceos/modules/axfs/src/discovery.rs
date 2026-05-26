@@ -5,6 +5,7 @@ use alloc::{
     vec::Vec,
 };
 
+use ax_kspin::SpinNoIrq;
 use rd_block_volume::{BlockVolume, DiskId, PartitionTableKind as VolumeTableKind, scan_volumes};
 use spin::Once;
 
@@ -99,6 +100,13 @@ pub struct DiscoveredFilesystem {
 
 static DISCOVERED_DISKS: Once<Vec<DiscoveredDisk>> = Once::new();
 static ROOT_SELECTION: Once<RootSelection> = Once::new();
+static MOUNTED_REGIONS: SpinNoIrq<Vec<RegionKey>> = SpinNoIrq::new(Vec::new());
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RegionKey {
+    disk_index: usize,
+    partition_index: Option<usize>,
+}
 
 impl Default for RootSelectionPolicy {
     fn default() -> Self {
@@ -138,6 +146,15 @@ impl RootCandidate {
         } else {
             let fs = self.filesystem.map(filesystem_name).unwrap_or("unknown");
             format!("disk{} raw device (fs={})", self.disk_index, fs)
+        }
+    }
+}
+
+impl RootSelection {
+    const fn region_key(self) -> RegionKey {
+        RegionKey {
+            disk_index: self.disk_index,
+            partition_index: self.partition_index,
         }
     }
 }
@@ -203,6 +220,7 @@ pub fn init_filesystems_with_policy(
         )
     });
     init_root_filesystem(fs);
+    mount_default_non_root_filesystems();
 }
 
 /// Returns the block filesystems discovered during runtime initialization.
@@ -265,18 +283,103 @@ pub fn mount_discovered_filesystem(
     target: impl AsRef<ax_fs_vfs::path::Path>,
 ) -> ax_fs_vfs::VfsResult<()> {
     let (dev, region, kind) = discovered_region(disk_index, partition_index)?;
-    let selection = RootSelection {
+    let key = RegionKey {
         disk_index,
         partition_index,
-        filesystem: Some(kind),
     };
-    if ROOT_SELECTION.get().copied() == Some(selection) {
+    if ROOT_SELECTION
+        .get()
+        .is_some_and(|selection| selection.region_key() == key)
+    {
         return Err(ax_fs_vfs::VfsError::ResourceBusy);
     }
+    reserve_mounted_region(key)?;
 
-    let fs = new_filesystem_from_dyn_by_kind(Box::new(dev), region, kind)?;
-    let target = ctx.resolve(target)?;
-    target.mount(&fs).map(|_| ())
+    let fs = match new_filesystem_from_dyn_by_kind(Box::new(dev), region, kind) {
+        Ok(fs) => fs,
+        Err(err) => {
+            unreserve_mounted_region(key);
+            return Err(err);
+        }
+    };
+    let target = match ctx.resolve(target) {
+        Ok(target) => target,
+        Err(err) => {
+            unreserve_mounted_region(key);
+            return Err(err);
+        }
+    };
+    if let Err(err) = target.mount(&fs) {
+        unreserve_mounted_region(key);
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn reserve_mounted_region(key: RegionKey) -> ax_fs_vfs::VfsResult<()> {
+    let mut mounted = MOUNTED_REGIONS.lock();
+    if mounted.contains(&key) {
+        return Err(ax_fs_vfs::VfsError::ResourceBusy);
+    }
+    mounted.push(key);
+    Ok(())
+}
+
+fn unreserve_mounted_region(key: RegionKey) {
+    MOUNTED_REGIONS.lock().retain(|mounted| *mounted != key);
+}
+
+fn mount_default_non_root_filesystems() {
+    let Some(ctx) = crate::ROOT_FS_CONTEXT.get() else {
+        return;
+    };
+
+    for fs in discovered_filesystems() {
+        if fs.is_root || fs.filesystem.is_none() {
+            continue;
+        }
+        let Some(mount_path) = default_mount_path(&fs) else {
+            continue;
+        };
+        match ctx.create_dir(mount_path.as_str(), ax_fs_vfs::NodePermission::default()) {
+            Ok(_) | Err(ax_fs_vfs::VfsError::AlreadyExists) => {}
+            Err(err) => {
+                warn!(
+                    "failed to create default mount point {} for disk{} partition {:?}: {:?}",
+                    mount_path, fs.disk_index, fs.partition_index, err
+                );
+                continue;
+            }
+        }
+
+        match mount_discovered_filesystem(
+            ctx,
+            fs.disk_index,
+            fs.partition_index,
+            mount_path.as_str(),
+        ) {
+            Ok(()) => info!(
+                "  mounted non-root filesystem disk{} partition {:?} at {}",
+                fs.disk_index, fs.partition_index, mount_path
+            ),
+            Err(err) => warn!(
+                "failed to mount non-root filesystem disk{} partition {:?} at {}: {:?}",
+                fs.disk_index, fs.partition_index, mount_path, err
+            ),
+        }
+    }
+}
+
+fn default_mount_path(fs: &DiscoveredFilesystem) -> Option<String> {
+    let name = fs.name.as_deref()?;
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return None;
+    }
+    if name.to_ascii_lowercase().contains("boot") {
+        Some("/boot".to_string())
+    } else {
+        Some(format!("/{name}"))
+    }
 }
 
 fn collect_disks(block_devs: Vec<Box<dyn FsBlockDevice>>) -> Vec<DiscoveredDisk> {
