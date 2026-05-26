@@ -85,6 +85,30 @@ fn record_sample_allocation() {
     ax_println!("Memory allocation sample recorded");
 }
 
+#[unsafe(no_mangle)]
+#[inline(never)]
+fn starry_memtrack_sample_hard_leaf() -> Vec<u8> {
+    let mut sample = Vec::with_capacity(8192);
+    sample.resize(8192, 0x5a);
+    core::hint::black_box(sample.as_ptr());
+    sample
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+fn starry_memtrack_sample_hard_mid() -> Vec<u8> {
+    let sample = starry_memtrack_sample_hard_leaf();
+    core::hint::black_box(sample.len());
+    sample
+}
+
+#[inline(never)]
+fn record_hard_sample_allocation() {
+    let sample = starry_memtrack_sample_hard_mid();
+    *SAMPLE_ALLOCATION.lock() = Some(sample);
+    ax_println!("Hard memory allocation sample recorded");
+}
+
 fn clear_sample_allocation() {
     SAMPLE_ALLOCATION.lock().take();
 }
@@ -118,6 +142,9 @@ impl DeviceOps for MemTrack {
                 }
                 b"sample\n" => {
                     record_sample_allocation();
+                }
+                b"sample_hard\n" => {
+                    record_hard_sample_allocation();
                 }
                 b"symbolize\n" => {
                     emit_symbolize_probe();
