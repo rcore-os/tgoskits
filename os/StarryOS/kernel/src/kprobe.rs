@@ -67,20 +67,20 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                     .protect(
                         aligned_addr,
                         aligned_length,
-                        original_flags | ax_hal::paging::MappingFlags::WRITE,
+                        original_flags | ax_runtime::hal::paging::MappingFlags::WRITE,
                     )
                     .expect("kprobe: set_writeable: protect failed");
                 crate::mm::flush_tlb_range(aligned_addr, aligned_length);
                 action(addr.as_mut_ptr());
                 #[cfg(target_arch = "aarch64")]
-                ax_hal::asm::clean_dcache_range_to_pou(addr, len);
+                ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, len);
                 guard
                     .protect(aligned_addr, aligned_length, original_flags)
                     .expect("kprobe: set_writeable: restore failed");
             },
             move || {
                 crate::mm::flush_tlb_range(aligned_addr, aligned_length);
-                ax_hal::asm::flush_icache_all();
+                ax_runtime::hal::cpu::asm::flush_icache_all();
             },
         );
     }
@@ -95,9 +95,9 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .map_alloc(
                 vaddr,
                 PAGE_SIZE_4K,
-                ax_hal::paging::MappingFlags::READ
-                    | ax_hal::paging::MappingFlags::WRITE
-                    | ax_hal::paging::MappingFlags::EXECUTE,
+                ax_runtime::hal::paging::MappingFlags::READ
+                    | ax_runtime::hal::paging::MappingFlags::WRITE
+                    | ax_runtime::hal::paging::MappingFlags::EXECUTE,
                 true,
             )
             .expect("kprobe: map_alloc for exec memory failed");
@@ -151,7 +151,7 @@ where
     f(guard.as_mut().expect("kprobe: manager not initialized"))
 }
 
-fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
+fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
         kprobe::PtRegs {
@@ -280,7 +280,7 @@ fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
     }
 }
 
-fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_hal::context::TrapFrame) {
+fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
     #[cfg(target_arch = "x86_64")]
     {
         tf.r15 = pt.r15 as u64;
@@ -384,7 +384,7 @@ fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_hal::context::TrapFrame) {
     }
 }
 
-pub fn handle_breakpoint(tf: &mut ax_hal::context::TrapFrame) -> bool {
+pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
     if handled.is_some() {
@@ -463,7 +463,7 @@ pub fn run_selftest() -> bool {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn handle_debug(tf: &mut ax_hal::context::TrapFrame) -> bool {
+pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
     if handled.is_some() {
