@@ -20,7 +20,7 @@ use crate::{virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
 #[cfg(probe = "pci")]
-module_driver!(
+crate::model_register!(
     name: "VirtIO Socket",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

@@ -22,7 +22,7 @@ use crate::mmio::iomap;
 const RK3588_CRU_GRF_BASE: usize = 0xfd5b_0000;
 const RK3588_CRU_GRF_SIZE: usize = 0x1000;
 
-module_driver!(
+crate::model_register!(
     name: "Rockchip RK3588 CRU",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,

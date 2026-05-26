@@ -1,27 +1,22 @@
 #![no_std]
+#![feature(used_with_arg)]
+#![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+extern crate alloc;
+
 #[macro_use]
 extern crate log;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[macro_use]
 extern crate ax_plat;
 
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod boot;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod console;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod drivers;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod init;
-#[cfg(all(feature = "irq", any(target_arch = "riscv32", target_arch = "riscv64")))]
+#[cfg(feature = "irq")]
 mod irq;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod mem;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod power;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod time;
 
 pub mod config {
