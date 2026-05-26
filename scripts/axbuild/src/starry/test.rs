@@ -1240,6 +1240,122 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn apk_curl_qemu_configs_bound_guest_network_commands() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-curl");
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let shell_init_cmd = config
+                .get("shell_init_cmd")
+                .and_then(toml::Value::as_str)
+                .unwrap_or_default();
+
+            assert!(
+                shell_init_cmd.contains("fetch_timeout=60"),
+                "{} must keep apk/curl network waits short enough for CI retries",
+                path.display()
+            );
+            for mirror in [
+                "https://mirrors.cernet.edu.cn/alpine",
+                "https://dl-cdn.alpinelinux.org/alpine",
+            ] {
+                assert!(
+                    shell_init_cmd.contains(mirror),
+                    "{} must retry apk-curl through fallback mirror {mirror}",
+                    path.display()
+                );
+            }
+            assert!(
+                shell_init_cmd.contains("APK_CURL_REPO_"),
+                "{} must report which apk mirror is being tried",
+                path.display()
+            );
+            assert!(
+                shell_init_cmd
+                    .contains("timeout \"$fetch_timeout\" apk --timeout \"$fetch_timeout\" update"),
+                "{} must bound apk update so CI can retry mirror stalls",
+                path.display()
+            );
+            assert!(
+                shell_init_cmd.contains(
+                    "timeout \"$fetch_timeout\" apk --timeout \"$fetch_timeout\" add curl"
+                ),
+                "{} must bound apk add so CI can retry mirror stalls",
+                path.display()
+            );
+            assert!(
+                shell_init_cmd.contains("curl --connect-timeout 10 --max-time 30"),
+                "{} must bound the external curl probe",
+                path.display()
+            );
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 600,
+                "{} must not leave apk-curl with the old long QEMU timeout",
+                path.display()
+            );
+            for marker in [
+                "APK_CURL_UPDATE_BEGIN",
+                "APK_CURL_UPDATE_DONE",
+                "APK_CURL_ADD_BEGIN",
+                "APK_CURL_ADD_DONE",
+                "APK_CURL_PROBE_BEGIN",
+                "APK_CURL_PROBE_DONE",
+            ] {
+                assert!(
+                    shell_init_cmd.contains(marker),
+                    "{} must mark apk-curl progress with {marker}",
+                    path.display()
+                );
+            }
+
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("lockdep fatal violation")),
+                "{} must fail when lockdep reports a fatal violation",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn bug_ext4_dir_ops_qemu_configs_fail_on_lockdep_fatal() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bug-ext4-dir-ops");
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("lockdep fatal violation")),
+                "{} must fail when lockdep reports a fatal violation",
+                path.display()
+            );
+        }
+    }
+
     fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQemuCase {
         PreparedStarryQemuCase {
             case: TestQemuCase {
