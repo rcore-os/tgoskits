@@ -178,7 +178,10 @@ pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxR
     }
     let user_param = vm_load::<SchedParam>(_param.cast(), 1)?;
     let user_param = user_param[0];
-    let policy = _policy as u32;
+    let mut policy = _policy as u32;
+    const SCHED_RESET_ON_FORK: u32 = 0x40000000;
+    let _reset_on_fork = (policy & SCHED_RESET_ON_FORK) != 0;
+    policy &= !SCHED_RESET_ON_FORK;
     let prio = user_param.sched_priority;
     match policy {
         SCHED_NORMAL | SCHED_FIFO | SCHED_RR | SCHED_BATCH | SCHED_IDLE => {}
@@ -203,7 +206,6 @@ pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxR
 }
 
 pub fn sys_sched_getparam(_pid: i32, _param: *mut ()) -> AxResult<isize> {
-    check_sched_permission(_pid)?;
     let task = get_task_by_sched_pid(_pid)?;
     if _param.is_null() {
         return Err(AxError::InvalidInput);

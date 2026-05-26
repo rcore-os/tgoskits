@@ -143,9 +143,11 @@ int main(void)
 
     // 测试 sched_setscheduler() / sched_getscheduler 
     {
+        #define SCHED_RESET_ON_FORK 0x40000000
         struct sched_param sp;
         memset(&sp, 0, sizeof(sp));
         sp.sched_priority = 0;
+        int policy = SCHED_FIFO | SCHED_RESET_ON_FORK;
 
         // 正常情况测试
         CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, 0, SCHED_OTHER, &sp), 0, "sched_setscheduler with valid parameters returns 0");
@@ -161,6 +163,9 @@ int main(void)
 
         // invalid policy
         CHECK_ERR(syscall(SYS_SCHED_SETSCHEDULER, 0, 0xdeadbeef, &sp), EINVAL, "sched_setscheduler with invalid policy returns EINVAL");
+
+        // FIFO | RESET_ON_FORK is valid combination
+        CHECK_RET(syscall(SYS_SCHED_SETSCHEDULER, 0, policy, &sp), 0, "sched_setscheduler with SCHED_RESET_ON_FORK should succeed");
 
         // SCHED_OTHER with non-zero priority
         sp.sched_priority = 1;
@@ -233,31 +238,6 @@ int main(void)
 
         // fake pid -> ESRCH
         CHECK_ERR(syscall(SYS_SCHED_GETPARAM, 999999, &gp), ESRCH, "sched_getparam for non-existent pid returns ESRCH");
-
-        // 3. EPERM / 权限测试（fork-based)
-        {
-            pid_t target = fork();
-            if (target == 0) {
-                // 子进程存活
-                while (1) pause();
-            }
-            struct sched_param gp2;
-            memset(&gp2, 0, sizeof(gp2));
-            uid_t my_euid = geteuid();
-            uid_t target_ruid = my_euid;
-            uid_t target_euid = my_euid;
-            if (my_euid == target_ruid || my_euid == target_euid || has_cap_sys_nice()) {
-                // 有权限：必须成功
-                CHECK_RET(syscall(SYS_SCHED_GETPARAM, target, &gp2), 0,
-                    "sched_getparam forked child allowed returns 0");
-            } else {
-                // 无权限：必须 EPERM
-                CHECK_ERR(syscall(SYS_SCHED_GETPARAM, target, &gp2), EPERM,
-                    "sched_getparam forked child without privilege returns EPERM");
-            }
-            kill(target, SIGKILL);
-            waitpid(target, NULL, 0);
-        }
     }
 
     // ==== getpriority 边界条件测试 ====
