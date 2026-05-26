@@ -349,12 +349,21 @@ fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
     if !needs_upper {
         emit_addi(buf, rd, RV_ZERO, val);
     } else {
-        let hi20 = ((val as i32 as i64 + 2048) >> 12) as u32;
+        let hi20 = ((val as i32 as i64 + 0x800) >> 12) as u32;
         let lo12 = val.wrapping_sub((hi20 as i32) << 12);
         emit_lui(buf, rd, hi20);
         if lo12 != 0 {
             emit_addi(buf, rd, rd, lo12);
         }
+    }
+}
+
+fn emit_add_offset(buf: &mut JitBuffer, rd: u32, rs: u32, off: i32) {
+    if off >= -2048 && off < 2048 {
+        emit_addi(buf, rd, rs, off);
+    } else {
+        emit_load_imm32(buf, RV_T1, off);
+        emit_add(buf, rd, rs, RV_T1);
     }
 }
 
@@ -505,20 +514,10 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_MOD => {
-                let skip = buf.offset();
                 if is_64 {
-                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remu(buf, dst, dst, src);
                 } else {
-                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remuw(buf, dst, dst, src);
-                }
-                emit_jal(buf, RV_ZERO, 8);
-                emit_addi(buf, dst, RV_ZERO, 0);
-                unsafe {
-                    let beq_ptr = buf.entry().add(skip) as *mut u32;
-                    let beq_off = 12u32;
-                    *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                 }
             }
             BPF_XOR => {
@@ -623,7 +622,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_JGT => {
                 let start = buf.offset();
-                emit_bgeu(buf, dst, src, 0);
+                emit_bgeu(buf, src, dst, 0);
                 emit_auipc(buf, RV_T6, 0);
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
@@ -631,7 +630,7 @@ impl JitBackend for Riscv64Backend {
                 let end = buf.offset();
                 unsafe {
                     let ptr = buf.entry().add(start) as *mut u32;
-                    *ptr = rv_b((end - start) as u32, src, dst, 7);
+                    *ptr = rv_b((end - start) as u32, dst, src, 7);
                 }
             }
             BPF_JGE => {
@@ -676,7 +675,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_JSGT => {
                 let start = buf.offset();
-                emit_bge(buf, dst, src, 0);
+                emit_bge(buf, src, dst, 0);
                 emit_auipc(buf, RV_T6, 0);
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
@@ -684,7 +683,7 @@ impl JitBackend for Riscv64Backend {
                 let end = buf.offset();
                 unsafe {
                     let ptr = buf.entry().add(start) as *mut u32;
-                    *ptr = rv_b((end - start) as u32, src, dst, 5);
+                    *ptr = rv_b((end - start) as u32, dst, src, 5);
                 }
             }
             BPF_JSGE => {
@@ -715,7 +714,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_JLE => {
                 let start = buf.offset();
-                emit_bltu(buf, dst, src, 0);
+                emit_bltu(buf, src, dst, 0);
                 emit_auipc(buf, RV_T6, 0);
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
@@ -723,7 +722,7 @@ impl JitBackend for Riscv64Backend {
                 let end = buf.offset();
                 unsafe {
                     let ptr = buf.entry().add(start) as *mut u32;
-                    *ptr = rv_b((end - start) as u32, src, dst, 6);
+                    *ptr = rv_b((end - start) as u32, dst, src, 6);
                 }
             }
             BPF_JSLT => {
@@ -741,7 +740,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_JSLE => {
                 let start = buf.offset();
-                emit_blt(buf, dst, src, 0);
+                emit_blt(buf, src, dst, 0);
                 emit_auipc(buf, RV_T6, 0);
                 emit_load_imm64(buf, RV_T1, branch_off as u64);
                 emit_add(buf, RV_T6, RV_T6, RV_T1);
@@ -749,7 +748,7 @@ impl JitBackend for Riscv64Backend {
                 let end = buf.offset();
                 unsafe {
                     let ptr = buf.entry().add(start) as *mut u32;
-                    *ptr = rv_b((end - start) as u32, src, dst, 4);
+                    *ptr = rv_b((end - start) as u32, dst, src, 4);
                 }
             }
             _ => {}
@@ -762,7 +761,7 @@ impl JitBackend for Riscv64Backend {
         }
         let off = insn.off as i32;
         let base = bpf_to_rv(insn.dst_reg());
-        emit_addi(buf, RV_T1, base, off);
+        emit_add_offset(buf, RV_T1, base, off);
         let val = insn.imm as u64;
         match insn.size() {
             BPF_B => {
@@ -792,7 +791,7 @@ impl JitBackend for Riscv64Backend {
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
         let base = bpf_to_rv(insn.dst_reg());
-        emit_addi(buf, RV_T1, base, off);
+        emit_add_offset(buf, RV_T1, base, off);
         match insn.size() {
             BPF_B => emit_sb(buf, src, RV_T1, 0),
             BPF_H => emit_sh(buf, src, RV_T1, 0),
@@ -809,21 +808,18 @@ impl JitBackend for Riscv64Backend {
         let off = insn.off as i32;
         let src = bpf_to_rv(insn.src_reg());
         let dst = bpf_to_rv(insn.dst_reg());
+        emit_add_offset(buf, RV_T1, src, off);
         match insn.size() {
             BPF_B => {
-                emit_addi(buf, RV_T1, src, off);
                 emit_lbu(buf, dst, RV_T1, 0);
             }
             BPF_H => {
-                emit_addi(buf, RV_T1, src, off);
                 emit_lhu(buf, dst, RV_T1, 0);
             }
             BPF_W => {
-                emit_addi(buf, RV_T1, src, off);
                 emit_lwu(buf, dst, RV_T1, 0);
             }
             BPF_DW => {
-                emit_addi(buf, RV_T1, src, off);
                 emit_ld(buf, dst, RV_T1, 0);
             }
             _ => {}
@@ -868,7 +864,8 @@ impl JitBackend for Riscv64Backend {
                 };
                 let zext_size = if class == BPF_ALU && use_imm { 8 } else { 0 };
                 let op_size = match alu_op {
-                    BPF_DIV | BPF_MOD => 16,
+                    BPF_DIV => 16,
+                    BPF_MOD => 4,
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
                         if use_imm {
                             4
