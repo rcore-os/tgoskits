@@ -22,7 +22,7 @@ mod tests {
         CommandRegister, DeviceType, PciMem32, PciMem64, PcieController, PcieGeneric,
         enumerate_by_controller,
     };
-    use rdif_block::{Buffer, Interface, Request, RequestKind, RequestStatus};
+    use rdif_block::{Buffer, Interface, RequestRead, RequestStatus, RequestWrite};
 
     #[test]
     fn test_framework_boot() {
@@ -60,10 +60,13 @@ mod tests {
 
         let ns = namespace_list[0];
         let mut block = NvmeBlockDriver::with_namespace("nvme", nvme, ns).into_interface();
-        let mut queue = block.create_queue().unwrap();
+        let mut read_queue = block.create_read_queue().unwrap();
+        let mut write_queue = block.create_write_queue().unwrap();
 
-        assert_eq!(queue.block_size(), ns.lba_size);
-        assert_eq!(queue.num_blocks(), ns.lba_count);
+        assert_eq!(read_queue.block_size(), ns.lba_size);
+        assert_eq!(read_queue.num_blocks(), ns.lba_count);
+        assert_eq!(write_queue.block_size(), ns.lba_size);
+        assert_eq!(write_queue.num_blocks(), ns.lba_count);
 
         for block in 0..128 {
             let mut write_buf = vec![0u8; ns.lba_size];
@@ -72,10 +75,10 @@ mod tests {
 
             write_buf[..message_bytes.len()].copy_from_slice(message_bytes);
 
-            submit_write(&mut *queue, block, &mut write_buf);
+            submit_write(&mut *write_queue, block, &mut write_buf);
 
             let mut read_buf = vec![0u8; ns.lba_size];
-            submit_read(&mut *queue, block, &mut read_buf);
+            submit_read(&mut *read_queue, block, &mut read_buf);
 
             assert_eq!(&read_buf[..message_bytes.len()], message_bytes);
 
@@ -87,32 +90,38 @@ mod tests {
         println!("nvme io ok");
     }
 
-    fn submit_read(queue: &mut dyn rdif_block::IQueue, block_id: usize, data: &mut [u8]) {
+    fn submit_read(queue: &mut dyn rdif_block::IReadQueue, block_id: usize, data: &mut [u8]) {
         let id = queue
-            .submit_request(Request {
+            .submit_read(RequestRead {
                 block_id,
-                kind: RequestKind::Read(unsafe {
+                buffer: unsafe {
                     Buffer::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len())
-                }),
+                },
             })
             .expect("read submit should succeed");
-        poll_complete(queue, id);
+        poll_read_complete(queue, id);
     }
 
-    fn submit_write(queue: &mut dyn rdif_block::IQueue, block_id: usize, data: &mut [u8]) {
+    fn submit_write(queue: &mut dyn rdif_block::IWriteQueue, block_id: usize, data: &mut [u8]) {
         let id = queue
-            .submit_request(Request {
+            .submit_write(RequestWrite {
                 block_id,
-                kind: RequestKind::Write(unsafe {
+                buffer: unsafe {
                     Buffer::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len())
-                }),
+                },
             })
             .expect("write submit should succeed");
-        poll_complete(queue, id);
+        poll_write_complete(queue, id);
     }
 
-    fn poll_complete(queue: &mut dyn rdif_block::IQueue, id: rdif_block::RequestId) {
-        while queue.poll_request(id).expect("poll should succeed") == RequestStatus::Pending {
+    fn poll_read_complete(queue: &mut dyn rdif_block::IReadQueue, id: rdif_block::RequestId) {
+        while queue.poll_read(id).expect("poll should succeed") == RequestStatus::Pending {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn poll_write_complete(queue: &mut dyn rdif_block::IWriteQueue, id: rdif_block::RequestId) {
+        while queue.poll_write(id).expect("poll should succeed") == RequestStatus::Pending {
             core::hint::spin_loop();
         }
     }

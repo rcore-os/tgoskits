@@ -124,35 +124,46 @@ impl From<dma_api::DmaError> for BlkError {
 
 /// Operations that require a block storage device driver to implement.
 ///
-/// This trait defines the core interface that all block device drivers
-/// must implement to work with the rdrive framework. It provides methods
-/// for queue management, interrupt handling, and device lifecycle operations.
+/// This trait defines the device-level block capability boundary. Data
+/// movement is split into independent read and write queues; IRQ event
+/// extraction is exposed through a separately owned handler.
 pub trait Interface: DriverGeneric {
-    fn create_queue(&mut self) -> Option<Box<dyn IQueue>>;
+    fn create_read_queue(&mut self) -> Option<Box<dyn IReadQueue>>;
+
+    fn create_write_queue(&mut self) -> Option<Box<dyn IWriteQueue>>;
 
     /// Enable interrupts for the device.
     ///
     /// After calling this method, the device will generate interrupts
     /// for completed operations and other events.
-    fn enable_irq(&mut self);
+    fn enable_irq(&self) {}
 
     /// Disable interrupts for the device.
     ///
     /// After calling this method, the device will not generate interrupts.
     /// This is useful during critical sections or device shutdown.
-    fn disable_irq(&mut self);
+    fn disable_irq(&self) {}
 
     /// Check if interrupts are currently enabled.
     ///
     /// Returns `true` if interrupts are enabled, `false` otherwise.
-    fn is_irq_enabled(&self) -> bool;
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
 
-    /// Handles an IRQ from the device, returning an event if applicable.
+    /// Take the device IRQ event handler.
     ///
-    /// This method should be called from the device's interrupt handler.
-    /// It processes the interrupt and returns information about which
-    /// queues have completed operations.
-    fn handle_irq(&mut self) -> Event;
+    /// IRQ-capable drivers should normally return `Some` exactly once and
+    /// `None` afterwards. Polling-only drivers may keep the default.
+    fn take_irq_handler(&mut self) -> Option<Box<dyn IrqHandler>> {
+        None
+    }
+}
+
+/// Lock-free IRQ event extraction for a block device.
+pub trait IrqHandler: Send + Sync + 'static {
+    /// Handles an IRQ from the device, returning queue event masks.
+    fn handle_irq(&self) -> Event;
 }
 
 #[repr(transparent)]
@@ -183,14 +194,17 @@ impl IdList {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Event {
-    /// Bitmask of queue IDs that have events.
-    pub queue: IdList,
+    /// Bitmask of read queue IDs that have events.
+    pub read_queue: IdList,
+    /// Bitmask of write queue IDs that have events.
+    pub write_queue: IdList,
 }
 
 impl Event {
     pub const fn none() -> Self {
         Self {
-            queue: IdList::none(),
+            read_queue: IdList::none(),
+            write_queue: IdList::none(),
         }
     }
 }
@@ -258,8 +272,8 @@ impl DerefMut for Buffer<'_> {
     }
 }
 
-/// Read queue trait for block devices.
-pub trait IQueue: Send + 'static {
+/// Common information exposed by block read and write queues.
+pub trait QueueInfo {
     /// Get the queue identifier.
     fn id(&self) -> usize;
 
@@ -271,23 +285,34 @@ pub trait IQueue: Send + 'static {
 
     /// Get the buffer configuration for this queue.
     fn buffer_config(&self) -> BuffConfig;
+}
 
-    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError>;
+/// Read queue trait for block devices.
+pub trait IReadQueue: QueueInfo + Send + 'static {
+    fn submit_read(&mut self, request: RequestRead<'_>) -> Result<RequestId, BlkError>;
 
     /// Poll the status of a previously submitted request.
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
+    fn poll_read(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
+}
+
+/// Write queue trait for block devices.
+pub trait IWriteQueue: QueueInfo + Send + 'static {
+    fn submit_write(&mut self, request: RequestWrite<'_>) -> Result<RequestId, BlkError>;
+
+    /// Poll the status of a previously submitted request.
+    fn poll_write(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
 }
 
 #[derive(Clone)]
-pub struct Request<'a> {
+pub struct RequestRead<'a> {
     pub block_id: usize,
-    pub kind: RequestKind<'a>,
+    pub buffer: Buffer<'a>,
 }
 
 #[derive(Clone)]
-pub enum RequestKind<'a> {
-    Read(Buffer<'a>),
-    Write(Buffer<'a>),
+pub struct RequestWrite<'a> {
+    pub block_id: usize,
+    pub buffer: Buffer<'a>,
 }
 
 #[cfg(test)]
@@ -304,17 +329,106 @@ mod tests {
     fn write_request_uses_dma_buffer_shape() {
         let mut bytes = [0x5a_u8; 4];
         let buffer = unsafe { Buffer::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let request = Request {
+        let request = RequestWrite {
             block_id: 7,
-            kind: RequestKind::Write(buffer),
-        };
-
-        let RequestKind::Write(buffer) = request.kind else {
-            panic!("write request should carry a block buffer");
+            buffer,
         };
 
         assert_eq!(request.block_id, 7);
-        assert_eq!(buffer.bus, 0x1000);
-        assert_eq!(&*buffer, &[0x5a; 4]);
+        assert_eq!(request.buffer.bus, 0x1000);
+        assert_eq!(&*request.buffer, &[0x5a; 4]);
+    }
+
+    struct NoopIrq;
+
+    impl IrqHandler for NoopIrq {
+        fn handle_irq(&self) -> Event {
+            let mut event = Event::none();
+            event.read_queue.insert(1);
+            event.write_queue.insert(2);
+            event
+        }
+    }
+
+    #[test]
+    fn block_api_separates_read_write_queues_and_irq_handler() {
+        fn assert_read_queue<T: IReadQueue>() {}
+        fn assert_write_queue<T: IWriteQueue>() {}
+        fn assert_irq_handler<T: IrqHandler>() {}
+
+        struct ReadOnly;
+        struct WriteOnly;
+
+        impl QueueInfo for ReadOnly {
+            fn id(&self) -> usize {
+                1
+            }
+
+            fn num_blocks(&self) -> usize {
+                8
+            }
+
+            fn block_size(&self) -> usize {
+                512
+            }
+
+            fn buffer_config(&self) -> BuffConfig {
+                BuffConfig {
+                    dma_mask: u64::MAX,
+                    align: 512,
+                    size: 512,
+                }
+            }
+        }
+
+        impl IReadQueue for ReadOnly {
+            fn submit_read(&mut self, _request: RequestRead<'_>) -> Result<RequestId, BlkError> {
+                Ok(RequestId::new(1))
+            }
+
+            fn poll_read(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+                Ok(RequestStatus::Complete)
+            }
+        }
+
+        impl QueueInfo for WriteOnly {
+            fn id(&self) -> usize {
+                2
+            }
+
+            fn num_blocks(&self) -> usize {
+                8
+            }
+
+            fn block_size(&self) -> usize {
+                512
+            }
+
+            fn buffer_config(&self) -> BuffConfig {
+                BuffConfig {
+                    dma_mask: u64::MAX,
+                    align: 512,
+                    size: 512,
+                }
+            }
+        }
+
+        impl IWriteQueue for WriteOnly {
+            fn submit_write(&mut self, _request: RequestWrite<'_>) -> Result<RequestId, BlkError> {
+                Ok(RequestId::new(2))
+            }
+
+            fn poll_write(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+                Ok(RequestStatus::Complete)
+            }
+        }
+
+        assert_read_queue::<ReadOnly>();
+        assert_write_queue::<WriteOnly>();
+        assert_irq_handler::<NoopIrq>();
+
+        let event = NoopIrq.handle_irq();
+        assert!(event.read_queue.contains(1));
+        assert!(event.write_queue.contains(2));
     }
 }

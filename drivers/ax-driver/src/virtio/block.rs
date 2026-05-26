@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::format;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(any(probe = "fdt", probe = "pci"))]
@@ -11,7 +12,10 @@ use virtio_drivers::{
     transport::Transport,
 };
 
-use crate::{block::PlatformDeviceBlock, virtio::VirtIoHalImpl};
+use crate::{
+    block::{PlatformDeviceBlock, SharedDriver},
+    virtio::VirtIoHalImpl,
+};
 
 const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 32 * SECTOR_SIZE;
 
@@ -64,8 +68,10 @@ pub fn register_transport<T: Transport + 'static>(
     let dev = VirtIoBlkDevice::new(transport)
         .map_err(|err| OnProbeError::other(format!("failed to initialize virtio-blk: {err:?}")))?;
     plat_dev.register_block(BlockDevice {
-        dev: Some(dev),
-        irq_enabled: false,
+        dev: Some(SharedDriver::new(dev)),
+        irq_enabled: AtomicBool::new(false),
+        read_queue_created: false,
+        write_queue_created: false,
     });
     log::info!("registered virtio block device");
     Ok(())
@@ -86,8 +92,10 @@ impl<T: Transport + 'static> VirtIoBlkDevice<T> {
 }
 
 struct BlockDevice<T: Transport + 'static> {
-    dev: Option<VirtIoBlkDevice<T>>,
-    irq_enabled: bool,
+    dev: Option<SharedDriver<VirtIoBlkDevice<T>>>,
+    irq_enabled: AtomicBool,
+    read_queue_created: bool,
+    write_queue_created: bool,
 }
 
 impl<T: Transport + 'static> DriverGeneric for BlockDevice<T> {
@@ -97,40 +105,60 @@ impl<T: Transport + 'static> DriverGeneric for BlockDevice<T> {
 }
 
 impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
-    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
-        self.dev
-            .take()
-            .map(|dev| alloc::boxed::Box::new(BlockQueue { raw: dev }) as _)
+    fn create_read_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IReadQueue>> {
+        if self.read_queue_created {
+            return None;
+        }
+        self.dev.as_ref().map(|dev| {
+            self.read_queue_created = true;
+            alloc::boxed::Box::new(BlockReadQueue { raw: dev.clone() }) as _
+        })
     }
 
-    fn enable_irq(&mut self) {
-        self.irq_enabled = true;
+    fn create_write_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IWriteQueue>> {
+        if self.write_queue_created {
+            return None;
+        }
+        self.dev.as_ref().map(|dev| {
+            self.write_queue_created = true;
+            alloc::boxed::Box::new(BlockWriteQueue { raw: dev.clone() }) as _
+        })
     }
 
-    fn disable_irq(&mut self) {
-        self.irq_enabled = false;
+    fn enable_irq(&self) {
+        if let Some(dev) = &self.dev {
+            dev.with_mut(|dev| dev.raw.enable_interrupts());
+        }
+        self.irq_enabled.store(true, Ordering::Release);
+    }
+
+    fn disable_irq(&self) {
+        if let Some(dev) = &self.dev {
+            dev.with_mut(|dev| dev.raw.disable_interrupts());
+        }
+        self.irq_enabled.store(false, Ordering::Release);
     }
 
     fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
-    }
-
-    fn handle_irq(&mut self) -> rdif_block::Event {
-        rdif_block::Event::none()
+        self.irq_enabled.load(Ordering::Acquire)
     }
 }
 
-struct BlockQueue<T: Transport + 'static> {
-    raw: VirtIoBlkDevice<T>,
+struct BlockReadQueue<T: Transport + 'static> {
+    raw: SharedDriver<VirtIoBlkDevice<T>>,
 }
 
-impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
+struct BlockWriteQueue<T: Transport + 'static> {
+    raw: SharedDriver<VirtIoBlkDevice<T>>,
+}
+
+impl<T: Transport + 'static> rdif_block::QueueInfo for BlockReadQueue<T> {
     fn id(&self) -> usize {
         0
     }
 
     fn num_blocks(&self) -> usize {
-        self.raw.raw.capacity() as _
+        self.raw.with_mut(|raw| raw.raw.capacity() as _)
     }
 
     fn block_size(&self) -> usize {
@@ -144,29 +172,61 @@ impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
             size: VIRTIO_BLK_DMA_BUFFER_SIZE,
         }
     }
+}
 
-    fn submit_request(
+impl<T: Transport + 'static> rdif_block::IReadQueue for BlockReadQueue<T> {
+    fn submit_read(
         &mut self,
-        request: rdif_block::Request<'_>,
+        mut request: rdif_block::RequestRead<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        match request.kind {
-            rdif_block::RequestKind::Read(mut buffer) => {
-                self.raw
-                    .raw
-                    .read_blocks(request.block_id, &mut buffer)
-                    .map_err(map_virtio_err_to_blk_err)?;
-            }
-            rdif_block::RequestKind::Write(items) => {
-                self.raw
-                    .raw
-                    .write_blocks(request.block_id, &items)
-                    .map_err(map_virtio_err_to_blk_err)?;
-            }
-        }
+        self.raw
+            .with_mut(|raw| raw.raw.read_blocks(request.block_id, &mut request.buffer))
+            .map_err(map_virtio_err_to_blk_err)?;
         Ok(rdif_block::RequestId::new(0))
     }
 
-    fn poll_request(
+    fn poll_read(
+        &mut self,
+        _request: rdif_block::RequestId,
+    ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {
+        Ok(rdif_block::RequestStatus::Complete)
+    }
+}
+
+impl<T: Transport + 'static> rdif_block::QueueInfo for BlockWriteQueue<T> {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn num_blocks(&self) -> usize {
+        self.raw.with_mut(|raw| raw.raw.capacity() as _)
+    }
+
+    fn block_size(&self) -> usize {
+        SECTOR_SIZE
+    }
+
+    fn buffer_config(&self) -> rdif_block::BuffConfig {
+        rdif_block::BuffConfig {
+            dma_mask: u64::MAX,
+            align: 0x1000,
+            size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+        }
+    }
+}
+
+impl<T: Transport + 'static> rdif_block::IWriteQueue for BlockWriteQueue<T> {
+    fn submit_write(
+        &mut self,
+        request: rdif_block::RequestWrite<'_>,
+    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
+        self.raw
+            .with_mut(|raw| raw.raw.write_blocks(request.block_id, &request.buffer))
+            .map_err(map_virtio_err_to_blk_err)?;
+        Ok(rdif_block::RequestId::new(0))
+    }
+
+    fn poll_write(
         &mut self,
         _request: rdif_block::RequestId,
     ) -> Result<rdif_block::RequestStatus, rdif_block::BlkError> {

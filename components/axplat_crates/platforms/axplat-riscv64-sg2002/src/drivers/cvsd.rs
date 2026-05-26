@@ -1,12 +1,15 @@
 use alloc::{boxed::Box, format, sync::Arc};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rdif_block::{
-    BlkError, BuffConfig, DriverGeneric, Event, IQueue, Interface, Request, RequestId,
-    RequestStatus,
+    BlkError, BuffConfig, DriverGeneric, IReadQueue, IWriteQueue, Interface, QueueInfo, RequestId,
+    RequestRead, RequestStatus, RequestWrite,
 };
 use sg200x_bsp::sdmmc::Sdmmc;
-use spin::Mutex;
 
 use crate::config::devices;
 
@@ -68,6 +71,76 @@ struct CvsdDriver(Sdmmc);
 // contexts is sound.
 unsafe impl Send for CvsdDriver {}
 
+struct SharedCvsdDriver {
+    inner: Arc<SharedCvsdDriverInner>,
+}
+
+struct SharedCvsdDriverInner {
+    driver: UnsafeCell<CvsdDriver>,
+    borrowed: AtomicBool,
+}
+
+struct SharedCvsdDriverGuard<'a> {
+    inner: &'a SharedCvsdDriverInner,
+}
+
+// SAFETY: Access to the `UnsafeCell` is serialized by `borrowed` and scoped to
+// `with_mut`. CVSD has no exported hard-IRQ handler, so callers only use this
+// from task-side queue methods.
+unsafe impl Send for SharedCvsdDriverInner {}
+
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for SharedCvsdDriverInner {}
+
+impl SharedCvsdDriver {
+    fn new(driver: CvsdDriver) -> Self {
+        Self {
+            inner: Arc::new(SharedCvsdDriverInner {
+                driver: UnsafeCell::new(driver),
+                borrowed: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn with_mut<R>(&self, f: impl FnOnce(&mut CvsdDriver) -> R) -> R {
+        let mut guard = self.inner.enter();
+        f(guard.get_mut())
+    }
+}
+
+impl Clone for SharedCvsdDriver {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl SharedCvsdDriverInner {
+    fn enter(&self) -> SharedCvsdDriverGuard<'_> {
+        while self
+            .borrowed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        SharedCvsdDriverGuard { inner: self }
+    }
+}
+
+impl SharedCvsdDriverGuard<'_> {
+    fn get_mut(&mut self) -> &mut CvsdDriver {
+        unsafe { &mut *self.inner.driver.get() }
+    }
+}
+
+impl Drop for SharedCvsdDriverGuard<'_> {
+    fn drop(&mut self) {
+        self.inner.borrowed.store(false, Ordering::Release);
+    }
+}
+
 impl CvsdDriver {
     fn new(sdmmc: usize, syscon: usize) -> Result<Self, ()> {
         let sdmmc = unsafe { Sdmmc::new(sdmmc, syscon) };
@@ -115,17 +188,17 @@ impl CvsdDriver {
 }
 
 struct CvsdBlock {
-    inner: Arc<Mutex<CvsdDriver>>,
-    queue_created: bool,
-    irq_enabled: bool,
+    inner: SharedCvsdDriver,
+    read_queue_created: bool,
+    write_queue_created: bool,
 }
 
 impl CvsdBlock {
     fn new(driver: CvsdDriver) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(driver)),
-            queue_created: false,
-            irq_enabled: false,
+            inner: SharedCvsdDriver::new(driver),
+            read_queue_created: false,
+            write_queue_created: false,
         }
     }
 }
@@ -137,46 +210,46 @@ impl DriverGeneric for CvsdBlock {
 }
 
 impl Interface for CvsdBlock {
-    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
-        if self.queue_created {
+    fn create_read_queue(&mut self) -> Option<Box<dyn IReadQueue>> {
+        if self.read_queue_created {
             return None;
         }
-        self.queue_created = true;
-        Some(Box::new(CvsdQueue {
+        self.read_queue_created = true;
+        Some(Box::new(CvsdReadQueue {
             id: 0,
-            inner: Arc::clone(&self.inner),
+            inner: self.inner.clone(),
         }))
     }
 
-    fn enable_irq(&mut self) {
-        self.irq_enabled = true;
-    }
-
-    fn disable_irq(&mut self) {
-        self.irq_enabled = false;
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
-    }
-
-    fn handle_irq(&mut self) -> Event {
-        Event::none()
+    fn create_write_queue(&mut self) -> Option<Box<dyn IWriteQueue>> {
+        if self.write_queue_created {
+            return None;
+        }
+        self.write_queue_created = true;
+        Some(Box::new(CvsdWriteQueue {
+            id: 0,
+            inner: self.inner.clone(),
+        }))
     }
 }
 
-struct CvsdQueue {
+struct CvsdReadQueue {
     id: usize,
-    inner: Arc<Mutex<CvsdDriver>>,
+    inner: SharedCvsdDriver,
 }
 
-impl IQueue for CvsdQueue {
+struct CvsdWriteQueue {
+    id: usize,
+    inner: SharedCvsdDriver,
+}
+
+impl QueueInfo for CvsdReadQueue {
     fn id(&self) -> usize {
         self.id
     }
 
     fn num_blocks(&self) -> usize {
-        self.inner.lock().num_blocks() as usize
+        self.inner.with_mut(|driver| driver.num_blocks() as usize)
     }
 
     fn block_size(&self) -> usize {
@@ -190,22 +263,50 @@ impl IQueue for CvsdQueue {
             size: self.block_size(),
         }
     }
+}
 
-    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        match request.kind {
-            rdif_block::RequestKind::Read(mut buffer) => self
-                .inner
-                .lock()
-                .read_blocks(request.block_id as u64, &mut buffer)?,
-            rdif_block::RequestKind::Write(buffer) => self
-                .inner
-                .lock()
-                .write_blocks(request.block_id as u64, &buffer)?,
-        }
+impl IReadQueue for CvsdReadQueue {
+    fn submit_read(&mut self, mut request: RequestRead<'_>) -> Result<RequestId, BlkError> {
+        self.inner
+            .with_mut(|driver| driver.read_blocks(request.block_id as u64, &mut request.buffer))?;
         Ok(RequestId::new(0))
     }
 
-    fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+    fn poll_read(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+        Ok(RequestStatus::Complete)
+    }
+}
+
+impl QueueInfo for CvsdWriteQueue {
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn num_blocks(&self) -> usize {
+        self.inner.with_mut(|driver| driver.num_blocks() as usize)
+    }
+
+    fn block_size(&self) -> usize {
+        BLOCK_SIZE
+    }
+
+    fn buffer_config(&self) -> BuffConfig {
+        BuffConfig {
+            dma_mask: u64::MAX,
+            align: 0x1000,
+            size: self.block_size(),
+        }
+    }
+}
+
+impl IWriteQueue for CvsdWriteQueue {
+    fn submit_write(&mut self, request: RequestWrite<'_>) -> Result<RequestId, BlkError> {
+        self.inner
+            .with_mut(|driver| driver.write_blocks(request.block_id as u64, &request.buffer))?;
+        Ok(RequestId::new(0))
+    }
+
+    fn poll_write(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
         Ok(RequestStatus::Complete)
     }
 }

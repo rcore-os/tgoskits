@@ -64,7 +64,9 @@ pub(crate) fn register_irq_handlers(blocks: &mut [ax_driver::block::Block]) {
             let Some((irq_num, handler)) = block.take_irq_handler() else {
                 continue;
             };
-            register_irq_handler(irq_num, handler);
+            if register_irq_handler(irq_num, handler) {
+                block.enable_irq();
+            }
         }
     }
 
@@ -75,7 +77,7 @@ pub(crate) fn register_irq_handlers(blocks: &mut [ax_driver::block::Block]) {
 }
 
 #[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
-fn register_irq_handler(irq_num: usize, handler: BlockIrqHandler) {
+fn register_irq_handler(irq_num: usize, handler: BlockIrqHandler) -> bool {
     let handler = Box::into_raw(Box::new(handler));
     for (slot, source) in BLOCK_IRQ_HANDLERS.iter().enumerate() {
         if source
@@ -91,10 +93,7 @@ fn register_irq_handler(irq_num: usize, handler: BlockIrqHandler) {
         }
 
         if axklib::irq::register(irq_num, BLOCK_IRQ_THUNKS[slot]) {
-            // The runtime IRQ entry is now installed and the slot points at the
-            // handler, so enabling device-side IRQs cannot race a null slot.
-            unsafe { &*handler }.enable_irq();
-            return;
+            return true;
         }
 
         source.store(ptr::null_mut(), Ordering::Release);
@@ -102,13 +101,14 @@ fn register_irq_handler(irq_num: usize, handler: BlockIrqHandler) {
             drop(Box::from_raw(handler));
         }
         warn!("failed to register block irq handler for irq {irq_num}");
-        return;
+        return false;
     }
 
     unsafe {
         drop(Box::from_raw(handler));
     }
     warn!("no free block irq handler slot for irq {irq_num}");
+    false
 }
 
 #[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
