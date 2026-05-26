@@ -27,6 +27,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+info()  { printf "[self-compile] %s\n" "$*"; }
+error() { printf "[self-compile] ERROR: %s\n" "$*" >&2; exit 1; }
+
 # ─── Argument parsing ───────────────────────────────────────────────────────────
 
 ARCH="riscv64"
@@ -98,9 +101,6 @@ fi
 
 INJECT_SCRIPT="/usr/bin/self-compile-inner.sh"
 QEMU_LOG="/tmp/starryos-selfcompile-$$.log"
-
-info()  { printf "[self-compile] %s\n" "$*"; }
-error() { printf "[self-compile] ERROR: %s\n" "$*" >&2; exit 1; }
 
 info "Architecture: $ARCH | Target: $TARGET | SMP: $SMP | Cargo jobs: $CARGO_BUILD_JOBS"
 
@@ -193,16 +193,6 @@ echo "BUILD_START"
 		kill \$HEARTBEAT_PID 2>/dev/null || true
 		wait \$HEARTBEAT_PID 2>/dev/null || true
 		echo "BUILD_END"
-		wc -c /opt/starryos/cargo-diag.log 2>/dev/null || echo "wc failed"
-		echo "===CARGO_STDERR_START==="
-		cat /opt/starryos/cargo-diag.log 2>/dev/null || echo "(empty or missing)"
-		echo "===CARGO_STDERR_END==="
-		cat /tmp/cargo-stdout.log 2>/dev/null || echo "(no cargo output)"
-		echo "===CARGO_OUTPUT_END==="
-		# Dump captured cargo output
-		echo "===CARGO_OUTPUT_START==="
-		cat /tmp/cargo-output.log 2>/dev/null || echo "(no cargo output captured)"
-		echo "===CARGO_OUTPUT_END==="
 # Restore original Cargo.toml
 [ -f Cargo.toml.orig ] && mv Cargo.toml.orig Cargo.toml
 
