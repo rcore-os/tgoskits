@@ -4,7 +4,7 @@
 //!
 //! 本库提供统一的串口驱动接口，支持多种硬件平台：
 //! - ARM PL011 UART
-//! - NS16550/16450 UART（IO Port 和 MMIO 版本）
+//! - NS16550/16450 UART（IO Port、MMIO 和 DesignWare APB 版本）
 //!
 //! ## 特性
 //!
@@ -22,7 +22,7 @@
 //!
 //! ### NS16550/16450 UART
 //! - 经典 PC 串口控制器，广泛兼容
-//! - 支持 IO Port（x86_64）和 MMIO（通用）两种访问方式
+//! - 支持 IO Port（x86_64）、MMIO（通用）和 DesignWare APB 访问方式
 //! - 支持 16 字节 FIFO 缓冲
 //!
 //! ## 快速开始
@@ -49,7 +49,6 @@
 //! uart.open().unwrap();
 //! ```
 
-// 导入核心模块
 pub mod ns16550;
 pub mod pl011;
 
@@ -62,6 +61,7 @@ pub enum Sender {
     #[cfg(target_arch = "x86_64")]
     Ns16550Sender(ns16550::Ns16550Sender<ns16550::Port>),
     Ns16550MmioSender(ns16550::Ns16550Sender<ns16550::Mmio>),
+    Ns16550DwApbSender(ns16550::Ns16550Sender<ns16550::DwApb>),
     Pl011Sender(pl011::Pl011Sender),
 }
 
@@ -95,6 +95,7 @@ pub enum Reciever {
     #[cfg(target_arch = "x86_64")]
     Ns16550Reciever(ns16550::Ns16550Reciever<ns16550::Port>),
     Ns16550MmioReciever(ns16550::Ns16550Reciever<ns16550::Mmio>),
+    Ns16550DwApbReciever(ns16550::Ns16550Reciever<ns16550::DwApb>),
     Pl011Reciever(pl011::Pl011Reciever),
 }
 

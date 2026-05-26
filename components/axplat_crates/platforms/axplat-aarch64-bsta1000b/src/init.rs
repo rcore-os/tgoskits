@@ -16,7 +16,7 @@ impl InitIf for InitIfImpl {
     fn init_early(_cpu_id: usize, _dtb: usize) {
         ax_cpu::init::init_trap();
         ax_plat_aarch64_peripherals::psci::init(PSCI_METHOD);
-        super::dw_apb_uart::init_early();
+        super::serial::init_early();
         ax_plat_aarch64_peripherals::generic_timer::init_early();
     }
 

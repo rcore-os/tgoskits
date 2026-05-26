@@ -23,13 +23,13 @@ pub mod config {
 
 mod boot;
 mod drivers;
-mod dw_apb_uart;
 mod init;
 mod mem;
 mod misc;
 #[cfg(feature = "smp")]
 mod mp;
 mod power;
+mod serial;
 
 ax_plat_aarch64_peripherals::time_if_impl!(TimeIfImpl);
 

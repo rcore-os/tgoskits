@@ -110,7 +110,6 @@ flowchart TB
 | `ax-alloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](crates/ax-alloc) |
 | `ax-allocator` | 组件层 | `components/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
-| `ax-arm-pl011` | 组件层 | `drivers/serial/arm_pl011` | 0 | 1 | [查看](crates/ax-arm-pl011) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
 | `ax-cap-access` | 组件层 | `components/cap_access` | 0 | 1 | [查看](crates/ax-cap-access) |
 | `ax-config` | ArceOS 层 | `os/arceos/modules/axconfig` | 1 | 12 | [查看](crates/ax-config) |

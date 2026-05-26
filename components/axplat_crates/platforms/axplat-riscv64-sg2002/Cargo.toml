@@ -21,7 +21,6 @@ rtc = []
 smp = ["ax-plat/smp", "ax-kspin/smp"]
 
 [dependencies]
-dw_uart_rs = "0.2.0"
 log = { workspace = true }
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["xuantie-c9xx"] }
@@ -32,6 +31,7 @@ ax-plat = { workspace = true }
 axklib.workspace = true
 rd-block.workspace = true
 sg200x-bsp.workspace = true
+some-serial.workspace = true
 spin.workspace = true
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]

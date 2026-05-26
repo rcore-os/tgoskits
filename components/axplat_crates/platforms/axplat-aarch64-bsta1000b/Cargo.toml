@@ -19,7 +19,7 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 log = "0.4"
 ax-kspin = { workspace = true }
 ax-page-table-entry = { workspace = true }
-dw_apb_uart = { workspace = true }
+some-serial = { workspace = true }
 
 ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }
