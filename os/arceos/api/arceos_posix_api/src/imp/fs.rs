@@ -5,7 +5,7 @@ use core::mem::size_of;
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_fs::{OpenOptions, ReadDir};
-use ax_fs_vfs::{Metadata, NodeType};
+use ax_fs_vfs::{Location, Metadata, NodeType};
 use ax_io::{PollState, SeekFrom, prelude::*};
 use ax_sync::Mutex;
 
@@ -17,6 +17,7 @@ pub struct File {
 }
 
 pub struct Directory {
+    loc: Location,
     inner: Mutex<ReadDir>,
 }
 
@@ -170,18 +171,16 @@ fn file_type_to_d_type(ty: NodeType) -> u8 {
 }
 
 fn metadata_to_stat(metadata: Metadata) -> ctypes::stat {
-    let ty = metadata.node_type as u8;
-    let perm = metadata.mode.bits() as u32;
-    let st_mode = ((ty as u32) << 12) | perm;
+    let st_mode = ((metadata.node_type as u32) << 12) | metadata.mode.bits() as u32;
     ctypes::stat {
-        st_ino: 1,
-        st_nlink: 1,
+        st_ino: metadata.inode,
+        st_nlink: metadata.nlink as _,
         st_mode,
-        st_uid: 1000,
-        st_gid: 1000,
+        st_uid: metadata.uid,
+        st_gid: metadata.gid,
         st_size: metadata.size as _,
         st_blocks: metadata.blocks as _,
-        st_blksize: 512,
+        st_blksize: metadata.block_size as _,
         ..Default::default()
     }
 }
@@ -206,8 +205,9 @@ impl File {
 }
 
 impl Directory {
-    fn new(inner: ReadDir) -> Self {
+    fn new(loc: Location, inner: ReadDir) -> Self {
         Self {
+            loc,
             inner: Mutex::new(inner),
         }
     }
@@ -263,18 +263,7 @@ impl FileLike for Directory {
     }
 
     fn stat(&self) -> LinuxResult<ctypes::stat> {
-        let st_mode = 0o040755;
-        Ok(ctypes::stat {
-            st_ino: 1,
-            st_nlink: 1,
-            st_mode,
-            st_uid: 1000,
-            st_gid: 1000,
-            st_size: 0,
-            st_blocks: 0,
-            st_blksize: 512,
-            ..Default::default()
-        })
+        Ok(metadata_to_stat(self.loc.metadata()?))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
@@ -338,8 +327,9 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
             let mut options = options;
             options.directory(true);
             let ctx = ax_fs::FS_CONTEXT.lock();
-            let dir = options.open(&ctx, filename)?.into_dir()?;
-            Directory::new(ReadDir::new(dir)).add_to_fd_table()
+            let loc = options.open(&ctx, filename)?.into_dir()?;
+            let dir = ReadDir::new(loc.clone());
+            Directory::new(loc, dir).add_to_fd_table()
         } else {
             let ctx = ax_fs::FS_CONTEXT.lock();
             let file = options.open(&ctx, filename)?.into_file()?;

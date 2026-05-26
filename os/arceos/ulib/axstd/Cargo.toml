@@ -59,9 +59,14 @@ sched-cfs = ["ax-feat/sched-cfs"]
 stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
-fs = ["ax-api/fs", "ax-feat/fs"]
-ext4fs = ["fs", "ax-feat/fs-ext4"]
-fatfs = ["fs", "ax-feat/fs-fat"]
+# Keep `fs` as the legacy default filesystem bundle. Use `fs-api` when only
+# the neutral filesystem API is needed.
+fs = ["fatfs"]
+ext4fs = ["fs-api", "ax-feat/fs-ext4"]
+fatfs = ["fs-api", "ax-feat/fs-fat"]
+devfs = ["fs-api", "ax-feat/fs-devfs"]
+ramfs = ["fs-api", "ax-feat/fs-ramfs"]
+fs-api = ["ax-api/fs"]
 
 # Networking
 net = ["ax-api/net", "ax-feat/net"]
