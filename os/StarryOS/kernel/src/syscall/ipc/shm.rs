@@ -666,7 +666,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
                 if !has_ipc_permission(&guard.shmid_ds.shm_perm, cred.euid, cred.egid, false) {
                     return Err(AxError::PermissionDenied);
                 }
-                let ptr = buf.as_ptr() as *mut ShmidDs;
+                let ptr = buf.as_ptr();
                 ptr.vm_write(guard.shmid_ds)?;
                 Ok(*actual_shmid as isize)
             });
