@@ -456,12 +456,12 @@ fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool)
     if is_64 {
         emit_mov_reg64(buf, X86_R11, src);
         emit_mov_reg64(buf, X86_R10, dst);
-        emit_xor_reg64(buf, dst, dst);
+        emit_xor_reg64(buf, X86_RAX, X86_RAX);
+        emit_xor_reg64(buf, X86_RDX, X86_RDX);
         emit_test_reg64(buf, X86_R11, X86_R11);
         let skip = buf.offset();
         emit_je(buf, 0);
         emit_mov_reg64(buf, X86_RAX, X86_R10);
-        emit_xor_reg64(buf, X86_RDX, X86_RDX);
         emit_rex_w(buf, 0, X86_R11);
         buf.emit_u8(0xF7);
         emit_modrm(buf, 3, 6, X86_R11);
@@ -476,13 +476,13 @@ fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool)
     } else {
         emit_mov_reg32(buf, X86_R11, src);
         emit_mov_reg32(buf, X86_R10, dst);
-        emit_xor_reg32(buf, dst, dst);
+        emit_xor_reg32(buf, X86_RAX, X86_RAX);
+        emit_xor_reg32(buf, X86_RDX, X86_RDX);
         emit_test_reg64(buf, X86_R11, X86_R11);
         let skip = buf.offset();
         emit_je(buf, 0);
         emit_mov_reg32(buf, X86_RAX, X86_R10);
         emit_zext32(buf, X86_RAX);
-        emit_xor_reg32(buf, X86_RDX, X86_RDX);
         emit_rex_if(buf, 0, X86_R11);
         buf.emit_u8(0xF7);
         emit_modrm(buf, 3, 6, X86_R11);
