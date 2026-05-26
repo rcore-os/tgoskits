@@ -1,0 +1,35 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "nvme,serial=starry-nvme-rootfs,drive=nvm",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+fail() {
+    echo 'NVME_ROOTFS_RW_20M_TEST_FAILED'
+    exit 1
+}
+mkdir -p /root/nvme-rootfs-rw-20m
+src=/root/nvme-rootfs-rw-20m/source.bin
+copy=/root/nvme-rootfs-rw-20m/copy.bin
+(yes 'nvme-rdif-block-submit-poll-0123456789abcdef' | head -c 20971520 > "$src") || fail
+sync || fail
+cp "$src" "$copy" || fail
+sync || fail
+size=$(wc -c < "$copy" | tr -d ' ')
+[ "$size" = "20971520" ] || fail
+hash=$(sha256sum "$copy" | awk '{print $1}')
+[ "$hash" = "2c05845aa65c70c952edbcf0838d340ec5552bafba6dd8571b245a090e891b85" ] || fail
+echo 'NVME_ROOTFS_RW_20M_TEST_PASSED'
+'''
+success_regex = ["(?m)^NVME_ROOTFS_RW_20M_TEST_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NVME_ROOTFS_RW_20M_TEST_FAILED\\s*$"]
+timeout = 300

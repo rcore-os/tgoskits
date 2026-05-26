@@ -237,6 +237,16 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
         args.push("-drive".to_string());
         args.push(disk_value);
     }
+    let has_custom_rootfs_device = has_blk_device
+        && device_drive_ids.iter().any(|id| {
+            id != wiring.disk_id
+                && custom_rootfs_drives
+                    .iter()
+                    .any(|(_, drive_id)| drive_id == id)
+        });
+    if has_custom_rootfs_device && !has_net_device && !has_netdev {
+        return;
+    }
     if !has_net_device {
         args.push("-device".to_string());
         args.push(wiring.default_net_device.to_string());
@@ -411,6 +421,32 @@ mod tests {
                 "virtio-net-pci,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_does_not_add_network_for_custom_rootfs_without_network() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=nvm,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+                "-device".to_string(),
+                "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                "id=nvm,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
+                "-device".to_string(),
+                "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
             ]
         );
     }
