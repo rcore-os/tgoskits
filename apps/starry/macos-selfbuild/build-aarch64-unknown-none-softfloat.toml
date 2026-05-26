@@ -1,0 +1,6 @@
+target = "aarch64-unknown-none-softfloat"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+log = "Warn"
+features = ["qemu", "gic-v3", "cntv-timer", "smp"]
+max_cpu_num = 8
+plat_dyn = false
