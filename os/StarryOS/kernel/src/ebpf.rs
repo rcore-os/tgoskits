@@ -2495,14 +2495,6 @@ pub fn sys_perf_event_open(
     crate::perf_event::sys_perf_event_open_impl(attr_uptr, pid, cpu, group_fd, flags)
 }
 
-pub fn bpf_close_all_fds() {
-    let mut guard = BPF_GLOBAL.lock();
-    guard.maps.clear();
-    guard.progs.clear();
-    guard.links.clear();
-    guard.free_fds.clear();
-}
-
 #[allow(dead_code)]
 pub fn bpf_close_fd(fd: u32) -> AxResult<()> {
     let mut guard = BPF_GLOBAL.lock();
