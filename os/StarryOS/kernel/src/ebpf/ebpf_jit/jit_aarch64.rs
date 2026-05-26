@@ -67,8 +67,13 @@ fn emit_addi(buf: &mut JitBuffer, rd: u32, rn: u32, imm: i32) {
 }
 
 fn emit_addiw(buf: &mut JitBuffer, rd: u32, rn: u32, imm: i32) {
-    let imm12 = (imm as u32) & 0xFFF;
-    buf.emit_u32(0x11000000 | (imm12 << 10) | (rn << 5) | rd);
+    if imm >= 0 {
+        let imm12 = (imm as u32) & 0xFFF;
+        buf.emit_u32(0x11000000 | (imm12 << 10) | (rn << 5) | rd);
+    } else {
+        let imm12 = (-imm as u32) & 0xFFF;
+        buf.emit_u32(0x51000000 | (imm12 << 10) | (rn << 5) | rd);
+    }
 }
 
 fn emit_subi(buf: &mut JitBuffer, rd: u32, rn: u32, imm: i32) {
@@ -218,53 +223,53 @@ fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
 }
 
 fn emit_str(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off << 2) as u32 & 0x1FFC;
-    buf.emit_u32(0xF9000000 | imm9 | (rn << 5) | rt);
+    let imm12 = ((off as u32) >> 3) & 0xFFF;
+    buf.emit_u32(0xF9000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_strw(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off << 2) as u32 & 0x1FFC;
-    buf.emit_u32(0xB9000000 | imm9 | (rn << 5) | rt);
+    let imm12 = ((off as u32) >> 2) & 0xFFF;
+    buf.emit_u32(0xB9000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_strh(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off << 1) as u32 & 0x1FFE;
-    buf.emit_u32(0x79000000 | imm9 | (rn << 5) | rt);
+    let imm12 = ((off as u32) >> 1) & 0xFFF;
+    buf.emit_u32(0x79000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_strb(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off) as u32 & 0xFFF;
-    buf.emit_u32(0x39000000 | imm9 | (rn << 5) | rt);
+    let imm12 = (off as u32) & 0xFFF;
+    buf.emit_u32(0x39000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_ldr(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off << 2) as u32 & 0x1FFC;
-    buf.emit_u32(0xF9400000 | imm9 | (rn << 5) | rt);
+    let imm12 = ((off as u32) >> 3) & 0xFFF;
+    buf.emit_u32(0xF9400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_ldrw(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off << 2) as u32 & 0x1FFC;
-    buf.emit_u32(0xB9400000 | imm9 | (rn << 5) | rt);
+    let imm12 = ((off as u32) >> 2) & 0xFFF;
+    buf.emit_u32(0xB9400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_ldrh(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off << 1) as u32 & 0x1FFE;
-    buf.emit_u32(0x79400000 | imm9 | (rn << 5) | rt);
+    let imm12 = ((off as u32) >> 1) & 0xFFF;
+    buf.emit_u32(0x79400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_ldrb(buf: &mut JitBuffer, rt: u32, rn: u32, off: i32) {
-    let imm9 = (off) as u32 & 0xFFF;
-    buf.emit_u32(0x39400000 | imm9 | (rn << 5) | rt);
+    let imm12 = (off as u32) & 0xFFF;
+    buf.emit_u32(0x39400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 fn emit_stp(buf: &mut JitBuffer, rt1: u32, rt2: u32, rn: u32, off: i32) {
-    let imm7 = ((off as i64) << 3) as u32 & 0x1FF8;
-    buf.emit_u32(0xA9000000 | imm7 | (rt2 << 10) | (rn << 5) | rt1);
+    let imm7 = (((off as i64) >> 3) as u32) & 0x7F;
+    buf.emit_u32(0xA9000000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1);
 }
 
 fn emit_ldp(buf: &mut JitBuffer, rt1: u32, rt2: u32, rn: u32, off: i32) {
-    let imm7 = ((off as i64) << 3) as u32 & 0x1FF8;
-    buf.emit_u32(0xA9400000 | imm7 | (rt2 << 10) | (rn << 5) | rt1);
+    let imm7 = (((off as i64) >> 3) as u32) & 0x7F;
+    buf.emit_u32(0xA9400000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1);
 }
 
 fn emit_cmp(buf: &mut JitBuffer, rn: u32, rm: u32) {
@@ -651,7 +656,7 @@ impl JitBackend for Aarch64Backend {
                 if op == BPF_EXIT {
                     20
                 } else if op == 0x80 {
-                    72
+                    64
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
                     4
                 } else {
