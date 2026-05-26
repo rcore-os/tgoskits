@@ -89,7 +89,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         let mut guard = ax_mm::kernel_aspace().lock();
         let range = VirtAddrRange::new(guard.base(), guard.end());
         let vaddr = guard
-            .find_free_area(VirtAddr::from(0), PAGE_SIZE_4K, range)
+            .find_free_area(guard.base(), PAGE_SIZE_4K, range)
             .expect("kprobe: no free virtual address for exec memory");
         guard
             .map_alloc(
@@ -137,7 +137,8 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
 
 type KprobeManager = kprobe::ProbeManager<spin::Mutex<()>, KernelKprobeOps>;
 
-static KPROBE_MANAGER: ax_sync::Mutex<Option<KprobeManager>> = ax_sync::Mutex::new(None);
+static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
+    ax_sync::spin::SpinNoIrq::new(None);
 
 fn with_manager<F, R>(f: F) -> R
 where
@@ -222,7 +223,7 @@ fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
     {
         kprobe::PtRegs {
             regs: tf.x,
-            sp: 0,
+            sp: 0, // aarch64 SP is not saved in TrapFrame
             pc: tf.elr,
             pstate: tf.spsr,
             orig_x0: tf.x[0],
