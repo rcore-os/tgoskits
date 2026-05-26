@@ -330,8 +330,6 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> A
     if (flags & !SYNC_FILE_RANGE_ALL) != 0 {
         return Err(AxError::from(LinuxError::EINVAL));
     }
-pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, flags: u32) -> AxResult<isize> {
-    debug!("sys_sync_file_range <= fd: {fd}, flags: {flags:#x}");
     // sync_file_range(2) is an advisory hint to initiate writeback for a
     // byte range. Until range-based writeback is implemented, keep this as
     // a no-op after basic fd validation rather than turning it into a
@@ -339,13 +337,10 @@ pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, flags: u32) ->
     // nature documented in the man page). Invalid fds still surface the
     // underlying error (EBADF). Directory fds are accepted to match fsync.
     let any = get_file_like(fd)?;
-    if any.downcast_ref::<File>().is_none() && any.downcast_ref::<Directory>().is_none() {
-        return Err(AxError::from(LinuxError::ESPIPE));
-    }
-    if flags & !0x7 != 0 {
-        return Err(AxError::from(LinuxError::EINVAL));
-    }
-    if any.downcast_ref::<File>().is_none() && any.downcast_ref::<Directory>().is_none() {
+    if any.downcast_ref::<File>().is_none()
+        && any.downcast_ref::<Directory>().is_none()
+        && any.downcast_ref::<Memfd>().is_none()
+    {
         return Err(AxError::from(LinuxError::ESPIPE));
     }
     Ok(0)
