@@ -4,7 +4,17 @@ use ax_task::current;
 use crate::task::AsThread;
 
 pub fn sys_getpid() -> AxResult<isize> {
-    Ok(current().as_thread().proc_data.proc.pid() as _)
+    let curr = current();
+    let thr = curr.as_thread();
+    let global_pid = thr.proc_data.proc.pid() as u64;
+    let nsproxy = thr.proc_data.nsproxy.lock();
+    let local = nsproxy.pid_ns.lock().local_pid(global_pid);
+    drop(nsproxy);
+    if let Some(local) = local {
+        Ok(local as isize)
+    } else {
+        Ok(global_pid as isize)
+    }
 }
 
 pub fn sys_getppid() -> AxResult<isize> {
