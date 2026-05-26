@@ -86,9 +86,9 @@ impl JitBuffer {
         #[cfg(target_arch = "aarch64")]
         {
             let vaddr = VirtAddr::from_usize(self.ptr as usize);
-            ax_hal::asm::clean_dcache_range_to_pou(vaddr, self.pos);
+            ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(vaddr, self.pos);
         }
-        ax_hal::asm::flush_icache_all();
+        ax_runtime::hal::cpu::asm::flush_icache_all();
     }
 }
 

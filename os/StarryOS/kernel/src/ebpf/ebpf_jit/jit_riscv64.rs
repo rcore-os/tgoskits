@@ -343,19 +343,17 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
         }
         return;
     }
-    let hi32 = ((val >> 32) as u32) as i32;
-    let lo32_u = val as u32;
-    let adjusted_hi32 = hi32.wrapping_add((lo32_u >> 31) as i32);
-    let adj_hi20 = ((adjusted_hi32 as i64 + 0x800) >> 12) as u32;
-    let adj_lo12 = (((adjusted_hi32 as i64) << 52) >> 52) as i32;
-    emit_lui(buf, rd, adj_hi20);
-    emit_addiw(buf, rd, rd, adj_lo12);
+    let upper = ((val + ((val & 0x80000000) << 1)) >> 32) as u32 as i32;
+    let upper_hi20 = ((upper as i64 + 0x800) >> 12) as u32;
+    let upper_lo12 = (((upper as i64) << 52) >> 52) as i32;
+    emit_lui(buf, rd, upper_hi20);
+    emit_addiw(buf, rd, rd, upper_lo12);
     emit_slli(buf, rd, rd, 32);
-    let lo32 = lo32_u as i32;
-    let lo32_hi20 = ((lo32 as i64 + 0x800) >> 12) as u32;
-    let lo32_lo12 = (((lo32 as i64) << 52) >> 52) as i32;
-    emit_lui(buf, RV_T1, lo32_hi20);
-    emit_addiw(buf, RV_T1, RV_T1, lo32_lo12);
+    let lower = val as u32 as i32;
+    let lower_hi20 = ((lower as i64 + 0x800) >> 12) as u32;
+    let lower_lo12 = (((lower as i64) << 52) >> 52) as i32;
+    emit_lui(buf, RV_T1, lower_hi20);
+    emit_addiw(buf, RV_T1, RV_T1, lower_lo12);
     emit_add(buf, rd, rd, RV_T1);
 }
 
@@ -591,6 +589,7 @@ impl JitBackend for Riscv64Backend {
             return;
         }
 
+        // BPF_CALL (0x80) is handled separately in compile()
         if op == 0x80 {
             return;
         }
@@ -973,5 +972,208 @@ impl JitBackend for Riscv64Backend {
             }
             _ => 4,
         }
+    }
+}
+
+#[cfg(all(test, target_arch = "riscv64"))]
+mod tests {
+    use super::*;
+
+    fn new_buf() -> JitBuffer {
+        JitBuffer::new(4096).unwrap()
+    }
+
+    fn buf_as_u32_slice(buf: &JitBuffer) -> &[u32] {
+        unsafe { core::slice::from_raw_parts(buf.entry() as *const u32, buf.offset() / 4) }
+    }
+
+    fn decode_lui(insn: u32) -> (u32, u32) {
+        let rd = (insn >> 7) & 0x1f;
+        let imm = (insn >> 12) & 0xfffff;
+        (rd, imm)
+    }
+
+    fn decode_addiw(insn: u32) -> (u32, u32, i32) {
+        let rd = (insn >> 7) & 0x1f;
+        let rs1 = (insn >> 15) & 0x1f;
+        let imm = ((insn as i32) << 20) >> 20;
+        (rd, rs1, imm)
+    }
+
+    fn decode_slli(insn: u32) -> (u32, u32, u32) {
+        let rd = (insn >> 7) & 0x1f;
+        let rs1 = (insn >> 15) & 0x1f;
+        let shamt = (insn >> 20) & 0x3f;
+        (rd, rs1, shamt)
+    }
+
+    fn decode_add(insn: u32) -> (u32, u32, u32) {
+        let rd = (insn >> 7) & 0x1f;
+        let rs1 = (insn >> 15) & 0x1f;
+        let rs2 = (insn >> 20) & 0x1f;
+        (rd, rs1, rs2)
+    }
+
+    fn decode_addi(insn: u32) -> (u32, u32, i32) {
+        decode_addiw(insn)
+    }
+
+    fn sign_extend_20(imm20: u32) -> i64 {
+        ((imm20 << 12) as i32 as i64) << 12 >> 12
+    }
+
+    fn reconstruct_load_imm64(insns: &[u32]) -> u64 {
+        let mut idx = 0;
+        let first_opcode = insns[idx] & 0x7f;
+        if first_opcode == 0x13 {
+            let (_, _, imm) = decode_addi(insns[idx]);
+            return imm as u64;
+        }
+        assert_eq!(first_opcode, 0x37, "expected LUI");
+        let (rd1, imm20_hi) = decode_lui(insns[idx]);
+        idx += 1;
+        let upper_val;
+        if idx < insns.len() && (insns[idx] & 0x7f) == 0x1b {
+            let (rd2, rs1, lo12) = decode_addiw(insns[idx]);
+            assert_eq!(rd2, rd1);
+            assert_eq!(rs1, rd1);
+            upper_val = ((imm20_hi as i32) << 12).wrapping_add(lo12);
+            idx += 1;
+        } else {
+            upper_val = (imm20_hi as i32) << 12;
+        }
+        if idx >= insns.len() || (insns[idx] & 0x7f) != 0x13 {
+            return upper_val as u64;
+        }
+        let (rd3, rs1_3, shamt) = decode_slli(insns[idx]);
+        assert_eq!(rd3, rd1);
+        assert_eq!(rs1_3, rd1);
+        assert_eq!(shamt, 32);
+        let shifted = (upper_val as u64) << 32;
+        idx += 1;
+        let (_, imm20_lo) = decode_lui(insns[idx]);
+        idx += 1;
+        let (rd_t1, rs1_t1, lo12_lo) = decode_addiw(insns[idx]);
+        let lower_val = ((imm20_lo as i32) << 12).wrapping_add(lo12_lo);
+        let lower_extended = lower_val as i64 as u64;
+        shifted.wrapping_add(lower_extended)
+    }
+
+    #[test]
+    fn test_load_imm64_small_positive() {
+        let mut buf = new_buf();
+        emit_load_imm64(&mut buf, RV_A0, 42);
+        assert_eq!(buf.offset(), 4);
+        let insns = buf_as_u32_slice(&buf);
+        let (_, _, imm) = decode_addi(insns[0]);
+        assert_eq!(imm, 42);
+    }
+
+    #[test]
+    fn test_load_imm64_small_negative() {
+        let mut buf = new_buf();
+        emit_load_imm64(&mut buf, RV_A0, (-1i64) as u64);
+        assert_eq!(buf.offset(), 4);
+        let insns = buf_as_u32_slice(&buf);
+        let (_, _, imm) = decode_addi(insns[0]);
+        assert_eq!(imm, -1);
+    }
+
+    #[test]
+    fn test_load_imm64_32bit_value() {
+        let mut buf = new_buf();
+        let val: u64 = 0x12345000;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_bit31_set() {
+        let mut buf = new_buf();
+        let val: u64 = 0x0000_0001_8000_0000;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_all_ones() {
+        let mut buf = new_buf();
+        let val: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_high_bit_only() {
+        let mut buf = new_buf();
+        let val: u64 = 0x8000_0000_0000_0000;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_max_positive() {
+        let mut buf = new_buf();
+        let val: u64 = 0x7FFF_FFFF_FFFF_FFFF;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_alternating_bits() {
+        let mut buf = new_buf();
+        let val: u64 = 0x5555_5555_AAAA_AAAA;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_upper_ffff_lower_0() {
+        let mut buf = new_buf();
+        let val: u64 = 0xFFFF_FFFF_0000_0000;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_load_imm64_zero_lower() {
+        let mut buf = new_buf();
+        let val: u64 = 0x1234_5678_0000_0000;
+        emit_load_imm64(&mut buf, RV_A0, val);
+        let insns = buf_as_u32_slice(&buf);
+        assert_eq!(reconstruct_load_imm64(insns), val);
+    }
+
+    #[test]
+    fn test_insn_size_alu_imm_small() {
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU64 | BPF_ADD;
+        insn.imm = 100;
+        let size = Riscv64Backend::insn_size(&insn);
+        assert_eq!(size, 8);
+    }
+
+    #[test]
+    fn test_insn_size_exit() {
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_JMP | BPF_EXIT;
+        let size = Riscv64Backend::insn_size(&insn);
+        assert_eq!(size, 32);
+    }
+
+    #[test]
+    fn test_insn_size_ld_dw_imm() {
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_LD | BPF_DW;
+        assert!(insn.is_ld_dw_imm());
+        let size = Riscv64Backend::insn_size(&insn);
+        assert_eq!(size, 24);
     }
 }

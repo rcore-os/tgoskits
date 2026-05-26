@@ -84,8 +84,6 @@ pub(crate) mod bpf_insn {
     pub const BPF_K: u8 = 0x00;
     pub const BPF_X: u8 = 0x08;
 
-    pub const BPF_CALL_OP: u8 = 0x80;
-
     pub const BPF_PSEUDO_MAP_FD: u8 = 1;
     pub const BPF_PSEUDO_MAP_VALUE: u8 = 2;
 
@@ -189,7 +187,6 @@ mod prog_type {
     pub const SYSCALL: u32 = 31;
 }
 
-#[allow(dead_code)]
 mod cmd {
     pub const MAP_CREATE: u64 = 0;
     pub const MAP_LOOKUP_ELEM: u64 = 1;
@@ -246,6 +243,7 @@ trait BpfMapOps: Send + Sync {
     fn update_elem(&mut self, key: &[u8], value: &[u8], flags: u64) -> AxResult<()>;
     fn delete_elem(&mut self, key: &[u8]) -> AxResult<()>;
     fn get_next_key(&mut self, key: Option<&[u8]>) -> AxResult<Option<Vec<u8>>>;
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any;
 }
 
 struct ArrayMap {
@@ -328,18 +326,22 @@ impl BpfMapOps for ArrayMap {
         }
         Ok(Some(next_idx.to_ne_bytes().to_vec()))
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
 }
 
 struct HashMapInner {
     meta: BpfMapMeta,
-    entries: alloc::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    entries: hashbrown::HashMap<Vec<u8>, Vec<u8>>,
 }
 
 impl HashMapInner {
     fn new(meta: BpfMapMeta) -> Self {
         Self {
             meta,
-            entries: alloc::collections::BTreeMap::new(),
+            entries: hashbrown::HashMap::new(),
         }
     }
 }
@@ -406,6 +408,10 @@ impl BpfMapOps for HashMapInner {
                 Ok(None)
             }
         }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 
@@ -484,6 +490,446 @@ impl BpfMapOps for PerfEventArrayMap {
         }
         Ok(Some(next_idx.to_ne_bytes().to_vec()))
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
+
+#[repr(C)]
+struct RingBufHdr {
+    len: u32,
+    start_offset: u32,
+}
+
+const RINGBUF_HDR_SIZE: usize = 8;
+const RINGBUF_ALIGN: usize = 8;
+
+struct RingBufferMap {
+    meta: BpfMapMeta,
+    buf: alloc::vec::Vec<u8>,
+    capacity: usize,
+    head: u64,
+    tail: u64,
+    mask: usize,
+    pending_reserve: Option<(usize, usize)>,
+}
+
+impl RingBufferMap {
+    fn new(meta: BpfMapMeta) -> Self {
+        let capacity = (meta.max_entries as usize).next_power_of_two();
+        let mask = capacity - 1;
+        Self {
+            meta,
+            buf: alloc::vec![0u8; capacity],
+            capacity,
+            head: 0,
+            tail: 0,
+            mask,
+            pending_reserve: None,
+        }
+    }
+
+    fn write_at(&mut self, offset: usize, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let start = offset & self.mask;
+        if start + data.len() <= self.capacity {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    self.buf.as_mut_ptr().add(start),
+                    data.len(),
+                );
+            }
+        } else {
+            let first = self.capacity - start;
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    self.buf.as_mut_ptr().add(start),
+                    first,
+                );
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(first),
+                    self.buf.as_mut_ptr(),
+                    data.len() - first,
+                );
+            }
+        }
+    }
+
+    fn available(&self) -> usize {
+        self.capacity - (self.head - self.tail) as usize
+    }
+
+    fn reserve(&mut self, size: usize) -> Option<*mut u8> {
+        let aligned_size = (size + RINGBUF_ALIGN - 1) & !(RINGBUF_ALIGN - 1);
+        let total = RINGBUF_HDR_SIZE + aligned_size;
+        if total > self.available() {
+            return None;
+        }
+        if self.pending_reserve.is_some() {
+            return None;
+        }
+        let offset = self.head as usize;
+        let hdr = RingBufHdr {
+            len: size as u32,
+            start_offset: offset as u32,
+        };
+        let hdr_bytes = unsafe {
+            core::slice::from_raw_parts(&hdr as *const RingBufHdr as *const u8, RINGBUF_HDR_SIZE)
+        };
+        self.write_at(offset, hdr_bytes);
+        let data_offset = offset + RINGBUF_HDR_SIZE;
+        let data_ptr = unsafe { self.buf.as_mut_ptr().add(data_offset & self.mask) };
+        self.pending_reserve = Some((aligned_size, data_offset));
+        Some(data_ptr)
+    }
+
+    fn submit(&mut self, _flags: u64) {
+        if let Some((aligned_size, _data_offset)) = self.pending_reserve.take() {
+            let total = RINGBUF_HDR_SIZE + aligned_size;
+            self.head += total as u64;
+        }
+    }
+
+    fn discard(&mut self, _flags: u64) {
+        if let Some((_, data_offset)) = self.pending_reserve.take() {
+            let hdr_bytes_to_clear = self.head as usize + RINGBUF_HDR_SIZE;
+            let zero = alloc::vec![0u8; RINGBUF_HDR_SIZE];
+            self.write_at(data_offset - RINGBUF_HDR_SIZE, &zero);
+            let _ = (hdr_bytes_to_clear, data_offset);
+        }
+    }
+
+    fn output(&mut self, data: &[u8]) -> bool {
+        let aligned_size = (data.len() + RINGBUF_ALIGN - 1) & !(RINGBUF_ALIGN - 1);
+        let total = RINGBUF_HDR_SIZE + aligned_size;
+        if total > self.available() {
+            return false;
+        }
+        let offset = self.head as usize;
+        let hdr = RingBufHdr {
+            len: data.len() as u32,
+            start_offset: offset as u32,
+        };
+        let hdr_bytes = unsafe {
+            core::slice::from_raw_parts(&hdr as *const RingBufHdr as *const u8, RINGBUF_HDR_SIZE)
+        };
+        self.write_at(offset, hdr_bytes);
+        self.write_at(offset + RINGBUF_HDR_SIZE, data);
+        if aligned_size > data.len() {
+            let pad = alloc::vec![0u8; aligned_size - data.len()];
+            self.write_at(offset + RINGBUF_HDR_SIZE + data.len(), &pad);
+        }
+        self.head += total as u64;
+        true
+    }
+}
+
+impl BpfMapOps for RingBufferMap {
+    fn meta(&self) -> &BpfMapMeta {
+        &self.meta
+    }
+
+    fn lookup_elem(&mut self, _key: &[u8]) -> AxResult<Option<Vec<u8>>> {
+        Err(bpf_error::EINVAL)
+    }
+
+    fn update_elem(&mut self, _key: &[u8], _value: &[u8], _flags: u64) -> AxResult<()> {
+        Err(bpf_error::EINVAL)
+    }
+
+    fn delete_elem(&mut self, _key: &[u8]) -> AxResult<()> {
+        Err(bpf_error::EINVAL)
+    }
+
+    fn get_next_key(&mut self, _key: Option<&[u8]>) -> AxResult<Option<Vec<u8>>> {
+        Err(bpf_error::EINVAL)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
+
+struct ProgArrayMap {
+    meta: BpfMapMeta,
+    prog_fds: alloc::vec::Vec<Option<u32>>,
+}
+
+impl ProgArrayMap {
+    fn new(meta: BpfMapMeta) -> Self {
+        let prog_fds = alloc::vec![None; meta.max_entries as usize];
+        Self { meta, prog_fds }
+    }
+}
+
+impl BpfMapOps for ProgArrayMap {
+    fn meta(&self) -> &BpfMapMeta {
+        &self.meta
+    }
+
+    fn lookup_elem(&mut self, key: &[u8]) -> AxResult<Option<Vec<u8>>> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        let i = idx as usize;
+        if i >= self.prog_fds.len() {
+            return Ok(None);
+        }
+        match self.prog_fds[i] {
+            Some(fd) => Ok(Some(fd.to_ne_bytes().to_vec())),
+            None => Ok(None),
+        }
+    }
+
+    fn update_elem(&mut self, key: &[u8], value: &[u8], _flags: u64) -> AxResult<()> {
+        if key.len() != 4 || value.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        let prog_fd = u32::from_ne_bytes([value[0], value[1], value[2], value[3]]);
+        let i = idx as usize;
+        if i >= self.prog_fds.len() {
+            return Err(bpf_error::EINVAL);
+        }
+        self.prog_fds[i] = Some(prog_fd);
+        Ok(())
+    }
+
+    fn delete_elem(&mut self, key: &[u8]) -> AxResult<()> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        let i = idx as usize;
+        if i >= self.prog_fds.len() {
+            return Err(bpf_error::EINVAL);
+        }
+        self.prog_fds[i] = None;
+        Ok(())
+    }
+
+    fn get_next_key(&mut self, key: Option<&[u8]>) -> AxResult<Option<Vec<u8>>> {
+        let start = match key {
+            None => 0,
+            Some(k) => {
+                if k.len() != 4 {
+                    return Err(bpf_error::EINVAL);
+                }
+                let idx = u32::from_ne_bytes([k[0], k[1], k[2], k[3]]);
+                (idx as usize).saturating_add(1)
+            }
+        };
+        for i in start..self.prog_fds.len() {
+            if self.prog_fds[i].is_some() {
+                return Ok(Some((i as u32).to_ne_bytes().to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
+
+const MAX_STACK_DEPTH: usize = 127;
+
+struct StackTraceMap {
+    meta: BpfMapMeta,
+    traces: hashbrown::HashMap<u32, alloc::vec::Vec<u64>>,
+    next_id: u32,
+}
+
+impl StackTraceMap {
+    fn new(meta: BpfMapMeta) -> Self {
+        Self {
+            meta,
+            traces: hashbrown::HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    fn store_trace(&mut self, ips: &[u64]) -> u32 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        if self.traces.len() >= self.meta.max_entries as usize
+            && let Some(oldest) = self.traces.keys().min().copied()
+        {
+            self.traces.remove(&oldest);
+        }
+        self.traces.insert(id, ips.to_vec());
+        id
+    }
+}
+
+impl BpfMapOps for StackTraceMap {
+    fn meta(&self) -> &BpfMapMeta {
+        &self.meta
+    }
+
+    fn lookup_elem(&mut self, key: &[u8]) -> AxResult<Option<Vec<u8>>> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let id = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        match self.traces.get(&id) {
+            Some(trace) => {
+                let value_size = self.meta.value_size as usize;
+                let count = value_size / 8;
+                let mut buf = alloc::vec![0u8; value_size];
+                for (i, ip) in trace.iter().enumerate().take(count) {
+                    let start = i * 8;
+                    buf[start..start + 8].copy_from_slice(&ip.to_ne_bytes());
+                }
+                Ok(Some(buf))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn update_elem(&mut self, _key: &[u8], _value: &[u8], _flags: u64) -> AxResult<()> {
+        Err(bpf_error::EINVAL)
+    }
+
+    fn delete_elem(&mut self, key: &[u8]) -> AxResult<()> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let id = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        self.traces.remove(&id);
+        Ok(())
+    }
+
+    fn get_next_key(&mut self, key: Option<&[u8]>) -> AxResult<Option<Vec<u8>>> {
+        let start = match key {
+            None => None,
+            Some(k) => {
+                if k.len() != 4 {
+                    return Err(bpf_error::EINVAL);
+                }
+                Some(u32::from_ne_bytes([k[0], k[1], k[2], k[3]]))
+            }
+        };
+        let mut keys: alloc::vec::Vec<u32> = self.traces.keys().copied().collect();
+        keys.sort();
+        match start {
+            None => match keys.first() {
+                Some(&k) => Ok(Some(k.to_ne_bytes().to_vec())),
+                None => Ok(None),
+            },
+            Some(sk) => match keys.iter().find(|&&k| k > sk) {
+                Some(&k) => Ok(Some(k.to_ne_bytes().to_vec())),
+                None => Ok(None),
+            },
+        }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
+
+struct PerCpuArrayMap {
+    meta: BpfMapMeta,
+    per_cpu_data: alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    elem_size: usize,
+    cpu_count: usize,
+}
+
+impl PerCpuArrayMap {
+    fn new(meta: BpfMapMeta, cpu_count: usize) -> Self {
+        let elem_size = meta.value_size as usize;
+        let total = elem_size * meta.max_entries as usize;
+        let per_cpu_data = alloc::vec![alloc::vec![0u8; total]; cpu_count];
+        Self {
+            meta,
+            per_cpu_data,
+            elem_size,
+            cpu_count,
+        }
+    }
+
+    fn current_cpu(&self) -> usize {
+        let cpu = ax_runtime::hal::percpu::this_cpu_id();
+        if cpu < self.cpu_count { cpu } else { 0 }
+    }
+}
+
+impl BpfMapOps for PerCpuArrayMap {
+    fn meta(&self) -> &BpfMapMeta {
+        &self.meta
+    }
+
+    fn lookup_elem(&mut self, key: &[u8]) -> AxResult<Option<Vec<u8>>> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]) as usize;
+        if idx >= self.meta.max_entries as usize {
+            return Ok(None);
+        }
+        let cpu = self.current_cpu();
+        let start = idx * self.elem_size;
+        let end = start + self.elem_size;
+        Ok(Some(self.per_cpu_data[cpu][start..end].to_vec()))
+    }
+
+    fn update_elem(&mut self, key: &[u8], value: &[u8], _flags: u64) -> AxResult<()> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]) as usize;
+        if idx >= self.meta.max_entries as usize {
+            return Err(bpf_error::EINVAL);
+        }
+        let cpu = self.current_cpu();
+        let start = idx * self.elem_size;
+        let end = start + self.elem_size.min(value.len());
+        self.per_cpu_data[cpu][start..end].copy_from_slice(&value[..end - start]);
+        Ok(())
+    }
+
+    fn delete_elem(&mut self, key: &[u8]) -> AxResult<()> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]) as usize;
+        if idx >= self.meta.max_entries as usize {
+            return Err(bpf_error::EINVAL);
+        }
+        let cpu = self.current_cpu();
+        let start = idx * self.elem_size;
+        let end = start + self.elem_size;
+        self.per_cpu_data[cpu][start..end].fill(0);
+        Ok(())
+    }
+
+    fn get_next_key(&mut self, key: Option<&[u8]>) -> AxResult<Option<Vec<u8>>> {
+        let next_idx = match key {
+            None => 0,
+            Some(k) => {
+                if k.len() != 4 {
+                    return Err(bpf_error::EINVAL);
+                }
+                let idx = u32::from_ne_bytes([k[0], k[1], k[2], k[3]]);
+                idx + 1
+            }
+        };
+        if next_idx >= self.meta.max_entries {
+            return Ok(None);
+        }
+        Ok(Some(next_idx.to_ne_bytes().to_vec()))
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
 }
 
 struct UnifiedMap {
@@ -503,6 +949,13 @@ impl UnifiedMap {
             map_type::HASH => alloc::boxed::Box::new(HashMapInner::new(meta.clone())),
             map_type::PERF_EVENT_ARRAY => {
                 alloc::boxed::Box::new(PerfEventArrayMap::new(meta.clone()))
+            }
+            map_type::RINGBUF => alloc::boxed::Box::new(RingBufferMap::new(meta.clone())),
+            map_type::PROG_ARRAY => alloc::boxed::Box::new(ProgArrayMap::new(meta.clone())),
+            map_type::STACK_TRACE => alloc::boxed::Box::new(StackTraceMap::new(meta.clone())),
+            map_type::PERCPU_ARRAY => {
+                let cpu_count = Self::detect_cpu_count();
+                alloc::boxed::Box::new(PerCpuArrayMap::new(meta.clone(), cpu_count))
             }
             _ => {
                 warn!("bpf: unsupported map type {map_type}");
@@ -530,6 +983,10 @@ impl UnifiedMap {
 
     fn meta(&self) -> &BpfMapMeta {
         self.inner.meta()
+    }
+
+    fn detect_cpu_count() -> usize {
+        ax_runtime::hal::cpu_num()
     }
 }
 
@@ -649,9 +1106,21 @@ impl BpfFdTable {
     }
 }
 
+// Lock ordering: BPF_GLOBAL -> BPF_TAIL_CALL_TARGET
+// BPF_LOOKUP_CACHE is per-CPU (no lock needed).
+// ProgArrayMap::update_elem does NOT acquire BPF_GLOBAL; the caller
+// (handle_map_update_elem / helper_map_update_elem) validates prog_fd
+// while holding BPF_GLOBAL before calling map.update().
+// BpfVm::execute() must never be called while BPF_GLOBAL is held.
+// All helpers that acquire BPF_GLOBAL are called from execute(), which
+// runs without any lock. Syscall handlers acquire BPF_GLOBAL independently.
+// run_bpf_prog clones insns under BPF_GLOBAL then drops the lock before
+// calling execute(). The tail-call path in execute() also drops BPF_GLOBAL
+// before recursing into execute().
 static BPF_GLOBAL: SpinNoIrq<BpfFdTable> = SpinNoIrq::new(BpfFdTable::new());
 #[ax_percpu::def_percpu]
 static BPF_LOOKUP_CACHE: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+static BPF_TAIL_CALL_TARGET: SpinNoIrq<Option<u32>> = SpinNoIrq::new(None);
 
 fn handle_map_create(uattr: usize, size: u32) -> AxResult<isize> {
     if size < 24 {
@@ -670,7 +1139,10 @@ fn handle_map_create(uattr: usize, size: u32) -> AxResult<isize> {
         max_entries = core::ptr::read(ptr.add(3));
         map_flags = core::ptr::read(ptr.add(4));
     }
-    if max_entries == 0 || key_size == 0 || value_size == 0 {
+    if max_entries == 0 {
+        return Err(bpf_error::EINVAL);
+    }
+    if map_type != map_type::RINGBUF && (key_size == 0 || value_size == 0) {
         return Err(bpf_error::EINVAL);
     }
     let mut guard = BPF_GLOBAL.lock();
@@ -731,9 +1203,21 @@ fn handle_map_update_elem(uattr: usize, size: u32) -> AxResult<isize> {
         (map_fd, key_ptr, value_ptr, flags)
     };
     let mut guard = BPF_GLOBAL.lock();
+    let meta = guard
+        .maps
+        .get(&map_fd)
+        .map(|m| m.meta().clone())
+        .ok_or(AxError::BadFileDescriptor)?;
+    let key_size = meta.key_size as usize;
+    let value_size = meta.value_size as usize;
+    if meta.map_type == map_type::PROG_ARRAY && value_size == 4 {
+        let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
+        let prog_fd = u32::from_ne_bytes([value[0], value[1], value[2], value[3]]);
+        if !guard.progs.contains_key(&prog_fd) {
+            return Err(bpf_error::EINVAL);
+        }
+    }
     let map = guard.get_map(map_fd)?;
-    let key_size = map.meta().key_size as usize;
-    let value_size = map.meta().value_size as usize;
     let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
     let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
     map.update(key, value, flags)?;
@@ -917,6 +1401,7 @@ mod helper_id {
     pub const GET_SMP_PROCESSOR_ID: u32 = 8;
     pub const SKB_STORE_BYTES: u32 = 9;
     pub const CSUM_DIFF: u32 = 10;
+    pub const TAIL_CALL: u32 = 12;
     pub const GET_CURRENT_PID_TGID: u32 = 14;
     pub const GET_CURRENT_UID_GID: u32 = 15;
     pub const GET_CURRENT_COMM: u32 = 16;
@@ -946,14 +1431,26 @@ fn init_helper_functions() -> alloc::collections::BTreeMap<u32, HelperFn> {
     m.insert(helper_id::MAP_LOOKUP_ELEM, helper_map_lookup_elem);
     m.insert(helper_id::MAP_UPDATE_ELEM, helper_map_update_elem);
     m.insert(helper_id::MAP_DELETE_ELEM, helper_map_delete_elem);
+    m.insert(helper_id::TAIL_CALL, helper_tail_call);
+    m.insert(helper_id::GET_STACK_ID, helper_get_stackid);
     m.insert(helper_id::PROBE_READ, helper_probe_read);
     m.insert(helper_id::PROBE_READ_KERNEL, helper_probe_read);
+    m.insert(helper_id::PROBE_READ_USER, helper_probe_read_user);
+    m.insert(helper_id::PROBE_READ_USER_STR, helper_probe_read_user_str);
+    m.insert(
+        helper_id::PROBE_READ_KERNEL_STR,
+        helper_probe_read_kernel_str,
+    );
     m.insert(helper_id::KTIME_GET_NS, helper_ktime_get_ns);
     m.insert(helper_id::GET_SMP_PROCESSOR_ID, helper_get_smp_processor_id);
     m.insert(helper_id::GET_CURRENT_PID_TGID, helper_get_current_pid_tgid);
     m.insert(helper_id::GET_CURRENT_UID_GID, helper_get_current_uid_gid);
     m.insert(helper_id::GET_PRANDOM_U32, helper_get_prandom_u32);
     m.insert(helper_id::PERF_EVENT_OUTPUT, helper_perf_event_output);
+    m.insert(helper_id::RINGBUF_OUTPUT, helper_ringbuf_output);
+    m.insert(helper_id::RINGBUF_RESERVE, helper_ringbuf_reserve);
+    m.insert(helper_id::RINGBUF_SUBMIT, helper_ringbuf_submit);
+    m.insert(helper_id::RINGBUF_DISCARD, helper_ringbuf_discard);
     m.insert(helper_id::TRACE_PRINTK, helper_trace_printk);
     m.insert(helper_id::GET_CURRENT_TASK, helper_get_current_task);
     m.insert(helper_id::GET_CURRENT_COMM, helper_get_current_comm);
@@ -972,11 +1469,14 @@ fn helper_map_lookup_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u
     let key_size = map.meta().key_size as usize;
     let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
     match map.lookup(key) {
-        Ok(Some(value)) => BPF_LOOKUP_CACHE.with_current(|cache| {
-            cache.clear();
-            cache.extend_from_slice(&value);
-            cache.as_ptr() as u64
-        }),
+        Ok(Some(value)) => {
+            drop(guard);
+            BPF_LOOKUP_CACHE.with_current(|cache| {
+                cache.clear();
+                cache.extend_from_slice(&value);
+                cache.as_ptr() as u64
+            })
+        }
         _ => 0,
     }
 }
@@ -986,14 +1486,29 @@ fn helper_map_update_elem(map_ptr: u64, key_ptr: u64, value_ptr: u64, flags: u64
         return u64::MAX;
     }
     let mut guard = BPF_GLOBAL.lock();
+    let meta = guard
+        .maps
+        .get(&(map_ptr as u32))
+        .map(|m| m.meta().clone())
+        .ok_or(u64::MAX);
+    let meta = match meta {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    if meta.map_type == map_type::PROG_ARRAY && meta.value_size == 4 {
+        let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, 4) };
+        let prog_fd = u32::from_ne_bytes([value[0], value[1], value[2], value[3]]);
+        if !guard.progs.contains_key(&prog_fd) {
+            return u64::MAX;
+        }
+    }
     let map = match guard.get_map(map_ptr as u32) {
         Ok(m) => m,
         Err(_) => return u64::MAX,
     };
-    let key_size = map.meta().key_size as usize;
-    let value_size = map.meta().value_size as usize;
-    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
-    let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
+    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, meta.key_size as usize) };
+    let value =
+        unsafe { core::slice::from_raw_parts(value_ptr as *const u8, meta.value_size as usize) };
     match map.update(key, value, flags) {
         Ok(()) => 0,
         Err(_) => u64::MAX,
@@ -1017,6 +1532,107 @@ fn helper_map_delete_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u
     }
 }
 
+fn helper_tail_call(_ctx: u64, map_fd: u64, index: u64, _a4: u64, _a5: u64) -> u64 {
+    if map_fd == 0 {
+        return u64::MAX;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_fd as u32) {
+        Ok(m) => m,
+        Err(_) => return u64::MAX,
+    };
+    if map.meta().map_type != map_type::PROG_ARRAY {
+        return u64::MAX;
+    }
+    let inner = match map.inner.as_any_mut().downcast_mut::<ProgArrayMap>() {
+        Some(p) => p,
+        None => return u64::MAX,
+    };
+    let i = index as usize;
+    if i >= inner.prog_fds.len() {
+        return u64::MAX;
+    }
+    let target_fd = match inner.prog_fds[i] {
+        Some(fd) => fd,
+        None => return u64::MAX,
+    };
+    if !guard.progs.contains_key(&target_fd) {
+        return u64::MAX;
+    }
+    drop(guard);
+    let mut tail_target = BPF_TAIL_CALL_TARGET.lock();
+    *tail_target = Some(target_fd);
+    0
+}
+
+fn helper_get_stackid(_ctx: u64, map_fd: u64, _flags: u64, _a4: u64, _a5: u64) -> u64 {
+    if map_fd == 0 {
+        return u64::MAX;
+    }
+    let fp: usize;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, rbp", out(reg) fp)
+    }
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    unsafe {
+        core::arch::asm!("addi {0}, s0, 0", out(reg) fp)
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mov {0}, x29", out(reg) fp)
+    }
+    #[cfg(target_arch = "loongarch64")]
+    unsafe {
+        core::arch::asm!("move {0}, $fp", out(reg) fp)
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    )))]
+    {
+        fp = 0;
+    }
+    let mut ips = alloc::vec::Vec::new();
+    let mut current_fp = fp;
+    for _ in 0..MAX_STACK_DEPTH {
+        if current_fp == 0 {
+            break;
+        }
+        unsafe {
+            let ip_ptr = current_fp as *const usize;
+            if ip_ptr.is_null() {
+                break;
+            }
+            let next_fp_ptr = ip_ptr.add(1);
+            if core::ptr::read(next_fp_ptr) == 0 {
+                break;
+            }
+            ips.push(core::ptr::read(ip_ptr) as u64);
+            current_fp = core::ptr::read(next_fp_ptr);
+        }
+    }
+    if ips.is_empty() {
+        return u64::MAX;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_fd as u32) {
+        Ok(m) => m,
+        Err(_) => return u64::MAX,
+    };
+    if map.meta().map_type != map_type::STACK_TRACE {
+        return u64::MAX;
+    }
+    let inner = match map.inner.as_any_mut().downcast_mut::<StackTraceMap>() {
+        Some(s) => s,
+        None => return u64::MAX,
+    };
+    inner.store_trace(&ips) as u64
+}
+
 fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
     if dst == 0 || size == 0 {
         return u64::MAX;
@@ -1029,27 +1645,115 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
         unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
         return 0;
     }
-    let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, len) };
-    let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, len) };
-    let copied = {
-        let buf = unsafe {
-            core::slice::from_raw_parts_mut(
-                dst_slice.as_mut_ptr() as *mut core::mem::MaybeUninit<u8>,
-                len,
-            )
-        };
-        match starry_vm::vm_read_slice(src as *const u8, buf) {
-            Ok(()) => len,
-            Err(_) => {
-                unsafe {
-                    core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice.as_mut_ptr(), len)
-                };
-                len
+    let buf =
+        unsafe { core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len) };
+    match starry_vm::vm_read_slice(src as *const u8, buf) {
+        Ok(()) => 0,
+        Err(_) => {
+            unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
+            u64::MAX
+        }
+    }
+}
+
+fn helper_probe_read_user(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
+    if dst == 0 || size == 0 {
+        return u64::MAX;
+    }
+    let len = size as usize;
+    if len > 4096 {
+        return u64::MAX;
+    }
+    if src == 0 {
+        unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
+        return 0;
+    }
+    let buf =
+        unsafe { core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len) };
+    match starry_vm::vm_read_slice(src as *const u8, buf) {
+        Ok(()) => 0,
+        Err(_) => {
+            unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
+            u64::MAX
+        }
+    }
+}
+
+unsafe fn probe_read_str_kernel(dst: *mut u8, size: usize, src: *const u8) -> usize {
+    let mut i = 0;
+    while i < size {
+        unsafe {
+            let byte = *src.add(i);
+            *dst.add(i) = byte;
+            if byte == 0 {
+                return i;
             }
         }
-    };
-    let _ = copied;
-    0
+        i += 1;
+    }
+    if size > 0 {
+        unsafe { *dst.add(size - 1) = 0 };
+    }
+    size
+}
+
+unsafe fn probe_read_str_user(dst: *mut u8, size: usize, src: *const u8) -> usize {
+    let mut i = 0;
+    while i < size {
+        let mut one_buf = core::mem::MaybeUninit::<u8>::uninit();
+        unsafe {
+            match starry_vm::vm_read_slice(src.add(i), core::slice::from_mut(&mut one_buf)) {
+                Ok(()) => {
+                    let byte = one_buf.assume_init();
+                    *dst.add(i) = byte;
+                    if byte == 0 {
+                        return i;
+                    }
+                }
+                Err(_) => {
+                    if i < size {
+                        *dst.add(i) = 0;
+                    }
+                    return i;
+                }
+            }
+        }
+        i += 1;
+    }
+    if size > 0 {
+        unsafe { *dst.add(size - 1) = 0 };
+    }
+    size
+}
+
+fn helper_probe_read_user_str(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
+    if dst == 0 || size == 0 {
+        return u64::MAX;
+    }
+    let len = size as usize;
+    if len > 4096 {
+        return u64::MAX;
+    }
+    if src == 0 {
+        unsafe { *(dst as *mut u8) = 0 };
+        return u64::MAX;
+    }
+    unsafe { probe_read_str_user(dst as *mut u8, len, src as *const u8) as u64 }
+}
+
+fn helper_probe_read_kernel_str(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
+    if dst == 0 || size == 0 {
+        return u64::MAX;
+    }
+    let len = size as usize;
+    if len > 4096 {
+        return u64::MAX;
+    }
+    if src == 0 {
+        unsafe { *(dst as *mut u8) = 0 };
+        return u64::MAX;
+    }
+    unsafe { probe_read_str_kernel(dst as *mut u8, len, src as *const u8) as u64 }
 }
 
 fn helper_ktime_get_ns(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
@@ -1076,8 +1780,14 @@ fn helper_get_current_uid_gid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) 
 }
 
 fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    static SEED: AtomicU32 = AtomicU32::new(12345);
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    static SEED: AtomicU32 = AtomicU32::new(0);
+    static INITIALIZED: AtomicBool = AtomicBool::new(false);
+    if !INITIALIZED.load(Ordering::Acquire) {
+        let ts = ax_runtime::hal::time::monotonic_time_nanos() as u32;
+        SEED.store(ts.wrapping_add(12345), Ordering::Relaxed);
+        INITIALIZED.store(true, Ordering::Release);
+    }
     let prev = SEED.load(Ordering::Relaxed);
     let next = prev.wrapping_mul(1103515245).wrapping_add(12345);
     SEED.store(next, Ordering::Relaxed);
@@ -1099,6 +1809,94 @@ fn helper_perf_event_output(
         Ok(()) => 0,
         Err(_) => u64::MAX,
     }
+}
+
+fn helper_ringbuf_output(map_fd: u64, data_ptr: u64, data_size: u64, _flags: u64, _a5: u64) -> u64 {
+    if map_fd == 0 || data_ptr == 0 || data_size == 0 {
+        return u64::MAX;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data_ptr as *const u8, data_size as usize) };
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_fd as u32) {
+        Ok(m) => m,
+        Err(_) => return u64::MAX,
+    };
+    if map.meta().map_type != map_type::RINGBUF {
+        return u64::MAX;
+    }
+    let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
+        Some(r) => r,
+        None => return u64::MAX,
+    };
+    if inner.output(data) { 0 } else { u64::MAX }
+}
+
+fn helper_ringbuf_reserve(map_fd: u64, size: u64, _flags: u64, _a4: u64, _a5: u64) -> u64 {
+    if map_fd == 0 || size == 0 || size > 4096 {
+        return 0;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_fd as u32) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    if map.meta().map_type != map_type::RINGBUF {
+        return 0;
+    }
+    let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
+        Some(r) => r,
+        None => return 0,
+    };
+    match inner.reserve(size as usize) {
+        Some(ptr) => ptr as u64,
+        None => 0,
+    }
+}
+
+fn helper_ringbuf_submit(sample_ptr: u64, flags: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    if sample_ptr == 0 {
+        return u64::MAX;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    for (_, map) in guard.maps.iter_mut() {
+        if map.meta().map_type != map_type::RINGBUF {
+            continue;
+        }
+        let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
+            Some(r) => r,
+            None => continue,
+        };
+        let buf_start = inner.buf.as_ptr() as u64;
+        let buf_end = buf_start + inner.buf.len() as u64;
+        if sample_ptr >= buf_start && sample_ptr < buf_end {
+            inner.submit(flags);
+            return 0;
+        }
+    }
+    u64::MAX
+}
+
+fn helper_ringbuf_discard(sample_ptr: u64, flags: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    if sample_ptr == 0 {
+        return u64::MAX;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    for (_, map) in guard.maps.iter_mut() {
+        if map.meta().map_type != map_type::RINGBUF {
+            continue;
+        }
+        let inner = match map.inner.as_any_mut().downcast_mut::<RingBufferMap>() {
+            Some(r) => r,
+            None => continue,
+        };
+        let buf_start = inner.buf.as_ptr() as u64;
+        let buf_end = buf_start + inner.buf.len() as u64;
+        if sample_ptr >= buf_start && sample_ptr < buf_end {
+            inner.discard(flags);
+            return 0;
+        }
+    }
+    u64::MAX
 }
 
 fn helper_trace_printk(fmt_ptr: u64, fmt_size: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
@@ -1141,7 +1939,6 @@ const BPF_MAX_INSN: usize = 1000000;
 const BPF_MAX_STACK: usize = 512;
 
 struct BpfVm {
-    #[allow(dead_code)]
     helpers: alloc::collections::BTreeMap<u32, HelperFn>,
 }
 
@@ -1157,28 +1954,151 @@ impl BpfVm {
             warn!("bpf verifier: program too large: {} insns", insns.len());
             return Err("program too large");
         }
-        let has_exit = insns.iter().any(|insn| {
-            let class = insn.class();
-            class == bpf_insn::BPF_JMP && (insn.code & 0xf0) == bpf_insn::BPF_EXIT
-        });
-        if !has_exit {
-            warn!("bpf verifier: program has no BPF_EXIT instruction");
-            return Err("no BPF_EXIT instruction");
+        if insns.is_empty() {
+            return Err("empty program");
         }
+
+        let max_pc = insns.len();
+
         for (pc, insn) in insns.iter().enumerate() {
+            let dst = insn.dst_reg() as usize;
+            let src = insn.src_reg() as usize;
+            if dst > 10 {
+                warn!("bpf verifier: invalid dst_reg {dst} at pc={pc}");
+                return Err("invalid destination register");
+            }
+            if src > 10 {
+                warn!("bpf verifier: invalid src_reg {src} at pc={pc}");
+                return Err("invalid source register");
+            }
+        }
+
+        let mut visited = alloc::vec![false; max_pc];
+        let mut stack = alloc::vec![0usize];
+        visited[0] = true;
+        while let Some(pc) = stack.pop() {
+            let insn = &insns[pc];
             let class = insn.class();
-            if class == bpf_insn::BPF_JMP || class == bpf_insn::BPF_JMP32 {
+
+            let successors = Self::insn_successors(insn, pc, max_pc)?;
+            if successors.is_empty() {
                 let op = insn.code & 0xf0;
-                if op != bpf_insn::BPF_EXIT && op != 0x80 {
-                    let target = pc as isize + 1 + insn.off as isize;
-                    if target < 0 || target as usize >= insns.len() {
-                        warn!("bpf verifier: jump out of bounds at pc={pc} target={target}");
-                        return Err("jump out of bounds");
-                    }
+                if class == bpf_insn::BPF_JMP && op == bpf_insn::BPF_EXIT {
+                    // terminal
+                } else {
+                    warn!("bpf verifier: unreachable termination at pc={pc}");
+                    return Err("instruction has no valid successor");
+                }
+            }
+            for s in successors {
+                if !visited[s] {
+                    visited[s] = true;
+                    stack.push(s);
                 }
             }
         }
+
+        let mut reachable_with_exit = false;
+        for (pc, &v) in visited.iter().enumerate() {
+            if !v {
+                continue;
+            }
+            let insn = &insns[pc];
+            let class = insn.class();
+            let op = insn.code & 0xf0;
+            if class == bpf_insn::BPF_JMP && op == bpf_insn::BPF_EXIT {
+                reachable_with_exit = true;
+            }
+
+            if class == bpf_insn::BPF_ST || class == bpf_insn::BPF_STX || class == bpf_insn::BPF_LDX
+            {
+                let off = insn.off as isize;
+                let abs_off = if off >= 0 { off } else { -off };
+                if abs_off as usize >= BPF_MAX_STACK {
+                    warn!("bpf verifier: stack access out of bounds at pc={pc} off={off}");
+                    return Err("stack access out of bounds");
+                }
+            }
+
+            if class == bpf_insn::BPF_ALU || class == bpf_insn::BPF_ALU64 {
+                let alu_op = insn.alu_op();
+                // Only reject immediate (BPF_K) division/modulo by zero.
+                // Register-based (BPF_X) division-by-zero is allowed: the
+                // interpreter returns 0 at runtime, matching Linux behavior.
+                if (alu_op == 0x30 || alu_op == 0x90)
+                    && (insn.code & bpf_insn::BPF_X) == 0
+                    && insn.imm == 0
+                {
+                    warn!("bpf verifier: division/modulo by zero immediate at pc={pc}");
+                    return Err("division/modulo by zero");
+                }
+            }
+        }
+        if !reachable_with_exit {
+            warn!("bpf verifier: no reachable BPF_EXIT instruction");
+            return Err("no reachable BPF_EXIT instruction");
+        }
+
         Ok(())
+    }
+
+    fn insn_successors(
+        insn: &bpf_insn::BpfInsn,
+        pc: usize,
+        max_pc: usize,
+    ) -> Result<alloc::vec::Vec<usize>, &'static str> {
+        let class = insn.class();
+        let op = insn.code & 0xf0;
+        match class {
+            bpf_insn::BPF_ALU
+            | bpf_insn::BPF_ALU64
+            | bpf_insn::BPF_ST
+            | bpf_insn::BPF_STX
+            | bpf_insn::BPF_LDX => {
+                let next = pc + 1;
+                if next >= max_pc {
+                    return Ok(alloc::vec![]);
+                }
+                Ok(alloc::vec![next])
+            }
+            bpf_insn::BPF_LD => {
+                if insn.is_ld_dw_imm() {
+                    let next = pc + 2;
+                    if next > max_pc {
+                        return Ok(alloc::vec![]);
+                    }
+                    Ok(alloc::vec![next])
+                } else {
+                    Ok(alloc::vec![])
+                }
+            }
+            bpf_insn::BPF_JMP | bpf_insn::BPF_JMP32 => {
+                if op == bpf_insn::BPF_EXIT {
+                    return Ok(alloc::vec![]);
+                }
+                if op == 0x80 {
+                    let next = pc + 1;
+                    if next >= max_pc {
+                        return Ok(alloc::vec![]);
+                    }
+                    return Ok(alloc::vec![next]);
+                }
+                let fallthrough = pc + 1;
+                let target = (pc as isize + 1 + insn.off as isize) as usize;
+                let mut succs = alloc::vec![];
+                if fallthrough < max_pc {
+                    succs.push(fallthrough);
+                }
+                if target < max_pc {
+                    succs.push(target);
+                } else {
+                    warn!("bpf verifier: jump out of bounds at pc={pc} target={target}");
+                    return Err("jump out of bounds");
+                }
+                Ok(succs)
+            }
+            _ => Ok(alloc::vec![]),
+        }
     }
 
     fn execute(&self, insns: &[bpf_insn::BpfInsn], ctx: u64) -> Result<u64, &'static str> {
@@ -1216,13 +2136,27 @@ impl BpfVm {
                     if op == bpf_insn::BPF_EXIT {
                         return Ok(regs[0]);
                     }
-                    if op == bpf_insn::BPF_CALL_OP {
+                    if op == 0x80 {
                         let helper_id = insn.imm as u32;
                         if let Some(helper_fn) = self.helpers.get(&helper_id) {
                             regs[0] = helper_fn(regs[1], regs[2], regs[3], regs[4], regs[5]);
                         } else {
                             warn!("bpf: unknown helper {}", helper_id);
                             regs[0] = u64::MAX;
+                        }
+                        if helper_id == helper_id::TAIL_CALL && regs[0] == 0 {
+                            let target_fd = {
+                                let mut tail_target = BPF_TAIL_CALL_TARGET.lock();
+                                tail_target.take()
+                            };
+                            if let Some(fd) = target_fd {
+                                let guard = BPF_GLOBAL.lock();
+                                if let Some(target_prog) = guard.progs.get(&fd) {
+                                    let target_insns = target_prog.insns.clone();
+                                    drop(guard);
+                                    return self.execute(&target_insns, regs[1]);
+                                }
+                            }
                         }
                         pc += 1;
                         continue;
@@ -1277,41 +2211,40 @@ impl BpfVm {
     }
 
     fn exec_alu(op: u8, dst: u64, src: u64, is_64: bool) -> u64 {
-        let mask = if is_64 { !0u64 } else { 0xffffffff };
-        let result = match op {
-            bpf_insn::BPF_ADD => dst.wrapping_add(src),
-            bpf_insn::BPF_SUB => dst.wrapping_sub(src),
-            bpf_insn::BPF_MUL => dst.wrapping_mul(src),
+        let (result, mask) = match op {
+            bpf_insn::BPF_ADD => (dst.wrapping_add(src), !0),
+            bpf_insn::BPF_SUB => (dst.wrapping_sub(src), !0),
+            bpf_insn::BPF_MUL => (dst.wrapping_mul(src), !0),
             bpf_insn::BPF_DIV => {
                 if src == 0 {
                     return 0;
                 }
-                dst / src
+                (dst / src, !0)
             }
-            bpf_insn::BPF_OR => dst | src,
-            bpf_insn::BPF_AND => dst & src,
-            bpf_insn::BPF_LSH => dst.wrapping_shl(src as u32),
+            bpf_insn::BPF_OR => (dst | src, !0),
+            bpf_insn::BPF_AND => (dst & src, !0),
+            bpf_insn::BPF_LSH => (dst.wrapping_shl(src as u32), !0),
             bpf_insn::BPF_RSH => {
                 if is_64 {
-                    dst >> src
+                    (dst >> src, !0)
                 } else {
-                    (dst as u32 >> src as u32) as u64
+                    ((dst as u32 >> src as u32) as u64, 0xffffffff)
                 }
             }
-            bpf_insn::BPF_NEG => (-(dst as i64)) as u64,
+            bpf_insn::BPF_NEG => ((-(dst as i64)) as u64, !0),
             bpf_insn::BPF_MOD => {
                 if src == 0 {
-                    return dst & mask;
+                    return dst;
                 }
-                dst % src
+                (dst % src, !0)
             }
-            bpf_insn::BPF_XOR => dst ^ src,
-            bpf_insn::BPF_MOV => src,
+            bpf_insn::BPF_XOR => (dst ^ src, !0),
+            bpf_insn::BPF_MOV => (src, !0),
             bpf_insn::BPF_ARSH => {
                 if is_64 {
-                    ((dst as i64) >> src) as u64
+                    (((dst as i64) >> src) as u64, !0)
                 } else {
-                    (((dst as i32) as i64) >> src) as u64
+                    ((((dst as i32) as i64) >> src) as u64, 0xffffffff)
                 }
             }
             _ => return dst,
@@ -1561,17 +2494,10 @@ pub fn sys_perf_event_open(
     crate::perf_event::sys_perf_event_open_impl(attr_uptr, pid, cpu, group_fd, flags)
 }
 
+#[allow(dead_code)]
 pub fn bpf_close_fd(fd: u32) -> AxResult<()> {
     let mut guard = BPF_GLOBAL.lock();
     guard.close_fd(fd)
-}
-
-pub fn bpf_close_all_fds() {
-    let mut guard = BPF_GLOBAL.lock();
-    guard.maps.clear();
-    guard.progs.clear();
-    guard.links.clear();
-    guard.free_fds.clear();
 }
 
 #[allow(dead_code)]
