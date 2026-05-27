@@ -177,7 +177,7 @@
 
 - `ax-hal`
 - 各类 `axplat-*` 平台包
-- `platform/*` 下的平台实现
+- `platforms/*` 下的平台实现
 - `starry-signal`
 
 `axvm` 并不直接依赖它；两者关系更多体现在 hypervisor 宿主 CPU 模式与 trap 行为的间接配合上。

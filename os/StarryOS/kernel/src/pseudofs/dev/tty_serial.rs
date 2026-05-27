@@ -10,11 +10,11 @@ use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::AnyBitPattern;
-use dw_apb_uart::DW8250;
 use sg200x_bsp::{
     pinmux::Pinmux,
     soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
 };
+use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::pseudofs::DeviceOps;
@@ -31,7 +31,7 @@ static UART1_POLL: PollSet = PollSet::new();
 static UART2_POLL: PollSet = PollSet::new();
 
 fn uart_irq_handler(paddr: PhysAddr, buf: &SpinNoIrq<VecDeque<u8>>, poll: &PollSet) {
-    let mut uart = DW8250::new(phys_to_virt(paddr).as_usize());
+    let mut uart = DwApbUart::new(phys_to_virt(paddr).as_usize());
     let mut rx = buf.lock();
     let mut got_data = false;
     while let Some(c) = uart.getchar() {
@@ -131,8 +131,8 @@ impl TtySerial {
         irq_handler: fn(usize),
     ) -> Self {
         let vaddr = phys_to_virt(paddr).as_usize();
-        let mut uart = DW8250::new(vaddr);
-        uart.init_with_baud(baud);
+        let mut uart = DwApbUart::new(vaddr);
+        uart.init_with_baud_clk(baud, SG2002_UART_CLOCK);
         uart.set_ier(true);
         ax_runtime::hal::irq::register(irq, irq_handler);
         ax_runtime::hal::irq::set_enable(irq, true);
@@ -150,8 +150,8 @@ impl TtySerial {
 
     fn set_baud(&self, baud: u32) {
         let vaddr = phys_to_virt(self.paddr).as_usize();
-        let mut uart = DW8250::new(vaddr);
-        uart.init_with_baud(baud);
+        let mut uart = DwApbUart::new(vaddr);
+        uart.init_with_baud_clk(baud, SG2002_UART_CLOCK);
         uart.set_ier(true);
         ax_runtime::hal::irq::set_enable(self.irq, true);
     }
@@ -177,7 +177,7 @@ impl DeviceOps for TtySerial {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         let vaddr = phys_to_virt(self.paddr).as_usize();
-        let mut uart = DW8250::new(vaddr);
+        let mut uart = DwApbUart::new(vaddr);
         for &b in buf {
             uart.putchar(b);
         }
