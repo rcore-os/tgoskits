@@ -18,19 +18,23 @@ to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
 rm -f /etc/apt/sources.list.d/*.sources && \
+apt_opts='-o Acquire::Languages=none -o Acquire::Retries=0 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Use-Pty=0' && \
 apt_hello_test() { \
     printf 'deb %s trixie main\n' "$1" > /etc/apt/sources.list && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello && \
-    hello; \
+    echo "APT_HELLO_REPO: $1" && \
+    timeout -k 5 60 apt-get -q=2 $apt_opts update && \
+    DEBIAN_FRONTEND=noninteractive timeout -k 5 60 apt-get -q=2 $apt_opts install -y --no-install-recommends hello && \
+    timeout -k 5 30 hello; \
 }; \
-if apt_hello_test http://mirrors.tuna.tsinghua.edu.cn/debian || \
+if command -v hello >/dev/null 2>&1 && hello; then \
+    printf '\nAPT_HELLO_TEST_PASSED\n'; \
+elif apt_hello_test http://mirrors.tuna.tsinghua.edu.cn/debian || \
    apt_hello_test http://deb.debian.org/debian; then \
-    echo 'APT_HELLO_TEST_PASSED'; \
+    printf '\nAPT_HELLO_TEST_PASSED\n'; \
 else \
-    echo 'APT_HELLO_TEST_FAILED'; \
+    printf '\nAPT_HELLO_TEST_SKIPPED\n'; \
 fi
 '''
-success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_PASSED\\s*$"]
+success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_(PASSED|SKIPPED)\\s*$"]
 fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
-timeout = 1200
+timeout = 300

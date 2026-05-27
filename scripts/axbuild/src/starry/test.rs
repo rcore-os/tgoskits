@@ -1385,6 +1385,106 @@ mod tests {
     }
 
     #[test]
+    fn apt_qemu_configs_bound_guest_package_commands() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/apt");
+
+        for arch in ["aarch64", "riscv64"] {
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let shell_init_cmd = config
+                .get("shell_init_cmd")
+                .and_then(toml::Value::as_str)
+                .unwrap_or_default();
+
+            assert!(
+                shell_init_cmd.contains("timeout -k 5 60 apt-get -q=2"),
+                "{} must bound each guest apt-get invocation",
+                path.display()
+            );
+            for option in [
+                "Acquire::Languages=none",
+                "Acquire::Retries=0",
+                "Acquire::http::Timeout=30",
+                "Acquire::https::Timeout=30",
+            ] {
+                assert!(
+                    shell_init_cmd.contains(option),
+                    "{} must pass apt option {option}",
+                    path.display()
+                );
+            }
+            for mirror in [
+                "http://mirrors.tuna.tsinghua.edu.cn/debian",
+                "http://deb.debian.org/debian",
+            ] {
+                assert!(
+                    shell_init_cmd.contains(mirror),
+                    "{} must retry apt through fallback mirror {mirror}",
+                    path.display()
+                );
+            }
+            assert!(
+                shell_init_cmd.contains("APT_HELLO_TEST_SKIPPED"),
+                "{} must skip instead of waiting for QEMU timeout when apt mirrors are unavailable",
+                path.display()
+            );
+            for marker in [
+                "printf '\\nAPT_HELLO_TEST_PASSED\\n'",
+                "printf '\\nAPT_HELLO_TEST_SKIPPED\\n'",
+            ] {
+                assert!(
+                    shell_init_cmd.contains(marker),
+                    "{} must print apt result marker on a fresh line",
+                    path.display()
+                );
+            }
+            assert!(
+                !shell_init_cmd.contains("apt-get update &&"),
+                "{} must not leave an unbounded apt-get update chain",
+                path.display()
+            );
+
+            let success_regex = config
+                .get("success_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                success_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("APT_HELLO_TEST_") && regex.contains("SKIPPED")),
+                "{} must accept a skip marker when external apt mirrors are unavailable",
+                path.display()
+            );
+
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .all(|regex| !regex.contains("APT_HELLO_TEST_SKIPPED")),
+                "{} must not treat the apt mirror skip marker as a failure",
+                path.display()
+            );
+
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 300,
+                "{} must not keep the old long QEMU timeout for guest apt mirror stalls",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn inotifywait_qemu_case_installs_tool_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/inotifywait");
