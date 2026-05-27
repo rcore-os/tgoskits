@@ -607,6 +607,16 @@ impl JitBackend for X86_64Backend {
                         emit_shl_imm32(buf, dst, shamt);
                         emit_zext32(buf, dst);
                     }
+                } else if dst == X86_RCX {
+                    emit_mov_reg64(buf, X86_R10, dst);
+                    emit_mov_reg64(buf, X86_RCX, src);
+                    if is_64 {
+                        emit_shl_reg64(buf, X86_R10);
+                    } else {
+                        emit_shl_reg32(buf, X86_R10);
+                        emit_zext32(buf, X86_R10);
+                    }
+                    emit_mov_reg64(buf, dst, X86_R10);
                 } else if is_64 {
                     emit_mov_reg64(buf, X86_RCX, src);
                     emit_shl_reg64(buf, dst);
@@ -625,6 +635,16 @@ impl JitBackend for X86_64Backend {
                         emit_shr_imm32(buf, dst, shamt);
                         emit_zext32(buf, dst);
                     }
+                } else if dst == X86_RCX {
+                    emit_mov_reg64(buf, X86_R10, dst);
+                    emit_mov_reg64(buf, X86_RCX, src);
+                    if is_64 {
+                        emit_shr_reg64(buf, X86_R10);
+                    } else {
+                        emit_shr_reg32(buf, X86_R10);
+                        emit_zext32(buf, X86_R10);
+                    }
+                    emit_mov_reg64(buf, dst, X86_R10);
                 } else if is_64 {
                     emit_mov_reg64(buf, X86_RCX, src);
                     emit_shr_reg64(buf, dst);
@@ -678,6 +698,15 @@ impl JitBackend for X86_64Backend {
                         emit_sar_imm32(buf, dst, shamt);
                         emit_zext32(buf, dst);
                     }
+                } else if dst == X86_RCX {
+                    emit_mov_reg64(buf, X86_R10, dst);
+                    emit_mov_reg64(buf, X86_RCX, src);
+                    if is_64 {
+                        emit_sar_reg64(buf, X86_R10);
+                    } else {
+                        emit_sar_reg32(buf, X86_R10);
+                    }
+                    emit_mov_reg64(buf, dst, X86_R10);
                 } else if is_64 {
                     emit_mov_reg64(buf, X86_RCX, src);
                     emit_sar_reg64(buf, dst);
@@ -847,6 +876,8 @@ impl JitBackend for X86_64Backend {
                             4
                         } else if use_imm {
                             4 + 3
+                        } else if bpf_to_x86(insn.dst_reg()) == X86_RCX {
+                            3 + 3 + 9
                         } else {
                             3 + 3
                         }
