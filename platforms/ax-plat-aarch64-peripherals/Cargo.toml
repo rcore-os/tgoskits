@@ -33,7 +33,7 @@ cntv-timer = []
 [dependencies]
 ax-kspin = { workspace = true }
 log = "0.4"
-spin = "0.10"
+spin = { workspace = true }
 ax-int-ratio = { workspace = true }
 ax-lazyinit = { workspace = true }
 aarch64-cpu = "11.0"

@@ -119,7 +119,7 @@ rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }
-spin = "0.10"
+spin = { workspace = true }
 starry-process = { workspace = true }
 starry-signal = { workspace = true }
 starry-vm = { workspace = true }

@@ -32,7 +32,7 @@ ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
 rdrive.workspace = true
 somehal.workspace = true
-spin = "0.10"
+spin = { workspace = true }
 
 [package.metadata.axplat]
 platform = "dyn"

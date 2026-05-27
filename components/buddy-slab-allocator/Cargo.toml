@@ -37,7 +37,7 @@ name = "global_allocator"
 
 [dependencies]
 log = "0.4"
-spin = "0.10"
+spin = { workspace = true }
 
 [dev-dependencies]
 divan = "0.1.21"
