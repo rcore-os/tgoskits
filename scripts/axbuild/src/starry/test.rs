@@ -1296,6 +1296,28 @@ mod tests {
                 "{} must probe curl only when the rootfs already provides it",
                 path.display()
             );
+            let curl_probe_index = shell_init_cmd.find("command -v curl").unwrap();
+            let update_begin_index = shell_init_cmd.find("APK_CURL_UPDATE_BEGIN").unwrap();
+            assert!(
+                curl_probe_index < update_begin_index,
+                "{} must skip deterministically before touching external apk mirrors when curl is \
+                 absent",
+                path.display()
+            );
+            let add_skipped_index = shell_init_cmd.find("APK_CURL_ADD_SKIPPED").unwrap();
+            let add_skipped_tail = &shell_init_cmd[add_skipped_index..];
+            assert!(
+                add_skipped_tail.contains("APK_CURL_TEST_SKIPPED")
+                    && add_skipped_tail.contains("exit 0"),
+                "{} must finish with the skip success marker immediately after detecting absent \
+                 curl",
+                path.display()
+            );
+            assert!(
+                !add_skipped_tail.contains("return 1"),
+                "{} must not return from the curl-missing path and wait for the QEMU timeout",
+                path.display()
+            );
             assert!(
                 shell_init_cmd.contains("curl --connect-timeout 10 --max-time 30"),
                 "{} must bound the external curl probe",

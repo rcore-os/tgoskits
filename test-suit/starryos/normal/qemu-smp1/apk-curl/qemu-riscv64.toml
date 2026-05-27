@@ -21,6 +21,12 @@ fetch_timeout=60
 repo_file=/etc/apk/repositories
 original_repos="$(cat "$repo_file")"
 
+if ! command -v curl >/dev/null 2>&1; then
+    echo "APK_CURL_ADD_SKIPPED"
+    echo 'APK_CURL_TEST_SKIPPED'
+    exit 0
+fi
+
 try_apk_curl() {
     mirror="$1"
     label="$2"
@@ -31,10 +37,6 @@ try_apk_curl() {
     echo "APK_CURL_UPDATE_BEGIN"
     timeout "$fetch_timeout" apk --timeout "$fetch_timeout" update && \
     echo "APK_CURL_UPDATE_DONE"
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "APK_CURL_ADD_SKIPPED"
-        return 1
-    fi
     echo "APK_CURL_PROBE_BEGIN" && \
     curl --version && \
     curl --connect-timeout 10 --max-time 30 -i https://baidu.com && \
