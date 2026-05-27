@@ -287,10 +287,6 @@ impl ArchTrait for Arch {
     }
 
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
-        if hartid == Self::cpu_current_hartid() {
-            return Err(CpuOnError::AlreadyOn);
-        }
-
         match sbi::hart_start(hartid, entry, arg) {
             Ok(()) => Ok(()),
             Err(sbi::HartStartError::AlreadyAvailable | sbi::HartStartError::AlreadyStarted) => {

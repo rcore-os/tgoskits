@@ -27,8 +27,8 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn secondary_init_intc() {
-        plic::secondary_init_intc();
+    fn secondary_init_intc(cpu_idx: usize) {
+        plic::secondary_init_intc(cpu_idx);
     }
 
     fn secondary_init_systick() {}

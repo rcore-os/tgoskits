@@ -2,7 +2,7 @@ use alloc::{format, vec::Vec};
 use core::{
     num::NonZeroU32,
     ptr::NonNull,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
@@ -28,7 +28,6 @@ const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
 
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
 static CURRENT_CPU_ID: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-static CURRENT_CPU_ID_READY: AtomicUsize = AtomicUsize::new(0);
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -48,10 +47,7 @@ pub fn systick_irq() -> rdrive::IrqId {
     S_TIMER.into()
 }
 
-pub fn register_current_cpu_id(cpu_idx: usize, reader: fn() -> usize) {
-    if let Some(bit) = cpu_ready_bit(cpu_idx) {
-        CURRENT_CPU_ID_READY.fetch_or(bit, Ordering::Release);
-    }
+pub fn register_current_cpu_id(_cpu_idx: usize, reader: fn() -> usize) {
     CURRENT_CPU_ID.store(reader as *mut (), Ordering::Release);
 }
 
@@ -109,10 +105,10 @@ pub fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
     }
 }
 
-pub fn secondary_init_intc() {
+pub fn secondary_init_intc(cpu_idx: usize) {
     enable_local_interrupts();
     if let Some(handler) = get_irq_handler() {
-        handler.init_current_context();
+        handler.init_context(cpu_idx);
     }
 }
 
@@ -288,11 +284,23 @@ impl RiscvPlicIrqHandler {
 
     fn init_current_context(&self) {
         if let Some(context) = self.current_context() {
-            self.inner.init_by_context(context);
-            trace!("PLIC context {context} initialized");
+            self.init_context_by_context_id(context);
         } else {
             warn_missing_current_context();
         }
+    }
+
+    fn init_context(&self, cpu_idx: usize) {
+        if let Some(context) = self.context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx) {
+            self.init_context_by_context_id(context);
+        } else {
+            warn!("PLIC supervisor context for logical CPU {cpu_idx} is not found");
+        }
+    }
+
+    fn init_context_by_context_id(&self, context: usize) {
+        self.inner.init_by_context(context);
+        trace!("PLIC context {context} initialized");
     }
 
     fn claim_current(&self) -> Option<NonZeroU32> {
@@ -347,27 +355,11 @@ fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {
 fn current_cpu_idx() -> Option<usize> {
     let reader = CURRENT_CPU_ID.load(Ordering::Acquire);
     if !reader.is_null() {
-        if let Some(cpu_idx) = someboot::smp::try_cpu_idx()
-            && !cpu_reader_is_ready(cpu_idx)
-        {
-            return Some(cpu_idx);
-        }
-
         let reader = unsafe { core::mem::transmute::<*mut (), fn() -> usize>(reader) };
         return Some(reader());
     }
 
-    someboot::smp::try_cpu_idx()
-}
-
-fn cpu_ready_bit(cpu_idx: usize) -> Option<usize> {
-    (cpu_idx < usize::BITS as usize).then(|| 1usize << cpu_idx)
-}
-
-fn cpu_reader_is_ready(cpu_idx: usize) -> bool {
-    cpu_ready_bit(cpu_idx)
-        .map(|bit| CURRENT_CPU_ID_READY.load(Ordering::Acquire) & bit != 0)
-        .unwrap_or(false)
+    someboot::smp::try_early_cpu_idx()
 }
 
 fn warn_missing_current_context() {

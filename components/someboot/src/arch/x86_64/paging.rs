@@ -124,7 +124,7 @@ pub fn enable_mmu() -> ! {
         panic!("failed to setup x86_64 page table: {err:?}");
     }
 
-    let meta = crate::smp::cpu_meta(crate::smp::cpu_idx()).unwrap();
+    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(super::entry::mmu_entry as *const () as usize) as usize;
 

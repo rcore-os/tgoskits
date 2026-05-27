@@ -21,7 +21,7 @@ pub trait PlatOp {
 
     fn secondary_init();
 
-    fn secondary_init_intc();
+    fn secondary_init_intc(cpu_idx: usize);
 
     fn secondary_init_systick();
 

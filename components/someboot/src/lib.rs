@@ -177,7 +177,7 @@ fn prime_entry() -> ! {
     }
 
     let entry = __someboot_main as *const () as usize;
-    let sp = crate::smp::cpu_meta(crate::smp::cpu_idx())
+    let sp = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx())
         .unwrap()
         .stack_top;
     let sp = __percpu(sp);
