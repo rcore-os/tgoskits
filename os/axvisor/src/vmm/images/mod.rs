@@ -46,7 +46,7 @@ pub fn is_x86_linux_image_config(config: &AxVMCrateConfig) -> bool {
     match config.kernel.image_location.as_deref() {
         Some("memory") => with_memory_image(config, detect_x86_linux_image).is_some(),
         #[cfg(feature = "fs")]
-        Some("fs") => fs::kernal_read(config, x86_linux::HEADER_READ_SIZE)
+        Some("fs") => fs::kernel_read(config, x86_linux::HEADER_READ_SIZE)
             .ok()
             .and_then(|data| detect_x86_linux_image(&data))
             .is_some(),
@@ -613,7 +613,7 @@ pub mod fs {
         info!("Loading VM images from filesystem");
         #[cfg(target_arch = "x86_64")]
         {
-            let kernel_probe = kernal_read(&loader.config, x86_linux::HEADER_READ_SIZE);
+            let kernel_probe = kernel_read(&loader.config, x86_linux::HEADER_READ_SIZE);
             match kernel_probe {
                 Ok(data) => {
                     if let Some(header) = detect_x86_linux_image(&data) {

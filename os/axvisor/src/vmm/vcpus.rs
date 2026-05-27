@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_cpumask::CpuMask;
+use ax_kspin::SpinNoIrq as Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
