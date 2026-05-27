@@ -129,7 +129,6 @@ graph LR
     cpuid["raw-cpuid"] --> current
 
     current --> ax-hal["ax-hal"]
-    current --> hello["hello-kernel / irq-kernel / smp-kernel"]
     current --> arceos["ArceOS x86 默认平台路径"]
 ```
 
@@ -142,7 +141,6 @@ graph LR
 
 ### 主要消费者
 - `ax-hal`：在 x86 PC 场景下复用本 crate 的 `axplat` 实现。
-- `platforms/examples/*`：最小平台样例。
 - ArceOS 和 StarryOS 的 x86 默认平台路径。
 
 ### 3.3 间接消费者
@@ -177,9 +175,7 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp"] }
 - 对启动路径中的结构布局和符号契约，优先考虑编译期断言和最小样例验证。
 
 ### 集成测试
-- `hello-kernel`：验证 Multiboot 启动、串口和最小 bring-up。
-- `irq-kernel`：验证 IOAPIC/LAPIC 中断路径。
-- `smp-kernel`：验证 AP 启动与 secondary path。
+- `ax-helloworld-myplat` 和系统级 smoke test：验证 Multiboot 启动、串口、IOAPIC/LAPIC 和 secondary path。
 - 启用 `rtc` 时验证 wall time 路径。
 
 ### 覆盖率
@@ -247,9 +243,6 @@ graph LR
     current --> ax-percpu["ax-percpu"]
     arceos_helloworld_myplat["ax-helloworld-myplat"] --> current
     ax-hal["ax-hal"] --> current
-    hello_kernel["hello-kernel"] --> current
-    irq_kernel["irq-kernel"] --> current
-    smp_kernel["smp-kernel"] --> current
 ```
 
 ### 直接依赖
@@ -277,9 +270,6 @@ graph LR
 ### 3.3 被依赖情况
 - `ax-helloworld-myplat`
 - `ax-hal`
-- `hello-kernel`
-- `irq-kernel`
-- `smp-kernel`
 
 ### 被依赖情况
 - `arceos-affinity`

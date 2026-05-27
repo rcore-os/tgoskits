@@ -222,7 +222,7 @@ graph TD
 cargo build -p ax-plat-aarch64-peripherals --target aarch64-unknown-none --all-features
 ```
 
-但真正有意义的验证应放到板级平台包上进行，例如通过 `ax-plat-aarch64-qemu-virt` 运行 `hello-kernel`、`irq-kernel` 或多核示例，确认串口输出、时钟推进和中断分发都贯通。
+但真正有意义的验证应放到板级平台包上进行，例如通过 `ax-plat-aarch64-qemu-virt` 运行 ArceOS/StarryOS/Axvisor 的系统级 smoke test，确认串口输出、时钟推进和中断分发都贯通。
 
 ### 4.4 维护时的注意事项
 

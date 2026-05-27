@@ -113,7 +113,7 @@ flowchart TD
 ax-plat-riscv64-qemu-virt = { workspace = true, features = ["irq", "smp", "rtc"] }
 ```
 
-在真正的 ArceOS 系统里，它通常进一步经 `ax-hal` 的平台选择或 `platforms/examples/*` 的样例工程间接生效。
+在真正的 ArceOS 系统里，它通常进一步经 `ax-hal` 的平台选择间接生效。
 
 ## 依赖关系
 ```mermaid
@@ -126,7 +126,6 @@ graph LR
     plic["riscv_plic"] --> current
 
     current --> ax-hal["ax-hal"]
-    current --> hello["hello-kernel / irq-kernel / smp-kernel"]
     current --> arceos["ArceOS RISC-V virt 平台路径"]
 ```
 
@@ -139,7 +138,6 @@ graph LR
 
 ### 主要消费者
 - `ax-hal`：在 RISC-V `virt` 平台选择中复用本 crate 的所有 `axplat` 实现。
-- `platforms/examples/*`：作为最小平台 bring-up 示例的底层平台包。
 - ArceOS 栈中的 RISC-V 默认平台路径与 `helloworld-myplat` 等示例。
 
 ### 3.3 间接消费者
@@ -174,7 +172,7 @@ ax-plat-riscv64-qemu-virt = { workspace = true, features = ["irq", "smp"] }
 - 对 `config` 生成结果和 `PACKAGE` 一致性应保留编译期校验。
 
 ### 集成测试
-- 使用 `hello-kernel`、`irq-kernel`、`smp-kernel` 验证主核 bring-up、中断和多 hart 启动。
+- 使用 `ax-helloworld-myplat` 和系统级 smoke test 验证主核 bring-up、中断和多 hart 启动。
 - 在启用 `rtc` 时验证 `wall_time` 路径是否正确。
 - 在 `irq` + `smp` 组合下验证 IPI、timer 和 PLIC 外部中断是否都能工作。
 
@@ -242,9 +240,6 @@ graph LR
     current --> riscv_plic["riscv_plic"]
     arceos_helloworld_myplat["ax-helloworld-myplat"] --> current
     ax-hal["ax-hal"] --> current
-    hello_kernel["hello-kernel"] --> current
-    irq_kernel["irq-kernel"] --> current
-    smp_kernel["smp-kernel"] --> current
 ```
 
 ### 直接依赖
@@ -272,9 +267,6 @@ graph LR
 ### 3.3 被依赖情况
 - `ax-helloworld-myplat`
 - `ax-hal`
-- `hello-kernel`
-- `irq-kernel`
-- `smp-kernel`
 
 ### 被依赖情况
 - `arceos-affinity`

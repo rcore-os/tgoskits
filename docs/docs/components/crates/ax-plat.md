@@ -198,7 +198,6 @@ impl ax_plat::init::InitIf for InitIfImpl {
 
 - 所有具体平台包：如 `ax-plat-aarch64-qemu-virt`、`ax-plat-x86-pc`、`ax-plat-riscv64-qemu-virt`。
 - `ax-hal`：通过选择某个 `ax-plat-*` 平台包把平台实现纳入构建。
-- `platforms/examples/*`：示例内核直接使用 `ax-plat` 接口与平台包。
 - 上层 ArceOS/StarryOS/Axvisor 宿主侧内核：通常通过 `ax-hal` 间接消费，而不是直接依赖 `ax-plat`。
 
 ### 3.3 依赖关系示意

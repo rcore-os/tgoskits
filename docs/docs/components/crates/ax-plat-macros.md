@@ -87,8 +87,7 @@ graph LR
 
     current --> axplat["ax-plat"]
     axplat --> ax-runtime["ax-runtime"]
-    axplat --> hello["hello-kernel / smp-kernel / irq-kernel"]
-    axplat --> oses["ArceOS / StarryOS / Axvisor 平台入口链"]
+        axplat --> oses["ArceOS / StarryOS / Axvisor 平台入口链"]
 ```
 
 ### 直接依赖
@@ -100,7 +99,6 @@ graph LR
 
 ### 3.3 间接消费者
 - `ax-runtime`：通过 `#[ax_plat::main]` / `#[ax_plat::secondary_main]` 接入平台入口。
-- `platforms/examples/*`：最小平台样例。
 - 通过 `axplat` 体系间接复用入口契约的 ArceOS、StarryOS 和 Axvisor 路径。
 
 ## 开发指南
@@ -131,7 +129,7 @@ graph LR
 - 展开后导出符号与 `call_interface` 调用路径是否符合预期。
 
 ### 集成测试
-- 用 `hello-kernel` / `smp-kernel` 验证 `_start -> ax_plat::call_main -> __axplat_main` 链条。
+- 用 `ax-helloworld-myplat` 和系统级 smoke test 验证 `_start -> ax_plat::call_main -> __axplat_main` 链条。
 - 用 `axplat` 内部 trait 接口验证 `def_plat_interface` 与 `impl_plat_interface` 的配合。
 
 ### 覆盖率

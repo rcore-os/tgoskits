@@ -206,9 +206,6 @@ flowchart TD
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：AArch64 默认平台之一。
-- `platforms/examples/hello-kernel`
-- `platforms/examples/irq-kernel`
-- `platforms/examples/smp-kernel`
 - Axvisor 宿主侧经 `ax-hal` 间接引入的 AArch64 QEMU 平台栈
 
 ### 3.3 关系示意
@@ -219,7 +216,7 @@ graph TD
     C[ax-plat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-hal]
-    B --> F[hello-kernel / irq-kernel / smp-kernel]
+    B --> F[ax-helloworld-myplat/系统级 smoke test]
     E --> G[ArceOS]
     E --> H[StarryOS]
     E --> I[Axvisor 宿主环境]
@@ -282,7 +279,7 @@ cargo build -p ax-plat-aarch64-qemu-virt --target aarch64-unknown-none --feature
 
 ### 5.2 现有有效验证面
 
-- 示例内核 `hello-kernel`、`irq-kernel`、`smp-kernel` 可以覆盖主启动链、IRQ 和多核路径。
+- `ax-helloworld-myplat` 和系统级 smoke test 可以覆盖主启动链、IRQ 和多核路径。
 - 该平台是 ArceOS AArch64/QEMU 的主力默认平台之一，因此实际回归频率通常高于专用板卡平台。
 
 ### 5.3 风险点

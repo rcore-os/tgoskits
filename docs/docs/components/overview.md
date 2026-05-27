@@ -196,11 +196,9 @@ flowchart TB
 | `define-weak-traits` | 组件层 | `components/crate_interface/test_crates/define-weak-traits` | 1 | 4 | [查看](crates/define-weak-traits) |
 | `deptool` | ArceOS 层 | `os/arceos/tools/deptool` | 0 | 0 | [查看](crates/deptool) |
 | `fxmac_rs` | 组件层 | `drivers/net/fxmac_rs` | 1 | 1 | [查看](crates/fxmac-rs) |
-| `hello-kernel` | 组件层 | `platforms/examples/hello-kernel` | 5 | 0 | [查看](crates/hello-kernel) |
 | `impl-simple-traits` | 组件层 | `components/crate_interface/test_crates/impl-simple-traits` | 2 | 1 | [查看](crates/impl-simple-traits) |
 | `impl-weak-partial` | 组件层 | `components/crate_interface/test_crates/impl-weak-partial` | 2 | 1 | [查看](crates/impl-weak-partial) |
 | `impl-weak-traits` | 组件层 | `components/crate_interface/test_crates/impl-weak-traits` | 2 | 1 | [查看](crates/impl-weak-traits) |
-| `irq-kernel` | 组件层 | `platforms/examples/irq-kernel` | 7 | 0 | [查看](crates/irq-kernel) |
 | `mingo` | ArceOS 层 | `os/arceos/tools/raspi4/chainloader` | 0 | 0 | [查看](crates/mingo) |
 | `range-alloc-arceos` | 组件层 | `components/range-alloc-arceos` | 0 | 1 | [查看](crates/range-alloc-arceos) |
 | `riscv-h` | 组件层 | `components/riscv-h` | 0 | 2 | [查看](crates/riscv-h) |
@@ -211,7 +209,6 @@ flowchart TB
 | `scope-local` | 组件层 | `components/scope-local` | 1 | 3 | [查看](crates/scope-local) |
 | `smoltcp` | 组件层 | `components/starry-smoltcp` | 0 | 3 | [查看](crates/smoltcp) |
 | `smoltcp-fuzz` | 组件层 | `components/starry-smoltcp/fuzz` | 1 | 0 | [查看](crates/smoltcp-fuzz) |
-| `smp-kernel` | 组件层 | `platforms/examples/smp-kernel` | 9 | 0 | [查看](crates/smp-kernel) |
 | `starry-kernel` | StarryOS 层 | `os/StarryOS/kernel` | 29 | 2 | [查看](crates/starry-kernel) |
 | `starry-process` | 组件层 | `components/starry-process` | 2 | 1 | [查看](crates/starry-process) |
 | `starry-signal` | 组件层 | `components/starry-signal` | 3 | 1 | [查看](crates/starry-signal) |

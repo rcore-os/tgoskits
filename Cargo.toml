@@ -76,11 +76,7 @@ members = [
     "components/axfs_crates/axfs_vfs",
     "components/axmm_crates/memory_addr",
     "components/axmm_crates/memory_set",
-    "platforms/ax-plat-*",
-    "platforms/ax-plat",
-    "platforms/ax-plat-macros",
-    "platforms/somehal",
-    "platforms/examples/*",
+    "platforms/*",
     "components/crate_interface/crate_interface_lite",
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
@@ -288,14 +284,12 @@ define-simple-traits = { version = "0.3.4", path = "components/crate_interface/t
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
 deptool = { version = "0.3.1", path = "os/arceos/tools/deptool" }
 fxmac_rs = { version = "0.5.1", path = "drivers/net/fxmac_rs" }
-hello-kernel = { version = "0.3.1", path = "platforms/examples/hello-kernel" }
 impl-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-simple-traits" }
 impl-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-weak-traits" }
 arm-gic-driver = { version = "0.17.1", path = "drivers/intc/arm-gic-driver" }
 enumerate = { version = "0.1.1", path = "drivers/examples/enumerate" }
 eth-intel = { version = "0.1.2", path = "drivers/net/eth-intel" }
-irq-kernel = { version = "0.3.1", path = "platforms/examples/irq-kernel" }
 loongarch_vcpu = { version = "0.5.3", path = "components/loongarch_vcpu" }
 mingo = { version = "0.8.3", path = "os/arceos/tools/raspi4/chainloader" }
 range-alloc-arceos = { version = "0.3.9", path = "components/range-alloc-arceos" }
@@ -341,7 +335,6 @@ phytium-mci-host = { version = "0.1.1", path = "drivers/blk/phytium-mci-host", d
 sdhci-host = { version = "0.1.1", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.1.1", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
-smp-kernel = { version = "0.3.1", path = "platforms/examples/smp-kernel" }
 starry-kernel = { version = "0.5.12", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.7", path = "components/starry-process" }
 starry-signal = { version = "0.7.0", path = "components/starry-signal" }

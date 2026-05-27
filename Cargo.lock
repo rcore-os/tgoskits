@@ -4281,18 +4281,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hello-kernel"
-version = "0.3.1"
-dependencies = [
- "ax-plat",
- "ax-plat-aarch64-qemu-virt",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-riscv64-qemu-virt",
- "ax-plat-x86-pc",
- "cfg-if",
-]
-
-[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4690,20 +4678,6 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
-
-[[package]]
-name = "irq-kernel"
-version = "0.3.1"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-plat",
- "ax-plat-aarch64-qemu-virt",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-riscv64-qemu-virt",
- "ax-plat-x86-pc",
- "cfg-if",
-]
 
 [[package]]
 name = "is-terminal"
@@ -7732,23 +7706,6 @@ dependencies = [
  "heapless 0.9.3",
  "log",
  "managed",
-]
-
-[[package]]
-name = "smp-kernel"
-version = "0.3.1"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-memory-addr",
- "ax-percpu",
- "ax-plat",
- "ax-plat-aarch64-qemu-virt",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-riscv64-qemu-virt",
- "ax-plat-x86-pc",
- "cfg-if",
- "const-str",
 ]
 
 [[package]]
