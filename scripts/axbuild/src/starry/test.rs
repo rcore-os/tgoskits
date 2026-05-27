@@ -1596,6 +1596,95 @@ mod tests {
     }
 
     #[test]
+    fn lua_qemu_case_installs_lua_before_boot() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/lua");
+        let cmake_path = case_dir.join("c/CMakeLists.txt");
+        let script_path = case_dir.join("c/lua-app-tests.sh");
+        let prebuild_path = case_dir.join("c/prebuild.sh");
+
+        assert!(
+            script_path.is_file(),
+            "{} must be installed through the case C pipeline",
+            script_path.display()
+        );
+        assert!(
+            cmake_path.is_file(),
+            "{} must install Lua assets through the host CMake install phase",
+            cmake_path.display()
+        );
+        assert!(
+            prebuild_path.is_file(),
+            "{} must install Lua packages into the staging root before QEMU boot",
+            prebuild_path.display()
+        );
+        assert!(
+            !case_dir.join("sh").exists(),
+            "{} must not keep the old shell pipeline that cannot prebuild packages",
+            case_dir.join("sh").display()
+        );
+
+        let script = fs::read_to_string(&script_path).unwrap();
+        for guest_apk_command in ["apk update", "apk add"] {
+            assert!(
+                !script.contains(guest_apk_command),
+                "{} must not run `{guest_apk_command}` after StarryOS boots",
+                script_path.display()
+            );
+        }
+        assert!(
+            script.contains("lua5.4 /usr/bin/lua-main.lua alpha beta")
+                && script.contains("LUA_APP_TEST_FAILED"),
+            "{} must still exercise the Lua runtime and report failures",
+            script_path.display()
+        );
+
+        let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+        assert!(
+            prebuild.contains("apk add")
+                && prebuild.contains("lua5.4")
+                && prebuild.contains("lua5.4-cjson"),
+            "{} must install Lua packages during case asset preparation",
+            prebuild_path.display()
+        );
+        for staged_path in [
+            "STARRY_STAGING_ROOT/usr/bin/lua5.4",
+            "STARRY_STAGING_ROOT/usr/lib/lua/5.4/cjson.so",
+        ] {
+            assert!(
+                prebuild.contains(staged_path),
+                "{} must verify {} exists in the staging root",
+                prebuild_path.display(),
+                staged_path
+            );
+        }
+
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+        assert!(
+            cmake.contains("install(PROGRAMS lua-app-tests.sh")
+                && cmake.contains("${STARRY_STAGING_ROOT}/usr/bin/lua5.4")
+                && cmake.contains("${STARRY_STAGING_ROOT}/usr/lib/lua/5.4/cjson.so"),
+            "{} must install the Lua interpreter, cjson module, and test scripts",
+            cmake_path.display()
+        );
+
+        for arch in ["aarch64", "riscv64", "x86_64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 180,
+                "{} must fail quickly because Lua setup happens before QEMU boot",
+                config_path.display()
+            );
+        }
+    }
+
+    #[test]
     fn dhcp_qemu_config_uses_dhcp_event_not_external_apk_fetch() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp/qemu-x86_64.toml");
