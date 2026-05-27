@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：ArceOS 层 / DMA 内存服务层
 > 版本：`0.3.0-preview.3`
-> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/dma.rs`、`drivers/ax-driver/src/ixgbe.rs`、`drivers/ax-driver/src/drivers.rs`、`os/arceos/api/ax-api/src/imp/mem.rs`、`platforms/ax-plat-dyn/src/drivers/mod.rs`、`os/axvisor/src/driver/blk/mod.rs`
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/dma.rs`、`drivers/ax-driver/src/ixgbe.rs`、`drivers/ax-driver/src/drivers.rs`、`os/arceos/api/ax-api/src/imp/mem.rs`、`platforms/axplat-dyn/src/drivers/mod.rs`、`os/axvisor/src/driver/blk/mod.rs`
 
 `ax-dma` 不是驱动聚合层，也不是某类设备驱动。它的真实职责是为 ArceOS 内核提供一套全局一致的 DMA 一致性内存分配服务：从页分配器拿到内存、把页表属性改成 `UNCACHED`、给设备返回可用的总线地址，并在释放时尽可能恢复映射属性。它位于 `ax-alloc` / `ax-mm` / `ax-hal` 等内存基础设施之上，位于需要软件管理 DMA 缓冲的驱动之下。
 
@@ -81,7 +81,7 @@
 ### 1.7 与其它 DMA 实现的边界
 仓库里至少还有两条独立 DMA 路径：
 
-- `platforms/ax-plat-dyn/src/drivers/mod.rs`：提供 `dma_api::DmaOp` 实现，服务动态平台块设备探测。
+- `platforms/axplat-dyn/src/drivers/mod.rs`：提供 `dma_api::DmaOp` 实现，服务动态平台块设备探测。
 - `os/axvisor/src/driver/blk/mod.rs`：提供 Axvisor 自己的 `rdif_block::dma_api::DmaOp` 实现。
 
 因此不能把 `ax-dma` 写成“整个仓库唯一的 DMA 抽象层”；它是 ArceOS 主线中的一个内核 DMA 内存服务模块。

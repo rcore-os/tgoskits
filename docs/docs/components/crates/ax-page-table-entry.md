@@ -1,6 +1,6 @@
 # `ax-page-table-entry`
 
-> 路径：`components/page_table_multiarch/page_table_entry`
+> 路径：`memory/page_table_entry`
 > 类型：库 crate
 > 分层：组件层 / 页表项编码层
 > 版本：`0.6.1`

@@ -18,7 +18,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
     PlatformFeature {
         feature: "plat-dyn",
         target_arch: None,
-        crate_name: "ax_plat_dyn",
+        crate_name: "axplat_dyn",
     },
     PlatformFeature {
         feature: "x86-pc",
@@ -188,7 +188,7 @@ fn gen_selected_platform(
         None
     };
 
-    if crate_name == Some("ax_plat_dyn") {
+    if crate_name == Some("axplat_dyn") {
         println!("cargo:rustc-cfg=plat_dyn");
     }
 

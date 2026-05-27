@@ -137,7 +137,7 @@ docker run --rm -v "$PWD":/workspace -w /workspace ghcr.io/rcore-os/tgoskits-con
 ## Change 4: 修复 bitmap-allocator 现有 clippy 阻塞
 
 **修改文件**
-- `components/bitmap-allocator/src/lib.rs`
+- `memory/bitmap-allocator/src/lib.rs`
 
 **修改前问题**
 `cargo xtask clippy --package starry-kernel` 首次运行时在 `bitmap-allocator` 依赖处被两个 `clippy::question_mark` 既有 warning 阻塞。

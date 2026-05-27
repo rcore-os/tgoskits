@@ -222,7 +222,7 @@ The production migration covered these groups:
 - networking and Starry runtime paths: `ax-net-ng`, Starry timer/netlink/usbfs
   and camera locks;
 - virtualization and platform components: `axvisor`, `axvm`, `riscv_vplic`,
-  `loongarch_vcpu`, `arm_vgic`, `ax-plat-dyn`;
+  `loongarch_vcpu`, `arm_vgic`, `axplat-dyn`;
 - portable driver components: `rdrive`, `arm-scmi-rs`, `ramdisk`,
   `nvme-driver`, `rdif-serial`, `realtek-rtl8125`, `sg2002-tpu`, `crab-usb`;
 - shared support crates: `dma-api`, `ax-driver-net`, `axdevice`.

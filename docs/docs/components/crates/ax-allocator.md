@@ -1,6 +1,6 @@
 # `ax-allocator`
 
-> 路径：`components/axallocator`
+> 路径：`memory/axallocator`
 > 类型：库 crate
 > 分层：组件层 / 分配算法基础件
 > 版本：`0.2.0`
