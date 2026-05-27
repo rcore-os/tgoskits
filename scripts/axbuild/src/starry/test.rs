@@ -1314,6 +1314,7 @@ mod tests {
                 "APK_CURL_ADD_DONE",
                 "APK_CURL_PROBE_BEGIN",
                 "APK_CURL_PROBE_DONE",
+                "APK_CURL_TEST_SKIPPED",
             ] {
                 assert!(
                     shell_init_cmd.contains(marker),
@@ -1332,6 +1333,27 @@ mod tests {
                     .filter_map(toml::Value::as_str)
                     .any(|regex| regex.contains("lockdep fatal violation")),
                 "{} must fail when lockdep reports a fatal violation",
+                path.display()
+            );
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .all(|regex| !regex.contains("APK_CURL_TEST_FAILED")),
+                "{} must not fail CI only because all external apk mirrors timed out",
+                path.display()
+            );
+
+            let success_regex = config
+                .get("success_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                success_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("PASSED") && regex.contains("SKIPPED")),
+                "{} must accept a skip marker when external apk mirrors are unavailable",
                 path.display()
             );
         }

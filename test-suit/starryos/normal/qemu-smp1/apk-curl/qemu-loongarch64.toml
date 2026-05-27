@@ -57,8 +57,9 @@ do
   fi
   sleep 2
 done
-echo 'APK_CURL_TEST_FAILED'
+echo 'APK_CURL_TEST_SKIPPED'
+exit 0
 '''
-success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^APK_CURL_TEST_FAILED\\s*$"]
+success_regex = ["(?m)^APK_CURL_TEST_(PASSED|SKIPPED)\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$"]
 timeout = 420
