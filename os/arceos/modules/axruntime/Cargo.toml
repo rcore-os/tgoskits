@@ -10,15 +10,14 @@ version = "0.5.16"
 [features]
 default = []
 
-alloc = ["dep:ax-alloc"]
-buddy-slab = ["alloc", "ax-alloc/buddy-slab"]
+buddy-slab = ["ax-alloc/buddy-slab"]
 dma = ["paging"]
 ipi = ["dep:ax-ipi"]
 irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
 multitask = ["ax-task/multitask"]
-paging = ["alloc", "ax-hal/paging", "dep:ax-mm", "dep:axklib"]
+paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
-smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
+smp = ["ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
@@ -31,7 +30,6 @@ plat-dyn = [
   "smp",
   "stack-guard-page",
   "tls",
-  "alloc",
 ]
 
 display = ["dep:ax-display", "ax-driver/display"]
@@ -57,7 +55,7 @@ net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/ne
 vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
 
 [dependencies]
-ax-alloc = {workspace = true, optional = true, features = ["default"]}
+ax-alloc = {workspace = true, features = ["default"]}
 ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
