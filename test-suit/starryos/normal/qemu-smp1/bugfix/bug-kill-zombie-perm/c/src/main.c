@@ -24,10 +24,9 @@
  *   5. Parent reaps the zombie with waitpid().
  *   6. Parent calls kill(reaped, 0)    → must return -1 / ESRCH.
  *
- * Synchronization: same pipe trick as bug-kill-zombie-esrch — child writes
- * one byte just before _exit() so the parent knows close_all_fds() has run.
- * A 10 ms usleep() then lets process.exit() (is_zombie = true) complete
- * before we probe with kill().
+ * Synchronization: poll waitid(WNOWAIT|WNOHANG) until the child is waitable
+ * without reaping it.  The loop is bounded so a scheduler/process bug reports
+ * a test failure instead of hanging the whole QEMU case.
  *
  * The test is designed to FAIL on the buggy kernel (check_kill_permission
  * returns ESRCH for a GC'd task) and PASS once the fix stores a cred
@@ -61,6 +60,24 @@ static int failed;
         }                                                                      \
     } while (0)
 
+static int wait_until_zombie(pid_t child)
+{
+    for (int waited_us = 0; waited_us < 5000000; waited_us += 10000) {
+        siginfo_t info;
+        memset(&info, 0, sizeof(info));
+        if (waitid(P_PID, (id_t)child, &info,
+                   WEXITED | WNOWAIT | WNOHANG) == 0) {
+            if (info.si_pid == child)
+                return 0;
+        } else if (errno != EINTR) {
+            return -1;
+        }
+        usleep(10000);
+    }
+    errno = ETIMEDOUT;
+    return -1;
+}
+
 int main(void)
 {
     printf("=== bug-kill-zombie-perm ===\n");
@@ -76,13 +93,6 @@ int main(void)
     /* Keep SIGCHLD default so the zombie is not auto-reaped. */
     signal(SIGCHLD, SIG_DFL);
 
-    /* Pipe: child writes one byte just before _exit(). */
-    int pipefd[2];
-    if (pipe(pipefd) < 0) {
-        perror("pipe");
-        return EXIT_FAILURE;
-    }
-
     pid_t child = fork();
     if (child < 0) {
         perror("fork");
@@ -94,25 +104,23 @@ int main(void)
          * Child: also drop to the same non-root UID so the parent's
          * permission check (same euid) should succeed.
          */
-        close(pipefd[0]);
         if (setuid(NON_ROOT_UID) < 0) {
             perror("child setuid");
             _exit(1);
         }
-        char byte = 1;
-        (void)write(pipefd[1], &byte, 1);
-        close(pipefd[1]);
         _exit(0);
     }
 
-    /* Parent: wait for child's pipe write, then drop to non-root UID. */
-    close(pipefd[1]);
-    char buf;
-    (void)read(pipefd[0], &buf, 1);
-    close(pipefd[0]);
+    if (wait_until_zombie(child) != 0) {
+        perror("waitid(WNOWAIT) for zombie child");
+        (void)kill(child, SIGKILL);
+        (void)waitpid(child, NULL, WNOHANG);
+        return EXIT_FAILURE;
+    }
 
     /*
-     * Drop privileges AFTER the pipe read so we are still root during fork().
+     * Drop privileges AFTER the child is a zombie so we are still root during
+     * fork and zombie-state synchronization.
      * Now both parent and child have uid/euid == NON_ROOT_UID.
      */
     if (setuid(NON_ROOT_UID) < 0) {
@@ -120,13 +128,6 @@ int main(void)
         return EXIT_FAILURE;
     }
     printf("  parent dropped to uid=%d\n", (int)getuid());
-
-    /*
-     * Give the child's do_exit() time to set is_zombie = true.
-     * The gap between pipe-close (close_all_fds) and process.exit() is a
-     * single function call; 10 ms is orders of magnitude longer.
-     */
-    usleep(10000);
 
     /* --- check 1: kill(zombie, 0) from same-UID non-root --- */
     errno = 0;

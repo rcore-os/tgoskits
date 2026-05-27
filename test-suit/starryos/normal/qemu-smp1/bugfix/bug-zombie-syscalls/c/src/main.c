@@ -12,21 +12,21 @@
  *   - getpriority(PRIO_PROCESS, zombie) → 0  (nice value, not ESRCH)
  *   - After waitpid(): all three  → -1 / ESRCH
  *
- * Synchronization (same pattern as bug-kill-zombie-esrch):
- *   The child writes a byte to a pipe just before _exit().  The parent reads
- *   it to know the child has called _exit(), then sleeps 10 ms to let
- *   process.exit() complete (which sets the zombie state).  Only then are
- *   the zombie checks performed.
+ * Synchronization:
+ *   waitid(WNOWAIT|WNOHANG) observes that the child is waitable without
+ *   reaping it.  The bounded loop avoids hanging the whole QEMU case if child
+ *   exit notification regresses.
  */
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int passed = 0;
@@ -44,6 +44,25 @@ static int failed = 0;
         }                                                                      \
     } while (0)
 
+static int wait_until_zombie(pid_t child)
+{
+    for (int waited_us = 0; waited_us < 5000000; waited_us += 10000) {
+        siginfo_t info;
+        memset(&info, 0, sizeof(info));
+        if (waitid(P_PID, (id_t)child, &info,
+                   WEXITED | WNOWAIT | WNOHANG) == 0) {
+            if (info.si_pid == child)
+                return 0;
+        } else if (errno != EINTR) {
+            return -1;
+        }
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 };
+        nanosleep(&ts, NULL);
+    }
+    errno = ETIMEDOUT;
+    return -1;
+}
+
 int main(void)
 {
     /* Record parent's sid and pgid — zombie child must return the same. */
@@ -53,13 +72,6 @@ int main(void)
     printf("parent pid=%d  sid=%d  pgid=%d\n",
            (int)getpid(), (int)parent_sid, (int)parent_pgid);
 
-    /* Pipe for synchronization: child writes 1 byte before _exit(). */
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        perror("pipe");
-        return EXIT_FAILURE;
-    }
-
     pid_t child = fork();
     if (child < 0) {
         perror("fork");
@@ -67,30 +79,15 @@ int main(void)
     }
 
     if (child == 0) {
-        /* ---- child ---- */
-        close(pipefd[0]);
-        /* Signal parent that we are about to exit. */
-        char byte = 1;
-        (void)write(pipefd[1], &byte, 1);
-        close(pipefd[1]);
         _exit(0);
     }
 
-    /* ---- parent ---- */
-    close(pipefd[1]);
-
-    /* Wait for child's write — child is about to call _exit(). */
-    char byte;
-    (void)read(pipefd[0], &byte, 1);
-    close(pipefd[0]);
-
-    /*
-     * Sleep 10 ms so do_exit() can finish process.exit() and register the
-     * zombie.  The gap between pipe-close and zombie registration is tiny
-     * but real; the sleep makes the test reliable.
-     */
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10 ms */
-    nanosleep(&ts, NULL);
+    if (wait_until_zombie(child) != 0) {
+        perror("waitid(WNOWAIT) for zombie child");
+        (void)kill(child, SIGKILL);
+        (void)waitpid(child, NULL, WNOHANG);
+        return EXIT_FAILURE;
+    }
 
     printf("\n--- checks before waitpid (zombie state) ---\n");
 

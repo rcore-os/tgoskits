@@ -11,32 +11,11 @@
  * might be a zombie").  A separate earlier bug returned 0 after reap.
  *
  * Synchronization:
- *   sigwaitinfo(SIGCHLD) stalls in StarryOS because send_signal does not
- *   interrupt a task that is blocked in rt_sigtimedwait when the signal is
- *   in the wait set but currently blocked at the signal layer.
- *
- *   Instead we use a pipe: the child writes a byte just before _exit().
- *   The parent reads it to know the child has called _exit().  At that
- *   point the child may not yet be a zombie (close_all_fds runs before
- *   process.exit() in do_exit), so we spin on waitpid(WNOHANG) until the
- *   child is waitable — but we must NOT reap it yet.
- *
- *   Problem: waitpid(WNOHANG) reaps atomically when it finds a zombie.
- *   We cannot "peek" without reaping.
- *
- *   Solution: use a short usleep() after the pipe read.  The child's
- *   do_exit() path is:
- *     close_all_fds()  → pipe write end closed → parent unblocks
- *     process.exit()   → is_zombie = true
- *     send SIGCHLD to parent
- *   The gap between pipe-close and is_zombie is a single function call.
- *   A 10 ms sleep is orders of magnitude longer than that gap on any
- *   real scheduler, making the race window negligible in practice.
- *
- *   This is intentionally a best-effort synchronization.  If the timing
- *   is wrong, check 1 may spuriously pass (child still alive) but will
- *   never spuriously fail.  The test is designed to FAIL with the buggy
- *   kernel (is_zombie → ESRCH) and PASS with the correct kernel.
+ *   waitpid(WNOHANG) reaps atomically when it finds a zombie, so it cannot be
+ *   used to wait for "zombie but not reaped" state.  Instead poll waitid()
+ *   with WNOWAIT|WNOHANG: it observes that the child is waitable without
+ *   consuming the zombie.  The loop is bounded so a scheduler/process bug
+ *   reports a test failure instead of hanging the whole QEMU case.
  */
 
 #define _GNU_SOURCE
@@ -64,6 +43,24 @@ static int failed;
         }                                                               \
     } while (0)
 
+static int wait_until_zombie(pid_t child)
+{
+    for (int waited_us = 0; waited_us < 5000000; waited_us += 10000) {
+        siginfo_t info;
+        memset(&info, 0, sizeof(info));
+        if (waitid(P_PID, (id_t)child, &info,
+                   WEXITED | WNOWAIT | WNOHANG) == 0) {
+            if (info.si_pid == child)
+                return 0;
+        } else if (errno != EINTR) {
+            return -1;
+        }
+        usleep(10000);
+    }
+    errno = ETIMEDOUT;
+    return -1;
+}
+
 int main(void)
 {
     printf("=== bug-kill-zombie-esrch ===\n");
@@ -78,13 +75,6 @@ int main(void)
      */
     signal(SIGCHLD, SIG_DFL);
 
-    /* Pipe for synchronization: child writes before _exit(). */
-    int pipefd[2];
-    if (pipe(pipefd) < 0) {
-        perror("pipe");
-        return EXIT_FAILURE;
-    }
-
     pid_t child = fork();
     if (child < 0) {
         perror("fork");
@@ -92,26 +82,15 @@ int main(void)
     }
 
     if (child == 0) {
-        /* Child: signal parent then exit. */
-        close(pipefd[0]);
-        char byte = 1;
-        (void)write(pipefd[1], &byte, 1);
-        close(pipefd[1]);
         _exit(0);
     }
 
-    /* Parent: wait for child to write, then give it time to become zombie. */
-    close(pipefd[1]);
-    char buf;
-    (void)read(pipefd[0], &buf, 1);
-    close(pipefd[0]);
-
-    /*
-     * The child has called write() and is about to _exit().
-     * do_exit() calls close_all_fds() then process.exit() (sets is_zombie).
-     * Sleep 10ms to let process.exit() complete.
-     */
-    usleep(10000);
+    if (wait_until_zombie(child) != 0) {
+        perror("waitid(WNOWAIT) for zombie child");
+        (void)kill(child, SIGKILL);
+        (void)waitpid(child, NULL, WNOHANG);
+        return EXIT_FAILURE;
+    }
 
     /*
      * --- check 1: kill(zombie, 0) must return 0 ---
