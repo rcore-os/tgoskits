@@ -10,19 +10,15 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
-/opt/llama/llama-cli --help > /tmp/llama-help.log 2>&1
-RC=$?
-echo "LLAMA_HELP_RC=$RC"
-if [ "$RC" -eq 0 ]; then echo "LLAMA_L0_OK"; else echo "LLAMA_L0_FAILED"; fi
-'''
-success_regex = ["(?m)^LLAMA_L0_OK\\s*$"]
+shell_init_cmd = "/usr/bin/llama-cpp-test.sh"
+success_regex = ["(?m)^LLAMA_TEST_PASSED\\s*$"]
 fail_regex = [
-    "(?m)^LLAMA_L0_FAILED\\s*$",
+    "(?m)^LLAMA_TEST_FAILED:",
     "(?i)kernel panic",
     "(?i)panicked at",
     "(?i)segmentation fault",
     "(?i)illegal instruction",
     "(?i)bus error",
+    "(?i)out of memory",
 ]
-timeout = 60
+timeout = 600
