@@ -357,6 +357,15 @@ jobs:
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+          - name: Test starry aarch64 buddy-slab qemu
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask starry test qemu --arch aarch64 -c test-clone-files-race-buddy-slab
+            cache_key: test-starry-aarch64-buddy-slab
+            container_image: base
+            apk_region: us
+            limit_to_owner: ""
+            main_pr_only: false
           - name: Test starry loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'

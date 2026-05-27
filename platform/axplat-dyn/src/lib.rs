@@ -1,6 +1,5 @@
 #![no_std]
 #![cfg(not(any(windows, unix)))]
-#![feature(used_with_arg)]
 
 extern crate alloc;
 extern crate ax_driver as _;

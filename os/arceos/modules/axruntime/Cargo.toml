@@ -22,7 +22,7 @@ smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
-plat-dyn = ["ax-hal/plat-dyn", "paging", "buddy-slab"]
+plat-dyn = ["ax-hal/plat-dyn", "paging"]
 
 display = ["dep:ax-display", "ax-driver/display"]
 fs = [
