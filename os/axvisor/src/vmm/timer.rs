@@ -78,6 +78,8 @@ where
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     let mut timers = timer_list.lock();
+    // The token is only an identifier used for cancellation and does not
+    // publish any timer data, so relaxed ordering is sufficient.
     let token = TOKEN.fetch_add(1, Ordering::Relaxed);
     let event = VmmTimerEvent::new(token, handler);
     timers.set(TimeValue::from_nanos(deadline), event);

@@ -214,6 +214,8 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 /// It will join all VCpu tasks to ensure they are fully cleaned up.
 pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = VM_VCPU_TASKS.lock().remove(&vm_id) {
+        // Take task references out before joining so we never block while
+        // holding the per-VM task-list lock.
         let tasks: Vec<_> = vm_vcpus.vcpu_task_list.lock().values().cloned().collect();
         let task_count = tasks.len();
 

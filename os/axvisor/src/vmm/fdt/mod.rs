@@ -49,13 +49,7 @@ pub fn init_dtb_cache() {
 
 /// Get reference to the DTB cache
 pub fn dtb_cache() -> &'static Mutex<BTreeMap<usize, Vec<u8>>> {
-    if let Some(cache) = GENERATED_DTB_CACHE.call_once(|| Mutex::new(BTreeMap::new())) {
-        cache
-    } else {
-        // SAFETY: call_once either initialized the cache in this call or observed
-        // another completed initialization.
-        unsafe { GENERATED_DTB_CACHE.get_unchecked() }
-    }
+    GENERATED_DTB_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 /// Generate guest FDT cache the result
