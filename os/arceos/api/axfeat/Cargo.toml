@@ -28,7 +28,6 @@ ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
 myplat = ["ax-hal/myplat"]
 defplat = ["ax-hal/defplat"]
 plat-dyn = [
-    "ax-hal/plat-dyn",
     "paging",
     "ax-runtime/plat-dyn",
     "ax-config/plat-dyn",

@@ -1772,8 +1772,8 @@ mod tests {
         fs::create_dir_all(build_config.parent().unwrap()).unwrap();
         fs::write(
             &build_config,
-            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\", \
-             \"starry-kernel/plat-dyn\"]\nlog = \"Warn\"\nplat_dyn = true\n",
+            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
+             \"Warn\"\nplat_dyn = true\n",
         )
         .unwrap();
         let mut request = starry_request(
@@ -1793,9 +1793,10 @@ mod tests {
         let (_group_request, cargo) =
             Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
-        assert!(cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
         assert!(
-            cargo
+            !cargo
                 .features
                 .contains(&"starry-kernel/plat-dyn".to_string())
         );

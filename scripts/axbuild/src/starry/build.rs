@@ -90,12 +90,22 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
+    let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
     let mut cargo = build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
         request.plat_dyn,
         metadata,
     )?;
+    if plat_dyn {
+        cargo.features.retain(|feature| {
+            !matches!(
+                feature.as_str(),
+                "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
+            )
+        });
+        cargo.features.push("plat-dyn".to_string());
+    }
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     Ok(cargo)
 }
@@ -204,7 +214,11 @@ fn uses_dynamic_platform(features: &[String]) -> bool {
     features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
+            "plat-dyn"
+                | "ax-feat/plat-dyn"
+                | "ax-std/plat-dyn"
+                | "starry-kernel/plat-dyn"
+                | "ax-hal/plat-dyn"
         )
     })
 }
@@ -520,7 +534,7 @@ HELLO = "world"
             env: HashMap::new(),
             features: vec![
                 "common".to_string(),
-                "ax-feat/plat-dyn".to_string(),
+                "plat-dyn".to_string(),
                 "ax-driver/rockchip-soc".to_string(),
                 "ax-driver/rockchip-sdhci".to_string(),
             ],
@@ -569,11 +583,7 @@ HELLO = "world"
         );
         let build_info = StarryBuildInfo {
             env: HashMap::new(),
-            features: vec![
-                "qemu".to_string(),
-                "ax-feat/plat-dyn".to_string(),
-                "starry-kernel/plat-dyn".to_string(),
-            ],
+            features: vec!["qemu".to_string(), "plat-dyn".to_string()],
             log: LogLevel::Info,
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
@@ -603,7 +613,7 @@ HELLO = "world"
             target: "scripts/targets/pie/riscv64gc-unknown-none-elf.json".to_string(),
             package: STARRY_PACKAGE.to_string(),
             bin: None,
-            features: vec!["ax-feat/plat-dyn".to_string()],
+            features: vec!["plat-dyn".to_string()],
             log: None,
             extra_config: None,
             profile: None,
@@ -630,7 +640,7 @@ HELLO = "world"
             target: "riscv64gc-unknown-none-elf".to_string(),
             package: STARRY_PACKAGE.to_string(),
             bin: None,
-            features: vec!["ax-feat/plat-dyn".to_string()],
+            features: vec!["plat-dyn".to_string()],
             log: None,
             extra_config: None,
             profile: None,

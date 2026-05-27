@@ -284,7 +284,7 @@ fn rootfs_patch_mode(request: &ResolvedStarryRequest, cargo: &Cargo) -> RootfsPa
         || cargo.features.iter().any(|feature| {
             matches!(
                 feature.as_str(),
-                "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
+                "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
             )
         })
     {

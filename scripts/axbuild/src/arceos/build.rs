@@ -182,7 +182,7 @@ mod tests {
         build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", true);
 
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
-        assert!(build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
+        assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
         let args = ArceosBuildInfo::build_cargo_args(

@@ -337,15 +337,11 @@ impl BuildInfo {
     }
 
     fn push_platform_feature(&mut self, target: &str, plat_dyn: bool, has_myplat: bool) {
-        if has_myplat || has_ax_hal_platform_feature(&self.features) {
+        if plat_dyn || has_myplat || has_ax_hal_platform_feature(&self.features) {
             return;
         }
 
-        let feature = if plat_dyn {
-            "ax-hal/plat-dyn"
-        } else {
-            default_ax_hal_platform_feature(target).unwrap_or("ax-hal/defplat")
-        };
+        let feature = default_ax_hal_platform_feature(target).unwrap_or("ax-hal/defplat");
         self.features.push(feature.to_string());
     }
 

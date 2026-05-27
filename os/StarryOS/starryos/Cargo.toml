@@ -31,12 +31,12 @@ sg2002 = [
   "starry-kernel/sg2002",
 ]
 sg2002-dyn = [
-  "dep:axplat-dyn",
+  "plat-dyn",
   "axplat-dyn/thead-mae",
   "starry-kernel/sg2002",
-  "starry-kernel/plat-dyn",
   "ax-driver/sg2002-placeholder",
 ]
+plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 # Enable the GICv3 distributor + redistributor + system-register
 # CPU interface on aarch64. Only meaningful when the target is the
