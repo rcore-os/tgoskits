@@ -1730,7 +1730,6 @@ dependencies = [
  "axvmconfig",
  "cfg-if",
  "log",
- "range-alloc-arceos",
  "riscv_vplic",
 ]
 
@@ -6474,10 +6473,6 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
-
-[[package]]
-name = "range-alloc-arceos"
-version = "0.3.9"
 
 [[package]]
 name = "ranges-ext"
