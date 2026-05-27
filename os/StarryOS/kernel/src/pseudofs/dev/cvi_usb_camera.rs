@@ -8,7 +8,6 @@ use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
     time::busy_wait,
 };
-use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
