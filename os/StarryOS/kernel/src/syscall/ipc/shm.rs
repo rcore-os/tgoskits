@@ -433,7 +433,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         mapping_flags.insert(MappingFlags::READ);
     }
     if shmflg & 0o200 != 0 {
-        mapping_flags.insert(MappingFlags::WRITE);
+        mapping_flags.insert(MappingFlags::WRITE | MappingFlags::READ);
     }
     if shmflg & 0o100 != 0 {
         mapping_flags.insert(MappingFlags::EXECUTE);

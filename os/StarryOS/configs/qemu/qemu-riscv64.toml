@@ -1,4 +1,6 @@
 args = [
+  "-machine",
+  "virt",
   "-m",
   "512M",
   "-nographic",
