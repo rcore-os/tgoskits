@@ -1691,6 +1691,71 @@ mod tests {
     }
 
     #[test]
+    fn zombie_bugfix_commands_are_isolated_from_large_bugfix_group() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let qemu_smp1 = workspace_root.join("test-suit/starryos/normal/qemu-smp1");
+        let zombie_case_dir = qemu_smp1.join("zombie-bugfix");
+        let zombie_commands = [
+            "/usr/bin/bug-kill-zombie-esrch",
+            "/usr/bin/bug-kill-zombie-perm",
+            "/usr/bin/bug-zombie-syscalls",
+            "/usr/bin/bug-waitid-basic",
+        ];
+
+        for command in zombie_commands {
+            let name = command.trim_start_matches("/usr/bin/");
+            assert!(
+                zombie_case_dir
+                    .join(name)
+                    .join("c/CMakeLists.txt")
+                    .is_file(),
+                "{} must be built in the isolated zombie-bugfix case",
+                command
+            );
+        }
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let bugfix_path = qemu_smp1.join("bugfix").join(format!("qemu-{arch}.toml"));
+            let bugfix_content = fs::read_to_string(&bugfix_path).unwrap();
+            let bugfix_config: toml::Value = toml::from_str(&bugfix_content).unwrap();
+            let bugfix_commands = bugfix_config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            for command in zombie_commands {
+                assert!(
+                    !bugfix_commands
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .any(|candidate| candidate == command),
+                    "{} must not keep {} in the long bugfix guest session",
+                    bugfix_path.display(),
+                    command
+                );
+            }
+
+            let zombie_path = zombie_case_dir.join(format!("qemu-{arch}.toml"));
+            let zombie_content = fs::read_to_string(&zombie_path).unwrap();
+            let zombie_config: toml::Value = toml::from_str(&zombie_content).unwrap();
+            let isolated_commands = zombie_config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            for command in zombie_commands {
+                assert!(
+                    isolated_commands
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .any(|candidate| candidate == command),
+                    "{} must include {}",
+                    zombie_path.display(),
+                    command
+                );
+            }
+        }
+    }
+
+    #[test]
     fn starry_grouped_cases_install_profile_autorun() {
         let config = starry_case_asset_config();
 
