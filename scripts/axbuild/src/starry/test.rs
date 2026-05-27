@@ -1477,6 +1477,41 @@ mod tests {
     }
 
     #[test]
+    fn util_linux_loongarch64_qemu_timeout_covers_full_mount_flow() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/util-linux");
+        let config_path = case_dir.join("qemu-loongarch64.toml");
+        let source_path = case_dir.join("c/src/main.c");
+
+        let source = fs::read_to_string(&source_path).unwrap();
+        for marker in [
+            "Loop device write-back",
+            "umount2 MNT_EXPIRE",
+            "pivot_root 2",
+            "UTIL LINUX TEST PASSED",
+        ] {
+            assert!(
+                source.contains(marker),
+                "{} must keep the long util-linux mount/writeback coverage marker {marker}",
+                source_path.display()
+            );
+        }
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let timeout = config
+            .get("timeout")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_default();
+        assert!(
+            timeout >= 300,
+            "{} must leave enough CI margin for the full loongarch64 util-linux mount/writeback \
+             flow",
+            config_path.display()
+        );
+    }
+
+    #[test]
     fn dhcp_qemu_config_uses_dhcp_event_not_external_apk_fetch() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp/qemu-x86_64.toml");
