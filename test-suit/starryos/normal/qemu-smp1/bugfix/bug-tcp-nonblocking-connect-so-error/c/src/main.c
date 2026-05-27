@@ -51,9 +51,11 @@ static int make_listener(void) {
     return fd;
 }
 
-static void server_process(void) {
+static void server_process(int ready_fd) {
     int listener = make_listener();
     if (listener < 0) _exit(10);
+    if (write(ready_fd, "R", 1) != 1) _exit(15);
+    close(ready_fd);
 
     int fd = accept(listener, NULL, NULL);
     if (fd < 0) _exit(11);
@@ -72,13 +74,29 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("=== bug-tcp-nonblocking-connect-so-error ===\n");
 
-    pid_t server = fork();
-    CHECK(server >= 0, "fork server");
-    if (server == 0) {
-        server_process();
-    }
+    int ready_pipe[2];
+    CHECK(pipe(ready_pipe) == 0, "create server ready pipe");
 
-    sleep(1);
+    pid_t server = fork();
+    if (server == 0) {
+        close(ready_pipe[0]);
+        server_process(ready_pipe[1]);
+    }
+    close(ready_pipe[1]);
+    CHECK(server > 0, "fork server");
+
+    struct pollfd ready_pfd;
+    memset(&ready_pfd, 0, sizeof(ready_pfd));
+    ready_pfd.fd = ready_pipe[0];
+    ready_pfd.events = POLLIN;
+    int ret = poll(&ready_pfd, 1, 3000);
+    CHECK(ret == 1 && (ready_pfd.revents & POLLIN) != 0,
+          "server reports listener ready");
+
+    char ready = 0;
+    CHECK(read(ready_pipe[0], &ready, 1) == 1 && ready == 'R',
+          "read server ready signal");
+    close(ready_pipe[0]);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     CHECK(fd >= 0, "create client socket");
@@ -88,7 +106,7 @@ int main(void) {
     CHECK(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0, "set O_NONBLOCK");
 
     struct sockaddr_in addr = loopback_addr();
-    int ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     CHECK(ret == 0 || errno == EINPROGRESS, "nonblocking connect starts");
 
     struct pollfd pfd;
