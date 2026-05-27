@@ -1,10 +1,10 @@
 # `axvmconfig`
 
-> 路径：`components/axvmconfig`
+> 路径：`virtualization/axvmconfig`
 > 类型：库 + 二进制混合 crate
 > 分层：组件层 / 虚拟机配置模型
 > 版本：`0.2.2`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/tool.rs`、`components/axvm/src/config.rs` 与 `os/axvisor/src/vmm/config.rs`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/tool.rs`、`virtualization/axvm/src/config.rs` 与 `os/axvisor/src/vmm/config.rs`
 
 `axvmconfig` 是 Axvisor 虚拟机配置链路的静态模型层。它的职责不是直接创建 VM，也不是直接操作页表或设备，而是把 TOML 中描述的 VM 元信息、镜像布局、内存区域、模拟设备、直通设备和中断模式转换成一组稳定的数据结构；这些结构随后被 `axvm` 转成运行时 `AxVMConfig`，再由 `os/axvisor` 继续执行内存分配、镜像加载、FDT 处理和 VM 实例化。
 
@@ -167,7 +167,7 @@ flowchart TD
 
 ### 1.6 与 `axvm` 和 `os/axvisor` 的分工
 
-`components/axvm/src/config.rs` 中的 `AxVMConfig::from()` 做了几件关键转换：
+`virtualization/axvm/src/config.rs` 中的 `AxVMConfig::from()` 做了几件关键转换：
 
 - `base.vm_type: usize` 转为 `VMType`
 - `entry_point` 转为 BSP/AP 两个 GPA 入口
@@ -237,8 +237,8 @@ cargo run -p axvmconfig -- generate --arch aarch64 --output vm.toml
 
 ### 主要消费者
 
-- `components/axvm`：通过 `AxVMConfig::from()` 把静态配置转成运行时配置
-- `components/axdevice` / `axdevice_base`：复用 `EmulatedDeviceType` 和设备配置模型
+- `virtualization/axvm`：通过 `AxVMConfig::from()` 把静态配置转成运行时配置
+- `virtualization/axdevice` / `axdevice_base`：复用 `EmulatedDeviceType` 和设备配置模型
 - `os/axvisor`：直接解析 TOML、分配内存、创建 VM、加载镜像
 - `scripts/axbuild`：生成 `AxVMCrateConfig` 的 JSON Schema
 
@@ -260,7 +260,7 @@ graph TD
 若要为 VM 增加新配置项，推荐沿以下顺序推进：
 
 1. 在 `AxVMCrateConfig` 相关结构中添加字段，并补齐 `serde` 与文档注释。
-2. 如果该字段需要进入运行时，则同步更新 `components/axvm/src/config.rs` 中的 `From<AxVMCrateConfig> for AxVMConfig`。
+2. 如果该字段需要进入运行时，则同步更新 `virtualization/axvm/src/config.rs` 中的 `From<AxVMCrateConfig> for AxVMConfig`。
 3. 如果该字段只在装载或管理阶段使用，则保留在 crate 配置层，并在 `os/axvisor` 的创建链路中消费。
 4. 若宿主工具需要暴露该字段，再同步更新 `tool.rs` 和 `templates.rs`。
 

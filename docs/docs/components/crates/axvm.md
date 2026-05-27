@@ -1,6 +1,6 @@
 # `axvm`
 
-> 路径：`components/axvm`
+> 路径：`virtualization/axvm`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.3`

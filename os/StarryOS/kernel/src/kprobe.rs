@@ -389,6 +389,11 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, tf);
+        #[cfg(feature = "ebpf")]
+        crate::perf_event::perf_event_trigger_by_type(
+            crate::perf_event::PERF_TYPE_KPROBE,
+            &pt_regs as *const _ as u64,
+        );
         return true;
     }
     false
@@ -468,6 +473,11 @@ pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, tf);
+        #[cfg(feature = "ebpf")]
+        crate::perf_event::perf_event_trigger_by_type(
+            crate::perf_event::PERF_TYPE_KPROBE,
+            &pt_regs as *const _ as u64,
+        );
         return true;
     }
     false

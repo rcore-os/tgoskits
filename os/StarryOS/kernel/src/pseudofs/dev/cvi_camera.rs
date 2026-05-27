@@ -313,8 +313,9 @@ struct Uart3;
 
 impl UartTransport for Uart3 {
     fn write_all(&mut self, data: &[u8]) -> Result<(), CameraError> {
-        let mut uart3 =
-            dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+        let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
+            phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
+        );
         data.iter().for_each(|x| uart3.putchar(*x));
         Ok(())
     }
@@ -369,13 +370,15 @@ impl CviCamera {
         pinmux.fmux().sd1_d2.write(FMUX_SD1_D2::FSEL::UART3_TX);
         pinmux.fmux().sd1_d1.write(FMUX_SD1_D1::FSEL::UART3_RX);
 
-        let mut uart3 =
-            dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
-        uart3.init_with_baud(1500000);
+        let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
+            phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
+        );
+        uart3.init_with_baud_clk(1_500_000, some_serial::ns16550::dw_apb::SG2002_UART_CLOCK);
         uart3.set_ier(true);
         ax_runtime::hal::irq::register(47, |_irq| {
-            let mut uart3 =
-                dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+            let mut uart3 = some_serial::ns16550::dw_apb::DwApbUart::new(
+                phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize(),
+            );
             let mut buf = CAMERA_UART_BUF.lock();
             loop {
                 if let Some(c) = uart3.getchar() {

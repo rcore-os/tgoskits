@@ -1,6 +1,6 @@
 # `axplat-dyn`
 
-> 路径：`platform/axplat-dyn`
+> 路径：`platforms/axplat-dyn`
 > 类型：库 crate
 > 分层：平台层 / 动态平台桥接层
 > 版本：`0.3.0-preview.3`

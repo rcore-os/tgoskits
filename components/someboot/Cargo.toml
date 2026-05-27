@@ -40,7 +40,7 @@ ranges-ext = { workspace = true }
 rgb = "0.8"
 some-serial.workspace = true
 somehal-macros = { workspace = true }
-spin = "0.10"
+spin = { workspace = true }
 tock-registers.workspace = true
 uguid = "2.2.1"
 derive_more.workspace = true

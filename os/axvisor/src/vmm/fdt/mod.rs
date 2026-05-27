@@ -25,6 +25,7 @@ mod vm_fdt;
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
 use axvm::config::{AxVMConfig, AxVMCrateConfig};
@@ -35,10 +36,8 @@ pub use parser::*;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
 pub use device::build_all_node_paths;
-#[cfg(any(target_arch = "aarch64", test))]
-pub use device::build_node_path;
 
-use crate::vmm::config::{config, get_vm_dtb_arc};
+use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
 // DTB cache for generated device trees
 static GENERATED_DTB_CACHE: LazyInit<Mutex<BTreeMap<usize, Vec<u8>>>> = LazyInit::new();
@@ -50,7 +49,7 @@ pub fn init_dtb_cache() {
 
 /// Get reference to the DTB cache
 pub fn dtb_cache() -> &'static Mutex<BTreeMap<usize, Vec<u8>>> {
-    GENERATED_DTB_CACHE.get().unwrap()
+    GENERATED_DTB_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 /// Generate guest FDT cache the result
@@ -63,24 +62,26 @@ pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateCon
 }
 
 /// Handle all FDT-related operations for guest architectures that boot with DTB.
-pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateConfig) {
+pub fn handle_fdt_operations(
+    vm_config: &mut AxVMConfig,
+    vm_create_config: &mut AxVMCrateConfig,
+) -> AxResult {
     let host_fdt_bytes = try_get_host_fdt();
 
     if let Some(host_fdt_bytes) = host_fdt_bytes {
         let host_fdt = Fdt::from_bytes(host_fdt_bytes)
-            .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
-            .expect("Failed to parse FDT");
-        set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config);
+            .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
+        set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config)?;
 
-        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config) {
+        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
             info!("VM[{}] found DTB , parsing...", vm_config.id());
-            update_provided_fdt(&provided_dtb, host_fdt_bytes, vm_create_config);
+            update_provided_fdt(&provided_dtb, host_fdt_bytes, vm_create_config)?;
         } else {
             info!(
                 "VM[{}] DTB not found, generating based on the configuration file.",
                 vm_config.id()
             );
-            setup_guest_fdt_from_vmm(host_fdt_bytes, vm_config, vm_create_config);
+            setup_guest_fdt_from_vmm(host_fdt_bytes, vm_config, vm_create_config)?;
         }
     } else {
         #[cfg(target_arch = "loongarch64")]
@@ -91,9 +92,9 @@ pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &mut 
             );
         }
 
-        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config) {
+        if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
             info!("VM[{}] found DTB , parsing...", vm_config.id());
-            update_provided_fdt(&provided_dtb, &[], vm_create_config);
+            update_provided_fdt(&provided_dtb, &[], vm_create_config)?;
         } else {
             warn!(
                 "VM[{}] no guest DTB provided; continuing without generated DTB",
@@ -105,59 +106,59 @@ pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &mut 
     // Overlay VM config with the given DTB.
     if let Some(dtb_arc) = get_vm_dtb_arc(vm_config) {
         let dtb = dtb_arc.as_ref();
-        parse_reserved_memory_regions(vm_create_config, dtb);
-        parse_passthrough_devices_address(vm_config, vm_create_config, dtb);
+        parse_reserved_memory_regions(vm_create_config, dtb)?;
+        parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
         #[cfg(target_arch = "aarch64")]
-        parse_vm_interrupt(vm_config, dtb);
+        parse_vm_interrupt(vm_config, dtb)?;
     } else {
         error!(
             "VM[{}] DTB not found in memory, skipping...",
             vm_config.id()
         );
     }
+    Ok(())
 }
 
 pub fn get_developer_provided_dtb(
     vm_cfg: &AxVMConfig,
     crate_config: &AxVMCrateConfig,
-) -> Option<Vec<u8>> {
+) -> AxResult<Option<Vec<u8>>> {
     match crate_config.kernel.image_location.as_deref() {
         Some("memory") => {
-            let vm_imags = config::get_memory_images()
+            let vm_imags = vmcfg::get_memory_images()
                 .iter()
-                .find(|&v| v.id == vm_cfg.id())?;
+                .find(|&v| v.id == vm_cfg.id());
 
-            if let Some(dtb) = vm_imags.dtb {
+            if let Some(dtb) = vm_imags.and_then(|images| images.dtb) {
                 info!("DTB file in memory, size: 0x{:x}", dtb.len());
-                return Some(dtb.to_vec());
+                return Ok(Some(dtb.to_vec()));
             }
         }
         #[cfg(feature = "fs")]
         Some("fs") => {
-            use ax_errno::ax_err_type;
             use std::io::{BufReader, Read};
             if let Some(dtb_path) = &crate_config.kernel.dtb_path {
-                let (dtb_file, dtb_size) =
-                    crate::vmm::images::fs::open_image_file(dtb_path).unwrap();
+                let (dtb_file, dtb_size) = crate::vmm::images::fs::open_image_file(dtb_path)?;
                 info!("DTB file in fs, size: 0x{:x}", dtb_size);
 
                 let mut file = BufReader::new(dtb_file);
                 let mut dtb_buffer = vec![0; dtb_size];
 
-                file.read_exact(&mut dtb_buffer)
-                    .map_err(|err| {
-                        ax_err_type!(
-                            Io,
-                            format!("Failed in reading from file {}, err {:?}", dtb_path, err)
-                        )
-                    })
-                    .unwrap();
-                return Some(dtb_buffer);
+                file.read_exact(&mut dtb_buffer).map_err(|err| {
+                    ax_err_type!(
+                        Io,
+                        format!("Failed in reading from file {}, err {:?}", dtb_path, err)
+                    )
+                })?;
+                return Ok(Some(dtb_buffer));
             }
         }
-        _ => unimplemented!(
-            "Check your \"image_location\" in config.toml, \"memory\" and \"fs\" are supported,\n."
-        ),
+        _ => {
+            return ax_errno::ax_err!(
+                InvalidInput,
+                "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
+            );
+        }
     }
-    None
+    Ok(None)
 }

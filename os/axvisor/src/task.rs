@@ -34,8 +34,11 @@ impl VCpuTask {
         }
     }
 
-    /// Get a strong reference to the VM if it's still alive.
-    /// Returns None if the VM has been dropped.
+    /// Get a strong reference to the VM.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the VM has been dropped (weak reference can no longer be upgraded).
     pub fn vm(&self) -> VMRef {
         self.vm.upgrade().expect("VM has been dropped")
     }

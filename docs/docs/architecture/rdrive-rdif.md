@@ -234,7 +234,7 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 | --- | --- | --- | --- |
 | Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`axplat-dyn`、`rdrive::PlatformDevice` |
 | Capability Boundary | `drivers/interface/rdif-*` | `rdif-base`、小型错误和事件类型 | 平台、runtime、任务调度 |
-| OS Glue | `platform/axplat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
+| OS Glue | `platforms/axplat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
 | Runtime | `drivers/*/rd-*`，块设备除外 | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
 
 Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
@@ -321,10 +321,10 @@ src/
 
 | 文件 | 当前问题 | 拆分方向 |
 | --- | --- | --- |
-| `platform/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
-| `platform/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
-| `platform/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
-| `platform/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
+| `platforms/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
+| `platforms/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
+| `platforms/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
+| `platforms/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 
 `lib.rs` 只做模块声明和 re-export，不承载核心实现。
 

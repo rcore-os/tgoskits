@@ -1,6 +1,6 @@
 # `ax-plat-aarch64-raspi`
 
-> 路径：`components/axplat_crates/platforms/axplat-aarch64-raspi`
+> 路径：`platforms/ax-plat-aarch64-raspi`
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
