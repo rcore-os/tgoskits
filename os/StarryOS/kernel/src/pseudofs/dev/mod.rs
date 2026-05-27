@@ -269,7 +269,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     #[cfg(feature = "dev-log")]
     root.add(
         "log",
-        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok(b"")),
+        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok("")),
     );
 
     #[cfg(feature = "memtrack")]

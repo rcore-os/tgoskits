@@ -145,11 +145,29 @@ fn patch_starry_cargo_config(
             .or_insert_with(|| platform.to_string());
     }
 
+    inject_kallsyms_post_build_cmd(cargo)?;
+
     if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
         inject_uimage_post_build_cmd(cargo, &request.arch)?;
     }
 
     Ok(())
+}
+
+fn inject_kallsyms_post_build_cmd(cargo: &mut Cargo) -> anyhow::Result<()> {
+    let script = crate::context::workspace_root_path()?
+        .join("scripts")
+        .join("axbuild")
+        .join("scripts")
+        .join("starry-kallsyms.sh");
+    cargo
+        .post_build_cmds
+        .push(format!("sh {}", shell_quote(&script.display().to_string())));
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn uimg_arch_for(arch: &str) -> String {
@@ -461,6 +479,8 @@ HELLO = "world"
         assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
         assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
         assert!(cargo.to_bin);
+        assert_eq!(cargo.post_build_cmds.len(), 1);
+        assert!(cargo.post_build_cmds[0].contains("scripts/axbuild/scripts/starry-kallsyms.sh"));
     }
 
     #[test]
@@ -690,5 +710,32 @@ HELLO = "world"
         ensure_starry_bin_arg(&mut args, STARRY_PACKAGE, &metadata).unwrap();
 
         assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
+    }
+
+    #[test]
+    fn patch_starry_cargo_config_runs_kallsyms_before_uimage_generation() {
+        let request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        let mut build_info = default_starry_build_info_for_target(&request.target);
+        build_info.env.insert("UIMAGE".to_string(), "y".to_string());
+        build_info.env.insert(
+            "AX_CONFIG_PATH".to_string(),
+            "/tmp/.axconfig.toml".to_string(),
+        );
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            request.package.clone(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
+        );
+
+        let metadata = crate::build::workspace_metadata().unwrap();
+        patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
+
+        assert_eq!(cargo.post_build_cmds.len(), 2);
+        assert!(cargo.post_build_cmds[0].contains("scripts/axbuild/scripts/starry-kallsyms.sh"));
+        assert!(cargo.post_build_cmds[1].contains("mkimage"));
     }
 }

@@ -139,6 +139,7 @@ sg200x-bsp = { workspace = true, optional = true }
 # because Writeable trait must come from the same version as sg200x-bsp's types.
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
+ksym = "0.6"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

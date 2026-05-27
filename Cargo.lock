@@ -4979,6 +4979,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ksym"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b543b77d8cfa33302b6b51b6a255f9e85b06997b7c4a0a7354fcc8304036eb09"
+
+[[package]]
 name = "ktest-helper"
 version = "0.1.1"
 dependencies = [
@@ -7955,6 +7961,7 @@ dependencies = [
  "inherit-methods-macro",
  "kernel-elf-parser",
  "kprobe",
+ "ksym",
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",

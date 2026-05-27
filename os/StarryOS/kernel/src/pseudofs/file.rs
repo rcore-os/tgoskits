@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, sync::Arc, vec::Vec};
+use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering, task::Context};
 
 use ax_sync::Mutex;
@@ -16,7 +16,9 @@ pub trait SimpleFileOps: Send + Sync + 'static {
     /// Reads all content in the file.
     fn read_all(&self) -> VfsResult<Cow<'_, [u8]>>;
     /// Replaces the file's content with `data`.
-    fn write_all(&self, data: &[u8]) -> VfsResult<()>;
+    fn write_all(&self, _data: &[u8]) -> VfsResult<()> {
+        Err(VfsError::BadFileDescriptor)
+    }
 }
 
 /// Type representing operation applied to a simple file.
@@ -56,17 +58,42 @@ where
     }
 }
 
+pub trait SimpleFileContent {
+    /// Converts the content into bytes.
+    fn into_content(self) -> Cow<'static, [u8]>;
+}
+
+impl SimpleFileContent for Vec<u8> {
+    fn into_content(self) -> Cow<'static, [u8]> {
+        Cow::Owned(self)
+    }
+}
+
+impl SimpleFileContent for String {
+    fn into_content(self) -> Cow<'static, [u8]> {
+        Cow::Owned(self.into_bytes())
+    }
+}
+
+impl SimpleFileContent for &'static str {
+    fn into_content(self) -> Cow<'static, [u8]> {
+        Cow::Borrowed(self.as_bytes())
+    }
+}
+
+impl SimpleFileContent for &'static [u8] {
+    fn into_content(self) -> Cow<'static, [u8]> {
+        Cow::Borrowed(self)
+    }
+}
+
 impl<F, R> SimpleFileOps for F
 where
     F: Fn() -> VfsResult<R> + Send + Sync + 'static,
-    R: Into<Vec<u8>>,
+    R: SimpleFileContent,
 {
     fn read_all(&self) -> VfsResult<Cow<'_, [u8]>> {
-        (self)().map(|it| Cow::Owned(it.into()))
-    }
-
-    fn write_all(&self, _data: &[u8]) -> VfsResult<()> {
-        Err(VfsError::BadFileDescriptor)
+        Ok((self)()?.into_content())
     }
 }
 
@@ -262,8 +289,8 @@ impl<T: DirectRwFsFileOps> FileNodeOps for SpecialFsFile<T> {
     }
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
-        self.ops.write_at(buf, 0)?;
-        Ok((buf.len(), 0))
+        let w = self.ops.write_at(buf, 0)?;
+        Ok((w, 0))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {

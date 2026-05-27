@@ -2,6 +2,8 @@ args = [
     "-nographic",
     "-cpu",
     "cortex-a53",
+    "-m",
+    "512M",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
