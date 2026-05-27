@@ -19,7 +19,10 @@ use linux_raw_sys::{
 use starry_vm::{vm_read_slice, vm_write_slice};
 
 use super::{FileLike, Kstat};
-use crate::file::{IoDst, IoSrc, get_file_like};
+use crate::{
+    file::{IoDst, IoSrc, get_file_like},
+    syscall::in_root_net_ns,
+};
 
 pub(super) const ETH0_IFINDEX: i32 = 2;
 pub(super) const LO_IFINDEX: i32 = 1;
@@ -284,7 +287,7 @@ impl FileLike for PacketSocket {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        if !ifreq_name_is_eth0(arg)? {
+        if !in_root_net_ns() || !ifreq_name_is_eth0(arg)? {
             return Err(AxError::NoSuchDevice);
         }
 

@@ -278,8 +278,8 @@ fn find_matching_message<'a>(
 
 /// Message queue manager
 pub struct MsgManager {
-    /// key -> msqid mapping
-    key_msqid: BTreeMap<i32, i32>,
+    /// (key, ns_id) -> msqid mapping
+    key_msqid: BTreeMap<(i32, u64), i32>,
     /// msqid -> message queue structure
     msqid_queues: BTreeMap<i32, Arc<Mutex<MessageQueue>>>,
 }
@@ -306,8 +306,8 @@ impl MsgManager {
     }
 
     /// Returns the message queue ID associated with the given key.
-    pub fn get_msqid_by_key(&self, key: i32) -> Option<i32> {
-        self.key_msqid.get(&key).cloned()
+    pub fn get_msqid_by_key(&self, key: i32, ns_id: u64) -> Option<i32> {
+        self.key_msqid.get(&(key, ns_id)).cloned()
     }
 
     /// Returns the message queue associated with the given ID.
@@ -316,8 +316,8 @@ impl MsgManager {
     }
 
     /// Inserts a mapping from a key to a message queue ID.
-    pub fn insert_key_msqid(&mut self, key: i32, msqid: i32) {
-        self.key_msqid.insert(key, msqid);
+    pub fn insert_key_msqid(&mut self, key: i32, ns_id: u64, msqid: i32) {
+        self.key_msqid.insert((key, ns_id), msqid);
     }
 
     /// Inserts a mapping from a message queue ID to its queue.
@@ -397,6 +397,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     let current_uid = cred.euid;
     let current_gid = cred.egid;
     let current_pid = proc_data.proc.pid();
+    let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
 
     let mut msg_manager = MSG_MANAGER.lock();
 
@@ -421,7 +422,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     }
 
     // Look for existing message queue
-    if let Some(msqid) = msg_manager.get_msqid_by_key(key) {
+    if let Some(msqid) = msg_manager.get_msqid_by_key(key, ns_id) {
         let msg_queue = msg_manager
             .get_queue_by_msqid(msqid)
             .ok_or(AxError::from(LinuxError::ENOENT))?; // ENOENT
@@ -465,7 +466,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
         current_gid,
     )));
 
-    msg_manager.insert_key_msqid(key, msqid);
+    msg_manager.insert_key_msqid(key, ns_id, msqid);
     msg_manager.insert_msqid_queues(msqid, msg_queue);
 
     Ok(msqid as isize)

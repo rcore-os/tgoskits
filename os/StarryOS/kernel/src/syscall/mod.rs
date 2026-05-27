@@ -3,6 +3,7 @@ mod io_mpx;
 mod ipc;
 mod mm;
 mod net;
+mod ns;
 mod resources;
 mod signal;
 mod sync;
@@ -15,8 +16,8 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use syscalls::Sysno;
 
 pub use self::{
-    fs::*, io_mpx::*, ipc::*, mm::*, net::*, resources::*, signal::*, sync::*, sys::*, task::*,
-    time::*,
+    fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
+    task::*, time::*,
 };
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
@@ -563,6 +564,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::fork => sys_fork(uctx),
         #[cfg(target_arch = "x86_64")]
         Sysno::vfork => sys_vfork(uctx),
+        Sysno::unshare => sys_unshare(uctx.arg0() as _),
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
