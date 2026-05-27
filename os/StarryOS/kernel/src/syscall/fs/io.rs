@@ -182,6 +182,9 @@ pub fn sys_pwrite64(
     if len == 0 {
         return Ok(0);
     }
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = File::from_fd(fd)?;
     let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
@@ -228,8 +231,11 @@ pub fn sys_pwritev2(
 ) -> AxResult<isize> {
     debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
     let f = File::from_fd(fd)?;
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     f.inner()
-        .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
+        .write_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
 }
 
