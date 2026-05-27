@@ -385,11 +385,6 @@ fn emit_add_offset(buf: &mut JitBuffer, rd: u32, rs: u32, off: i32) {
     }
 }
 
-fn emit_zext32(buf: &mut JitBuffer, rd: u32) {
-    emit_slli(buf, rd, rd, 32);
-    emit_srli(buf, rd, rd, 32);
-}
-
 pub(crate) struct Riscv64Backend;
 
 impl JitBackend for Riscv64Backend {
