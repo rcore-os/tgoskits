@@ -12,7 +12,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FsContext};
-use ax_hal::time::wall_time;
+use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{

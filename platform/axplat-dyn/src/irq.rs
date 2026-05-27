@@ -97,20 +97,17 @@ impl IrqIf for IrqIfImpl {
         Some(irq.raw())
     }
 
-    fn send_ipi(_id: usize, target: ax_plat::irq::IpiTarget) {
-        match target {
-            ax_plat::irq::IpiTarget::Current { cpu_id }
-            | ax_plat::irq::IpiTarget::Other { cpu_id } => {
-                somehal::irq::send_ipi_to_cpu(cpu_id);
+    fn send_ipi(id: usize, target: ax_plat::irq::IpiTarget) {
+        let target = match target {
+            ax_plat::irq::IpiTarget::Current { cpu_id } => {
+                somehal::irq::IpiTarget::Current { cpu_id }
             }
+            ax_plat::irq::IpiTarget::Other { cpu_id } => somehal::irq::IpiTarget::Other { cpu_id },
             ax_plat::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
-                for target_cpu in 0..cpu_num {
-                    if target_cpu != cpu_id {
-                        somehal::irq::send_ipi_to_cpu(target_cpu);
-                    }
-                }
+                somehal::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num }
             }
-        }
+        };
+        somehal::irq::send_ipi(id.into(), target);
     }
 }
 

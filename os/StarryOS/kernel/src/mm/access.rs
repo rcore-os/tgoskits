@@ -8,9 +8,12 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::{asm::user_copy, paging::MappingFlags, trap::page_fault_handler};
 use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_runtime::hal::{
+    cpu::{asm::user_copy, trap::page_fault_handler},
+    paging::MappingFlags,
+};
 use ax_task::{current, might_sleep};
 use extern_trait::extern_trait;
 use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_write_slice};
@@ -25,7 +28,7 @@ use crate::{
 #[track_caller]
 pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
     assert!(
-        ax_hal::asm::irqs_enabled(),
+        ax_runtime::hal::cpu::asm::irqs_enabled(),
         "faultable user memory access requires IRQs enabled"
     );
 
@@ -508,7 +511,7 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
             }
 
             #[cfg(target_arch = "aarch64")]
-            ax_hal::asm::clean_dcache_range_to_pou(addr, data.len());
+            ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, data.len());
 
             guard.protect(aligned_addr, aligned_length, original_flags)?;
             Ok(())
@@ -519,12 +522,12 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
 
 fn flush_tlb_range(start: VirtAddr, size: usize) {
     for offset in (0..size).step_by(PAGE_SIZE_4K) {
-        ax_hal::asm::flush_tlb(Some(start + offset));
+        ax_runtime::hal::cpu::asm::flush_tlb(Some(start + offset));
     }
 }
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     flush_tlb_range(start, size);
 
-    ax_hal::asm::flush_icache_all();
+    ax_runtime::hal::cpu::asm::flush_icache_all();
 }

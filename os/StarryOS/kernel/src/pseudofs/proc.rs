@@ -14,11 +14,11 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_hal::{
+use ax_memory_addr::PAGE_SIZE_4K;
+use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use starry_process::{Pid, Process};
@@ -61,7 +61,7 @@ fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
 }
 
 fn render_meminfo() -> String {
-    let total = ax_hal::mem::total_ram_size();
+    let total = ax_runtime::hal::mem::total_ram_size();
     let usages = ax_alloc::global_allocator().usages();
     // Sum all allocator categories to estimate kernel-consumed memory.
     let used = usages.get(ax_alloc::UsageKind::RustHeap)
@@ -113,7 +113,7 @@ fn render_meminfo() -> String {
 }
 
 fn render_cpuinfo() -> String {
-    let cpu_count = ax_hal::cpu_num();
+    let cpu_count = ax_runtime::hal::cpu_num();
     let mut buf = String::new();
     for i in 0..cpu_count {
         render_cpu_entry(&mut buf, i);
@@ -185,7 +185,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
 
 fn render_stat() -> String {
     let up = monotonic_time();
-    let cpu_count = ax_hal::cpu_num() as u64;
+    let cpu_count = ax_runtime::hal::cpu_num() as u64;
     // Total CPU-time budget in jiffies across all CPUs (USER_HZ = 100).
     let up_jiffies = up.as_secs() * 100 + (up.subsec_millis() / 10) as u64;
     let total_budget = up_jiffies.saturating_mul(cpu_count);
@@ -339,7 +339,7 @@ fn task_status(task: &AxTaskRef) -> String {
         &cred,
         num_threads,
         task.cpumask(),
-        ax_hal::cpu_num(),
+        ax_runtime::hal::cpu_num(),
     )
 }
 
@@ -678,7 +678,7 @@ impl SimpleDirOps for ThreadDir {
                             &cred,
                             num_threads,
                             task.cpumask(),
-                            ax_hal::cpu_num(),
+                            ax_runtime::hal::cpu_num(),
                         ))
                     } else {
                         Ok(task_status(&task))
@@ -859,7 +859,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             let secs = up.as_secs();
             let cs = up.subsec_millis() / 10;
             // Approximate total idle as uptime × cpu_count (no per-CPU idle accounting yet).
-            let idle_secs = secs.saturating_mul(ax_hal::cpu_num() as u64);
+            let idle_secs = secs.saturating_mul(ax_runtime::hal::cpu_num() as u64);
             Ok(format!("{secs}.{cs:02} {idle_secs}.00\n"))
         }),
     );

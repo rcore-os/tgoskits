@@ -1235,7 +1235,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
 
         for (_, irq_num) in failed_device_ids {
             if let Some(irq_num) = irq_num {
-                let _ = ax_hal::irq::unregister(irq_num);
+                let _ = ax_runtime::hal::irq::unregister(irq_num);
             }
         }
 

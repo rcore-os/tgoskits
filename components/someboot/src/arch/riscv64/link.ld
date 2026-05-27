@@ -54,6 +54,21 @@ SECTIONS
     _edata = .;
     __kernel_load_end = .;
     __bss_start = .;
+
+    .tdata : {
+        _stdata = .;
+        *(.tdata .tdata.*)
+        _etdata = .;
+    }
+
+    .tbss : {
+        _stbss = .;
+        *(.tbss .tbss.*)
+        *(.init.bss)
+        *(.tcommon)
+        _etbss = .;
+    }
+
     .sbss : {
         *(.dynsbss)
         *(.sbss .sbss.*)

@@ -89,6 +89,7 @@ pub mod context {
     pub use ax_cpu::{TaskContext, TrapFrame};
 }
 
+pub use ax_cpu as cpu;
 pub use ax_cpu::asm;
 #[cfg(feature = "uspace")]
 pub use ax_cpu::uspace;

@@ -29,6 +29,21 @@ impl PlatOp for Plat {
 
     fn secondary_init_systick() {}
 
+    fn send_ipi(_irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+        match target {
+            crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
+                plic::send_ipi_to_cpu(cpu_id);
+            }
+            crate::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
+                for target_cpu in 0..cpu_num {
+                    if target_cpu != cpu_id {
+                        plic::send_ipi_to_cpu(target_cpu);
+                    }
+                }
+            }
+        }
+    }
+
     fn send_ipi_to_cpu(cpu_id: usize) {
         plic::send_ipi_to_cpu(cpu_id);
     }

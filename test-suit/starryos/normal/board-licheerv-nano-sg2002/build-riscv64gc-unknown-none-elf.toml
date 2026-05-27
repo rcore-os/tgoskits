@@ -3,10 +3,10 @@ target = "riscv64gc-unknown-none-elf"
 env = {}
 features = [
   "ax-driver/plat-dyn",
-    "sg2002-dyn",
-    "ax-feat/plat-dyn",
-    "ax-driver/cvsd",
-    "ax-driver/serial",
+  "sg2002-dyn",
+  "ax-feat/plat-dyn",
+  "ax-driver/cvsd",
+  "ax-driver/serial",
 ]
 log = "Info"
 max_cpu_num = 1
