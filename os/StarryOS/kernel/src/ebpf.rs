@@ -1015,11 +1015,11 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
 }
 
 fn helper_ktime_get_ns(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    ax_hal::time::monotonic_time_nanos()
+    ax_runtime::hal::time::monotonic_time_nanos()
 }
 
 fn helper_get_smp_processor_id(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    ax_hal::percpu::this_cpu_id() as u64
+    ax_runtime::hal::percpu::this_cpu_id() as u64
 }
 
 fn helper_get_current_pid_tgid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {

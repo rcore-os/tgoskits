@@ -787,7 +787,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         #[cfg(not(feature = "ebpf"))]
         Sysno::bpf | Sysno::perf_event_open => sys_dummy_fd(sysno),
 
-        Sysno::fanotify_init | Sysno::inotify_init1 => Err(AxError::Unsupported),
+        Sysno::fanotify_init => Err(AxError::Unsupported),
 
         Sysno::timer_create => {
             sys_timer_create(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
