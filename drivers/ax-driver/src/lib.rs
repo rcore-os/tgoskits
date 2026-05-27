@@ -60,28 +60,13 @@ pub mod error;
 ))]
 pub mod mmio;
 
-#[cfg(any(
-    feature = "ahci",
-    feature = "bcm2835-sdhci",
-    feature = "nvme",
-    feature = "ramdisk",
-    feature = "virtio-blk",
-    feature = "phytium-mci",
-    feature = "rockchip-dwmmc",
-    feature = "rockchip-sdhci",
-))]
+#[cfg(feature = "block")]
 pub mod block;
 #[cfg(feature = "display")]
 pub mod display;
 #[cfg(feature = "input")]
 pub mod input;
-#[cfg(any(
-    feature = "fxmac",
-    feature = "intel-net",
-    feature = "ixgbe",
-    feature = "realtek-rtl8125",
-    feature = "virtio-net",
-))]
+#[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "vsock")]
 pub mod vsock;

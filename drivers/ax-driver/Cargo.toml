@@ -20,24 +20,26 @@ irq = []
 
 display = ["dep:rdif-display"]
 input = ["dep:rdif-input"]
+block = []
+net = []
 vsock = ["dep:rdif-vsock"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["virtio"]
-virtio-net = ["virtio", "dep:ax-kernel-guard"]
+virtio-blk = ["block", "virtio"]
+virtio-net = ["net", "virtio", "dep:ax-kernel-guard"]
 virtio-gpu = ["display", "virtio"]
 virtio-input = ["input", "virtio"]
 virtio-socket = ["vsock", "virtio"]
 
-ramdisk = ["dep:ramdisk"]
-bcm2835-sdhci = ["dep:bcm2835-sdhci"]
-ahci = ["dep:simple-ahci"]
-nvme = ["dep:nvme-driver"]
-ixgbe = ["dep:ax-alloc", "dep:ixgbe-driver"]
-fxmac = ["dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
-intel-net = ["dep:eth-intel"]
-realtek-rtl8125 = ["dep:realtek-rtl8125"]
+ramdisk = ["block", "dep:ramdisk"]
+bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
+ahci = ["block", "dep:simple-ahci"]
+nvme = ["block", "dep:nvme-driver"]
+ixgbe = ["net", "dep:ax-alloc", "dep:ixgbe-driver"]
+fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
+intel-net = ["net", "dep:eth-intel"]
+realtek-rtl8125 = ["net", "dep:realtek-rtl8125"]
 
 rockchip-dwc-xhci = ["fdt", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["fdt"]
@@ -46,6 +48,7 @@ serial = ["fdt"]
 rtc = ["fdt"]
 rknpu = ["fdt", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rockchip-sdhci = [
+    "block",
     "fdt",
     "rockchip-soc",
     "dep:rdif-clk",
@@ -54,12 +57,14 @@ rockchip-sdhci = [
     "sdmmc-protocol/sdio",
 ]
 phytium-mci = [
+    "block",
     "fdt",
     "dep:phytium-mci-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
 rockchip-dwmmc = [
+    "block",
     "fdt",
     "rockchip-soc",
     "dep:arm-scmi-rs",

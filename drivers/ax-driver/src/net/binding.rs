@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use rd_net::{Interface, NetError};
-use rdrive::{Device, DriverGeneric, probe::pci::EndpointRc};
+use rdrive::{Device, DriverGeneric};
 
 pub struct PlatformNetDevice {
     name: &'static str,
@@ -41,7 +41,13 @@ impl DriverGeneric for PlatformNetDevice {
     }
 }
 
-pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
+#[cfg(any(
+    feature = "intel-net",
+    feature = "ixgbe",
+    feature = "realtek-rtl8125",
+    feature = "virtio-net"
+))]
+pub fn pci_legacy_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
     crate::pci::endpoint_legacy_irq(endpoint)
 }
 
