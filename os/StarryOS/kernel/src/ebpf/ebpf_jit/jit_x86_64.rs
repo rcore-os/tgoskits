@@ -688,7 +688,7 @@ impl JitBackend for X86_64Backend {
                 }
             }
             BPF_END => {
-                log::warn!("eBPF JIT x86_64: BPF_END (byte-order conversion) not implemented");
+                warn!("eBPF JIT x86_64: BPF_END (byte-order conversion) not implemented");
             }
             _ => {}
         }
@@ -829,6 +829,7 @@ impl JitBackend for X86_64Backend {
                 let alu_op = insn.alu_op();
                 let load_size = if use_imm
                     && alu_op != BPF_MOV
+                    && alu_op != BPF_NEG
                     && alu_op != BPF_LSH
                     && alu_op != BPF_RSH
                     && alu_op != BPF_ARSH
@@ -848,7 +849,7 @@ impl JitBackend for X86_64Backend {
                     }
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
                         if use_imm {
-                            if is_64 { 4 } else { 4 + 3 }
+                            if class == BPF_ALU64 { 4 } else { 4 + 3 }
                         } else {
                             3 + 3
                         }
