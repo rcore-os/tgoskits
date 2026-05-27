@@ -19,7 +19,8 @@ use std::println;
 use std::string::ToString;
 
 use crate::shell::command::{
-    CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, run_cmd_bytes,
+    CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, prompt_string,
+    run_cmd_bytes,
 };
 
 const LF: u8 = b'\n';
@@ -30,6 +31,12 @@ const ESC: u8 = 0x1b; // ESC key
 
 const MAX_LINE_LEN: usize = 256;
 
+enum InputState {
+    Normal,
+    Escape,
+    EscapeSeq,
+}
+
 // Initialize the console shell.
 pub fn console_init() {
     let mut stdin = std::io::stdin();
@@ -39,12 +46,6 @@ pub fn console_init() {
     let mut buf = [0; MAX_LINE_LEN];
     let mut cursor = 0; // cursor position in buffer
     let mut line_len = 0; // actual length of current line
-
-    enum InputState {
-        Normal,
-        Escape,
-        EscapeSeq,
-    }
 
     let mut input_state = InputState::Normal;
 
@@ -105,10 +106,7 @@ pub fn console_init() {
 
                             let current_content =
                                 std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                            #[cfg(feature = "fs")]
-                            let prompt = format!("axvisor:{}$ ", &std::env::current_dir().unwrap());
-                            #[cfg(not(feature = "fs"))]
-                            let prompt = "axvisor:$ ".to_string();
+                            let prompt = prompt_string();
                             clear_line_and_redraw(&mut stdout, &prompt, current_content, cursor);
                         }
                     }
@@ -131,10 +129,7 @@ pub fn console_init() {
 
                             let current_content =
                                 std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                            #[cfg(feature = "fs")]
-                            let prompt = format!("axvisor:{}$ ", &std::env::current_dir().unwrap());
-                            #[cfg(not(feature = "fs"))]
-                            let prompt = "axvisor:$ ".to_string();
+                            let prompt = prompt_string();
                             clear_line_and_redraw(&mut stdout, &prompt, current_content, cursor);
                         }
                     }
@@ -161,10 +156,7 @@ pub fn console_init() {
                             buf[..copy_len].copy_from_slice(&cmd_bytes[..copy_len]);
                             cursor = copy_len;
                             line_len = copy_len;
-                            #[cfg(feature = "fs")]
-                            let prompt = format!("axvisor:{}$ ", &std::env::current_dir().unwrap());
-                            #[cfg(not(feature = "fs"))]
-                            let prompt = "axvisor:$ ".to_string();
+                            let prompt = prompt_string();
                             clear_line_and_redraw(&mut stdout, &prompt, prev_cmd, cursor);
                         }
                         input_state = InputState::Normal;
@@ -182,11 +174,7 @@ pub fn console_init() {
                                 cursor = copy_len;
                                 line_len = copy_len;
 
-                                #[cfg(feature = "fs")]
-                                let prompt =
-                                    format!("axvisor:{}$ ", &std::env::current_dir().unwrap());
-                                #[cfg(not(feature = "fs"))]
-                                let prompt = "axvisor:$ ".to_string();
+                                let prompt = prompt_string();
                                 clear_line_and_redraw(&mut stdout, &prompt, next_cmd, cursor);
                             }
                             None => {
@@ -194,11 +182,7 @@ pub fn console_init() {
                                 buf[..line_len].fill(0);
                                 cursor = 0;
                                 line_len = 0;
-                                #[cfg(feature = "fs")]
-                                let prompt =
-                                    format!("axvisor:{}$ ", &std::env::current_dir().unwrap());
-                                #[cfg(not(feature = "fs"))]
-                                let prompt = "axvisor:$ ".to_string();
+                                let prompt = prompt_string();
                                 clear_line_and_redraw(&mut stdout, &prompt, "", cursor);
                             }
                         }

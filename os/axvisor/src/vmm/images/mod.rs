@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
+use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
@@ -21,7 +21,7 @@ use byte_unit::Byte;
 
 use crate::hal::CacheOp;
 use crate::vmm::VMRef;
-use crate::vmm::config::{config, get_vm_dtb_arc};
+use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
@@ -29,29 +29,38 @@ mod x86_boot;
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
-        Some("memory") => with_memory_image(config, linux::Header::parse),
+        Some("memory") => with_memory_image(config, linux::Header::parse).flatten(),
         #[cfg(feature = "fs")]
         Some("fs") => {
             let read_size = linux::Header::hdr_size();
-            let data = fs::kernal_read(config, read_size).ok()?;
+            let data = fs::kernel_read(config, read_size).ok()?;
             linux::Header::parse(&data)
         }
-        _ => unimplemented!(
-            "Check your \"image_location\" in config.toml, \"memory\" and \"fs\" are supported,\n NOTE: \"fs\" feature should be enabled if you want to load images from filesystem. (APP_FEATURES=fs)"
-        ),
+        _ => None,
     }
 }
 
-fn with_memory_image<F, R>(config: &AxVMCrateConfig, func: F) -> R
+fn with_memory_image<F, R>(config: &AxVMCrateConfig, func: F) -> Option<R>
 where
     F: FnOnce(&[u8]) -> R,
 {
-    let vm_imags = config::get_memory_images()
+    let vm_imags = vmcfg::get_memory_images()
+        .iter()
+        .find(|&v| v.id == config.base.id)?;
+
+    Some(func(vm_imags.kernel))
+}
+
+fn memory_images_for_vm(config: &AxVMCrateConfig) -> AxResult<&'static vmcfg::MemoryImage> {
+    vmcfg::get_memory_images()
         .iter()
         .find(|&v| v.id == config.base.id)
-        .expect("VM images is missed, Perhaps add `VM_CONFIGS=PATH/CONFIGS/FILE` command.");
-
-    func(vm_imags.kernel)
+        .ok_or_else(|| {
+            ax_err_type!(
+                NotFound,
+                "VM images are missing; pass VM configs with AXVISOR_VM_CONFIGS"
+            )
+        })
 }
 
 pub struct ImageLoader {
@@ -94,8 +103,9 @@ impl ImageLoader {
             Some("memory") => self.load_vm_images_from_memory(),
             #[cfg(feature = "fs")]
             Some("fs") => fs::load_vm_images_from_filesystem(self),
-            _ => unimplemented!(
-                "Check your \"image_location\" in config.toml, \"memory\" and \"fs\" are supported,\n NOTE: \"fs\" feature should be enabled if you want to load images from filesystem. (APP_FEATURES=fs)"
+            _ => ax_err!(
+                InvalidInput,
+                "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
             ),
         }
     }
@@ -105,18 +115,13 @@ impl ImageLoader {
     fn load_vm_images_from_memory(&self) -> AxResult {
         info!("Loading VM[{}] images from memory", self.config.base.id);
 
-        let vm_imags = config::get_memory_images()
-            .iter()
-            .find(|&v| v.id == self.config.base.id)
-            .expect("VM images is missed, Perhaps add `VM_CONFIGS=PATH/CONFIGS/FILE` command.");
+        let vm_imags = memory_images_for_vm(&self.config)?;
 
-        load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())
-            .expect("Failed to load VM images");
+        load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
 
         // Load Ramdisk image and record its size before regenerating the DTB.
         if let Some(buffer) = vm_imags.ramdisk {
-            self.load_ramdisk_from_memory(buffer)
-                .expect("Failed to load Ramdisk images");
+            self.load_ramdisk_from_memory(buffer)?;
         }
         // Load DTB image
         let vm_config = axvm::config::AxVMConfig::from(self.config.clone());
@@ -124,20 +129,32 @@ impl ImageLoader {
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
             #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-            crate::vmm::fdt::update_fdt(
-                core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
-                _dtb_slice.len(),
-                self.vm.clone(),
-                &self.config,
-            );
+            {
+                if let Some(dtb_src) = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8) {
+                    crate::vmm::fdt::update_fdt(
+                        dtb_src,
+                        _dtb_slice.len(),
+                        self.vm.clone(),
+                        &self.config,
+                    )?;
+                } else {
+                    return ax_err!(InvalidData, "Guest DTB pointer is null");
+                }
+            }
             #[cfg(target_arch = "loongarch64")]
-            load_vm_image_from_memory(_dtb_slice, self.dtb_load_gpa.unwrap(), self.vm.clone())
-                .expect("Failed to load DTB images");
+            {
+                let dtb_load_gpa = self
+                    .dtb_load_gpa
+                    .ok_or_else(|| ax_err_type!(NotFound, "DTB load address is missing"))?;
+                load_vm_image_from_memory(_dtb_slice, dtb_load_gpa, self.vm.clone())?;
+            }
         } else {
             #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
             if let Some(buffer) = vm_imags.dtb {
-                load_vm_image_from_memory(buffer, self.dtb_load_gpa.unwrap(), self.vm.clone())
-                    .expect("Failed to load DTB images");
+                let dtb_load_gpa = self
+                    .dtb_load_gpa
+                    .ok_or_else(|| ax_err_type!(NotFound, "DTB load address is missing"))?;
+                load_vm_image_from_memory(buffer, dtb_load_gpa, self.vm.clone())?;
             } else {
                 info!("dtb_load_gpa not provided");
             }
@@ -161,9 +178,8 @@ impl ImageLoader {
         if let Some(buffer) = bios {
             let load_gpa = self
                 .bios_load_gpa
-                .expect("BIOS image present but BIOS load addr is missed");
-            load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())
-                .expect("Failed to load BIOS images");
+                .ok_or_else(|| ax_err_type!(NotFound, "BIOS load address is missing"))?;
+            load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())?;
             #[cfg(target_arch = "x86_64")]
             self.load_x86_multiboot_info(buffer, load_gpa)?;
             return Ok(());
@@ -176,8 +192,11 @@ impl ImageLoader {
                 "Loading built-in x86 boot image at GPA {:#x}",
                 bios_load_gpa.as_usize()
             );
-            load_vm_image_from_memory(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa, self.vm.clone())
-                .expect("Failed to load built-in x86 boot image");
+            load_vm_image_from_memory(
+                x86_boot::DEFAULT_BIOS_IMAGE,
+                bios_load_gpa,
+                self.vm.clone(),
+            )?;
             #[cfg(target_arch = "x86_64")]
             self.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa)?;
         }
@@ -230,7 +249,7 @@ impl ImageLoader {
         let load_gpa = self
             .vm
             .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
-            .expect("Ramdisk image present but ramdisk info is missing");
+            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load address is missing"))?;
         let size = ramdisk.len();
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
@@ -288,7 +307,11 @@ pub fn load_vm_image_from_memory(
         let region_len = region.len();
         let bytes_to_write = region_len.min(image_size - buffer_pos);
 
-        // copy data from memory
+        // SAFETY: `region` is valid writable guest memory obtained from
+        // `vm.get_image_load_region()`; `bytes_to_write <= region.len()` is
+        // guaranteed by `region_len.min(image_size - buffer_pos)`; and
+        // `image_buffer[buffer_pos..]` has at least `bytes_to_write` bytes.
+        // The source and destination do not overlap (guest HPA vs host image buffer).
         unsafe {
             core::ptr::copy_nonoverlapping(
                 image_buffer[buffer_pos..].as_ptr(),
@@ -300,7 +323,7 @@ pub fn load_vm_image_from_memory(
         crate::hal::arch::cache::dcache_range(
             CacheOp::Clean,
             (region.as_ptr() as usize).into(),
-            region_len,
+            bytes_to_write,
         );
 
         // Update the position of the buffer.
@@ -313,7 +336,14 @@ pub fn load_vm_image_from_memory(
         }
     }
 
-    Ok(())
+    if buffer_pos == image_size {
+        Ok(())
+    } else {
+        ax_err!(
+            InvalidData,
+            format!("VM image was only partially loaded: {buffer_pos}/{image_size} bytes")
+        )
+    }
 }
 
 #[cfg(feature = "fs")]
@@ -322,7 +352,7 @@ pub mod fs {
     use ax_errno::{AxResult, ax_err, ax_err_type};
     use std::{fs::File, vec::Vec};
 
-    pub fn kernal_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
+    pub fn kernel_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
         use std::fs::File;
         use std::io::Read;
         let file_name = &config.kernel.kernel_path;
@@ -392,8 +422,7 @@ pub mod fs {
                 x86_boot::DEFAULT_BIOS_IMAGE,
                 bios_load_gpa,
                 loader.vm.clone(),
-            )
-            .expect("Failed to load built-in x86 boot image");
+            )?;
             #[cfg(target_arch = "x86_64")]
             loader.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa)?;
         }
@@ -406,15 +435,23 @@ pub mod fs {
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
             #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-            crate::vmm::fdt::update_fdt(
-                core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
-                _dtb_slice.len(),
-                loader.vm.clone(),
-                &loader.config,
-            );
+            {
+                let dtb_src = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8)
+                    .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
+                crate::vmm::fdt::update_fdt(
+                    dtb_src,
+                    _dtb_slice.len(),
+                    loader.vm.clone(),
+                    &loader.config,
+                )?;
+            }
             #[cfg(target_arch = "loongarch64")]
-            load_vm_image_from_memory(_dtb_slice, loader.dtb_load_gpa.unwrap(), loader.vm.clone())
-                .expect("Failed to load DTB images");
+            {
+                let dtb_load_gpa = loader
+                    .dtb_load_gpa
+                    .ok_or_else(|| ax_err_type!(NotFound, "DTB load address is missing"))?;
+                load_vm_image_from_memory(_dtb_slice, dtb_load_gpa, loader.vm.clone())?;
+            }
         }
 
         Ok(())
