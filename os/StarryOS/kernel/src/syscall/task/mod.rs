@@ -6,6 +6,7 @@ mod exit;
 mod job;
 mod namespace;
 pub mod ptrace;
+mod namespace;
 mod schedule;
 mod thread;
 mod wait;
