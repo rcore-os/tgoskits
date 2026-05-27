@@ -14,10 +14,11 @@ repository.workspace = true
 license.workspace = true
 
 [features]
-default = ["dynamic_debug"]
+default = ["dynamic_debug", "ebpf"]
 dev-log = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
+ebpf = []
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
