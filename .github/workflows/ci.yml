@@ -271,8 +271,9 @@ jobs:
       matrix:
         include:
           - name: Run clippy
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
             command: |
               set -eux
               git_cmd() {
@@ -300,16 +301,17 @@ jobs:
               else
                 cargo xtask clippy
               fi
-            cache_key: clippy
+            cache_key: ""
             container_image: base
             fetch_depth: full
             limit_to_owner: ""
             main_pr_only: false
           - name: Test with std
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
             command: cargo xtask test
-            cache_key: test-std
+            cache_key: ""
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
