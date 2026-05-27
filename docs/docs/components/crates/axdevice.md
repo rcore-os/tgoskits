@@ -65,7 +65,7 @@
 - `emu_mmio_devices`
 - `emu_sys_reg_devices`
 - `emu_port_devices`
-- `ivc_channel: Option<Mutex<RangeAllocator<usize>>>`
+- `ivc_channel: Option<Mutex<RangeAllocator>>`
 
 前三者决定地址访问分发，最后一个则是 Inter-VM Communication 区间分配器，用于在配置的 IVC GPA 范围内按 4K 对齐切片。
 
@@ -79,7 +79,7 @@ flowchart TD
     B --> C[遍历 EmulatedDeviceConfig]
     C --> D{按 EmulatedDeviceType 匹配}
     D --> E[实例化具体设备对象]
-    D --> F[初始化 IVC RangeAllocator]
+    D --> F[初始化内部 IVC RangeAllocator]
     D --> G[不支持类型发出 warn]
     E --> H[加入 MMIO/sysreg/port 容器]
 ```
@@ -194,7 +194,7 @@ let mut devices = AxVmDevices::new(config);
 
 `IVCChannel` 在本 crate 中不是一个 MMIO 设备对象，而是一个 GPA 区间分配器：
 
-- 初始化时只建立 `RangeAllocator`。
+- 初始化时只建立 `axdevice` 内部的 IVC `RangeAllocator`。
 - 分配和释放必须满足 4K 对齐。
 - 重复声明多个 IVCChannel 配置时，仅首次生效，后续配置会被忽略并打印告警。
 
@@ -209,7 +209,7 @@ let mut devices = AxVmDevices::new(config);
 | `axdevice_base` | 统一设备 trait 定义 |
 | `axvmconfig` | 设备配置和设备类型枚举 |
 | `axaddrspace` | GPA、端口、系统寄存器地址类型与访问宽度 |
-| `range-alloc-arceos` | IVC 区间分配 |
+| 内部 `range_alloc` 模块 | IVC 区间分配 |
 | `memory_addr` | 4K 对齐检查等辅助能力 |
 | `ax-errno` | 统一错误类型 |
 | `spin` | IVC 分配器锁 |
