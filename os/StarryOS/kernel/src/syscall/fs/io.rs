@@ -228,7 +228,15 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
-    f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
+    let file = f.inner();
+    let flags = file.flags();
+    if flags.contains(FileFlags::PATH) {
+        return Err(AxError::BadFileDescriptor);
+    }
+    if !flags.contains(FileFlags::WRITE) {
+        return Err(AxError::InvalidInput);
+    }
+    file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
 

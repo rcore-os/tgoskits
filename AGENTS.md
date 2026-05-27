@@ -18,6 +18,8 @@
 - Use `board-uboot-fsck-repair` when a physical board Linux rootfs needs ext4 recovery through U-Boot, initramfs fsck reports unrepaired corruption, OrangePi-5-Plus needs `extraboardargs=fsckfix`, or Starry board write tests must be bracketed by Linux fsck/boot checks.
 - `crates-io-owner`: project-local skill at `.claude/skills/crates-io-owner/SKILL.md`
 - Use `crates-io-owner` when the user wants to add or verify `github:rcore-os:crates-io` for branch-added crates, asks which new crates still need the crates.io team owner, or explicitly wants `cargo owner` used instead of `Cargo.toml` metadata.
+- `starry-syscall-harness`: project-local skill at `.claude/skills/starry-syscall-harness/SKILL.md`
+- Use `starry-syscall-harness` when auditing StarryOS syscall Linux-compatibility semantics, running the syscall differential harness, using its MCP tools, or preparing fixes from harness output.
 
 ## Other Requirements
 
