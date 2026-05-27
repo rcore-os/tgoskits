@@ -6,9 +6,6 @@ fail() {
     exit 1
 }
 
-apk update || fail "apk update"
-apk add inotify-tools || fail "apk add inotify-tools"
-
 command -v inotifywait >/dev/null || fail "inotifywait missing"
 
 workdir=/tmp/starry-inotifywait

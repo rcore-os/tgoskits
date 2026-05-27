@@ -17,4 +17,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/inotifywait-tests.sh"
 success_regex = ["(?m)^INOTIFYWAIT_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^INOTIFYWAIT_TEST_FAILED:"]
-timeout = 600
+timeout = 180

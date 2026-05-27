@@ -1362,6 +1362,77 @@ mod tests {
     }
 
     #[test]
+    fn inotifywait_qemu_case_installs_tool_before_boot() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/inotifywait");
+        let config_path = case_dir.join("qemu-x86_64.toml");
+        let script_path = case_dir.join("c/inotifywait-tests.sh");
+        let prebuild_path = case_dir.join("c/prebuild.sh");
+
+        assert!(
+            script_path.is_file(),
+            "{} must be installed through the case C pipeline",
+            script_path.display()
+        );
+        assert!(
+            prebuild_path.is_file(),
+            "{} must install inotify-tools before StarryOS boots",
+            prebuild_path.display()
+        );
+
+        let script = fs::read_to_string(&script_path).unwrap();
+        for guest_apk_command in ["apk update", "apk add"] {
+            assert!(
+                !script.contains(guest_apk_command),
+                "{} must not run `{guest_apk_command}` after StarryOS boots",
+                script_path.display()
+            );
+        }
+        assert!(
+            script.contains("command -v inotifywait"),
+            "{} must still exercise the inotifywait userspace tool",
+            script_path.display()
+        );
+
+        let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+        assert!(
+            prebuild.contains("apk add") && prebuild.contains("inotify-tools"),
+            "{} must install the inotify-tools package during case asset preparation",
+            prebuild_path.display()
+        );
+        assert!(
+            prebuild.contains("STARRY_CASE_OVERLAY_DIR"),
+            "{} must copy inotifywait into the injected case overlay",
+            prebuild_path.display()
+        );
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let timeout = config
+            .get("timeout")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_default();
+        assert!(
+            timeout <= 180,
+            "{} must fail quickly because apk setup happens before QEMU boot",
+            config_path.display()
+        );
+
+        let success_regex = config
+            .get("success_regex")
+            .and_then(toml::Value::as_array)
+            .unwrap();
+        assert!(
+            success_regex
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .any(|regex| regex.contains("INOTIFYWAIT_TEST_PASSED")),
+            "{} must require the inotifywait test pass marker",
+            config_path.display()
+        );
+    }
+
+    #[test]
     fn dhcp_qemu_config_uses_dhcp_event_not_external_apk_fetch() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp/qemu-x86_64.toml");
