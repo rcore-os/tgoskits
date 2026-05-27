@@ -44,28 +44,86 @@ crate::model_register!(
 );
 
 pub mod error;
+#[cfg(any(
+    target_os = "none",
+    feature = "rockchip-soc",
+    feature = "rockchip-pm",
+    feature = "rockchip-dwmmc",
+    feature = "rockchip-sdhci",
+    feature = "phytium-mci",
+    feature = "rk3588-pcie",
+    feature = "rknpu",
+    feature = "xhci-mmio",
+    feature = "xhci-pci",
+    virtio_dev,
+))]
 pub mod mmio;
 
+#[cfg(any(
+    target_os = "none",
+    feature = "ahci",
+    feature = "bcm2835-sdhci",
+    feature = "nvme",
+    feature = "ramdisk",
+    feature = "virtio-blk",
+    feature = "phytium-mci",
+    feature = "rockchip-dwmmc",
+    feature = "rockchip-sdhci",
+))]
 pub mod block;
 #[cfg(feature = "display")]
 pub mod display;
 #[cfg(feature = "input")]
 pub mod input;
+#[cfg(any(
+    target_os = "none",
+    feature = "fxmac",
+    feature = "intel-net",
+    feature = "ixgbe",
+    feature = "realtek-rtl8125",
+    feature = "virtio-net",
+))]
 pub mod net;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 
+#[cfg(any(
+    target_os = "none",
+    feature = "ahci",
+    feature = "fxmac",
+    feature = "ixgbe",
+    feature = "intel-net",
+    feature = "realtek-rtl8125",
+    feature = "nvme",
+    feature = "xhci-pci",
+    feature = "virtio-blk",
+    feature = "virtio-net",
+    feature = "virtio-gpu",
+    feature = "virtio-input",
+    feature = "virtio-socket",
+    feature = "pci-list-devices",
+    feature = "rk3588-pcie",
+))]
 pub mod pci;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
+#[cfg(target_os = "none")]
 pub mod serial;
 #[cfg(any(
+    target_os = "none",
     feature = "rockchip-soc",
     feature = "rockchip-pm",
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;
+#[cfg(target_os = "none")]
 pub mod time;
+#[cfg(any(
+    target_os = "none",
+    feature = "rockchip-dwc-xhci",
+    feature = "xhci-mmio",
+    feature = "xhci-pci",
+))]
 pub mod usb;
 #[cfg(virtio_dev)]
 pub mod virtio;
