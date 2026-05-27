@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StarryOS Harness</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>StarryOS Harness</h1>
+          <div class="meta-line" id="repo-root">repo loading</div>
+        </div>
+        <div class="top-actions">
+          <span class="status-pill" id="active-state">idle</span>
+          <button class="secondary" id="run-doctor" type="button">Doctor</button>
+          <button class="secondary" id="refresh-all" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="main-grid">
+        <nav class="nav-tabs" aria-label="Harness workflows">
+          <button class="nav-tab active" data-tab="syscall" type="button">Syscall</button>
+          <button class="nav-tab" data-tab="perf" type="button">Performance</button>
+          <button class="nav-tab" data-tab="diff" type="button">Diff</button>
+          <button class="nav-tab" data-tab="jobs" type="button">Jobs</button>
+        </nav>
+
+        <section class="workspace">
+          <section class="tab-panel active" id="tab-syscall">
+            <div class="panel-heading">
+              <div>
+                <h2>Syscall 扫描与修复上下文</h2>
+                <div class="meta-line" id="syscall-report-path">no report</div>
+              </div>
+              <button class="primary" id="run-discover" type="button">扫描/修复上下文</button>
+            </div>
+
+            <div class="control-grid compact">
+              <label>
+                <span>Arch</span>
+                <select id="syscall-arch">
+                  <option value="riscv64">riscv64</option>
+                  <option value="aarch64">aarch64</option>
+                  <option value="loongarch64">loongarch64</option>
+                  <option value="x86_64">x86_64</option>
+                </select>
+              </label>
+              <label>
+                <span>Timeout</span>
+                <input id="syscall-timeout" min="1" max="3600" type="number" value="120" />
+              </label>
+              <label class="checkbox-row">
+                <input id="syscall-fail-on-diff" type="checkbox" />
+                <span>diff 时返回失败</span>
+              </label>
+            </div>
+
+            <div class="summary-strip" id="syscall-summary"></div>
+            <div class="split-pane">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Case</th>
+                      <th>Linux</th>
+                      <th>StarryOS</th>
+                    </tr>
+                  </thead>
+                  <tbody id="syscall-diffs"></tbody>
+                </table>
+              </div>
+              <section class="brief-panel">
+                <h3>修复上下文</h3>
+                <div id="syscall-brief"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="tab-perf">
+            <div class="panel-heading">
+              <div>
+                <h2>qperf 性能分析</h2>
+                <div class="meta-line" id="perf-report-path">no report</div>
+              </div>
+              <button class="primary" id="run-perf" type="button">分析热点</button>
+            </div>
+
+            <div class="control-grid">
+              <label>
+                <span>Arch</span>
+                <select id="perf-arch">
+                  <option value="riscv64">riscv64</option>
+                  <option value="loongarch64">loongarch64</option>
+                </select>
+              </label>
+              <label>
+                <span>Timeout</span>
+                <input id="perf-timeout" min="1" max="3600" type="number" value="20" />
+              </label>
+              <label>
+                <span>Format</span>
+                <select id="perf-format">
+                  <option value="all">all</option>
+                  <option value="svg">svg</option>
+                  <option value="folded">folded</option>
+                  <option value="pprof">pprof</option>
+                </select>
+              </label>
+              <label>
+                <span>Mode</span>
+                <select id="perf-mode">
+                  <option value="tb">tb</option>
+                  <option value="insn">insn</option>
+                </select>
+              </label>
+              <label>
+                <span>Freq</span>
+                <input id="perf-freq" min="1" max="100000" type="number" value="99" />
+              </label>
+              <label>
+                <span>Max depth</span>
+                <input id="perf-depth" min="1" max="1024" type="number" value="64" />
+              </label>
+              <label>
+                <span>Top</span>
+                <input id="perf-top" min="1" max="200" type="number" value="20" />
+              </label>
+              <label>
+                <span>Min %</span>
+                <input id="perf-min-percent" min="0" max="100" step="0.1" type="number" value="5" />
+              </label>
+              <label class="checkbox-row">
+                <input id="perf-debug" type="checkbox" />
+                <span>debug symbols</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="perf-kernel-filter" type="checkbox" />
+                <span>kernel filter</span>
+              </label>
+            </div>
+
+            <div class="summary-strip" id="perf-summary"></div>
+            <div class="flamegraph-shell" id="flamegraph-shell">
+              <iframe id="flamegraph-frame" title="qperf flamegraph"></iframe>
+              <div class="empty-state" id="flamegraph-empty">no flamegraph</div>
+            </div>
+
+            <div class="split-pane lower">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Function</th>
+                      <th>Samples</th>
+                      <th>Percent</th>
+                    </tr>
+                  </thead>
+                  <tbody id="perf-functions"></tbody>
+                </table>
+              </div>
+              <section class="brief-panel">
+                <h3>瓶颈修复候选</h3>
+                <div id="perf-candidates"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="tab-diff">
+            <div class="panel-heading">
+              <div>
+                <h2>性能差异</h2>
+                <div class="meta-line" id="diff-report-path">no report</div>
+              </div>
+              <button class="primary" id="run-diff" type="button">对比</button>
+            </div>
+
+            <div class="control-grid compact">
+              <label class="wide">
+                <span>Baseline</span>
+                <input id="diff-baseline" type="text" value="target/starry-syscall-harness/perf/riscv64/latest" />
+              </label>
+              <label class="wide">
+                <span>Compare</span>
+                <input id="diff-compare" type="text" value="target/starry-syscall-harness/perf/riscv64/latest" />
+              </label>
+              <label>
+                <span>Top</span>
+                <input id="diff-top" min="1" max="200" type="number" value="20" />
+              </label>
+            </div>
+            <div class="table-wrap full">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Function</th>
+                    <th>Baseline</th>
+                    <th>Compare</th>
+                    <th>Delta</th>
+                  </tr>
+                </thead>
+                <tbody id="diff-changes"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="tab-jobs">
+            <div class="panel-heading">
+              <div>
+                <h2>任务日志</h2>
+                <div class="meta-line" id="job-meta">no job</div>
+              </div>
+              <button class="secondary" id="refresh-job" type="button">刷新日志</button>
+            </div>
+            <pre class="job-log" id="job-log"></pre>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

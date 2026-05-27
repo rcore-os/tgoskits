@@ -99,6 +99,19 @@ def tool_schema() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "starry_harness_ui_command",
+            "description": "Return the command for launching the optional local browser UI.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "host": {"type": "string", "default": "127.0.0.1"},
+                    "port": {"type": "integer", "default": 8765, "minimum": 0},
+                    "open": {"type": "boolean", "default": False},
+                },
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -169,6 +182,24 @@ def handle_tool_call(repo: Path, params: dict[str, Any]) -> dict[str, Any]:
             str(arguments.get("top", 20)),
         ]
         code, output = run_harness(repo, command)
+    elif name == "starry_harness_ui_command":
+        host = arguments.get("host", "127.0.0.1")
+        port = arguments.get("port", 8765)
+        command = [
+            "python3",
+            str(repo / "tools/starry-syscall-harness/harness.py"),
+            "ui",
+            "--repo-root",
+            str(repo),
+            "--host",
+            str(host),
+            "--port",
+            str(port),
+        ]
+        if arguments.get("open", False):
+            command.append("--open")
+        output = " ".join(command) + f"\nURL: http://{host}:{port}/"
+        code = 0
     else:
         return {
             "content": [{"type": "text", "text": f"unknown tool: {name}"}],

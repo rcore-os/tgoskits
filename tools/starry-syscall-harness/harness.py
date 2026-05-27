@@ -778,6 +778,14 @@ def discover(args: argparse.Namespace) -> int:
     return discover_inside(args)
 
 
+def ui(args: argparse.Namespace) -> int:
+    repo_root = repo_root_from(Path(args.repo_root)) if args.repo_root else script_repo_root()
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from ui_server import serve_ui
+
+    return serve_ui(repo_root, args.host, args.port, args.image, args.open)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="StarryOS syscall and qperf differential harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -821,6 +829,14 @@ def main(argv: list[str] | None = None) -> int:
     perf_diff_parser.add_argument("--top", type=int, default=20)
     perf_diff_parser.add_argument("--output-dir", default="target/starry-syscall-harness")
     perf_diff_parser.set_defaults(func=perf_diff)
+
+    ui_parser = sub.add_parser("ui", help="serve the optional local browser UI")
+    ui_parser.add_argument("--repo-root")
+    ui_parser.add_argument("--image", default=DEFAULT_IMAGE)
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--port", type=int, default=8765)
+    ui_parser.add_argument("--open", action="store_true")
+    ui_parser.set_defaults(func=ui)
 
     args = parser.parse_args(argv)
     return args.func(args)
