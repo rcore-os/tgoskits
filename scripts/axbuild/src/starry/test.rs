@@ -595,6 +595,12 @@ impl Starry {
                             outcome: StarryQemuCaseOutcome::Failed,
                             duration: case_started.elapsed(),
                         });
+                        finalize_qemu_case_run(&StarryQemuRunReport {
+                            group: test_group,
+                            cases: reports,
+                            total_duration: suite_started.elapsed(),
+                        })?;
+                        bail!("starry qemu test aborted: case `{case_name}` failed");
                     }
                 }
             }
