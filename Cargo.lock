@@ -1396,26 +1396,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-plat-dyn"
-version = "0.6.2"
-dependencies = [
- "anyhow",
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-errno",
- "ax-memory-addr",
- "ax-percpu",
- "ax-plat",
- "axklib",
- "heapless 0.9.3",
- "log",
- "rdrive",
- "somehal",
- "spin 0.12.0",
-]
-
-[[package]]
 name = "ax-plat-loongarch64-qemu-virt"
 version = "0.5.10"
 dependencies = [
@@ -1883,7 +1863,7 @@ dependencies = [
  "log",
  "rdrive",
  "somehal",
- "spin",
+ "spin 0.12.0",
 ]
 
 [[package]]
