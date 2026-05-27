@@ -39,7 +39,7 @@ flowchart TD
     ArceosApi["os/arceos/api/* + os/arceos/ulib/*"]
     ArceosApps["ArceOS examples + test-suit/arceos"]
     StarryKernel["os/StarryOS/kernel + components/starry-*"]
-    AxvisorRuntime["os/axvisor + components/axvm/axvcpu/axdevice/*"]
+    AxvisorRuntime["os/axvisor + virtualization/axvm/axvcpu/axdevice/*"]
     PlatformCrates["components/axplat_crates/platforms/* + platform/*"]
 
     ReusableCrate --> ArceosModules
@@ -57,7 +57,7 @@ flowchart TD
 上述流程图表示常见的三种组件依赖路径：
 
 1. 纯复用 crate 直接被系统包依赖  
-   例如 `components/starry-process`、`components/axvm`
+   例如 `components/starry-process`、`virtualization/axvm`
 
 2. 先经过 ArceOS 模块层，再被上层系统消费  
    例如 `ax-hal`、`ax-task`、`ax-driver`、`ax-net`
@@ -94,7 +94,7 @@ flowchart TD
 | ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`、`drivers/*`，以及相关 `memory/*` / `axplat_crates` | ArceOS，且可能波及 StarryOS / Axvisor |
 | ArceOS 的 feature 或应用接口 | `os/arceos/api/axfeat`、`os/arceos/ulib/axstd`、`os/arceos/ulib/axlibc` | ArceOS 应用与上层系统 |
 | StarryOS 的 Linux 兼容行为 | `components/starry-*`、`os/StarryOS/kernel/*` | StarryOS |
-| Hypervisor、vCPU、虚拟设备、VM 管理 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`components/axvisor_api`、`os/axvisor/src/*` | Axvisor |
+| Hypervisor、vCPU、虚拟设备、VM 管理 | `virtualization/axvm`、`virtualization/axvcpu`、`virtualization/axdevice`、`virtualization/axvisor_api`、`os/axvisor/src/*` | Axvisor |
 | 平台、板级适配或 VM 启动配置 | `components/axplat_crates/platforms/*`、`platform/*`、`os/axvisor/configs/*` | 一到多个系统 |
 
 若不确定某个 crate 的维护者或来源仓库，可查看 `scripts/repo/repos.csv`，该文件记录了所有 subtree 组件的来源信息。
@@ -122,7 +122,7 @@ flowchart TD
 | `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package ax-helloworld --arch riscv64` |
 | `os/arceos/modules/*` | `cargo xtask arceos run --package ax-helloworld --arch riscv64` | 需要功能时换成 `ax-httpserver --net` 或 `ax-shell --blk` |
 | `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo starry test qemu --target riscv64` |
-| `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
+| `virtualization/axvm`、`virtualization/axvcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
 
 ### 4.3 补充统一测试
 

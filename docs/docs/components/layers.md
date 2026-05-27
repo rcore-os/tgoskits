@@ -89,7 +89,7 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `bwbench-client` | `0.3.0` | `os/arceos/tools/bwbench_client` |
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `deptool` | `0.3.0` | `os/arceos/tools/deptool` |
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `mingo` | `0.8.0` | `os/arceos/tools/raspi4/chainloader` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `aarch64_sysreg` | `0.3.1` | `components/aarch64_sysreg` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `aarch64_sysreg` | `0.3.1` | `virtualization/aarch64_sysreg` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl031` | `0.4.1` | `drivers/rtc/arm_pl031` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-cap-access` | `0.3.0` | `components/cap_access` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-config-gen` | `0.4.1` | `components/axconfig-gen/axconfig-gen` |
@@ -108,10 +108,10 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-timer-list` | `0.3.0` | `components/timer_list` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `axbacktrace` | `0.3.2` | `components/axbacktrace` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `axpoll` | `0.3.2` | `components/axpoll` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `axvisor_api_proc` | `0.5.0` | `components/axvisor_api/axvisor_api_proc` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `axvisor_api_proc` | `0.5.0` | `virtualization/axvisor_api_proc` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `bitmap-allocator` | `0.4.1` | `memory/bitmap-allocator` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `range-alloc-arceos` | `0.3.4` | `memory/range-alloc-arceos` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `riscv-h` | `0.4.0` | `components/riscv-h` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `riscv-h` | `0.4.0` | `virtualization/riscv-h` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `rsext4` | `0.3.0` | `components/rsext4` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `smoltcp` | `0.14.0` | `components/starry-smoltcp` |
 | 1 | 堆叠层 | 组件层 | `ax-allocator` | `0.4.0` | `memory/axallocator` |
@@ -125,9 +125,9 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.0` | `components/axplat_crates/axplat-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-sched` | `0.5.1` | `components/axsched` |
 | 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `components/axfs-ng-vfs` |
-| 1 | 堆叠层 | 组件层 | `axhvc` | `0.4.0` | `components/axhvc` |
+| 1 | 堆叠层 | 组件层 | `axhvc` | `0.4.0` | `virtualization/axhvc` |
 | 1 | 堆叠层 | 组件层 | `axklib` | `0.5.0` | `components/axklib` |
-| 1 | 堆叠层 | 组件层 | `axvmconfig` | `0.4.2` | `components/axvmconfig` |
+| 1 | 堆叠层 | 组件层 | `axvmconfig` | `0.4.2` | `virtualization/axvmconfig` |
 | 1 | 堆叠层 | 组件层 | `define-simple-traits` | `0.3.0` | `components/crate_interface/test_crates/define-simple-traits` |
 | 1 | 堆叠层 | 组件层 | `define-weak-traits` | `0.3.0` | `components/crate_interface/test_crates/define-weak-traits` |
 | 1 | 堆叠层 | 组件层 | `fxmac_rs` | `0.4.1` | `drivers/net/fxmac_rs` |
@@ -159,30 +159,30 @@ flowchart TB
 | 4 | 堆叠层 | 组件层 | `ax-plat-aarch64-peripherals` | `0.5.1` | `components/axplat_crates/platforms/axplat-aarch64-peripherals` |
 | 4 | 堆叠层 | 组件层 | `ax-plat-loongarch64-qemu-virt` | `0.5.1` | `components/axplat_crates/platforms/axplat-loongarch64-qemu-virt` |
 | 4 | 堆叠层 | 组件层 | `ax-plat-x86-pc` | `0.5.1` | `components/axplat_crates/platforms/axplat-x86-pc` |
-| 4 | 堆叠层 | 组件层 | `axdevice_base` | `0.4.2` | `components/axdevice_base` |
-| 4 | 堆叠层 | 组件层 | `axvisor_api` | `0.5.0` | `components/axvisor_api` |
+| 4 | 堆叠层 | 组件层 | `axdevice_base` | `0.4.2` | `virtualization/axdevice_base` |
+| 4 | 堆叠层 | 组件层 | `axvisor_api` | `0.5.0` | `virtualization/axvisor_api` |
 | 4 | 堆叠层 | 组件层 | `starry-signal` | `0.5.0` | `components/starry-signal` |
-| 5 | 堆叠层 | 组件层 | `arm_vgic` | `0.4.2` | `components/arm_vgic` |
+| 5 | 堆叠层 | 组件层 | `arm_vgic` | `0.4.2` | `virtualization/arm_vgic` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-bsta1000b` | `0.5.1` | `components/axplat_crates/platforms/axplat-aarch64-bsta1000b` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-phytium-pi` | `0.5.1` | `components/axplat_crates/platforms/axplat-aarch64-phytium-pi` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-qemu-virt` | `0.5.1` | `components/axplat_crates/platforms/axplat-aarch64-qemu-virt` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-raspi` | `0.5.1` | `components/axplat_crates/platforms/axplat-aarch64-raspi` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-riscv64-qemu-virt` | `0.5.1` | `components/axplat_crates/platforms/axplat-riscv64-qemu-virt` |
-| 5 | 堆叠层 | 组件层 | `axvcpu` | `0.5.0` | `components/axvcpu` |
-| 5 | 堆叠层 | 组件层 | `riscv_vplic` | `0.4.2` | `components/riscv_vplic` |
-| 5 | 堆叠层 | 组件层 | `x86_vlapic` | `0.4.2` | `components/x86_vlapic` |
+| 5 | 堆叠层 | 组件层 | `axvcpu` | `0.5.0` | `virtualization/axvcpu` |
+| 5 | 堆叠层 | 组件层 | `riscv_vplic` | `0.4.2` | `virtualization/riscv_vplic` |
+| 5 | 堆叠层 | 组件层 | `x86_vlapic` | `0.4.2` | `virtualization/x86_vlapic` |
 | 6 | 堆叠层 | ArceOS 层 | `ax-hal` | `0.5.0` | `os/arceos/modules/axhal` |
-| 6 | 堆叠层 | 组件层 | `arm_vcpu` | `0.5.0` | `components/arm_vcpu` |
-| 6 | 堆叠层 | 组件层 | `axdevice` | `0.4.2` | `components/axdevice` |
+| 6 | 堆叠层 | 组件层 | `arm_vcpu` | `0.5.0` | `virtualization/arm_vcpu` |
+| 6 | 堆叠层 | 组件层 | `axdevice` | `0.4.2` | `virtualization/axdevice` |
 | 6 | 堆叠层 | 组件层 | `hello-kernel` | `0.3.0` | `components/axplat_crates/examples/hello-kernel` |
 | 6 | 堆叠层 | 组件层 | `irq-kernel` | `0.3.0` | `components/axplat_crates/examples/irq-kernel` |
-| 6 | 堆叠层 | 组件层 | `riscv_vcpu` | `0.5.0` | `components/riscv_vcpu` |
+| 6 | 堆叠层 | 组件层 | `riscv_vcpu` | `0.5.0` | `virtualization/riscv_vcpu` |
 | 6 | 堆叠层 | 组件层 | `smp-kernel` | `0.3.0` | `components/axplat_crates/examples/smp-kernel` |
-| 6 | 堆叠层 | 组件层 | `x86_vcpu` | `0.5.0` | `components/x86_vcpu` |
+| 6 | 堆叠层 | 组件层 | `x86_vcpu` | `0.5.0` | `virtualization/x86_vcpu` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-ipi` | `0.5.0` | `os/arceos/modules/axipi` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-mm` | `0.5.0` | `os/arceos/modules/axmm` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-task` | `0.5.0` | `os/arceos/modules/axtask` |
-| 7 | 堆叠层 | 组件层 | `axvm` | `0.5.0` | `components/axvm` |
+| 7 | 堆叠层 | 组件层 | `axvm` | `0.5.0` | `virtualization/axvm` |
 | 8 | 堆叠层 | ArceOS 层 | `ax-dma` | `0.5.0` | `os/arceos/modules/axdma` |
 | 8 | 堆叠层 | ArceOS 层 | `ax-sync` | `0.5.0` | `os/arceos/modules/axsync` |
 | 9 | 堆叠层 | ArceOS 层 | `ax-driver` | `0.5.0` | `drivers/ax-driver` |
