@@ -3,6 +3,7 @@
 #include <elf.h>
 #include <errno.h>
 #include <signal.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,10 +34,29 @@ struct trace_addrs {
 };
 
 static volatile int trace_return_value = 7;
+static volatile sig_atomic_t sigchld_seen = 0;
 
 __attribute__((noinline, aligned(8))) static int trace_target_function(void)
 {
     return trace_return_value;
+}
+
+static void sigchld_handler(int signo)
+{
+    (void)signo;
+    sigchld_seen = 1;
+}
+
+static int traceme_stop_child(void *arg)
+{
+    (void)arg;
+    if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0) {
+        _exit(101);
+    }
+    if (kill(getpid(), SIGSTOP) != 0) {
+        _exit(102);
+    }
+    _exit(0);
 }
 
 struct riscv_user_regs {
@@ -82,6 +102,75 @@ static int fail(const char *msg)
 
 int main(void)
 {
+    struct sigaction chld_action;
+    memset(&chld_action, 0, sizeof(chld_action));
+    chld_action.sa_handler = sigchld_handler;
+    sigemptyset(&chld_action.sa_mask);
+    chld_action.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &chld_action, NULL) != 0) {
+        return fail("sigaction SIGCHLD");
+    }
+
+    pid_t check_pid = fork();
+    if (check_pid < 0) {
+        return fail("initial fork");
+    }
+
+    if (check_pid == 0) {
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0) {
+            _exit(101);
+        }
+        if (kill(getpid(), SIGSTOP) != 0) {
+            _exit(102);
+        }
+        _exit(0);
+    }
+
+    int check_status = 0;
+    if (waitpid(check_pid, &check_status, 0) != check_pid || !WIFSTOPPED(check_status)
+        || WSTOPSIG(check_status) != SIGSTOP) {
+        printf("FAIL: expected linux_check_ptrace_features-style SIGSTOP, status=%#x\n",
+               check_status);
+        return 1;
+    }
+    if (kill(check_pid, SIGKILL) != 0) {
+        return fail("kill initial child");
+    }
+    if (waitpid(check_pid, &check_status, 0) != check_pid || !WIFSIGNALED(check_status)
+        || WTERMSIG(check_status) != SIGKILL) {
+        printf("FAIL: expected initial child SIGKILL, status=%#x\n", check_status);
+        return 1;
+    }
+
+    enum { STACK_SIZE = 4096 * 4 };
+    char *clone_stack = malloc(STACK_SIZE);
+    if (clone_stack == NULL) {
+        return fail("malloc clone stack");
+    }
+    pid_t clone_pid = clone(traceme_stop_child, clone_stack + STACK_SIZE, CLONE_VM | SIGCHLD, NULL);
+    if (clone_pid < 0) {
+        free(clone_stack);
+        return fail("clone");
+    }
+    int clone_status = 0;
+    if (waitpid(clone_pid, &clone_status, 0) != clone_pid || !WIFSTOPPED(clone_status)
+        || WSTOPSIG(clone_status) != SIGSTOP) {
+        printf("FAIL: expected CLONE_VM traced child SIGSTOP, status=%#x\n", clone_status);
+        free(clone_stack);
+        return 1;
+    }
+    if (kill(clone_pid, SIGKILL) != 0) {
+        free(clone_stack);
+        return fail("kill clone child");
+    }
+    if (waitpid(clone_pid, &clone_status, 0) != clone_pid || !WIFSIGNALED(clone_status)
+        || WTERMSIG(clone_status) != SIGKILL) {
+        printf("FAIL: expected CLONE_VM traced child SIGKILL, status=%#x\n", clone_status);
+        free(clone_stack);
+        return 1;
+    }
+    free(clone_stack);
+
     int pipefd[2];
     if (pipe(pipefd) != 0) {
         return fail("pipe");
@@ -110,8 +199,7 @@ int main(void)
             _exit(102);
         }
         close(pipefd[1]);
-        pid_t tid = (pid_t)syscall(SYS_gettid);
-        if (syscall(SYS_tgkill, getpid(), tid, SIGSTOP) != 0) {
+        if (kill(getpid(), SIGSTOP) != 0) {
             _exit(103);
         }
         if (*trace_word != TRACE_WORD_PATCHED) {
@@ -131,7 +219,7 @@ int main(void)
     close(pipefd[0]);
 
     int status = 0;
-    if (waitpid(pid, &status, WUNTRACED) != pid || !WIFSTOPPED(status)
+    if (waitpid(pid, &status, 0) != pid || !WIFSTOPPED(status)
         || WSTOPSIG(status) != SIGSTOP) {
         printf("FAIL: expected initial SIGSTOP, status=%#x\n", status);
         return 1;
