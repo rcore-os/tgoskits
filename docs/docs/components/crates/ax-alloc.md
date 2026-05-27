@@ -94,7 +94,7 @@ graph LR
     ax-alloc --> axfsng["ax-fs-ng"]
     ax-alloc --> ax-api["ax-api"]
     ax-alloc --> starry_kernel["starry-kernel"]
-    ax-alloc --> ax_plat_dyn["ax-plat-dyn"]
+    ax-alloc --> axplat_dyn["axplat-dyn"]
 ```
 
 ### 直接依赖

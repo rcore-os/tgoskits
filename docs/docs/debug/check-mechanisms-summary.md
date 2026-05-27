@@ -117,7 +117,7 @@ boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception
 - `os/arceos/modules/axtask/src/task.rs`
 - `os/arceos/modules/axtask/src/run_queue.rs`
 - `os/arceos/modules/axruntime/src/mp.rs`
-- `platforms/ax-plat-dyn/src/boot.rs`
+- `platforms/axplat-dyn/src/boot.rs`
 
 后续改进方向：
 
