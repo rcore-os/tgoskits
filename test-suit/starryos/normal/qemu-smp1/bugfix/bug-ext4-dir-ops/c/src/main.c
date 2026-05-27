@@ -1,6 +1,6 @@
 /*!
  * bug-ext4-dir-ops.c
- *!
+ *
  * Verifies POSIX rmdir() and rename() semantics on ext4 (rsext4),
  * plus VFS dentry cache correctness after rename (stale parent bug).
  *
