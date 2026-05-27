@@ -1,5 +1,9 @@
 pub(crate) fn probe_all_devices() {
     info!("Probe platform devices...");
+    if !rdrive::is_initialized() {
+        warn!("rdrive is not initialized; skip platform device probe");
+        return;
+    }
     rdrive::probe_all(false)
         .unwrap_or_else(|err| panic!("failed to probe platform devices: {err:?}"));
 }
@@ -9,6 +13,9 @@ pub(crate) fn take_dyn_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            return alloc::vec::Vec::new();
+        }
         ax_driver::block::take_block_devices()
             .into_iter()
             .map(|dev| {
@@ -39,6 +46,9 @@ pub(crate) fn take_dyn_fs_ng_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>> {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            return alloc::vec::Vec::new();
+        }
         ax_driver::block::take_block_devices()
             .into_iter()
             .map(|dev| {
@@ -68,6 +78,10 @@ pub(crate) fn take_static_fs_ng_block_devices()
 pub(crate) fn init_dyn_display() {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
+            return;
+        }
         let devices = ax_driver::display::take_display_devices()
             .unwrap_or_else(|err| panic!("failed to open display devices: {err:?}"))
             .into_iter()
@@ -100,6 +114,10 @@ pub(crate) fn init_static_display() {
 pub(crate) fn init_dyn_input() {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
+            return;
+        }
         let devices = ax_driver::input::take_input_devices()
             .unwrap_or_else(|err| panic!("failed to open input devices: {err:?}"))
             .into_iter()
@@ -170,6 +188,10 @@ pub(crate) fn take_static_net_ng_drivers()
 pub(crate) fn init_dyn_vsock() {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            ax_net_ng::init_vsock(alloc::vec::Vec::new());
+            return;
+        }
         let devices = ax_driver::vsock::take_vsock_devices()
             .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
         ax_net_ng::init_vsock(devices);
@@ -190,6 +212,9 @@ pub(crate) fn init_static_vsock() {
 fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            return alloc::vec::Vec::new();
+        }
         let mut devices = alloc::vec::Vec::new();
         for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
             let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
@@ -211,6 +236,9 @@ fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::Ether
 fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
     #[cfg(target_os = "none")]
     {
+        if !rdrive::is_initialized() {
+            return alloc::vec::Vec::new();
+        }
         let mut devices = alloc::vec::Vec::new();
         for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
             let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)

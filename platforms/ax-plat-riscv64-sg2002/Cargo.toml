@@ -24,7 +24,7 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 log = { workspace = true }
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["xuantie-c9xx"] }
-ax-driver = { workspace = true, features = ["block"] }
+ax-driver = { workspace = true, features = ["plat-static", "block"] }
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }

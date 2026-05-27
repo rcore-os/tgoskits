@@ -118,15 +118,12 @@ impl Rv64PTE {
         #[cfg(feature = "xuantie-c9xx")]
         {
             // CPU T-Head XUANTIE-C9xx extended flags:
-            // Memory: Shareable, Bufferable, Cacheable, Non-strong-order
-            // Device: Shareable, Non-bufferable, Non-cacheable, Strong-order
             if mflags.contains(MappingFlags::DEVICE) {
                 self.0 |= (PTEFlags::SH | PTEFlags::SO).bits() as u64;
+            } else if mflags.contains(MappingFlags::UNCACHED) {
+                self.0 |= (PTEFlags::SH | PTEFlags::B).bits() as u64;
             } else {
                 self.0 |= (PTEFlags::SH | PTEFlags::B | PTEFlags::C).bits() as u64;
-            }
-            if mflags.contains(MappingFlags::UNCACHED) {
-                self.0 &= !((PTEFlags::B | PTEFlags::C).bits() as u64);
             }
         }
         self.0 |= (extended_flags & !Self::PHYS_ADDR_MASK);

@@ -30,7 +30,7 @@ ax-page-table-entry = { workspace = true }
 ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
-ax-driver = { workspace = true, features = ["pci", "virtio"] }
+ax-driver = { workspace = true, features = ["plat-static", "virtio"] }
 ax-plat = { workspace = true }
 axklib = { workspace = true, optional = true }
 mmio-api.workspace = true

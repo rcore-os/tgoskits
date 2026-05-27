@@ -9,7 +9,9 @@ impl InitIf for InitIfImpl {
     /// This function should be called immediately after the kernel has booted,
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
-    fn init_early(_cpu_id: usize, _dtb: usize) {
+    fn init_early(cpu_id: usize, _dtb: usize) {
+        #[cfg(target_arch = "riscv64")]
+        somehal::arch::register_current_cpu_id(cpu_id, ax_plat::percpu::this_cpu_id);
         ax_cpu::init::init_trap();
         #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
         {
@@ -21,7 +23,9 @@ impl InitIf for InitIfImpl {
 
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
-    fn init_early_secondary(_cpu_id: usize) {
+    fn init_early_secondary(cpu_id: usize) {
+        #[cfg(target_arch = "riscv64")]
+        somehal::arch::register_current_cpu_id(cpu_id, ax_plat::percpu::this_cpu_id);
         ax_cpu::init::init_trap();
         #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
         {

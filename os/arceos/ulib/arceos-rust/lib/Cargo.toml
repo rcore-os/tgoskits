@@ -61,11 +61,11 @@ stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
 fd = ["ax-posix-api/fd"]
-fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs", "ax-driver/pci", "ax-driver/virtio-blk"]
+fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs", "ax-driver/virtio-blk"]
 
 # Networking
 dns = []
-net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net", "ax-driver/pci", "ax-driver/virtio-net"]
+net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net", "ax-driver/virtio-net"]
 
 # Display
 display = ["ax-api/display", "ax-feat/display"]

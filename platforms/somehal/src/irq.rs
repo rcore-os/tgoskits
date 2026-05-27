@@ -59,3 +59,11 @@ pub(crate) fn _handle_irq(hwirq: IrqId) {
 pub fn irq_handler_raw() -> IrqId {
     Plat::irq_handler().raw().into()
 }
+
+pub fn irq_handler_with_raw(raw: usize) -> Option<IrqId> {
+    Plat::irq_handler_with_raw(raw).map(|irq| irq.raw().into())
+}
+
+pub fn send_ipi_to_cpu(cpu_id: usize) {
+    Plat::send_ipi_to_cpu(cpu_id);
+}

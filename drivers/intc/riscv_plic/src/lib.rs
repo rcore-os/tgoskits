@@ -65,6 +65,15 @@ pub struct Plic {
 unsafe impl Send for Plic {}
 unsafe impl Sync for Plic {}
 
+/// Lock-free PLIC operations used by interrupt entry code.
+#[derive(Clone, Copy)]
+pub struct PlicIrqHandler {
+    base: NonNull<PLICRegs>,
+}
+
+unsafe impl Send for PlicIrqHandler {}
+unsafe impl Sync for PlicIrqHandler {}
+
 impl Plic {
     /// Create a new instance of the PLIC from the base address.
     ///
@@ -76,9 +85,14 @@ impl Plic {
         Self { base }
     }
 
+    /// Returns a lock-free handler for per-context interrupt entry operations.
+    pub const fn irq_handler(&self) -> PlicIrqHandler {
+        PlicIrqHandler { base: self.base }
+    }
+
     /// Initialize the PLIC by context, setting the priority threshold to 0.
     pub fn init_by_context(&mut self, ctx: usize) {
-        self.regs().contexts[ctx].priority_threshold.set(0);
+        self.irq_handler().init_by_context(ctx);
     }
 
     const fn regs(&self) -> &PLICRegs {
@@ -190,7 +204,7 @@ impl Plic {
     /// See §8.
     #[inline]
     pub fn claim(&mut self, ctx: usize) -> Option<NonZeroU32> {
-        NonZeroU32::new(self.regs().contexts[ctx].interrupt_claim_complete.get())
+        self.irq_handler().claim(ctx)
     }
 
     /// Mark that interrupt identified by `source` is completed in `context`.
@@ -198,6 +212,27 @@ impl Plic {
     /// See §9.
     #[inline]
     pub fn complete(&mut self, ctx: usize, source: NonZeroU32) {
+        self.irq_handler().complete(ctx, source);
+    }
+}
+
+impl PlicIrqHandler {
+    const fn regs(&self) -> &PLICRegs {
+        unsafe { self.base.as_ref() }
+    }
+
+    /// Initialize the PLIC by context, setting the priority threshold to 0.
+    pub fn init_by_context(&self, ctx: usize) {
+        self.regs().contexts[ctx].priority_threshold.set(0);
+    }
+
+    /// Claim an interrupt in `context`, returning its source.
+    pub fn claim(&self, ctx: usize) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.regs().contexts[ctx].interrupt_claim_complete.get())
+    }
+
+    /// Mark that interrupt identified by `source` is completed in `context`.
+    pub fn complete(&self, ctx: usize, source: NonZeroU32) {
         self.regs().contexts[ctx]
             .interrupt_claim_complete
             .set(source.get());

@@ -1,4 +1,4 @@
-features = ["ax-std", "ax-hal/plat-dyn", "ax-driver/virtio-net"]
+features = ["ax-std", "ax-driver/virtio-net"]
 log = "Warn"
 max_cpu_num = 4
 plat_dyn = true

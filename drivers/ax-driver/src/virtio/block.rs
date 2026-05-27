@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::format;
 
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(any(probe = "fdt", probe = "pci"))]
+#[cfg(any(plat_dyn, plat_static))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -15,7 +15,7 @@ use crate::{block::PlatformDeviceBlock, virtio::VirtIoHalImpl};
 
 const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 32 * SECTOR_SIZE;
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 crate::model_register!(
     name: "VirtIO Block",
     level: ProbeLevel::PostKernel,
@@ -25,7 +25,7 @@ crate::model_register!(
     }],
 );
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,
@@ -34,7 +34,7 @@ fn probe_pci(
     register_transport(plat_dev, transport)
 }
 
-#[cfg(probe = "fdt")]
+#[cfg(plat_dyn)]
 crate::model_register!(
     name: "VirtIO MMIO Block",
     level: ProbeLevel::PostKernel,
@@ -45,7 +45,7 @@ crate::model_register!(
     }],
 );
 
-#[cfg(probe = "fdt")]
+#[cfg(plat_dyn)]
 fn probe_fdt(
     info: rdrive::register::FdtInfo<'_>,
     plat_dev: PlatformDevice,

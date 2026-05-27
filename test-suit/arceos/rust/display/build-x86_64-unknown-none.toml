@@ -1,4 +1,4 @@
-features = ["ax-std", "ax-hal/x86-pc", "ax-driver/pci", "ax-driver/virtio-gpu"]
+features = ["ax-std", "ax-hal/x86-pc", "ax-driver/plat-static", "ax-driver/virtio-gpu"]
 log = "Warn"
 max_cpu_num = 4
 
