@@ -1287,10 +1287,13 @@ mod tests {
                 path.display()
             );
             assert!(
-                shell_init_cmd.contains(
-                    "timeout \"$fetch_timeout\" apk --timeout \"$fetch_timeout\" add curl"
-                ),
-                "{} must bound apk add so CI can retry mirror stalls",
+                !shell_init_cmd.contains("apk --timeout \"$fetch_timeout\" add curl"),
+                "{} must not install curl dynamically in normal CI",
+                path.display()
+            );
+            assert!(
+                shell_init_cmd.contains("command -v curl"),
+                "{} must probe curl only when the rootfs already provides it",
                 path.display()
             );
             assert!(
@@ -1310,8 +1313,7 @@ mod tests {
             for marker in [
                 "APK_CURL_UPDATE_BEGIN",
                 "APK_CURL_UPDATE_DONE",
-                "APK_CURL_ADD_BEGIN",
-                "APK_CURL_ADD_DONE",
+                "APK_CURL_ADD_SKIPPED",
                 "APK_CURL_PROBE_BEGIN",
                 "APK_CURL_PROBE_DONE",
                 "APK_CURL_TEST_SKIPPED",
