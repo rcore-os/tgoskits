@@ -30,14 +30,10 @@ fn main() {
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_has_cvsd = matches!(target_arch.as_str(), "riscv32" | "riscv64");
 
-    if has_plat_static && has_plat_dyn {
-        panic!("ax-driver features `plat-static` and `plat-dyn` are mutually exclusive");
-    }
-    if has_plat_static {
-        enable_cfg_flag("plat_static");
-    }
     if has_plat_dyn {
         enable_cfg_flag("plat_dyn");
+    } else if has_plat_static {
+        enable_cfg_flag("plat_static");
     }
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
