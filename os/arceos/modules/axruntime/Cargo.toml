@@ -55,7 +55,7 @@ net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/ne
 vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
 
 [dependencies]
-ax-alloc = {workspace = true, features = ["default"]}
+ax-alloc = {workspace = true}
 ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}

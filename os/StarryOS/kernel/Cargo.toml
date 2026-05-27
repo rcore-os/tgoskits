@@ -45,8 +45,7 @@ ax-feat = { workspace = true, features = [
     "irq",
     "uspace",
 
-    "page-alloc-4g",
-    "alloc-slab",
+    "alloc-tlsf",
 
     "multitask",
     "task-ext",
@@ -58,7 +57,7 @@ ax-feat = { workspace = true, features = [
     "net-ng",
 ] }
 
-ax-alloc = { workspace = true, features = ["default"] }
+ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-display.workspace = true
 ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
