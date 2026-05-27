@@ -52,7 +52,7 @@ graph LR
 
 ```bash
 cargo xtask clippy --package ax-driver
-cargo xtask clippy --package axplat-dyn
+cargo xtask clippy --package ax-plat-dyn
 ```
 
 涉及 ArceOS 运行路径时，继续跑对应 `cargo xtask arceos test qemu ...` 用例。

@@ -24,7 +24,7 @@ tgoskits/
 │   ├── arceos/
 │   ├── axvisor/
 │   └── StarryOS/
-├── platform/                  # 平台相关 crate
+├── platforms/                  # 平台相关 crate
 ├── scripts/
 │   └── repo/
 │       ├── repo.py            # subtree 管理脚本

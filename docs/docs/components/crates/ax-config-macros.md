@@ -4,7 +4,7 @@
 > 类型：过程宏库
 > 分层：组件层 / 编译期配置展开层
 > 版本：`0.2.1`
-> 文档依据：`Cargo.toml`、`src/lib.rs`、`tests/example_config.rs`、`README.md`、`os/arceos/modules/axconfig/src/lib.rs`、`components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/lib.rs`
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`tests/example_config.rs`、`README.md`、`os/arceos/modules/axconfig/src/lib.rs`、`platforms/ax-plat-aarch64-qemu-virt/src/lib.rs`
 
 `ax-config-macros` 把 TOML 配置文本直接变成 Rust 常量定义，是 `axconfig*` 链路中的“编译期翻译器”。它不生成配置文件，也不保存任何运行时状态；它的职责是在宏展开阶段读取配置文本，调用 `ax-config-gen` 解析后输出等价的 Rust 代码。
 

@@ -186,7 +186,7 @@ function SystemsDiagram({ systems }) {
       </div>
       <div className="systems-diagram__foundation">
         <strong>共享组件基础层</strong>
-        <code>components/ · ax* crates · starry-* · drivers/ · platform/</code>
+        <code>components/ · ax* crates · starry-* · drivers/ · platforms/</code>
       </div>
     </div>
   );
@@ -659,7 +659,7 @@ function QualitySection() {
   const lanes = [
     { title: 'Host 侧组件验证', desc: '在宿主机上直接执行标准库测试与 clippy 静态检查，秒级反馈，无需交叉编译。', items: ['cargo test -p <crate>', 'cargo xtask clippy', 'cargo xtask test'] },
     { title: 'QEMU 系统级验证', desc: '构建目标系统镜像后在 QEMU 中运行，验证 syscall、进程管理、设备驱动等系统级行为。', items: ['ArceOS example 运行检查', 'StarryOS rootfs + shell 启动', 'Axvisor Guest 引导与交互'] },
-    { title: '板级场景回归', desc: '变更涉及平台适配或跨系统共享组件时，在物理板卡上执行端到端回归测试，确认硬件行为一致。', items: ['platform/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 变更的多系统影响面检查'] },
+    { title: '板级场景回归', desc: '变更涉及平台适配或跨系统共享组件时，在物理板卡上执行端到端回归测试，确认硬件行为一致。', items: ['platforms/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 变更的多系统影响面检查'] },
   ];
 
   return (
