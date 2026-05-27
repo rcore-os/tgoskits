@@ -12,7 +12,8 @@ Usage:
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
-  SMP=8 JOBS=8 SOURCE_TMPFS=1 EXTRA_RUSTFLAGS='-Z threads=2'
+  SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  EXTRA_RUSTFLAGS='<extra guest rustflags>'
 USAGE
 }
 
@@ -70,6 +71,7 @@ smp="${SMP:-8}"
 jobs="${JOBS:-$smp}"
 mem="${MEM:-4096M}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
+qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-7200}"
 stamp="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
 case_name="${CASE_NAME:-smp${smp}-j${jobs}}"
 out_root="${OUT_ROOT:-$repo_root/target/starry-macos-selfbuild}"
@@ -139,7 +141,7 @@ echo "log=$log"
 echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
 echo "qemu=$qemu"
-echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs"
+echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs qemu_timeout_sec=$qemu_timeout_sec"
 : >"$log"
 
 "$qemu" \
@@ -163,6 +165,7 @@ qemu_pid="$!"
 exec 3>"$input_fifo"
 sent_cmd=0
 host_rc=124
+start_ts="$(date +%s)"
 
 set +e
 while kill -0 "$qemu_pid" 2>/dev/null; do
@@ -183,12 +186,23 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
         break
     fi
 
-    if LC_ALL=C grep -a -E -q '(panic|trap|fatal|segmentation fault)' "$log"; then
+    if LC_ALL=C grep -a -E -i -q '(panic|trap|fatal|segmentation fault)' "$log"; then
         echo "===HOST-QEMU-STOP reason=failure-pattern pid=$qemu_pid===" >>"$log"
         kill "$qemu_pid" 2>/dev/null || true
         wait "$qemu_pid" 2>/dev/null
         host_rc=1
         break
+    fi
+
+    if [[ "$qemu_timeout_sec" != "0" ]]; then
+        now_ts="$(date +%s)"
+        if (( now_ts - start_ts >= qemu_timeout_sec )); then
+            echo "===HOST-QEMU-STOP reason=timeout pid=$qemu_pid elapsed=$((now_ts - start_ts)) timeout=$qemu_timeout_sec===" >>"$log"
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null
+            host_rc=124
+            break
+        fi
     fi
 
     sleep 2
