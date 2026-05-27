@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.100"
-bincode = "2.0.1"
+bincode.workspace = true
 crossbeam-channel = "0.5.15"
 qemu-plugin = { version = "10.1.0-v2", default-features = false, features = [
     "anyhow",

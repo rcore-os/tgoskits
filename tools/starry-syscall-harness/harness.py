@@ -401,6 +401,7 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
     qperf_dir = work_dir / "qperf"
     qperf_dir.mkdir(parents=True, exist_ok=True)
 
+    ensure_starry_qemu_defconfig(repo_root, args.arch)
     command = [
         "cargo",
         "xtask",
@@ -599,8 +600,13 @@ def compile_probe(repo_root: Path, work_dir: Path, arch: str) -> tuple[Path, Pat
     return linux_bin, starry_bin
 
 
+def ensure_starry_qemu_defconfig(repo_root: Path, arch: str) -> None:
+    run(["cargo", "xtask", "starry", "defconfig", f"qemu-{arch}"], cwd=repo_root)
+
+
 def ensure_rootfs(repo_root: Path, arch: str) -> Path:
     config = ARCHES[arch]
+    ensure_starry_qemu_defconfig(repo_root, arch)
     run(["cargo", "xtask", "starry", "rootfs", "--arch", arch], cwd=repo_root)
     candidates = [
         repo_root / "tmp" / "axbuild" / "rootfs" / f"rootfs-{arch}-alpine.img",

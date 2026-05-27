@@ -66,7 +66,7 @@ The performance report includes rule-based fix candidates for common VirtIO and 
 Register the MCP server locally:
 
 ```bash
-codex mcp add starry-syscall-harness -- python3 /home/cg24/tgoskits/tools/starry-syscall-harness/mcp_server.py --repo /home/cg24/tgoskits
+codex mcp add starry-syscall-harness -- python3 /path/to/tgoskits/tools/starry-syscall-harness/mcp_server.py --repo /path/to/tgoskits
 ```
 
 The MCP tools expose `doctor`, `discover`, `perf-profile`, and `perf-diff` flows.

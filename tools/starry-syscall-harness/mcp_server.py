@@ -10,6 +10,18 @@ from typing import Any
 PROTOCOL_VERSION = "2024-11-05"
 
 
+def repo_root_from(start: Path) -> Path:
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / "Cargo.toml").exists() and (candidate / "os/StarryOS").exists():
+            return candidate
+    raise SystemExit(f"cannot find tgoskits repo root from {start}")
+
+
+def script_repo_root() -> Path:
+    return repo_root_from(Path(__file__).resolve())
+
+
 def read_message() -> dict[str, Any] | None:
     headers: dict[str, str] = {}
     while True:
@@ -248,9 +260,10 @@ def serve(repo: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MCP server for the StarryOS syscall harness")
-    parser.add_argument("--repo", default="/home/cg24/tgoskits")
+    parser.add_argument("--repo", default=None)
     args = parser.parse_args()
-    serve(Path(args.repo).resolve())
+    repo = repo_root_from(Path(args.repo)) if args.repo else script_repo_root()
+    serve(repo)
     return 0
 
 

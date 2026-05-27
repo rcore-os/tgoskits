@@ -170,10 +170,13 @@ static void case_ftruncate_readonly_fd(void)
     errno = 0;
     int ret = ftruncate(fd, 1);
     int err = saved_errno(ret);
+    int not_open_for_write = ret == -1 && (err == EBADF || err == EINVAL);
     close(fd);
     unlink(path);
 
-    printf("CASE ftruncate_readonly_fd ret=%d errno=%d\n", ret, err);
+    printf("CASE ftruncate_readonly_fd ret=%d not_open_for_write=%d\n",
+           ret,
+           not_open_for_write);
 }
 
 int main(void)

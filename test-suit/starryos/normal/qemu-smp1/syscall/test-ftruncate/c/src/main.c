@@ -15,7 +15,7 @@
  * 预期行为 (POSIX/Linux):
  *   - length < 0         -> EINVAL
  *   - fd 无效            -> EBADF
- *   - fd 未打开写        -> EBADF 或 EINVAL
+ *   - fd 未打开写        -> EBADF
  *   - fd 是 pipe/socket  -> EINVAL
  *   - length 超最大上限   -> EFBIG
  *   - 正常截断到更小/更大 -> 0
@@ -154,7 +154,7 @@ int main(void)
     }
 
     /* ================================================================
-     * 7. 只读 fd — 应返回 EBADF 或 EINVAL
+     * 7. 只读 fd — 应返回 EBADF
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-ftruncate-XXXXXX";
@@ -166,18 +166,8 @@ int main(void)
         int rd_fd = open(tmpl, O_RDONLY);
         CHECK(rd_fd >= 0, "open O_RDONLY 应成功");
 
-        errno = 0;
-        long ret = (long)call_ftruncate(rd_fd, 2);
-        if (ret == -1 && (errno == EBADF || errno == EINVAL)) {
-            printf("  PASS | %s:%d | 只读 fd ftruncate 返回 errno=%d "
-                   "(expected)\n", __FILE__, __LINE__, errno);
-            __pass++;
-        } else {
-            printf("  FAIL | %s:%d | 只读 fd ftruncate | "
-                   "expected EBADF/EINVAL got ret=%ld errno=%d (%s)\n",
-                   __FILE__, __LINE__, ret, errno, strerror(errno));
-            __fail++;
-        }
+        CHECK_ERR(call_ftruncate(rd_fd, 2), EBADF,
+                  "只读 fd ftruncate 应返回 EBADF");
 
         close(rd_fd);
         unlink(tmpl);

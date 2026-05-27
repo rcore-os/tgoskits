@@ -234,7 +234,7 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
         return Err(AxError::BadFileDescriptor);
     }
     if !flags.contains(FileFlags::WRITE) {
-        return Err(AxError::InvalidInput);
+        return Err(AxError::BadFileDescriptor);
     }
     file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
