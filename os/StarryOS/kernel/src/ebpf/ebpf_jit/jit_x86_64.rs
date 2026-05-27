@@ -538,7 +538,14 @@ impl JitBackend for X86_64Backend {
             bpf_to_x86(insn.src_reg())
         };
 
-        if use_imm && insn.alu_op() != BPF_MOV && insn.alu_op() != BPF_NEG {
+        let alu_op = insn.alu_op();
+        if use_imm
+            && alu_op != BPF_MOV
+            && alu_op != BPF_NEG
+            && alu_op != BPF_LSH
+            && alu_op != BPF_RSH
+            && alu_op != BPF_ARSH
+        {
             let imm = insn.imm;
             if is_64 {
                 emit_mov_imm64(buf, imm_src, insn.imm as u64);
@@ -680,7 +687,9 @@ impl JitBackend for X86_64Backend {
                     emit_zext32(buf, dst);
                 }
             }
-            BPF_END => {}
+            BPF_END => {
+                log::warn!("eBPF JIT x86_64: BPF_END (byte-order conversion) not implemented");
+            }
             _ => {}
         }
     }
@@ -818,7 +827,16 @@ impl JitBackend for X86_64Backend {
         match class {
             BPF_ALU | BPF_ALU64 => {
                 let alu_op = insn.alu_op();
-                let load_size = if use_imm && alu_op != BPF_MOV { 7 } else { 0 };
+                let load_size = if use_imm
+                    && alu_op != BPF_MOV
+                    && alu_op != BPF_LSH
+                    && alu_op != BPF_RSH
+                    && alu_op != BPF_ARSH
+                {
+                    7
+                } else {
+                    0
+                };
                 let op_size = match alu_op {
                     BPF_DIV | BPF_MOD => 50,
                     BPF_MOV => {
@@ -826,6 +844,13 @@ impl JitBackend for X86_64Backend {
                             10
                         } else {
                             3
+                        }
+                    }
+                    BPF_LSH | BPF_RSH | BPF_ARSH => {
+                        if use_imm {
+                            if is_64 { 4 } else { 4 + 3 }
+                        } else {
+                            3 + 3
                         }
                     }
                     _ => 3 + 3,
