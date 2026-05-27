@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`axconfig.toml`、`src/boot.rs`、`src/init.rs`、`src/dw_apb_uart.rs`、`src/mem.rs`、`src/power.rs`、`src/mp.rs`、`src/misc.rs`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`axconfig.toml`、`src/boot.rs`、`src/init.rs`、`src/serial.rs`、`src/mem.rs`、`src/power.rs`、`src/mp.rs`、`src/misc.rs`
 
 `ax-plat-aarch64-bsta1000b` 是 Black Sesame A1000B SoC 在 `axplat` 体系里的具体板级实现。它把 A1000B 的启动入口、早期页表、固定地址空间、PSCI 多核拉起、GIC/Generic Timer 接线以及本地 DesignWare APB UART 控制台组织成一组 `axplat` 接口，使上层内核能够按统一平台契约完成 bring-up。它不是通用 AArch64 外设库，也不是完整驱动栈；它解决的是“这块板子怎样从裸机入口走到 `ax_plat::call_main()`，并把最小可运行平台能力交给上层”的问题。
 
@@ -16,7 +16,7 @@
 
 - 向下依赖 `ax-cpu` 提供 EL 切换、MMU 打开、trap 初始化和缓存/停机等 CPU 原语。
 - 横向复用 `ax-plat-aarch64-peripherals` 提供的 PSCI、Generic Timer 和 GIC glue。
-- 自己补上 A1000B 特有的启动代码、内存布局、CPU 硬件 ID 列表，以及非 PL011 的 `dw_apb_uart` 控制台实现。
+- 自己补上 A1000B 特有的启动代码、内存布局、CPU 硬件 ID 列表，以及非 PL011 的 DesignWare APB UART 控制台实现。
 - 向上实现 `InitIf`、`MemIf`、`PowerIf`，并通过 `TimeIf` / `IrqIf` 宏展开接入 `axplat`。
 
 这意味着它的核心工作不是“定义抽象”，而是“把板级事实落成 `axplat` 的实现”：
@@ -32,7 +32,7 @@
 | `lib.rs` | crate 根与 glue 汇总 | `config` 生成、包名校验、`TimeIf`/`IrqIf` 宏接入 |
 | `boot` | 最早期引导 | Linux 风格 ARM64 镜像头、主核/次核入口、引导页表、MMU 打开 |
 | `init` | `InitIf` 实现 | trap、PSCI、UART、Generic Timer、GIC 的初始化顺序 |
-| `dw_apb_uart` | 本地控制台实现 | `ConsoleIf` 落地、UART 初始化、可选 UART IRQ 使能 |
+| `serial` | 本地控制台实现 | `ConsoleIf` 落地、UART 初始化、可选 UART IRQ 使能 |
 | `mem` | `MemIf` 实现 | RAM/MMIO 区间、线性映射、地址空间边界 |
 | `power` | `PowerIf` 实现 | `system_off()`、`cpu_boot()`、`cpu_num()` |
 | `mp` | 次核启动 | 基于 PSCI `cpu_on()` 的次核拉起路径 |
@@ -78,7 +78,7 @@ flowchart TD
 
 尤其需要注意三点：
 
-- 这个 crate 没有展开 `ax-plat-aarch64-peripherals::console_if_impl!`，因为 A1000B 控制台不是 PL011，而是本地 `dw_apb_uart` 实现。
+- 这个 crate 没有展开 `ax-plat-aarch64-peripherals::console_if_impl!`，因为 A1000B 控制台不是 PL011，而是本地 DesignWare APB UART 实现。
 - `boot.rs` 会把 DTB 指针传上去，但本 crate 的 `init.rs` 并不解析 DTB；当前平台描述主要由 `axconfig.toml` 固化。
 - `misc.rs` 里确实有 QSPI reset、CPU reset 和 bootmode 读取逻辑，但这些函数没有接入 `ax_plat::power::system_off()`；对上层可见的电源语义仍然是 PSCI `system_off()`。
 
@@ -104,7 +104,7 @@ flowchart TD
 
 - 为 A1000B 提供可直接链接的 ARM64 启动入口。
 - 建立最小可用引导页表，并负责 MMU 打开前后的栈切换。
-- 提供基于 `dw_apb_uart` 的控制台输入输出。
+- 提供基于 `some-serial` DesignWare APB UART 支持的控制台输入输出。
 - 通过 `ax-plat-aarch64-peripherals` 接入 PSCI、Generic Timer 和 GIC。
 - 暴露平台 RAM、MMIO、线性映射和内核地址空间边界。
 - 在 `smp` 打开时，基于 PSCI `cpu_on()` 拉起次核。
@@ -114,7 +114,7 @@ flowchart TD
 | Feature | 作用 | 主要落点 |
 | --- | --- | --- |
 | `fp-simd` | 启动期提前打开 FP/SIMD，避免早期 Rust 代码触发非法指令 | `boot.rs` |
-| `irq` | 编译 GIC glue、定时器 IRQ 和 UART IRQ 使能路径 | `lib.rs`、`init.rs`、`dw_apb_uart.rs` |
+| `irq` | 编译 GIC glue、定时器 IRQ 和 UART IRQ 使能路径 | `lib.rs`、`init.rs`、`serial.rs` |
 | `smp` | 编译次核入口和 `PowerIf::cpu_boot()` 路径 | `boot.rs`、`mp.rs`、`power.rs` |
 | `rtc` | Cargo feature 已预留，但当前源码没有对应实现，等价于占位开关 | `Cargo.toml` |
 
@@ -144,7 +144,7 @@ flowchart TD
 | `axplat` | 目标平台抽象接口与 `call_main()` 契约 |
 | `ax-cpu` | EL 切换、MMU 初始化、trap 初始化、缓存/停机辅助 |
 | `ax-plat-aarch64-peripherals` | PSCI、Generic Timer、GIC 及 `TimeIf`/`IrqIf` glue |
-| `dw_apb_uart` | A1000B 控制台所用的 DesignWare 8250 UART 驱动 |
+| `some-serial` | A1000B 控制台所用的 DesignWare APB UART 驱动 |
 | `ax-page-table-entry` | 构造 AArch64 引导页表项 |
 | `ax-config-macros` | 把 `axconfig.toml` 变成 `config` 常量模块 |
 | `ax-kspin` | 串口访问的无中断自旋锁 |
@@ -162,7 +162,7 @@ flowchart TD
 graph TD
     A[ax-cpu / ax-page-table-entry / ax-config-macros] --> B[ax-plat-aarch64-bsta1000b]
     C[ax-plat-aarch64-peripherals] --> B
-    D[dw_apb_uart / ax-kspin] --> B
+    D[some-serial / ax-kspin] --> B
     E[axplat] --> B
     B --> F[ax-helloworld-myplat]
     F --> G[板卡 bring-up / 自定义内核验证]
@@ -200,7 +200,7 @@ fn kernel_main(cpu_id: usize, arg: usize) -> ! {
 
 - 修改 `axconfig.toml` 中的 RAM 基址、MMIO 地址或 `PHYS_VIRT_OFFSET` 时，必须同时检查 `boot.rs` 的 1 GiB block 映射假设是否仍成立。
 - 修改 `CPU_ID_LIST` 时，必须同步验证 PSCI `cpu_on()` 目标 ID 与真实硬件 MPIDR 的对应关系。
-- 若更换控制台 IP，需要同时改动 `dw_apb_uart.rs` 和 `init.rs` 中的初始化与 IRQ 使能顺序。
+- 若更换控制台 IP，需要同时改动 `serial.rs` 和 `init.rs` 中的初始化与 IRQ 使能顺序。
 - 如果想让“重启”成为正式平台能力，不能只改 `misc.rs`；还需要重新设计 `PowerIf` 的对外语义。
 
 ### 4.3 适合的调试顺序
@@ -225,7 +225,7 @@ fn kernel_main(cpu_id: usize, arg: usize) -> ! {
 ### 5.2 推荐测试分层
 
 - 启动冒烟：验证从 `_start` 到 `ax_plat::call_main()` 的完整链路。
-- 串口验证：确认 `dw_apb_uart` 早期初始化后能立即输出日志。
+- 串口验证：确认 DesignWare APB UART 早期初始化后能立即输出日志。
 - IRQ 验证：启用 `irq` 后确认 GIC 初始化、timer IRQ 和 UART IRQ 能正常工作。
 - SMP 验证：启用 `smp` 后确认 `cpu_boot()` 能按 `CPU_ID_LIST` 拉起次核。
 - 电源验证：确认 `system_off()` 走 PSCI 关机，而不是错误落入本地 reset 辅助逻辑。

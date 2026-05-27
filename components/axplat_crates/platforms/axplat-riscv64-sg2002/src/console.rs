@@ -3,17 +3,17 @@ use ax_lazyinit::LazyInit;
 use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use dw_uart_rs::DW8250;
+use some_serial::ns16550::dw_apb::{DwApbUart, SG2002_UART_CLOCK};
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 
-static UART: LazyInit<SpinNoIrq<DW8250>> = LazyInit::new();
+static UART: LazyInit<SpinNoIrq<DwApbUart>> = LazyInit::new();
 
 pub(crate) fn init_early() {
     UART.init_once({
-        let mut uart = DW8250::new(UART_PADDR + PHYS_VIRT_OFFSET);
+        let mut uart = DwApbUart::new(UART_PADDR + PHYS_VIRT_OFFSET);
         // SG2002 uses dw-apb-uart with 25MHz clock, 115200 baud.
-        uart.ns16550_init(25_000_000, 115200);
+        uart.init_with_baud_clk(115_200, SG2002_UART_CLOCK);
         SpinNoIrq::new(uart)
     });
 }

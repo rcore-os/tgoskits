@@ -37,11 +37,11 @@ spin = "0.10"
 ax-int-ratio = { workspace = true }
 ax-lazyinit = { workspace = true }
 aarch64-cpu = "11.0"
-ax-arm-pl011 = { workspace = true }
 arm-gic-driver.workspace = true
 ax-arm-pl031 = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+some-serial = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none"]

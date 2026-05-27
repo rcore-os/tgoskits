@@ -31,7 +31,7 @@ dynamic_debug = ["ax-feat/ipi"]
 sg2002 = [
     "dep:ax-dma",
     "dep:sg2002-tpu",
-    "dep:dw_apb_uart",
+    "dep:some-serial",
     "dep:sg200x-bsp",
     "dep:tock-registers",
 ]
@@ -132,7 +132,7 @@ ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
 kprobe = "0.5"
-dw_apb_uart = { workspace = true, features = ["sg2002"], optional = true }
+some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 # 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)
 # because Writeable trait must come from the same version as sg200x-bsp's types.

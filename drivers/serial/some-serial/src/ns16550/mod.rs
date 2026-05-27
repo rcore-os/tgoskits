@@ -14,11 +14,13 @@ use rdif_serial::{
 };
 use registers::*;
 
+pub mod dw_apb;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod pio;
 // MMIO 版本（通用）
 mod mmio;
 
+pub use dw_apb::*;
 pub use mmio::*;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use pio::*;
@@ -29,6 +31,49 @@ pub trait Kind: Clone + Send + Sync + 'static {
     fn read_reg(&self, reg: u8) -> u8;
     fn write_reg(&self, reg: u8, val: u8);
     fn get_base(&self) -> usize;
+
+    fn set_baudrate(&self, clock_freq: u32, baudrate: u32) -> Result<(), ConfigError> {
+        if baudrate == 0 || clock_freq == 0 {
+            return Err(ConfigError::InvalidBaudrate);
+        }
+
+        let divisor = clock_freq / (16 * baudrate);
+        if divisor == 0 || divisor > 0xFFFF {
+            return Err(ConfigError::InvalidBaudrate);
+        }
+
+        let mut lcr: LineControlFlags = self.read_flags(UART_LCR);
+        lcr.insert(LineControlFlags::DIVISOR_LATCH_ACCESS);
+        self.write_flags(UART_LCR, lcr);
+
+        self.write_reg(UART_DLL, (divisor & 0xFF) as u8);
+        self.write_reg(UART_DLH, ((divisor >> 8) & 0xFF) as u8);
+
+        lcr.remove(LineControlFlags::DIVISOR_LATCH_ACCESS);
+        self.write_flags(UART_LCR, lcr);
+
+        Ok(())
+    }
+
+    fn baudrate(&self, clock_freq: u32) -> u32 {
+        let dll = self.read_reg(UART_DLL) as u16;
+        let dlh = self.read_reg(UART_DLH) as u16;
+        let divisor = dll | (dlh << 8);
+
+        if divisor == 0 {
+            return 0;
+        }
+
+        clock_freq / (16 * divisor as u32)
+    }
+
+    fn init(&self) {
+        self.write_flags(UART_IER, InterruptEnableFlags::empty());
+
+        let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
+        mcr.insert(ModemControlFlags::DATA_TERMINAL_READY | ModemControlFlags::REQUEST_TO_SEND);
+        self.write_flags(UART_MCR, mcr);
+    }
 
     // 类型安全的 bitflags 寄存器访问
     fn read_flags<F: Flags<Bits = u8>>(&self, reg: u8) -> F {
@@ -85,17 +130,7 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
     }
 
     fn baudrate(&self) -> u32 {
-        // 只读方式获取波特率，通过读取 DLL 和 DLH
-        // 注意：如果 DLAB 未设置，读取的可能不是除数值
-        let dll = self.read_reg_u8(UART_DLL) as u16;
-        let dlh = self.read_reg_u8(UART_DLH) as u16;
-        let divisor = dll | (dlh << 8);
-
-        if divisor == 0 {
-            return 0;
-        }
-
-        self.clock_freq / (16 * divisor as u32)
+        self.base.baudrate(self.clock_freq)
     }
 
     fn data_bits(&self) -> DataBits {
@@ -148,7 +183,7 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
     }
 
     fn open(&mut self) {
-        self.init();
+        self.init_core();
     }
 
     fn close(&mut self) {
@@ -236,6 +271,12 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
                     return Err(SetBackError::new(want, actual));
                 }
             }
+            crate::Sender::Ns16550DwApbSender(ref sender) => {
+                let actual = sender.base.get_base();
+                if actual != want {
+                    return Err(SetBackError::new(want, actual));
+                }
+            }
             _ => {
                 return Err(SetBackError::new(want, 0)); // 不匹配的类型
             }
@@ -260,6 +301,12 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
                     return Err(SetBackError::new(want, actual));
                 }
             }
+            crate::Reciever::Ns16550DwApbReciever(ref reciever) => {
+                let actual = reciever.base.get_base();
+                if actual != want {
+                    return Err(SetBackError::new(want, actual));
+                }
+            }
             _ => {
                 return Err(SetBackError::new(want, 0)); // 不匹配的类型
             }
@@ -270,15 +317,6 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
 }
 
 impl<T: Kind> Ns16550<T> {
-    // 基础 u8 寄存器访问（用于除数寄存器等特殊场景）
-    fn read_reg_u8(&self, reg: u8) -> u8 {
-        self.base.read_reg(reg)
-    }
-
-    fn write_reg_u8(&mut self, reg: u8, val: u8) {
-        self.base.write_reg(reg, val);
-    }
-
     // 类型安全的 bitflags 寄存器访问
     fn read_flags<F: Flags<Bits = u8>>(&self, reg: u8) -> F {
         F::from_bits_retain(self.base.read_reg(reg))
@@ -298,31 +336,7 @@ impl<T: Kind> Ns16550<T> {
 
     /// 设置波特率
     fn set_baudrate_internal(&mut self, baudrate: u32) -> Result<(), ConfigError> {
-        if baudrate == 0 || self.clock_freq == 0 {
-            return Err(ConfigError::InvalidBaudrate);
-        }
-
-        let divisor = self.clock_freq / (16 * baudrate);
-        if divisor == 0 || divisor > 0xFFFF {
-            return Err(ConfigError::InvalidBaudrate);
-        }
-
-        // 保存原始 LCR
-        let mut lcr: LineControlFlags = self.read_flags(UART_LCR);
-
-        // 设置 DLAB 以访问波特率除数寄存器
-        lcr.insert(LineControlFlags::DIVISOR_LATCH_ACCESS);
-        self.write_flags(UART_LCR, lcr);
-
-        // 设置除数（使用 u8 方法，因为这是原始数据写入）
-        self.write_reg_u8(UART_DLL, (divisor & 0xFF) as u8);
-        self.write_reg_u8(UART_DLH, ((divisor >> 8) & 0xFF) as u8);
-
-        // 清除 DLAB 位，恢复正常访问
-        lcr.remove(LineControlFlags::DIVISOR_LATCH_ACCESS);
-        self.write_flags(UART_LCR, lcr);
-
-        Ok(())
+        self.base.set_baudrate(self.clock_freq, baudrate)
     }
 
     /// 设置数据位
@@ -426,14 +440,8 @@ impl<T: Kind> Ns16550<T> {
     }
 
     /// 初始化 UART
-    fn init(&mut self) {
-        // 禁用所有中断
-        self.write_flags(UART_IER, InterruptEnableFlags::empty());
-
-        // 确保传输器启用（设置 DTR 和 RTS）
-        let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
-        mcr.insert(ModemControlFlags::DATA_TERMINAL_READY | ModemControlFlags::REQUEST_TO_SEND);
-        self.write_flags(UART_MCR, mcr);
+    fn init_core(&mut self) {
+        self.base.init();
     }
 
     /// 检查 FIFO 是否启用

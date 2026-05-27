@@ -48,7 +48,6 @@ graph LR
 - `ax-alloc`
 - `ax-allocator`
 - `ax-api`
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `ax-cap-access`
 - `ax-config`

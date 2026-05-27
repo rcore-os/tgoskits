@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | `generic_timer` | ARM Generic Timer 适配 | tick 与纳秒换算、oneshot 计时器、定时器 IRQ 使能、`time_if_impl!` |
 | `gic` | GICv2 中断控制 | `Gic` 单例、IRQ handler 表、ACK/EOI/DIR、IPI、`irq_if_impl!` |
-| `pl011` | PL011 串口 | `Pl011Uart` 单例、字节读写、`console_if_impl!` |
+| `pl011` | PL011 串口 | 基于 `some-serial` 的 PL011 单例、字节读写、`console_if_impl!` |
 | `pl031` | PL031 RTC | Unix 时间读取、epoch 偏移缓存 |
 | `psci` | PSCI 电源管理 | `smc`/`hvc` 路径选择、`cpu_on`、`cpu_off`、`system_off` |
 | `lib.rs` | 导出层 | feature 裁剪与模块组织 |
@@ -39,7 +39,7 @@
 
 该 crate 采用“静态单例 + 宏生成接口实现”的风格，典型全局状态包括：
 
-- `pl011`：`LazyInit<SpinNoIrq<Pl011Uart>>`，保证早期串口只初始化一次。
+- `pl011`：`LazyInit<SpinNoIrq<ConsoleUart>>`，保证早期串口只初始化一次。
 - `gic`：`LazyInit<SpinNoIrq<Gic>>`、`LazyInit<TrapOp>`、`HandlerTable<1024>`，分别负责 GIC 设备访问、trap 辅助操作和 IRQ 分发表。
 - `generic_timer`：两组 tick 与纳秒转换比率，用 `CNTFRQ_EL0` 初始化。
 - `pl031`：`RTC_EPOCHOFFSET_NANOS`，缓存墙钟相对于单调时钟零点的偏移。
@@ -156,7 +156,7 @@ generic_timer::enable_irqs(timer_irq);
 
 | 依赖 | 作用 |
 | --- | --- |
-| `ax-arm-pl011` | PL011 串口驱动 |
+| `some-serial` | 统一串口驱动集合，提供 PL011 支持 |
 | `ax-arm-pl031` | PL031 RTC 驱动 |
 | `arm-gic-driver` | GICv2 控制器访问与 trap 操作 |
 | `aarch64-cpu` | 访问系统寄存器和底层 CPU 能力 |
@@ -179,7 +179,7 @@ generic_timer::enable_irqs(timer_irq);
 
 ```mermaid
 graph TD
-    A[ax-arm-pl011 / ax-arm-pl031 / arm-gic-driver / aarch64-cpu] --> B[ax-plat-aarch64-peripherals]
+    A[some-serial / ax-arm-pl031 / arm-gic-driver / aarch64-cpu] --> B[ax-plat-aarch64-peripherals]
     C[axplat] --> B
     D[ax-lazyinit / ax-kspin / int_ratio] --> B
 

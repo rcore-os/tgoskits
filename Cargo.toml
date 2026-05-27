@@ -196,7 +196,6 @@ arm_vgic = { version = "0.4.10", path = "components/arm_vgic" }
 ax-alloc = { version = "0.7.2", path = "os/arceos/modules/axalloc", default-features = false }
 ax-allocator = { version = "0.5.2", path = "components/axallocator" }
 ax-api = { version = "0.5.16", path = "os/arceos/api/arceos_api" }
-ax-arm-pl011 = { version = "0.3.8", path = "drivers/serial/arm_pl011" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 ax-cap-access = { version = "0.3.5", path = "components/cap_access" }
 ax-config = { version = "0.5.10", path = "os/arceos/modules/axconfig" }
@@ -289,7 +288,6 @@ bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
 deptool = { version = "0.3.1", path = "os/arceos/tools/deptool" }
-dw_apb_uart = { version = "0.1", path = "drivers/serial/dw_apb_uart", default-features = false }
 fxmac_rs = { version = "0.5.1", path = "drivers/net/fxmac_rs" }
 hello-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/hello-kernel" }
 impl-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-simple-traits" }

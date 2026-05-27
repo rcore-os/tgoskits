@@ -63,7 +63,6 @@ graph LR
 - 另外还有 `8` 个同类项未在此展开
 
 ### 间接依赖
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-allocator`

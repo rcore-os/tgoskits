@@ -744,13 +744,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-arm-pl011"
-version = "0.3.8"
-dependencies = [
- "tock-registers 0.8.1",
-]
-
-[[package]]
 name = "ax-arm-pl031"
 version = "0.4.7"
 dependencies = [
@@ -1341,8 +1334,8 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "dw_apb_uart",
  "log",
+ "some-serial",
 ]
 
 [[package]]
@@ -1351,7 +1344,6 @@ version = "0.5.10"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "arm-gic-driver",
- "ax-arm-pl011",
  "ax-arm-pl031",
  "ax-cpu",
  "ax-int-ratio",
@@ -1359,6 +1351,7 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "log",
+ "some-serial",
  "spin",
 ]
 
@@ -1463,12 +1456,12 @@ dependencies = [
  "ax-plat",
  "ax-riscv-plic",
  "axklib",
- "dw_uart_rs",
  "log",
  "rd-block",
  "riscv 0.16.0",
  "sbi-rt 0.0.3",
  "sg200x-bsp",
+ "some-serial",
  "spin",
 ]
 
@@ -3469,22 +3462,6 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
-
-[[package]]
-name = "dw_apb_uart"
-version = "0.1.2"
-dependencies = [
- "tock-registers 0.10.1",
-]
-
-[[package]]
-name = "dw_uart_rs"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da3751978e2d9bced3cb480631bb2c14098357ae269ac95475720aee545c6dcd"
-dependencies = [
- "tock-registers 0.8.1",
-]
 
 [[package]]
 name = "dwmmc-host"
@@ -7967,7 +7944,6 @@ dependencies = [
  "crab-usb",
  "ddebug",
  "downcast-rs",
- "dw_apb_uart",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
@@ -7991,6 +7967,7 @@ dependencies = [
  "sg2002-tpu",
  "sg200x-bsp",
  "slab",
+ "some-serial",
  "spin",
  "starry-process",
  "starry-signal",

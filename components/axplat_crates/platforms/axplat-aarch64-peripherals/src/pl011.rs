@@ -1,35 +1,53 @@
 //! PL011 UART.
 
-use core::ptr::{read_volatile, write_volatile};
+use core::{hint::spin_loop, ptr::NonNull};
 
-use ax_arm_pl011::Pl011Uart;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_plat::{console::ConsoleIrqEvent, mem::VirtAddr};
+use some_serial::{
+    InterfaceRaw, InterruptMask, Reciever as Receiver, Sender, TIrqHandler, TReciever as _,
+    TSender as _,
+    pl011::{Pl011, Pl011IrqHandler},
+};
 
-static UART: LazyInit<SpinNoIrq<Pl011Uart>> = LazyInit::new();
-static UART_BASE: LazyInit<usize> = LazyInit::new();
-
-const PL011_IMSC: usize = 0x38;
-const PL011_MIS: usize = 0x40;
-const PL011_ICR: usize = 0x44;
-
-const PL011_RX_INT: u32 = 1 << 4;
-const PL011_RT_INT: u32 = 1 << 6;
-const PL011_FE_INT: u32 = 1 << 7;
-const PL011_PE_INT: u32 = 1 << 8;
-const PL011_BE_INT: u32 = 1 << 9;
-const PL011_OE_INT: u32 = 1 << 10;
-const PL011_INPUT_IRQ_MASK: u32 =
-    PL011_RX_INT | PL011_RT_INT | PL011_FE_INT | PL011_PE_INT | PL011_BE_INT | PL011_OE_INT;
-
-fn read_reg(offset: usize) -> u32 {
-    unsafe { read_volatile(((*UART_BASE) + offset) as *const u32) }
+struct ConsoleUart {
+    uart: Pl011,
+    tx: Sender,
+    rx: Receiver,
 }
 
-fn write_reg(offset: usize, value: u32) {
-    unsafe { write_volatile(((*UART_BASE) + offset) as *mut u32, value) }
+impl ConsoleUart {
+    fn new(uart_base: VirtAddr) -> Self {
+        let base = NonNull::new(uart_base.as_mut_ptr()).expect("PL011 MMIO base must be non-null");
+        let mut uart = Pl011::new_no_clock(base);
+        uart.open();
+        uart.set_irq_mask(InterruptMask::empty());
+        let tx = uart.take_tx().expect("PL011 TX handle was already taken");
+        let rx = uart.take_rx().expect("PL011 RX handle was already taken");
+        let irq_handler = uart
+            .irq_handler()
+            .expect("PL011 IRQ handler was already taken");
+        UART_IRQ_HANDLER.init_once(irq_handler);
+        Self { uart, tx, rx }
+    }
+
+    fn putchar(&mut self, c: u8) {
+        while !self.tx.write_byte(c) {
+            spin_loop();
+        }
+    }
+
+    fn getchar(&mut self) -> Option<u8> {
+        match self.rx.read_byte() {
+            Some(Ok(byte)) => Some(byte),
+            Some(Err(_)) | None => None,
+        }
+    }
 }
+
+static UART: LazyInit<SpinNoIrq<ConsoleUart>> = LazyInit::new();
+static UART_IRQ_HANDLER: LazyInit<Pl011IrqHandler> = LazyInit::new();
 
 /// Writes a byte to the console.
 pub fn putchar(c: u8) {
@@ -66,47 +84,27 @@ pub fn read_bytes(bytes: &mut [u8]) -> usize {
 
 /// Early stage initialization of the PL011 UART driver.
 pub fn init_early(uart_base: VirtAddr) {
-    UART_BASE.init_once(uart_base.as_usize());
-    UART.init_once(SpinNoIrq::new({
-        let mut uart = Pl011Uart::new(uart_base.as_mut_ptr());
-        uart.init();
-        uart
-    }));
-    set_input_irq_enabled(false);
+    UART.init_once(SpinNoIrq::new(ConsoleUart::new(uart_base)));
 }
 
 /// Enables or disables PL011 receive-side IRQs.
 pub fn set_input_irq_enabled(enabled: bool) {
-    let _guard = UART.lock();
-    let imsc = read_reg(PL011_IMSC);
-    let imsc = if enabled {
-        imsc | PL011_INPUT_IRQ_MASK
+    let mut uart = UART.lock();
+    let mask = if enabled {
+        InterruptMask::RX_AVAILABLE
     } else {
-        imsc & !PL011_INPUT_IRQ_MASK
+        InterruptMask::empty()
     };
-    write_reg(PL011_IMSC, imsc);
+    uart.uart.set_irq_mask(mask);
 }
 
 /// Handles a PL011 input interrupt and returns the corresponding event flags.
 pub fn handle_irq() -> ConsoleIrqEvent {
-    let _guard = UART.lock();
-    let mis = read_reg(PL011_MIS);
-    let clear = mis & PL011_INPUT_IRQ_MASK;
-    if clear != 0 {
-        write_reg(PL011_ICR, clear);
-    }
-
+    let status = UART_IRQ_HANDLER.clean_interrupt_status();
     let mut events = ConsoleIrqEvent::empty();
-    if mis & (PL011_RX_INT | PL011_RT_INT) != 0 {
+    if status.contains(InterruptMask::RX_AVAILABLE) {
         events |= ConsoleIrqEvent::RX_READY;
     }
-    if mis & PL011_OE_INT != 0 {
-        events |= ConsoleIrqEvent::OVERRUN;
-    }
-    if mis & (PL011_FE_INT | PL011_PE_INT | PL011_BE_INT | PL011_OE_INT) != 0 {
-        events |= ConsoleIrqEvent::RX_ERROR;
-    }
-
     events
 }
 

@@ -1,4 +1,4 @@
-//! snps,dw-apb-uart serial driver
+//! DesignWare APB UART serial driver.
 
 #[cfg(feature = "irq")]
 use core::ptr::read_volatile;
@@ -10,13 +10,14 @@ use ax_plat::{
     console::ConsoleIf,
     mem::{PhysAddr, pa},
 };
-use dw_apb_uart::DW8250;
+use some_serial::ns16550::dw_apb::{DwApbUart, RK3588_UART_CLOCK};
 
 use crate::mem::phys_to_virt;
 
 const UART_BASE: PhysAddr = pa!(crate::config::devices::UART_PADDR);
 
-static UART: SpinNoIrq<DW8250> = SpinNoIrq::new(DW8250::new(phys_to_virt(UART_BASE).as_usize()));
+static UART: SpinNoIrq<DwApbUart> =
+    SpinNoIrq::new(DwApbUart::new(phys_to_virt(UART_BASE).as_usize()));
 
 #[cfg(feature = "irq")]
 const UART_LSR_OFFSET: usize = 0x14;
@@ -34,7 +35,7 @@ fn getchar() -> Option<u8> {
 
 /// UART simply initialize
 pub fn init_early() {
-    UART.lock().init();
+    UART.lock().init_with_baud_clk(115_200, RK3588_UART_CLOCK);
 }
 
 struct ConsoleIfImpl;
