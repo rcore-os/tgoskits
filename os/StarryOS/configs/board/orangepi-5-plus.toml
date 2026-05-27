@@ -5,7 +5,7 @@ env = {}
 features = [
   "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
-  "-list-devices",
+  "ax-driver/pci-list-devices",
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",
   "ax-driver/rockchip-soc",
