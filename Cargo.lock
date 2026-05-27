@@ -1973,7 +1973,6 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat-loongarch64-qemu-virt",
- "ax-plat-riscv64-qemu-virt",
  "ax-plat-x86-qemu-q35",
  "ax-std",
  "ax-timer-list",

@@ -928,7 +928,6 @@ fn ax_hal_platform_feature_name<'a>(
     let platform = feature.strip_prefix("ax-hal/")?;
     match platform {
         "plat-dyn" => Some(platform),
-        "riscv64-qemu-virt-hv" => Some(platform),
         _ if metadata
             .map(|metadata| platform_package_by_name(metadata, platform).is_some())
             .unwrap_or_else(|| is_known_ax_hal_platform_feature(platform)) =>
@@ -1034,10 +1033,6 @@ fn platform_packages(metadata: &Metadata) -> Vec<PlatformPackage> {
 }
 
 fn platform_package_by_name(metadata: &Metadata, platform_name: &str) -> Option<String> {
-    if platform_name == "riscv64-qemu-virt-hv" {
-        return platform_package_by_name(metadata, "riscv64-qemu-virt");
-    }
-
     platform_packages(metadata)
         .into_iter()
         .find(|platform| platform.metadata.platform == platform_name)
