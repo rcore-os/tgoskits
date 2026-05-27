@@ -322,6 +322,13 @@ fn generate_flamegraph(folded_path: &Path, svg_path: &Path) -> anyhow::Result<()
             .with_context(|| format!("failed to create {}", svg_path.display()))?;
         let mut opts = inferno::flamegraph::Options::default();
         opts.count_name = "samples".to_string();
+        opts.title = "StarryOS qperf Flame Graph".to_string();
+        opts.image_width = Some(3200);
+        opts.frame_height = 24;
+        opts.font_size = 13;
+        opts.min_width = 0.35;
+        opts.hash = true;
+        opts.deterministic = true;
         inferno::flamegraph::from_reader(&mut opts, input, output)
             .context("failed to generate flamegraph")?;
         eprintln!("flamegraph written to {}", svg_path.display());

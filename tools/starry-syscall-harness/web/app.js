@@ -223,13 +223,29 @@ function setFlamegraph(url, message = "no flamegraph") {
   if (!url) {
     frame.hidden = true;
     frame.removeAttribute("src");
+    frame.style.width = "";
+    frame.style.height = "";
     empty.textContent = message;
     empty.hidden = false;
     return;
   }
+  frame.onload = resizeFlamegraphFrame;
   frame.hidden = false;
   frame.src = url;
   empty.hidden = true;
+}
+
+function resizeFlamegraphFrame() {
+  const frame = $("flamegraph-frame");
+  const svg = frame.contentDocument?.documentElement;
+  const width = Number(svg?.getAttribute("width"));
+  const height = Number(svg?.getAttribute("height"));
+  if (Number.isFinite(width) && width > 0) {
+    frame.style.width = `${Math.max(width, 1600)}px`;
+  }
+  if (Number.isFinite(height) && height > 0) {
+    frame.style.height = `${Math.max(height + 20, 220)}px`;
+  }
 }
 
 async function refreshDiffReport() {
