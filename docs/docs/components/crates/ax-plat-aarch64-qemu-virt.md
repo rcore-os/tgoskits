@@ -1,6 +1,6 @@
 # `ax-plat-aarch64-qemu-virt`
 
-> 路径：`components/axplat_crates/platforms/axplat-aarch64-qemu-virt`
+> 路径：`platforms/ax-plat-aarch64-qemu-virt`
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
@@ -206,9 +206,9 @@ flowchart TD
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：AArch64 默认平台之一。
-- `components/axplat_crates/examples/hello-kernel`
-- `components/axplat_crates/examples/irq-kernel`
-- `components/axplat_crates/examples/smp-kernel`
+- `platforms/examples/hello-kernel`
+- `platforms/examples/irq-kernel`
+- `platforms/examples/smp-kernel`
 - Axvisor 宿主侧经 `ax-hal` 间接引入的 AArch64 QEMU 平台栈
 
 ### 3.3 关系示意

@@ -1,6 +1,6 @@
 # `ax-plat-x86-pc`
 
-> 路径：`components/axplat_crates/platforms/axplat-x86-pc`
+> 路径：`platforms/ax-plat-x86-pc`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.3.1-pre.6`
@@ -142,13 +142,13 @@ graph LR
 
 ### 主要消费者
 - `ax-hal`：在 x86 PC 场景下复用本 crate 的 `axplat` 实现。
-- `components/axplat_crates/examples/*`：最小平台样例。
+- `platforms/examples/*`：最小平台样例。
 - ArceOS 和 StarryOS 的 x86 默认平台路径。
 
 ### 3.3 间接消费者
 - 通过 `ax-hal` 运行在 Standard PC 环境上的 ArceOS 样例与测试。
 - StarryOS 的 x86 平台 bring-up。
-- Axvisor 的依赖图中可能出现该包，但主 x86 平台更偏向 `axplat-x86-qemu-q35`。
+- Axvisor 的依赖图中可能出现该包，但主 x86 平台更偏向 `ax-plat-x86-qemu-q35`。
 
 ## 开发指南
 ### 接入方式
@@ -195,21 +195,21 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp"] }
 StarryOS 在 x86 默认平台路径中也会复用这条 `axplat` 实现。因此它在 StarryOS 中承担的是板级 bring-up 与平台设施角色，而不是 Linux 兼容语义层。
 
 ### Axvisor
-Axvisor 的主 x86 manifest 更明确地偏向 `axplat-x86-qemu-q35`，因此 `ax-plat-x86-pc` 在 Axvisor 中更适合作为“通用 PC / Multiboot 参考实现”来理解，而不是其当前主平台实现。
+Axvisor 的主 x86 manifest 更明确地偏向 `ax-plat-x86-qemu-q35`，因此 `ax-plat-x86-pc` 在 Axvisor 中更适合作为“通用 PC / Multiboot 参考实现”来理解，而不是其当前主平台实现。
 # `ax-plat-x86-pc` 技术文档
 
-> 路径：`components/axplat_crates/platforms/axplat-x86-pc`
+> 路径：`platforms/ax-plat-x86-pc`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.3.1-pre.6`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axplat_crates/platforms/axplat-x86-pc/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `platforms/ax-plat-x86-pc/README.md`
 
 `ax-plat-x86-pc` 的核心定位是：Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine.
 
 ## 架构设计
 - 目录角色：可复用基础组件
 - crate 形态：库 crate
-- 工作区位置：子工作区 `components/axplat_crates`
+- 工作区位置：子工作区 `platforms`
 - feature 视角：主要通过 `fp-simd`、`irq`、`reboot-on-system-off`、`rtc`、`smp` 控制编译期能力装配。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `IrqIfImpl`、`ConsoleIfImpl`、`InitIfImpl`、`MemIfImpl`、`PowerImpl`、`TimeIfImpl`、`APIC_TIMER_VECTOR`、`APIC_SPURIOUS_VECTOR`、`APIC_ERROR_VECTOR`、`IO_APIC_BASE`。
 - 设计重心：该 crate 的重心通常是板级假设、条件编译矩阵和启动时序，阅读时应优先关注架构/平台绑定点。
@@ -315,7 +315,7 @@ graph LR
 ax-plat-x86-pc = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# ax-plat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
+# ax-plat-x86-pc = { path = "platforms/ax-plat-x86-pc" }
 ```
 
 ### 初始化

@@ -41,16 +41,16 @@ endef
 clippy_args := -A unsafe_op_in_unsafe_fn
 
 define cargo_clippy
-  $(call run_cmd,cargo clippy,--workspace --exclude ax-log --exclude axplat-dyn --exclude "arceos-*" $(1) $(verbose) -- $(clippy_args))
+  $(call run_cmd,cargo clippy,--workspace --exclude ax-log --exclude ax-plat-dyn --exclude "arceos-*" $(1) $(verbose) -- $(clippy_args))
   $(call run_cmd,cargo clippy,-p ax-log $(1) $(verbose) -- $(clippy_args))
 endef
 
 all_packages := \
-  $(filter-out axplat-dyn,$(shell ls $(CURDIR)/modules)) \
+  $(filter-out ax-plat-dyn,$(shell ls $(CURDIR)/modules)) \
   ax-feat ax-api ax-std ax-libc
 
 define cargo_doc
-  $(call run_cmd,cargo doc,--no-deps --all-features --workspace --exclude "arceos-*" --exclude axplat-dyn $(verbose))
+  $(call run_cmd,cargo doc,--no-deps --all-features --workspace --exclude "arceos-*" --exclude ax-plat-dyn $(verbose))
   @# run twice to fix broken hyperlinks
   $(foreach p,$(all_packages), \
     $(call run_cmd,cargo rustdoc,--all-features -p $(p) $(verbose))
@@ -59,5 +59,5 @@ endef
 
 define unit_test
   $(call run_cmd,cargo test,-p ax-fs $(1) $(verbose) -- --nocapture)
-  $(call run_cmd,cargo test,--workspace --exclude ax-fs --exclude axplat-dyn $(1) $(verbose) -- --nocapture)
+  $(call run_cmd,cargo test,--workspace --exclude ax-fs --exclude ax-plat-dyn $(1) $(verbose) -- --nocapture)
 endef

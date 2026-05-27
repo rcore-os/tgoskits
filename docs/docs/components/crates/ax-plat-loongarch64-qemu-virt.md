@@ -1,6 +1,6 @@
 # `ax-plat-loongarch64-qemu-virt`
 
-> 路径：`components/axplat_crates/platforms/axplat-loongarch64-qemu-virt`
+> 路径：`platforms/ax-plat-loongarch64-qemu-virt`
 > 类型：库 crate
 > 分层：组件层 / LoongArch64 板级平台包
 > 版本：`0.3.1-pre.6`
@@ -179,9 +179,9 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：当前 LoongArch 默认平台路径之一。
-- `components/axplat_crates/examples/hello-kernel`
-- `components/axplat_crates/examples/irq-kernel`
-- `components/axplat_crates/examples/smp-kernel`
+- `platforms/examples/hello-kernel`
+- `platforms/examples/irq-kernel`
+- `platforms/examples/smp-kernel`
 - `os/arceos/examples/helloworld-myplat`
 
 ### 3.3 依赖关系示意

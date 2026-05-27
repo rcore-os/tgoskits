@@ -322,7 +322,7 @@ flowchart TD
 | 字段 | 值 |
 |------|-----|
 | `arch` | 从 target triple 提取的架构名 |
-| `platform` | 平台包名（如 `riscv64-qemu-virt`） |
+| `platforms` | 平台包名（如 `riscv64-qemu-virt`） |
 | `plat.max-cpu-num` | `--smp` 参数值（仅 `max_cpu_num > 1` 时注入） |
 
 ### 配置内容示例
@@ -348,7 +348,7 @@ virtio-mmio-ranges = [[0x1000_1000, 0x1000], ...]
 `resolve_platform_config_path()` 按以下顺序查找平台配置：
 
 1. 包在 workspace `Cargo.toml` 中的 manifest 路径旁查找 `axconfig.toml`
-2. `components/axplat_crates/platforms/<platform-dir>/axconfig.toml`（组件目录约定）
+2. `platforms/<platform-dir>/axconfig.toml`（组件目录约定）
 3. 在完整依赖元数据中重新查找（支持平台包位于 workspace 外部的场景）
 
 如果所有路径都未找到配置文件，构建会报错终止，提示用户确保平台包包含 `axconfig.toml`。

@@ -1,6 +1,6 @@
 # `hello-kernel`
 
-> 路径：`components/axplat_crates/examples/hello-kernel`
+> 路径：`platforms/examples/hello-kernel`
 > 类型：平台样例内核 crate
 > 分层：组件层 / `axplat` 最小 bring-up 示例
 > 版本：`0.1.0`
@@ -101,7 +101,7 @@ graph LR
 ## 开发指南
 ### 接入方式
 ```bash
-cd components/axplat_crates/examples/hello-kernel
+cd platforms/examples/hello-kernel
 make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 ```
 

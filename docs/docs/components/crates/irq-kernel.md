@@ -1,6 +1,6 @@
 # `irq-kernel`
 
-> 路径：`components/axplat_crates/examples/irq-kernel`
+> 路径：`platforms/examples/irq-kernel`
 > 类型：平台样例内核 crate
 > 分层：组件层 / `axplat` 中断链路示例
 > 版本：`0.1.0`
@@ -109,7 +109,7 @@ graph LR
 ## 开发指南
 ### 接入方式
 ```bash
-cd components/axplat_crates/examples/irq-kernel
+cd platforms/examples/irq-kernel
 make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 ```
 
