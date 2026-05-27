@@ -715,7 +715,11 @@ pub(crate) fn load_test_qemu_case_fields(
 ) -> anyhow::Result<TestQemuCase> {
     let test_commands = load_qemu_case_test_commands(&qemu_config_path, suite_name)?;
     let subcases = if discover_subcases && !test_commands.is_empty() {
-        discover_qemu_subcases(&case_dir)?
+        let arch = qemu_config_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("qemu-"));
+        discover_qemu_subcases(&case_dir, arch)?
     } else {
         Vec::new()
     };
@@ -740,7 +744,10 @@ fn load_qemu_case_test_commands(
     normalize_qemu_test_commands(qemu_config_path, config.test_commands, suite_name)
 }
 
-fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase>> {
+fn discover_qemu_subcases(
+    case_dir: &Path,
+    arch: Option<&str>,
+) -> anyhow::Result<Vec<TestQemuSubcase>> {
     let mut subcases = Vec::new();
     for entry in
         fs::read_dir(case_dir).with_context(|| format!("failed to read {}", case_dir.display()))?
@@ -748,6 +755,13 @@ fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() {
+            continue;
+        }
+
+        if let Some(arch) = arch
+            && let Some(configs) = qemu_configs_in_dir(&path)?
+            && !configs.contains_key(arch)
+        {
             continue;
         }
 

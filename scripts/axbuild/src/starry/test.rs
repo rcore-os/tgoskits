@@ -2125,6 +2125,45 @@ mod tests {
     }
 
     #[test]
+    fn grouped_case_skips_arch_specific_subcases_for_other_arches() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(
+            root.path(),
+            "normal",
+            "default",
+            "riscv64gc-unknown-none-elf",
+        );
+        write_grouped_qemu_test_config(root.path(), "normal", "default", "syscall", "riscv64");
+
+        let case_dir = root
+            .path()
+            .join("test-suit/starryos/normal/default/syscall");
+        fs::create_dir_all(case_dir.join("alpha/c")).unwrap();
+        fs::create_dir_all(case_dir.join("x86-only/c")).unwrap();
+        fs::write(case_dir.join("x86-only/qemu-x86_64.toml"), "timeout = 1\n").unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
+            None,
+            "normal",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(
+            cases[0]
+                .case
+                .subcases
+                .iter()
+                .map(|subcase| subcase.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"]
+        );
+    }
+
+    #[test]
     fn grouped_case_loads_with_both_shell_init_cmd_and_test_commands_present() {
         // The mutual-exclusion check has been moved from the initial TOML parse
         // (discover_qemu_cases) to prepare_qemu_cases so we only read each
