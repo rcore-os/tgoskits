@@ -181,6 +181,8 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
                 } else {
                     send_signal_to_process(pid as _, Some(sig))?;
                 }
+            } else {
+                send_signal_to_process(pid as _, None)?;
             }
         }
         0 => {
