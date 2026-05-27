@@ -1,6 +1,6 @@
 # `arm_vcpu`
 
-> 路径：`components/arm_vcpu`
+> 路径：`virtualization/arm_vcpu`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.2`
@@ -187,11 +187,11 @@ arm_vcpu = { workspace = true }
 `arm_vcpu` 是 Axvisor 在 AArch64 路径上的关键执行引擎之一。`axvm` 负责统一 VM 资源模型，而真正把 guest 扔进 EL1 执行、再把 VM exit 带回宿主的，就是 `arm_vcpu`。
 # `arm_vcpu` 技术文档
 
-> 路径：`components/arm_vcpu`
+> 路径：`virtualization/arm_vcpu`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.2`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/arm_vcpu/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `virtualization/arm_vcpu/README.md`
 
 `arm_vcpu` 的核心定位是：Aarch64 VCPU implementation for Arceos Hypervisor
 
@@ -273,7 +273,7 @@ graph LR
 arm_vcpu = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# arm_vcpu = { path = "components/arm_vcpu" }
+# arm_vcpu = { path = "virtualization/arm_vcpu" }
 ```
 
 ### 初始化

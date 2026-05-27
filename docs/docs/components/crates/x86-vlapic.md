@@ -1,10 +1,10 @@
 # `x86_vlapic`
 
-> 路径：`components/x86_vlapic`
+> 路径：`virtualization/x86_vlapic`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.4.2`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/x86_vlapic/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `virtualization/x86_vlapic/README.md`
 
 `x86_vlapic` 的核心定位是：x86 Virtual Local APIC
 
@@ -81,7 +81,7 @@ graph LR
 x86_vlapic = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# x86_vlapic = { path = "components/x86_vlapic" }
+# x86_vlapic = { path = "virtualization/x86_vlapic" }
 ```
 
 ### 初始化

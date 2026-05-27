@@ -768,13 +768,24 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // dummy fds
         Sysno::userfaultfd
-        | Sysno::perf_event_open
         | Sysno::io_uring_setup
-        | Sysno::bpf
         | Sysno::fsopen
         | Sysno::fspick
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
+
+        #[cfg(feature = "ebpf")]
+        Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
+        #[cfg(feature = "ebpf")]
+        Sysno::perf_event_open => crate::ebpf::sys_perf_event_open(
+            uctx.arg0(),
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        #[cfg(not(feature = "ebpf"))]
+        Sysno::bpf | Sysno::perf_event_open => sys_dummy_fd(sysno),
 
         Sysno::fanotify_init => Err(AxError::Unsupported),
 

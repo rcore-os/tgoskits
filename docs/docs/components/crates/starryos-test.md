@@ -105,13 +105,13 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 graph LR
     ax-feat["ax-feat"] --> test["starryos-test"]
     kernel["starry-kernel"] --> test
-    vf2["axplat-riscv64-visionfive2 (optional)"] --> test
+    vf2["ax-plat-riscv64-visionfive2 (optional)"] --> test
 ```
 
 ### 直接依赖
 - `ax-feat`：提供底层平台、驱动和运行时装配。
 - `starry-kernel`：真正执行系统 bring-up。
-- `axplat-riscv64-visionfive2`：在 `vf2` feature 下可选引入。
+- `ax-plat-riscv64-visionfive2`：在 `vf2` feature 下可选引入。
 
 ### 3.2 关键外部驱动者
 - `tg-xtask`：不是 Cargo 依赖，但是真正让这个包进入测试流水线的上层驱动者。

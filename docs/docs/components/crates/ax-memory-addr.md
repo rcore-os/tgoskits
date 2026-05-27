@@ -1,6 +1,6 @@
 # `ax-memory-addr`
 
-> 路径：`components/axmm_crates/memory_addr`
+> 路径：`memory/memory_addr`
 > 类型：库 crate
 > 分层：组件层 / 地址建模基础库
 > 版本：`0.4.1`

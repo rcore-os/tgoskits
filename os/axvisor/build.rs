@@ -45,7 +45,8 @@ use std::{
 };
 
 use anyhow::Context;
-use quote::quote;
+use quote::{ToTokens, quote};
+use syn::LitStr;
 use toml::Table;
 
 /// A configuration file that has been read from disk.
@@ -89,7 +90,7 @@ fn get_configs() -> Result<Vec<ConfigFile>, String> {
 ///
 /// Returns the file handle.
 fn open_output_file() -> fs::File {
-    let output_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let output_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo"));
     let output_file = output_dir.join("vm_configs.rs");
 
     fs::OpenOptions::new()
@@ -97,13 +98,17 @@ fn open_output_file() -> fs::File {
         .create(true)
         .truncate(true)
         .open(output_file)
-        .unwrap()
+        .expect("failed to open generated vm_configs.rs")
 }
 
 // Convert relative path to absolute path
 fn convert_to_absolute(configs_path: impl AsRef<Path>, path: &str) -> PathBuf {
     let path = Path::new(path);
-    let configs_path = configs_path.as_ref().parent().unwrap().join(path);
+    let configs_path = configs_path
+        .as_ref()
+        .parent()
+        .map(|parent| parent.join(path))
+        .unwrap_or_else(|| path.to_path_buf());
     if path.is_relative() {
         fs::canonicalize(configs_path).unwrap_or_else(|_| path.to_path_buf())
     } else {
@@ -120,10 +125,7 @@ struct MemoryImage {
 }
 
 fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
-    let config = config_file
-        .content
-        .parse::<Table>()
-        .expect("failed to parse config file");
+    let config = config_file.content.parse::<Table>().ok()?;
 
     let id = config.get("base")?.as_table()?.get("id")?.as_integer()? as usize;
 
@@ -137,7 +139,7 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
 
     let kernel_path = config.get("kernel")?.as_table()?.get("kernel_path")?;
 
-    let kernel = convert_to_absolute(&config_file.path, kernel_path.as_str().unwrap());
+    let kernel = convert_to_absolute(&config_file.path, kernel_path.as_str()?);
 
     let dtb = config
         .get("kernel")?
@@ -199,7 +201,11 @@ fn generate_guest_img_loading_functions(
                 .to_string();
             let dtb = match files.dtb {
                 Some(v) => {
-                    let s = v.canonicalize().unwrap().display().to_string();
+                    let s = v
+                        .canonicalize()
+                        .with_context(|| format!("Path {} not found", v.display()))?
+                        .display()
+                        .to_string();
                     quote! { Some(include_bytes!(#s)) }
                 }
                 None => quote! { None },
@@ -207,7 +213,11 @@ fn generate_guest_img_loading_functions(
 
             let bios = match files.bios {
                 Some(v) => {
-                    let s = v.canonicalize().unwrap().display().to_string();
+                    let s = v
+                        .canonicalize()
+                        .with_context(|| format!("Path {} not found", v.display()))?
+                        .display()
+                        .to_string();
                     quote! { Some(include_bytes!(#s)) }
                 }
                 None => quote! { None },
@@ -215,7 +225,11 @@ fn generate_guest_img_loading_functions(
 
             let ramdisk = match files.ramdisk {
                 Some(v) => {
-                    let s = v.canonicalize().unwrap().display().to_string();
+                    let s = v
+                        .canonicalize()
+                        .with_context(|| format!("Path {} not found", v.display()))?
+                        .display()
+                        .to_string();
                     quote! { Some(include_bytes!(#s)) }
                 }
                 None => quote! { None },
@@ -255,7 +269,7 @@ fn generate_guest_img_loading_functions(
             ]
         }
     };
-    let syntax_tree = syn::parse2(output).unwrap();
+    let syntax_tree = syn::parse2(output)?;
     let formatted = prettyplease::unparse(&syntax_tree);
     out_file.write_all(formatted.as_bytes())?;
 
@@ -263,7 +277,8 @@ fn generate_guest_img_loading_functions(
 }
 
 fn main() -> anyhow::Result<()> {
-    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let arch =
+        std::env::var("CARGO_CFG_TARGET_ARCH").context("CARGO_CFG_TARGET_ARCH is not set")?;
 
     // let platform = env::var("AX_PLATFORM").unwrap_or("".to_string());
 
@@ -306,7 +321,8 @@ fn main() -> anyhow::Result<()> {
             } else {
                 writeln!(output_file, "    vec![")?;
                 for config_file in &config_files {
-                    writeln!(output_file, "        r###\"{}\"###,", config_file.content)?;
+                    let content = LitStr::new(&config_file.content, proc_macro2::Span::call_site());
+                    writeln!(output_file, "        {},", content.to_token_stream())?;
                 }
                 writeln!(output_file, "    ]")?;
             }

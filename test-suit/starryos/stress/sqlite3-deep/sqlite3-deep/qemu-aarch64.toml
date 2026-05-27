@@ -1,0 +1,79 @@
+args = [
+    "-nographic", "-machine", "virt,gic-version=2",
+    "-cpu", "cortex-a53", "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+set -e
+
+echo "SQLITE_DEEP_ENV_BEGIN"
+apk update
+apk add --no-cache sqlite
+sqlite3 --version
+ls -ld /tmp
+echo "SQLITE_DEEP_ENV_OK"
+
+echo "S5_TRANSACTION_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+sqlite3 /tmp/test.db "PRAGMA journal_mode=DELETE;CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT);"
+sqlite3 /tmp/test.db "BEGIN;INSERT INTO t(name) VALUES('alice');INSERT INTO t(name) VALUES('bob');COMMIT;"
+out="$(sqlite3 /tmp/test.db "SELECT COUNT(*) FROM t;")"
+echo "after_commit: $out"
+test "$out" = "2"
+sqlite3 /tmp/test.db "BEGIN;INSERT INTO t(name) VALUES('rollback_me');ROLLBACK;"
+out="$(sqlite3 /tmp/test.db "SELECT COUNT(*) FROM t;")"
+echo "after_rollback: $out"
+test "$out" = "2"
+echo "S5_TRANSACTION_OK"
+
+echo "S6_WAL_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+out="$(sqlite3 /tmp/test.db "PRAGMA journal_mode=WAL;")"
+echo "journal_mode: $out"
+echo "$out" | grep -qx "wal"
+sqlite3 /tmp/test.db "CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT);"
+sqlite3 /tmp/test.db "INSERT INTO t(name) VALUES('alice');"
+out="$(sqlite3 /tmp/test.db "SELECT id, name FROM t;")"
+echo "query_result: $out"
+test "$out" = "1|alice"
+out="$(sqlite3 /tmp/test.db "SELECT id, name FROM t;")"
+echo "reopen_result: $out"
+test "$out" = "1|alice"
+ls -l /tmp/test.db /tmp/test.db-wal /tmp/test.db-shm 2>/dev/null || true
+echo "S6_WAL_OK"
+
+echo "S7_BULK_INSERT_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+sqlite3 /tmp/test.db "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT);"
+sqlite3 /tmp/test.db "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 500) INSERT INTO t(value) SELECT 'row-' || x FROM cnt;"
+out="$(sqlite3 /tmp/test.db "SELECT COUNT(*) FROM t;")"
+echo "count: $out"
+test "$out" = "500"
+out="$(sqlite3 /tmp/test.db "PRAGMA integrity_check;")"
+echo "integrity: $out"
+test "$out" = "ok"
+echo "S7_BULK_INSERT_OK"
+
+echo "S8_BLOB_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+sqlite3 /tmp/test.db "CREATE TABLE blob_test(id INTEGER PRIMARY KEY, data BLOB);"
+sqlite3 /tmp/test.db "INSERT INTO blob_test(data) VALUES(randomblob(65536));"
+out="$(sqlite3 /tmp/test.db "SELECT length(data) FROM blob_test;")"
+echo "blob_length: $out"
+test "$out" = "65536"
+out="$(sqlite3 /tmp/test.db "SELECT length(data) FROM blob_test;")"
+echo "reopen_blob_length: $out"
+test "$out" = "65536"
+echo "S8_BLOB_OK"
+
+echo "SQLITE3_DEEP_TEST_PASSED"
+'''
+success_regex = ["(?m)^SQLITE3_DEEP_TEST_PASSED\\s*$"]
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 300
