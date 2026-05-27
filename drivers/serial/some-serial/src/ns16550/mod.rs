@@ -17,6 +17,7 @@ use registers::*;
 pub mod dw_apb;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod pio;
+pub mod rockchip_fiq;
 // MMIO 版本（通用）
 mod mmio;
 
@@ -24,6 +25,7 @@ pub use dw_apb::*;
 pub use mmio::*;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use pio::*;
+pub use rockchip_fiq::*;
 
 use crate::{RawReciever, RawSender};
 
@@ -277,6 +279,12 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
                     return Err(SetBackError::new(want, actual));
                 }
             }
+            crate::Sender::Ns16550RockchipFiqSender(ref sender) => {
+                let actual = sender.base_addr();
+                if actual != want {
+                    return Err(SetBackError::new(want, actual));
+                }
+            }
             _ => {
                 return Err(SetBackError::new(want, 0)); // 不匹配的类型
             }
@@ -303,6 +311,12 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
             }
             crate::Reciever::Ns16550DwApbReciever(ref reciever) => {
                 let actual = reciever.base.get_base();
+                if actual != want {
+                    return Err(SetBackError::new(want, actual));
+                }
+            }
+            crate::Reciever::Ns16550RockchipFiqReciever(ref reciever) => {
+                let actual = reciever.base_addr();
                 if actual != want {
                     return Err(SetBackError::new(want, actual));
                 }
