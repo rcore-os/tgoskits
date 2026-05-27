@@ -165,6 +165,11 @@ impl Sdhci {
         }
     }
 
+    pub(crate) fn clear_cached_irq_status(&mut self) {
+        self.irq_pending_normal = 0;
+        self.irq_pending_error = 0;
+    }
+
     pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
         let error_hw = if normal_hw & NORMAL_INT_ERROR != 0 {
@@ -287,6 +292,7 @@ impl Sdhci {
 
         self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+        self.clear_cached_irq_status();
 
         if let Some(d) = data {
             self.configure_data_phase(d.direction, d.block_size, d.block_count, use_dma);
@@ -436,9 +442,14 @@ fn read_r2(host: &Sdhci) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use sdmmc_protocol::DataDirection;
+    use core::ptr::NonNull;
+
+    use sdmmc_protocol::{DataDirection, cmd::cmd17};
 
     use super::*;
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
 
     #[test]
     fn multi_block_transfer_mode_leaves_stop_command_to_request_state_machine() {
@@ -469,5 +480,24 @@ mod tests {
             0,
             "transfer completion belongs to the data-complete poll step"
         );
+    }
+
+    #[test]
+    fn new_command_discards_cached_irq_status_from_previous_request() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.irq_pending_normal = NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE;
+        host.irq_pending_error = ERROR_INT_DATA_TIMEOUT;
+        host.pending_data = Some(crate::host::PendingData {
+            direction: DataDirection::Read,
+            block_size: 512,
+            block_count: 1,
+        });
+
+        host.submit_command(&cmd17(0)).unwrap();
+
+        assert_eq!(host.irq_pending_normal, 0);
+        assert_eq!(host.irq_pending_error, 0);
     }
 }
