@@ -31,7 +31,8 @@ use std::{print, println};
 
 use spin::LazyLock;
 
-pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> = LazyLock::new(build_command_tree);
+pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
+    LazyLock::new(build_command_tree);
 
 #[derive(Debug, Clone)]
 pub struct CommandNode {

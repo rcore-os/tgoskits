@@ -60,7 +60,8 @@ impl PwmSysfsState {
     }
 }
 
-static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> = LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
+static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> =
+    LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
 
 struct PwmClassDir {
     fs: Arc<SimpleFs>,

@@ -51,7 +51,8 @@ impl Ord for Entry {
     }
 }
 
-static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> = LazyLock::new(|| Mutex::new(BinaryHeap::new()));
+static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> =
+    LazyLock::new(|| Mutex::new(BinaryHeap::new()));
 static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
 
 /// The type of interval timer.

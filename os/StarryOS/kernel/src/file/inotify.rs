@@ -49,7 +49,8 @@ pub struct Inotify {
     poll_rx: PollSet,
 }
 
-static INOTIFY_INSTANCES: LazyLock<Mutex<Vec<Weak<Inotify>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static INOTIFY_INSTANCES: LazyLock<Mutex<Vec<Weak<Inotify>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl Inotify {
     pub fn new() -> Arc<Self> {
