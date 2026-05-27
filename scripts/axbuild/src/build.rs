@@ -991,6 +991,7 @@ fn default_ax_hal_platform_feature(
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 #[serde(rename_all = "kebab-case")]
 struct AxplatMetadata {
     platform: String,
@@ -1044,6 +1045,17 @@ fn platform_package_by_name(metadata: &Metadata, platform_name: &str) -> Option<
         .map(|platform| platform.package)
 }
 
+fn platform_package_by_name_with_workspace_fallback(
+    metadata: &Metadata,
+    platform_name: &str,
+) -> Option<String> {
+    platform_package_by_name(metadata, platform_name).or_else(|| {
+        cached_workspace_metadata()
+            .ok()
+            .and_then(|metadata| platform_package_by_name(metadata, platform_name))
+    })
+}
+
 fn default_platform_package(metadata: &Metadata, arch: &str) -> Option<String> {
     platform_packages(metadata)
         .into_iter()
@@ -1053,6 +1065,17 @@ fn default_platform_package(metadata: &Metadata, arch: &str) -> Option<String> {
                 && !platform.metadata.dynamic
         })
         .map(|platform| platform.package)
+}
+
+fn default_platform_package_with_workspace_fallback(
+    metadata: &Metadata,
+    arch: &str,
+) -> Option<String> {
+    default_platform_package(metadata, arch).or_else(|| {
+        cached_workspace_metadata()
+            .ok()
+            .and_then(|metadata| default_platform_package(metadata, arch))
+    })
 }
 
 fn platform_config_path_from_metadata(
@@ -1072,11 +1095,11 @@ fn platform_config_path_from_metadata(
 }
 
 fn ax_hal_platform_package(platform: &str, metadata: &Metadata) -> Option<String> {
-    platform_package_by_name(metadata, platform)
+    platform_package_by_name_with_workspace_fallback(metadata, platform)
 }
 
 fn require_default_platform_package(metadata: &Metadata, arch: &str) -> anyhow::Result<String> {
-    default_platform_package(metadata, arch)
+    default_platform_package_with_workspace_fallback(metadata, arch)
         .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
 }
 
@@ -1086,8 +1109,12 @@ fn explicit_myplat_platform_package(
     metadata: &Metadata,
 ) -> Option<String> {
     match (package, arch) {
-        ("axvisor", "x86_64") => platform_package_by_name(metadata, "x86-qemu-q35"),
-        ("axvisor", "riscv64") => platform_package_by_name(metadata, "riscv64-qemu-virt"),
+        ("axvisor", "x86_64") => {
+            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
+        }
+        ("axvisor", "riscv64") => {
+            platform_package_by_name_with_workspace_fallback(metadata, "riscv64-qemu-virt")
+        }
         _ => None,
     }
 }
