@@ -116,11 +116,11 @@ pub fn init_early(cpu_id: usize, arg: usize) {
 pub fn cpu_num() -> usize {
     #[cfg(feature = "smp")]
     {
-        use spin::Lazy;
+        use spin::LazyLock;
 
         /// The number of CPUs in the system. Based on the number declared by the
         /// platform crate and limited by the configured maximum CPU number.
-        static CPU_NUM: Lazy<usize> = Lazy::new(|| {
+        static CPU_NUM: LazyLock<usize> = LazyLock::new(|| {
             let max_cpu_num = ax_config::plat::MAX_CPU_NUM;
             let plat_cpu_num = ax_plat::power::cpu_num();
             let cpu_num = plat_cpu_num.min(max_cpu_num);

@@ -7,14 +7,14 @@ pub use ax_plat::mem::{
 };
 use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
-use spin::Lazy;
+use spin::LazyLock;
 
 #[allow(unused_imports)]
 use crate::addr_of_sym;
 
 const MAX_REGIONS: usize = 128;
 
-static ALL_MEM_REGIONS: Lazy<Vec<PhysMemRegion, MAX_REGIONS>> = Lazy::new(|| {
+static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::new(|| {
     let mut all_regions = Vec::new();
     let mut push = |r: PhysMemRegion| {
         if r.size > 0 {

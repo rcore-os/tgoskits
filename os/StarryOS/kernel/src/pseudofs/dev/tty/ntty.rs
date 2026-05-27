@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use axpoll::PollSet;
-use spin::Lazy;
+use spin::LazyLock;
 
 use super::{
     Tty,
@@ -27,8 +27,8 @@ impl TtyWrite for Console {
 }
 
 /// The default TTY device.
-pub static N_TTY: Lazy<Arc<NTtyDriver>> = Lazy::new(new_n_tty);
-static CONSOLE_INPUT_SOURCE: Lazy<Arc<PollSet>> = Lazy::new(|| Arc::new(PollSet::new()));
+pub static N_TTY: LazyLock<Arc<NTtyDriver>> = LazyLock::new(new_n_tty);
+static CONSOLE_INPUT_SOURCE: LazyLock<Arc<PollSet>> = LazyLock::new(|| Arc::new(PollSet::new()));
 
 fn handle_console_input_irq(_irq_num: usize) {
     let events = ax_runtime::hal::console::handle_irq();

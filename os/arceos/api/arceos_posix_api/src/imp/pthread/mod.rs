@@ -6,14 +6,14 @@ use core::{
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_task::AxTaskRef;
-use spin::{Lazy, RwLock};
+use spin::{LazyLock, RwLock};
 
 use crate::ctypes;
 
 pub mod mutex;
 
-static TID_TO_PTHREAD: Lazy<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
-    Lazy::new(|| {
+static TID_TO_PTHREAD: LazyLock<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
+    LazyLock::new(|| {
         let mut map = BTreeMap::new();
         let main_task = ax_task::current();
         let main_tid = main_task.id().as_u64();

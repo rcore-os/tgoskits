@@ -349,8 +349,8 @@ dma-api = { version = "0.7.3", path = "memory/dma-api" }
 mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = "0.10"
-ostool = { version = "0.19" }
+spin = "0.12"
+ostool = { version = "0.21" }
 uefi = "0.36"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"

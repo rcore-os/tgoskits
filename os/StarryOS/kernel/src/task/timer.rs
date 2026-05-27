@@ -10,7 +10,7 @@ use ax_task::{
     future::{block_on, timeout_at},
 };
 use event_listener::{Event, listener};
-use spin::Lazy;
+use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
@@ -51,8 +51,9 @@ impl Ord for Entry {
     }
 }
 
-static ALARM_LIST: Lazy<Mutex<BinaryHeap<Entry>>> = Lazy::new(|| Mutex::new(BinaryHeap::new()));
-static EVENT_NEW_TIMER: Lazy<Event> = Lazy::new(Event::new);
+static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> =
+    LazyLock::new(|| Mutex::new(BinaryHeap::new()));
+static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
 
 /// The type of interval timer.
 #[repr(i32)]

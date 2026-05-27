@@ -22,7 +22,7 @@ use linux_raw_sys::{
     },
     ioctl::FIONREAD,
 };
-use spin::Lazy;
+use spin::LazyLock;
 use starry_vm::VmMutPtr;
 
 use crate::file::{FileLike, IoDst, IoSrc};
@@ -49,7 +49,8 @@ pub struct Inotify {
     poll_rx: PollSet,
 }
 
-static INOTIFY_INSTANCES: Lazy<Mutex<Vec<Weak<Inotify>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static INOTIFY_INSTANCES: LazyLock<Mutex<Vec<Weak<Inotify>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl Inotify {
     pub fn new() -> Arc<Self> {
