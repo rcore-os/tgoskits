@@ -707,19 +707,24 @@ impl JitBackend for Aarch64Backend {
                 } else if insn.code == (BPF_JMP | BPF_JA) || insn.code == (BPF_JMP32 | BPF_JA) {
                     4
                 } else {
-                    let cmp_size = if use_imm { 16 } else { 4 };
-                    if op == BPF_JSET {
-                        cmp_size + 12
+                    let jmp_is_64 = class == BPF_JMP;
+                    let imm_load = if use_imm {
+                        if jmp_is_64 { 16 } else { 8 }
                     } else {
-                        cmp_size + 8
+                        0
+                    };
+                    if op == BPF_JSET {
+                        imm_load + 12
+                    } else {
+                        imm_load + 8
                     }
                 }
             }
             BPF_ST => {
                 if insn.size() == BPF_DW {
-                    28
-                } else {
                     24
+                } else {
+                    16
                 }
             }
             BPF_STX => 8,
