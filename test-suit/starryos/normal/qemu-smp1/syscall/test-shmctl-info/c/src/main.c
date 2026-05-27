@@ -45,19 +45,7 @@ struct shminfo64
     unsigned long shmall;
 };
 
-/*
- * struct shm_info — filled by shmctl(0, SHM_INFO, ...).
- */
-struct shm_info
-{
-    int used_ids;
-    int __pad;          /* pad to sizeof(unsigned long) */
-    unsigned long shm_tot;
-    unsigned long shm_rss;
-    unsigned long shm_swp;
-    unsigned long swap_attempts;
-    unsigned long swap_successes;
-};
+/* struct shm_info is provided by <bits/shm.h> (included via <sys/shm.h>). */
 
 /* Build a process-unique key that is never IPC_PRIVATE. */
 static key_t make_key(unsigned int salt)
