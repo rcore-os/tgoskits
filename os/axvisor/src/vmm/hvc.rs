@@ -16,29 +16,23 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::{GuestPhysAddr, MappingFlags};
 use axhvc::{HyperCallCode, HyperCallResult};
 
+use crate::vmm::VMRef;
 use crate::vmm::ivc::{self, IVCChannel};
-use crate::vmm::{VCpuRef, VMRef};
 
 pub struct HyperCall {
-    _vcpu: VCpuRef,
     vm: VMRef,
     code: HyperCallCode,
     args: [u64; 6],
 }
 
 impl HyperCall {
-    pub fn new(vcpu: VCpuRef, vm: VMRef, code: u64, args: [u64; 6]) -> AxResult<Self> {
+    pub fn new(vm: VMRef, code: u64, args: [u64; 6]) -> AxResult<Self> {
         let code = HyperCallCode::try_from(code as u32).map_err(|e| {
             warn!("Invalid hypercall code: {code} e {e:?}");
             ax_err_type!(InvalidInput)
         })?;
 
-        Ok(Self {
-            _vcpu: vcpu,
-            vm,
-            code,
-            args,
-        })
+        Ok(Self { vm, code, args })
     }
 
     pub fn execute(&self) -> HyperCallResult {
@@ -88,7 +82,9 @@ impl HyperCall {
                     self.code,
                     key
                 );
-                let (base_gpa, size) = ivc::unpublish_channel(self.vm.id(), key)?.unwrap();
+                let (base_gpa, size) = ivc::unpublish_channel(self.vm.id(), key)?;
+                // The publisher's GPA mapping is always unmapped; subscribers keep their own
+                // GPA views. The shared HPA frame is freed when the last subscriber leaves.
                 self.vm.unmap_region(base_gpa, size)?;
 
                 Ok(0)

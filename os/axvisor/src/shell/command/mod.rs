@@ -23,7 +23,10 @@ pub use vm::*;
 use std::io::prelude::*;
 use std::string::String;
 use std::vec::Vec;
-use std::{collections::BTreeMap, string::ToString};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    string::ToString,
+};
 use std::{print, println};
 
 use spin::Lazy;
@@ -36,8 +39,6 @@ pub struct CommandNode {
     subcommands: BTreeMap<String, CommandNode>,
     description: &'static str,
     usage: Option<&'static str>,
-    #[allow(dead_code)]
-    log_level: log::LevelFilter,
     options: Vec<OptionDef>,
     flags: Vec<FlagDef>,
 }
@@ -63,7 +64,7 @@ pub struct FlagDef {
 pub struct ParsedCommand {
     pub command_path: Vec<String>,
     pub options: BTreeMap<String, String>,
-    pub flags: BTreeMap<String, bool>,
+    pub flags: BTreeSet<String>,
     pub positional_args: Vec<String>,
 }
 
@@ -83,7 +84,6 @@ impl CommandNode {
             subcommands: BTreeMap::new(),
             description,
             usage: None,
-            log_level: log::LevelFilter::Off,
             options: Vec::new(),
             flags: Vec::new(),
         }
@@ -96,12 +96,6 @@ impl CommandNode {
 
     pub fn with_usage(mut self, usage: &'static str) -> Self {
         self.usage = Some(usage);
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_log_level(mut self, level: log::LevelFilter) -> Self {
-        self.log_level = level;
         self
     }
 
@@ -257,16 +251,9 @@ impl CommandParser {
     fn parse_args(
         tokens: &[String],
         command_node: &CommandNode,
-    ) -> Result<
-        (
-            BTreeMap<String, String>,
-            BTreeMap<String, bool>,
-            Vec<String>,
-        ),
-        ParseError,
-    > {
+    ) -> Result<(BTreeMap<String, String>, BTreeSet<String>, Vec<String>), ParseError> {
         let mut options = BTreeMap::new();
-        let mut flags = BTreeMap::new();
+        let mut flags = BTreeSet::new();
         let mut positional_args = Vec::new();
         let mut i = 0;
 
@@ -285,7 +272,7 @@ impl CommandParser {
                         return Err(ParseError::UnknownOption(format!("--{opt_name}")));
                     }
                 } else if Self::is_flag(name, command_node) {
-                    flags.insert(name.to_string(), true);
+                    flags.insert(name.to_string());
                 } else if Self::is_option(name, command_node) {
                     // --option value format
                     if i + 1 >= tokens.len() {
@@ -301,14 +288,12 @@ impl CommandParser {
                 let chars: Vec<char> = token[1..].chars().collect();
                 for (j, &ch) in chars.iter().enumerate() {
                     if Self::is_short_flag(ch, command_node) {
-                        flags.insert(
-                            Self::get_flag_name_by_short(ch, command_node)
-                                .unwrap()
-                                .to_string(),
-                            true,
-                        );
+                        let flag_name = Self::get_flag_name_by_short(ch, command_node)
+                            .ok_or_else(|| ParseError::UnknownOption(format!("-{ch}")))?;
+                        flags.insert(flag_name.to_string());
                     } else if Self::is_short_option(ch, command_node) {
-                        let opt_name = Self::get_option_name_by_short(ch, command_node).unwrap();
+                        let opt_name = Self::get_option_name_by_short(ch, command_node)
+                            .ok_or_else(|| ParseError::UnknownOption(format!("-{ch}")))?;
                         if j == chars.len() - 1 && i + 1 < tokens.len() {
                             // Last character and there is a next token as value
                             options.insert(opt_name.to_string(), tokens[i + 1].clone());
@@ -382,9 +367,14 @@ pub fn execute_command(input: &str) -> Result<(), ParseError> {
     let parsed = CommandParser::parse(input)?;
 
     // Find the corresponding command node
-    let mut current_node = COMMAND_TREE.get(&parsed.command_path[0]).unwrap();
+    let mut current_node = COMMAND_TREE
+        .get(&parsed.command_path[0])
+        .ok_or_else(|| ParseError::UnknownCommand(parsed.command_path[0].clone()))?;
     for cmd in &parsed.command_path[1..] {
-        current_node = current_node.subcommands.get(cmd).unwrap();
+        current_node = current_node
+            .subcommands
+            .get(cmd)
+            .ok_or_else(|| ParseError::UnknownCommand(cmd.clone()))?;
     }
 
     // Execute the command
@@ -480,11 +470,22 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 }
 
 pub fn print_prompt() {
+    print!("{}", prompt_string());
+    std::io::stdout().flush().ok();
+}
+
+pub fn prompt_string() -> String {
     #[cfg(feature = "fs")]
-    print!("axvisor:{}$ ", std::env::current_dir().unwrap());
+    {
+        match std::env::current_dir() {
+            Ok(dir) => format!("axvisor:{dir}$ "),
+            Err(_) => "axvisor:$ ".to_string(),
+        }
+    }
     #[cfg(not(feature = "fs"))]
-    print!("axvisor:$ ");
-    std::io::stdout().flush().unwrap();
+    {
+        "axvisor:$ ".to_string()
+    }
 }
 
 pub fn run_cmd_bytes(cmd_bytes: &[u8]) {
@@ -536,7 +537,7 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
-            std::io::stdout().flush().unwrap();
+            std::io::stdout().flush().ok();
             true
         }
         _ if input.starts_with("help ") => {
