@@ -1905,6 +1905,31 @@ mod tests {
     }
 
     #[test]
+    fn busybox_guest_script_reports_case_start_and_bounds_nologin() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let script_path =
+            workspace_root.join("test-suit/starryos/normal/qemu-smp1/busybox/sh/busybox-tests.sh");
+        let script = fs::read_to_string(&script_path).unwrap();
+
+        assert!(
+            script.contains("echo \"START: $BB_CASE_NAME\""),
+            "{} must print case start markers so CI timeout logs identify the hanging BusyBox \
+             applet",
+            script_path.display()
+        );
+        assert!(
+            script.contains("timeout 2 busybox nologin"),
+            "{} must run nologin in the foreground under a timeout",
+            script_path.display()
+        );
+        assert!(
+            !script.contains("busybox nologin >/tmp/bb_nologin.out 2>&1 &"),
+            "{} must not leave the nologin probe as a background child",
+            script_path.display()
+        );
+    }
+
+    #[test]
     fn starry_grouped_cases_install_profile_autorun() {
         let config = starry_case_asset_config();
 
