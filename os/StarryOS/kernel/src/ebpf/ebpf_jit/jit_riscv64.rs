@@ -954,7 +954,13 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_ST | BPF_STX => {
-                let off_size = if insn.off >= -2048 && insn.off < 2048 {
+                let base = bpf_to_rv(insn.dst_reg());
+                let effective_off = if base == RV_S5 {
+                    (insn.off as i32) - CALLEE_SAVED_SIZE as i32
+                } else {
+                    insn.off as i32
+                };
+                let off_size = if effective_off >= -2048 && effective_off < 2048 {
                     0
                 } else {
                     8
@@ -971,7 +977,13 @@ impl JitBackend for Riscv64Backend {
                 4 + off_size + imm_size + 4
             }
             BPF_LDX => {
-                let off_size = if insn.off >= -2048 && insn.off < 2048 {
+                let base = bpf_to_rv(insn.src_reg());
+                let effective_off = if base == RV_S5 {
+                    (insn.off as i32) - CALLEE_SAVED_SIZE as i32
+                } else {
+                    insn.off as i32
+                };
+                let off_size = if effective_off >= -2048 && effective_off < 2048 {
                     0
                 } else {
                     8
