@@ -344,7 +344,7 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
         let hi20 = (lo32.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
         emit_lui(buf, rd, hi20 & 0xFFFFF);
         if lo12 != 0 {
-            emit_addiw(buf, rd, rd, lo12);
+            emit_addiw(buf, rd, rd, lo12 as i32);
         }
         return;
     }
@@ -352,13 +352,13 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
     let upper_lo12 = (upper << 20) >> 20;
     let upper_hi20 = (upper.wrapping_sub(upper_lo12).wrapping_add(0x800)) >> 12;
     emit_lui(buf, rd, upper_hi20 & 0xFFFFF);
-    emit_addiw(buf, rd, rd, upper_lo12);
+    emit_addiw(buf, rd, rd, upper_lo12 as i32);
     emit_slli(buf, rd, rd, 32);
     let lower = val as u32;
     let lower_lo12 = (lower << 20) >> 20;
     let lower_hi20 = (lower.wrapping_sub(lower_lo12).wrapping_add(0x800)) >> 12;
     emit_lui(buf, RV_T1, lower_hi20 & 0xFFFFF);
-    emit_addiw(buf, RV_T1, RV_T1, lower_lo12);
+    emit_addiw(buf, RV_T1, RV_T1, lower_lo12 as i32);
     emit_add(buf, rd, rd, RV_T1);
 }
 
@@ -372,7 +372,7 @@ fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
         let hi20 = (val_u.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
         emit_lui(buf, rd, hi20 & 0xFFFFF);
         if lo12 != 0 {
-            emit_addiw(buf, rd, rd, lo12);
+            emit_addiw(buf, rd, rd, lo12 as i32);
         }
     }
 }
