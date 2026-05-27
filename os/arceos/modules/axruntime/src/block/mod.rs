@@ -1,31 +1,46 @@
-#[cfg(any(
-    feature = "fs-ng",
-    all(feature = "irq", any(feature = "fs", feature = "fs-ng"))
-))]
-use alloc::boxed::Box;
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 use alloc::vec::Vec;
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 use core::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
-use ax_driver::block::BlockIrqHandler;
-
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 mod root;
-#[cfg(any(feature = "fs-ng", test))]
+#[cfg(any(
+    all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")),
+    test
+))]
 pub(crate) mod volume;
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 const BLOCK_IRQ_SLOTS: usize = 16;
 
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 struct FsNgBlockDevice(ax_driver::block::Block);
 
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 impl ax_fs_ng::FsBlockDevice for FsNgBlockDevice {
     fn name(&self) -> &str {
         self.0.name()
@@ -52,11 +67,28 @@ impl ax_fs_ng::FsBlockDevice for FsNgBlockDevice {
     }
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
-static BLOCK_IRQ_HANDLERS: [AtomicPtr<BlockIrqHandler>; BLOCK_IRQ_SLOTS] =
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
+static BLOCK_IRQ_HANDLERS: [AtomicPtr<ax_driver::block::BlockIrqHandler>; BLOCK_IRQ_SLOTS] =
     [const { AtomicPtr::new(ptr::null_mut()) }; BLOCK_IRQ_SLOTS];
 
-#[cfg(any(feature = "fs", feature = "fs-ng"))]
+#[cfg(any(
+    all(
+        feature = "fs",
+        not(feature = "fs-ng"),
+        any(not(feature = "plat-dyn"), target_os = "none")
+    ),
+    all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+))]
 pub(crate) fn register_irq_handlers(blocks: &mut [ax_driver::block::Block]) {
     #[cfg(feature = "irq")]
     {
@@ -76,9 +108,19 @@ pub(crate) fn register_irq_handlers(blocks: &mut [ax_driver::block::Block]) {
     }
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
-fn register_irq_handler(irq_num: usize, handler: BlockIrqHandler) -> bool {
-    let handler = Box::into_raw(Box::new(handler));
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
+fn register_irq_handler(irq_num: usize, handler: ax_driver::block::BlockIrqHandler) -> bool {
+    let handler = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(handler));
     for (slot, source) in BLOCK_IRQ_HANDLERS.iter().enumerate() {
         if source
             .compare_exchange(
@@ -98,20 +140,30 @@ fn register_irq_handler(irq_num: usize, handler: BlockIrqHandler) -> bool {
 
         source.store(ptr::null_mut(), Ordering::Release);
         unsafe {
-            drop(Box::from_raw(handler));
+            drop(alloc::boxed::Box::from_raw(handler));
         }
         warn!("failed to register block irq handler for irq {irq_num}");
         return false;
     }
 
     unsafe {
-        drop(Box::from_raw(handler));
+        drop(alloc::boxed::Box::from_raw(handler));
     }
     warn!("no free block irq handler slot for irq {irq_num}");
     false
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 fn handle_block_irq(slot: usize) {
     let handler = BLOCK_IRQ_HANDLERS[slot].load(Ordering::Acquire);
     let Some(handler) = (unsafe { handler.as_ref() }) else {
@@ -120,12 +172,32 @@ fn handle_block_irq(slot: usize) {
     let _ = handler.handle();
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 fn handle_block_irq_slot<const SLOT: usize>(_: usize) {
     handle_block_irq(SLOT);
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 const BLOCK_IRQ_THUNKS: [fn(usize); BLOCK_IRQ_SLOTS] = [
     handle_block_irq_slot::<0>,
     handle_block_irq_slot::<1>,
@@ -159,18 +231,19 @@ pub(crate) fn init_static_fs_ng() {
     init_fs_ng_from_blocks(take_block_devices(), None);
 }
 
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 fn take_block_devices() -> Vec<ax_driver::block::Block> {
     let mut devices = ax_driver::block::take_block_devices();
     register_irq_handlers(&mut devices);
     devices
 }
 
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 fn init_fs_ng_from_blocks(blocks: Vec<ax_driver::block::Block>, bootargs: Option<&str>) {
-    let block_devs = blocks
-        .into_iter()
-        .map(|dev| Box::new(FsNgBlockDevice(dev)) as Box<dyn ax_fs_ng::FsBlockDevice>);
+    let block_devs = blocks.into_iter().map(|dev| {
+        alloc::boxed::Box::new(FsNgBlockDevice(dev))
+            as alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>
+    });
     let root_spec = root::parse_root_spec(bootargs);
     let mut disks = root::collect_disks(block_devs);
     let candidates = root::collect_root_candidates(&disks);

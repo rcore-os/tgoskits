@@ -24,6 +24,7 @@ rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
     "ax-feat/plat-dyn",
     "dep:ax-driver",
+    "ax-driver/usb",
     "dep:crab-usb",
     "dep:rdrive",
 ]
