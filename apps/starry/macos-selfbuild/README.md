@@ -5,6 +5,8 @@ with QEMU/HVF and building StarryOS again inside the StarryOS guest.
 
 It is an operator-facing app scenario, not a CI test. Rootfs images, kernels,
 logs, and build outputs are local artifacts and are intentionally not committed.
+The repository side is the reproducible runner and checklist; the large rootfs
+with guest Rust/Cargo must be supplied as an external artifact.
 
 ## What This Demonstrates
 
@@ -44,6 +46,9 @@ The rootfs should contain at least:
 /opt/tgoskits/Cargo.toml or /opt/tgoskits-src.tar
 ```
 
+The run script copies the input rootfs before booting. Keep at least one extra
+rootfs image worth of free disk space under `target/starry-macos-selfbuild/`.
+
 Check a prepared rootfs before booting:
 
 ```bash
@@ -73,7 +78,7 @@ ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
 SMP=8 \
 JOBS=8 \
 SOURCE_TMPFS=1 \
-EXTRA_RUSTFLAGS='-Z threads=2' \
+QEMU_TIMEOUT_SEC=7200 \
 apps/starry/macos-selfbuild/run_selfbuild.sh
 ```
 
@@ -107,25 +112,59 @@ and the host side stops QEMU after seeing:
 | `SMP` | `8` | QEMU vCPU count, passed to `-smp`. |
 | `JOBS` | `SMP` | Guest `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS`. |
 | `SOURCE_TMPFS` | `1` | Copy `/opt/tgoskits` into `/tmp` before building to reduce ext4 output pressure. |
+| `QEMU_TIMEOUT_SEC` | `7200` | Host-side timeout for a stuck boot or build. Use `0` to disable it. |
 | `BUILD_TARGET` | `aarch64-unknown-none-softfloat` | Guest Cargo target. |
 | `BUILD_PACKAGE` | `starryos` | Cargo package to build. |
 | `BUILD_BIN` | `starryos` | Cargo binary to build. |
 | `FEATURES` | `qemu,gic-v3,cntv-timer,smp` | StarryOS features for the guest build. |
-| `EXTRA_RUSTFLAGS` | empty | Extra guest Rust flags. The fastest local run used `-Z threads=2`. |
+| `EXTRA_RUSTFLAGS` | empty | Extra guest Rust flags for local tuning experiments. |
+
+To reproduce the fastest local profile, keep the same rootfs/kernel setup and
+make the tuning knobs explicit:
+
+```bash
+KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
+ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
+SMP=8 \
+JOBS=8 \
+SOURCE_TMPFS=1 \
+FEATURES='ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,ax-feat/bus-pci,gic-v3,cntv-timer,smp' \
+CARGO_PROFILE_RELEASE_LTO=false \
+CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
+apps/starry/macos-selfbuild/run_selfbuild.sh
+```
 
 ## Representative Results
 
-These are reference measurements from the Apple Silicon HVF self-build
-experiment. They are included to document the intended scale of the demo; rerun
-locally for authoritative numbers on a given machine.
+These are reference measurements from the local Apple Silicon HVF self-build
+experiment. They document the intended scale of the demo; rerun locally for
+authoritative numbers on a given machine. The table separates default
+reproduction knobs from later local tuning, so it should not be read as a single
+controlled benchmark.
 
 | Case | Guest build knobs | Result |
 | --- | --- | --- |
 | slow guest baseline | `SMP=8`, `JOBS=1`, ext4 source/target | `951s` |
 | first working SMP build | `SMP=8`, `JOBS=8`, ext4 source/target | `917s` |
-| tmpfs source/target | `SMP=8`, `JOBS=8`, `SOURCE_TMPFS=1` | `660s` |
-| optimized fast build | `SMP=8`, `JOBS=8`, `SOURCE_TMPFS=1`, `EXTRA_RUSTFLAGS='-Z threads=2'` | `331s` |
-| host oracle | macOS host build of the same kernel target | `134s` |
+| tmp target only | `SMP=8`, `JOBS=8`, target dir in `/tmp` | `660s` |
+| tmp source and target | `SMP=8`, `JOBS=8`, source copy plus target dir in `/tmp` | `642s` |
+| no LTO | `SMP=8`, `JOBS=8`, tmp source/target, `CARGO_PROFILE_RELEASE_LTO=false` | `515s` |
+| opt0 plus high CGU | `SMP=8`, `JOBS=8`, no LTO, `OPT_LEVEL=0`, `CODEGEN_UNITS=256` | `427s` |
+| tuned local best | `SMP=8`, `JOBS=8`, tmpfs source/target, tuned feature set, no LTO, `OPT_LEVEL=0`, `CODEGEN_UNITS=256` | `331s` |
+| host reference | separate macOS host build used as a lower-bound reference, outside the guest | `134s` |
+
+Speedup checkpoints from these local runs:
+
+```text
+slow guest baseline -> tuned local best: 951s / 331s = 2.87x
+tmp source/target -> tuned local best: 642s / 331s = 1.94x
+tuned JOBS=1 -> tuned JOBS=8: 422s / 331s = 1.28x
+```
+
+The `134s` host reference is not a guest self-build result and is not used in
+the speedup ratios above. Treat it as a host-side lower bound, not as an
+apples-to-apples AArch64 guest comparison.
 
 The main performance lesson is:
 

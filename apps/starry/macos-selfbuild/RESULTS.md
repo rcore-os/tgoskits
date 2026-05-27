@@ -15,6 +15,10 @@ QEMU disk mode: -snapshot
 success marker: STARRY-MACOS-SELFBUILD-PASS
 ```
 
+The committed app does not include the large rootfs, toolchain, kernel image, or
+local logs. A reproducible run starts from a prepared rootfs that passes
+`check_rootfs.sh`.
+
 ## Build Command Shape
 
 Inside the StarryOS guest, the app runs:
@@ -42,19 +46,41 @@ RUSTC=/opt/rustc-nightly-sysroot
 RUSTDOC=/opt/rustdoc-nightly-sysroot
 ```
 
+The default runner uses the build shape above. Local tuning runs may override
+`FEATURES`, release-profile settings, or `EXTRA_RUSTFLAGS`; those overrides must
+be recorded beside the number.
+
 ## Reference Numbers
 
 | Case | Time | Notes |
 | --- | --- | --- |
 | `SMP=8`, `JOBS=1`, ext4 source/target | `951s` | slow guest baseline |
 | `SMP=8`, `JOBS=8`, ext4 source/target | `917s` | first complete SMP self-build |
-| `SMP=8`, `JOBS=8`, tmpfs source/target | `660s` | removes heavy ext4 output pressure |
-| `SMP=8`, `JOBS=8`, tmpfs, `-Z threads=2` | `331s` | fastest local full self-build |
-| host macOS oracle | `134s` | same target on host, not inside StarryOS |
+| `SMP=8`, `JOBS=8`, tmp target only | `660s` | moves Cargo target output to `/tmp` |
+| `SMP=8`, `JOBS=8`, tmp source and target | `642s` | copies source and target output to `/tmp` |
+| `SMP=8`, `JOBS=8`, tmp source/target, no LTO | `515s` | `CARGO_PROFILE_RELEASE_LTO=false` |
+| `SMP=8`, `JOBS=8`, tmp source/target, no LTO, opt0, CGU256 | `427s` | reduces serial optimized codegen cost |
+| `SMP=8`, `JOBS=8`, tuned feature set, no LTO, opt0, CGU256 | `331s` | best local full self-build |
+| host macOS reference | `134s` | separate host-side lower bound, not inside StarryOS |
+
+The fastest local row used this explicit feature set:
+
+```text
+FEATURES=ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,ax-feat/bus-pci,gic-v3,cntv-timer,smp
+```
+
+Use explicit end-to-end ratios when reporting the full guest cargo build. The
+checked-in numbers support these ratios:
+
+```text
+951s / 331s = 2.87x   slow guest baseline to tuned local best
+642s / 331s = 1.94x   tmp source/target baseline to tuned local best
+422s / 331s = 1.28x   tuned JOBS=1 to tuned JOBS=8
+```
 
 ## Interpretation
 
 The self-build already passes in an 8-vCPU StarryOS guest. The remaining gap to
-the host oracle is not just "more CPUs"; it is the sum of filesystem writeback,
-process/wait/pipe overhead, SMP scheduling, lock contention, and serial Cargo
-critical-path work.
+the host reference is not just "more CPUs"; it is the sum of filesystem
+writeback, process/wait/pipe overhead, SMP scheduling, lock contention, and
+serial Cargo critical-path work.
