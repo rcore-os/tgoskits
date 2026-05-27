@@ -848,8 +848,10 @@ impl JitBackend for X86_64Backend {
                         }
                     }
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
-                        if use_imm {
-                            if class == BPF_ALU64 { 4 } else { 4 + 3 }
+                        if use_imm && class == BPF_ALU64 {
+                            4
+                        } else if use_imm {
+                            4 + 3
                         } else {
                             3 + 3
                         }
