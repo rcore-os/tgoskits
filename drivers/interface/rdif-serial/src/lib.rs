@@ -21,6 +21,14 @@ impl DriverGeneric for Box<dyn Interface> {
     fn name(&self) -> &str {
         self.as_ref().name()
     }
+
+    fn raw_any(&self) -> Option<&dyn Any> {
+        self.as_ref().raw_any()
+    }
+
+    fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+        self.as_mut().raw_any_mut()
+    }
 }
 
 mod serial;

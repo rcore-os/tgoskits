@@ -62,6 +62,7 @@ pub enum Sender {
     Ns16550Sender(ns16550::Ns16550Sender<ns16550::Port>),
     Ns16550MmioSender(ns16550::Ns16550Sender<ns16550::Mmio>),
     Ns16550DwApbSender(ns16550::Ns16550Sender<ns16550::DwApb>),
+    Ns16550RockchipFiqSender(ns16550::rockchip_fiq::RockchipFiqSender),
     Pl011Sender(pl011::Pl011Sender),
 }
 
@@ -96,6 +97,7 @@ pub enum Reciever {
     Ns16550Reciever(ns16550::Ns16550Reciever<ns16550::Port>),
     Ns16550MmioReciever(ns16550::Ns16550Reciever<ns16550::Mmio>),
     Ns16550DwApbReciever(ns16550::Ns16550Reciever<ns16550::DwApb>),
+    Ns16550RockchipFiqReciever(ns16550::rockchip_fiq::RockchipFiqReceiver),
     Pl011Reciever(pl011::Pl011Reciever),
 }
 
