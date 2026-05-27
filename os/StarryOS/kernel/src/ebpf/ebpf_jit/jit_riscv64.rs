@@ -569,7 +569,9 @@ impl JitBackend for Riscv64Backend {
                     emit_sraw(buf, dst, dst, RV_T2);
                 }
             }
-            BPF_END => {}
+            BPF_END => {
+                log::warn!("eBPF JIT riscv64: BPF_END (byte-order conversion) not implemented");
+            }
             _ => {}
         }
     }
@@ -893,6 +895,8 @@ impl JitBackend for Riscv64Backend {
                 let alu_op = insn.alu_op();
                 let load_size = if use_imm {
                     if insn.imm >= -2048 && insn.imm < 2048 {
+                        4
+                    } else if (insn.imm as u32) & 0xFFF == 0 {
                         4
                     } else {
                         8
