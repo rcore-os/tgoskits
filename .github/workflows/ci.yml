@@ -66,6 +66,7 @@ jobs:
         uses: dorny/paths-filter@v4
         with:
           base: ${{ github.event_name == 'push' && github.ref || '' }}
+          token: ""
           filters: |
             ci_checks:
               - ".cargo/**"
