@@ -61,6 +61,7 @@ test_commands = [
     "/usr/bin/bug-tcp-udp-bind-same-port",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
     "/usr/bin/bug-epollet-second-chunk",
+    "/usr/bin/bug-ext4-dir-ops",
     "/usr/bin/bug-tcp-concurrent-connect",
     "/usr/bin/bug-tcp-nonblocking-connect-so-error",
     "/usr/bin/bug-kill-zombie-esrch",

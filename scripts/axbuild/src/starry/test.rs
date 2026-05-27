@@ -1390,14 +1390,33 @@ mod tests {
     }
 
     #[test]
-    fn bug_ext4_dir_ops_qemu_configs_fail_on_lockdep_fatal() {
+    fn bug_ext4_dir_ops_stays_in_bugfix_grouped_qemu_configs() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bug-ext4-dir-ops");
+        let case_dir =
+            workspace_root.join("test-suit/starryos/normal/qemu-smp1/bugfix/bug-ext4-dir-ops");
+        assert!(
+            case_dir.join("c/CMakeLists.txt").is_file(),
+            "{} must remain a grouped C test case",
+            case_dir.display()
+        );
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let path = case_dir.parent().unwrap().join(format!("qemu-{arch}.toml"));
             let content = fs::read_to_string(&path).unwrap();
             let config: toml::Value = toml::from_str(&content).unwrap();
+            let test_commands = config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                test_commands
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|command| command == "/usr/bin/bug-ext4-dir-ops"),
+                "{} must run bug-ext4-dir-ops from the grouped bugfix case",
+                path.display()
+            );
+
             let fail_regex = config
                 .get("fail_regex")
                 .and_then(toml::Value::as_array)
@@ -1407,8 +1426,8 @@ mod tests {
                 fail_regex
                     .iter()
                     .filter_map(toml::Value::as_str)
-                    .any(|regex| regex.contains("lockdep fatal violation")),
-                "{} must fail when lockdep reports a fatal violation",
+                    .any(|regex| regex.contains("STARRY_GROUPED_TEST_FAILED")),
+                "{} must fail when a grouped bugfix command fails",
                 path.display()
             );
         }
