@@ -46,7 +46,7 @@ xhci-mmio = ["usb", "plat-dyn"]
 xhci-pci = ["usb"]
 serial = ["plat-dyn", "dep:some-serial"]
 sg2002-placeholder = ["plat-dyn"]
-rtc = ["plat-dyn", "dep:ax-arm-pl031"]
+rtc = ["plat-dyn", "dep:ax-arm-pl031", "dep:riscv_goldfish"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rockchip-sdhci = [
     "block",
@@ -133,3 +133,6 @@ simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
 virtio-drivers = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv_goldfish = { version = "0.1", optional = true }
