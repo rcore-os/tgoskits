@@ -787,13 +787,8 @@ impl JitBackend for X86_64Backend {
         let off = insn.off as i32;
         let base = bpf_to_x86(insn.dst_reg());
         let src = bpf_to_x86(insn.src_reg());
-        let sz = if insn.size() == BPF_DW {
-            BPF_DW
-        } else {
-            insn.size()
-        };
         let adjusted_off = if base == X86_RBP { off - 32 } else { off };
-        emit_store_mem(buf, base, adjusted_off, src, sz);
+        emit_store_mem(buf, base, adjusted_off, src, insn.size());
     }
 
     fn emit_ldx(buf: &mut JitBuffer, insn: &BpfInsn) {
