@@ -339,25 +339,25 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
         return;
     }
     if (val as u32 as i32) as i64 == val_i {
-        let lo32 = val as u32 as i32;
-        let lo12 = (((lo32 as i64) << 52) >> 52) as i32;
-        let hi20 = ((lo32 as i64 - lo12 as i64 + 0x800) >> 12) as u32;
-        emit_lui(buf, rd, hi20);
+        let lo32 = val as u32;
+        let lo12 = (lo32 << 20) >> 20;
+        let hi20 = (lo32.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
+        emit_lui(buf, rd, hi20 & 0xFFFFF);
         if lo12 != 0 {
-            emit_addi(buf, rd, rd, lo12);
+            emit_addiw(buf, rd, rd, lo12);
         }
         return;
     }
-    let upper = ((val + ((val & 0x80000000) << 1)) >> 32) as u32 as i32;
-    let upper_hi20 = ((upper as i64 + 0x800) >> 12) as u32;
-    let upper_lo12 = (((upper as i64) << 52) >> 52) as i32;
-    emit_lui(buf, rd, upper_hi20);
+    let upper = (val >> 32) as u32;
+    let upper_lo12 = (upper << 20) >> 20;
+    let upper_hi20 = (upper.wrapping_sub(upper_lo12).wrapping_add(0x800)) >> 12;
+    emit_lui(buf, rd, upper_hi20 & 0xFFFFF);
     emit_addiw(buf, rd, rd, upper_lo12);
     emit_slli(buf, rd, rd, 32);
-    let lower = val as u32 as i32;
-    let lower_hi20 = ((lower as i64 + 0x800) >> 12) as u32;
-    let lower_lo12 = (((lower as i64) << 52) >> 52) as i32;
-    emit_lui(buf, RV_T1, lower_hi20);
+    let lower = val as u32;
+    let lower_lo12 = (lower << 20) >> 20;
+    let lower_hi20 = (lower.wrapping_sub(lower_lo12).wrapping_add(0x800)) >> 12;
+    emit_lui(buf, RV_T1, lower_hi20 & 0xFFFFF);
     emit_addiw(buf, RV_T1, RV_T1, lower_lo12);
     emit_add(buf, rd, rd, RV_T1);
 }
@@ -367,11 +367,12 @@ fn emit_load_imm32(buf: &mut JitBuffer, rd: u32, val: i32) {
     if !needs_upper {
         emit_addi(buf, rd, RV_ZERO, val);
     } else {
-        let hi20 = ((val as i32 as i64 + 0x800) >> 12) as u32;
-        let lo12 = val.wrapping_sub((hi20 as i32) << 12);
-        emit_lui(buf, rd, hi20);
+        let val_u = val as u32;
+        let lo12 = (val_u << 20) >> 20;
+        let hi20 = (val_u.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
+        emit_lui(buf, rd, hi20 & 0xFFFFF);
         if lo12 != 0 {
-            emit_addi(buf, rd, rd, lo12);
+            emit_addiw(buf, rd, rd, lo12);
         }
     }
 }
@@ -1011,6 +1012,123 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             _ => 4,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_arch_independent {
+    fn compute_hi20_lo12(val: u32) -> (u32, u32) {
+        let lo12 = (val << 20) >> 20;
+        let hi20 = (val.wrapping_sub(lo12).wrapping_add(0x800)) >> 12;
+        (hi20 & 0xFFFFF, lo12)
+    }
+
+    fn reconstruct_from_hi20_lo12(hi20: u32, lo12: u32) -> u64 {
+        let lui_val = ((hi20 as i32).wrapping_shl(12)) as i64;
+        (lui_val.wrapping_add(lo12 as i32 as i64)) as u64
+    }
+
+    fn reconstruct_64bit(
+        upper_hi20: u32,
+        upper_lo12: u32,
+        lower_hi20: u32,
+        lower_lo12: u32,
+    ) -> u64 {
+        let upper = reconstruct_from_hi20_lo12(upper_hi20, upper_lo12);
+        let lower = reconstruct_from_hi20_lo12(lower_hi20, lower_lo12);
+        ((upper as u64) << 32).wrapping_add(lower)
+    }
+
+    #[test]
+    fn test_hi20_lo12_identity() {
+        for val in [
+            0x00000000u32,
+            0x00000001,
+            0x00000FFF,
+            0xFFFFF000,
+            0xFFFFFFFF,
+        ] {
+            let (hi20, lo12) = compute_hi20_lo12(val);
+            let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
+            assert_eq!(
+                reconstructed, val as u64,
+                "val={val:#010x}: hi20={hi20:#010x} lo12={lo12:#010x}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hi20_lo12_bit31_set() {
+        let val: u32 = 0x80000000;
+        let (hi20, lo12) = compute_hi20_lo12(val);
+        assert_eq!(hi20, 0x80000, "hi20 should be 0x80000");
+        assert_eq!(lo12, 0, "lo12 should be 0");
+        let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
+        assert_eq!(reconstructed, val as u64);
+    }
+
+    #[test]
+    fn test_hi20_lo12_large_negative() {
+        let val: u32 = 0xC0000000;
+        let (hi20, lo12) = compute_hi20_lo12(val);
+        assert_ne!(hi20, 0, "hi20 should not be 0");
+        let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
+        assert_eq!(reconstructed, val as u64);
+    }
+
+    #[test]
+    fn test_hi20_lo12_0x7FFFFFFF() {
+        let val: u32 = 0x7FFFFFFF;
+        let (hi20, lo12) = compute_hi20_lo12(val);
+        assert_ne!(hi20, 0, "hi20 should not be 0");
+        let reconstructed = reconstruct_from_hi20_lo12(hi20, lo12);
+        assert_eq!(reconstructed, val as u64);
+    }
+
+    #[test]
+    fn test_64bit_reconstruct_0x1_80000000() {
+        let val: u64 = 0x0000_0001_8000_0000;
+        let upper = (val >> 32) as u32;
+        let lower = val as u32;
+        let (upper_hi20, upper_lo12) = compute_hi20_lo12(upper);
+        let (lower_hi20, lower_lo12) = compute_hi20_lo12(lower);
+        assert_ne!(lower_hi20, 0, "lower_hi20 should not be 0 for 0x80000000");
+        let reconstructed = reconstruct_64bit(upper_hi20, upper_lo12, lower_hi20, lower_lo12);
+        assert_eq!(reconstructed, val, "val={val:#018x}");
+    }
+
+    #[test]
+    fn test_64bit_reconstruct_all_ones() {
+        let val: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+        let upper = (val >> 32) as u32;
+        let lower = val as u32;
+        let (upper_hi20, upper_lo12) = compute_hi20_lo12(upper);
+        let (lower_hi20, lower_lo12) = compute_hi20_lo12(lower);
+        let reconstructed = reconstruct_64bit(upper_hi20, upper_lo12, lower_hi20, lower_lo12);
+        assert_eq!(reconstructed, val);
+    }
+
+    #[test]
+    fn test_64bit_reconstruct_alternating() {
+        let val: u64 = 0x5555_5555_AAAA_AAAA;
+        let upper = (val >> 32) as u32;
+        let lower = val as u32;
+        let (upper_hi20, upper_lo12) = compute_hi20_lo12(upper);
+        let (lower_hi20, lower_lo12) = compute_hi20_lo12(lower);
+        let reconstructed = reconstruct_64bit(upper_hi20, upper_lo12, lower_hi20, lower_lo12);
+        assert_eq!(reconstructed, val);
+    }
+
+    #[test]
+    fn test_hi20_masked_to_20_bits() {
+        for val in 0u32..4096 {
+            let (hi20, _) = compute_hi20_lo12(val * 0x1000);
+            assert_eq!(
+                hi20 & !0xFFFFF,
+                0,
+                "hi20 must fit in 20 bits for val={val:#010x}"
+            );
         }
     }
 }
