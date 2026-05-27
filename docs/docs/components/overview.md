@@ -108,7 +108,7 @@ flowchart TB
 | `arm_vcpu` | 组件层 | `components/arm_vcpu` | 6 | 1 | [查看](crates/arm-vcpu) |
 | `arm_vgic` | 组件层 | `components/arm_vgic` | 6 | 2 | [查看](crates/arm-vgic) |
 | `ax-alloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](crates/ax-alloc) |
-| `ax-allocator` | 组件层 | `components/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
+| `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
 | `ax-cap-access` | 组件层 | `components/cap_access` | 0 | 1 | [查看](crates/ax-cap-access) |
@@ -147,13 +147,13 @@ flowchart TB
 | `ax-libc` | ArceOS 层 | `os/arceos/ulib/axlibc` | 4 | 0 | [查看](crates/ax-libc) |
 | `ax-linked-list-r4l` | 组件层 | `components/linked_list_r4l` | 0 | 1 | [查看](crates/ax-linked-list-r4l) |
 | `ax-log` | ArceOS 层 | `os/arceos/modules/axlog` | 2 | 5 | [查看](crates/ax-log) |
-| `ax-memory-addr` | 组件层 | `components/axmm_crates/memory_addr` | 0 | 24 | [查看](crates/ax-memory-addr) |
-| `ax-memory-set` | 组件层 | `components/axmm_crates/memory_set` | 2 | 3 | [查看](crates/ax-memory-set) |
+| `ax-memory-addr` | 组件层 | `memory/memory_addr` | 0 | 24 | [查看](crates/ax-memory-addr) |
+| `ax-memory-set` | 组件层 | `memory/memory_set` | 2 | 3 | [查看](crates/ax-memory-set) |
 | `ax-mm` | ArceOS 层 | `os/arceos/modules/axmm` | 8 | 4 | [查看](crates/ax-mm) |
 | `ax-net` | ArceOS 层 | `os/arceos/modules/axnet` | 8 | 4 | [查看](crates/ax-net) |
 | `ax-net-ng` | ArceOS 层 | `os/arceos/modules/axnet-ng` | 11 | 2 | [查看](crates/ax-net-ng) |
-| `ax-page-table-entry` | 组件层 | `components/page_table_multiarch/page_table_entry` | 1 | 12 | [查看](crates/ax-page-table-entry) |
-| `ax-page-table-multiarch` | 组件层 | `components/page_table_multiarch/page_table_multiarch` | 3 | 7 | [查看](crates/ax-page-table-multiarch) |
+| `ax-page-table-entry` | 组件层 | `memory/page_table_entry` | 1 | 12 | [查看](crates/ax-page-table-entry) |
+| `ax-page-table-multiarch` | 组件层 | `memory/page_table_multiarch` | 3 | 7 | [查看](crates/ax-page-table-multiarch) |
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
 | `ax-plat` | 组件层 | `components/axplat_crates/axplat` | 6 | 15 | [查看](crates/ax-plat) |
@@ -173,7 +173,7 @@ flowchart TB
 | `ax-std` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](crates/ax-std) |
 | `ax-sync` | ArceOS 层 | `os/arceos/modules/axsync` | 2 | 9 | [查看](crates/ax-sync) |
 | `ax-task` | ArceOS 层 | `os/arceos/modules/axtask` | 13 | 8 | [查看](crates/ax-task) |
-| `axaddrspace` | 组件层 | `components/axaddrspace` | 6 | 12 | [查看](crates/axaddrspace) |
+| `axaddrspace` | 组件层 | `memory/axaddrspace` | 6 | 12 | [查看](crates/axaddrspace) |
 | `axbacktrace` | 组件层 | `components/axbacktrace` | 0 | 5 | [查看](crates/axbacktrace) |
 | `axbuild` | 工具层 | `scripts/axbuild` | 1 | 3 | [查看](crates/axbuild) |
 | `axdevice` | 组件层 | `components/axdevice` | 8 | 2 | [查看](crates/axdevice) |
@@ -190,7 +190,7 @@ flowchart TB
 | `axvisor_api_proc` | 组件层 | `components/axvisor_api/axvisor_api_proc` | 0 | 1 | [查看](crates/axvisor-api-proc) |
 | `axvm` | 组件层 | `components/axvm` | 16 | 1 | [查看](crates/axvm) |
 | `axvmconfig` | 组件层 | `components/axvmconfig` | 1 | 4 | [查看](crates/axvmconfig) |
-| `bitmap-allocator` | 组件层 | `components/bitmap-allocator` | 0 | 1 | [查看](crates/bitmap-allocator) |
+| `bitmap-allocator` | 组件层 | `memory/bitmap-allocator` | 0 | 1 | [查看](crates/bitmap-allocator) |
 | `bwbench-client` | ArceOS 层 | `os/arceos/tools/bwbench_client` | 0 | 0 | [查看](crates/bwbench-client) |
 | `define-simple-traits` | 组件层 | `components/crate_interface/test_crates/define-simple-traits` | 1 | 2 | [查看](crates/define-simple-traits) |
 | `define-weak-traits` | 组件层 | `components/crate_interface/test_crates/define-weak-traits` | 1 | 4 | [查看](crates/define-weak-traits) |
@@ -202,7 +202,7 @@ flowchart TB
 | `impl-weak-traits` | 组件层 | `components/crate_interface/test_crates/impl-weak-traits` | 2 | 1 | [查看](crates/impl-weak-traits) |
 | `irq-kernel` | 组件层 | `components/axplat_crates/examples/irq-kernel` | 7 | 0 | [查看](crates/irq-kernel) |
 | `mingo` | ArceOS 层 | `os/arceos/tools/raspi4/chainloader` | 0 | 0 | [查看](crates/mingo) |
-| `range-alloc-arceos` | 组件层 | `components/range-alloc-arceos` | 0 | 1 | [查看](crates/range-alloc-arceos) |
+| `range-alloc-arceos` | 组件层 | `memory/range-alloc-arceos` | 0 | 1 | [查看](crates/range-alloc-arceos) |
 | `riscv-h` | 组件层 | `components/riscv-h` | 0 | 2 | [查看](crates/riscv-h) |
 | `ax-riscv-plic` | 组件层 | `drivers/intc/riscv_plic` | 0 | 1 | [查看](crates/ax-riscv-plic) |
 | `riscv_vcpu` | 组件层 | `components/riscv_vcpu` | 8 | 2 | [查看](crates/riscv-vcpu) |

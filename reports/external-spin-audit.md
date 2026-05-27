@@ -112,7 +112,7 @@ Workspace manifests that declare external `spin` directly:
 ```text
 components/arm_vcpu/Cargo.toml:23: spin = "0.10"
 components/arm_vgic/Cargo.toml:34: spin = "0.10"
-components/axaddrspace/Cargo.toml:41: spin = "0.10"
+memory/axaddrspace/Cargo.toml:41: spin = "0.10"
 components/axbacktrace/Cargo.toml:20: spin = { version = "0.10", default-features = false, features = ["once"] }
 components/axdevice/Cargo.toml:20: spin = "0.10"
 components/axdriver_crates/axdriver_net/Cargo.toml:29: spin = "0.9"
@@ -193,14 +193,14 @@ Grouped by area:
  1 components/percpu/percpu
  1 components/loongarch_vcpu/src
  1 components/kspin/src
- 1 components/dma-api/src
+ 1 memory/dma-api/src
  1 components/axvm/src
  1 components/axpoll/src
  1 components/axfs-ng-vfs/src
  1 components/axdriver_crates/axdriver_net
  1 components/axdevice/src
  1 components/axbacktrace/src
- 1 components/axaddrspace/tests
+ 1 memory/axaddrspace/tests
 ```
 
 The `components/kspin/src/base.rs` entry is documentation text referencing
@@ -223,7 +223,7 @@ components/axfs_crates/axfs_devfs/src/dir.rs
 components/axfs_crates/axfs_ramfs/src/dir.rs
 components/axfs_crates/axfs_ramfs/src/file.rs
 components/axvm/src/vm.rs
-components/dma-api/src/pool.rs
+memory/dma-api/src/pool.rs
 components/loongarch_vcpu/src/registers.rs
 components/riscv_vplic/src/vplic.rs
 drivers/blk/nvme-driver/src/block.rs
@@ -317,7 +317,7 @@ platform/somehal/src/arch/aarch64/systick.rs
 These direct uses are in test utilities or tests:
 
 ```text
-components/axaddrspace/tests/test_utils/mod.rs
+memory/axaddrspace/tests/test_utils/mod.rs
 components/x86_vcpu/src/test_utils.rs
 drivers/serial/some-serial/tests/test.rs
 drivers/soc/rockchip/rockchip-soc/tests/test.rs

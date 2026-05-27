@@ -19,8 +19,6 @@ members = [
     "components/arm_vcpu",
     "components/arm_vgic",
     "components/ax-lazyinit",
-    "components/axaddrspace",
-    "components/axallocator",
     "components/axbacktrace",
     "components/axcpu",
     "components/axdevice",
@@ -37,12 +35,9 @@ members = [
     "components/axvisor_api",
     "components/axvm",
     "components/axvmconfig",
-    "components/bitmap-allocator",
-    "components/buddy-slab-allocator",
     "components/cap_access",
     "components/cpumask",
     "components/crate_interface",
-    "components/dma-api",
     "components/handler_table",
     "components/int_ratio",
     "components/kasm-aarch64",
@@ -52,10 +47,6 @@ members = [
     "components/linked_list_r4l",
     "components/lockdep",
     "components/loongarch_vcpu",
-    "components/mmio-api",
-    "components/page-table-generic",
-    "components/range-alloc-arceos",
-    "components/ranges-ext",
     "components/riscv-h",
     "components/riscv_vcpu",
     "components/riscv_vplic",
@@ -74,8 +65,6 @@ members = [
     "components/axfs_crates/axfs_devfs",
     "components/axfs_crates/axfs_ramfs",
     "components/axfs_crates/axfs_vfs",
-    "components/axmm_crates/memory_addr",
-    "components/axmm_crates/memory_set",
     "components/axplat_crates/axplat",
     "components/axplat_crates/axplat-macros",
     "components/axplat_crates/examples/*",
@@ -84,8 +73,7 @@ members = [
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
-    "components/page_table_multiarch/page_table_entry",
-    "components/page_table_multiarch/page_table_multiarch",
+    "memory/*",
     "components/percpu/percpu",
     "components/percpu/percpu_macros",
 
@@ -194,7 +182,7 @@ arceos-yield = { version = "0.3.1", path = "test-suit/arceos/rust/task/yield" }
 arm_vcpu = { version = "0.5.9", path = "components/arm_vcpu" }
 arm_vgic = { version = "0.4.10", path = "components/arm_vgic" }
 ax-alloc = { version = "0.7.2", path = "os/arceos/modules/axalloc", default-features = false }
-ax-allocator = { version = "0.5.2", path = "components/axallocator" }
+ax-allocator = { version = "0.5.2", path = "memory/axallocator" }
 ax-api = { version = "0.5.16", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 ax-cap-access = { version = "0.3.5", path = "components/cap_access" }
@@ -235,14 +223,14 @@ ax-lazyinit = { version = "0.4.7", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.15", path = "os/arceos/ulib/axlibc" }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }
 ax-log = { version = "0.5.12", path = "os/arceos/modules/axlog" }
-ax-memory-addr = { version = "0.6.8", path = "components/axmm_crates/memory_addr" }
-ax-memory-set = { version = "0.6.9", path = "components/axmm_crates/memory_set" }
+ax-memory-addr = { version = "0.6.8", path = "memory/memory_addr" }
+ax-memory-set = { version = "0.6.9", path = "memory/memory_set" }
 axpanic = { version = "0.1.0", path = "components/axpanic" }
 ax-mm = { version = "0.5.15", path = "os/arceos/modules/axmm" }
 ax-net = { version = "0.5.14", path = "os/arceos/modules/axnet" }
 ax-net-ng = { version = "0.6.1", path = "os/arceos/modules/axnet-ng" }
-ax-page-table-entry = { version = "0.8.9", path = "components/page_table_multiarch/page_table_entry" }
-ax-page-table-multiarch = { version = "0.8.10", path = "components/page_table_multiarch/page_table_multiarch" }
+ax-page-table-entry = { version = "0.8.9", path = "memory/page_table_entry" }
+ax-page-table-multiarch = { version = "0.8.10", path = "memory/page_table_multiarch" }
 ax-percpu = { version = "0.4.11", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.5.8", path = "components/axplat_crates/axplat" }
@@ -265,7 +253,7 @@ ax-std = { version = "0.5.15", path = "os/arceos/ulib/axstd" }
 ax-sync = { version = "0.5.15", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.5.16", path = "os/arceos/modules/axtask" }
 ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
-axaddrspace = { version = "0.5.11", path = "components/axaddrspace" }
+axaddrspace = { version = "0.5.11", path = "memory/axaddrspace" }
 axbacktrace = { version = "0.4.0", path = "components/axbacktrace" }
 axbuild = { version = "0.4.8", path = "scripts/axbuild" }
 axdevice = { version = "0.4.10", path = "components/axdevice" }
@@ -283,7 +271,7 @@ axvisor_api = { version = "0.5.11", path = "components/axvisor_api" }
 axvisor_api_proc = { version = "0.5.7", path = "components/axvisor_api/axvisor_api_proc" }
 axvm = { version = "0.5.9", path = "components/axvm", default-features = false }
 axvmconfig = { version = "0.5.2", path = "components/axvmconfig", default-features = false }
-bitmap-allocator = { version = "0.4.5", path = "components/bitmap-allocator" }
+bitmap-allocator = { version = "0.4.5", path = "memory/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
@@ -299,7 +287,7 @@ eth-intel = { version = "0.1.2", path = "drivers/net/eth-intel" }
 irq-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/irq-kernel" }
 loongarch_vcpu = { version = "0.5.3", path = "components/loongarch_vcpu" }
 mingo = { version = "0.8.3", path = "os/arceos/tools/raspi4/chainloader" }
-range-alloc-arceos = { version = "0.3.9", path = "components/range-alloc-arceos" }
+range-alloc-arceos = { version = "0.3.9", path = "memory/range-alloc-arceos" }
 riscv-h = { version = "0.4.7", path = "components/riscv-h" }
 riscv_vcpu = { version = "0.5.9", path = "components/riscv_vcpu" }
 riscv_vplic = { version = "0.4.12", path = "components/riscv_vplic" }
@@ -354,11 +342,11 @@ test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test
 tg-xtask = { version = "0.5.11", path = "xtask" }
 x86_vcpu = { version = "0.5.9", path = "components/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.10", path = "components/x86_vlapic" }
-page-table-generic = { version = "0.7.2", path = "components/page-table-generic" }
+page-table-generic = { version = "0.7.2", path = "memory/page-table-generic" }
 someboot = { version = "0.1.15", path = "components/someboot" }
 some-serial = { version = "0.4.1", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.2.2" }
-ranges-ext = { version = "0.6.4", path = "components/ranges-ext" }
+ranges-ext = { version = "0.6.4", path = "memory/ranges-ext" }
 somehal-macros = { path = "components/somehal-macros", version = "0.1.3" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.6.7", path = "platform/somehal" }
@@ -370,7 +358,7 @@ bitflags = "2.11"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
 derive_more = { version = "2.1", default-features = false, features = ["full"] }
 bindgen = "0.72"
-buddy-slab-allocator = { version = "0.4", path = "components/buddy-slab-allocator" }
+buddy-slab-allocator = { version = "0.4", path = "memory/buddy-slab-allocator" }
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 enum_dispatch = "0.3"
@@ -380,8 +368,8 @@ futures = { version = "0.3", default-features = false }
 heapless = "0.9"
 schemars = "1.2.1"
 toml = "1"
-dma-api = { version = "0.7.3", path = "components/dma-api" }
-mmio-api = { version = "0.2.2", path = "components/mmio-api" }
+dma-api = { version = "0.7.3", path = "memory/dma-api" }
+mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.10"

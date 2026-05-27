@@ -1,6 +1,6 @@
 # `range-alloc-arceos`
 
-> 路径：`components/range-alloc-arceos`
+> 路径：`memory/range-alloc-arceos`
 > 类型：库 crate
 > 分层：组件层 / 区间分配算法组件
 > 版本：`0.1.4`

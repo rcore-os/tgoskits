@@ -12,7 +12,7 @@ flowchart TD
     subgraph Components["组件层 (components/)"]
         direction LR
         C1["架构组件<br/>aarch64_sysreg arm_vcpu ..."]
-        C2["内存组件<br/>axaddrspace axmm_crates ..."]
+        C2["内存组件<br/>axaddrspace ax-memory-addr ax-memory-set ..."]
         C3["设备组件<br/>drivers/ axdevice ..."]
         C4["文件系统组件<br/>axfs_crates axfs-ng-vfs rsext4"]
         C5["平台组件<br/>axplat_crates percpu ..."]
