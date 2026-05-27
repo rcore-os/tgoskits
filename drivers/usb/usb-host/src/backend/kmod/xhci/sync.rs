@@ -1,12 +1,15 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use spin::{Mutex, MutexGuard, RwLock};
+use spin::{
+    RwLock,
+    mutex::{SpinMutex, SpinMutexGuard},
+};
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
 pub(crate) struct IrqLock<T> {
-    inner: Mutex<()>,
+    inner: SpinMutex<()>,
     reg: Arc<RwLock<XhciRegisters>>,
     data: UnsafeCell<T>,
 }
@@ -17,7 +20,7 @@ unsafe impl<T> Send for IrqLock<T> where T: Send {}
 impl<T> IrqLock<T> {
     pub fn new(data: T, reg: Arc<RwLock<XhciRegisters>>) -> Self {
         Self {
-            inner: Mutex::new(()),
+            inner: SpinMutex::new(()),
             reg,
             data: UnsafeCell::new(data),
         }
@@ -47,12 +50,12 @@ impl<T> IrqLock<T> {
 }
 
 pub(crate) struct IrqLockGuard<'a, T> {
-    _guard: MutexGuard<'a, ()>,
+    _guard: SpinMutexGuard<'a, ()>,
     data: &'a mut T,
     _disable_guard: DisableIrqGuard,
 }
 
-impl<'a, T> core::ops::Deref for IrqLockGuard<'a, T> {
+impl<T> core::ops::Deref for IrqLockGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -60,7 +63,7 @@ impl<'a, T> core::ops::Deref for IrqLockGuard<'a, T> {
     }
 }
 
-impl<'a, T> core::ops::DerefMut for IrqLockGuard<'a, T> {
+impl<T> core::ops::DerefMut for IrqLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
     }

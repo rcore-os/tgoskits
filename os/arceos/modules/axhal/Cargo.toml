@@ -19,7 +19,7 @@ smp = [
     "ax-plat-riscv64-visionfive2?/smp",
     "ax-plat-loongarch64-qemu-virt?/smp",
     "ax-plat-x86-qemu-q35?/smp",
-    "ax-plat-dyn?/smp",
+    "axplat-dyn?/smp",
     "ax-plat/smp",
 ]
 irq = [
@@ -34,7 +34,7 @@ irq = [
     "ax-plat-loongarch64-qemu-virt?/irq",
     "ax-plat-x86-qemu-q35?/irq",
     "ax-plat/irq",
-    "ax-plat-dyn?/irq",
+    "axplat-dyn?/irq",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
@@ -48,7 +48,7 @@ fp-simd = [
     "ax-plat-riscv64-visionfive2?/fp-simd",
     "ax-plat-loongarch64-qemu-virt?/fp-simd",
     "ax-plat-x86-qemu-q35?/fp-simd",
-    "ax-plat-dyn?/fp-simd",
+    "axplat-dyn?/fp-simd",
 ]
 rtc = [
     "ax-plat-x86-pc?/rtc",
@@ -61,7 +61,7 @@ rtc = [
     "ax-plat-riscv64-visionfive2?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
     "ax-plat-x86-qemu-q35?/rtc",
-    "ax-plat-dyn?/rtc",
+    "axplat-dyn?/rtc",
 ]
 # Forward the GICv3 toggle to the aarch64 qemu-virt platform.
 # `?` lets non-aarch64 builds pass the feature through without
@@ -81,19 +81,19 @@ paging = [
     "ax-plat-riscv64-qemu-virt?/paging",
 ]
 tls = ["ax-cpu/tls"]
-uspace = ["paging", "ax-cpu/uspace", "ax-plat-dyn?/uspace"]
+uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
 hv = [
     "paging",
     "ax-cpu/arm-el2",
     "ax-cpu/exception-table",
     "ax-percpu/arm-el2",
-    "ax-plat-dyn?/hv",
+    "axplat-dyn?/hv",
 ]
 axvisor-linker = []
 
 # Custom or default platforms
 myplat = []
-plat-dyn = ["ax-plat-dyn"]
+plat-dyn = ["axplat-dyn"]
 x86-pc = ["dep:ax-plat-x86-pc"]
 aarch64-qemu-virt = ["dep:ax-plat-aarch64-qemu-virt"]
 aarch64-raspi = ["dep:ax-plat-aarch64-raspi"]
@@ -139,7 +139,7 @@ ax-plat-x86-pc = { workspace = true, optional = true }
 ax-plat-x86-qemu-q35 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
-ax-plat-dyn = { workspace = true, default-features = false, optional = true }
+axplat-dyn = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 ax-plat-aarch64-qemu-virt = { workspace = true, optional = true }

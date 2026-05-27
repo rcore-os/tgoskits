@@ -6,7 +6,7 @@ use sg200x_bsp::{
     pwm::{Pwm, PwmChannel, PwmMode, PwmPolarity},
     soc::PWM0_BASE,
 };
-use spin::Lazy;
+use spin::LazyLock;
 
 use crate::pseudofs::{
     DirMaker, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile, SimpleFileOperation,
@@ -60,7 +60,8 @@ impl PwmSysfsState {
     }
 }
 
-static PWM_SYSFS_STATE: Lazy<Mutex<PwmSysfsState>> = Lazy::new(|| Mutex::new(PwmSysfsState::new()));
+static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> =
+    LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
 
 struct PwmClassDir {
     fs: Arc<SimpleFs>,

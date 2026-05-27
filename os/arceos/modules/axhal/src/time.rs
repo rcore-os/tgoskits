@@ -11,7 +11,7 @@ pub use ax_plat::time::{irq_num, set_oneshot_timer};
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
     #[cfg(plat_dyn)]
     {
-        ax_plat_dyn::try_init_epoch_offset(epoch_time_nanos)
+        axplat_dyn::try_init_epoch_offset(epoch_time_nanos)
     }
     #[cfg(not(plat_dyn))]
     {

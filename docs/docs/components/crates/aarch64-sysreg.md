@@ -1,10 +1,10 @@
 # `aarch64_sysreg`
 
-> 路径：`components/aarch64_sysreg`
+> 路径：`virtualization/aarch64_sysreg`
 > 类型：库 crate
 > 分层：组件层 / AArch64 编码字典组件
 > 版本：`0.1.1`
-> 文档依据：当前仓库源码、`Cargo.toml`、`src/lib.rs`、`src/operation_type.rs`、`src/registers_type.rs`、`src/system_reg_type.rs`、`components/arm_vgic/src/vtimer/*`
+> 文档依据：当前仓库源码、`Cargo.toml`、`src/lib.rs`、`src/operation_type.rs`、`src/registers_type.rs`、`src/system_reg_type.rs`、`virtualization/arm_vgic/src/vtimer/*`
 
 `aarch64_sysreg` 不是“系统寄存器读写库”，也不是一套完整的 AArch64 指令仿真框架。它的真实定位更接近一个**AArch64 指令/寄存器编码字典**：把若干数值编码稳定地映射成 Rust 枚举，并提供名称格式化与数值转换能力。当前仓库里，最直接的真实用途是被 `arm_vgic` 用来给虚拟计时器相关的系统寄存器构造 `SysRegAddr`。
 
