@@ -28,6 +28,7 @@ extern crate log;
 
 mod config;
 mod device;
+mod range_alloc;
 
 pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;

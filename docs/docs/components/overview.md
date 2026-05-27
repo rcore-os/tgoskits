@@ -200,7 +200,6 @@ flowchart TB
 | `impl-weak-partial` | 组件层 | `components/crate_interface/test_crates/impl-weak-partial` | 2 | 1 | [查看](crates/impl-weak-partial) |
 | `impl-weak-traits` | 组件层 | `components/crate_interface/test_crates/impl-weak-traits` | 2 | 1 | [查看](crates/impl-weak-traits) |
 | `mingo` | ArceOS 层 | `os/arceos/tools/raspi4/chainloader` | 0 | 0 | [查看](crates/mingo) |
-| `range-alloc-arceos` | 组件层 | `memory/range-alloc-arceos` | 0 | 1 | [查看](crates/range-alloc-arceos) |
 | `riscv-h` | 组件层 | `virtualization/riscv-h` | 0 | 2 | [查看](crates/riscv-h) |
 | `ax-riscv-plic` | 组件层 | `drivers/intc/riscv_plic` | 0 | 1 | [查看](crates/ax-riscv-plic) |
 | `riscv_vcpu` | 组件层 | `virtualization/riscv_vcpu` | 8 | 2 | [查看](crates/riscv-vcpu) |
