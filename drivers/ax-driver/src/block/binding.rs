@@ -146,6 +146,7 @@ impl Block {
         let block_size = queues.queue.info().device.logical_block_size;
         for (offset, block_buf) in buf.chunks_exact_mut(block_size).enumerate() {
             let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
+            dma_buffer.sync_for_device(0, block_size);
             let segment = buffer_from_dma(&mut dma_buffer, block_size);
             let mut segments = [segment];
             let request_id = queues
@@ -387,5 +388,218 @@ fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
             error!("Block device error: {error}");
             AxError::Io
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::{boxed::Box, string::String, vec::Vec};
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+    use std::{
+        alloc::{alloc_zeroed, dealloc},
+        sync::Mutex,
+    };
+
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    };
+    use rdif_block::{DeviceInfo, DriverGeneric, QueueLimits, validate_request_shape};
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SyncOp {
+        ForDevice {
+            size: usize,
+            direction: DmaDirection,
+        },
+        ForCpu {
+            size: usize,
+            direction: DmaDirection,
+        },
+    }
+
+    #[derive(Default)]
+    struct TrackingDma {
+        ops: Mutex<Vec<SyncOp>>,
+    }
+
+    impl TrackingDma {
+        fn has_read_device_sync(&self) -> bool {
+            self.ops.lock().unwrap().iter().any(|op| {
+                matches!(
+                    op,
+                    SyncOp::ForDevice {
+                        size: 512,
+                        direction: DmaDirection::FromDevice
+                    }
+                )
+            })
+        }
+    }
+
+    impl DmaOp for TrackingDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            let ptr = unsafe { alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr)?;
+            Some(unsafe { DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            unsafe { self.alloc_contiguous(constraints, layout) }
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+            unsafe { self.dealloc_contiguous(handle) };
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+
+        fn sync_alloc_for_device(
+            &self,
+            _handle: &DmaAllocHandle,
+            _offset: usize,
+            size: usize,
+            direction: DmaDirection,
+        ) {
+            self.ops
+                .lock()
+                .unwrap()
+                .push(SyncOp::ForDevice { size, direction });
+        }
+
+        fn sync_alloc_for_cpu(
+            &self,
+            _handle: &DmaAllocHandle,
+            _offset: usize,
+            size: usize,
+            direction: DmaDirection,
+        ) {
+            self.ops
+                .lock()
+                .unwrap()
+                .push(SyncOp::ForCpu { size, direction });
+        }
+    }
+
+    struct TestInterface;
+
+    impl DriverGeneric for TestInterface {
+        fn name(&self) -> &str {
+            "test-block"
+        }
+    }
+
+    impl Interface for TestInterface {
+        fn device_info(&self) -> DeviceInfo {
+            DeviceInfo {
+                name: Some("test-block"),
+                ..DeviceInfo::new(8, 512)
+            }
+        }
+
+        fn queue_limits(&self) -> QueueLimits {
+            QueueLimits::simple(512, u64::MAX)
+        }
+
+        fn queue_topology(&self) -> QueueTopology {
+            QueueTopology::single(1)
+        }
+
+        fn create_queue(&mut self, _config: QueueConfig) -> Option<Box<dyn IQueue>> {
+            None
+        }
+    }
+
+    struct TestQueue {
+        dma: &'static TrackingDma,
+    }
+
+    impl IQueue for TestQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                depth: 1,
+                mode: QueueMode::Polled,
+                device: DeviceInfo {
+                    name: Some("test-block"),
+                    ..DeviceInfo::new(8, 512)
+                },
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
+            assert!(
+                self.dma.has_read_device_sync(),
+                "read DMA buffers must be synchronized for device ownership before submit"
+            );
+            validate_request_shape(self.info().device, self.info().limits, &request)?;
+            request.segments[0].fill(0x5a);
+            Ok(RequestId::new(0))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Complete)
+        }
+    }
+
+    #[test]
+    fn read_block_syncs_dma_buffer_for_device_before_submit() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let mut block = Block {
+            name: String::from("test-block"),
+            irq_num: None,
+            irq_enabled: false,
+            #[cfg(feature = "irq")]
+            irq_handler: None,
+            interface: Box::new(TestInterface),
+            queues: SpinNoIrq::new(BlockQueues {
+                queue: Box::new(TestQueue { dma }),
+                pool: BlockBufferPool {
+                    dma: DeviceDma::new(u64::MAX, dma),
+                    size: 512,
+                    align: 512,
+                },
+            }),
+        };
+        let mut buf = [0_u8; 512];
+
+        block.read_block(0, &mut buf).unwrap();
+
+        assert_eq!(buf, [0x5a; 512]);
     }
 }
