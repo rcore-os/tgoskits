@@ -1,0 +1,17 @@
+args = [
+  "-machine",
+  "k230",
+  "-smp",
+  "1",
+  "-m",
+  "2G",
+  "-nographic",
+  "-dtb",
+  "${workspace}/os/StarryOS/configs/board/k230-canmv.dtb",
+  "-drive",
+  "if=sd,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+]
+uefi = false
+to_bin = true
+success_regex = []
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

@@ -56,6 +56,11 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "ax_plat_riscv64_qemu_virt",
     },
     PlatformFeature {
+        feature: "riscv64-k230",
+        target_arch: Some("riscv64"),
+        crate_name: "ax_plat_riscv64_k230",
+    },
+    PlatformFeature {
         feature: "riscv64-sg2002",
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",

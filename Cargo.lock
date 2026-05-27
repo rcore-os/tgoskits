@@ -1034,6 +1034,7 @@ dependencies = [
  "ax-plat-aarch64-qemu-virt",
  "ax-plat-aarch64-raspi",
  "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-k230",
  "ax-plat-riscv64-qemu-virt",
  "ax-plat-riscv64-sg2002",
  "ax-plat-riscv64-visionfive2",
@@ -1422,6 +1423,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "ax-plat-riscv64-k230"
+version = "0.5.9"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-driver",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-plat",
+ "ax-riscv-plic",
+ "axklib",
+ "log",
+ "mmio-api",
+ "rd-block",
+ "riscv 0.16.0",
+ "sbi-rt 0.0.3",
+ "sdhci-host",
+ "sdmmc-protocol",
+ "some-serial",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -4890,6 +4914,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "k230-kpu"
+version = "0.1.0"
+
+[[package]]
 name = "kasm-aarch64"
 version = "0.2.1"
 dependencies = [
@@ -7922,6 +7950,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",
+ "k230-kpu",
  "kernel-elf-parser",
  "kprobe",
  "ksym",

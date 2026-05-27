@@ -9,6 +9,8 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "k230-kpu")]
+mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
@@ -448,6 +450,29 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 NodeType::CharacterDevice,
                 DeviceId::new(1, 1),
                 Arc::new(pinmux::PinmuxDev),
+            ),
+        );
+    }
+
+    #[cfg(feature = "k230-kpu")]
+    {
+        let kpu = Arc::new(kpu::KpuDevice::new());
+        root.add(
+            "kpu",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                kpu::KPU_DEVICE_ID,
+                kpu.clone(),
+            ),
+        );
+        root.add(
+            "kpu0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                kpu::KPU_DEVICE_ID,
+                kpu,
             ),
         );
     }

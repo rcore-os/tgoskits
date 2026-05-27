@@ -30,6 +30,10 @@ sg2002 = [
   "ax-hal/riscv64-sg2002",
   "starry-kernel/sg2002",
 ]
+k230 = [
+  "ax-hal/riscv64-k230",
+  "starry-kernel/k230-kpu",
+]
 
 # Enable the GICv3 distributor + redistributor + system-register
 # CPU interface on aarch64. Only meaningful when the target is the

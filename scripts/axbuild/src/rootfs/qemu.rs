@@ -83,7 +83,11 @@ pub(crate) enum RootfsPatchMode {
 pub(crate) fn patch_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode) {
     match mode {
         RootfsPatchMode::ReplaceDriveOnly => replace_drive_arg(&mut qemu.args, rootfs_path),
-        RootfsPatchMode::EnsureDiskBootNet => ensure_disk_boot_net_args(qemu, rootfs_path),
+        RootfsPatchMode::EnsureDiskBootNet => {
+            if !replace_sd_drive_arg(&mut qemu.args, rootfs_path) {
+                ensure_disk_boot_net_args(qemu, rootfs_path);
+            }
+        }
     }
 }
 
@@ -131,6 +135,43 @@ fn replace_drive_arg(args: &mut Vec<String>, rootfs_path: &Path) {
         args.insert(insert_pos, "-drive".to_string());
         args.insert(insert_pos + 1, replacement);
     }
+}
+
+fn replace_sd_drive_arg(args: &mut [String], rootfs_path: &Path) -> bool {
+    let mut replaced = false;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "-drive" && index + 1 < args.len() && drive_arg_is_sd(&args[index + 1]) {
+            replace_drive_file_part(&mut args[index + 1], rootfs_path);
+            replaced = true;
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    replaced
+}
+
+fn drive_arg_is_sd(value: &str) -> bool {
+    value.split(',').any(|part| part == "if=sd")
+}
+
+fn replace_drive_file_part(value: &mut String, rootfs_path: &Path) {
+    let replacement = format!("file={}", rootfs_path.display());
+    let mut parts = value
+        .split(',')
+        .map(|part| {
+            if part.starts_with("file=") {
+                replacement.clone()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !parts.iter().any(|part| part.starts_with("file=")) {
+        parts.push(replacement);
+    }
+    *value = parts.join(",");
 }
 
 /// Ensures a QEMU config contains the standard block device, drive, and user
@@ -326,6 +367,32 @@ mod tests {
                 "virtio-net-pci,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0,hostfwd=tcp::18790-:18790".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_patches_sd_drive_without_adding_virtio() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "k230".to_string(),
+                "-drive".to_string(),
+                "if=sd,format=raw,file=/tmp/old-rootfs.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-machine".to_string(),
+                "k230".to_string(),
+                "-drive".to_string(),
+                "if=sd,format=raw,file=/tmp/new-rootfs.img".to_string(),
             ]
         );
     }

@@ -21,6 +21,7 @@ input = ["dep:ax-input", "ax-feat/input"]
 ebpf = []
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
+k230-kpu = ["dep:k230-kpu"]
 plat-dyn = [
     "dep:ax-driver",
     "ax-driver/usb",
@@ -74,6 +75,7 @@ ax-sync.workspace = true
 ax-task.workspace = true
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
+k230-kpu = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
 rdrive = { workspace = true, optional = true }
 

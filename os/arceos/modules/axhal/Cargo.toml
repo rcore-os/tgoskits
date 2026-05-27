@@ -15,6 +15,7 @@ smp = [
     "ax-plat-aarch64-bsta1000b?/smp",
     "ax-plat-aarch64-phytium-pi?/smp",
     "ax-plat-riscv64-qemu-virt?/smp",
+    "ax-plat-riscv64-k230?/smp",
     "ax-plat-riscv64-sg2002?/smp",
     "ax-plat-riscv64-visionfive2?/smp",
     "ax-plat-loongarch64-qemu-virt?/smp",
@@ -29,6 +30,7 @@ irq = [
     "ax-plat-aarch64-bsta1000b?/irq",
     "ax-plat-aarch64-phytium-pi?/irq",
     "ax-plat-riscv64-qemu-virt?/irq",
+    "ax-plat-riscv64-k230?/irq",
     "ax-plat-riscv64-sg2002?/irq",
     "ax-plat-riscv64-visionfive2?/irq",
     "ax-plat-loongarch64-qemu-virt?/irq",
@@ -44,6 +46,7 @@ fp-simd = [
     "ax-plat-aarch64-bsta1000b?/fp-simd",
     "ax-plat-aarch64-phytium-pi?/fp-simd",
     "ax-plat-riscv64-qemu-virt?/fp-simd",
+    "ax-plat-riscv64-k230?/fp-simd",
     "ax-plat-riscv64-sg2002?/fp-simd",
     "ax-plat-riscv64-visionfive2?/fp-simd",
     "ax-plat-loongarch64-qemu-virt?/fp-simd",
@@ -57,6 +60,7 @@ rtc = [
     "ax-plat-aarch64-bsta1000b?/rtc",
     "ax-plat-aarch64-phytium-pi?/rtc",
     "ax-plat-riscv64-qemu-virt?/rtc",
+    "ax-plat-riscv64-k230?/rtc",
     "ax-plat-riscv64-sg2002?/rtc",
     "ax-plat-riscv64-visionfive2?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
@@ -79,6 +83,7 @@ paging = [
     "ax-plat-aarch64-qemu-virt?/paging",
     "ax-plat-loongarch64-qemu-virt?/paging",
     "ax-plat-riscv64-qemu-virt?/paging",
+    "ax-plat-riscv64-k230?/paging",
 ]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
@@ -100,6 +105,7 @@ aarch64-raspi = ["dep:ax-plat-aarch64-raspi"]
 aarch64-bsta1000b = ["dep:ax-plat-aarch64-bsta1000b"]
 aarch64-phytium-pi = ["dep:ax-plat-aarch64-phytium-pi"]
 riscv64-qemu-virt = ["dep:ax-plat-riscv64-qemu-virt"]
+riscv64-k230 = ["dep:ax-plat-riscv64-k230"]
 riscv64-sg2002 = ["dep:ax-plat-riscv64-sg2002"]
 riscv64-visionfive2 = ["dep:ax-plat-riscv64-visionfive2"]
 riscv64-qemu-virt-hv = [
@@ -149,6 +155,7 @@ ax-plat-aarch64-phytium-pi = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-plat-riscv64-qemu-virt = { workspace = true, optional = true }
+ax-plat-riscv64-k230 = { workspace = true, optional = true }
 ax-plat-riscv64-sg2002 = { workspace = true, optional = true }
 ax-plat-riscv64-visionfive2 = { workspace = true, optional = true }
 

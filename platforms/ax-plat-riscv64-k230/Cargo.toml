@@ -1,0 +1,47 @@
+[package]
+name = "ax-plat-riscv64-k230"
+version = "0.5.9"
+repository = "https://github.com/rcore-os/tgoskits"
+description = "Implementation of `axplat` hardware abstraction layer for the QEMU Kendryte K230 board."
+keywords = ["arceos", "os", "hal", "embedded", "riscv"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
+
+[features]
+fp-simd = ["ax-cpu/fp-simd"]
+hypervisor = ["irq", "smp"]
+irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
+paging = ["dep:axklib"]
+rtc = []
+smp = ["ax-plat/smp"]
+
+[dependencies]
+ax-kspin = { workspace = true }
+ax-lazyinit = { workspace = true }
+log = "0.4"
+riscv = "0.16"
+ax-riscv-plic = { workspace = true, optional = true }
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+some-serial.workspace = true
+
+ax-config-macros = { workspace = true }
+ax-cpu = { workspace = true }
+ax-driver = { workspace = true, features = ["block"] }
+ax-plat = { workspace = true }
+axklib = { workspace = true, optional = true }
+mmio-api.workspace = true
+rd-block.workspace = true
+sdhci-host.workspace = true
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
+spin.workspace = true
+
+[package.metadata.axplat]
+platform = "riscv64-k230"
+arch = "riscv64"
+config = "axconfig.toml"
+crate = "ax_plat_riscv64_k230"
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]

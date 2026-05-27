@@ -948,6 +948,7 @@ fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
             | "aarch64-raspi"
             | "aarch64-bsta1000b"
             | "aarch64-phytium-pi"
+            | "riscv64-k230"
             | "riscv64-qemu-virt"
             | "riscv64-sg2002"
             | "riscv64-visionfive2"

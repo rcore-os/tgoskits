@@ -1,0 +1,79 @@
+# Architecture identifier.
+arch = "riscv64"                                # str
+# Platform identifier.
+platform = "riscv64-k230"                       # str
+# Platform package.
+package = "ax-plat-riscv64-k230"                # str
+
+#
+# Platform configs
+#
+[plat]
+# Maximum number of CPUs. For platforms that do not support runtime CPU number
+# detection, it's also the number of CPUs to boot.
+max-cpu-num = 1                     # uint
+# Base address of Linux-usable DDR in QEMU K230 direct boot.
+phys-memory-base = 0x0820_0000      # uint
+# Size of usable DDR before the KPU L2/cache window.
+phys-memory-size = 0x77e0_0000      # uint
+# Base physical address of the kernel image.
+kernel-base-paddr = 0x0820_0000     # uint
+# Base virtual address of the kernel image.
+kernel-base-vaddr = "0xffff_ffc0_0820_0000"     # uint
+# Linear mapping offset, for quick conversions between physical and virtual
+# addresses.
+phys-virt-offset = "0xffff_ffc0_0000_0000"      # uint
+# Offset of bus address and phys address. some boards, the bus address is
+# different from the physical address.
+phys-bus-offset = 0                             # uint
+# Kernel address space base.
+kernel-aspace-base = "0xffff_ffc0_0000_0000"    # uint
+# Kernel address space size.
+kernel-aspace-size = "0x0000_003f_ffff_f000"    # uint
+# Stack size on bootstrapping. (256K)
+boot-stack-size = 0x40000                       # uint
+
+#
+# Device specifications
+#
+[devices]
+# MMIO ranges with format (`base_paddr`, `size`).
+mmio-ranges = [
+    [0x8000_0000, 0x0020_0000],     # KPU L2 cache
+    [0x8020_0000, 0x0020_0000],     # SRAM
+    [0x8040_0000, 0x0000_2000],     # KPU CFG + FFT + AI 2D
+    [0x9100_0c00, 0x0000_0400],     # RTC
+    [0x9110_8000, 0x0000_0800],     # STC
+    [0x9140_0000, 0x0000_1000],     # UART0
+    [0x9158_0000, 0x0000_1000],     # SD0
+    [0x9158_1000, 0x0000_1000],     # SD1
+    [0xf000_00000, 0x0040_0000],    # PLIC
+    [0xf040_00000, 0x0040_0000],    # CLINT
+]                                   # [(uint, uint)]
+# VirtIO MMIO ranges with format (`base_paddr`, `size`).
+virtio-mmio-ranges = [] # [(uint, uint)]
+
+# Timer interrupt frequency in Hz.
+timer-frequency = 27_000_000        # uint
+# Timer interrupt num.
+timer-irq = "0x8000_0000_0000_0005" # uint
+# IPI interrupt num
+ipi-irq = "0x8000_0000_0000_0001"   # uint
+
+rtc-paddr = 0x9100_0c00             # uint
+
+plic-paddr = 0xf000_00000           # uint
+
+uart-paddr = 0x9140_0000            # uint
+uart-irq = 16                       # uint
+uart-clock = 50_000_000             # uint
+
+sd1-paddr = 0x9158_1000             # uint
+sd1-size = 0x1000                   # uint
+sd1-irq = 144                       # uint
+
+kpu-cfg-paddr = 0x8040_0000         # uint
+kpu-cfg-size = 0x800                # uint
+kpu-l2-paddr = 0x8000_0000          # uint
+kpu-l2-size = 0x20_0000             # uint
+kpu-irq = 189                       # uint

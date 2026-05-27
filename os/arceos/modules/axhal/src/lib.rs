@@ -8,6 +8,7 @@
 //!
 //! - `x86-pc`: Standard PC with x86_64 ISA.
 //! - `riscv64-qemu-virt`: QEMU virt machine with RISC-V ISA.
+//! - `riscv64-k230`: QEMU Kendryte K230 machine with RISC-V ISA.
 //! - `aarch64-qemu-virt`: QEMU virt machine with AArch64 ISA.
 //! - `aarch64-raspi`: Raspberry Pi with AArch64 ISA.
 //! - `dummy`: If none of the above platform is selected, the dummy platform

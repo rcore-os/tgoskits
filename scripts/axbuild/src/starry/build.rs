@@ -102,10 +102,14 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
 
 fn normalize_starry_platform_features(features: &mut Vec<String>) {
     let has_sg2002 = features.iter().any(|feature| feature == "sg2002");
+    let has_k230 = features.iter().any(|feature| feature == "k230");
     let has_vf2 = features.iter().any(|feature| feature == "vf2");
 
     if has_sg2002 {
         features.push("ax-hal/riscv64-sg2002".to_string());
+    }
+    if has_k230 {
+        features.push("ax-hal/riscv64-k230".to_string());
     }
     if has_vf2 {
         features.push("ax-hal/riscv64-visionfive2".to_string());
@@ -728,7 +732,7 @@ HELLO = "world"
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
+            StarryBuildInfo::build_cargo_args(&request.target, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
