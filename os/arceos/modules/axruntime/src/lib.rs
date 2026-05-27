@@ -19,7 +19,6 @@
 //!
 //! # Cargo Features
 //!
-//! - `alloc`: Enable global memory allocator.
 //! - `paging`: Enable page table manipulation support.
 //! - `irq`: Enable interrupt handling support.
 //! - `multitask`: Enable multi-threading support.
@@ -56,15 +55,6 @@ pub use ax_hal as hal;
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
-#[cfg(any(
-    all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")),
-    all(any(feature = "fs", feature = "fs-ng"), feature = "plat-dyn"),
-    feature = "net",
-    feature = "net-ng",
-    feature = "display",
-    feature = "input",
-    feature = "vsock"
-))]
 extern crate alloc;
 
 const LOGO: &str = r#"
@@ -166,7 +156,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    #[cfg(feature = "buddy-slab")]
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
@@ -214,7 +204,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         );
     }
 
-    #[cfg(feature = "alloc")]
     init_allocator();
 
     {
@@ -353,7 +342,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 }
 
-#[cfg(feature = "alloc")]
 fn init_allocator() {
     use ax_hal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
 
