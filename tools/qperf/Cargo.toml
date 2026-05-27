@@ -6,6 +6,7 @@ publish = false
 
 [lib]
 crate-type = ["cdylib"]
+test = false
 
 [dependencies]
 anyhow = "1.0.100"

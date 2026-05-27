@@ -240,12 +240,7 @@ fn print_hotspots(hotspots: &HashMap<String, u64>, total: u64, top_n: usize) {
     eprintln!("{}", "-".repeat(82));
     for (func, count) in entries.iter().take(top) {
         let pct = **count as f64 / total as f64 * 100.0;
-        eprintln!(
-            "{:<60} {:>10} {:>9.2}%",
-            truncate_str(func, 60),
-            count,
-            pct
-        );
+        eprintln!("{:<60} {:>10} {:>9.2}%", truncate_str(func, 60), count, pct);
     }
 }
 
@@ -322,9 +317,9 @@ fn generate_flamegraph(folded_path: &Path, svg_path: &Path) -> anyhow::Result<()
     #[cfg(not(feature = "flamegraph"))]
     {
         eprintln!(
-            "Flamegraph generation requires the 'flamegraph' feature. \
-             Rebuild with: cargo build --features flamegraph\n\
-             Alternatively, use an external tool: inferno-flamegraph < {} > {}",
+            "Flamegraph generation requires the 'flamegraph' feature. Rebuild with: cargo build \
+             --features flamegraph\nAlternatively, use an external tool: inferno-flamegraph < {} \
+             > {}",
             folded_path.display(),
             svg_path.display()
         );

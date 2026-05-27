@@ -1340,7 +1340,7 @@ mod tests {
     #[test]
     fn bug_ext4_dir_ops_qemu_configs_fail_on_lockdep_fatal() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bug-ext4-dir-ops");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bugfix");
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
             let path = case_dir.join(format!("qemu-{arch}.toml"));

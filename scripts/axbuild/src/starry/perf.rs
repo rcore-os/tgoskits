@@ -286,7 +286,12 @@ fn run_analyzer(
     ensure_file(elf, "StarryOS kernel ELF")?;
     ensure_file(raw, "qperf raw samples")?;
     let mut command = Command::new(analyzer);
-    command.arg("resolve").arg("-e").arg(elf).arg(raw).arg(folded);
+    command
+        .arg("resolve")
+        .arg("-e")
+        .arg(elf)
+        .arg(raw)
+        .arg(folded);
     if top_n > 0 {
         command.arg("--top").arg(top_n.to_string());
     }
