@@ -809,7 +809,7 @@ HELLO = "world"
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
+            StarryBuildInfo::build_cargo_args(&request.target, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
