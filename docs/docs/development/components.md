@@ -271,11 +271,11 @@ my_component = { path = "components/my_component" }
 
 ### 5.5 遇到嵌套 workspace 时不要照抄
 
-`components/axmm_crates` 这类目录本身是独立 workspace。给这类目录加新 crate 时，需要特别注意处理方式：
+历史上部分组件曾放在嵌套 workspace 中；迁移到 `memory/*`、`virtualization/*` 这类根目录分类后，给这些分类加新 crate 时，需要特别注意处理方式：
 
 - 先在它自己的 workspace 里接好
-- 再在根 `Cargo.toml` 里为具体 leaf crate 增加 patch 或 member
-- 不要把整个父目录直接重新塞回根 workspace
+- 再在根 `Cargo.toml` 里为具体 leaf crate 增加 dependency path；若已被 `memory/*`、`virtualization/*` 这类 glob 覆盖，就不要重复添加显式 member
+- 不要把已经迁走的历史父目录重新塞回根 workspace
 
 ### 5.6 什么时候需要改 `repos.csv`
 

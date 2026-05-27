@@ -159,23 +159,23 @@ flowchart TB
 | 4 | 堆叠层 | 组件层 | `ax-plat-aarch64-peripherals` | `0.5.1` | `platforms/ax-plat-aarch64-peripherals` |
 | 4 | 堆叠层 | 组件层 | `ax-plat-loongarch64-qemu-virt` | `0.5.1` | `platforms/ax-plat-loongarch64-qemu-virt` |
 | 4 | 堆叠层 | 组件层 | `ax-plat-x86-pc` | `0.5.1` | `platforms/ax-plat-x86-pc` |
-| 4 | 堆叠层 | 组件层 | `axdevice_base` | `0.4.2` | `components/axdevice_base` |
-| 4 | 堆叠层 | 组件层 | `axvisor_api` | `0.5.0` | `components/axvisor_api` |
+| 4 | 堆叠层 | 组件层 | `axdevice_base` | `0.4.2` | `virtualization/axdevice_base` |
+| 4 | 堆叠层 | 组件层 | `axvisor_api` | `0.5.0` | `virtualization/axvisor_api` |
 | 4 | 堆叠层 | 组件层 | `starry-signal` | `0.5.0` | `components/starry-signal` |
-| 5 | 堆叠层 | 组件层 | `arm_vgic` | `0.4.2` | `components/arm_vgic` |
+| 5 | 堆叠层 | 组件层 | `arm_vgic` | `0.4.2` | `virtualization/arm_vgic` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-bsta1000b` | `0.5.1` | `platforms/ax-plat-aarch64-bsta1000b` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-phytium-pi` | `0.5.1` | `platforms/ax-plat-aarch64-phytium-pi` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-qemu-virt` | `0.5.1` | `platforms/ax-plat-aarch64-qemu-virt` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-raspi` | `0.5.1` | `platforms/ax-plat-aarch64-raspi` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-riscv64-qemu-virt` | `0.5.1` | `platforms/ax-plat-riscv64-qemu-virt` |
-| 5 | 堆叠层 | 组件层 | `axvcpu` | `0.5.0` | `components/axvcpu` |
-| 5 | 堆叠层 | 组件层 | `riscv_vplic` | `0.4.2` | `components/riscv_vplic` |
-| 5 | 堆叠层 | 组件层 | `x86_vlapic` | `0.4.2` | `components/x86_vlapic` |
+| 5 | 堆叠层 | 组件层 | `axvcpu` | `0.5.0` | `virtualization/axvcpu` |
+| 5 | 堆叠层 | 组件层 | `riscv_vplic` | `0.4.2` | `virtualization/riscv_vplic` |
+| 5 | 堆叠层 | 组件层 | `x86_vlapic` | `0.4.2` | `virtualization/x86_vlapic` |
 | 6 | 堆叠层 | ArceOS 层 | `ax-hal` | `0.5.0` | `os/arceos/modules/axhal` |
-| 6 | 堆叠层 | 组件层 | `arm_vcpu` | `0.5.0` | `components/arm_vcpu` |
-| 6 | 堆叠层 | 组件层 | `axdevice` | `0.4.2` | `components/axdevice` |
-| 6 | 堆叠层 | 组件层 | `riscv_vcpu` | `0.5.0` | `components/riscv_vcpu` |
-| 6 | 堆叠层 | 组件层 | `x86_vcpu` | `0.5.0` | `components/x86_vcpu` |
+| 6 | 堆叠层 | 组件层 | `arm_vcpu` | `0.5.0` | `virtualization/arm_vcpu` |
+| 6 | 堆叠层 | 组件层 | `axdevice` | `0.4.2` | `virtualization/axdevice` |
+| 6 | 堆叠层 | 组件层 | `riscv_vcpu` | `0.5.0` | `virtualization/riscv_vcpu` |
+| 6 | 堆叠层 | 组件层 | `x86_vcpu` | `0.5.0` | `virtualization/x86_vcpu` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-ipi` | `0.5.0` | `os/arceos/modules/axipi` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-mm` | `0.5.0` | `os/arceos/modules/axmm` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-task` | `0.5.0` | `os/arceos/modules/axtask` |
