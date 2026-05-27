@@ -42,6 +42,8 @@ realtek-rtl8125 = ["dep:realtek-rtl8125"]
 rockchip-dwc-xhci = ["fdt", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["fdt"]
 xhci-pci = []
+serial = ["fdt"]
+rtc = ["fdt"]
 rknpu = ["fdt", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rockchip-sdhci = [
     "fdt",
