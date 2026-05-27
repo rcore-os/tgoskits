@@ -737,6 +737,7 @@ fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
         grouped_runner: test_case::GroupedCaseRunnerConfig {
             runner_name: "axvisor-run-case-tests".to_string(),
             runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+            autorun_profile_script: None,
             begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),

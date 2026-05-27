@@ -1428,6 +1428,7 @@ mod tests {
             grouped_runner: case_assets::GroupedCaseRunnerConfig {
                 runner_name: "suite-run-case-tests".to_string(),
                 runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                autorun_profile_script: None,
                 begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
                 passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
                 failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),

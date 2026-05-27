@@ -915,6 +915,7 @@ pub(crate) fn starry_case_asset_config() -> case::CaseAssetConfig {
         grouped_runner: case::GroupedCaseRunnerConfig {
             runner_name: "starry-run-case-tests".to_string(),
             runner_path: "/usr/bin/starry-run-case-tests".to_string(),
+            autorun_profile_script: Some("99-starry-run-case-tests.sh".to_string()),
             begin_marker: "STARRY_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "STARRY_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "STARRY_GROUPED_TEST_FAILED".to_string(),
@@ -1687,6 +1688,16 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn starry_grouped_cases_install_profile_autorun() {
+        let config = starry_case_asset_config();
+
+        assert_eq!(
+            config.grouped_runner.autorun_profile_script.as_deref(),
+            Some("99-starry-run-case-tests.sh")
+        );
     }
 
     fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQemuCase {
