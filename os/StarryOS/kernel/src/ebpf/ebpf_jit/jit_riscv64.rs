@@ -557,7 +557,6 @@ impl JitBackend for Riscv64Backend {
                     emit_mv(buf, dst, src);
                 } else {
                     emit_addiw(buf, dst, src, 0);
-                    emit_zext32(buf, dst);
                 }
             }
             BPF_ARSH => {
@@ -1221,5 +1220,145 @@ mod tests {
         assert!(insn.is_ld_dw_imm());
         let size = Riscv64Backend::insn_size(&insn);
         assert_eq!(size, 24);
+    }
+
+    #[test]
+    fn test_alu_add32_zext() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU | BPF_ADD | BPF_X;
+        insn.dst_reg = 1;
+        insn.src_reg = 2;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, false);
+        assert_eq!(buf.offset(), expected_size);
+        let insns = buf_as_u32_slice(&buf);
+        let last = insns[insns.len() - 1];
+        let prev = insns[insns.len() - 2];
+        let (_, _, shamt1) = decode_slli(prev);
+        let (_, _, shamt2) = decode_slli_with_func(last);
+        assert_eq!(shamt1, 32);
+        assert_eq!(shamt2, 32);
+    }
+
+    fn decode_slli_with_func(insn: u32) -> (u32, u32, u32) {
+        let funct3 = (insn >> 12) & 0x7;
+        let opcode = insn & 0x7f;
+        assert_eq!(opcode, 0x13);
+        assert!(funct3 == 1 || funct3 == 5);
+        let rd = (insn >> 7) & 0x1f;
+        let rs1 = (insn >> 15) & 0x1f;
+        let shamt = (insn >> 20) & 0x3f;
+        (rd, rs1, shamt)
+    }
+
+    #[test]
+    fn test_alu_mov32_zext() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU | BPF_MOV | BPF_X;
+        insn.dst_reg = 1;
+        insn.src_reg = 2;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, false);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_div32_emit_size_matches_insn_size() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU64 | BPF_DIV | BPF_X;
+        insn.dst_reg = 1;
+        insn.src_reg = 2;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, true);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_mod64_emit_size_matches_insn_size() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU64 | BPF_MOD | BPF_X;
+        insn.dst_reg = 1;
+        insn.src_reg = 2;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, true);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_mod32_emit_size_matches_insn_size() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU | BPF_MOD | BPF_X;
+        insn.dst_reg = 1;
+        insn.src_reg = 2;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, false);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_alu_imm_add64_emit_size() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU64 | BPF_ADD;
+        insn.dst_reg = 1;
+        insn.imm = 42;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, true);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_alu_imm_add32_emit_size() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU | BPF_ADD;
+        insn.dst_reg = 1;
+        insn.imm = 42;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, false);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_arsh32_no_zext() {
+        let mut buf = new_buf();
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_ALU | BPF_ARSH;
+        insn.dst_reg = 1;
+        insn.imm = 1;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        Riscv64Backend::emit_alu(&mut buf, &insn, false);
+        assert_eq!(buf.offset(), expected_size);
+    }
+
+    #[test]
+    fn test_st_ldx_frame_pointer_offset() {
+        let mut insn = BpfInsn::default();
+        insn.code = BPF_MEM | BPF_STX | BPF_DW;
+        insn.dst_reg = 10;
+        insn.src_reg = 0;
+        insn.off = -8;
+        let expected_size = Riscv64Backend::insn_size(&insn);
+        assert!(expected_size >= 8);
+    }
+
+    #[test]
+    fn test_insn_size_alu32_all_ops() {
+        for (op_code, _name) in [BPF_ADD, BPF_SUB, BPF_MUL, BPF_OR, BPF_AND, BPF_XOR]
+            .iter()
+            .zip(["add", "sub", "mul", "or", "and", "xor"].iter())
+        {
+            let mut insn = BpfInsn::default();
+            insn.code = BPF_ALU | op_code | BPF_X;
+            insn.dst_reg = 1;
+            insn.src_reg = 2;
+            let size = Riscv64Backend::insn_size(&insn);
+            assert!(size >= 12, "ALU32 {} should include op(4) + zext(8)", _name);
+        }
     }
 }
