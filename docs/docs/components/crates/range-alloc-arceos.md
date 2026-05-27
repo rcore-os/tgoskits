@@ -1,10 +1,10 @@
 # `range-alloc-arceos`
 
-> 路径：`components/range-alloc-arceos`
+> 路径：`memory/range-alloc-arceos`
 > 类型：库 crate
 > 分层：组件层 / 区间分配算法组件
 > 版本：`0.1.4`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`tests/test.rs`、`components/axdevice/src/device.rs`、`components/axvm/src/vm.rs`、`os/axvisor/src/vmm/hvc.rs`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`tests/test.rs`、`virtualization/axdevice/src/device.rs`、`virtualization/axvm/src/vm.rs`、`os/axvisor/src/vmm/hvc.rs`
 
 `range-alloc-arceos` 的真实定位是一个**泛型连续区间分配器**。它管理的是一个初始范围上的“哪些子区间空闲、哪些子区间已占用”，并提供 best-fit 分配与回收合并逻辑。它不是页分配器，不处理地址映射，不理解设备，不负责对齐策略，更不是完整的内存管理子系统。
 

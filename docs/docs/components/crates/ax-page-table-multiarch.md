@@ -1,6 +1,6 @@
 # `ax-page-table-multiarch`
 
-> 路径：`components/page_table_multiarch/page_table_multiarch`
+> 路径：`memory/page_table_multiarch`
 > 类型：库 crate
 > 分层：组件层 / 通用页表引擎
 > 版本：`0.6.1`

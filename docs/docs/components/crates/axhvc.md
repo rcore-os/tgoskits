@@ -1,6 +1,6 @@
 # `axhvc`
 
-> 路径：`components/axhvc`
+> 路径：`virtualization/axhvc`
 > 类型：库 crate
 > 分层：组件层 / HyperCall ABI 定义组件
 > 版本：`0.2.0`

@@ -1,6 +1,6 @@
 # `axdevice`
 
-> 路径：`components/axdevice`
+> 路径：`virtualization/axdevice`
 > 类型：库 crate
 > 分层：组件层 / 虚拟化设备分发层
 > 版本：`0.2.1`
@@ -218,7 +218,7 @@ let mut devices = AxVmDevices::new(config);
 
 ### 主要消费者
 
-- `components/axvm`：直接持有 `AxVmDevices` 并在 VM exit 中调用分发接口。
+- `virtualization/axvm`：直接持有 `AxVmDevices` 并在 VM exit 中调用分发接口。
 - `os/axvisor`：通过 `axvm` 间接消费，是当前仓库中的核心落地点。
 - 测试代码：`tests/test.rs` 直接用 mock MMIO 设备验证分发语义。
 
