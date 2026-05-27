@@ -715,7 +715,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_gettime => sys_timer_gettime(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
-          Sysno::getxattr => sys_getxattr(
+        Sysno::getxattr => sys_getxattr(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -754,33 +754,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
             uctx.arg4() as _,
         ),
-        Sysno::listxattr => sys_listxattr(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-            uctx.arg2() as _,
-        ),
-        Sysno::llistxattr => sys_llistxattr(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-            uctx.arg2() as _,
-        ),
-        Sysno::flistxattr => sys_flistxattr(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-            uctx.arg2() as _,
-        ),
-        Sysno::removexattr => sys_removexattr(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-        ),
-        Sysno::lremovexattr => sys_lremovexattr(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-        ),
-        Sysno::fremovexattr => sys_fremovexattr(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-        ),
+        Sysno::listxattr => sys_listxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::llistxattr => sys_llistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::flistxattr => sys_flistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::removexattr => sys_removexattr(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::lremovexattr => sys_lremovexattr(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::fremovexattr => sys_fremovexattr(uctx.arg0() as _, uctx.arg1() as _),
         _ => {
             let tid = ax_task::current().id().as_u64() as u32;
             warn!("Unimplemented syscall: {sysno} (tid={tid})");

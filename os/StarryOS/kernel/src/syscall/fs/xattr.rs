@@ -73,11 +73,7 @@ pub fn sys_llistxattr(
     Ok(0)
 }
 
-pub fn sys_flistxattr(
-    _fd: i32,
-    _list: *mut u8,
-    _size: usize,
-) -> AxResult<isize> {
+pub fn sys_flistxattr(_fd: i32, _list: *mut u8, _size: usize) -> AxResult<isize> {
     Ok(0)
 }
 
@@ -95,9 +91,6 @@ pub fn sys_lremovexattr(
     Err(AxError::Unsupported)
 }
 
-pub fn sys_fremovexattr(
-    _fd: i32,
-    _name: *const core::ffi::c_char,
-) -> AxResult<isize> {
+pub fn sys_fremovexattr(_fd: i32, _name: *const core::ffi::c_char) -> AxResult<isize> {
     Err(AxError::Unsupported)
 }
