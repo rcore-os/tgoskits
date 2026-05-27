@@ -191,6 +191,11 @@ fn emit_xori(buf: &mut JitBuffer, rd: u32, rs1: u32, imm: i32) {
     buf.emit_u32(rv_i(imm as u32, rs1, 4, rd, 0x13));
 }
 
+fn emit_zext32(buf: &mut JitBuffer, rd: u32) {
+    emit_slli(buf, rd, rd, 32);
+    emit_srli(buf, rd, rd, 32);
+}
+
 fn emit_slli(buf: &mut JitBuffer, rd: u32, rs1: u32, shamt: u32) {
     buf.emit_u32(rv_i(shamt, rs1, 1, rd, 0x13));
 }
@@ -424,10 +429,6 @@ impl JitBackend for Riscv64Backend {
             emit_load_imm64(buf, RV_T1, insn.imm as u64);
         }
 
-        if !is_64 && use_imm {
-            emit_zext32(buf, dst);
-        }
-
         match insn.alu_op() {
             BPF_ADD => {
                 if is_64 {
@@ -529,10 +530,19 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_MOD => {
+                let skip = buf.offset();
                 if is_64 {
+                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remu(buf, dst, dst, src);
                 } else {
+                    emit_beq(buf, src, RV_ZERO, 0);
                     emit_remuw(buf, dst, dst, src);
+                }
+                let end = buf.offset();
+                unsafe {
+                    let beq_ptr = buf.entry().add(skip) as *mut u32;
+                    let beq_off = (end - skip) as u32;
+                    *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                 }
             }
             BPF_XOR => {
@@ -547,6 +557,7 @@ impl JitBackend for Riscv64Backend {
                     emit_mv(buf, dst, src);
                 } else {
                     emit_addiw(buf, dst, src, 0);
+                    emit_zext32(buf, dst);
                 }
             }
             BPF_ARSH => {
@@ -571,6 +582,10 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_END => {}
             _ => {}
+        }
+
+        if !is_64 && insn.alu_op() != BPF_ARSH {
+            emit_zext32(buf, dst);
         }
     }
 
@@ -915,10 +930,14 @@ impl JitBackend for Riscv64Backend {
                 } else {
                     0
                 };
-                let zext_size = if class == BPF_ALU && use_imm { 8 } else { 0 };
+                let zext_size = if class == BPF_ALU && alu_op != BPF_ARSH {
+                    8
+                } else {
+                    0
+                };
                 let op_size = match alu_op {
                     BPF_DIV => 16,
-                    BPF_MOD => 4,
+                    BPF_MOD => 8,
                     BPF_LSH | BPF_RSH | BPF_ARSH => {
                         if use_imm {
                             4
