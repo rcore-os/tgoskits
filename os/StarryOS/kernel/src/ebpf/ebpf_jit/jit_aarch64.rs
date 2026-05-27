@@ -20,6 +20,7 @@ const AA_X9: u32 = 9;
 const AA_X15: u32 = 15;
 const AA_X16: u32 = 16;
 const AA_X17: u32 = 17;
+const AA_TMP: u32 = 8;
 const AA_SP: u32 = 31;
 const AA_X29: u32 = 29;
 const AA_LR: u32 = 30;
@@ -585,12 +586,12 @@ impl JitBackend for Aarch64Backend {
         } else {
             emit_load_imm32(buf, AA_X17, insn.imm);
         }
-        emit_addi(buf, AA_X16, base, adjusted_off);
+        emit_addi(buf, AA_TMP, base, adjusted_off);
         match insn.size() {
-            BPF_B => emit_strb(buf, AA_X17, AA_X16, 0),
-            BPF_H => emit_strh(buf, AA_X17, AA_X16, 0),
-            BPF_W => emit_strw(buf, AA_X17, AA_X16, 0),
-            BPF_DW => emit_str(buf, AA_X17, AA_X16, 0),
+            BPF_B => emit_strb(buf, AA_X17, AA_TMP, 0),
+            BPF_H => emit_strh(buf, AA_X17, AA_TMP, 0),
+            BPF_W => emit_strw(buf, AA_X17, AA_TMP, 0),
+            BPF_DW => emit_str(buf, AA_X17, AA_TMP, 0),
             _ => {}
         }
     }
@@ -607,12 +608,12 @@ impl JitBackend for Aarch64Backend {
         } else {
             off
         };
-        emit_addi(buf, AA_X16, base, adjusted_off);
+        emit_addi(buf, AA_TMP, base, adjusted_off);
         match insn.size() {
-            BPF_B => emit_strb(buf, src, AA_X16, 0),
-            BPF_H => emit_strh(buf, src, AA_X16, 0),
-            BPF_W => emit_strw(buf, src, AA_X16, 0),
-            BPF_DW => emit_str(buf, src, AA_X16, 0),
+            BPF_B => emit_strb(buf, src, AA_TMP, 0),
+            BPF_H => emit_strh(buf, src, AA_TMP, 0),
+            BPF_W => emit_strw(buf, src, AA_TMP, 0),
+            BPF_DW => emit_str(buf, src, AA_TMP, 0),
             _ => {}
         }
     }
@@ -629,12 +630,12 @@ impl JitBackend for Aarch64Backend {
         } else {
             off
         };
-        emit_addi(buf, AA_X16, base, adjusted_off);
+        emit_addi(buf, AA_TMP, base, adjusted_off);
         match insn.size() {
-            BPF_B => emit_ldrb(buf, dst, AA_X16, 0),
-            BPF_H => emit_ldrh(buf, dst, AA_X16, 0),
-            BPF_W => emit_ldrw(buf, dst, AA_X16, 0),
-            BPF_DW => emit_ldr(buf, dst, AA_X16, 0),
+            BPF_B => emit_ldrb(buf, dst, AA_TMP, 0),
+            BPF_H => emit_ldrh(buf, dst, AA_TMP, 0),
+            BPF_W => emit_ldrw(buf, dst, AA_TMP, 0),
+            BPF_DW => emit_ldr(buf, dst, AA_TMP, 0),
             _ => {}
         }
     }
