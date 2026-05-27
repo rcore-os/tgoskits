@@ -531,8 +531,9 @@ impl JitBackend for X86_64Backend {
     fn emit_alu(buf: &mut JitBuffer, insn: &BpfInsn, is_64: bool) {
         let dst = bpf_to_x86(insn.dst_reg());
         let use_imm = (insn.code & BPF_X) == 0;
+        let imm_src = if dst == X86_RCX { X86_R11 } else { X86_RCX };
         let src = if use_imm {
-            X86_RCX
+            imm_src
         } else {
             bpf_to_x86(insn.src_reg())
         };
@@ -540,9 +541,9 @@ impl JitBackend for X86_64Backend {
         if use_imm && insn.alu_op() != BPF_MOV && insn.alu_op() != BPF_NEG {
             let imm = insn.imm;
             if is_64 {
-                emit_mov_imm64(buf, X86_RCX, insn.imm as u64);
+                emit_mov_imm64(buf, imm_src, insn.imm as u64);
             } else {
-                emit_mov_imm32(buf, X86_RCX, imm);
+                emit_mov_imm32(buf, imm_src, imm);
             }
         }
 
@@ -698,17 +699,18 @@ impl JitBackend for X86_64Backend {
 
         let dst = bpf_to_x86(insn.dst_reg());
         let use_imm = (insn.code & BPF_X) == 0;
+        let imm_src = if dst == X86_RCX { X86_R11 } else { X86_RCX };
         let src = if use_imm {
-            X86_RCX
+            imm_src
         } else {
             bpf_to_x86(insn.src_reg())
         };
 
         if use_imm {
             if is_64 {
-                emit_mov_imm64(buf, X86_RCX, insn.imm as u64);
+                emit_mov_imm64(buf, imm_src, insn.imm as u64);
             } else {
-                emit_mov_imm32(buf, X86_RCX, insn.imm);
+                emit_mov_imm32(buf, imm_src, insn.imm);
             }
         }
 
@@ -759,7 +761,7 @@ impl JitBackend for X86_64Backend {
         let off = insn.off as i32;
         let imm = insn.imm as i64;
         let base = bpf_to_x86(insn.dst_reg());
-        let adjusted_off = if base == X86_RBP { off - 40 } else { off };
+        let adjusted_off = if base == X86_RBP { off - 32 } else { off };
         if insn.size() == BPF_DW {
             emit_mov_imm64(buf, X86_RCX, imm as u64);
             emit_store_mem(buf, base, adjusted_off, X86_RCX, BPF_DW);
@@ -781,7 +783,7 @@ impl JitBackend for X86_64Backend {
         } else {
             insn.size()
         };
-        let adjusted_off = if base == X86_RBP { off - 40 } else { off };
+        let adjusted_off = if base == X86_RBP { off - 32 } else { off };
         emit_store_mem(buf, base, adjusted_off, src, sz);
     }
 
@@ -792,7 +794,7 @@ impl JitBackend for X86_64Backend {
         let off = insn.off as i32;
         let base = bpf_to_x86(insn.src_reg());
         let dst = bpf_to_x86(insn.dst_reg());
-        let adjusted_off = if base == X86_RBP { off - 40 } else { off };
+        let adjusted_off = if base == X86_RBP { off - 32 } else { off };
         emit_load_mem(buf, dst, base, adjusted_off, insn.size());
     }
 
