@@ -57,6 +57,48 @@ def tool_schema() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "starry_perf_profile",
+            "description": "Run StarryOS qperf profiling in Docker and return hotspot/fix-candidate report paths.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "arch": {
+                        "type": "string",
+                        "enum": ["riscv64", "loongarch64"],
+                        "default": "riscv64",
+                    },
+                    "timeout": {"type": "integer", "default": 20, "minimum": 1},
+                    "format": {
+                        "type": "string",
+                        "enum": ["folded", "svg", "pprof", "all"],
+                        "default": "all",
+                    },
+                    "freq": {"type": "integer", "default": 99, "minimum": 1},
+                    "max_depth": {"type": "integer", "default": 64, "minimum": 1},
+                    "mode": {"type": "string", "enum": ["tb", "insn"], "default": "tb"},
+                    "top": {"type": "integer", "default": 20, "minimum": 1},
+                    "min_percent": {"type": "number", "default": 5.0, "minimum": 0.0},
+                    "debug": {"type": "boolean", "default": False},
+                    "kernel_filter": {"type": "boolean", "default": False},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "starry_perf_diff",
+            "description": "Compare two qperf folded stack outputs or profile directories.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "baseline": {"type": "string"},
+                    "compare": {"type": "string"},
+                    "top": {"type": "integer", "default": 20, "minimum": 1},
+                },
+                "required": ["baseline", "compare"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -86,6 +128,46 @@ def handle_tool_call(repo: Path, params: dict[str, Any]) -> dict[str, Any]:
         ]
         if arguments.get("fail_on_diff", False):
             command.append("--fail-on-diff")
+        code, output = run_harness(repo, command)
+    elif name == "starry_perf_profile":
+        command = [
+            "perf-profile",
+            "--repo-root",
+            str(repo),
+            "--arch",
+            arguments.get("arch", "riscv64"),
+            "--timeout",
+            str(arguments.get("timeout", 20)),
+            "--format",
+            arguments.get("format", "all"),
+            "--freq",
+            str(arguments.get("freq", 99)),
+            "--max-depth",
+            str(arguments.get("max_depth", 64)),
+            "--mode",
+            arguments.get("mode", "tb"),
+            "--top",
+            str(arguments.get("top", 20)),
+            "--min-percent",
+            str(arguments.get("min_percent", 5.0)),
+        ]
+        if arguments.get("debug", False):
+            command.append("--debug")
+        if arguments.get("kernel_filter", False):
+            command.append("--kernel-filter")
+        code, output = run_harness(repo, command)
+    elif name == "starry_perf_diff":
+        command = [
+            "perf-diff",
+            "--repo-root",
+            str(repo),
+            "--baseline",
+            arguments["baseline"],
+            "--compare",
+            arguments["compare"],
+            "--top",
+            str(arguments.get("top", 20)),
+        ]
         code, output = run_harness(repo, command)
     else:
         return {

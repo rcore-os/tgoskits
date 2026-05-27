@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
@@ -90,6 +93,14 @@ pub struct ArgsPerf {
     pub max_depth: usize,
     #[arg(long, value_name = "SECONDS", default_value_t = 20)]
     pub timeout: u64,
+    #[arg(long, value_enum, default_value_t = PerfMode::Tb)]
+    pub mode: PerfMode,
+    #[arg(long, default_value_t = 20)]
+    pub top: usize,
+    #[arg(long)]
+    pub debug: bool,
+    #[arg(long)]
+    pub kernel_filter: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -98,6 +109,21 @@ pub enum PerfFormat {
     Svg,
     Pprof,
     All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfMode {
+    Tb,
+    Insn,
+}
+
+impl fmt::Display for PerfMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Tb => "tb",
+            Self::Insn => "insn",
+        })
+    }
 }
 
 #[derive(Args)]
