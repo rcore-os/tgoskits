@@ -21,10 +21,10 @@ mod config;
 #[cfg(feature = "ebpf")]
 mod ebpf;
 mod file;
+mod kmod_loader;
 mod kprobe;
 mod mm;
 mod perf_event;
-mod kmod_loader;
 mod pseudofs;
 mod stop_machine;
 mod syscall;

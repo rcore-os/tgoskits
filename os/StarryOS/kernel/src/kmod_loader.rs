@@ -70,24 +70,24 @@ impl SectionMemOps for KmodSectionMem {
             Ok(r) => r,
             Err(_) => return false,
         };
-        let mut new_flags = ax_hal::paging::MappingFlags::empty();
+        let mut new_flags = ax_runtime::hal::paging::MappingFlags::empty();
         if perms.contains(SectionPerm::READ) {
-            new_flags |= ax_hal::paging::MappingFlags::READ;
+            new_flags |= ax_runtime::hal::paging::MappingFlags::READ;
         }
         if perms.contains(SectionPerm::WRITE) {
-            new_flags |= ax_hal::paging::MappingFlags::WRITE;
+            new_flags |= ax_runtime::hal::paging::MappingFlags::WRITE;
         }
         if perms.contains(SectionPerm::EXECUTE) {
-            new_flags |= ax_hal::paging::MappingFlags::EXECUTE;
+            new_flags |= ax_runtime::hal::paging::MappingFlags::EXECUTE;
         }
         if aspace.protect(vaddr, self.size, new_flags).is_err() {
             return false;
         }
         for offset in (0..self.size).step_by(PAGE_SIZE_4K) {
-            ax_hal::asm::flush_tlb(Some(vaddr + offset));
+            ax_runtime::hal::cpu::asm::flush_tlb(Some(vaddr + offset));
         }
         if perms.contains(SectionPerm::EXECUTE) {
-            ax_hal::asm::flush_icache_all();
+            ax_runtime::hal::cpu::asm::flush_icache_all();
         }
         drop(aspace);
         let _ = original_flags;
@@ -152,9 +152,9 @@ impl KernelModuleHelper for StarryKmodHelper {
 
     fn flsuh_cache(addr: usize, size: usize) {
         #[cfg(target_arch = "aarch64")]
-        ax_hal::asm::clean_dcache_range_to_pou(VirtAddr::from(addr), size);
+        ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(VirtAddr::from(addr), size);
         let _ = (addr, size);
-        ax_hal::asm::flush_icache_all();
+        ax_runtime::hal::cpu::asm::flush_icache_all();
     }
 }
 
