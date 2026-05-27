@@ -8,6 +8,7 @@ features = [
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
+  "starry-kernel/input",
 ]
 log = "Warn"
 plat_dyn = true
