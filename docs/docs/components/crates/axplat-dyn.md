@@ -1,18 +1,18 @@
-# `axplat-dyn`
+# `ax-plat-dyn`
 
-> 路径：`platform/axplat-dyn`
+> 路径：`platforms/ax-plat-dyn`
 > 类型：库 crate
 > 分层：平台层 / 动态平台桥接层
 > 版本：`0.3.0-preview.3`
 > 文档依据：当前仓库源码、`Cargo.toml`、`build.rs`、`link.ld` 及 `os/arceos/modules/axhal`/`ax-driver` 的接入路径
 
-`axplat-dyn` 不是那类“用 `axconfig.toml` 固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
+`ax-plat-dyn` 不是那类“用 `axconfig.toml` 固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
 
 ## 架构设计
 
 ### 设计定位
 
-`axplat-dyn` 在当前仓库里的位置可以概括为：
+`ax-plat-dyn` 在当前仓库里的位置可以概括为：
 
 - 向下：依赖 `somehal` 提供的入口宏、内存映射、控制台、时钟、中断、电源和 CPU 元数据。
 - 向上：实现 `InitIf`、`ConsoleIf`、`MemIf`、`TimeIf`、`PowerIf` 以及可选 `IrqIf`，并通过 `ax_plat::call_main()` / `call_secondary_main()` 把控制权交给内核入口。
@@ -22,7 +22,7 @@
 这决定了它与普通板级包的一个根本差异：
 
 - 普通 `axplat-*` 平台包主要把编译期 `axconfig.toml` 变成板级常量，再围绕这些常量实现 `axplat` 接口。
-- `axplat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以 `axconfig.toml` 为主线。
+- `ax-plat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以 `axconfig.toml` 为主线。
 
 ### 模块结构
 
@@ -40,7 +40,7 @@
 
 ### 1.3 平台实现装配方式
 
-`axplat-dyn` 的实现不是单点完成的，而是由四层 glue 组合出来：
+`ax-plat-dyn` 的实现不是单点完成的，而是由四层 glue 组合出来：
 
 | 装配层 | 依赖来源 | 本 crate 的落点 | 作用 |
 | --- | --- | --- | --- |
@@ -78,7 +78,7 @@ flowchart TD
 - `init_later()`：在分页建立更完整后调用 `somehal::post_paging()`，随后使能定时器 IRQ。
 - `init_later_secondary()`：次核路径上只补做定时器 IRQ 使能。
 
-这里有一个重要前提：`axplat-dyn` 默认假设“更早的架构级 bring-up 已经由 `somehal` 完成”，它不自己构造早期页表，也不自己处理最底层的 CPU 模式切换。
+这里有一个重要前提：`ax-plat-dyn` 默认假设“更早的架构级 bring-up 已经由 `somehal` 完成”，它不自己构造早期页表，也不自己处理最底层的 CPU 模式切换。
 
 ### 1.5 内存、时间、中断与电源 glue
 
@@ -122,11 +122,11 @@ flowchart TD
 - `system_off()` 调用 `somehal::power::shutdown()`。
 - `cpu_num()` 通过 `somehal::smp::cpu_meta_list()` 统计 CPU 数。
 
-这里还暴露出一个细节：`cpu_boot()` 当前忽略了 `stack_top_paddr` 参数，说明次核启动栈安排不是由 `axplat-dyn` 独立决定，而是纳入了 `somehal` 的启动协议。
+这里还暴露出一个细节：`cpu_boot()` 当前忽略了 `stack_top_paddr` 参数，说明次核启动栈安排不是由 `ax-plat-dyn` 独立决定，而是纳入了 `somehal` 的启动协议。
 
 ### 1.6 动态设备探测路径
 
-`drivers` 模块是 `axplat-dyn` 与普通平台包最不一样的部分之一。它不是简单地“列出 MMIO 区间”，而是主动承担一部分动态设备发现职责：
+`drivers` 模块是 `ax-plat-dyn` 与普通平台包最不一样的部分之一。它不是简单地“列出 MMIO 区间”，而是主动承担一部分动态设备发现职责：
 
 1. `probe_all_devices()` 先清空本地块设备注册表。
 2. 调用 `rdrive::probe_all(true)` 触发探测。
@@ -146,17 +146,17 @@ flowchart TD
 
 这一层的关键价值在于：
 
-- `axplat-dyn` 不只是“平台初始化 glue”，还是 `ax-driver` 动态设备模型的探测前端。
+- `ax-plat-dyn` 不只是“平台初始化 glue”，还是 `ax-driver` 动态设备模型的探测前端。
 - 当前有效覆盖面主要是块设备；网络、显示等类别并没有在本 crate 中提供同等级的动态探测路径。
 - `VirtIO` block 路径里的 `enable_irq()` / `disable_irq()` 仍是 `todo!()`，说明它更偏向当前可用的基础探测和阻塞 I/O 路径，而非完整中断驱动栈。
 
 ### 1.7 与 `axplat`、`ax-plat-macros` 和工具链的边界
 
-`axplat-dyn` 的边界必须明确区分：
+`ax-plat-dyn` 的边界必须明确区分：
 
-- 与 `axplat` 的边界：`axplat` 定义的是稳定平台契约和入口调用面；`axplat-dyn` 只是其中一个实现者，并不改变接口定义。
+- 与 `axplat` 的边界：`axplat` 定义的是稳定平台契约和入口调用面；`ax-plat-dyn` 只是其中一个实现者，并不改变接口定义。
 - 与 `ax-plat-macros` 的边界：本 crate 不直接依赖 `ax-plat-macros`，只通过 `axplat` 重新导出的 `#[impl_plat_interface]` 和入口宏参与体系。
-- 与 `somehal` 的边界：真正的“平台事实来源”在 `somehal`，包括入口、内存图、时钟、IRQ、电源与 CPU 元数据；`axplat-dyn` 负责转译，而不是重新探测 CPU 模式或自己管理整套启动环境。
+- 与 `somehal` 的边界：真正的“平台事实来源”在 `somehal`，包括入口、内存图、时钟、IRQ、电源与 CPU 元数据；`ax-plat-dyn` 负责转译，而不是重新探测 CPU 模式或自己管理整套启动环境。
 - 与 `ax-config-gen` 的边界：当前源码中保留了一段被注释掉的 `config` 模块草稿，但现行实现并没有启用 `axconfig.toml -> AX_CONFIG_PATH -> include_configs!` 这条常规平台包主线，因此它不属于典型 `axplat-*` 配置化平台生态。
 
 ## 核心功能
@@ -211,7 +211,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[somehal / ax-cpu / axklib] --> B[axplat-dyn]
+    A[somehal / ax-cpu / axklib] --> B[ax-plat-dyn]
     C[axplat] --> B
     D[rdrive / rd-block / dma-api / ax-driver] --> B
 
@@ -227,7 +227,7 @@ graph TD
 
 ### 4.1 何时应使用这条路径
 
-适合使用 `axplat-dyn` 的情况是：
+适合使用 `ax-plat-dyn` 的情况是：
 
 - 你已经有 `somehal` 这层更底部的平台抽象，希望把它接进 `axplat`/`ax-hal`。
 - 你需要的是“运行时探测 + 动态设备模型”，而不是“固定板级参数 + 静态平台包”。
@@ -243,7 +243,7 @@ graph TD
 2. 确保目标是裸机环境，而不是 `unix`/`windows` 宿主机构建路径。
 3. 让 `somehal` 提供入口、FDT、内存图、控制台、时钟、中断和电源实现。
 4. 由 `boot.rs` 把控制流统一转到 `ax_plat::call_main()`，随后上层只通过 `axplat` 接口使用平台能力。
-5. 若需要动态块设备，在适当阶段调用 `ax-driver::init_drivers()`，其内部会落到 `axplat_dyn::drivers::probe_all_devices()`。
+5. 若需要动态块设备，在适当阶段调用 `ax-driver::init_drivers()`，其内部会落到 `ax_plat_dyn::drivers::probe_all_devices()`。
 
 ### 4.3 维护注意事项
 
@@ -271,7 +271,7 @@ graph TD
 
 ### 5.3 重点风险
 
-- 一旦 `somehal` 的内存图语义变化，`axplat-dyn` 的 RAM/保留区/MMIO 划分会整体漂移。
+- 一旦 `somehal` 的内存图语义变化，`ax-plat-dyn` 的 RAM/保留区/MMIO 划分会整体漂移。
 - 该 crate 同时承担“平台契约 glue”和“设备探测 glue”两类职责，回归面比普通平台包更宽。
 - 当前动态设备路径主要覆盖块设备，若上层以为 `dyn` 模式天然涵盖所有设备类型，容易产生错误预期。
 
@@ -285,4 +285,4 @@ graph TD
 
 ## 总结
 
-`axplat-dyn` 的价值不在“又实现了一套新的板级常量配置”，而在它把 `somehal` 的运行时平台事实和 `rdrive` 的设备探测能力拼成了 `axplat`/`ax-driver` 能消费的标准形态。它既不是常规 `axplat-*` 平台包，也不是运行时装卸模块，而是一条面向动态平台事实和动态驱动模型的桥接路径。理解这一点，是读懂它与 `axplat`、`ax-plat-macros` 及上层构建系统边界的关键。
+`ax-plat-dyn` 的价值不在“又实现了一套新的板级常量配置”，而在它把 `somehal` 的运行时平台事实和 `rdrive` 的设备探测能力拼成了 `axplat`/`ax-driver` 能消费的标准形态。它既不是常规 `axplat-*` 平台包，也不是运行时装卸模块，而是一条面向动态平台事实和动态驱动模型的桥接路径。理解这一点，是读懂它与 `axplat`、`ax-plat-macros` 及上层构建系统边界的关键。

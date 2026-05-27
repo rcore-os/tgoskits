@@ -68,7 +68,7 @@ ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.6.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 ax-driver = { workspace = true, optional = true }
-axplat-dyn = { workspace = true, optional = true }
+ax-plat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true

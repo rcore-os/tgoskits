@@ -16,7 +16,7 @@
 - 调用点必须足够直白，便于平台代码或驱动代码直接复用。
 - ABI 必须尽量稳定，避免每个项目都重新发明一套 helper trait。
 
-在当前仓库里，`ax-runtime/src/klib.rs` 就是 `axklib::Klib` 的一个真实实现方；`platform/axplat-dyn` 和 `os/axvisor` 的驱动代码则是典型使用方。
+在当前仓库里，`ax-runtime/src/klib.rs` 就是 `axklib::Klib` 的一个真实实现方；`platforms/ax-plat-dyn` 和 `os/axvisor` 的驱动代码则是典型使用方。
 
 ### 1.2 核心接口
 `axklib` 只有一个核心 trait：
@@ -68,7 +68,7 @@ flowchart TD
 - 让 ArceOS 与 Axvisor 等项目共享一套极小的 helper 抽象。
 
 ### 使用场景
-- `mem::iomap()`：被 `platform/axplat-dyn` 和 `os/axvisor/src/driver/*` 的驱动代码直接使用。
+- `mem::iomap()`：被 `platforms/ax-plat-dyn` 和 `os/axvisor/src/driver/*` 的驱动代码直接使用。
 - `time::busy_wait()`：被 Axvisor 驱动中的短延时场景直接使用。
 - `irq::register()` / `irq::set_enable()`：由具体运行时实现映射到 HAL。
 - `Klib` trait：由 `os/arceos/modules/axruntime/src/klib.rs` 真实实现。
@@ -86,7 +86,7 @@ graph LR
     trait_ffi["trait-ffi"] --> axklib
 
     axklib --> ax-runtime["ax-runtime 实现方"]
-    axklib --> axplat_dyn["axplat-dyn 使用方"]
+    axklib --> ax_plat_dyn["ax-plat-dyn 使用方"]
     axklib --> axvisor["axvisor 使用方"]
 ```
 
@@ -97,7 +97,7 @@ graph LR
 
 ### 主要消费者
 - `ax-runtime`：当前 ArceOS 侧的主要实现方。
-- `axplat-dyn`：动态平台与设备接入路径的调用方。
+- `ax-plat-dyn`：动态平台与设备接入路径的调用方。
 - `axvisor`：若干驱动直接通过 `axklib` 访问 iomap 与 busy-wait。
 
 ## 开发指南
@@ -123,7 +123,7 @@ axklib = { workspace = true }
 `axklib` 本体没有独立测试；当前验证主要依赖实现方和调用方：
 
 - `ax-runtime` 对 `Klib` 的实现是否与 `ax-mm` / `ax-hal` 对齐；
-- `axplat-dyn` 和 Axvisor 驱动是否能通过 `iomap`、`busy_wait` 正常工作。
+- `ax-plat-dyn` 和 Axvisor 驱动是否能通过 `iomap`、`busy_wait` 正常工作。
 
 ### 单元测试
 - trait 桥接代码的签名稳定性。

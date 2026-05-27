@@ -50,7 +50,7 @@ numerator / denominator ~= mult / (1 << shift)
 - 支持快速取倒数 `inverse()`。
 
 ### 使用场景
-- `Ratio::new()`：在 `ax-plat-x86-pc`、`axplat-x86-qemu-q35`、`ax-plat-aarch64-peripherals` 的时间初始化代码中使用。
+- `Ratio::new()`：在 `ax-plat-x86-pc`、`ax-plat-x86-qemu-q35`、`ax-plat-aarch64-peripherals` 的时间初始化代码中使用。
 - `mul_trunc()`：平台时间路径用来把 deadline 或 tick 值做快速转换。
 - `inverse()`：AArch64 generic timer 初始化时直接通过现有比例求反比率。
 - `Ratio::zero()`：常作为静态变量的初始化哨兵值。
@@ -64,7 +64,7 @@ numerator / denominator ~= mult / (1 << shift)
 ```mermaid
 graph LR
     ax_int_ratio["ax-int-ratio"] --> x86pc["ax-plat-x86-pc"]
-    ax_int_ratio --> x86q35["axplat-x86-qemu-q35"]
+    ax_int_ratio --> x86q35["ax-plat-x86-qemu-q35"]
     ax_int_ratio --> aarch64["ax-plat-aarch64-peripherals"]
 ```
 
@@ -72,7 +72,7 @@ graph LR
 `ax-int-ratio` 没有本地 crate 依赖，体量非常小。
 
 ### 主要消费者
-- `ax-plat-x86-pc` / `axplat-x86-qemu-q35`：LAPIC 计时换算。
+- `ax-plat-x86-pc` / `ax-plat-x86-qemu-q35`：LAPIC 计时换算。
 - `ax-plat-aarch64-peripherals`：ARM generic timer 的 ticks / nanos 双向换算。
 
 ## 开发指南

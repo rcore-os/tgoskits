@@ -16,10 +16,10 @@ smp = [
     "ax-plat-aarch64-phytium-pi?/smp",
     "ax-plat-riscv64-qemu-virt?/smp",
     "ax-plat-riscv64-sg2002?/smp",
-    "axplat-riscv64-visionfive2?/smp",
+    "ax-plat-riscv64-visionfive2?/smp",
     "ax-plat-loongarch64-qemu-virt?/smp",
-    "axplat-x86-qemu-q35?/smp",
-    "axplat-dyn?/smp",
+    "ax-plat-x86-qemu-q35?/smp",
+    "ax-plat-dyn?/smp",
     "ax-plat/smp",
 ]
 irq = [
@@ -30,11 +30,11 @@ irq = [
     "ax-plat-aarch64-phytium-pi?/irq",
     "ax-plat-riscv64-qemu-virt?/irq",
     "ax-plat-riscv64-sg2002?/irq",
-    "axplat-riscv64-visionfive2?/irq",
+    "ax-plat-riscv64-visionfive2?/irq",
     "ax-plat-loongarch64-qemu-virt?/irq",
-    "axplat-x86-qemu-q35?/irq",
+    "ax-plat-x86-qemu-q35?/irq",
     "ax-plat/irq",
-    "axplat-dyn?/irq",
+    "ax-plat-dyn?/irq",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
@@ -45,10 +45,10 @@ fp-simd = [
     "ax-plat-aarch64-phytium-pi?/fp-simd",
     "ax-plat-riscv64-qemu-virt?/fp-simd",
     "ax-plat-riscv64-sg2002?/fp-simd",
-    "axplat-riscv64-visionfive2?/fp-simd",
+    "ax-plat-riscv64-visionfive2?/fp-simd",
     "ax-plat-loongarch64-qemu-virt?/fp-simd",
-    "axplat-x86-qemu-q35?/fp-simd",
-    "axplat-dyn?/fp-simd",
+    "ax-plat-x86-qemu-q35?/fp-simd",
+    "ax-plat-dyn?/fp-simd",
 ]
 rtc = [
     "ax-plat-x86-pc?/rtc",
@@ -58,10 +58,10 @@ rtc = [
     "ax-plat-aarch64-phytium-pi?/rtc",
     "ax-plat-riscv64-qemu-virt?/rtc",
     "ax-plat-riscv64-sg2002?/rtc",
-    "axplat-riscv64-visionfive2?/rtc",
+    "ax-plat-riscv64-visionfive2?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
-    "axplat-x86-qemu-q35?/rtc",
-    "axplat-dyn?/rtc",
+    "ax-plat-x86-qemu-q35?/rtc",
+    "ax-plat-dyn?/rtc",
 ]
 # Forward the GICv3 toggle to the aarch64 qemu-virt platform.
 # `?` lets non-aarch64 builds pass the feature through without
@@ -81,19 +81,19 @@ paging = [
     "ax-plat-riscv64-qemu-virt?/paging",
 ]
 tls = ["ax-cpu/tls"]
-uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
+uspace = ["paging", "ax-cpu/uspace", "ax-plat-dyn?/uspace"]
 hv = [
     "paging",
     "ax-cpu/arm-el2",
     "ax-cpu/exception-table",
     "ax-percpu/arm-el2",
-    "axplat-dyn?/hv",
+    "ax-plat-dyn?/hv",
 ]
 axvisor-linker = []
 
 # Custom or default platforms
 myplat = []
-plat-dyn = ["axplat-dyn"]
+plat-dyn = ["ax-plat-dyn"]
 x86-pc = ["dep:ax-plat-x86-pc"]
 aarch64-qemu-virt = ["dep:ax-plat-aarch64-qemu-virt"]
 aarch64-raspi = ["dep:ax-plat-aarch64-raspi"]
@@ -101,13 +101,13 @@ aarch64-bsta1000b = ["dep:ax-plat-aarch64-bsta1000b"]
 aarch64-phytium-pi = ["dep:ax-plat-aarch64-phytium-pi"]
 riscv64-qemu-virt = ["dep:ax-plat-riscv64-qemu-virt"]
 riscv64-sg2002 = ["dep:ax-plat-riscv64-sg2002"]
-riscv64-visionfive2 = ["dep:axplat-riscv64-visionfive2"]
+riscv64-visionfive2 = ["dep:ax-plat-riscv64-visionfive2"]
 riscv64-qemu-virt-hv = [
     "dep:ax-plat-riscv64-qemu-virt",
     "ax-plat-riscv64-qemu-virt/hypervisor",
 ]
 loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
-x86-qemu-q35 = ["dep:axplat-x86-qemu-q35", "axplat-x86-qemu-q35/reboot-on-system-off"]
+x86-qemu-q35 = ["dep:ax-plat-x86-qemu-q35", "ax-plat-x86-qemu-q35/reboot-on-system-off"]
 defplat = [
     "dep:ax-plat-x86-pc",
     "dep:ax-plat-aarch64-qemu-virt",
@@ -136,10 +136,10 @@ spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-plat-x86-pc = { workspace = true, optional = true }
-axplat-x86-qemu-q35 = { workspace = true, optional = true }
+ax-plat-x86-qemu-q35 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
-axplat-dyn = { workspace = true, default-features = false, optional = true }
+ax-plat-dyn = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 ax-plat-aarch64-qemu-virt = { workspace = true, optional = true }
@@ -150,7 +150,7 @@ ax-plat-aarch64-phytium-pi = { workspace = true, optional = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-plat-riscv64-qemu-virt = { workspace = true, optional = true }
 ax-plat-riscv64-sg2002 = { workspace = true, optional = true }
-axplat-riscv64-visionfive2 = { workspace = true, optional = true }
+ax-plat-riscv64-visionfive2 = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }

@@ -113,7 +113,7 @@ pub fn memory_regions() -> impl Iterator<Item = PhysMemRegion> {
 pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
     #[cfg(plat_dyn)]
     {
-        axplat_dyn::boot_stack_bounds(cpu_id)
+        ax_plat_dyn::boot_stack_bounds(cpu_id)
     }
     #[cfg(not(plat_dyn))]
     {

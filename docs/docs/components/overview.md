@@ -43,8 +43,8 @@ flowchart TB
     end
     subgraph sg_plat["平台层"]
         direction LR
-        p1["axplat-dyn"]
-        p2["axplat-x86-qemu-q35"]
+        p1["ax-plat-dyn"]
+        p2["ax-plat-x86-qemu-q35"]
     end
     subgraph sg_comp["组件层 (93 crates)"]
         direction LR
@@ -156,16 +156,16 @@ flowchart TB
 | `ax-page-table-multiarch` | 组件层 | `components/page_table_multiarch/page_table_multiarch` | 3 | 7 | [查看](crates/ax-page-table-multiarch) |
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
-| `ax-plat` | 组件层 | `components/axplat_crates/axplat` | 6 | 15 | [查看](crates/ax-plat) |
-| `ax-plat-aarch64-bsta1000b` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-bsta1000b` | 6 | 1 | [查看](crates/ax-plat-aarch64-bsta1000b) |
-| `ax-plat-aarch64-peripherals` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-peripherals` | 7 | 4 | [查看](crates/ax-plat-aarch64-peripherals) |
-| `ax-plat-aarch64-phytium-pi` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-phytium-pi` | 5 | 1 | [查看](crates/ax-plat-aarch64-phytium-pi) |
-| `ax-plat-aarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-qemu-virt` | 5 | 5 | [查看](crates/ax-plat-aarch64-qemu-virt) |
-| `ax-plat-aarch64-raspi` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-raspi` | 5 | 1 | [查看](crates/ax-plat-aarch64-raspi) |
-| `ax-plat-loongarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
-| `ax-plat-macros` | 组件层 | `components/axplat_crates/axplat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
-| `ax-plat-riscv64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-riscv64-qemu-virt` | 6 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
-| `ax-plat-x86-pc` | 组件层 | `components/axplat_crates/platforms/axplat-x86-pc` | 7 | 5 | [查看](crates/ax-plat-x86-pc) |
+| `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
+| `ax-plat-aarch64-bsta1000b` | 组件层 | `platforms/ax-plat-aarch64-bsta1000b` | 6 | 1 | [查看](crates/ax-plat-aarch64-bsta1000b) |
+| `ax-plat-aarch64-peripherals` | 组件层 | `platforms/ax-plat-aarch64-peripherals` | 7 | 4 | [查看](crates/ax-plat-aarch64-peripherals) |
+| `ax-plat-aarch64-phytium-pi` | 组件层 | `platforms/ax-plat-aarch64-phytium-pi` | 5 | 1 | [查看](crates/ax-plat-aarch64-phytium-pi) |
+| `ax-plat-aarch64-qemu-virt` | 组件层 | `platforms/ax-plat-aarch64-qemu-virt` | 5 | 5 | [查看](crates/ax-plat-aarch64-qemu-virt) |
+| `ax-plat-aarch64-raspi` | 组件层 | `platforms/ax-plat-aarch64-raspi` | 5 | 1 | [查看](crates/ax-plat-aarch64-raspi) |
+| `ax-plat-loongarch64-qemu-virt` | 组件层 | `platforms/ax-plat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
+| `ax-plat-macros` | 组件层 | `platforms/ax-plat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
+| `ax-plat-riscv64-qemu-virt` | 组件层 | `platforms/ax-plat-riscv64-qemu-virt` | 6 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
+| `ax-plat-x86-pc` | 组件层 | `platforms/ax-plat-x86-pc` | 7 | 5 | [查看](crates/ax-plat-x86-pc) |
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |
 | `ax-sched` | 组件层 | `components/axsched` | 1 | 1 | [查看](crates/ax-sched) |
@@ -181,8 +181,8 @@ flowchart TB
 | `axfs-ng-vfs` | 组件层 | `components/axfs-ng-vfs` | 2 | 3 | [查看](crates/axfs-ng-vfs) |
 | `axhvc` | 组件层 | `components/axhvc` | 1 | 1 | [查看](crates/axhvc) |
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
-| `axplat-dyn` | 平台层 | `platform/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
-| `axplat-x86-qemu-q35` | 平台层 | `platform/x86-qemu-q35` | 7 | 1 | [查看](crates/axplat-x86-qemu-q35) |
+| `ax-plat-dyn` | 平台层 | `platforms/ax-plat-dyn` | 11 | 2 | [查看](crates/ax-plat-dyn) |
+| `ax-plat-x86-qemu-q35` | 平台层 | `platforms/ax-plat-x86-qemu-q35` | 7 | 1 | [查看](crates/ax-plat-x86-qemu-q35) |
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](crates/axpoll) |
 | `axvcpu` | 组件层 | `components/axvcpu` | 5 | 5 | [查看](crates/axvcpu) |
 | `axvisor` | Axvisor 层 | `os/axvisor` | 27 | 0 | [查看](crates/axvisor) |
@@ -196,11 +196,9 @@ flowchart TB
 | `define-weak-traits` | 组件层 | `components/crate_interface/test_crates/define-weak-traits` | 1 | 4 | [查看](crates/define-weak-traits) |
 | `deptool` | ArceOS 层 | `os/arceos/tools/deptool` | 0 | 0 | [查看](crates/deptool) |
 | `fxmac_rs` | 组件层 | `drivers/net/fxmac_rs` | 1 | 1 | [查看](crates/fxmac-rs) |
-| `hello-kernel` | 组件层 | `components/axplat_crates/examples/hello-kernel` | 5 | 0 | [查看](crates/hello-kernel) |
 | `impl-simple-traits` | 组件层 | `components/crate_interface/test_crates/impl-simple-traits` | 2 | 1 | [查看](crates/impl-simple-traits) |
 | `impl-weak-partial` | 组件层 | `components/crate_interface/test_crates/impl-weak-partial` | 2 | 1 | [查看](crates/impl-weak-partial) |
 | `impl-weak-traits` | 组件层 | `components/crate_interface/test_crates/impl-weak-traits` | 2 | 1 | [查看](crates/impl-weak-traits) |
-| `irq-kernel` | 组件层 | `components/axplat_crates/examples/irq-kernel` | 7 | 0 | [查看](crates/irq-kernel) |
 | `mingo` | ArceOS 层 | `os/arceos/tools/raspi4/chainloader` | 0 | 0 | [查看](crates/mingo) |
 | `range-alloc-arceos` | 组件层 | `components/range-alloc-arceos` | 0 | 1 | [查看](crates/range-alloc-arceos) |
 | `riscv-h` | 组件层 | `components/riscv-h` | 0 | 2 | [查看](crates/riscv-h) |
@@ -211,7 +209,6 @@ flowchart TB
 | `scope-local` | 组件层 | `components/scope-local` | 1 | 3 | [查看](crates/scope-local) |
 | `smoltcp` | 组件层 | `components/starry-smoltcp` | 0 | 3 | [查看](crates/smoltcp) |
 | `smoltcp-fuzz` | 组件层 | `components/starry-smoltcp/fuzz` | 1 | 0 | [查看](crates/smoltcp-fuzz) |
-| `smp-kernel` | 组件层 | `components/axplat_crates/examples/smp-kernel` | 9 | 0 | [查看](crates/smp-kernel) |
 | `starry-kernel` | StarryOS 层 | `os/StarryOS/kernel` | 29 | 2 | [查看](crates/starry-kernel) |
 | `starry-process` | 组件层 | `components/starry-process` | 2 | 1 | [查看](crates/starry-process) |
 | `starry-signal` | 组件层 | `components/starry-signal` | 3 | 1 | [查看](crates/starry-signal) |

@@ -328,7 +328,7 @@ vm_configs = []   # 注意：默认为空，需手动指定或通过 setup_qemu.
 ### 7.3 新增板级支持
 
 1. 创建 `os/axvisor/configs/board/<board>.toml`
-2. 在 `components/axplat_crates/platforms/` 下添加对应平台 crate（如需要）
+2. 在 `platforms/` 下添加对应平台 crate（如需要）
 3. 创建对应的 VM 配置 `configs/vms/<guest>-<arch>-<board>.toml`
 4. 验证：
 

@@ -62,7 +62,7 @@ axaddrspace 0.5.10 -> spin 0.10.0
 axbacktrace 0.3.9 -> spin 0.10.0
 axdevice 0.4.9 -> spin 0.10.0
 axfs-ng-vfs 0.4.1 -> spin 0.10.0
-axplat-dyn 0.6.1 -> spin 0.10.0
+ax-plat-dyn 0.6.1 -> spin 0.10.0
 axpoll 0.3.9 -> spin 0.10.0
 axvisor 0.5.7 -> spin 0.10.0
 axvm 0.5.8 -> spin 0.10.0
@@ -119,7 +119,7 @@ components/axdriver_crates/axdriver_net/Cargo.toml:29: spin = "0.9"
 components/axfs-ng-vfs/Cargo.toml:20: spin = { version = "0.10", default-features = false, features = ["mutex"] }
 components/axfs_crates/axfs_devfs/Cargo.toml:14: spin = "0.9"
 components/axfs_crates/axfs_ramfs/Cargo.toml:14: spin = "0.9"
-components/axplat_crates/platforms/axplat-aarch64-peripherals/Cargo.toml:18: spin = "0.10"
+platforms/ax-plat-aarch64-peripherals/Cargo.toml:18: spin = "0.10"
 components/axpoll/Cargo.toml:22: spin = { version = "0.10", default-features = false, features = ["lazy", ...] }
 components/axvm/Cargo.toml:21: spin = "0.10"
 components/loongarch_vcpu/Cargo.toml:17: spin = "0.10"
@@ -144,8 +144,8 @@ os/arceos/modules/axfs/Cargo.toml:27: spin = { workspace = true }
 os/arceos/modules/axnet-ng/Cargo.toml:34: spin = { workspace = true }
 os/arceos/modules/axtask/Cargo.toml:70: spin = { workspace = true, optional = true }
 os/axvisor/Cargo.toml:57: spin = "0.10"
-platform/axplat-dyn/Cargo.toml:84: spin = "0.10"
-platform/somehal/Cargo.toml:31: spin = "0.10"
+platforms/ax-plat-dyn/Cargo.toml:84: spin = "0.10"
+platforms/somehal/Cargo.toml:31: spin = "0.10"
 ```
 
 The workspace root also defines:
@@ -170,7 +170,7 @@ Grouped by area:
 ```text
 17 os/arceos/modules
 14 os/StarryOS/kernel
- 8 platform/axplat-dyn/src
+ 8 platforms/ax-plat-dyn/src
  8 drivers/usb/usb-host
  4 drivers/rdrive/src
  4 components/arm_vgic/src
@@ -180,7 +180,7 @@ Grouped by area:
  2 drivers/tpu/sg2002-tpu
  2 drivers/firmware/arm-scmi-rs
  2 components/axfs_crates/axfs_devfs
- 1 platform/somehal/src
+ 1 platforms/somehal/src
  1 drivers/soc/rockchip
  1 drivers/serial/some-serial
  1 drivers/net/realtek-rtl8125
@@ -272,12 +272,12 @@ os/arceos/modules/axnet/src/smoltcp_impl/udp.rs
 os/axvisor/src/hal/arch/loongarch64/mod.rs
 os/axvisor/src/vmm/fdt/mod.rs
 os/axvisor/src/vmm/vm_list.rs
-platform/axplat-dyn/src/drivers/blk/mod.rs
-platform/axplat-dyn/src/drivers/blk/virtio_pci.rs
-platform/axplat-dyn/src/drivers/mod.rs
-platform/axplat-dyn/src/drivers/net/virtio_pci.rs
-platform/axplat-dyn/src/drivers/pci.rs
-platform/axplat-dyn/src/drivers/soc/scmi.rs
+platforms/ax-plat-dyn/src/drivers/blk/mod.rs
+platforms/ax-plat-dyn/src/drivers/blk/virtio_pci.rs
+platforms/ax-plat-dyn/src/drivers/mod.rs
+platforms/ax-plat-dyn/src/drivers/net/virtio_pci.rs
+platforms/ax-plat-dyn/src/drivers/pci.rs
+platforms/ax-plat-dyn/src/drivers/soc/scmi.rs
 ```
 
 ## Initialization-only source uses
@@ -307,9 +307,9 @@ os/arceos/modules/axhal/src/mem.rs
 os/arceos/modules/axnet-ng/src/lib.rs
 os/arceos/modules/axnet-ng/src/tcp.rs
 os/arceos/modules/axtask/src/api.rs
-platform/axplat-dyn/src/drivers/blk/rockchip_mmc.rs
-platform/axplat-dyn/src/mem.rs
-platform/somehal/src/arch/aarch64/systick.rs
+platforms/ax-plat-dyn/src/drivers/blk/rockchip_mmc.rs
+platforms/ax-plat-dyn/src/mem.rs
+platforms/somehal/src/arch/aarch64/systick.rs
 ```
 
 ## Test-only source uses

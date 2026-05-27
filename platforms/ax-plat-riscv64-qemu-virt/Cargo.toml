@@ -1,0 +1,45 @@
+[package]
+name = "ax-plat-riscv64-qemu-virt"
+version = "0.5.9"
+repository = "https://github.com/rcore-os/tgoskits"
+description = "Implementation of `axplat` hardware abstraction layer for QEMU RISC-V virt board."
+keywords = ["arceos", "os", "hal", "embedded", "riscv"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
+
+[features]
+fp-simd = ["ax-cpu/fp-simd"]
+hypervisor = ["irq", "smp"]
+irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
+paging = ["dep:axklib"]
+rtc = ["dep:riscv_goldfish"]
+smp = ["ax-plat/smp"]
+
+[dependencies]
+ax-kspin = { workspace = true }
+ax-lazyinit = { workspace = true }
+log = "0.4"
+riscv = "0.16"
+riscv_goldfish = { version = "0.1", optional = true }
+ax-riscv-plic = { workspace = true, optional = true }
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+some-serial.workspace = true
+
+ax-config-macros = { workspace = true }
+ax-cpu = { workspace = true }
+ax-driver = { workspace = true, features = ["pci", "virtio"] }
+ax-plat = { workspace = true }
+axklib = { workspace = true, optional = true }
+mmio-api.workspace = true
+
+[package.metadata.axplat]
+platform = "riscv64-qemu-virt"
+arch = "riscv64"
+config = "axconfig.toml"
+crate = "ax_plat_riscv64_qemu_virt"
+default-for-arch = true
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]

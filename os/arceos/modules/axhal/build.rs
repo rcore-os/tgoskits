@@ -18,7 +18,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
     PlatformFeature {
         feature: "plat-dyn",
         target_arch: None,
-        crate_name: "axplat_dyn",
+        crate_name: "ax_plat_dyn",
     },
     PlatformFeature {
         feature: "x86-pc",
@@ -28,7 +28,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
     PlatformFeature {
         feature: "x86-qemu-q35",
         target_arch: Some("x86_64"),
-        crate_name: "axplat_x86_qemu_q35",
+        crate_name: "ax_plat_x86_qemu_q35",
     },
     PlatformFeature {
         feature: "aarch64-qemu-virt",
@@ -63,7 +63,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
     PlatformFeature {
         feature: "riscv64-visionfive2",
         target_arch: Some("riscv64"),
-        crate_name: "axplat_riscv64_visionfive2",
+        crate_name: "ax_plat_riscv64_visionfive2",
     },
     PlatformFeature {
         feature: "riscv64-qemu-virt-hv",
@@ -188,7 +188,7 @@ fn gen_selected_platform(
         None
     };
 
-    if crate_name == Some("axplat_dyn") {
+    if crate_name == Some("ax_plat_dyn") {
         println!("cargo:rustc-cfg=plat_dyn");
     }
 

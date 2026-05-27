@@ -226,9 +226,9 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 
 | 层 | 位置 | 允许依赖 | 不允许 |
 | --- | --- | --- | --- |
-| Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`axplat-dyn`、`rdrive::PlatformDevice` |
+| Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`ax-plat-dyn`、`rdrive::PlatformDevice` |
 | Capability Boundary | `drivers/interface/rdif-*` | `rdif-base`、小型错误和事件类型 | 平台、runtime、任务调度 |
-| OS Glue | `platform/axplat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
+| OS Glue | `platforms/ax-plat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
 | Runtime | `drivers/*/rd-*` | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
 
 Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用。
@@ -315,10 +315,10 @@ src/
 
 | 文件 | 当前问题 | 拆分方向 |
 | --- | --- | --- |
-| `platform/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
-| `platform/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rd-block adapter |
-| `platform/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
-| `platform/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
+| `platforms/ax-plat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
+| `platforms/ax-plat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rd-block adapter |
+| `platforms/ax-plat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
+| `platforms/ax-plat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 
 `lib.rs` 只做模块声明和 re-export，不承载核心实现。
 
