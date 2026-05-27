@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.15...someboot-v0.1.16) - 2026-05-27
+
+### Fixed
+
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
 ## [0.1.15](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.14...someboot-v0.1.15) - 2026-05-15
 
 ### Fixed

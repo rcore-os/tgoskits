@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.4...ax-cpu-v0.6.5) - 2026-05-27
+
+### Added
+
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+
+### Fixed
+
+- *(loongarch64)* make userspace LSX usable (preserve FP/LSX state + fix uc_mcontext offset + advertise AT_HWCAP) ([#917](https://github.com/rcore-os/tgoskits/pull/917))
+- *(axcpu)* save SP in aarch64 TrapFrame for kprobe correctness ([#887](https://github.com/rcore-os/tgoskits/pull/887))
+
 ## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.3...ax-cpu-v0.6.4) - 2026-05-22
 
 ### Fixed

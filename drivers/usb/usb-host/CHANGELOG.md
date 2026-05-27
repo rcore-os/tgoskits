@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.3...crab-usb-v0.9.4) - 2026-05-27
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- *(dma-api)* split coherent and streaming DMA APIs ([#932](https://github.com/rcore-os/tgoskits/pull/932))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.9.3](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.1...crab-usb-v0.9.3) - 2026-05-18
 
 ### Added

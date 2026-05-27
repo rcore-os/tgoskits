@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.20.1...rdrive-v0.21.0) - 2026-05-27
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- *(driver)* move static probes to platform-owned registration ([#937](https://github.com/rcore-os/tgoskits/pull/937))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.20.0](https://github.com/drivercraft/sparreal-os/compare/rdrive-v0.19.1...rdrive-v0.20.0) - 2026-03-10
 
 ### Other

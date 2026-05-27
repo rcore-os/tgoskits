@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.5.8...ax-plat-v0.5.9) - 2026-05-27
+
+### Other
+
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.5.7...ax-plat-v0.5.8) - 2026-05-15
 
 ### Other

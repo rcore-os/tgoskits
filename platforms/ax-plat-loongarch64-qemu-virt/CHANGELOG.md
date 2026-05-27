@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.10...ax-plat-loongarch64-qemu-virt-v0.5.11) - 2026-05-27
+
+### Other
+
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.9...ax-plat-loongarch64-qemu-virt-v0.5.10) - 2026-05-22
 
 ### Other

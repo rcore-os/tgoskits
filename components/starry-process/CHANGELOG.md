@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.7...starry-process-v0.4.8) - 2026-05-27
+
+### Added
+
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.6...starry-process-v0.4.7) - 2026-05-22
 
 ### Added

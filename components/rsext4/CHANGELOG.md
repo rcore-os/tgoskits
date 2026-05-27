@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.4.1...rsext4-v0.5.0) - 2026-05-27
+
+### Added
+
+- *(starry)* add SG2002 board boot support ([#834](https://github.com/rcore-os/tgoskits/pull/834))
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+- *(rsext4)* rmdir returns ENOTEMPTY on non-empty dirs, rename rejects cross-type overwrites ([#854](https://github.com/rcore-os/tgoskits/pull/854))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- Refactor journal recovery and partition scanning logic ([#927](https://github.com/rcore-os/tgoskits/pull/927))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.4.0...rsext4-v0.4.1) - 2026-05-22
 
 ### Fixed

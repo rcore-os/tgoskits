@@ -7,7 +7,7 @@ keywords = ["os", "usb", "xhci", "driver"]
 license.workspace = true
 name = "crab-usb"
 repository.workspace = true
-version = "0.9.3"
+version = "0.9.4"
 
 [features]
 aggressive_usb_reset = []

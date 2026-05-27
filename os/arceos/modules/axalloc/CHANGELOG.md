@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.7.2...ax-alloc-v0.7.3) - 2026-05-27
+
+### Other
+
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.7.1...ax-alloc-v0.7.2) - 2026-05-22
 
 ### Other

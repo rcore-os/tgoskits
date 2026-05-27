@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-visionfive2-v0.1.4...ax-plat-riscv64-visionfive2-v0.1.5) - 2026-05-27
+
+### Other
+
+- updated the following local packages: ax-lazyinit, ax-cpu, rdrive, ax-plat
+
 ## [0.1.4](https://github.com/rcore-os/tgoskits/compare/axplat-riscv64-visionfive2-v0.1.3...axplat-riscv64-visionfive2-v0.1.4) - 2026-05-22
 
 ### Other

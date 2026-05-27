@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.8...axbuild-v0.4.9) - 2026-05-27
+
+### Added
+
+- *(starry)* add SG2002 board boot support ([#834](https://github.com/rcore-os/tgoskits/pull/834))
+
+### Fixed
+
+- *(starry)* abort test run on first failure ([#983](https://github.com/rcore-os/tgoskits/pull/983))
+- *(ci)* stabilize Starry LoongArch apk-curl test ([#959](https://github.com/rcore-os/tgoskits/pull/959))
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+- *(ax-task)* preempt on async wake, guard wait queue against double-enqueue ([#912](https://github.com/rcore-os/tgoskits/pull/912))
+- *(starry)* repair SG2002 CI build ([#929](https://github.com/rcore-os/tgoskits/pull/929))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+- Adds support for kernel symbol dumping via kallsyms ([#837](https://github.com/rcore-os/tgoskits/pull/837))
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+- Revert "fix(ax-task): preempt on async wake, guard wait queue against double-…" ([#939](https://github.com/rcore-os/tgoskits/pull/939))
+- *(axbuild)* remove unused feature toggles ([#933](https://github.com/rcore-os/tgoskits/pull/933))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- *(axbuild)* use target JSON specs for kernel builds ([#839](https://github.com/rcore-os/tgoskits/pull/839))
+
 ## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.7...axbuild-v0.4.8) - 2026-05-22
 
 ### Added

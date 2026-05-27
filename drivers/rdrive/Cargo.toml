@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdrive"
 repository.workspace = true
-version = "0.20.1"
+version = "0.21.0"
 
 [dependencies]
 fdt-edit.workspace = true

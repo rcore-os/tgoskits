@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.6.0...ax-driver-v0.6.1) - 2026-05-27
+
+### Added
+
+- *(some-serial)* add Rockchip FIQ debugger UART ([#980](https://github.com/rcore-os/tgoskits/pull/980))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.5.14...ax-driver-v0.6.0) - 2026-05-19
 
 ### Fixed

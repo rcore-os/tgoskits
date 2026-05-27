@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.15...ax-fs-ng-v0.5.16) - 2026-05-27
+
+### Fixed
+
+- *(ci)* stabilize Starry LoongArch apk-curl test ([#959](https://github.com/rcore-os/tgoskits/pull/959))
+- *(starry)* align mount and umount2 semantics with Linux ([#876](https://github.com/rcore-os/tgoskits/pull/876))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+- *(ax-fs-ng)* complete direct device transfers ([#800](https://github.com/rcore-os/tgoskits/pull/800))
+- *(rsext4)* rmdir returns ENOTEMPTY on non-empty dirs, rename rejects cross-type overwrites ([#854](https://github.com/rcore-os/tgoskits/pull/854))
+
+### Other
+
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.14...ax-fs-ng-v0.5.15) - 2026-05-22
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axvisor_api-v0.5.11...axvisor_api-v0.5.12) - 2026-05-27
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/axvisor_api-v0.5.10...axvisor_api-v0.5.11) - 2026-05-22
 
 ### Other
