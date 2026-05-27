@@ -2,6 +2,7 @@
 target = "riscv64gc-unknown-none-elf"
 env = {}
 features = ["sg2002"]
+  "starryos/tlsf",
 log = "Info"
 max_cpu_num = 1
 plat_dyn = false

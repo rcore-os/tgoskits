@@ -1,5 +1,6 @@
 env = {}
 features = [
+  "starryos/tlsf",
   "ax-hal/plat-dyn",
   "ax-feat/rtc",
   "ax-driver/rtc",

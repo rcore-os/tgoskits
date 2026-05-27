@@ -3,6 +3,7 @@ target = "aarch64-unknown-none-softfloat"
 # Runtime U-Boot settings live in `orangepi-5-plus-uboot.toml`.
 env = {}
 features = [
+  "starryos/tlsf",
   "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
   "ax-driver/pci-list-devices",
