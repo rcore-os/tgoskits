@@ -1512,6 +1512,89 @@ mod tests {
     }
 
     #[test]
+    fn procps_qemu_case_installs_tools_before_boot() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/procps");
+        let cmake_path = case_dir.join("c/CMakeLists.txt");
+        let script_path = case_dir.join("c/procps-test.sh");
+        let prebuild_path = case_dir.join("c/prebuild.sh");
+
+        assert!(
+            script_path.is_file(),
+            "{} must be installed through the case C pipeline",
+            script_path.display()
+        );
+        assert!(
+            cmake_path.is_file(),
+            "{} must install procps assets through the host CMake install phase",
+            cmake_path.display()
+        );
+        assert!(
+            prebuild_path.is_file(),
+            "{} must install procps into the staging root before CMake install",
+            prebuild_path.display()
+        );
+        assert!(
+            !case_dir.join("sh").exists(),
+            "{} must not keep the old shell pipeline that cannot prebuild packages",
+            case_dir.join("sh").display()
+        );
+
+        let script = fs::read_to_string(&script_path).unwrap();
+        for guest_apk_command in ["apk update", "apk add", "apk info"] {
+            assert!(
+                !script.contains(guest_apk_command),
+                "{} must not run `{guest_apk_command}` after StarryOS boots",
+                script_path.display()
+            );
+        }
+        assert!(
+            script.contains("PROCPS_TEST_PASSED") && script.contains("command -v pmap"),
+            "{} must still exercise the installed procps tools",
+            script_path.display()
+        );
+
+        let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+        assert!(
+            prebuild.contains("apk add") && prebuild.contains("procps"),
+            "{} must install procps during case asset preparation",
+            prebuild_path.display()
+        );
+        for tool in ["ps", "free", "uptime", "pgrep", "pmap"] {
+            assert!(
+                prebuild.contains(tool),
+                "{} must verify that apk installed the {tool} tool in the staging root",
+                prebuild_path.display()
+            );
+        }
+
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+        assert!(
+            cmake.contains("install(PROGRAMS procps-test.sh")
+                && cmake.contains("STARRY_STAGING_ROOT")
+                && cmake.contains("ps")
+                && cmake.contains("pmap"),
+            "{} must install both the procps test script and staging-root tools",
+            cmake_path.display()
+        );
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 180,
+                "{} must fail quickly because procps setup happens before QEMU boot",
+                config_path.display()
+            );
+        }
+    }
+
+    #[test]
     fn dhcp_qemu_config_uses_dhcp_event_not_external_apk_fetch() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp/qemu-x86_64.toml");

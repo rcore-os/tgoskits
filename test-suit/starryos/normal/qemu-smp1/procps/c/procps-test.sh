@@ -1,6 +1,7 @@
 #!/bin/sh
-echo "=== install procps ==="
-apk add procps || echo "  WARN | apk add procps failed (network issue), using busybox fallback"
+set -u
+
+echo "=== procps tool test ==="
 
 PASS=0
 FAIL=0
@@ -20,6 +21,22 @@ run_test() {
     fi
 }
 
+require_tool() {
+    TOOL="$1"
+    if command -v "$TOOL" >/dev/null 2>&1; then
+        PASS=$((PASS + 1))
+        echo "  PASS | $TOOL available"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  FAIL | $TOOL available"
+    fi
+}
+
+echo "=== verify procps tools ==="
+for tool in ps free uptime pgrep pmap; do
+    require_tool "$tool"
+done
+
 echo "=== test ps ==="
 run_test "ps aux" ps aux
 run_test "ps -ef" ps -ef
@@ -36,14 +53,14 @@ echo "=== test pgrep ==="
 run_test "pgrep -l sh" pgrep -l sh
 
 echo "=== test pmap ==="
-if apk info -e procps >/dev/null 2>&1; then
+if command -v pmap >/dev/null 2>&1; then
     if pmap 1 >/dev/null 2>&1; then
         run_test "pmap 1" pmap 1
     else
-        echo "  SKIP | pmap (procps installed but pmap tool not working on this arch)"
+        echo "  SKIP | pmap (tool installed but pmap is unsupported on this arch)"
     fi
 else
-    echo "  SKIP | pmap (procps-ng not installed)"
+    echo "  SKIP | pmap (procps tool missing)"
 fi
 
 echo "=== test /proc entries ==="
@@ -61,6 +78,8 @@ echo "=== results: PASS=$PASS FAIL=$FAIL ==="
 
 if [ $FAIL -eq 0 ]; then
     echo "PROCPS_TEST_PASSED"
+    exit 0
 else
     echo "PROCPS_TEST_FAILED"
+    exit 1
 fi
