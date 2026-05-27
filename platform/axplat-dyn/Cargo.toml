@@ -20,7 +20,6 @@ hv = ["somehal/hv", "ax-cpu/arm-el2"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-alloc = { workspace = true, features = ["buddy-slab"] }
 ax-config-macros = { workspace = true }
 ax-cpu.workspace = true
 ax-driver = { workspace = true, features = ["fdt", "pci-fdt"] }

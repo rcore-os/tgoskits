@@ -5,11 +5,11 @@ use core::{ffi::CStr, iter};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{CachedFile, FS_CONTEXT, FileBackend};
-use ax_hal::{
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_runtime::hal::{
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::{

@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FileBackend, FileFlags};
-use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use ax_task::current;
 use linux_raw_sys::general::*;
 

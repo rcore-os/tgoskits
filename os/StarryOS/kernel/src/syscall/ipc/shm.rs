@@ -1,11 +1,11 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::{
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{ctypes::c_ushort, general::*};

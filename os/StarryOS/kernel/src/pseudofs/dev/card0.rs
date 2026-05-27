@@ -37,8 +37,8 @@ use core::{
     task::Context,
 };
 
-use ax_hal::{mem::virt_to_phys, paging::PageSize, time::monotonic_time};
 use ax_memory_addr::{PhysAddr, PhysAddrRange, VirtAddr};
+use ax_runtime::hal::{mem::virt_to_phys, paging::PageSize, time::monotonic_time};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -490,7 +490,7 @@ impl Card0 {
 
     fn dealloc_dumb_pages(&self, paddr: PhysAddr, size: usize) {
         use ax_alloc::{UsageKind, global_allocator};
-        use ax_hal::mem::phys_to_virt;
+        use ax_runtime::hal::mem::phys_to_virt;
         let vaddr = phys_to_virt(paddr);
         let num_pages = size / (PageSize::Size4K as usize);
         global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
@@ -511,7 +511,7 @@ impl Card0 {
         let info = ax_display::framebuffer_info();
         let src_size = buf.size.min(info.fb_size as u64) as usize;
         if let Some(src_paddr) = buf.paddr {
-            use ax_hal::mem::phys_to_virt;
+            use ax_runtime::hal::mem::phys_to_virt;
             let src = phys_to_virt(src_paddr);
             let dst = VirtAddr::from(info.fb_base_vaddr);
             let copy_bytes = src_size.min(info.fb_size);
