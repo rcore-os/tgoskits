@@ -45,7 +45,8 @@ crate::model_register!(
 
 pub mod error;
 #[cfg(any(
-    target_os = "none",
+    all(target_os = "none", feature = "serial"),
+    all(target_os = "none", feature = "rtc"),
     feature = "rockchip-soc",
     feature = "rockchip-pm",
     feature = "rockchip-dwmmc",
@@ -60,7 +61,6 @@ pub mod error;
 pub mod mmio;
 
 #[cfg(any(
-    target_os = "none",
     feature = "ahci",
     feature = "bcm2835-sdhci",
     feature = "nvme",
@@ -76,7 +76,6 @@ pub mod display;
 #[cfg(feature = "input")]
 pub mod input;
 #[cfg(any(
-    target_os = "none",
     feature = "fxmac",
     feature = "intel-net",
     feature = "ixgbe",
@@ -107,19 +106,17 @@ pub mod vsock;
 pub mod pci;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "none", feature = "serial"))]
 pub mod serial;
 #[cfg(any(
-    target_os = "none",
     feature = "rockchip-soc",
     feature = "rockchip-pm",
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "none", feature = "rtc"))]
 pub mod time;
 #[cfg(any(
-    target_os = "none",
     feature = "rockchip-dwc-xhci",
     feature = "xhci-mmio",
     feature = "xhci-pci",
