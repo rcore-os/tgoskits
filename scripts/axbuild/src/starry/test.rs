@@ -1845,6 +1845,66 @@ mod tests {
     }
 
     #[test]
+    fn tty_bugfix_commands_are_isolated_from_large_bugfix_group() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let qemu_smp1 = workspace_root.join("test-suit/starryos/normal/qemu-smp1");
+        let tty_case_dir = qemu_smp1.join("tty-bugfix");
+        let tty_commands = [
+            "/usr/bin/bug-raw-terminal-polling",
+            "/usr/bin/bug-tty-cursor-report",
+        ];
+
+        for command in tty_commands {
+            let name = command.trim_start_matches("/usr/bin/");
+            assert!(
+                tty_case_dir.join(name).join("c/CMakeLists.txt").is_file(),
+                "{} must be built in the isolated tty-bugfix case",
+                command
+            );
+        }
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let bugfix_path = qemu_smp1.join("bugfix").join(format!("qemu-{arch}.toml"));
+            let bugfix_content = fs::read_to_string(&bugfix_path).unwrap();
+            let bugfix_config: toml::Value = toml::from_str(&bugfix_content).unwrap();
+            let bugfix_commands = bugfix_config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            for command in tty_commands {
+                assert!(
+                    !bugfix_commands
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .any(|candidate| candidate == command),
+                    "{} must not keep {} in the long bugfix guest session",
+                    bugfix_path.display(),
+                    command
+                );
+            }
+
+            let tty_path = tty_case_dir.join(format!("qemu-{arch}.toml"));
+            let tty_content = fs::read_to_string(&tty_path).unwrap();
+            let tty_config: toml::Value = toml::from_str(&tty_content).unwrap();
+            let isolated_commands = tty_config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            for command in tty_commands {
+                assert!(
+                    isolated_commands
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .any(|candidate| candidate == command),
+                    "{} must include {}",
+                    tty_path.display(),
+                    command
+                );
+            }
+        }
+    }
+
+    #[test]
     fn starry_grouped_cases_install_profile_autorun() {
         let config = starry_case_asset_config();
 
