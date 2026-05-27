@@ -1388,6 +1388,7 @@ mod tests {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/inotifywait");
         let config_path = case_dir.join("qemu-x86_64.toml");
+        let cmake_path = case_dir.join("c/CMakeLists.txt");
         let script_path = case_dir.join("c/inotifywait-tests.sh");
         let prebuild_path = case_dir.join("c/prebuild.sh");
 
@@ -1397,8 +1398,13 @@ mod tests {
             script_path.display()
         );
         assert!(
+            cmake_path.is_file(),
+            "{} must install inotifywait assets through the host CMake install phase",
+            cmake_path.display()
+        );
+        assert!(
             prebuild_path.is_file(),
-            "{} must install inotify-tools before StarryOS boots",
+            "{} must install inotify-tools into the staging root before CMake install",
             prebuild_path.display()
         );
 
@@ -1422,10 +1428,26 @@ mod tests {
             "{} must install the inotify-tools package during case asset preparation",
             prebuild_path.display()
         );
+        for host_overlay_command in ["STARRY_CASE_OVERLAY_DIR", "cp ", "chmod ", "mkdir "] {
+            assert!(
+                !prebuild.contains(host_overlay_command),
+                "{} must not manipulate host overlay paths from the guest prebuild shell",
+                prebuild_path.display()
+            );
+        }
         assert!(
-            prebuild.contains("STARRY_CASE_OVERLAY_DIR"),
-            "{} must copy inotifywait into the injected case overlay",
+            prebuild.contains("STARRY_STAGING_ROOT/usr/bin/inotifywait"),
+            "{} must verify that apk installed the inotifywait tool in the staging root",
             prebuild_path.display()
+        );
+
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+        assert!(
+            cmake.contains("install(PROGRAMS inotifywait-tests.sh")
+                && cmake.contains("${STARRY_STAGING_ROOT}/usr/bin/inotifywait")
+                && cmake.contains("DESTINATION usr/bin"),
+            "{} must copy both test script and inotifywait through CMake install",
+            cmake_path.display()
         );
 
         let content = fs::read_to_string(&config_path).unwrap();
