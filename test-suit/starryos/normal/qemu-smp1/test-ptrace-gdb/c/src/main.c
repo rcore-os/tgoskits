@@ -1520,6 +1520,79 @@ static int test_sigkill_event_stopped_tracee(void)
     return 0;
 }
 
+static int test_traceme_rejects_second_call(void)
+{
+    printf("test 17: repeated PTRACE_TRACEME is rejected\n");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        return fail("fork traceme repeat");
+    }
+    if (pid == 0) {
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0) {
+            _exit(10);
+        }
+        errno = 0;
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) == 0 || errno != EPERM) {
+            _exit(11);
+        }
+        _exit(0);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) {
+        return fail("wait traceme repeat");
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("FAIL: repeated TRACEME child status=%#x\n", status);
+        return 1;
+    }
+
+    printf("  ok: second TRACEME failed with EPERM\n");
+    return 0;
+}
+
+static int test_invalid_resume_signal(void)
+{
+    printf("test 18: invalid ptrace resume signal is rejected\n");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        return fail("fork invalid resume signal");
+    }
+    if (pid == 0) {
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0) {
+            _exit(1);
+        }
+        raise(SIGSTOP);
+        _exit(0);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFSTOPPED(status)) {
+        printf("FAIL: invalid-resume initial stop status=%#x\n", status);
+        return 1;
+    }
+
+    errno = 0;
+    if (ptrace(PTRACE_CONT, pid, NULL, (void *)(long)9999) == 0 || errno != EIO) {
+        printf("FAIL: invalid resume signo errno=%d (%s)\n", errno, strerror(errno));
+        ptrace(PTRACE_KILL, pid, NULL, NULL);
+        waitpid(pid, &status, 0);
+        return 1;
+    }
+
+    if (ptrace(PTRACE_KILL, pid, NULL, NULL) != 0) {
+        return fail("kill invalid-resume child");
+    }
+    if (waitpid(pid, &status, 0) != pid) {
+        return fail("wait invalid-resume child");
+    }
+
+    printf("  ok: invalid resume signal failed with EIO\n");
+    return 0;
+}
+
 int main(void)
 {
     int pass = 0;
@@ -1616,6 +1689,18 @@ int main(void)
     }
 
     if (test_sigkill_event_stopped_tracee() == 0) {
+        pass++;
+    } else {
+        fail_count++;
+    }
+
+    if (test_traceme_rejects_second_call() == 0) {
+        pass++;
+    } else {
+        fail_count++;
+    }
+
+    if (test_invalid_resume_signal() == 0) {
         pass++;
     } else {
         fail_count++;

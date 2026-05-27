@@ -9,6 +9,6 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-ptrace-gdb"
-success_regex = ["DONE: 16 pass, 0 fail"]
+success_regex = ["DONE: 18 pass, 0 fail"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']
 timeout = 120

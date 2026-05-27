@@ -112,10 +112,7 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
     info!("sys_ptrace <= request: {request}, pid: {pid}, addr: {addr:#x}, data: {data:#x}");
 
     match request {
-        PTRACE_TRACEME => {
-            current().as_thread().proc_data.set_ptrace_traceme();
-            Ok(0)
-        }
+        PTRACE_TRACEME => ptrace_traceme(),
         PTRACE_PEEKTEXT | PTRACE_PEEKDATA => ptrace_peekdata(pid, addr, data),
         PTRACE_POKETEXT | PTRACE_POKEDATA => ptrace_pokedata(pid, addr, data),
         PTRACE_CONT => ptrace_cont(pid, data),
@@ -140,11 +137,35 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
     }
 }
 
+fn ptrace_traceme() -> AxResult<isize> {
+    let curr = current();
+    let proc_data = &curr.as_thread().proc_data;
+    if proc_data.proc.parent().is_none()
+        || proc_data.is_ptrace_traceme()
+        || proc_data.is_ptrace_attached()
+        || proc_data.ptrace_tracer_pid().is_some()
+    {
+        return Err(AxError::from(LinuxError::EPERM));
+    }
+    proc_data.set_ptrace_traceme();
+    Ok(0)
+}
+
+fn ptrace_resume_signo(data: usize) -> AxResult<u32> {
+    if data == 0 {
+        return Ok(0);
+    }
+    let signo = u8::try_from(data).map_err(|_| AxError::from(LinuxError::EIO))?;
+    Signo::from_repr(signo).ok_or_else(|| AxError::from(LinuxError::EIO))?;
+    Ok(signo as u32)
+}
+
 fn ptrace_cont(pid: usize, data: usize) -> AxResult<isize> {
+    let signo = ptrace_resume_signo(data)?;
     let tracee = ptrace_stopped_tracee(pid)?;
     tracee.set_ptrace_singlestep(false);
     tracee.set_ptrace_syscall_trace(false);
-    tracee.resume_ptrace_stop_with_signal(data as u32);
+    tracee.resume_ptrace_stop_with_signal(signo);
     Ok(0)
 }
 
@@ -164,10 +185,11 @@ fn ptrace_kill(pid: usize) -> AxResult<isize> {
 }
 
 fn ptrace_singlestep(pid: usize, data: usize) -> AxResult<isize> {
+    let signo = ptrace_resume_signo(data)?;
     let tracee = ptrace_stopped_tracee(pid)?;
     tracee.set_ptrace_singlestep(true);
     tracee.set_ptrace_syscall_trace(false);
-    tracee.resume_ptrace_stop_with_signal(data as u32);
+    tracee.resume_ptrace_stop_with_signal(signo);
     Ok(0)
 }
 
@@ -196,6 +218,7 @@ fn ptrace_attach(pid: usize) -> AxResult<isize> {
 }
 
 fn ptrace_detach(pid: usize, data: usize) -> AxResult<isize> {
+    let signo = ptrace_resume_signo(data)?;
     let tracee = ptrace_stopped_tracee(pid)?;
     tracee.clear_ptrace_traceme();
     tracee.clear_ptrace_attached();
@@ -203,15 +226,16 @@ fn ptrace_detach(pid: usize, data: usize) -> AxResult<isize> {
     tracee.set_ptrace_singlestep(false);
     tracee.set_ptrace_syscall_trace(false);
     tracee.set_ptrace_options(0);
-    tracee.resume_ptrace_stop_with_signal(data as u32);
+    tracee.resume_ptrace_stop_with_signal(signo);
     Ok(0)
 }
 
 fn ptrace_syscall(pid: usize, data: usize) -> AxResult<isize> {
+    let signo = ptrace_resume_signo(data)?;
     let tracee = ptrace_stopped_tracee(pid)?;
     tracee.set_ptrace_singlestep(false);
     tracee.set_ptrace_syscall_trace(true);
-    tracee.resume_ptrace_stop_with_signal(data as u32);
+    tracee.resume_ptrace_stop_with_signal(signo);
     Ok(0)
 }
 
