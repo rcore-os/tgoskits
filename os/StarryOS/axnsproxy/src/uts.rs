@@ -6,8 +6,8 @@ use ax_kspin::SpinNoIrq;
 
 /// The initial root UTS namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUTS)`.
-pub static ROOT_UTS_NS: spin::Lazy<Arc<SpinNoIrq<UtNamespace>>> =
-    spin::Lazy::new(|| Arc::new(SpinNoIrq::new(UtNamespace::new_root())));
+pub static ROOT_UTS_NS: spin::LazyLock<Arc<SpinNoIrq<UtNamespace>>> =
+    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(UtNamespace::new_root())));
 
 const fn pad_str(info: &str) -> [c_char; 65] {
     let mut data: [c_char; 65] = [0; 65];
