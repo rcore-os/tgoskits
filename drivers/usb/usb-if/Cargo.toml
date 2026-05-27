@@ -12,5 +12,5 @@ anyhow = { version = "1", default-features = false}
 futures = {workspace = true, features = ["alloc"]}
 log = {workspace = true}
 num_enum = {version = "0.7", default-features = false}
-spin = "0.10"
+spin = { workspace = true }
 thiserror = {workspace = true}

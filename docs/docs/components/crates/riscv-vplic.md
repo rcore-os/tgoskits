@@ -1,6 +1,6 @@
 # `riscv_vplic`
 
-> 路径：`components/riscv_vplic`
+> 路径：`virtualization/riscv_vplic`
 > 类型：库 crate
 > 分层：组件层 / RISC-V 虚拟中断控制器
 > 版本：`0.2.1`

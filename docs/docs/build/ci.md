@@ -63,7 +63,7 @@ detect_changes
 
 | 检测路径 | 触发任务 |
 |----------|----------|
-| `.cargo/`、`Cargo.toml`、`Cargo.lock`、`components/`、`drivers/`、`examples/`、`os/`、`platform/`、`scripts/`、`test-suit/`、`xtask/` 等 | CI 检查 |
+| `.cargo/`、`Cargo.toml`、`Cargo.lock`、`components/`、`drivers/`、`examples/`、`os/`、`platforms/`、`scripts/`、`test-suit/`、`xtask/` 等 | CI 检查 |
 | `container/Dockerfile`、`rust-toolchain.toml` | 发布基础容器镜像 |
 | `container/Dockerfile.axvisor-lvz`、`rust-toolchain.toml` | 发布 LVZ 扩展镜像 |
 

@@ -38,4 +38,4 @@ ax-percpu-macros = { workspace = true }
 x86 = "0.52"
 
 [target.'cfg(not(target_os = "none"))'.dependencies]
-spin = "0.10"
+spin = { workspace = true }

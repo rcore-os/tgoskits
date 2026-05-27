@@ -1,6 +1,6 @@
 # `arm_vgic`
 
-> 路径：`components/arm_vgic`
+> 路径：`virtualization/arm_vgic`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.1`
@@ -187,11 +187,11 @@ arm_vgic = { workspace = true, features = ["vgicv3"] }
 `arm_vgic` 是 Axvisor ARM 虚拟化栈中的关键设备组件之一。`axdevice` 负责把它挂进 VM，`axvm` 负责更高层装配，`arm_vcpu` 负责执行态注入，三者共同构成 ARM guest 中断虚拟化主线。
 # `arm_vgic` 技术文档
 
-> 路径：`components/arm_vgic`
+> 路径：`virtualization/arm_vgic`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/arm_vgic/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `virtualization/arm_vgic/README.md`
 
 `arm_vgic` 的核心定位是：ARM Virtual Generic Interrupt Controller (VGIC) implementation.
 
@@ -276,7 +276,7 @@ graph LR
 arm_vgic = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# arm_vgic = { path = "components/arm_vgic" }
+# arm_vgic = { path = "virtualization/arm_vgic" }
 ```
 
 ### 初始化

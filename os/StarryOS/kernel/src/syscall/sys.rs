@@ -97,8 +97,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::Lazy<Mutex<SyslogState>> =
-    spin::Lazy::new(|| Mutex::new(SyslogState::new()));
+static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
+    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
 /// Mirror of Linux kernel `uid_valid()` / `make_kuid()` rejection: any caller-
 /// supplied UID/GID of `(uid_t)-1` (`u32::MAX`) is invalid outside the NOCHG

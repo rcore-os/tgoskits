@@ -141,9 +141,9 @@ pub fn init_scheduler() {
 }
 
 pub(crate) fn cpu_mask_full() -> AxCpuMask {
-    use spin::Lazy;
+    use spin::LazyLock;
 
-    static CPU_MASK_FULL: Lazy<AxCpuMask> = Lazy::new(|| {
+    static CPU_MASK_FULL: LazyLock<AxCpuMask> = LazyLock::new(|| {
         let cpu_num = ax_hal::cpu_num();
         let mut cpumask = AxCpuMask::new();
         for cpu_id in 0..cpu_num {

@@ -32,7 +32,7 @@ flowchart LR
     starryComponents["StarryComponents: starry-process starry-signal starry-vm"]
     arceosModules["ArceosModules: ax-hal ax-task ax-mm ax-fs ax-net ax-sync"]
     sharedCrates["SharedCrates: components/*"]
-    platformLayer["PlatformLayer: axplat-* + platform/*"]
+    platformLayer["PlatformLayer: axplat-* + platforms/*"]
 
     sharedCrates --> arceosModules
     sharedCrates --> starryComponents
@@ -60,7 +60,7 @@ flowchart LR
 | 内核核心层 | `os/StarryOS/kernel` | `entry`、`syscall`、`task`、`mm`、`file`、`pseudofs`、`time`、`trap` |
 | Starry 专用组件层 | `components/starry-*` | 进程、信号、虚拟内存等抽象 |
 | ArceOS 基础模块层 | `os/arceos/modules/*` | HAL、任务调度、同步、基础 I/O、文件与网络能力 |
-| 平台层 | `platform/*`、`axplat-*` | 架构与板级支持 |
+| 平台层 | `platforms/*`、`axplat-*` | 架构与板级支持 |
 
 ## 内核子系统
 

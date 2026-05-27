@@ -14,7 +14,7 @@ use core::{
 use ax_kspin::SpinNoIrq;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use spin::Lazy;
+use spin::LazyLock;
 
 bitflags! {
     /// I/O events.
@@ -111,7 +111,7 @@ impl Drop for Inner {
 }
 
 /// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(Lazy<SpinNoIrq<Inner>>);
+pub struct PollSet(LazyLock<SpinNoIrq<Inner>>);
 
 impl Default for PollSet {
     fn default() -> Self {
@@ -122,7 +122,7 @@ impl Default for PollSet {
 impl PollSet {
     /// Creates a new empty [`PollSet`].
     pub const fn new() -> Self {
-        Self(Lazy::new(|| SpinNoIrq::new(Inner::new())))
+        Self(LazyLock::new(|| SpinNoIrq::new(Inner::new())))
     }
 
     /// Registers a waker.

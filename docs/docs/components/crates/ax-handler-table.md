@@ -54,7 +54,7 @@ flowchart TD
 
 ### 使用场景
 - `HandlerTable::new()`：各平台 IRQ 子系统用它声明静态处理器表。
-- `register_handler()` / `unregister_handler()`：被 `components/axplat_crates/ax-plat/src/irq.rs` 的平台实现间接消费。
+- `register_handler()` / `unregister_handler()`：被 `platforms/ax-plat/src/irq.rs` 的平台实现间接消费。
 - `handle()`：由平台 IRQ 处理路径在拿到实际 IRQ 号后调用。
 
 ### 边界说明

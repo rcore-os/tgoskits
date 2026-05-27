@@ -16,7 +16,7 @@ use smoltcp::{
     time::Duration,
     wire::{IpEndpoint, IpListenEndpoint},
 };
-use spin::Lazy;
+use spin::LazyLock;
 
 use crate::{
     LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
@@ -726,8 +726,8 @@ impl TcpSocket {
     }
 }
 
-static TCP_BOUND_PORTS: Lazy<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     if endpoint.port == 0 {
