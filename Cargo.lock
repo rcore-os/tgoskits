@@ -567,7 +567,7 @@ dependencies = [
  "nb",
  "num-align",
  "smccc",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -585,7 +585,7 @@ dependencies = [
  "axvisor_api",
  "log",
  "numeric-enum-macro",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -602,7 +602,7 @@ dependencies = [
  "axvisor_api",
  "bitmaps",
  "log",
- "spin 0.12.0",
+ "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -664,9 +664,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autocfg"
-version = "1.5.1"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
@@ -909,7 +909,7 @@ dependencies = [
  "sdmmc-protocol",
  "simple-ahci",
  "some-serial",
- "spin 0.12.0",
+ "spin",
  "virtio-drivers",
 ]
 
@@ -960,7 +960,7 @@ dependencies = [
  "axfatfs",
  "log",
  "rsext4",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -969,7 +969,7 @@ version = "0.3.11"
 dependencies = [
  "ax-fs-vfs",
  "log",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -995,7 +995,7 @@ dependencies = [
  "rsext4",
  "scope-local",
  "slab",
- "spin 0.12.0",
+ "spin",
  "starry-fatfs",
 ]
 
@@ -1005,7 +1005,7 @@ version = "0.3.12"
 dependencies = [
  "ax-fs-vfs",
  "log",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1036,16 +1036,16 @@ dependencies = [
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-qemu-virt",
  "ax-plat-riscv64-sg2002",
- "ax-plat-riscv64-visionfive2",
  "ax-plat-x86-pc",
- "ax-plat-x86-qemu-q35",
  "axplat-dyn",
+ "axplat-riscv64-visionfive2",
+ "axplat-x86-qemu-q35",
  "cfg-if",
  "fdt-parser",
  "heapless 0.9.3",
  "log",
  "rdrive",
- "spin 0.12.0",
+ "spin",
  "toml 1.1.2+spec-1.1.0",
 ]
 
@@ -1231,7 +1231,7 @@ dependencies = [
  "cfg-if",
  "log",
  "smoltcp 0.13.1",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1260,7 +1260,7 @@ dependencies = [
  "rdif-vsock",
  "ringbuf",
  "smoltcp 0.13.1",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1295,7 +1295,7 @@ dependencies = [
  "ax-kernel-guard",
  "ax-percpu-macros",
  "cfg-if",
- "spin 0.12.0",
+ "spin",
  "x86",
 ]
 
@@ -1352,7 +1352,7 @@ dependencies = [
  "ax-plat",
  "log",
  "some-serial",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1462,25 +1462,7 @@ dependencies = [
  "sbi-rt 0.0.3",
  "sg200x-bsp",
  "some-serial",
- "spin 0.12.0",
-]
-
-[[package]]
-name = "ax-plat-riscv64-visionfive2"
-version = "0.1.4"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-kspin",
- "ax-lazyinit",
- "ax-plat",
- "ax-riscv-plic",
- "log",
- "rdrive",
- "riscv 0.14.0",
- "riscv_goldfish",
- "sbi-rt 0.0.3",
- "uart_16550 0.4.0",
+ "spin",
 ]
 
 [[package]]
@@ -1509,31 +1491,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-plat-x86-qemu-q35"
-version = "0.4.8"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-int-ratio",
- "ax-kspin",
- "ax-lazyinit",
- "ax-percpu",
- "ax-plat",
- "axklib",
- "bitflags 2.11.1",
- "heapless 0.9.3",
- "log",
- "multiboot",
- "raw-cpuid 11.6.0",
- "uart_16550 0.4.0",
- "x2apic",
- "x86",
- "x86_64",
- "x86_rtc",
-]
-
-[[package]]
 name = "ax-posix-api"
 version = "0.5.16"
 dependencies = [
@@ -1552,7 +1509,7 @@ dependencies = [
  "bindgen 0.72.1",
  "flatten_objects",
  "scope-local",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1596,7 +1553,7 @@ dependencies = [
  "rd-block",
  "rd-net",
  "rdrive",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1626,7 +1583,7 @@ dependencies = [
  "ax-kspin",
  "ax-lazyinit",
  "lock_api",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1665,7 +1622,7 @@ dependencies = [
  "extern-trait",
  "futures-util",
  "log",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1713,7 +1670,7 @@ dependencies = [
  "gimli 0.33.0",
  "log",
  "paste",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -1785,6 +1742,16 @@ dependencies = [
  "axaddrspace",
  "axvmconfig",
  "serde",
+]
+
+[[package]]
+name = "axerrno"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f961d2868582a092fb1e71b90c16cc6f2cbbe7bb5fa7e4bd6fe61d882ce6bb34"
+dependencies = [
+ "log",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -1863,7 +1830,50 @@ dependencies = [
  "log",
  "rdrive",
  "somehal",
- "spin 0.12.0",
+ "spin",
+]
+
+[[package]]
+name = "axplat-riscv64-visionfive2"
+version = "0.1.4"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-plat",
+ "ax-riscv-plic",
+ "log",
+ "rdrive",
+ "riscv 0.14.0",
+ "riscv_goldfish",
+ "sbi-rt 0.0.3",
+ "uart_16550 0.4.0",
+]
+
+[[package]]
+name = "axplat-x86-qemu-q35"
+version = "0.4.8"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-driver",
+ "ax-int-ratio",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-percpu",
+ "ax-plat",
+ "axklib",
+ "bitflags 2.11.1",
+ "heapless 0.9.3",
+ "log",
+ "multiboot",
+ "raw-cpuid 11.6.0",
+ "uart_16550 0.4.0",
+ "x2apic",
+ "x86",
+ "x86_64",
+ "x86_rtc",
 ]
 
 [[package]]
@@ -1874,7 +1884,7 @@ dependencies = [
  "bitflags 2.11.1",
  "futures",
  "linux-raw-sys 0.12.1",
- "spin 0.12.0",
+ "spin",
  "tokio",
 ]
 
@@ -1963,7 +1973,6 @@ dependencies = [
  "ax-percpu",
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-qemu-virt",
- "ax-plat-x86-qemu-q35",
  "ax-std",
  "ax-timer-list",
  "axaddrspace",
@@ -1973,6 +1982,7 @@ dependencies = [
  "axhvc",
  "axklib",
  "axplat-dyn",
+ "axplat-x86-qemu-q35",
  "axvcpu",
  "axvisor_api",
  "axvm",
@@ -1991,7 +2001,7 @@ dependencies = [
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
- "spin 0.12.0",
+ "spin",
  "syn 2.0.117",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -2041,7 +2051,7 @@ dependencies = [
  "log",
  "loongarch_vcpu",
  "riscv_vcpu",
- "spin 0.12.0",
+ "spin",
  "x86_vcpu",
 ]
 
@@ -2203,6 +2213,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitfield-struct"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca6739863c590881f038d033a146c51ddae239186a4327014839fd864f44ed5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2288,7 +2309,7 @@ dependencies = [
  "divan",
  "log",
  "rand 0.10.1",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -2303,14 +2324,14 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672b945a3e4f4f40bfd4cd5ee07df9e796a42254ce7cd6d2599ad969244c44a"
 dependencies = [
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
 name = "bwbench-client"
@@ -2623,9 +2644,9 @@ dependencies = [
 
 [[package]]
 name = "compact_str"
-version = "0.8.2"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fd622ebbb56a5b2ccb651b32b911cdeb2a9b4b11776b2473bf26a26a286244e"
+checksum = "3b79c4069c6cad78e2e0cdfcbd26275770669fb39fd308a752dc110e83b9af32"
 dependencies = [
  "castaway",
  "cfg-if",
@@ -2637,9 +2658,9 @@ dependencies = [
 
 [[package]]
 name = "compact_str"
-version = "0.9.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dfdd1c2274d9aa354115b09dc9a901d6c5576818cdf70d14cae2bdb47df00ab"
+checksum = "3fdb1325a1cece981e8a296ab8f0f9b63ae357bd0784a9faaf548cc7b480707a"
 dependencies = [
  "castaway",
  "cfg-if",
@@ -2803,7 +2824,7 @@ dependencies = [
  "mbarrier",
  "nb",
  "num_enum",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "trait-ffi",
@@ -3017,9 +3038,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-common"
-version = "0.2.2"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
 dependencies = [
  "hybrid-array",
 ]
@@ -3101,7 +3122,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "321ec774d27fafc66e812034d0025f8858bd7d9095304ff8fc200e0b9f9cc257"
 dependencies = [
  "ahash 0.8.12",
- "compact_str 0.8.2",
+ "compact_str 0.8.1",
  "crossbeam-channel",
  "cursive-macros",
  "enum-map",
@@ -3361,14 +3382,14 @@ checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.0",
  "const-oid",
- "crypto-common 0.2.2",
+ "crypto-common 0.2.1",
 ]
 
 [[package]]
 name = "displaydoc"
-version = "0.2.6"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
+checksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3468,7 +3489,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 name = "dwmmc-host"
 version = "0.1.1"
 dependencies = [
- "bitfield-struct",
+ "bitfield-struct 0.11.0",
  "dma-api",
  "embedded-hal",
  "log",
@@ -3485,9 +3506,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "either"
-version = "1.16.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "embedded-graphics"
@@ -3609,9 +3630,9 @@ dependencies = [
 
 [[package]]
 name = "enumset"
-version = "1.1.13"
+version = "1.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "839c4174b41e75c8f7306110b2c51996a293b8d1d850edd529011841d9fede7d"
+checksum = "7f96a4a12fe60ac746ae295a1a4ecb5bb02debc20856506c8635288065f142de"
 dependencies = [
  "enumset_derive",
 ]
@@ -3864,9 +3885,9 @@ checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 
 [[package]]
 name = "fitimage"
-version = "0.1.4"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92edd7c1c55efd27b5a17dd6d505affafcfe48dfaed7423d4c4ae7361e56a7d8"
+checksum = "8cb4d07a1e7a76a7ac4b6b754d45670b1a82c8a0484d80cceeb30c99ad65ce1d"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4043,9 +4064,9 @@ checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
 name = "futures-timer"
-version = "3.0.4"
+version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
 
 [[package]]
 name = "futures-util"
@@ -4158,6 +4179,17 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "goblin"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "983a6aafb3b12d4c41ea78d39e189af4298ce747353945ff5105b54a056e5cd9"
+dependencies = [
+ "log",
+ "plain",
+ "scroll",
+]
 
 [[package]]
 name = "h2"
@@ -4281,6 +4313,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hello-kernel"
+version = "0.3.1"
+dependencies = [
+ "ax-plat",
+ "ax-plat-aarch64-qemu-virt",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
+ "ax-plat-x86-pc",
+ "cfg-if",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4294,9 +4338,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "http"
-version = "1.4.1"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be7462df143984c4598a256ef469b251d7d7f9e271135073e78fc535414f3d0"
+checksum = "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
 dependencies = [
  "bytes",
  "itoa",
@@ -4655,6 +4699,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "int-enum"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e366a1634cccc76b4cfd3e7580de9b605e4d93f1edac48d786c1f867c0def495"
+dependencies = [
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "intrusive-collections"
 version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4678,6 +4734,20 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+
+[[package]]
+name = "irq-kernel"
+version = "0.3.1"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
+ "ax-plat-aarch64-qemu-virt",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
+ "ax-plat-x86-pc",
+ "cfg-if",
+]
 
 [[package]]
 name = "is-terminal"
@@ -4744,9 +4814,9 @@ dependencies = [
 
 [[package]]
 name = "jiff"
-version = "0.2.27"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "392c70591e8749fe235ddaf513e6f58b26bce3dcc16524cecc8936f75afa161e"
+checksum = "f00b5dbd620d61dfdcb6007c9c1f6054ebd75319f163d886a9055cec1155073d"
 dependencies = [
  "jiff-static",
  "log",
@@ -4757,9 +4827,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.27"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47b605b0c050d845fc355bb11eb3f9a8deddc218ea60c76e61aa1f2adfb2c96a"
+checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4791,9 +4861,9 @@ dependencies = [
 
 [[package]]
 name = "jkconfig"
-version = "0.2.4"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4cbaedffb63dabcbab61e23e0adc1fc7bc0d7420f2f56124e2bc0002d9274ab"
+checksum = "d8746ebf553e6e9d0620a918072432b44aa9563f6f19d17432b613828df708a1"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -4879,14 +4949,25 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.99"
+version = "0.3.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142bc4740e452c1e57ade0cbc129f139c9093e354346f0872ef985f4f5cf5f11"
+checksum = "67df7112613f8bfd9150013a0314e196f4800d3201ae742489d999db2f979f08"
 dependencies = [
  "cfg-if",
  "futures-util",
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kapi"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93505ad306e00dcd1b283c328110de980a1b1ac00e127c0eba192cf5500159d9"
+dependencies = [
+ "axerrno",
+ "kmod-tools",
+ "paste",
 ]
 
 [[package]]
@@ -4909,6 +4990,12 @@ dependencies = [
  "portable-atomic",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "kbindings"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "753ac4e7753fa007b8f7828d0e01e9ececa48b689460e6380fb36bbf74654a8d"
 
 [[package]]
 name = "kernel-elf-parser"
@@ -4940,6 +5027,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "kmacro-tools"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edf3202c44ae67bf2647146a753b2b09e9b48db0fd5db1686f595b6682e7ca72"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "kmod-loader"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550f9b0e0c6e219e177bc0c6e6a10630deec3befdc3c9951b2ce7fb0b3f3070c"
+dependencies = [
+ "axerrno",
+ "bitfield-struct 0.13.0",
+ "bitflags 2.11.1",
+ "cfg-if",
+ "goblin",
+ "int-enum",
+ "kapi",
+ "kmod-tools",
+ "log",
+ "paste",
+]
+
+[[package]]
+name = "kmod-tools"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80053048fd6814e4fcd5bda5f23a88d2deffb5d70ac7544f8312f706296c503e"
+dependencies = [
+ "kbindings",
+ "kmacro-tools",
+]
+
+[[package]]
 name = "kprobe"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4951,12 +5077,6 @@ dependencies = [
  "yaxpeax-arch",
  "yaxpeax-x86",
 ]
-
-[[package]]
-name = "ksym"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b543b77d8cfa33302b6b51b6a255f9e85b06997b7c4a0a7354fcc8304036eb09"
 
 [[package]]
 name = "ktest-helper"
@@ -5135,9 +5255,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.30"
+version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
+checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "loongArch64"
@@ -5274,9 +5394,9 @@ checksum = "ae960838283323069879657ca3de837e9f7bbb4c7bf6ea7f1b290d5e9476d2e0"
 
 [[package]]
 name = "memchr"
-version = "2.8.1"
+version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
+checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "memmap2"
@@ -5487,9 +5607,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.2.2"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+checksum = "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
 
 [[package]]
 name = "num-derive"
@@ -5609,7 +5729,7 @@ dependencies = [
  "mmio-api",
  "pcie",
  "rd-block",
- "spin 0.12.0",
+ "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -5681,9 +5801,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.21.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4d0470fd8561e21f458d865490c928ebff45c0e1037a45f634a527acb8f15ff"
+checksum = "f785cb91e2622849c3f0e55d5363989934d365967c06f0a8ce8fd944f3b834ba"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5697,7 +5817,7 @@ dependencies = [
  "fitimage",
  "futures",
  "indicatif",
- "jkconfig 0.2.4",
+ "jkconfig 0.2.3",
  "log",
  "lzma-rs",
  "network-interface",
@@ -5917,7 +6037,7 @@ dependencies = [
 name = "phytium-mci-host"
 version = "0.1.1"
 dependencies = [
- "bitfield-struct",
+ "bitfield-struct 0.11.0",
  "dma-api",
  "log",
  "mmio-api",
@@ -5942,6 +6062,12 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+
+[[package]]
+name = "plain"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plotters"
@@ -6270,7 +6396,7 @@ dependencies = [
  "dma-api",
  "rd-block",
  "rdif-block",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -6382,7 +6508,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ef8dea09a92caaf73bff7adb70b76162e5937524058a7e5bff37869cbbec293"
 dependencies = [
  "bitflags 2.11.1",
- "compact_str 0.9.1",
+ "compact_str 0.9.0",
  "hashbrown 0.16.1",
  "indoc",
  "itertools 0.14.0",
@@ -6600,7 +6726,7 @@ dependencies = [
  "futures",
  "heapless 0.9.3",
  "rdif-base",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
 ]
 
@@ -6641,7 +6767,7 @@ dependencies = [
  "rdif-intc",
  "rdif-pcie",
  "rdrive-macros",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
 ]
 
@@ -6662,7 +6788,7 @@ dependencies = [
  "log",
  "mmio-api",
  "rdif-eth",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -6742,9 +6868,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.13.4"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
+checksum = "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -7001,7 +7127,7 @@ dependencies = [
  "mbarrier",
  "num-align",
  "rdif-base",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -7028,7 +7154,7 @@ dependencies = [
  "log",
  "mbarrier",
  "num-align",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -7039,7 +7165,7 @@ version = "0.4.1"
 dependencies = [
  "bitflags 2.11.1",
  "log",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -7327,7 +7453,7 @@ version = "0.3.7"
 dependencies = [
  "ax-percpu",
  "ctor 0.6.3",
- "spin 0.12.0",
+ "spin",
 ]
 
 [[package]]
@@ -7335,6 +7461,26 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "scroll"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1257cd4248b4132760d6524d6dda4e053bc648c9070b960929bf50cfb1e7add"
+dependencies = [
+ "scroll_derive",
+]
+
+[[package]]
+name = "scroll_derive"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed76efe62313ab6610570951494bdaa81568026e0318eaa55f167de70eeea67d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "sdhci-host"
@@ -7438,9 +7584,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.150"
+version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
  "itoa",
  "memchr",
@@ -7651,7 +7797,7 @@ version = "0.1.1-preview.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e202ff0a10a30a13384768edcda5b00eeeafd7dda1784234662f43dba170e9b2"
 dependencies = [
- "bitfield-struct",
+ "bitfield-struct 0.11.0",
  "log",
  "thiserror 2.0.18",
  "volatile 0.6.1",
@@ -7712,6 +7858,23 @@ dependencies = [
  "heapless 0.9.3",
  "log",
  "managed",
+]
+
+[[package]]
+name = "smp-kernel"
+version = "0.3.1"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-memory-addr",
+ "ax-percpu",
+ "ax-plat",
+ "ax-plat-aarch64-qemu-virt",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
+ "ax-plat-x86-pc",
+ "cfg-if",
+ "const-str",
 ]
 
 [[package]]
@@ -7777,7 +7940,7 @@ dependencies = [
  "smccc",
  "some-serial",
  "somehal-macros",
- "spin 0.12.0",
+ "spin",
  "syn 2.0.117",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
@@ -7801,7 +7964,7 @@ dependencies = [
  "rdrive",
  "someboot",
  "somehal-macros",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -7821,12 +7984,6 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
-
-[[package]]
-name = "spin"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1527984ca054dfca79333baec451042863f485fbee01b7bf6d911de915cac865"
 dependencies = [
  "lock_api",
 ]
@@ -7923,8 +8080,8 @@ dependencies = [
  "indoc",
  "inherit-methods-macro",
  "kernel-elf-parser",
+ "kmod-loader",
  "kprobe",
- "ksym",
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",
@@ -7939,7 +8096,7 @@ dependencies = [
  "sg200x-bsp",
  "slab",
  "some-serial",
- "spin 0.12.0",
+ "spin",
  "starry-process",
  "starry-signal",
  "starry-vm",
@@ -8174,9 +8331,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"
-version = "0.4.46"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
 dependencies = [
  "filetime",
  "libc",
@@ -8934,9 +9091,9 @@ dependencies = [
 
 [[package]]
 name = "uboot-shell"
-version = "0.2.4"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2237321472e37a34980340e0a6f8ba406167fb010209ead2f0e594bdfb718e02"
+checksum = "c3b3d5d2959cc2e9a28cb2c4ad30f99a33f6831f4f159b08c696604b9494b672"
 dependencies = [
  "colored",
  "futures",
@@ -9134,7 +9291,7 @@ dependencies = [
  "futures",
  "log",
  "num_enum",
- "spin 0.12.0",
+ "spin",
  "thiserror 2.0.18",
 ]
 
@@ -9347,9 +9504,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.122"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ed04576f974d2b2fba0f38c51dbc5518011e38c36bf1143164be765528fd409"
+checksum = "49ace1d07c165b0864824eee619580c4689389afa9dc9ed3a4c75040d82e6790"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -9360,9 +9517,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.72"
+version = "0.4.71"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9473dbd2991ae90b6291c3c32c30c6187ac49aa32f9905d1cce280ec1e110b0f"
+checksum = "96492d0d3ffba25305a7dc88720d250b1401d7edca02cc3bcd50633b424673b8"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -9370,9 +9527,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.122"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "916151b09da36bd82f6615cbf3a419e2f0ba23a03c6160e8e92eb6bd4aa1dec6"
+checksum = "8e68e6f4afd367a562002c05637acb8578ff2dea1943df76afb9e83d177c8578"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -9380,9 +9537,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.122"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "299047362ccbfce148b67ab7e73349f77748e00c8296f9542adfad2ad82c5c5e"
+checksum = "d95a9ec35c64b2a7cb35d3fead40c4238d0940c86d107136999567a4703259f2"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -9393,9 +9550,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.122"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a929b2c61f11ba3e9bc35b50c1f25cb38e0e892c0c231ae2b8cf78d5dad4437"
+checksum = "c4e0100b01e9f0d03189a92b96772a1fb998639d981193d7dbab487302513441"
 dependencies = [
  "unicode-ident",
 ]
@@ -9455,9 +9612,9 @@ checksum = "dba9c05687e501b2710833fbe2cc7ff8cc24411fb0d81967498ca44598942f88"
 
 [[package]]
 name = "web-sys"
-version = "0.3.99"
+version = "0.3.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d621441cfc37b84979402712047321980c178f299193a3589d05b99e8763436"
+checksum = "4b572dff8bcf38bad0fa19729c89bb5748b2b9b1d8be70cf90df697e3a8f32aa"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -10166,9 +10323,9 @@ dependencies = [
 
 [[package]]
 name = "yaxpeax-x86"
-version = "2.1.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a159e15f66ce40b5dfc28213366f8ff42ff8f0508e2e72e431c62573f025ac5e"
+checksum = "9a9a30b7dd533c7b1a73eaf7c4ea162a7a632a2bb29b9fff47d8f2cc8513a883"
 dependencies = [
  "cfg-if",
  "num-traits",

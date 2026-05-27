@@ -786,6 +786,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         #[cfg(not(feature = "ebpf"))]
         Sysno::bpf | Sysno::perf_event_open => sys_dummy_fd(sysno),
+        Sysno::init_module => {
+            crate::kmod_loader::sys_init_module(uctx.arg0(), uctx.arg1(), uctx.arg2())
+        }
+        Sysno::delete_module => crate::kmod_loader::sys_delete_module(uctx.arg0(), uctx.arg1()),
+        Sysno::finit_module => {
+            crate::kmod_loader::sys_finit_module(uctx.arg0() as _, uctx.arg1(), uctx.arg2())
+        }
 
         Sysno::fanotify_init => Err(AxError::Unsupported),
 

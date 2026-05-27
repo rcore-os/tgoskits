@@ -282,6 +282,7 @@ impl PerfEvent {
         if !self.enabled {
             return;
         }
+        #[cfg(feature = "ebpf")]
         if let Some(prog_fd) = self.prog_fd
             && let Err(e) = crate::ebpf::run_bpf_prog(prog_fd, ctx)
         {

@@ -21,6 +21,7 @@ mod config;
 #[cfg(feature = "ebpf")]
 mod ebpf;
 mod file;
+mod kmod_loader;
 mod kprobe;
 mod mm;
 #[cfg(feature = "ebpf")]

@@ -1131,7 +1131,7 @@ impl BpfVm {
             let class = insn.class();
             if class == bpf_insn::BPF_JMP || class == bpf_insn::BPF_JMP32 {
                 let op = insn.code & 0xf0;
-                if op != bpf_insn::BPF_EXIT && op != bpf_insn::BPF_CALL_OP {
+                if op != bpf_insn::BPF_EXIT && op != 0x80 {
                     let target = pc as isize + 1 + insn.off as isize;
                     if target < 0 || target as usize >= insns.len() {
                         warn!("bpf verifier: jump out of bounds at pc={pc} target={target}");
