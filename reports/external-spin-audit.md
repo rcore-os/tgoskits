@@ -62,7 +62,7 @@ axaddrspace 0.5.10 -> spin 0.10.0
 axbacktrace 0.3.9 -> spin 0.10.0
 axdevice 0.4.9 -> spin 0.10.0
 axfs-ng-vfs 0.4.1 -> spin 0.10.0
-ax-plat-dyn 0.6.1 -> spin 0.10.0
+axplat-dyn 0.6.1 -> spin 0.10.0
 axpoll 0.3.9 -> spin 0.10.0
 axvisor 0.5.7 -> spin 0.10.0
 axvm 0.5.8 -> spin 0.10.0
@@ -144,7 +144,7 @@ os/arceos/modules/axfs/Cargo.toml:27: spin = { workspace = true }
 os/arceos/modules/axnet-ng/Cargo.toml:34: spin = { workspace = true }
 os/arceos/modules/axtask/Cargo.toml:70: spin = { workspace = true, optional = true }
 os/axvisor/Cargo.toml:57: spin = "0.10"
-platforms/ax-plat-dyn/Cargo.toml:84: spin = "0.10"
+platforms/axplat-dyn/Cargo.toml:84: spin = "0.10"
 platforms/somehal/Cargo.toml:31: spin = "0.10"
 ```
 
@@ -170,7 +170,7 @@ Grouped by area:
 ```text
 17 os/arceos/modules
 14 os/StarryOS/kernel
- 8 platforms/ax-plat-dyn/src
+ 8 platforms/axplat-dyn/src
  8 drivers/usb/usb-host
  4 drivers/rdrive/src
  4 virtualization/arm_vgic/src
@@ -272,12 +272,12 @@ os/arceos/modules/axnet/src/smoltcp_impl/udp.rs
 os/axvisor/src/hal/arch/loongarch64/mod.rs
 os/axvisor/src/vmm/fdt/mod.rs
 os/axvisor/src/vmm/vm_list.rs
-platforms/ax-plat-dyn/src/drivers/blk/mod.rs
-platforms/ax-plat-dyn/src/drivers/blk/virtio_pci.rs
-platforms/ax-plat-dyn/src/drivers/mod.rs
-platforms/ax-plat-dyn/src/drivers/net/virtio_pci.rs
-platforms/ax-plat-dyn/src/drivers/pci.rs
-platforms/ax-plat-dyn/src/drivers/soc/scmi.rs
+platforms/axplat-dyn/src/drivers/blk/mod.rs
+platforms/axplat-dyn/src/drivers/blk/virtio_pci.rs
+platforms/axplat-dyn/src/drivers/mod.rs
+platforms/axplat-dyn/src/drivers/net/virtio_pci.rs
+platforms/axplat-dyn/src/drivers/pci.rs
+platforms/axplat-dyn/src/drivers/soc/scmi.rs
 ```
 
 ## Initialization-only source uses
@@ -307,8 +307,8 @@ os/arceos/modules/axhal/src/mem.rs
 os/arceos/modules/axnet-ng/src/lib.rs
 os/arceos/modules/axnet-ng/src/tcp.rs
 os/arceos/modules/axtask/src/api.rs
-platforms/ax-plat-dyn/src/drivers/blk/rockchip_mmc.rs
-platforms/ax-plat-dyn/src/mem.rs
+platforms/axplat-dyn/src/drivers/blk/rockchip_mmc.rs
+platforms/axplat-dyn/src/mem.rs
 platforms/somehal/src/arch/aarch64/systick.rs
 ```
 

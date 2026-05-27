@@ -98,7 +98,7 @@ tgoskits/
 │       ├── configs/           # 板级 / VM / 测试配置
 │       └── xtask/             # Axvisor 专用构建任务
 ├── platforms/                  # 平台适配层
-│   ├── ax-plat-dyn/            # 动态平台支持
+│   ├── axplat-dyn/            # 动态平台支持
 │   ├── riscv64-qemu-virt/     # RISC-V QEMU virt 平台
 │   └── x86-qemu-q35/          # x86 Q35 平台
 ├── drivers/                   # SoC 专用驱动（RK3588 时钟 / NPU / 电源管理）

@@ -1,5 +1,5 @@
 [package]
-name = "ax-plat-dyn"
+name = "axplat-dyn"
 version = "0.6.2"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
@@ -37,5 +37,5 @@ spin = "0.10"
 [package.metadata.axplat]
 platform = "dyn"
 arch = "aarch64"
-crate = "ax_plat_dyn"
+crate = "axplat_dyn"
 dynamic = true

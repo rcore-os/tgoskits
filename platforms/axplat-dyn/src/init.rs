@@ -14,7 +14,7 @@ impl InitIf for InitIfImpl {
         #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
         {
             ax_cpu::asm::enable_fp();
-            debug!("ax-plat-dyn: fp/simd enabled");
+            debug!("axplat-dyn: fp/simd enabled");
         }
         somehal::timer::enable();
     }
@@ -26,7 +26,7 @@ impl InitIf for InitIfImpl {
         #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
         {
             ax_cpu::asm::enable_fp();
-            debug!("ax-plat-dyn: secondary fp/simd enabled");
+            debug!("axplat-dyn: secondary fp/simd enabled");
         }
         somehal::timer::enable();
     }

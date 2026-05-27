@@ -241,7 +241,7 @@ axdevice_base = { version = "0.4.11", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.4.2", path = "components/axfs-ng-vfs" }
 axhvc = { version = "0.4.8", path = "virtualization/axhvc" }
 axklib = { version = "0.5.9", path = "components/axklib" }
-ax-plat-dyn = { version = "0.6.2", path = "platforms/ax-plat-dyn", default-features = false }
+axplat-dyn = { version = "0.6.2", path = "platforms/axplat-dyn", default-features = false }
 ax-plat-riscv64-visionfive2 = { version = "0.1.4", path = "platforms/ax-plat-riscv64-visionfive2" }
 ax-plat-x86-qemu-q35 = { version = "0.4.8", path = "platforms/ax-plat-x86-qemu-q35", default-features = false }
 axpoll = { version = "0.3.9", path = "components/axpoll" }

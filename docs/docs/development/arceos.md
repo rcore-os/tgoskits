@@ -387,7 +387,7 @@ platforms/ax-plat-aarch64-qemu-virt/
 | 目录 | 内容 |
 |------|------|
 | `platforms/` | 工作区内 `ax-plat-*` 平台 crate |
-| `platforms/ax-plat-dyn/` | 动态平台加载（设备树驱动） |
+| `platforms/axplat-dyn/` | 动态平台加载（设备树驱动） |
 | `platforms/ax-plat-x86-qemu-q35/` | x86_64 QEMU Q35 独立平台 |
 
 已有平台：
