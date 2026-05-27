@@ -1,10 +1,10 @@
 use ax_errno::{AxError, AxResult};
 use ax_task::current;
-
-use crate::task::AsThread;
 use linux_raw_sys::general::{
     CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
+
+use crate::task::AsThread;
 
 const SUPPORTED_NS_FLAGS: u32 =
     CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWUSER;
