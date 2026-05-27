@@ -1338,6 +1338,58 @@ mod tests {
     }
 
     #[test]
+    fn dhcp_qemu_config_uses_dhcp_event_not_external_apk_fetch() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp/qemu-x86_64.toml");
+        let content = fs::read_to_string(&path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        assert!(
+            !content.contains("apk update"),
+            "{} must not validate DHCP through apk update",
+            path.display()
+        );
+        for mirror in [
+            "https://mirrors.cernet.edu.cn/alpine",
+            "https://dl-cdn.alpinelinux.org/alpine",
+        ] {
+            assert!(
+                !content.contains(mirror),
+                "{} must not depend on external APK mirror {mirror}",
+                path.display()
+            );
+        }
+
+        let success_regex = config
+            .get("success_regex")
+            .and_then(toml::Value::as_array)
+            .unwrap();
+        assert_eq!(
+            success_regex.len(),
+            1,
+            "{} must use only the DHCP lease event as its success condition",
+            path.display()
+        );
+        assert!(
+            success_regex
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .any(|regex| regex.contains("eth0: DHCP acquired address")),
+            "{} must validate the DHCP lease event reported by StarryOS",
+            path.display()
+        );
+
+        let timeout = config
+            .get("timeout")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_default();
+        assert!(
+            timeout <= 180,
+            "{} must fail quickly when DHCP never completes",
+            path.display()
+        );
+    }
+
+    #[test]
     fn bug_ext4_dir_ops_qemu_configs_fail_on_lockdep_fatal() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bug-ext4-dir-ops");
