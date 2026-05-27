@@ -155,7 +155,7 @@ async function refreshPerfReport() {
     $("perf-summary").innerHTML = summaryItem("Samples", "none");
     $("perf-functions").innerHTML = emptyRow(3, "no qperf report");
     $("perf-candidates").innerHTML = '<div class="brief-text">no candidates</div>';
-    setFlamegraph(null);
+    setFlamegraph(null, "no qperf report");
   }
 }
 
@@ -183,7 +183,10 @@ function renderPerf(report) {
     : emptyRow(3, "no hotspots");
   $("perf-candidates").innerHTML = renderPerfCandidates(report.fix_candidates || []);
   const flamegraph = report._ui.artifacts?.flamegraph;
-  setFlamegraph(flamegraph?.exists ? flamegraph.url : null);
+  setFlamegraph(
+    flamegraph?.exists ? flamegraph.url : null,
+    flamegraphMessage(report, flamegraph),
+  );
 }
 
 function renderPerfCandidates(candidates) {
@@ -203,12 +206,24 @@ function renderPerfCandidates(candidates) {
     .join("");
 }
 
-function setFlamegraph(url) {
+function flamegraphMessage(report, flamegraph) {
+  const format = report.parameters?.format || "unknown";
+  if (format === "folded") {
+    return "format folded did not request SVG";
+  }
+  if (flamegraph && !flamegraph.exists) {
+    return "flamegraph.svg was not generated; check profile.stderr";
+  }
+  return "no flamegraph";
+}
+
+function setFlamegraph(url, message = "no flamegraph") {
   const frame = $("flamegraph-frame");
   const empty = $("flamegraph-empty");
   if (!url) {
     frame.hidden = true;
     frame.removeAttribute("src");
+    empty.textContent = message;
     empty.hidden = false;
     return;
   }

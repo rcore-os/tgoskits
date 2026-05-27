@@ -64,8 +64,9 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         .unwrap_or_else(|| crate::context::DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
     let outputs = prepare_outputs(starry.app.workspace_root(), &arch, args.out.as_deref())?;
+    let generate_svg = matches!(args.format, PerfFormat::Svg | PerfFormat::All);
 
-    let tools = build_qperf_tools(starry.app.workspace_root())?;
+    let tools = build_qperf_tools(starry.app.workspace_root(), generate_svg)?;
 
     let build_args = ArgsBuild {
         config: None,
@@ -104,7 +105,6 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         eprintln!("qperf: QEMU ended with {qemu_status} after producing samples");
     }
 
-    let generate_svg = matches!(args.format, PerfFormat::Svg | PerfFormat::All);
     run_analyzer(
         &tools.analyzer,
         &elf,
@@ -166,7 +166,7 @@ fn prepare_outputs(root: &Path, arch: &str, out: Option<&Path>) -> anyhow::Resul
     })
 }
 
-fn build_qperf_tools(root: &Path) -> anyhow::Result<QperfTools> {
+fn build_qperf_tools(root: &Path, analyzer_flamegraph: bool) -> anyhow::Result<QperfTools> {
     let manifest = root.join("tools/qperf/Cargo.toml");
     let target_dir = root.join("tools/qperf/target");
     if !manifest.exists() {
@@ -186,13 +186,18 @@ fn build_qperf_tools(root: &Path) -> anyhow::Result<QperfTools> {
         .exec()
         .context("failed to build qperf plugin")?;
 
-    Command::new("cargo")
+    let mut analyzer_build = Command::new("cargo");
+    analyzer_build
         .current_dir(root)
         .args(["build", "--manifest-path"])
         .arg(root.join("tools/qperf/analyzer/Cargo.toml"))
         .arg("--release")
         .arg("--target-dir")
-        .arg(&target_dir)
+        .arg(&target_dir);
+    if analyzer_flamegraph {
+        analyzer_build.args(["--features", "flamegraph"]);
+    }
+    analyzer_build
         .exec()
         .context("failed to build qperf-analyzer")?;
 
