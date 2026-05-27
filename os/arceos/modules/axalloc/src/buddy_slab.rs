@@ -165,11 +165,10 @@ impl GlobalAllocator {
     /// Allocate arbitrary number of bytes. Returns the left bound of the
     /// allocated region.
     pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-        let result = self
-            .inner
-            .lock()
-            .alloc(layout)
-            .map_err(crate::AllocError::from);
+        let result = {
+            let inner = self.inner.lock();
+            inner.alloc(layout).map_err(crate::AllocError::from)
+        };
         if result.is_ok() {
             self.usages.lock().alloc(UsageKind::RustHeap, layout.size());
         }
@@ -178,10 +177,13 @@ impl GlobalAllocator {
 
     /// Gives back the allocated region to the byte allocator.
     pub fn dealloc(&self, pos: NonNull<u8>, layout: Layout) {
+        {
+            let inner = self.inner.lock();
+            unsafe { inner.dealloc(pos, layout) };
+        }
         self.usages
             .lock()
             .dealloc(UsageKind::RustHeap, layout.size());
-        unsafe { self.inner.lock().dealloc(pos, layout) };
     }
 
     /// Allocates contiguous pages.
@@ -191,11 +193,12 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let result = self
-            .inner
-            .lock()
-            .alloc_pages(num_pages, alignment)
-            .map_err(crate::AllocError::from);
+        let result = {
+            let inner = self.inner.lock();
+            inner
+                .alloc_pages(num_pages, alignment)
+                .map_err(crate::AllocError::from)
+        };
         if result.is_ok() {
             self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
         }
@@ -209,11 +212,12 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let result = self
-            .inner
-            .lock()
-            .alloc_pages_lowmem(num_pages, alignment)
-            .map_err(crate::AllocError::from);
+        let result = {
+            let inner = self.inner.lock();
+            inner
+                .alloc_pages_lowmem(num_pages, alignment)
+                .map_err(crate::AllocError::from)
+        };
         if result.is_ok() {
             self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
         }
@@ -233,8 +237,11 @@ impl GlobalAllocator {
 
     /// Gives back the allocated pages starts from `pos` to the page allocator.
     pub fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
+        {
+            let inner = self.inner.lock();
+            inner.dealloc_pages(pos, num_pages);
+        }
         self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
-        self.inner.lock().dealloc_pages(pos, num_pages);
     }
 
     /// Returns the number of allocated bytes in the allocator backend.
@@ -346,6 +353,9 @@ pub fn global_allocator() -> &'static GlobalAllocator {
 }
 
 /// Initializes the per-CPU slab for the current CPU.
+///
+/// Must run after per-CPU storage is initialized and before scheduler, IPI, or
+/// IRQ paths can allocate on this CPU.
 pub fn init_percpu_slab(cpu_id: usize) {
     PERCPU_SLAB.with_current(|slab| slab.init(cpu_id));
 }

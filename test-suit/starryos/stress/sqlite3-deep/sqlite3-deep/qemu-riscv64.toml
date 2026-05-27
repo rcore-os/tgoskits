@@ -1,0 +1,67 @@
+args = [
+    "-nographic", "-cpu", "rv64",
+    "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+set -e
+
+echo "SQLITE_DEEP_ENV_BEGIN"
+apk update
+apk add --no-cache sqlite
+sqlite3 --version
+ls -ld /tmp
+echo "SQLITE_DEEP_ENV_OK"
+
+echo "S5_TRANSACTION_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+out="$(sqlite3 /tmp/test.db "PRAGMA journal_mode=DELETE;CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT);
+BEGIN;INSERT INTO t(name) VALUES('alice');INSERT INTO t(name) VALUES('bob');COMMIT;SELECT COUNT(*) FROM t;
+BEGIN;INSERT INTO t(name) VALUES('rollback_me');ROLLBACK;SELECT COUNT(*) FROM t;")"
+echo "$out"
+echo "$out" | grep -q "delete"
+count2="$(echo "$out" | grep -c "^2$")"
+test "$count2" -eq 2
+echo "S5_TRANSACTION_OK"
+
+echo "S6_WAL_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+out="$(sqlite3 /tmp/test.db "PRAGMA journal_mode=WAL;CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT);INSERT INTO t(name) VALUES('alice');SELECT id, name FROM t;")"
+echo "$out"
+echo "$out" | grep -qx "wal"
+echo "$out" | grep -qx "1|alice"
+out="$(sqlite3 /tmp/test.db "SELECT id, name FROM t;")"
+echo "$out"
+test "$out" = "1|alice"
+ls -l /tmp/test.db /tmp/test.db-wal /tmp/test.db-shm 2>/dev/null || true
+echo "S6_WAL_OK"
+
+echo "S7_BULK_INSERT_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+out="$(sqlite3 /tmp/test.db "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT);WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 500) INSERT INTO t(value) SELECT 'row-' || x FROM cnt;SELECT COUNT(*) FROM t;PRAGMA integrity_check;")"
+echo "$out"
+echo "$out" | grep -qx "500"
+echo "$out" | grep -qx "ok"
+echo "S7_BULK_INSERT_OK"
+
+echo "S8_BLOB_BEGIN"
+rm -f /tmp/test.db /tmp/test.db-journal /tmp/test.db-wal /tmp/test.db-shm
+out="$(sqlite3 /tmp/test.db "CREATE TABLE blob_test(id INTEGER PRIMARY KEY, data BLOB);INSERT INTO blob_test(data) VALUES(randomblob(65536));SELECT length(data) FROM blob_test;")"
+echo "$out"
+test "$out" = "65536"
+out="$(sqlite3 /tmp/test.db "SELECT length(data) FROM blob_test;")"
+echo "$out"
+test "$out" = "65536"
+echo "S8_BLOB_OK"
+
+echo "SQLITE3_DEEP_TEST_PASSED"
+'''
+success_regex = ["(?m)^SQLITE3_DEEP_TEST_PASSED\\s*$"]
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 300

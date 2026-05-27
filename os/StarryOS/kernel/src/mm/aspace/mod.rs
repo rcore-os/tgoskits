@@ -6,15 +6,15 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_hal::{
-    mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
-    trap::PageFaultFlags,
-};
 use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr, VirtAddrRange, is_aligned_4k,
 };
 use ax_memory_set::{MemoryArea, MemorySet};
+use ax_runtime::hal::{
+    mem::phys_to_virt,
+    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
+    trap::PageFaultFlags,
+};
 use ax_sync::Mutex;
 
 mod backend;

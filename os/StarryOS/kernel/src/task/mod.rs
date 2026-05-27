@@ -17,7 +17,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
 use axpoll::PollSet;
@@ -159,6 +159,8 @@ pub struct Thread {
     /// wrong context or, if it had a user handler, swallow the dump so
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
+
+    pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 }
 
 impl Thread {
@@ -188,6 +190,7 @@ impl Thread {
             cred: SpinNoIrq::new(cred),
 
             fault_dump_signo: AtomicU8::new(0),
+            kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
         })
     }
 

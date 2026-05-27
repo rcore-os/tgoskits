@@ -1,5 +1,5 @@
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{
+use ax_runtime::hal::time::{
     NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
 };
 use ax_task::current;

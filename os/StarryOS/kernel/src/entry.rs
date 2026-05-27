@@ -4,7 +4,7 @@ use alloc::{
 };
 
 use ax_fs::FS_CONTEXT;
-use ax_hal::uspace::UserContext;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
@@ -21,6 +21,11 @@ use crate::{
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
+
+    // FIXME: loongarch64 selftest hangs on QEMU; the kprobe crate's loongarch64
+    // breakpoint handling needs upstream fixes before selftest can be enabled.
+    #[cfg(not(target_arch = "loongarch64"))]
+    crate::kprobe::run_selftest();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
