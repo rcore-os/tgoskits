@@ -182,6 +182,7 @@ flowchart TD
 | `scripts/axbuild/src/rootfs/qemu.rs` | 修改 | 保留并 patch `-drive if=sd,...`，避免注入 VirtIO rootfs |
 | `os/StarryOS/configs/board/k230-canmv.*` | 新增 | K230 board 配置和 DTB |
 | `os/StarryOS/configs/qemu/qemu-k230.toml` | 新增 | QEMU K230 参数 |
+| `test-suit/starryos/k230-qemu/` | 新增 | 显式 K230 QEMU 测试组，包含 `/dev/kpu` 用户态 smoke |
 | `Cargo.toml`, `Cargo.lock` | 修改 | 纳入新增 crate |
 
 ## KPU 驱动 crate 设计
@@ -766,6 +767,46 @@ od 读数   -> 00000000
 ```
 
 这说明 StarryOS `/dev` 节点创建、KPU CFG MMIO 映射和 read path 已经打通。
+
+## 用户态 KPU smoke 用例
+
+在阶段一手动 guest smoke 的基础上，后续补充了一个可由 Starry test-suit 发现的 K230 专用测试组：
+
+```text
+test-suit/starryos/k230-qemu/qemu-k230/kpu-smoke
+```
+
+该测试组没有放入默认 `normal` group，因为它依赖带 K230 machine/KPU model 的 QEMU binary。默认 CI 使用的 stock QEMU 不一定包含 `-machine k230`，因此该组需要显式运行：
+
+```sh
+PATH="$PWD/target/qemu-k230/bin:$PATH" \
+cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-smoke
+```
+
+本地约定的 K230 QEMU 布局：
+
+```text
+target/qemu-k230/bin/qemu-system-riscv64
+target/qemu-k230/pc-bios/
+```
+
+`kpu-smoke` 使用 C asset pipeline 构建并安装：
+
+```text
+/usr/bin/k230-kpu-smoke
+```
+
+该程序覆盖以下用户态 ABI：
+
+- 打开 `/dev/kpu` 与 `/dev/kpu0`。
+- 使用 `pread()` 从 KPU CFG offset `0` 读取 32-bit 寄存器。
+- 使用 `KPU_IOC_GET_STATUS` 读取 64-bit status。
+- 使用 `KPU_IOC_CLEAR` 清 done 状态。
+- 使用 `mmap(offset = 0)` 映射 KPU CFG，并从 mmap 区域读取 status 寄存器。
+- 使用 `mmap(offset = 0x1000)` 映射 KPU L2，并完成 32-bit 写入/读回。
+- 成功时输出稳定 marker：`KPU_SMOKE_PASS`。
+
+该 smoke 仍不执行真实 KPU command stream，因此它验证的是 `/dev/kpu` 的基础 ABI 与映射路径，而不是 GNNE 模型推理结果。
 
 ## 当前阶段结论
 

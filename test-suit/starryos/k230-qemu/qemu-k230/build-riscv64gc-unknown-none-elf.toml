@@ -1,0 +1,7 @@
+env = {}
+features = [
+  "k230",
+]
+log = "Info"
+plat_dyn = false
+target = "riscv64gc-unknown-none-elf"

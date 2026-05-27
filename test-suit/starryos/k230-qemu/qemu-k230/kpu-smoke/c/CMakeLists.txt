@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(k230-kpu-smoke C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(k230-kpu-smoke src/main.c)
+target_compile_options(k230-kpu-smoke PRIVATE -Wall -Wextra -Werror)
+install(TARGETS k230-kpu-smoke RUNTIME DESTINATION usr/bin)
