@@ -24,6 +24,7 @@ mod file;
 mod kmod_loader;
 mod kprobe;
 mod mm;
+#[cfg(feature = "ebpf")]
 mod perf_event;
 mod pseudofs;
 mod stop_machine;
