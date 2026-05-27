@@ -520,7 +520,7 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
     )
 }
 
-fn flush_tlb_range(start: VirtAddr, size: usize) {
+pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     for offset in (0..size).step_by(PAGE_SIZE_4K) {
         ax_runtime::hal::cpu::asm::flush_tlb(Some(start + offset));
     }

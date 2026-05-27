@@ -131,6 +131,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
+kprobe = "0.5"
 dw_apb_uart = { workspace = true, features = ["sg2002"], optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 # 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)

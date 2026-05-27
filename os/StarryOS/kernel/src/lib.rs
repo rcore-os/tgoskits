@@ -19,6 +19,7 @@ pub mod entry;
 
 mod config;
 mod file;
+mod kprobe;
 mod mm;
 mod pseudofs;
 mod stop_machine;
