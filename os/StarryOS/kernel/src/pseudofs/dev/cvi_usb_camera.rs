@@ -2,7 +2,6 @@ use core::{any::Any, time::Duration};
 
 use ax_config::plat::PHYS_VIRT_OFFSET;
 use ax_errno::AxError;
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
