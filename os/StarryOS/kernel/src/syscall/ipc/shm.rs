@@ -298,8 +298,8 @@ where
 /// processes. note: this struct do not modify the struct ShmInner, but only
 /// manage the mapping.
 pub struct ShmManager {
-    /// key <-> shm_id
-    key_shmid: BiBTreeMap<i32, i32>,
+    /// (key, ns_id) <-> shm_id
+    key_shmid: BiBTreeMap<(i32, u64), i32>,
     /// shm_id -> shm_inner
     pub(crate) shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
     /// pid -> shm_id <-> vaddr
@@ -315,9 +315,10 @@ impl ShmManager {
         }
     }
 
-    /// Returns the shared memory ID associated with the given key.
-    pub fn get_shmid_by_key(&self, key: i32) -> Option<i32> {
-        self.key_shmid.get_by_key(&key).cloned()
+    /// Returns the shared memory ID associated with the given key and IPC
+    /// namespace.
+    pub fn get_shmid_by_key(&self, key: i32, ns_id: u64) -> Option<i32> {
+        self.key_shmid.get_by_key(&(key, ns_id)).cloned()
     }
 
     /// Returns the shared memory inner structure [`ShmInner`] associated with
@@ -353,9 +354,9 @@ impl ShmManager {
             .cloned()
     }
 
-    /// Inserts a mapping from a key to a shared memory ID.
-    pub fn insert_key_shmid(&mut self, key: i32, shmid: i32) {
-        self.key_shmid.insert(key, shmid);
+    /// Inserts a mapping from a (key, ns_id) pair to a shared memory ID.
+    pub fn insert_key_shmid(&mut self, key: i32, ns_id: u64, shmid: i32) {
+        self.key_shmid.insert((key, ns_id), shmid);
     }
 
     /// Inserts a mapping from a shared memory ID to its inner
@@ -481,33 +482,22 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     let thread = curr.as_thread();
     let cur_pid = thread.proc_data.proc.pid();
     let cred = thread.cred();
+    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
     let mut shm_manager = SHM_MANAGER.lock();
 
-    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
-
     if key != IPC_PRIVATE {
-        // A segment already exists for this key.
-        if let Some(shmid) = shm_manager.get_shmid_by_key(key) {
+        // A segment already exists for this (key, ns_id) pair.
+        if let Some(shmid) = shm_manager.get_shmid_by_key(key, ns_id) {
+            // IPC_CREAT | IPC_EXCL requires the creation to fail when the
+            // segment is already present. See Linux ipcget_public().
+            if shmflg & IPC_CREAT as usize != 0 && shmflg & IPC_EXCL as usize != 0 {
+                return Err(AxError::AlreadyExists);
+            }
             let shm_inner = shm_manager
                 .get_inner_by_shmid(shmid)
                 .ok_or(AxError::NotFound)?;
-            let shm_inner = shm_inner.lock();
-            // Only match if the segment lives in our IPC namespace.
-            if shm_inner.ns_id == ns_id {
-                // IPC_CREAT | IPC_EXCL requires the creation to fail when the
-                // segment is already present. See Linux ipcget_public().
-                if shmflg & IPC_CREAT as usize != 0 && shmflg & IPC_EXCL as usize != 0 {
-                    return Err(AxError::AlreadyExists);
-                }
-                drop(shm_inner);
-                let shm_inner = shm_manager
-                    .get_inner_by_shmid(shmid)
-                    .ok_or(AxError::NotFound)?;
-                let mut shm_inner = shm_inner.lock();
-                return shm_inner.try_update(size, cur_pid);
-            }
-            // Key exists in a different namespace — fall through and
-            // create a new segment in the current namespace.
+            let mut shm_inner = shm_inner.lock();
+            return shm_inner.try_update(size, cur_pid);
         }
 
         // No segment exists for this key: create one only when IPC_CREAT
@@ -537,7 +527,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
             ns_id,
         },
     )));
-    shm_manager.insert_key_shmid(key, shmid);
+    shm_manager.insert_key_shmid(key, ns_id, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);
 
     Ok(shmid as isize)
