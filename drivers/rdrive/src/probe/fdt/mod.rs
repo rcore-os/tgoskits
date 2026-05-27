@@ -56,6 +56,14 @@ pub struct FdtInfo<'a> {
 }
 
 impl<'a> FdtInfo<'a> {
+    pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'a>> {
+        system().get_by_phandle(phandle)
+    }
+
+    pub fn find_compatible(&self, compatible: &[&str]) -> Vec<NodeType<'a>> {
+        system().find_compatible(compatible)
+    }
+
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
     }
@@ -89,6 +97,14 @@ impl System {
 
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
+    }
+
+    pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'_>> {
+        self.fdt.get_by_phandle(phandle)
+    }
+
+    pub fn find_compatible(&self, compatible: &[&str]) -> Vec<NodeType<'_>> {
+        self.fdt.find_compatible(compatible)
     }
 
     pub fn new(fdt_addr: NonNull<u8>) -> Result<Self, DriverError> {

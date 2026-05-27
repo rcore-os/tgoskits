@@ -15,7 +15,7 @@ pub fn enable_mmu() -> ! {
     }
 
     let mmu_entry_phys = super::entry::mmu_entry as *const () as usize;
-    let meta = crate::smp::cpu_meta(crate::smp::cpu_idx()).unwrap();
+    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 

@@ -9,7 +9,7 @@ use core::{
 use ax_kernel_guard::NoPreemptIrqSave;
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::Transport};
 
@@ -21,7 +21,7 @@ use crate::{
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 crate::model_register!(
     name: "VirtIO Net",
     level: ProbeLevel::PostKernel,
@@ -305,7 +305,7 @@ struct RxInflight {
     len: usize,
 }
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,

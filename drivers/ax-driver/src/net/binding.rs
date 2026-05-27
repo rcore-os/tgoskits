@@ -42,7 +42,17 @@ impl DriverGeneric for PlatformNetDevice {
 }
 
 pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
-    #[cfg(all(feature = "pci-fdt", target_os = "none"))]
+    #[cfg(all(
+        plat_dyn,
+        target_os = "none",
+        any(
+            feature = "intel-net",
+            feature = "ixgbe",
+            feature = "realtek-rtl8125",
+            feature = "virtio-net",
+            feature = "xhci-pci",
+        )
+    ))]
     {
         let interrupt_pin = endpoint.interrupt_pin();
         if interrupt_pin != 0 {
@@ -57,7 +67,6 @@ pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
         }
     }
 
-    #[cfg(feature = "pci")]
     if let Some(irq) =
         crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
     {

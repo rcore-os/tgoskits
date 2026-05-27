@@ -47,6 +47,7 @@ pub mod power;
 pub mod smp;
 pub mod timer;
 
+pub use acpi::rsdp_addr_phys;
 pub use fdt::{fdt_addr, fdt_addr_phys};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, irq_handler, someboot_secondary_entry as secondary_entry};
@@ -176,7 +177,7 @@ fn prime_entry() -> ! {
     }
 
     let entry = __someboot_main as *const () as usize;
-    let sp = crate::smp::cpu_meta(crate::smp::cpu_idx())
+    let sp = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx())
         .unwrap()
         .stack_top;
     let sp = __percpu(sp);

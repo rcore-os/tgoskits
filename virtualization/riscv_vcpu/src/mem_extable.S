@@ -7,9 +7,9 @@
 // Adds the faulting instruction and fixup target to the exception table.
 .macro add_extable from, to
 .pushsection __ex_table, "a"
-.balign      8
-.quad        \from
-.quad        \to
+.balign      4
+.word        \from - _ex_table_start
+.word        \to - _ex_table_start
 .popsection
 .endm
 .option push
