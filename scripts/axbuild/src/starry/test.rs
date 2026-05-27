@@ -1578,10 +1578,9 @@ mod tests {
     }
 
     #[test]
-    fn util_linux_loongarch64_qemu_timeout_covers_full_mount_flow() {
+    fn util_linux_slow_arch_qemu_timeouts_cover_full_mount_flow() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/util-linux");
-        let config_path = case_dir.join("qemu-loongarch64.toml");
         let source_path = case_dir.join("c/src/main.c");
 
         let source = fs::read_to_string(&source_path).unwrap();
@@ -1598,18 +1597,21 @@ mod tests {
             );
         }
 
-        let content = fs::read_to_string(&config_path).unwrap();
-        let config: toml::Value = toml::from_str(&content).unwrap();
-        let timeout = config
-            .get("timeout")
-            .and_then(toml::Value::as_integer)
-            .unwrap_or_default();
-        assert!(
-            timeout >= 300,
-            "{} must leave enough CI margin for the full loongarch64 util-linux mount/writeback \
-             flow",
-            config_path.display()
-        );
+        for arch in ["aarch64", "loongarch64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout >= 300,
+                "{} must leave enough CI margin for the full {arch} util-linux mount/writeback \
+                 flow",
+                config_path.display()
+            );
+        }
     }
 
     #[test]
