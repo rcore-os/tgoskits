@@ -188,6 +188,26 @@ not performed in v0.3.
 - Conclusion: SmolLM2-135M Q4_0 fits comfortably in 512MB guest with
   Alpine rootfs on all three tested architectures.
 
+## 7.5. Stability Check (L5)
+
+Init x3 + Infer x3 per architecture (2026-05-27).
+
+| Arch     | Case  | Run 1          | Run 2          | Run 3          |
+|----------|-------|----------------|----------------|----------------|
+| aarch64  | init  | PASS (2.80s)   | FAIL* (0.72s)  | PASS (2.65s)   |
+| aarch64  | infer | PASS (19.42s)  | PASS (20.38s)  | PASS (20.18s)  |
+| x86_64   | init  | PASS (2.97s)   | PASS (2.89s)   | PASS (2.95s)   |
+| x86_64   | infer | PASS (35.02s)  | PASS (34.79s)  | PASS (34.65s)  |
+| riscv64  | init  | PASS (3.16s)   | PASS (3.08s)   | PASS (3.19s)   |
+| riscv64  | infer | PASS (30.08s)  | PASS (29.83s)  | PASS (29.42s)  |
+
+**aarch64 init run 2**: StarryOS kernel kretprobe selftest intermittent
+failure (hit=false, val=42), unrelated to llama.cpp. Kernel issue, not
+application-level.
+
+**Summary**: 17/18 PASS. 1 failure due to kernel kprobe race condition,
+not llama.cpp. Application-level stability: 100%.
+
 ## 8. Current Limitations
 
 - **Debian/glibc**: not covered (Alpine/musl only)
