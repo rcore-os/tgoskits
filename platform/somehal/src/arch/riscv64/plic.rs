@@ -1,5 +1,9 @@
 use alloc::{format, vec::Vec};
-use core::{num::NonZeroU32, ptr::NonNull};
+use core::{
+    num::NonZeroU32,
+    ptr::NonNull,
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+};
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
 use kernutil::StaticCell;
@@ -23,6 +27,8 @@ const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
 
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
+static CURRENT_CPU_ID: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static CURRENT_CPU_ID_READY: AtomicUsize = AtomicUsize::new(0);
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -40,6 +46,13 @@ module_driver!(
 
 pub fn systick_irq() -> rdrive::IrqId {
     S_TIMER.into()
+}
+
+pub fn register_current_cpu_id(cpu_idx: usize, reader: fn() -> usize) {
+    if let Some(bit) = cpu_ready_bit(cpu_idx) {
+        CURRENT_CPU_ID_READY.fetch_or(bit, Ordering::Release);
+    }
+    CURRENT_CPU_ID.store(reader as *mut (), Ordering::Release);
 }
 
 pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
@@ -278,19 +291,13 @@ impl RiscvPlicIrqHandler {
             self.inner.init_by_context(context);
             trace!("PLIC context {context} initialized");
         } else {
-            warn!(
-                "PLIC supervisor context for logical CPU {} is not found",
-                someboot::smp::cpu_idx()
-            );
+            warn_missing_current_context();
         }
     }
 
     fn claim_current(&self) -> Option<NonZeroU32> {
         let Some(context) = self.current_context() else {
-            warn!(
-                "PLIC supervisor context for logical CPU {} is not found",
-                someboot::smp::cpu_idx()
-            );
+            warn_missing_current_context();
             return None;
         };
         let Some(source) = self.inner.claim(context) else {
@@ -302,10 +309,7 @@ impl RiscvPlicIrqHandler {
 
     fn complete_current(&self, source: NonZeroU32) {
         let Some(context) = self.current_context() else {
-            warn!(
-                "PLIC supervisor context for logical CPU {} is not found",
-                someboot::smp::cpu_idx()
-            );
+            warn_missing_current_context();
             return;
         };
         self.inner.complete(context, source);
@@ -324,10 +328,7 @@ impl RiscvPlic {
             self.inner.enable(source, context);
         }
         if current.is_none() {
-            warn!(
-                "PLIC supervisor context for logical CPU {} is not found",
-                someboot::smp::cpu_idx()
-            );
+            warn_missing_current_context();
         }
     }
 
@@ -339,8 +340,42 @@ impl RiscvPlic {
 }
 
 fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {
-    let cpu_idx = someboot::smp::cpu_idx();
+    let cpu_idx = current_cpu_idx()?;
     context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx)
+}
+
+fn current_cpu_idx() -> Option<usize> {
+    let reader = CURRENT_CPU_ID.load(Ordering::Acquire);
+    if !reader.is_null() {
+        if let Some(cpu_idx) = someboot::smp::try_cpu_idx()
+            && !cpu_reader_is_ready(cpu_idx)
+        {
+            return Some(cpu_idx);
+        }
+
+        let reader = unsafe { core::mem::transmute::<*mut (), fn() -> usize>(reader) };
+        return Some(reader());
+    }
+
+    someboot::smp::try_cpu_idx()
+}
+
+fn cpu_ready_bit(cpu_idx: usize) -> Option<usize> {
+    (cpu_idx < usize::BITS as usize).then(|| 1usize << cpu_idx)
+}
+
+fn cpu_reader_is_ready(cpu_idx: usize) -> bool {
+    cpu_ready_bit(cpu_idx)
+        .map(|bit| CURRENT_CPU_ID_READY.load(Ordering::Acquire) & bit != 0)
+        .unwrap_or(false)
+}
+
+fn warn_missing_current_context() {
+    if let Some(cpu_idx) = current_cpu_idx() {
+        warn!("PLIC supervisor context for logical CPU {cpu_idx} is not found");
+    } else {
+        warn!("PLIC supervisor context for current logical CPU is not found");
+    }
 }
 
 impl DriverGeneric for RiscvPlic {

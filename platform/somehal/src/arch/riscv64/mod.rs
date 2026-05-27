@@ -4,6 +4,10 @@ mod plic;
 
 pub struct Plat;
 
+pub fn register_current_cpu_id(cpu_idx: usize, reader: fn() -> usize) {
+    plic::register_current_cpu_id(cpu_idx, reader);
+}
+
 impl PlatOp for Plat {
     fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
         plic::irq_set_enable(irq, enable);

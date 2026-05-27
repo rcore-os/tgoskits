@@ -110,12 +110,12 @@ pub fn cpu_hart_id() -> usize {
 
 pub fn cpu_idx() -> usize {
     let hart_id = cpu_hart_id();
-    for (idx, id) in __cpu_id_list().enumerate() {
-        if id == hart_id {
-            return idx;
-        }
-    }
-    panic!("Current CPU hart id {hart_id:#x} not found in CPU list");
+    cpu_id_to_idx(hart_id)
+        .unwrap_or_else(|| panic!("Current CPU hart id {hart_id:#x} not found in CPU list"))
+}
+
+pub fn try_cpu_idx() -> Option<usize> {
+    cpu_id_to_idx(cpu_hart_id())
 }
 
 pub fn cpu_id_to_idx(hart_id: usize) -> Option<usize> {
