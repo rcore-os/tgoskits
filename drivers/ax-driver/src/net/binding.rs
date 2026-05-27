@@ -3,20 +3,20 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use rd_net::{Interface, NetError};
-use rdrive::{Device, DriverGeneric};
+use rdrive::{Device, DriverGeneric, probe::pci::EndpointRc};
 
 pub struct PlatformNetDevice {
     name: &'static str,
-    net: Option<rd_net::Net>,
     irq_num: Option<usize>,
+    net: Option<rd_net::Net>,
 }
 
 impl PlatformNetDevice {
     fn new(name: &'static str, net: rd_net::Net, irq_num: Option<usize>) -> Self {
         Self {
             name,
-            net: Some(net),
             irq_num,
+            net: Some(net),
         }
     }
 
@@ -41,13 +41,32 @@ impl DriverGeneric for PlatformNetDevice {
     }
 }
 
-#[cfg(any(
-    feature = "intel-net",
-    feature = "ixgbe",
-    feature = "realtek-rtl8125",
-    feature = "virtio-net"
-))]
-pub fn pci_legacy_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
+pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
+    #[cfg(all(
+        plat_dyn,
+        target_os = "none",
+        any(
+            feature = "intel-net",
+            feature = "ixgbe",
+            feature = "realtek-rtl8125",
+            feature = "virtio-net",
+            feature = "xhci-pci",
+        )
+    ))]
+    {
+        let interrupt_pin = endpoint.interrupt_pin();
+        if interrupt_pin != 0 {
+            match crate::pci::fdt_irq_for_endpoint(endpoint.address(), interrupt_pin) {
+                Ok(Some(irq)) => return Some(irq),
+                Ok(None) => {}
+                Err(err) => log::warn!(
+                    "failed to resolve FDT IRQ for net endpoint {}: {err}",
+                    endpoint.address()
+                ),
+            }
+        }
+    }
+
     crate::pci::endpoint_legacy_irq(endpoint)
 }
 

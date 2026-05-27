@@ -4,7 +4,7 @@ use alloc::{borrow::ToOwned, format, string::String};
 
 use rdif_input::{AbsInfo, EventType, InputDeviceId, InputError, InputEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -14,7 +14,7 @@ use virtio_drivers::{
 
 use crate::{input::PlatformDeviceInput, virtio::VirtIoHalImpl};
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 crate::model_register!(
     name: "VirtIO Input",
     level: ProbeLevel::PostKernel,
@@ -24,7 +24,7 @@ crate::model_register!(
     }],
 );
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,

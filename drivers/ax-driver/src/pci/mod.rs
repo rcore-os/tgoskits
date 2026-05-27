@@ -29,9 +29,19 @@ use virtio_drivers::transport::{
 #[cfg(virtio_dev)]
 use crate::virtio::VirtIoHalImpl;
 
-#[cfg(feature = "pci-fdt")]
+#[cfg(plat_dyn)]
 mod fdt;
-#[cfg(all(feature = "pci-fdt", target_os = "none"))]
+#[cfg(all(
+    plat_dyn,
+    target_os = "none",
+    any(
+        feature = "intel-net",
+        feature = "ixgbe",
+        feature = "realtek-rtl8125",
+        feature = "virtio-net",
+        feature = "xhci-pci",
+    )
+))]
 pub(crate) use fdt::fdt_irq_for_endpoint;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
@@ -106,7 +116,7 @@ pub const fn has_static_endpoint_drivers() -> bool {
         feature = "virtio-gpu",
         feature = "virtio-input",
         feature = "virtio-socket",
-        feature = "pci-list-devices",
+        feature = "list-pci-devices",
     ))
 }
 
@@ -201,18 +211,6 @@ pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
 }
 
 pub fn endpoint_legacy_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
-    #[cfg(all(feature = "pci-fdt", target_os = "none"))]
-    match fdt_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin()) {
-        Ok(Some(irq)) => return Some(irq),
-        Ok(None) => {}
-        Err(err) => {
-            log::warn!(
-                "failed to resolve PCI FDT IRQ for endpoint {}: {err:?}",
-                endpoint.address()
-            );
-        }
-    }
-
     if let Some(irq) = legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin()) {
         return Some(irq);
     }

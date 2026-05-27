@@ -4,7 +4,7 @@ use alloc::format;
 
 use rdif_vsock::{VsockAddr as RdifVsockAddr, VsockConnId, VsockError, VsockEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -19,7 +19,7 @@ use crate::{virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 crate::model_register!(
     name: "VirtIO Socket",
     level: ProbeLevel::PostKernel,
@@ -29,7 +29,7 @@ crate::model_register!(
     }],
 );
 
-#[cfg(probe = "pci")]
+#[cfg(any(plat_static, plat_dyn))]
 fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,

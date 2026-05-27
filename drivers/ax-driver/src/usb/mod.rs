@@ -240,7 +240,7 @@ fn pci_static_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
 pub(crate) fn pci_irq_or_error(
     endpoint: &rdrive::probe::pci::EndpointRc,
 ) -> Result<usize, rdrive::probe::OnProbeError> {
-    #[cfg(feature = "pci-fdt")]
+    #[cfg(plat_dyn)]
     if let Some(irq) =
         crate::pci::fdt_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())?
     {

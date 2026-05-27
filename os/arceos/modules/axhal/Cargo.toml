@@ -102,10 +102,6 @@ aarch64-phytium-pi = ["dep:ax-plat-aarch64-phytium-pi"]
 riscv64-qemu-virt = ["dep:ax-plat-riscv64-qemu-virt"]
 riscv64-sg2002 = ["dep:ax-plat-riscv64-sg2002"]
 riscv64-visionfive2 = ["dep:ax-plat-riscv64-visionfive2"]
-riscv64-qemu-virt-hv = [
-    "dep:ax-plat-riscv64-qemu-virt",
-    "ax-plat-riscv64-qemu-virt/hypervisor",
-]
 loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
 x86-qemu-q35 = ["dep:ax-plat-x86-qemu-q35", "ax-plat-x86-qemu-q35/reboot-on-system-off"]
 defplat = [

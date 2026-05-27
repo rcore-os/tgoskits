@@ -45,18 +45,19 @@ crate::model_register!(
 
 pub mod error;
 #[cfg(any(
-    all(target_os = "none", feature = "serial"),
-    all(target_os = "none", feature = "rtc"),
-    feature = "rockchip-soc",
-    feature = "rockchip-pm",
-    feature = "rockchip-dwmmc",
-    feature = "rockchip-sdhci",
-    feature = "phytium-mci",
-    feature = "rk3588-pcie",
-    feature = "rknpu",
-    feature = "xhci-mmio",
-    feature = "xhci-pci",
-    virtio_dev,
+    all(feature = "serial", plat_dyn),
+    all(feature = "rtc", plat_dyn),
+    all(feature = "rockchip-soc", plat_dyn),
+    all(feature = "rockchip-pm", plat_dyn),
+    all(feature = "sg2002-placeholder", plat_dyn),
+    all(feature = "rockchip-dwmmc", plat_dyn),
+    all(feature = "rockchip-sdhci", plat_dyn),
+    all(feature = "phytium-mci", plat_dyn),
+    all(feature = "rk3588-pcie", plat_dyn),
+    all(feature = "rknpu", plat_dyn),
+    all(feature = "xhci-mmio", target_os = "none", plat_dyn),
+    all(feature = "xhci-pci", target_os = "none"),
+    all(virtio_dev, plat_dyn)
 ))]
 pub mod mmio;
 
@@ -71,41 +72,21 @@ pub mod net;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 
-#[cfg(any(
-    target_os = "none",
-    feature = "ahci",
-    feature = "fxmac",
-    feature = "ixgbe",
-    feature = "intel-net",
-    feature = "realtek-rtl8125",
-    feature = "nvme",
-    feature = "xhci-pci",
-    feature = "virtio-blk",
-    feature = "virtio-net",
-    feature = "virtio-gpu",
-    feature = "virtio-input",
-    feature = "virtio-socket",
-    feature = "pci-list-devices",
-    feature = "rk3588-pcie",
-))]
 pub mod pci;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
-#[cfg(all(target_os = "none", feature = "serial"))]
+#[cfg(feature = "serial")]
 pub mod serial;
 #[cfg(any(
     feature = "rockchip-soc",
     feature = "rockchip-pm",
+    feature = "sg2002-placeholder",
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;
-#[cfg(all(target_os = "none", feature = "rtc"))]
+#[cfg(feature = "rtc")]
 pub mod time;
-#[cfg(any(
-    feature = "rockchip-dwc-xhci",
-    feature = "xhci-mmio",
-    feature = "xhci-pci",
-))]
+#[cfg(feature = "usb")]
 pub mod usb;
 #[cfg(virtio_dev)]
 pub mod virtio;

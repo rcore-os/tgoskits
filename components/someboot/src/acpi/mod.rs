@@ -35,6 +35,11 @@ fn rsdp() -> Option<NonNull<u8>> {
     NonNull::new(ptr)
 }
 
+pub fn rsdp_addr_phys() -> Option<usize> {
+    let rsdp = unsafe { RSDP };
+    (rsdp != 0).then_some(rsdp)
+}
+
 pub fn tables() -> Result<AcpiTables<AcpiHandle>, acpi::AcpiError> {
     unsafe {
         let rsdp = if RSDP == 0 {

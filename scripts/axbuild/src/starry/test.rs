@@ -1670,10 +1670,9 @@ mod tests {
                     .iter()
                     .filter_map(toml::Value::as_str)
                     .any(|command| command == "/usr/bin/bug-ext4-dir-ops"),
-                "{} must run bug-ext4-dir-ops from the grouped bugfix case",
+                "{} must include the bug-ext4-dir-ops grouped command",
                 path.display()
             );
-
             let fail_regex = config
                 .get("fail_regex")
                 .and_then(toml::Value::as_array)
@@ -2106,8 +2105,8 @@ mod tests {
         fs::create_dir_all(build_config.parent().unwrap()).unwrap();
         fs::write(
             &build_config,
-            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\", \
-             \"starry-kernel/plat-dyn\"]\nlog = \"Warn\"\nplat_dyn = true\n",
+            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
+             \"Warn\"\nplat_dyn = true\n",
         )
         .unwrap();
         let mut request = starry_request(
@@ -2127,9 +2126,10 @@ mod tests {
         let (_group_request, cargo) =
             Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
-        assert!(cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
         assert!(
-            cargo
+            !cargo
                 .features
                 .contains(&"starry-kernel/plat-dyn".to_string())
         );
