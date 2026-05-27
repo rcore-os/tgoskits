@@ -17,35 +17,25 @@
 - pip list --format=json / --outdated
 - pip config / pip debug
 
-## 前置依赖
-
-- 主机已安装 `debugfs` (e2fsprogs) 和对应架构的 `qemu-*-static`
-- Alpine rootfs 镜像 (由 `cargo xtask starry rootfs` 生成)
-
 ## 运行测试
 
 ```bash
-# 在 StarryOS QEMU 上运行
 cargo xtask starry app run -t pip
-
-# 指定架构 (默认 x86_64)
-cargo xtask starry app run -t pip --arch aarch64
 ```
 
 ## 在 Linux 主机上快速验证测试脚本
 
 ```bash
-# 直接在主机 shell 中运行测试脚本 (需要 python3 和 pip)
 sh apps/starry/pip/test_pip.sh
 ```
 
 ## 工作原理
 
-1. `prebuild.sh` 被 xtask 框架调用，通过 qemu-user 在 staging rootfs 中执行 `apk add python3 py3-pip`
-2. 安装的 Python/pip 文件和 `test_pip.sh` 被复制到 overlay 目录
-3. overlay 被注入到 rootfs 镜像中
-4. QEMU 启动后执行 `sh /usr/bin/test_pip.sh`
-5. 测试脚本逐阶段输出 `STARRY_PIP_STAGE_N: ... OK`，最终输出 `STARRY_PIP_TESTS_PASSED`
+1. `prebuild.sh` 被 xtask 框架调用，使用宿主机 `apk --root` 在 staging rootfs 中安装 `python3 py3-pip`
+2. 通过 `readelf` 解析运行时依赖并复制到 overlay
+3. `test_pip.sh` 被复制到 overlay 的 `/usr/bin/`
+4. overlay 被注入到 rootfs 镜像中
+5. QEMU 启动后执行 `/usr/bin/test_pip.sh`
 
 ## 判定标准
 

@@ -17,7 +17,7 @@ args = [
 uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
-shell_init_cmd = "sh /usr/bin/test_pip.sh"
+shell_init_cmd = "/usr/bin/test_pip.sh"
 success_regex = ["(?m)^STARRY_PIP_TESTS_PASSED\\s*$"]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
