@@ -9,5 +9,5 @@ if [[ -z "$overlay_dir" ]]; then
     exit 1
 fi
 
-install -Dm0755 "$app_dir/nginx-smoke-tests.sh" "$overlay_dir/usr/bin/nginx-smoke-tests.sh"
+install -Dm0755 "$app_dir/smoke/nginx-smoke-tests.sh" "$overlay_dir/usr/bin/nginx-smoke-tests.sh"
 install -Dm0755 "$app_dir/nginx-alpine-mirror.sh" "$overlay_dir/usr/bin/nginx-alpine-mirror.sh"
