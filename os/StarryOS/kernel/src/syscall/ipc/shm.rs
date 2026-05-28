@@ -481,13 +481,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     // Create a new shm_inner
     let shmid = next_ipc_id();
     let shm_inner = Arc::new(Mutex::new(ShmInner::new(
-        key,
-        shmid,
-        size,
-        shmflg,
-        cur_pid,
-        cred.euid,
-        cred.egid,
+        key, shmid, size, shmflg, cur_pid, cred.euid, cred.egid,
     )));
     shm_manager.insert_key_shmid(key, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);
