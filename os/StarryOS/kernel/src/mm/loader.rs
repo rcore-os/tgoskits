@@ -18,6 +18,7 @@ use kernel_elf_parser::{
 use ouroboros::self_referencing;
 use uluru::LRUCache;
 
+
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
@@ -30,6 +31,12 @@ const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
     | (1 << (b'F' - b'A'))
     | (1 << (b'D' - b'A'))
     | (1 << (b'C' - b'A'));
+
+// RISC-V relocation types
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_RELATIVE: u32 = 3;
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_JUMP_SLOT: u32 = 5;
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
@@ -138,7 +145,199 @@ fn map_elf<'a>(
         // TDOO: flush the I-cache
     }
 
+
+    // Apply relocations for static-pie binaries
+    #[cfg(target_arch = "riscv64")]
+    {
+        if elf_parser.headers().header.pt1.class() == xmas_elf::header::Class::SixtyFour {
+            let is_pie = elf_parser.headers().header.pt2.type_().as_type() == xmas_elf::header::Type::SharedObject;
+            if is_pie {
+                apply_relocations(uspace, base, entry.borrow_cache(), &elf_parser.headers().ph)?;
+            }
+        }
+    }
+
     Ok(elf_parser)
+}
+
+
+/// Apply relocations for static-pie binaries.
+///
+/// This processes .rela.dyn and .rela.plt sections to apply
+/// R_RISCV_RELATIVE and R_RISCV_JUMP_SLOT relocations.
+#[cfg(target_arch = "riscv64")]
+fn apply_relocations(
+    uspace: &mut AddrSpace,
+    base: usize,
+    cache: &CachedFile,
+    ph: &[xmas_elf::program::ProgramHeader64],
+) -> AxResult {
+    // Find PT_DYNAMIC segment
+    let dynamic_ph = ph.iter().find(|p| {
+        p.get_type() == Ok(xmas_elf::program::Type::Dynamic)
+    });
+
+    let dynamic_ph = match dynamic_ph {
+        Some(ph) => ph,
+        None => return Ok(()), // No dynamic section, nothing to do
+    };
+
+    // Read dynamic entries from file
+    let dyn_offset = dynamic_ph.offset as usize;
+    let dyn_size = dynamic_ph.file_size as usize;
+
+    if dyn_offset + dyn_size > (cache.location().len().unwrap_or(0) as usize) {
+        debug!("Dynamic section extends beyond file");
+        return Err(AxError::InvalidData);
+    }
+
+    let mut dyn_data = vec![0u8; dyn_size];
+    cache.read_at(&mut dyn_data, dyn_offset as u64)?;
+    let entry_size = 16; // sizeof(Dynamic<u64>) = 16 bytes
+    let num_entries = dyn_size / entry_size;
+
+    // Parse dynamic entries using byte-by-byte reading
+    let mut rela_addr: u64 = 0;
+    let mut rela_size: u64 = 0;
+    let mut jmprel_addr: u64 = 0;
+    let mut jmprel_size: u64 = 0;
+    let mut symtab_addr: u64 = 0;
+    let mut strtab_addr: u64 = 0;
+
+    for i in 0..num_entries {
+        let offset = i * entry_size;
+        let entry_data = &dyn_data[offset..offset + entry_size];
+
+        // Dynamic entry: tag (8 bytes) + value (8 bytes)
+        let tag = u64::from_le_bytes(entry_data[0..8].try_into().unwrap());
+        let value = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
+
+        match tag {
+            7 => rela_addr = value,      // DT_RELA
+            8 => rela_size = value,      // DT_RELASZ
+            23 => jmprel_addr = value,   // DT_JMPREL
+            2 => jmprel_size = value,    // DT_PLTRELSZ
+            6 => symtab_addr = value,    // DT_SYMTAB
+            5 => strtab_addr = value,    // DT_STRTAB
+            0 => break,                  // DT_NULL
+            _ => {}
+        }
+    }
+
+    // Process .rela.dyn (R_RISCV_RELATIVE)
+    if rela_addr != 0 && rela_size != 0 {
+        let rela_offset = (rela_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
+        let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
+        let rela_count = rela_size as usize / rela_entry_size;
+
+        debug!("Processing {} RELATIVE relocations", rela_count);
+
+        for i in 0..rela_count {
+            let entry_offset = rela_offset + i * rela_entry_size;
+            if entry_offset + rela_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+                break;
+            }
+
+            let mut entry_data = vec![0u8; rela_entry_size];
+            cache.read_at(&mut entry_data, entry_offset as u64)?;
+
+            // Rela entry: offset (8 bytes) + info (8 bytes) + addend (8 bytes)
+            let offset = u64::from_le_bytes(entry_data[0..8].try_into().unwrap()) as usize;
+            let info = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
+            let addend = i64::from_le_bytes(entry_data[16..24].try_into().unwrap());
+
+            let reloc_type = (info & 0xffffffff) as u32;
+
+            match reloc_type {
+                R_RISCV_RELATIVE => {
+                    // *(base + offset) = base + addend
+                    let target = base + offset;
+                    let value = (base as i64 + addend) as u64;
+                    uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
+                    debug!("RELATIVE: [{:#x}] = {:#x}", target, value);
+                }
+                _ => {
+                    debug!("Unsupported relocation type: {}", reloc_type);
+                }
+            }
+        }
+    }
+
+    // Process .rela.plt (R_RISCV_JUMP_SLOT)
+    if jmprel_addr != 0 && jmprel_size != 0 {
+        let jmprel_offset = (jmprel_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
+        let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
+        let jmprel_count = jmprel_size as usize / rela_entry_size;
+
+        debug!("Processing {} JUMP_SLOT relocations", jmprel_count);
+
+        for i in 0..jmprel_count {
+            let entry_offset = jmprel_offset + i * rela_entry_size;
+            if entry_offset + rela_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+                break;
+            }
+
+            let mut entry_data = vec![0u8; rela_entry_size];
+            cache.read_at(&mut entry_data, entry_offset as u64)?;
+
+            // Rela entry: offset (8 bytes) + info (8 bytes) + addend (8 bytes)
+            let offset = u64::from_le_bytes(entry_data[0..8].try_into().unwrap()) as usize;
+            let info = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
+            let _addend = i64::from_le_bytes(entry_data[16..24].try_into().unwrap());
+
+            let reloc_type = (info & 0xffffffff) as u32;
+            let sym_idx = (info >> 32) as usize;
+
+            match reloc_type {
+                R_RISCV_JUMP_SLOT => {
+                    // For static-pie, symbols are in the binary itself
+                    // We need to look up the symbol in .dynsym
+                    if symtab_addr == 0 || strtab_addr == 0 {
+                        debug!("Missing symtab/strtab for JUMP_SLOT");
+                        continue;
+                    }
+
+                    // Read symbol from .dynsym
+                    let sym_offset = (symtab_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
+                    let sym_entry_size = 24; // sizeof(Sym64) = 24 bytes
+                    let sym_entry_offset = sym_offset + sym_idx * sym_entry_size;
+
+                    if sym_entry_offset + sym_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+                        debug!("Symbol entry extends beyond file");
+                        continue;
+                    }
+
+                    let mut sym_data = vec![0u8; sym_entry_size];
+                    cache.read_at(&mut sym_data, sym_entry_offset as u64)?;
+                    // Sym64: st_name(4) + st_info(1) + st_other(1) + st_shndx(2) + st_value(8) + st_size(8)
+                    let st_value = u64::from_le_bytes(sym_data[8..16].try_into().unwrap());
+
+                    // For static-pie, the symbol value is relative to load base
+                    let target = base + offset;
+                    let value = base as u64 + st_value;
+
+                    uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
+                    debug!("JUMP_SLOT: [{:#x}] = {:#x} (sym_idx={})", target, value, sym_idx);
+                }
+                _ => {
+                    debug!("Unsupported relocation type: {}", reloc_type);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Stub for non-riscv64 architectures
+#[cfg(not(target_arch = "riscv64"))]
+fn apply_relocations(
+    _uspace: &mut AddrSpace,
+    _base: usize,
+    _cache: &CachedFile,
+    _ph: &[xmas_elf::program::ProgramHeader64],
+) -> AxResult {
+    Ok(())
 }
 
 fn map_elf_error(err: &'static str) -> AxError {
