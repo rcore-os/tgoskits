@@ -13,7 +13,9 @@ use serde::Deserialize;
 use super::{ArceOS, build, cbuild, ensure_qemu_runtime_assets};
 use crate::{
     context::{BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
-    test::{case::TestQemuCase, qemu as qemu_test, suite as test_suite},
+    test::{
+        case::TestQemuCase, host_http::HostHttpServerGuard, qemu as qemu_test, suite as test_suite,
+    },
 };
 
 const ARCEOS_RUST_TEST_GROUP: &str = "rust";
@@ -112,6 +114,13 @@ struct ArceosQemuBuildGroup<'a> {
     request: ResolvedBuildRequest,
     cargo: Cargo,
     cases: Vec<&'a PreparedArceosRustQemuCase>,
+}
+
+struct GenericQemuRunOptions<'a> {
+    selected_case: Option<&'a str>,
+    symbolize_after: bool,
+    keep_qemu_log: bool,
+    allow_empty: bool,
 }
 
 impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
@@ -268,9 +277,12 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     &arch,
                     &target,
                     group,
-                    selected_case.as_deref(),
-                    symbolize_after,
-                    keep_qemu_log,
+                    GenericQemuRunOptions {
+                        selected_case: selected_case.as_deref(),
+                        symbolize_after,
+                        keep_qemu_log,
+                        allow_empty: args.test_group.is_none(),
+                    },
                 )
                 .await?
             }
@@ -359,12 +371,20 @@ async fn test_generic_qemu(
     arch: &str,
     target: &str,
     group: &str,
-    selected_case: Option<&str>,
-    symbolize_after: bool,
-    keep_qemu_log: bool,
+    options: GenericQemuRunOptions<'_>,
 ) -> anyhow::Result<()> {
     let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
-    let cases = discover_qemu_cases_in_dir(&dir, arch, target, selected_case, group)?;
+    let cases = if options.allow_empty && options.selected_case.is_none() {
+        discover_qemu_cases_in_dir_allow_empty(&dir, arch, target, options.selected_case, group)?
+    } else {
+        discover_qemu_cases_in_dir(&dir, arch, target, options.selected_case, group)?
+    };
+    if cases.is_empty() {
+        println!(
+            "skipping arceos {group} qemu tests for arch: {arch} (target: {target}, no cases)"
+        );
+        return Ok(());
+    }
     let group_label = format!("arceos {group}");
     println!(
         "running {group_label} qemu tests for arch: {arch} (target: {target}, cases: {})",
@@ -379,8 +399,8 @@ async fn test_generic_qemu(
         &group_label,
         &prepared,
         total,
-        symbolize_after,
-        keep_qemu_log,
+        options.symbolize_after,
+        options.keep_qemu_log,
     )
     .await
 }
@@ -518,8 +538,22 @@ fn discover_qemu_cases_in_dir(
         .collect::<anyhow::Result<Vec<_>>>()
 }
 
+fn discover_qemu_cases_in_dir_allow_empty(
+    dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    group: &str,
+) -> anyhow::Result<Vec<ArceosRustQemuCase>> {
+    qemu_test::discover_qemu_cases_allow_empty(dir, arch, target, selected_case, "ArceOS", group)?
+        .into_iter()
+        .map(load_rust_qemu_case)
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
 fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<ArceosRustQemuCase> {
     let package = read_manifest_package_name(&case.case_dir.join("Cargo.toml"))?;
+    let host_http_server = qemu_test::load_qemu_case_host_http_server(&case.qemu_config_path)?;
     Ok(ArceosRustQemuCase {
         case: TestQemuCase {
             name: case.name,
@@ -528,6 +562,7 @@ fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<Ar
             qemu_config_path: case.qemu_config_path,
             test_commands: Vec::new(),
             host_symbolize_success_regex: Vec::new(),
+            host_http_server,
             subcases: Vec::new(),
         },
         build_group: case.build_group,
@@ -550,7 +585,7 @@ async fn prepare_rust_qemu_cases(
             SnapshotPersistence::Discard,
         )?;
         let cargo = build::load_cargo_config(&request)?;
-        let qemu = arceos
+        let mut qemu = arceos
             .load_qemu_config(&request, &cargo)
             .await?
             .with_context(|| {
@@ -559,6 +594,13 @@ async fn prepare_rust_qemu_cases(
                     case.case.display_name
                 )
             })?;
+        let build_info: build::ArceosBuildInfo =
+            crate::build::load_build_info(&request.build_info_path)?;
+        qemu_test::apply_smp_qemu_arg(
+            &mut qemu,
+            request.smp.or(build_info.max_cpu_num).or(Some(1)),
+        );
+        qemu_test::apply_timeout_scale(&mut qemu);
         ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
             case,
@@ -612,6 +654,14 @@ async fn run_rust_qemu_case(
     let memory_blocks = capture_backtrace
         .as_ref()
         .map(|capture| capture.captured_blocks.clone());
+
+    let _host_http_server = case
+        .case
+        .case
+        .host_http_server
+        .as_ref()
+        .map(|config| HostHttpServerGuard::start(config, case_name))
+        .transpose()?;
 
     arceos
         .app
@@ -1615,6 +1665,7 @@ mod tests {
                     qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
                     test_commands: Vec::new(),
                     host_symbolize_success_regex: Vec::new(),
+                    host_http_server: None,
                     subcases: Vec::new(),
                 },
                 build_group: "std".to_string(),
