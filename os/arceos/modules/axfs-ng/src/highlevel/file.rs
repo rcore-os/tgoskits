@@ -5,7 +5,8 @@ use alloc::{
 };
 use core::{
     num::NonZeroUsize,
-    sync::atomic::{AtomicU8, Ordering},
+    ops::Range,
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     task::Context,
 };
 
@@ -199,42 +200,11 @@ impl OpenOptions {
     fn _open(&self, loc: Location) -> VfsResult<OpenResult> {
         let flags = self.to_flags()?;
 
-        // O_CREAT on an existing directory → EISDIR (Linux behavior;
-        // CREAT carries an implicit "create regular file" intent that
-        // conflicts with an existing directory regardless of access mode).
-        // Fixes bug-open-creat-on-existing-dir-no-eisdir.
-        // O_PATH path bypasses this — it doesn't actually open / mutate.
-        if self.create && loc.is_dir() && !self.path {
-            return Err(VfsError::IsADirectory);
-        }
-
-        if loc.is_readonly()
-            && (flags.intersects(FileFlags::WRITE | FileFlags::APPEND) || self.truncate)
-        {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
-
         if self.directory {
             loc.check_is_dir()?;
         }
         if self.truncate {
             loc.entry().as_file()?.set_len(0)?;
-        }
-
-        // ENXIO on opening a UNIX-domain-socket file. man 2 open §"ENXIO":
-        // "The file is a UNIX domain socket." Two exclusions:
-        //   (1) O_PATH bypass: socket file can still be O_PATH-opened to get a
-        //       location handle.
-        //   (2) Caller intends to create a socket (self.node_type == Socket,
-        //       used by axnet UnixSocket::bind which mounts /dev/log etc.)
-        //       — opening a freshly-created Socket via the create-then-open
-        //       path is internal kernel use, not user open(2).
-        // Fixes bug-open-unix-socket-no-enxio.
-        if !self.path
-            && self.node_type != NodeType::Socket
-            && loc.metadata()?.node_type == NodeType::Socket
-        {
-            return Err(VfsError::NoSuchDeviceOrAddress);
         }
 
         Ok(if loc.is_dir() {
@@ -276,86 +246,22 @@ impl OpenOptions {
             return Err(VfsError::InvalidInput);
         }
 
-        // Empty pathname → NotFound. man "ENOENT — O_CREAT is not set and
-        // the named file does not exist." resolve_parent("") would otherwise
-        // return cwd itself which lets open() succeed — wrong per POSIX.
-        // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
-        // Fixes bug-openat-empty-path-no-enoent.
-        if path.as_ref().as_str().is_empty() {
-            return Err(VfsError::NotFound);
-        }
-
-        // Trailing-slash check: man — paths with trailing '/' must refer to
-        // a directory. Components::parse_forward strips the empty trailing
-        // component, so we use Path::has_trailing_slash() to recover the
-        // signal. Captured early; the post-resolution check below enforces
-        // it. Fixes bug-open-trailing-slash.
-        let must_be_dir = path.as_ref().has_trailing_slash();
-
         let loc = match context.resolve_parent(path.as_ref()) {
             Ok((parent, name)) => {
-                // If the path ends with '/', Linux never creates regular
-                // files via O_CREAT here — the path explicitly requests a
-                // directory, and open() cannot create directories. Suppress
-                // create flags BEFORE open_file to avoid creating an inode
-                // that the post-check would then reject (codex P1: original
-                // ordering left a stale file on disk for failing calls).
-                let effective_create = self.create && !must_be_dir;
-                let effective_create_new = self.create_new && !must_be_dir;
                 let mut loc = parent.open_file(
                     &name,
                     &axfs_ng_vfs::OpenOptions {
-                        create: effective_create,
-                        create_new: effective_create_new,
+                        create: self.create,
+                        create_new: self.create_new,
                         node_type: self.node_type,
                         permission: NodePermission::from_bits_truncate(self.mode as _),
                         user: self.user,
                     },
                 )?;
                 if !self.no_follow {
-                    // Save the symlink-target path before resolving, so we can
-                    // recurse into create-at-target if the target is dangling.
-                    let was_symlink = loc.node_type() == NodeType::Symlink;
-                    let symlink_target = if was_symlink && self.create {
-                        loc.read_link().ok()
-                    } else {
-                        None
-                    };
-                    let parent_for_resolve = parent.clone();
-                    match context
-                        .with_current_dir(parent_for_resolve)?
-                        .try_resolve_symlink(loc, &mut 0)
-                    {
-                        Ok(resolved) => loc = resolved,
-                        Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
-                            // O_CREAT on a dangling symlink: man — Linux follows
-                            // the symlink and creates the target file (provided
-                            // its parent directory exists). Recurse with the
-                            // symlink target as the new path.
-                            // Fixes bug-open-creat-dangling-no-create.
-                            let target = symlink_target.unwrap();
-                            return self.open(&context.with_current_dir(parent)?, &target);
-                        }
-                        Err(e) => return Err(e),
-                    }
-                } else if loc.node_type() == NodeType::Symlink && !self.path {
-                    // O_NOFOLLOW + basename is a symlink + not O_PATH:
-                    // man "If the trailing component (i.e., basename) of
-                    // pathname is a symbolic link, then the open fails,
-                    // with the error ELOOP."
-                    //
-                    // Precedence: a trailing slash on the original path
-                    // forces the resolved entry to be a directory; a
-                    // symlink itself is not a directory, so ENOTDIR
-                    // takes priority over ELOOP (Linux behavior verified
-                    // via host gcc: `open("/tmp/sym/", O_NOFOLLOW)` →
-                    // ENOTDIR, not ELOOP). Without this check, starry
-                    // returns ELOOP and diverges from Linux.
-                    if must_be_dir {
-                        return Err(VfsError::NotADirectory);
-                    }
-                    // Fixes bug-open-nofollow-sym.
-                    return Err(VfsError::FilesystemLoop);
+                    loc = context
+                        .with_current_dir(parent)?
+                        .try_resolve_symlink(loc, &mut 0)?;
                 }
                 loc
             }
@@ -365,30 +271,16 @@ impl OpenOptions {
             }
             Err(err) => return Err(err),
         };
-
-        // Trailing-slash post-check: if the original pathname ended with '/'
-        // (other than the root itself), the resolved location MUST be a
-        // directory; otherwise return NotADirectory.
-        if must_be_dir && !loc.is_dir() {
-            return Err(VfsError::NotADirectory);
-        }
-
         self._open(loc)
     }
 
     pub(crate) fn to_flags(&self) -> VfsResult<FileFlags> {
-        // Linux semantic: O_APPEND only adds APPEND bit; it does NOT promote
-        // read-only fd to read/write. (Previous code merged (true,_,true) →
-        // READ|WRITE|APPEND which silently upgraded RDONLY|APPEND to RW —
-        // see bug-open-rdonly-append-promotes-rw.)
         Ok(match (self.read, self.write, self.append) {
             (true, false, false) => FileFlags::READ,
             (false, true, false) => FileFlags::WRITE,
             (true, true, false) => FileFlags::READ | FileFlags::WRITE,
-            (true, false, true) => FileFlags::READ | FileFlags::APPEND,
-            (false, true, true) => FileFlags::WRITE | FileFlags::APPEND,
-            (true, true, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
-            (false, false, true) => FileFlags::APPEND, // RDONLY-equivalent + APPEND: pure status
+            (false, _, true) => FileFlags::WRITE | FileFlags::APPEND,
+            (true, _, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
             (false, false, false) => return Err(VfsError::InvalidInput),
         } | if self.path {
             FileFlags::PATH
@@ -401,12 +293,19 @@ impl OpenOptions {
         if !self.read && !self.write && !self.append {
             return false;
         }
-        // Linux multi-fs: RDONLY|TRUNC truncates the file (POSIX VERSIONS
-        // says effect is "unspecified", but most fs do truncate). Don't
-        // reject. Fixes bug-open-rdonly-trunc-einval.
-        // RDWR|APPEND|TRUNC is also explicitly allowed by Linux; the prior
-        // restriction "(_,true) && truncate && !create_new → false" was too
-        // strict. Fixes bug-open-append-trunc-einval.
+        match (self.write, self.append) {
+            (true, false) => {}
+            (false, false) => {
+                if self.truncate {
+                    return false;
+                }
+            }
+            (_, true) => {
+                if self.truncate && !self.create_new {
+                    return false;
+                }
+            }
+        }
         true
     }
 }
@@ -493,6 +392,105 @@ impl CachedFileShared {
             evict_listeners: Mutex::new(LinkedList::default()),
         }
     }
+
+    /// Scan the LRU and evict up to `max` clean pages.
+    ///
+    /// Collects non-dirty pages from the LRU cache (least-recently-used
+    /// first), pops them, notifies all registered evict listeners, and
+    /// drops the pages (freeing their backing physical memory).
+    /// Returns the number of pages evicted.
+    ///
+    /// # Lock ordering: `page_cache` → `evict_listeners`
+    ///
+    /// This function holds the `page_cache` lock while acquiring
+    /// `evict_listeners`.  Listeners must never acquire `page_cache`
+    /// (or any lock taken before `evict_listeners`), or a deadlock will
+    /// occur.  The current callers (address-space backend page-table
+    /// invalidation) do not touch the file's page cache, so this
+    /// ordering is safe in practice.
+    ///
+    /// # Context
+    ///
+    /// When called from the page-reclaim path, the reclaim callback is
+    /// invoked with interrupts enabled: `try_page_reclaim` releases its
+    /// `SpinNoIrq` guard before invoking the callback, so `might_sleep()`
+    /// in the blocking `evict_listeners.lock()` is safe.
+    fn try_evict_clean_pages(&self, max: usize) -> usize {
+        let Some(mut cache) = self.page_cache.try_lock() else {
+            return 0;
+        };
+        let mut to_evict = [0u32; 256];
+        let limit = max.min(256);
+        let mut cnt = 0;
+        for (&pn, page) in cache.iter().rev() {
+            if !page.dirty && cnt < limit {
+                to_evict[cnt] = pn;
+                cnt += 1;
+            }
+        }
+        for &pn in to_evict[..cnt].iter() {
+            if let Some(page) = cache.pop(&pn) {
+                for listener in self.evict_listeners.lock().iter() {
+                    (listener.listener)(pn, &page);
+                }
+            }
+        }
+        cnt
+    }
+}
+
+struct ReclaimGuard;
+
+impl Drop for ReclaimGuard {
+    fn drop(&mut self) {
+        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Weak<CachedFileShared>>> =
+    spin::RwLock::new(alloc::vec::Vec::new());
+
+static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn page_cache_reclaim(num_pages: usize) -> usize {
+    if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        return 0;
+    }
+    let _guard = ReclaimGuard;
+
+    let mut reclaimed = 0;
+    let target = num_pages.max(16) * 2;
+    let mut file_count = 0;
+
+    if let Some(guard) = GLOBAL_CACHED_FILES.try_read() {
+        for weak in guard.iter() {
+            if let Some(file) = weak.upgrade() {
+                let freed = file.try_evict_clean_pages(target - reclaimed);
+                reclaimed += freed;
+                file_count += 1;
+                if reclaimed >= target {
+                    break;
+                }
+            }
+        }
+    } else {
+        return 0;
+    }
+
+    if reclaimed > 0 {
+        debug!(
+            "page_cache_reclaim: evicted {} clean pages across {} files",
+            reclaimed, file_count
+        );
+    }
+
+    reclaimed
+}
+
+fn register_cached_file(file: &Arc<CachedFileShared>) {
+    let mut guard = GLOBAL_CACHED_FILES.write();
+    guard.retain(|w| w.upgrade().is_some());
+    guard.push(Arc::downgrade(file));
 }
 
 /// A file handle with an LRU page cache for buffered I/O.
@@ -536,21 +534,28 @@ impl CachedFile {
         let in_memory = location.filesystem().name() == "tmpfs";
 
         let mut guard = location.user_data();
-        let shared = if let Some(shared) = guard.get::<FileUserData>().and_then(|it| it.get()) {
-            shared
-        } else {
-            let (shared, user_data) = if in_memory {
-                let shared = Arc::new(CachedFileShared::new_unbounded());
-                (shared.clone(), FileUserData::Strong(shared))
+        let (shared, is_new) =
+            if let Some(shared) = guard.get::<FileUserData>().and_then(|it| it.get()) {
+                (shared, false)
             } else {
-                let shared = Arc::new(CachedFileShared::new());
-                let user_data = FileUserData::Weak(Arc::downgrade(&shared));
-                (shared, user_data)
+                let (shared, user_data) = if in_memory {
+                    let shared = Arc::new(CachedFileShared::new_unbounded());
+                    (shared.clone(), FileUserData::Strong(shared))
+                } else {
+                    let shared = Arc::new(CachedFileShared::new());
+                    let user_data = FileUserData::Weak(Arc::downgrade(&shared));
+                    (shared, user_data)
+                };
+                guard.insert(user_data);
+                (shared, true)
             };
-            guard.insert(user_data);
-            shared
-        };
         drop(guard);
+
+        // In-memory files (tmpfs) have no backing store, so evicting clean
+        // pages would lose data. Only register disk-backed files for reclaim.
+        if is_new && !in_memory {
+            register_cached_file(&shared);
+        }
 
         Self {
             inner: location,
@@ -662,74 +667,71 @@ impl CachedFile {
         f(page, evicted)
     }
 
+    fn with_pages<T>(
+        &self,
+        range: Range<u64>,
+        page_initial: impl FnOnce(&FileNode) -> VfsResult<T>,
+        mut page_each: impl FnMut(T, &mut PageCache, Range<usize>) -> VfsResult<T>,
+    ) -> VfsResult<T> {
+        let file = self.inner.entry().as_file()?;
+        let mut initial = page_initial(file)?;
+        let start_page = (range.start / PAGE_SIZE as u64) as u32;
+        let end_page = range.end.div_ceil(PAGE_SIZE as u64) as u32;
+        let mut page_offset = (range.start % PAGE_SIZE as u64) as usize;
+        for pn in start_page..end_page {
+            let page_start = pn as u64 * PAGE_SIZE as u64;
+
+            let mut guard = self.shared.page_cache.lock();
+            let page = self.page_or_insert(file, &mut guard, pn)?.0;
+
+            initial = page_each(
+                initial,
+                page,
+                page_offset..(range.end - page_start).min(PAGE_SIZE as u64) as usize,
+            )?;
+            page_offset = 0;
+        }
+
+        Ok(initial)
+    }
+
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
         let len = self.inner.len()?;
-        let end = offset.saturating_add(dst.remaining_mut() as u64).min(len);
+        let end = (offset + dst.remaining_mut() as u64).min(len);
         if end <= offset {
             return Ok(0);
         }
-
-        let file = self.inner.entry().as_file()?;
-        let mut scratch = PageCache::new()?;
-        let mut read = 0;
-        let mut current = offset;
-        while current < end {
-            let pn = (current / PAGE_SIZE as u64) as u32;
-            let page_start = pn as u64 * PAGE_SIZE as u64;
-            let page_offset = (current - page_start) as usize;
-            let chunk_len = (end - page_start).min(PAGE_SIZE as u64) as usize - page_offset;
-
-            {
-                let mut guard = self.shared.page_cache.lock();
-                let page = self.page_or_insert(file, &mut guard, pn)?.0;
-                scratch.data()[..chunk_len]
-                    .copy_from_slice(&page.data()[page_offset..page_offset + chunk_len]);
-            }
-
-            dst.write_all(&scratch.data()[..chunk_len])?;
-            read += chunk_len;
-            current += chunk_len as u64;
-        }
-
-        Ok(read)
+        self.with_pages(
+            offset..end,
+            |_| Ok(0),
+            |read, page, range| {
+                let len = range.end - range.start;
+                dst.write(&page.data()[range.start..range.end])?;
+                Ok(read + len)
+            },
+        )
     }
 
     fn write_at_locked(&self, mut buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        let file = self.inner.entry().as_file()?;
-        let end = offset.saturating_add(buf.remaining() as u64);
-        if end > file.len()? {
-            file.set_len(end)?;
-        }
-
-        let mut scratch = PageCache::new()?;
-        let mut written = 0;
-        let mut current = offset;
-        while current < end && buf.remaining() > 0 {
-            let pn = (current / PAGE_SIZE as u64) as u32;
-            let page_start = pn as u64 * PAGE_SIZE as u64;
-            let page_offset = (current - page_start) as usize;
-            let chunk_len =
-                ((PAGE_SIZE - page_offset).min(buf.remaining())).min((end - current) as usize);
-            let n = buf.read(&mut scratch.data()[..chunk_len])?;
-            if n == 0 {
-                break;
-            }
-
-            {
-                let mut guard = self.shared.page_cache.lock();
-                let page = self.page_or_insert(file, &mut guard, pn)?.0;
-                page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
+        let end = offset + buf.remaining() as u64;
+        self.with_pages(
+            offset..end,
+            |file| {
+                if end > file.len()? {
+                    file.set_len(end)?;
+                }
+                Ok(0)
+            },
+            |written, page, range| {
+                let len = range.end - range.start;
+                buf.read(&mut page.data()[range.start..range.end])?;
                 if !self.in_memory {
                     page.dirty = true;
                 }
-            }
-
-            written += n;
-            current += n as u64;
-        }
-
-        Ok(written)
+                Ok(written + len)
+            },
+        )
     }
 
     /// Writes `buf` to the file at `offset`.
@@ -930,29 +932,11 @@ impl FileBackend {
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
-            Self::Direct(loc) => {
-                let mut total = 0;
-                while dst.remaining_mut() > 0 {
-                    let chunk = dst.remaining_mut().min(ax_io::DEFAULT_BUF_SIZE);
-                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
-                        loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
-                            offset += *read as u64;
-                        })
-                    })) {
-                        Ok(read) => read,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
-                    if read == 0 {
-                        break;
-                    }
-                    total += read;
-                    if read < chunk {
-                        break;
-                    }
-                }
-                Ok(total)
-            }
+            Self::Direct(loc) => dst.read_from(&mut ax_io::read_fn(|buf| {
+                loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
+                    offset += *read as u64;
+                })
+            })),
         }
     }
 
@@ -960,32 +944,14 @@ impl FileBackend {
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
-            Self::Direct(loc) => {
-                let mut total = 0;
-                while src.remaining() > 0 {
-                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
-                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
-                        loc.entry()
-                            .as_file()?
-                            .write_at(buf, offset)
-                            .inspect(|written| {
-                                offset += *written as u64;
-                            })
-                    })) {
-                        Ok(written) => written,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
-                    if written == 0 {
-                        break;
-                    }
-                    total += written;
-                    if written < chunk {
-                        break;
-                    }
-                }
-                Ok(total)
-            }
+            Self::Direct(loc) => src.write_to(&mut ax_io::write_fn(|buf| {
+                loc.entry()
+                    .as_file()?
+                    .write_at(buf, offset)
+                    .inspect(|written| {
+                        offset += *written as u64;
+                    })
+            })),
         }
     }
 
@@ -994,29 +960,14 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.append(src),
             Self::Direct(loc) => {
-                let mut total = 0;
-                let mut end = loc.entry().as_file()?.len()?;
-                while src.remaining() > 0 {
-                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
-                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
-                        loc.entry().as_file()?.append(buf).map(|(n, offset)| {
-                            end = offset;
-                            n
-                        })
-                    })) {
-                        Ok(written) => written,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
-                    if written == 0 {
-                        break;
-                    }
-                    total += written;
-                    if written < chunk {
-                        break;
-                    }
-                }
-                Ok((total, end))
+                let mut end = 0;
+                src.write_to(&mut ax_io::write_fn(|buf| {
+                    loc.entry().as_file()?.append(buf).map(|(n, offset)| {
+                        end = offset;
+                        n
+                    })
+                }))
+                .map(|n| (n, end))
             }
         }
     }
@@ -1058,16 +1009,14 @@ pub struct File {
 impl File {
     /// Creates a new [`File`] from a [`FileBackend`] and access flags.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
-        // man 2 open: "The file offset is set to the beginning of the file"
-        // — initial position is always 0, regardless of O_APPEND.
-        // O_APPEND only relocates the offset BEFORE EACH WRITE (handled in
-        // `write()` via the `access(FileFlags::APPEND)` branch). Setting
-        // initial position to EOF would break read() on RDONLY|APPEND
-        // (read sees EOF immediately) — see bug-open-rdonly-append-promotes-rw.
         let position = if inner.location().flags().contains(NodeFlags::STREAM) {
             None
         } else {
-            Some(Mutex::new(0))
+            Some(Mutex::new(if flags.contains(FileFlags::APPEND) {
+                inner.location().len().unwrap_or_default()
+            } else {
+                0
+            }))
         };
         Self {
             inner,
@@ -1100,11 +1049,6 @@ impl File {
     /// Checks that the file has the required `flags` and returns the backend.
     pub fn access(&self, flags: FileFlags) -> VfsResult<&FileBackend> {
         if self.flags().contains(flags) && !self.is_path() {
-            if self.inner.location().is_readonly()
-                && flags.intersects(FileFlags::WRITE | FileFlags::APPEND)
-            {
-                return Err(VfsError::ReadOnlyFilesystem);
-            }
             Ok(&self.inner)
         } else {
             Err(VfsError::BadFileDescriptor)
@@ -1190,11 +1134,6 @@ impl File {
         {
             self.access_flags.fetch_or(3, Ordering::AcqRel);
         }
-        // WRITE bit is mandatory for any write path, regardless of whether
-        // APPEND is set. Otherwise O_RDONLY|O_APPEND fd would silently
-        // succeed writes (since access(APPEND) only checks the APPEND bit).
-        // Fixes bug-open-rdonly-append-promotes-rw (the part inside axfs).
-        self.access(FileFlags::WRITE)?;
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {
