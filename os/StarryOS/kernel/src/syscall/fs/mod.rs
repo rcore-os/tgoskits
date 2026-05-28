@@ -27,5 +27,5 @@ pub use self::{
     signalfd::*,
     stat::*,
     timerfd::*,
-    xattr::*,
+     
 };

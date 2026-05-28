@@ -1,0 +1,36 @@
+args = [
+    "-machine", "virt",
+    "-cpu", "cortex-a53",
+    "-nographic",
+    "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${rootfs}",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = """
+set -e
+echo "[curl-test] start"
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+apk update >/dev/null 2>&1
+apk add curl ca-certificates >/dev/null 2>&1
+curl --version
+OUT=$(curl --noproxy '*' -sS --connect-timeout 5 --max-time 15 http://10.0.2.2:8000/)
+echo "[curl-test] response:"
+echo "$OUT"
+echo "$OUT" | grep "hello from host"
+echo "[curl-test] passed"
+"""
+success_regex = ["(?m)^\\[curl-test\\] passed$"]
+fail_regex = [
+    "(?m)panicked at",
+    "(?m)failed to determine root device",
+    "(?m)BACKTRACE_BEGIN",
+    "(?m)not found",
+    "(?m)No such file",
+    "(?m)Connection refused",
+]
+timeout = 300
