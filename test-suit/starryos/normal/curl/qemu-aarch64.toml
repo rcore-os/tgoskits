@@ -22,7 +22,7 @@ OUT=$(curl --noproxy '*' -sS --connect-timeout 5 --max-time 15 http://10.0.2.2:8
 echo "[curl-test] response:"
 echo "$OUT"
 echo "$OUT" | grep "hello from host"
-echo "[curl-test] passed"
+echo "CURL_TEST_DONE=$(date +%s)"
 """
 success_regex = ["(?m)^\\[curl-test\\] passed$"]
 fail_regex = [
