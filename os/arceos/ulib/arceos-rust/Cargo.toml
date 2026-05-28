@@ -31,11 +31,6 @@ defplat = []
 
 # Memory
 alloc = []
-alloc-tlsf = []
-alloc-slab = []
-alloc-buddy = []
-page-alloc-64g = [] # Support up to 64G memory capacity
-page-alloc-4g = [] # Support up to 4G memory capacity
 paging = []
 dma = []
 tls = []

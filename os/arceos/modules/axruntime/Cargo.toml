@@ -10,7 +10,6 @@ version = "0.5.16"
 [features]
 default = []
 
-buddy-slab = ["ax-alloc/buddy-slab"]
 dma = ["paging"]
 ipi = ["dep:ax-ipi"]
 irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
@@ -25,7 +24,6 @@ plat-dyn = [
   "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
   "paging",
-  "buddy-slab",
   "irq",
   "rtc",
   "smp",
@@ -56,7 +54,7 @@ net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/ne
 vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
 
 [dependencies]
-ax-alloc = {workspace = true, features = ["default"]}
+ax-alloc = {workspace = true}
 ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}

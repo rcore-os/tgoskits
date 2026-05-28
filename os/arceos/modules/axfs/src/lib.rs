@@ -41,7 +41,11 @@ use crate::{dev::Disk, partition::PartitionInfo};
 pub fn init_filesystems(mut block_devs: Vec<Box<dyn FsBlockDevice>>, bootargs: Option<&str>) {
     info!("Initialize filesystems...");
 
-    let dev = block_devs.pop().expect("No block device found!");
+    let Some(dev) = block_devs.pop() else {
+        warn!("No block device found, mount ramfs as rootfs");
+        self::root::init_rootfs_with_ramfs();
+        return;
+    };
     info!("  use block device 0: {:?}", dev.name());
     let mut disk = Disk::new(dev);
 
@@ -61,6 +65,11 @@ pub fn init_filesystems(mut block_devs: Vec<Box<dyn FsBlockDevice>>, bootargs: O
             warn!("Failed to scan GPT partitions: {:?}", e);
         }
     }
+}
+
+/// Cleanly unmounts the initialized root filesystem.
+pub fn shutdown_filesystems() -> ax_errno::AxResult {
+    self::root::shutdown_rootfs()
 }
 
 /// Initialize filesystems with detected partitions

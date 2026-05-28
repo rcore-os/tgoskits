@@ -28,7 +28,7 @@ ax-driver = { workspace = true, features = ["plat-static", "block"] }
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }
-axklib.workspace = true
+axklib = { workspace = true, features = ["tlsf"] }
 rd-block.workspace = true
 sg200x-bsp.workspace = true
 some-serial.workspace = true

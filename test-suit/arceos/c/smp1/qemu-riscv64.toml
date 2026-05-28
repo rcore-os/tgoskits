@@ -4,7 +4,7 @@ args = [
     "-cpu",
     "rv64",
     "-m",
-    "128M",
+    "512M",
     "-nographic",
     "-serial",
     "mon:stdio",

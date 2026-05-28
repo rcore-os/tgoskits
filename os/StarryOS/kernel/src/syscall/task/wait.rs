@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -11,13 +11,15 @@ use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PID, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
 };
 use starry_process::{Pid, Process};
-use starry_signal::SignalInfo;
+use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::task::{
-    AsThread, JobStatus, decode_wait_status, get_process_data, get_task, get_zombie_cred,
-    remove_process, unregister_zombie,
+    AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
+    get_zombie_cred, processes, remove_process, traced_zombies_for, unregister_zombie,
 };
+
+const PTRACE_O_TRACESYSGOOD: usize = 1;
 
 bitflags! {
     /// Options accepted by wait4 / waitpid.
@@ -67,6 +69,74 @@ impl WaitTarget {
     }
 }
 
+fn stopped_wait_signo(data: &ProcessData, signo: Signo) -> i32 {
+    let event = data.ptrace_event().unwrap_or(0);
+    let mut wait_signo = if event != 0 {
+        Signo::SIGTRAP as i32
+    } else {
+        signo as i32
+    };
+    if event == 0
+        && signo == Signo::SIGTRAP
+        && data.is_ptrace_syscall_stop()
+        && data.ptrace_options() & PTRACE_O_TRACESYSGOOD != 0
+    {
+        wait_signo |= 0x80;
+    }
+    wait_signo
+}
+
+fn stopped_wait_status(data: &ProcessData, signo: Signo) -> i32 {
+    let event = data.ptrace_event().unwrap_or(0) as i32;
+    let wait_signo = stopped_wait_signo(data, signo);
+    (event << 16) | (wait_signo << 8) | 0x7f
+}
+
+fn child_uid(child: &Process) -> u32 {
+    get_zombie_cred(child.pid())
+        .map(|cred| cred.uid)
+        .or_else(|| {
+            child
+                .threads()
+                .into_iter()
+                .find_map(|tid| get_task(tid).ok().map(|task| task.as_thread().cred().uid))
+        })
+        .unwrap_or(0)
+}
+
+fn waitable_processes(proc: &Process, target: WaitTarget, tracer_pid: Pid) -> Vec<Arc<Process>> {
+    let mut candidates = proc
+        .children()
+        .into_iter()
+        .filter(|child| target.matches(child))
+        .collect::<Vec<_>>();
+
+    for data in processes() {
+        let traced = data.ptrace_tracer_pid() == Some(tracer_pid);
+        let proc = data.proc.clone();
+        if traced
+            && target.matches(&proc)
+            && !candidates
+                .iter()
+                .any(|candidate| candidate.pid() == proc.pid())
+        {
+            candidates.push(proc);
+        }
+    }
+
+    for zombie in traced_zombies_for(tracer_pid) {
+        if target.matches(&zombie)
+            && !candidates
+                .iter()
+                .any(|candidate| candidate.pid() == zombie.pid())
+        {
+            candidates.push(zombie);
+        }
+    }
+
+    candidates
+}
+
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
     let options = WaitPidOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
@@ -86,18 +156,25 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
 
     // FIXME: add back support for WALL & WCLONE, since ProcessData may drop before
     // Process now.
-    let children = proc
-        .children()
-        .into_iter()
-        .filter(|child| target.matches(child))
-        .collect::<Vec<_>>();
+    let children = waitable_processes(proc, target, proc.pid());
     if children.is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
-        if let Some(child) = children.iter().find(|child| child.is_zombie()) {
+        if let Some((child, data, signo)) = children.iter().find_map(|child| {
+            get_process_data(child.pid())
+                .ok()
+                .filter(|data| !data.ptrace_stop_reported())
+                .and_then(|data| data.ptrace_stop_signo().map(|signo| (child, data, signo)))
+        }) {
+            if let Some(exit_code) = exit_code.nullable() {
+                exit_code.vm_write(stopped_wait_status(&data, signo))?;
+            }
+            data.mark_ptrace_stop_reported();
+            return Ok(Some(child.pid() as _));
+        } else if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             // Accumulate child's CPU time before freeing.
             for tid in child.threads() {
                 if let Ok(task) = get_task(tid) {
@@ -195,12 +272,10 @@ pub fn sys_waitid(
         _ => return Err(AxError::InvalidInput),
     };
 
-    // Validate options — WEXITED must be present (we don't support WSTOPPED/WCONTINUED yet).
     let options = WaitIdOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
-    if !options.contains(WaitIdOptions::WEXITED) {
-        return Err(AxError::InvalidInput);
-    }
-    if options.contains(WaitIdOptions::WUNTRACED) || options.contains(WaitIdOptions::WCONTINUED) {
+    if !options
+        .intersects(WaitIdOptions::WEXITED | WaitIdOptions::WUNTRACED | WaitIdOptions::WCONTINUED)
+    {
         return Err(AxError::InvalidInput);
     }
 
@@ -209,21 +284,48 @@ pub fn sys_waitid(
     let curr = current();
     let proc = &curr.as_thread().proc_data.proc;
 
-    let children: Vec<_> = proc
-        .children()
-        .into_iter()
-        .filter(|child| target.matches(child))
-        .collect();
+    let children = waitable_processes(proc, target, proc.pid());
     if children.is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
-        if let Some(child) = children.iter().find(|child| child.is_zombie()) {
+        if options.contains(WaitIdOptions::WUNTRACED)
+            && let Some((child, data, signo)) = children.iter().find_map(|child| {
+                get_process_data(child.pid())
+                    .ok()
+                    .filter(|data| !data.ptrace_stop_reported())
+                    .and_then(|data| data.ptrace_stop_signo().map(|signo| (child, data, signo)))
+            })
+        {
+            let child_pid = child.pid();
+            let child_uid = child_uid(child);
+
+            if let Some(infop) = infop.nullable() {
+                let siginfo = SignalInfo::new_sigchld(
+                    child_pid,
+                    child_uid,
+                    linux_raw_sys::general::CLD_TRAPPED as i32,
+                    stopped_wait_signo(&data, signo),
+                );
+                infop.vm_write(siginfo.0)?;
+            }
+            if !options.contains(WaitIdOptions::WNOWAIT)
+                && let Ok(data) = get_process_data(child_pid)
+            {
+                data.mark_ptrace_stop_reported();
+            }
+
+            return Ok(Some(0));
+        }
+
+        if options.contains(WaitIdOptions::WEXITED)
+            && let Some(child) = children.iter().find(|child| child.is_zombie())
+        {
             let child_pid = child.pid();
             let (code, status) = decode_wait_status(child.exit_code());
-            let child_uid = get_zombie_cred(child_pid).map(|c| c.uid).unwrap_or(0);
+            let child_uid = child_uid(child);
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
@@ -231,7 +333,6 @@ pub fn sys_waitid(
             }
 
             if !options.contains(WaitIdOptions::WNOWAIT) {
-                // Accumulate child's CPU time before freeing.
                 for tid in child.threads() {
                     if let Ok(task) = get_task(tid) {
                         let thr = task.as_thread();
@@ -243,11 +344,10 @@ pub fn sys_waitid(
                 remove_process(child_pid);
                 unregister_zombie(child_pid);
             }
-            // waitid(2): on success returns 0 (not the child PID).
-            Ok(Some(0))
-        } else if options.contains(WaitIdOptions::WNOHANG) {
-            // WNOHANG with no ready child: return 0. Zero out siginfo if
-            // infop is non-NULL so callers don't read stale data.
+            return Ok(Some(0));
+        }
+
+        if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
                 let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
                 infop.vm_write(zeroed)?;

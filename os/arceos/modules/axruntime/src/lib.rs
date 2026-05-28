@@ -156,8 +156,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(feature = "buddy-slab")]
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
+    // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");

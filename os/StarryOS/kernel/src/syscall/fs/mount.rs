@@ -139,6 +139,14 @@ pub fn sys_mount(
                 mp.set_readonly(true);
             }
         }
+        "cgroup2" => {
+            let fs = crate::pseudofs::cgroup::new_cgroup2fs();
+            let target = FS_CONTEXT.lock().resolve(target)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+        }
         #[cfg(feature = "ext4")]
         "ext4" => {
             mount_ext4(&source, &target, (flags & MS_RDONLY) != 0)?;
