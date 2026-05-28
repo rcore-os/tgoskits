@@ -694,7 +694,6 @@ dependencies = [
 name = "ax-alloc"
 version = "0.7.2"
 dependencies = [
- "ax-allocator",
  "ax-errno",
  "ax-kspin",
  "ax-memory-addr",
@@ -704,6 +703,7 @@ dependencies = [
  "buddy-slab-allocator",
  "cfg-if",
  "log",
+ "rlsf",
  "strum 0.27.2",
 ]
 
@@ -1336,6 +1336,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
  "some-serial",
 ]
@@ -1366,6 +1367,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
 ]
 
@@ -1394,6 +1396,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
 ]
 
@@ -1477,6 +1480,7 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
+ "axklib",
  "log",
  "rdrive",
  "riscv 0.14.0",
@@ -1848,6 +1852,7 @@ dependencies = [
 name = "axklib"
 version = "0.5.9"
 dependencies = [
+ "ax-alloc",
  "ax-errno",
  "ax-memory-addr",
  "dma-api",
@@ -1975,8 +1980,6 @@ dependencies = [
  "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-x86-qemu-q35",
  "ax-std",
  "ax-timer-list",
  "axaddrspace",

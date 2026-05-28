@@ -21,6 +21,7 @@ ax-cpu = { workspace = true }
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }
+axklib = { workspace = true, features = ["tlsf"] }
 rdrive.workspace = true
 ax-riscv-plic = { workspace = true, optional = true }
 log = "0.4"

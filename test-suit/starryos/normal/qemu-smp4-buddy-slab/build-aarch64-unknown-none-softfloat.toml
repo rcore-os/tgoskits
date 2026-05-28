@@ -10,7 +10,6 @@ features = [
   "ax-driver/virtio-socket",
   "starry-kernel/input",
   "starry-kernel/vsock",
-  "starryos/buddy-slab",
 ]
 max_cpu_num = 4
 log = "Warn"

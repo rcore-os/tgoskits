@@ -90,7 +90,7 @@ list-pci-devices = []
 [dependencies]
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
-ax-alloc = { workspace = true, optional = true, features = ["default"] }
+ax-alloc = { workspace = true, optional = true }
 ax-crate-interface = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
 ax-arm-pl031 = { workspace = true, optional = true }
