@@ -20,21 +20,6 @@ shell_init_cmd = '''
 fetch_timeout=60
 repo_file=/etc/apk/repositories
 original_repos="$(cat "$repo_file")"
-case "$original_repos" in
-    *dl-cdn.alpinelinux.org*)
-        apk_region=us
-        repo_candidates='https://dl-cdn.alpinelinux.org/alpine upstream'
-        ;;
-    *)
-        apk_region=china
-        repo_candidates='https://mirrors.aliyun.com/alpine aliyun
-https://mirrors.tuna.tsinghua.edu.cn/alpine tuna
-https://mirrors.ustc.edu.cn/alpine ustc'
-        ;;
-esac
-echo "APK_CURL_REGION_$apk_region"
-repo_candidates_file=/tmp/apk-curl-repositories
-printf '%s\n' "$repo_candidates" > "$repo_candidates_file"
 
 try_apk_curl() {
     mirror="$1"
@@ -56,9 +41,10 @@ try_apk_curl() {
 }
 
 i=0
-while IFS= read -r repo
+for repo in \
+    "https://mirrors.cernet.edu.cn/alpine cernet" \
+    "https://dl-cdn.alpinelinux.org/alpine upstream"
 do
-    test -n "$repo" || continue
     i=$((i + 1))
     mirror=${repo% *}
     label=${repo#* }
@@ -68,7 +54,7 @@ do
         exit 0
     fi
     sleep 2
-done < "$repo_candidates_file"
+done
 echo 'APK_CURL_TEST_FAILED'
 '''
 success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]

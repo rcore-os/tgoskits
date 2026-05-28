@@ -15,6 +15,7 @@
 #define TEST_NAME "apk-add-fs-equivalence"
 #define APK_PAYLOAD_CHUNK_SIZE 16384
 #define APK_PAYLOAD_CHUNKS 128
+#define APK_PAYLOAD_BYTES (APK_PAYLOAD_CHUNK_SIZE * APK_PAYLOAD_CHUNKS)
 #define APK_PAYLOAD_BUDGET_MS 30000
 
 static void fail_at(const char *file, int line, const char *message)
@@ -380,10 +381,24 @@ static void verify_payload_chunk(const unsigned char *buf, size_t chunk)
     }
 }
 
+static unsigned long long payload_checksum_update(unsigned long long checksum,
+                                                  const unsigned char *buf,
+                                                  size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        checksum = (checksum * 1315423911ULL) ^ (unsigned long long)buf[i] ^ i;
+    }
+    return checksum;
+}
+
 static void test_large_apk_payload_io(const char *base)
 {
     char tmp[PATH_MAX], final[PATH_MAX];
     unsigned char buf[APK_PAYLOAD_CHUNK_SIZE];
+    size_t written = 0;
+    size_t readback = 0;
+    unsigned long long write_checksum = 0;
+    unsigned long long read_checksum = 0;
 
     path_join(tmp, sizeof(tmp), base, "var/cache/apk/large-package.apk-new");
     path_join(final, sizeof(final), base, "usr/lib/large-package.dat");
@@ -394,7 +409,9 @@ static void test_large_apk_payload_io(const char *base)
 
     for (size_t chunk = 0; chunk < APK_PAYLOAD_CHUNKS; chunk++) {
         fill_payload_chunk(buf, chunk);
+        write_checksum = payload_checksum_update(write_checksum, buf, sizeof(buf));
         write_all(fd, buf, sizeof(buf));
+        written += sizeof(buf);
     }
     CHECK(fdatasync(fd) == 0, "fdatasync large apk payload failed");
     CHECK(fsync(fd) == 0, "fsync large apk payload failed");
@@ -406,10 +423,20 @@ static void test_large_apk_payload_io(const char *base)
     for (size_t chunk = 0; chunk < APK_PAYLOAD_CHUNKS; chunk++) {
         read_exact_at(fd, buf, sizeof(buf), (off_t)(chunk * APK_PAYLOAD_CHUNK_SIZE));
         verify_payload_chunk(buf, chunk);
+        read_checksum = payload_checksum_update(read_checksum, buf, sizeof(buf));
+        readback += sizeof(buf);
     }
     CHECK(close(fd) == 0, "close large apk payload readback failed");
+    CHECK(written == APK_PAYLOAD_BYTES, "large payload written byte count mismatch");
+    CHECK(readback == APK_PAYLOAD_BYTES, "large payload readback byte count mismatch");
+    CHECK(readback == written, "large payload readback length differs from written length");
+    CHECK(read_checksum == write_checksum, "large payload checksum mismatch");
 
     long elapsed_ms = monotonic_ms() - start_ms;
+    printf("APK_ADD_FS_EQUIV_LARGE_PAYLOAD_WRITE_BYTES=%zu CHECKSUM=%llu\n",
+           written, write_checksum);
+    printf("APK_ADD_FS_EQUIV_LARGE_PAYLOAD_READ_BYTES=%zu CHECKSUM=%llu\n",
+           readback, read_checksum);
     printf("APK_ADD_FS_EQUIV_LARGE_PAYLOAD_MS=%ld\n", elapsed_ms);
     CHECK(elapsed_ms < APK_PAYLOAD_BUDGET_MS, "large apk payload I/O exceeded budget");
 }

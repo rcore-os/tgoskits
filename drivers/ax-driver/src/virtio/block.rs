@@ -1,7 +1,6 @@
 extern crate alloc;
 
 use alloc::format;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(any(plat_dyn, plat_static))]
@@ -69,7 +68,6 @@ pub fn register_transport<T: Transport + 'static>(
         .map_err(|err| OnProbeError::other(format!("failed to initialize virtio-blk: {err:?}")))?;
     plat_dev.register_block(BlockDevice {
         dev: Some(SharedDriver::new(dev)),
-        irq_enabled: AtomicBool::new(false),
         queue_created: false,
     });
     log::info!("registered virtio block device");
@@ -92,7 +90,6 @@ impl<T: Transport + 'static> VirtIoBlkDevice<T> {
 
 struct BlockDevice<T: Transport + 'static> {
     dev: Option<SharedDriver<VirtIoBlkDevice<T>>>,
-    irq_enabled: AtomicBool,
     queue_created: bool,
 }
 
@@ -132,7 +129,11 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
     }
 
     fn queue_topology(&self) -> rdif_block::QueueTopology {
-        rdif_block::QueueTopology::single(1)
+        rdif_block::QueueTopology {
+            max_queues: 1,
+            default_queue_depth: 1,
+            poll_queue_count: 1,
+        }
     }
 
     fn create_queue(
@@ -154,21 +155,17 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
     }
 
     fn enable_irq(&self) {
-        if let Some(dev) = &self.dev {
-            dev.with_mut(|dev| dev.raw.enable_interrupts());
-        }
-        self.irq_enabled.store(true, Ordering::Release);
+        self.disable_irq();
     }
 
     fn disable_irq(&self) {
         if let Some(dev) = &self.dev {
             dev.with_mut(|dev| dev.raw.disable_interrupts());
         }
-        self.irq_enabled.store(false, Ordering::Release);
     }
 
     fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled.load(Ordering::Acquire)
+        false
     }
 }
 

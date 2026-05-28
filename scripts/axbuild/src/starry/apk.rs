@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, bail};
 
 pub(crate) const STARRY_APK_REGION_VAR: &str = "STARRY_APK_REGION";
-const CHINA_ALPINE_MIRROR: &str = "https://mirrors.aliyun.com/alpine";
+const CHINA_ALPINE_MIRROR: &str = "https://mirrors.cernet.edu.cn/alpine";
 const US_ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +150,7 @@ mod tests {
 
         assert_eq!(
             rewrite_apk_repositories_content(input, ApkRegion::China),
-            "https://mirrors.aliyun.com/alpine/v3.23/main\nhttps://mirrors.aliyun.com/alpine/v3.23/community\n"
+            "https://mirrors.cernet.edu.cn/alpine/v3.23/main\nhttps://mirrors.cernet.edu.cn/alpine/v3.23/community\n"
         );
     }
 

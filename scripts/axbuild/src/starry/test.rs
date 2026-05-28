@@ -1484,6 +1484,7 @@ mod tests {
             "read(",
             "pread(",
             "pwrite(",
+            "payload_checksum_update(",
             "rename(",
             "unlink(",
             "chmod(",
@@ -1501,6 +1502,9 @@ mod tests {
             "fdatasync(",
             "sync()",
             "syncfs(",
+            "APK_ADD_FS_EQUIV_LARGE_PAYLOAD_WRITE_BYTES",
+            "APK_ADD_FS_EQUIV_LARGE_PAYLOAD_READ_BYTES",
+            "read_checksum == write_checksum",
             "APK_ADD_FS_EQUIV_TEST_PASSED",
             "APK_ADD_FS_EQUIV_TEST_FAILED",
         ] {
@@ -1575,6 +1579,14 @@ mod tests {
                     .filter_map(toml::Value::as_str)
                     .any(|regex| regex.contains("APK_ADD_FS_EQUIV_TEST_PASSED")),
                 "{} must require the pass marker",
+                config_path.display()
+            );
+            assert!(
+                success_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .all(|regex| !regex.contains("APK_ADD_FS_EQUIV_LARGE_PAYLOAD")),
+                "{} must not use intermediate payload diagnostics as success markers",
                 config_path.display()
             );
             let fail_regex = config
@@ -1748,7 +1760,7 @@ mod tests {
     }
 
     #[test]
-    fn apk_curl_qemu_case_selects_repositories_by_starry_apk_region() {
+    fn apk_curl_qemu_case_tries_cernet_before_upstream() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-curl");
 
@@ -1762,41 +1774,40 @@ mod tests {
                 .unwrap();
 
             assert!(
-                script.contains("APK_CURL_REGION_$apk_region"),
-                "{} must print the selected APK region for diagnosis",
+                script.contains("apk --timeout \"$fetch_timeout\" add curl"),
+                "{} must install curl dynamically to exercise the apk add path",
                 config_path.display()
             );
             assert!(
-                script.contains("case \"$original_repos\" in")
-                    && script.contains("*dl-cdn.alpinelinux.org*")
-                    && script.contains("apk_region=us")
-                    && script.contains("apk_region=china"),
-                "{} must infer the region from the repositories prepared by STARRY_APK_REGION",
+                script.contains("mirrors.cernet.edu.cn")
+                    && script.contains("dl-cdn.alpinelinux.org"),
+                "{} must provide Cernet first and upstream as a fallback",
+                config_path.display()
+            );
+            let cernet_index = script.find("mirrors.cernet.edu.cn").unwrap();
+            let upstream_index = script.find("dl-cdn.alpinelinux.org").unwrap();
+            assert!(
+                cernet_index < upstream_index,
+                "{} must try Cernet before upstream",
                 config_path.display()
             );
             assert!(
-                script.contains("mirrors.tuna.tsinghua.edu.cn")
-                    && script.contains("mirrors.ustc.edu.cn")
-                    && script.contains("mirrors.aliyun.com"),
-                "{} must provide China mirror candidates",
-                config_path.display()
-            );
-            let aliyun_index = script.find("mirrors.aliyun.com").unwrap();
-            let tuna_index = script.find("mirrors.tuna.tsinghua.edu.cn").unwrap();
-            let ustc_index = script.find("mirrors.ustc.edu.cn").unwrap();
-            assert!(
-                aliyun_index < tuna_index && tuna_index < ustc_index,
-                "{} must try the observed-fast Aliyun mirror before TUNA and USTC",
+                !script.contains("mirrors.aliyun.com")
+                    && !script.contains("mirrors.tuna.tsinghua.edu.cn")
+                    && !script.contains("mirrors.ustc.edu.cn"),
+                "{} must avoid mirrors that repeatedly timeout in QEMU",
                 config_path.display()
             );
             assert!(
-                script.contains("dl-cdn.alpinelinux.org"),
-                "{} must provide the upstream US mirror candidate",
+                !script.contains("__original__"),
+                "{} must use explicit mirror attempts so the selected repository is diagnosable",
                 config_path.display()
             );
             assert!(
-                !script.contains("mirrors.cernet.edu.cn"),
-                "{} must not use the Cernet mirror that redirects and hangs in QEMU",
+                script.contains("APK_CURL_REPO_$label")
+                    && script.contains("APK_CURL_TEST_PASSED")
+                    && script.contains("APK_CURL_TEST_FAILED"),
+                "{} must keep clear pass/fail diagnostics",
                 config_path.display()
             );
         }

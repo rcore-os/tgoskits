@@ -3,7 +3,6 @@ use ax_driver::{PlatformDevice, probe::OnProbeError};
 use crate::config::devices;
 
 const PCI_ECAM_SIZE: usize = (devices::PCI_BUS_END + 1) << 20;
-const PCI_LEGACY_IRQS: &[usize] = &[0x30, 0x31, 0x32, 0x33];
 
 ax_driver::model_register!(
     name: "Static PCIe ECAM",
@@ -19,7 +18,6 @@ fn probe(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
         return Err(OnProbeError::NotMatch);
     }
 
-    ax_driver::pci::register_static_legacy_irq_routes(PCI_LEGACY_IRQS, PCI_ECAM_SIZE);
     ax_driver::pci::register_ecam_controller(
         plat_dev,
         devices::PCI_ECAM_BASE,
