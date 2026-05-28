@@ -177,15 +177,15 @@ pub struct QueueInfo {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TransferPlanConfig {
-    pub max_transfer_size: usize,
+pub struct TransferRuntimeCaps {
+    pub max_transfer_bytes: usize,
     pub max_segments: usize,
 }
 
-impl TransferPlanConfig {
-    pub const fn new(max_transfer_size: usize, max_segments: usize) -> Self {
+impl TransferRuntimeCaps {
+    pub const fn new(max_transfer_bytes: usize, max_segments: usize) -> Self {
         Self {
-            max_transfer_size,
+            max_transfer_bytes,
             max_segments,
         }
     }
@@ -204,7 +204,6 @@ pub struct TransferChunk {
     pub block_count: u32,
     pub byte_offset: usize,
     pub byte_len: usize,
-    pub segment_count: usize,
     max_segment_size: usize,
 }
 
@@ -243,6 +242,43 @@ impl Iterator for TransferSegments {
     }
 }
 
+impl ExactSizeIterator for TransferSegments {
+    fn len(&self) -> usize {
+        self.remaining_len.div_ceil(self.max_segment_size)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TransferPlanner {
+    device: DeviceInfo,
+    limits: QueueLimits,
+    max_chunk_size: usize,
+}
+
+impl TransferPlanner {
+    pub fn new(
+        device: DeviceInfo,
+        limits: QueueLimits,
+        caps: TransferRuntimeCaps,
+    ) -> Result<Self, BlkError> {
+        let max_chunk_size = planned_transfer_size(device, limits, caps)?;
+
+        Ok(Self {
+            device,
+            limits,
+            max_chunk_size,
+        })
+    }
+
+    pub const fn chunk_size(&self) -> usize {
+        self.max_chunk_size
+    }
+
+    pub fn plan(&self, lba: u64, byte_len: usize) -> Result<TransferPlan, BlkError> {
+        TransferPlan::new(self.device, self.limits, self.max_chunk_size, lba, byte_len)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TransferPlan {
     next_lba: u64,
@@ -254,28 +290,27 @@ pub struct TransferPlan {
 }
 
 impl TransferPlan {
-    pub fn new(
-        info: QueueInfo,
+    fn new(
+        device: DeviceInfo,
+        limits: QueueLimits,
+        max_chunk_size: usize,
         lba: u64,
         byte_len: usize,
-        config: TransferPlanConfig,
     ) -> Result<Self, BlkError> {
-        let block_size = info.device.logical_block_size;
+        let block_size = device.logical_block_size;
         if block_size == 0 || byte_len == 0 || !byte_len.is_multiple_of(block_size) {
             return Err(BlkError::InvalidRequest);
         }
 
         let block_count = byte_len / block_size;
         let block_count_u64 = u64::try_from(block_count).map_err(|_| BlkError::InvalidRequest)?;
-        if lba >= info.device.num_blocks
+        if lba >= device.num_blocks
             || lba
                 .checked_add(block_count_u64)
-                .is_none_or(|end| end > info.device.num_blocks)
+                .is_none_or(|end| end > device.num_blocks)
         {
             return Err(BlkError::InvalidBlockIndex(lba));
         }
-
-        let max_chunk_size = planned_transfer_size(info, config)?;
 
         Ok(Self {
             next_lba: lba,
@@ -283,25 +318,25 @@ impl TransferPlan {
             remaining_bytes: byte_len,
             block_size,
             max_chunk_size,
-            max_segment_size: info.limits.max_segment_size,
+            max_segment_size: limits.max_segment_size,
         })
     }
 }
 
-pub fn planned_transfer_size(
-    info: QueueInfo,
-    config: TransferPlanConfig,
+fn planned_transfer_size(
+    device: DeviceInfo,
+    limits: QueueLimits,
+    caps: TransferRuntimeCaps,
 ) -> Result<usize, BlkError> {
-    let block_size = info.device.logical_block_size;
-    let limits = info.limits;
-    let max_segments = limits.max_segments.min(config.max_segments);
+    let block_size = device.logical_block_size;
+    let max_segments = limits.max_segments.min(caps.max_segments);
     if block_size == 0
         || limits.max_blocks_per_request == 0
         || max_segments == 0
         || limits.max_segment_size == 0
         || limits.max_transfer_size == 0
         || limits.preferred_transfer_size == 0
-        || config.max_transfer_size == 0
+        || caps.max_transfer_bytes == 0
     {
         return Err(BlkError::InvalidRequest);
     }
@@ -313,7 +348,7 @@ pub fn planned_transfer_size(
         max_by_segments,
         limits.max_transfer_size,
         limits.preferred_transfer_size,
-        config.max_transfer_size,
+        caps.max_transfer_bytes,
     ]
     .into_iter()
     .min()
@@ -341,7 +376,6 @@ impl Iterator for TransferPlan {
             block_count: block_count_u32,
             byte_offset: self.byte_offset,
             byte_len,
-            segment_count: byte_len.div_ceil(self.max_segment_size),
             max_segment_size: self.max_segment_size,
         };
 
@@ -859,9 +893,9 @@ mod tests {
         }
     }
 
-    fn test_plan_config() -> TransferPlanConfig {
-        TransferPlanConfig {
-            max_transfer_size: 16 * 1024,
+    fn test_runtime_caps() -> TransferRuntimeCaps {
+        TransferRuntimeCaps {
+            max_transfer_bytes: 16 * 1024,
             max_segments: 16,
         }
     }
@@ -870,12 +904,13 @@ mod tests {
         chunks
             .iter()
             .map(|chunk| {
+                let segments = chunk.segments();
                 (
                     chunk.lba,
                     chunk.block_count,
                     chunk.byte_offset,
                     chunk.byte_len,
-                    chunk.segment_count,
+                    segments.len(),
                 )
             })
             .collect()
@@ -884,9 +919,11 @@ mod tests {
     #[test]
     fn simple_limits_prefer_single_block_transfers() {
         let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
-        let plan = TransferPlan::new(info, 0, 2048, test_plan_config()).unwrap();
+        let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+        let plan = planner.plan(0, 2048).unwrap();
         let chunks: alloc::vec::Vec<_> = plan.collect();
 
+        assert_eq!(planner.chunk_size(), 512);
         assert_eq!(
             chunk_summary(&chunks),
             [
@@ -913,9 +950,11 @@ mod tests {
             supports_discard: false,
             supports_write_zeroes: false,
         });
-        let plan = TransferPlan::new(info, 4, 5120, test_plan_config()).unwrap();
+        let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+        let plan = planner.plan(4, 5120).unwrap();
         let chunks: alloc::vec::Vec<_> = plan.collect();
 
+        assert_eq!(planner.chunk_size(), 2048);
         assert_eq!(
             chunk_summary(&chunks),
             [
@@ -941,11 +980,13 @@ mod tests {
             supports_discard: false,
             supports_write_zeroes: false,
         });
-        let mut plan = TransferPlan::new(info, 0, 4096, test_plan_config()).unwrap();
+        let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+        let mut plan = planner.plan(0, 4096).unwrap();
         let chunk = plan.next().unwrap();
-        let segments: alloc::vec::Vec<_> = chunk.segments().collect();
+        let segment_iter = chunk.segments();
+        assert_eq!(segment_iter.len(), 4);
+        let segments: alloc::vec::Vec<_> = segment_iter.collect();
 
-        assert_eq!(chunk.segment_count, 4);
         assert_eq!(
             segments,
             [
@@ -985,9 +1026,11 @@ mod tests {
             supports_discard: false,
             supports_write_zeroes: false,
         });
-        let plan = TransferPlan::new(info, 0, 5120, test_plan_config()).unwrap();
+        let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+        let plan = planner.plan(0, 5120).unwrap();
         let chunks: alloc::vec::Vec<_> = plan.collect();
 
+        assert_eq!(planner.chunk_size(), 2048);
         assert_eq!(
             chunks
                 .iter()
@@ -1012,24 +1055,90 @@ mod tests {
             supports_discard: false,
             supports_write_zeroes: false,
         });
-        let plan = TransferPlan::new(
-            info,
-            0,
-            4096,
-            TransferPlanConfig {
-                max_transfer_size: 4096,
+        let planner = TransferPlanner::new(
+            info.device,
+            info.limits,
+            TransferRuntimeCaps {
+                max_transfer_bytes: 4096,
                 max_segments: 1,
             },
         )
         .unwrap();
+        let plan = planner.plan(0, 4096).unwrap();
         let chunks: alloc::vec::Vec<_> = plan.collect();
 
+        assert_eq!(planner.chunk_size(), 2048);
         assert_eq!(
             chunks
                 .iter()
                 .map(|chunk| chunk.byte_len)
                 .collect::<alloc::vec::Vec<_>>(),
             [2048, 2048]
+        );
+    }
+
+    #[test]
+    fn transfer_planner_rejects_too_small_runtime_cap() {
+        let info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 16,
+            max_segments: 8,
+            max_segment_size: 2048,
+            max_transfer_size: 8192,
+            preferred_transfer_size: 8192,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+
+        assert_eq!(
+            TransferPlanner::new(
+                info.device,
+                info.limits,
+                TransferRuntimeCaps {
+                    max_transfer_bytes: 511,
+                    max_segments: 1,
+                },
+            )
+            .unwrap_err(),
+            BlkError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn transfer_planner_does_not_depend_on_queue_identity() {
+        let mut info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 16,
+            max_segments: 8,
+            max_segment_size: 2048,
+            max_transfer_size: 8192,
+            preferred_transfer_size: 4096,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+        let first = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+        info.id = 7;
+        info.depth = 64;
+        info.mode = QueueMode::Interrupt;
+        let second = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+
+        assert_eq!(first.chunk_size(), second.chunk_size());
+    }
+
+    #[test]
+    fn transfer_planner_checks_range_when_creating_plan() {
+        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
+
+        assert_eq!(
+            planner.plan(63, 1024).unwrap_err(),
+            BlkError::InvalidBlockIndex(63)
         );
     }
 

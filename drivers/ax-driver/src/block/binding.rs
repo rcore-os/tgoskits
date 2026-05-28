@@ -12,7 +12,7 @@ use log::{error, warn};
 use rdif_block::{
     BlkError, Buffer, IQueue, Interface, QueueConfig, QueueInfo, QueueMode, QueueTopology, Request,
     RequestFlags, RequestId, RequestOp, RequestStatus, TransferChunk, TransferPlan,
-    TransferPlanConfig, planned_transfer_size,
+    TransferPlanner, TransferRuntimeCaps,
 };
 use rdrive::Device;
 
@@ -33,6 +33,7 @@ struct BlockQueues {
 
 struct BlockBufferPool {
     dma: DeviceDma,
+    planner: TransferPlanner,
     size: usize,
     align: usize,
 }
@@ -147,7 +148,7 @@ impl Block {
         let info = queues.queue.info();
         validate_io(info, block_id, buf.len())?;
 
-        let plan = transfer_plan(info, block_id, buf.len(), queues.pool.size)?;
+        let plan = transfer_plan(queues.pool.planner, block_id, buf.len())?;
         for chunk in plan {
             let block_buf =
                 &mut buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
@@ -176,7 +177,7 @@ impl Block {
         let info = queues.queue.info();
         validate_io(info, block_id, buf.len())?;
 
-        let plan = transfer_plan(info, block_id, buf.len(), queues.pool.size)?;
+        let plan = transfer_plan(queues.pool.planner, block_id, buf.len())?;
         for chunk in plan {
             let block_buf =
                 &buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
@@ -207,11 +208,13 @@ impl BlockQueues {
         if block_size == 0 {
             return Err(AxError::BadState);
         }
-        let layout = block_buffer_layout(info)?;
+        let planner = block_transfer_planner(info)?;
+        let layout = block_buffer_layout(info, planner.chunk_size())?;
         Ok(Self {
             queue,
             pool: BlockBufferPool {
                 dma: DeviceDma::new(info.limits.dma_mask, axklib::dma::op()),
+                planner,
                 size: layout.size(),
                 align: layout.align(),
             },
@@ -366,58 +369,28 @@ fn validate_io(info: QueueInfo, block_id: u64, len: usize) -> AxResult {
     Ok(())
 }
 
-fn block_buffer_layout(info: QueueInfo) -> AxResult<Layout> {
+fn block_buffer_layout(info: QueueInfo, size: usize) -> AxResult<Layout> {
     let block_size = info.device.logical_block_size;
-    let size = block_buffer_size(info)?;
     if size < block_size {
         return Err(AxError::BadState);
     }
     Layout::from_size_align(size, info.limits.dma_alignment.max(1)).map_err(|_| AxError::BadState)
 }
 
-fn block_buffer_size(info: QueueInfo) -> AxResult<usize> {
-    transfer_plan_config(info)
-        .and_then(|config| planned_transfer_size(info, config))
-        .map_err(map_blk_err_to_ax_err)
-        .and_then(|size| {
-            if size < info.device.logical_block_size {
-                Err(AxError::BadState)
-            } else {
-                Ok(size)
-            }
-        })
-}
-
-fn transfer_plan(
-    info: QueueInfo,
-    block_id: u64,
-    len: usize,
-    buffer_size: usize,
-) -> AxResult<TransferPlan> {
-    TransferPlan::new(
-        info,
-        block_id,
-        len,
-        TransferPlanConfig::new(buffer_size, info.limits.max_segments),
+fn block_transfer_planner(info: QueueInfo) -> AxResult<TransferPlanner> {
+    TransferPlanner::new(
+        info.device,
+        info.limits,
+        TransferRuntimeCaps {
+            max_transfer_bytes: MAX_BLOCK_BUFFER_SIZE,
+            max_segments: usize::MAX,
+        },
     )
     .map_err(map_blk_err_to_ax_err)
 }
 
-fn transfer_plan_config(info: QueueInfo) -> Result<TransferPlanConfig, BlkError> {
-    Ok(TransferPlanConfig::new(
-        info.limits
-            .preferred_transfer_size
-            .min(runtime_transfer_cap(info)?),
-        info.limits.max_segments,
-    ))
-}
-
-fn runtime_transfer_cap(info: QueueInfo) -> Result<usize, BlkError> {
-    if info.limits.max_segment_size == usize::MAX {
-        Ok(info.device.logical_block_size)
-    } else {
-        Ok(MAX_BLOCK_BUFFER_SIZE)
-    }
+fn transfer_plan(planner: TransferPlanner, block_id: u64, len: usize) -> AxResult<TransferPlan> {
+    planner.plan(block_id, len).map_err(map_blk_err_to_ax_err)
 }
 
 fn segments_from_dma(
@@ -426,8 +399,9 @@ fn segments_from_dma(
 ) -> AxResult<Vec<Buffer<'_>>> {
     let base_virt = buffer.as_ptr().as_ptr();
     let base_bus = buffer.dma_addr().as_u64();
-    let mut segments = Vec::with_capacity(chunk.segment_count);
-    for segment in chunk.segments() {
+    let planned_segments = chunk.segments();
+    let mut segments = Vec::with_capacity(planned_segments.len());
+    for segment in planned_segments {
         let virt = unsafe { base_virt.add(segment.byte_offset) };
         let bus = base_bus
             .checked_add(segment.byte_offset as u64)
@@ -728,7 +702,8 @@ mod tests {
 
     fn block_with_queue(queue: Box<dyn IQueue>, dma: &'static TrackingDma) -> Block {
         let info = queue.info();
-        let layout = block_buffer_layout(info).unwrap();
+        let planner = block_transfer_planner(info).unwrap();
+        let layout = block_buffer_layout(info, planner.chunk_size()).unwrap();
         Block {
             name: String::from("test-block"),
             irq_num: None,
@@ -740,6 +715,7 @@ mod tests {
                 queue,
                 pool: BlockBufferPool {
                     dma: DeviceDma::new(u64::MAX, dma),
+                    planner,
                     size: layout.size(),
                     align: layout.align(),
                 },
@@ -867,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn block_buffer_size_caps_large_finite_segments() {
+    fn block_transfer_planner_caps_large_finite_segments() {
         let info = QueueInfo {
             id: 0,
             depth: 1,
@@ -891,11 +867,14 @@ mod tests {
             },
         };
 
-        assert_eq!(block_buffer_size(info).unwrap(), 16 * 1024);
+        assert_eq!(
+            block_transfer_planner(info).unwrap().chunk_size(),
+            16 * 1024
+        );
     }
 
     #[test]
-    fn block_buffer_size_keeps_unbounded_segments_at_one_block() {
+    fn block_transfer_planner_uses_simple_limit_preference_for_unbounded_segments() {
         let info = QueueInfo {
             id: 0,
             depth: 1,
@@ -907,7 +886,38 @@ mod tests {
             limits: QueueLimits::simple(512, u64::MAX),
         };
 
-        assert_eq!(block_buffer_size(info).unwrap(), 512);
+        assert_eq!(block_transfer_planner(info).unwrap().chunk_size(), 512);
+    }
+
+    #[test]
+    fn block_transfer_planner_applies_runtime_cap_without_unbounded_segment_special_case() {
+        let info = QueueInfo {
+            id: 0,
+            depth: 1,
+            mode: QueueMode::Polled,
+            device: DeviceInfo {
+                name: Some("unbounded-large-preference-block"),
+                ..DeviceInfo::new(128, 512)
+            },
+            limits: QueueLimits {
+                dma_mask: u64::MAX,
+                dma_alignment: 4096,
+                max_blocks_per_request: u32::MAX,
+                max_segments: 1,
+                max_segment_size: usize::MAX,
+                max_transfer_size: usize::MAX,
+                preferred_transfer_size: 64 * 1024,
+                supported_flags: RequestFlags::NONE,
+                supports_flush: false,
+                supports_discard: false,
+                supports_write_zeroes: false,
+            },
+        };
+
+        assert_eq!(
+            block_transfer_planner(info).unwrap().chunk_size(),
+            MAX_BLOCK_BUFFER_SIZE
+        );
     }
 
     #[test]
