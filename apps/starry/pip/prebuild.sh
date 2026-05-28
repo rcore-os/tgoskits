@@ -2,10 +2,10 @@
 set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-arch="${STARRY_ARCH:-x86_64}"
 base_rootfs="${STARRY_BASE_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
+apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/pip-apk-cache"
 
 require_env() {
     local name="$1"
@@ -19,17 +19,10 @@ require_env() {
 ensure_host_packages() {
     local missing=()
 
+    command -v apk >/dev/null 2>&1 || missing+=(apk-tools)
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
-
-    # qemu-user is needed to run apk inside the staging root on non-Alpine hosts
-    case "$arch" in
-        aarch64)     command -v qemu-aarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-        riscv64)     command -v qemu-riscv64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-        x86_64)      command -v qemu-x86_64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-        loongarch64) command -v qemu-loongarch64-static >/dev/null 2>&1 || missing+=(qemu-user-static) ;;
-    esac
 
     if [[ ${#missing[@]} -eq 0 ]]; then
         return
@@ -50,26 +43,14 @@ extract_base_rootfs() {
 }
 
 install_pip_packages() {
-    # Set up apk repositories and DNS so apk can download packages
-    mkdir -p "$staging_root/etc/apk"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" > "$staging_root/etc/apk/repositories"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> "$staging_root/etc/apk/repositories"
-    cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
-
-    local qemu_user
-    case "$arch" in
-        aarch64)     qemu_user="qemu-aarch64-static" ;;
-        riscv64)     qemu_user="qemu-riscv64-static" ;;
-        x86_64)      qemu_user="qemu-x86_64-static" ;;
-        loongarch64) qemu_user="qemu-loongarch64-static" ;;
-        *)           echo "error: unsupported arch: $arch" >&2; exit 1 ;;
-    esac
-
-    echo "[pip prebuild] installing python3 and py3-pip via qemu-user apk..."
-    export QEMU_LD_PREFIX="$staging_root"
-    export LD_LIBRARY_PATH="$staging_root/usr/lib:$staging_root/lib"
-    "$qemu_user" -L "$staging_root" "$staging_root/sbin/apk" \
-        add --no-cache --root "$staging_root" python3 py3-pip
+    mkdir -p "$apk_cache"
+    echo "[pip prebuild] installing python3 and py3-pip via host apk..."
+    apk --root "$staging_root" \
+        --cache-dir "$apk_cache" \
+        --update-cache \
+        --no-progress \
+        --no-scripts \
+        add python3 py3-pip
 }
 
 copy_file_to_overlay() {
