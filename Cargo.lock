@@ -1969,6 +1969,7 @@ version = "0.5.11"
 dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
+ "ax-errno",
  "ax-memory-addr",
  "axaddrspace",
  "axvisor_api_proc",

@@ -16,6 +16,8 @@ license = "Apache-2.0"
 # Procedural macro definitions
 axvisor_api_proc = { workspace = true }
 # === Third-party Libraries ===
+# Error type shared across host/runtime implementations
+ax-errno = { workspace = true }
 # Address space abstraction
 axaddrspace = { workspace = true }
 # Interface definition tools

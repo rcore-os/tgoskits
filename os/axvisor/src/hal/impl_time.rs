@@ -28,4 +28,8 @@ impl TimeIf for TimeImpl {
     fn cancel_timer(token: CancelToken) {
         vmm::timer::cancel_timer(token)
     }
+
+    fn set_oneshot_timer(deadline: TimeValue) {
+        ax_hal::time::set_oneshot_timer(deadline.as_nanos() as u64)
+    }
 }

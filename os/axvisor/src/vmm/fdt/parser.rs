@@ -16,7 +16,6 @@
 
 use alloc::{string::ToString, vec::Vec};
 use ax_errno::{AxResult, ax_err_type};
-use ax_hal::{dtb, mem};
 use axaddrspace::MappingFlags;
 use axvm::config::{
     AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType,
@@ -31,13 +30,13 @@ const PAGE_SIZE_4K: usize = 0x1000;
 
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
-    let bootarg: usize = dtb::get_bootarg();
-    if bootarg == 0 {
+    let bootarg = axvisor_api::platform::get_host_fdt_ptr();
+    let Some(bootarg) = bootarg else {
         warn!("Boot argument does not contain a host FDT pointer");
         return None;
-    }
+    };
 
-    let fdt_vaddr = mem::phys_to_virt(bootarg.into());
+    let fdt_vaddr = axvisor_api::memory::phys_to_virt(bootarg);
     let header = unsafe {
         core::slice::from_raw_parts(fdt_vaddr.as_ptr(), core::mem::size_of::<FdtHeader>())
     };

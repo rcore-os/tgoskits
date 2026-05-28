@@ -16,7 +16,6 @@ use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
 use alloc::boxed::Box;
-use ax_hal;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
@@ -112,7 +111,7 @@ pub fn check_events() {
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
-        let now = ax_hal::time::monotonic_time();
+        let now = axvisor_api::time::current_time();
         let event = timer_list.lock().expire_one(now);
         if let Some((_deadline, event)) = event {
             trace!("pick one {_deadline:#?} to handle!!!");
@@ -127,7 +126,7 @@ pub fn check_events() {
 
 fn rearm_host_timer(next_deadline: Option<TimeValue>) {
     if let Some(deadline) = next_deadline {
-        ax_hal::time::set_oneshot_timer(deadline.as_nanos() as u64);
+        axvisor_api::time::set_oneshot_timer(deadline);
     }
 }
 

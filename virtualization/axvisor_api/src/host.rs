@@ -43,6 +43,10 @@
 //! }
 //! ```
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+
 /// The API trait for host system functionalities.
 ///
 /// This trait defines the interface for querying host system information.
@@ -66,4 +70,13 @@ pub trait HostIf {
     /// println!("Host has {} CPUs", cpu_count);
     /// ```
     fn get_host_cpu_num() -> usize;
+
+    /// Spawn a host task bound to `cpu_id` and execute the provided closure on it.
+    ///
+    /// Host runtimes without affinity support may treat this as a best-effort
+    /// placement request.
+    fn spawn_cpu_init_task(cpu_id: usize, task: Box<dyn FnOnce() + Send + 'static>);
+
+    /// Yield the current host task/thread.
+    fn yield_now();
 }

@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::arceos;
-
 use ax_hal::{self, percpu::this_cpu_id};
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
+use axvisor_api::host;
 use axvm::AxVMPerCpu;
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
@@ -24,6 +23,7 @@ use axvm::AxVMPerCpu;
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv64/mod.rs")]
 pub mod arch;
+pub mod task;
 
 use crate::{hal::arch::hardware_check, vmm};
 
@@ -78,52 +78,45 @@ pub(crate) fn enable_virtualization() {
     use core::sync::atomic::AtomicUsize;
     use core::sync::atomic::Ordering;
 
-    use std::thread;
-
-    use arceos::api::task::{AxCpuMask, ax_set_current_affinity};
-
     static CORES: AtomicUsize = AtomicUsize::new(0);
 
     info!("Enabling hardware virtualization support on all cores...");
 
     hardware_check();
 
-    let cpu_count = ax_hal::cpu_num();
+    let cpu_count = host::get_host_cpu_num();
 
     for cpu_id in 0..cpu_count {
-        thread::spawn(move || {
-            info!("Core {cpu_id} is initializing hardware virtualization support...");
-            // Initialize cpu affinity here.
-            assert!(
-                ax_set_current_affinity(AxCpuMask::one_shot(cpu_id)).is_ok(),
-                "Initialize CPU affinity failed!"
-            );
+        host::spawn_cpu_init_task(
+            cpu_id,
+            alloc::boxed::Box::new(move || {
+                info!("Core {cpu_id} is initializing hardware virtualization support...");
+                info!("Enabling hardware virtualization support on core {cpu_id}");
 
-            info!("Enabling hardware virtualization support on core {cpu_id}");
+                vmm::init_timer_percpu();
 
-            vmm::init_timer_percpu();
+                // SAFETY: We are initializing the per-CPU state for the first time
+                #[allow(static_mut_refs)]
+                let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
+                percpu
+                    .init(this_cpu_id())
+                    .expect("Failed to initialize per-CPU state");
+                percpu
+                    .hardware_enable()
+                    .expect("Failed to enable virtualization");
 
-            // SAFETY: We are initializing the per-CPU state for the first time
-            #[allow(static_mut_refs)]
-            let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-            percpu
-                .init(this_cpu_id())
-                .expect("Failed to initialize per-CPU state");
-            percpu
-                .hardware_enable()
-                .expect("Failed to enable virtualization");
+                info!("Hardware virtualization support enabled on core {cpu_id}");
 
-            info!("Hardware virtualization support enabled on core {cpu_id}");
-
-            let _ = CORES.fetch_add(1, Ordering::Release);
-        });
+                let _ = CORES.fetch_add(1, Ordering::Release);
+            }),
+        );
     }
 
     info!("Waiting for all cores to enable hardware virtualization...");
 
     // Wait for all cores to enable virtualization.
     while CORES.load(Ordering::Acquire) != cpu_count {
-        thread::yield_now();
+        host::yield_now();
     }
 
     info!("All cores have enabled hardware virtualization support.");
@@ -131,6 +124,8 @@ pub(crate) fn enable_virtualization() {
 
 mod impl_console;
 mod impl_host;
+mod impl_irq;
 mod impl_memory;
+mod impl_platform;
 mod impl_time;
 mod impl_vmm;

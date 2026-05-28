@@ -1,19 +1,17 @@
-use std::os::arceos::modules::ax_task;
-
 use axvisor_api::vmm::{InterruptVector, VCpuId, VCpuSet, VMId, VmmIf};
 
-use crate::{task::AsVCpuTask, vmm};
+use crate::{hal::task, vmm};
 
 struct VmmImpl;
 
 #[axvisor_api::api_impl]
 impl VmmIf for VmmImpl {
     fn current_vm_id() -> usize {
-        ax_task::current().as_vcpu_task().vm().id()
+        task::current_vm_id()
     }
 
     fn current_vcpu_id() -> usize {
-        ax_task::current().as_vcpu_task().vcpu.id()
+        task::current_vcpu_id()
     }
 
     fn vcpu_num(vm_id: VMId) -> Option<usize> {

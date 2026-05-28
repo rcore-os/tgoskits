@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_hal::{self, mem::virt_to_phys};
-use axvisor_api::arch::ArchIf;
+use ax_hal::mem::virt_to_phys;
+use axvisor_api::{arch::ArchIf, irq};
 
 struct ArchImpl;
 
@@ -104,6 +104,6 @@ impl ArchIf for ArchImpl {
     }
 
     fn handle_irq() {
-        ax_hal::trap::irq_handler(0);
+        irq::handle_irq(0);
     }
 }

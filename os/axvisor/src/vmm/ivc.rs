@@ -19,18 +19,39 @@ use alloc::vec::Vec;
 use std::sync::Mutex;
 
 use ax_errno::AxResult;
-use ax_hal::paging::PagingHandlerImpl;
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 
+pub(crate) struct IvcPagingHandler;
+
+impl PagingHandler for IvcPagingHandler {
+    fn alloc_frames(_num: usize, _align: usize) -> Option<HostPhysAddr> {
+        None
+    }
+
+    fn dealloc_frames(_paddr: HostPhysAddr, _num: usize) {}
+
+    fn alloc_frame() -> Option<HostPhysAddr> {
+        axvisor_api::memory::alloc_frame()
+    }
+
+    fn dealloc_frame(paddr: HostPhysAddr) {
+        axvisor_api::memory::dealloc_frame(paddr)
+    }
+
+    fn phys_to_virt(paddr: HostPhysAddr) -> ax_memory_addr::VirtAddr {
+        axvisor_api::memory::phys_to_virt(paddr)
+    }
+}
+
 /// A global btree map to store IVC channels,
 /// indexed by (publisher_vm_id, channel_key).
-static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), IVCChannel<PagingHandlerImpl>>> =
+static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), IVCChannel<IvcPagingHandler>>> =
     Mutex::new(BTreeMap::new());
 
 pub fn insert_channel(
     publisher_vm_id: usize,
-    channel: IVCChannel<PagingHandlerImpl>,
+    channel: IVCChannel<IvcPagingHandler>,
 ) -> AxResult<()> {
     let mut channels = IVC_CHANNELS.lock();
     if channels

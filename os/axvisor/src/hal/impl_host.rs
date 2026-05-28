@@ -1,3 +1,6 @@
+use alloc::boxed::Box;
+use std::os::arceos;
+
 use axvisor_api::host::HostIf;
 
 struct HostImpl;
@@ -6,5 +9,23 @@ struct HostImpl;
 impl HostIf for HostImpl {
     fn get_host_cpu_num() -> usize {
         ax_hal::cpu_num()
+    }
+
+    fn spawn_cpu_init_task(cpu_id: usize, task: Box<dyn FnOnce() + Send + 'static>) {
+        use std::thread;
+
+        use arceos::api::task::{AxCpuMask, ax_set_current_affinity};
+
+        thread::spawn(move || {
+            assert!(
+                ax_set_current_affinity(AxCpuMask::one_shot(cpu_id)).is_ok(),
+                "Initialize CPU affinity failed!"
+            );
+            task();
+        });
+    }
+
+    fn yield_now() {
+        std::thread::yield_now();
     }
 }

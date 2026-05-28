@@ -6,6 +6,22 @@
 
 **⚠️维护者会尽力保持API的兼容性，但 breaking changes 仍可能发生⚠️**
 
+## 当前接口覆盖
+
+目前 `axvisor_api` 已经覆盖并统一了 AxVisor 中最常见的一组宿主运行时能力：
+
+- `host`：CPU 枚举与宿主任务/线程辅助能力
+- `memory`：页帧分配与地址转换
+- `time`：单调时间、定时器注册与 one-shot timer 编程
+- `irq`：宿主中断分发与 hook/handler 注册
+- `platform`：启动固件发现与宿主资源交接
+- `vmm`：VM/vCPU 上下文与中断注入辅助能力
+- `arch`：体系结构相关的虚拟化钩子
+- `console`：宿主控制台 I/O
+
+这意味着 AxVisor 中一批原本散落在 `os/axvisor` 功能代码中的 ArceOS
+直连依赖，已经可以逐步收口到统一接口或 port 层实现中。
+
 ## 为什么需要新一代 API？
 
 Axvisor 的各个部件需要访问 ArceOS 系统提供的功能。对于 Axvisor 本体，ArceOS 是它的依赖项，它可以直接访问 ArceOS 的 API；然而出于解耦合的考虑，其他位于更下层的组件不应该将 ArceOS 作为自己的依赖项，也就不能直接访问 ArceOS 的 API；因此，需要一种“依赖注入”的方式来将 ArceOS 的 API 提供给 Axvisor 的各个部件。

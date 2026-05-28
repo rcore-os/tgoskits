@@ -13,9 +13,24 @@
 
 # 介绍
 
-`axvisor_api` 是一个工作区，用于将相关的 TGOSKits 组件放在统一的目录结构下，便于协同开发、版本管理与组合使用。
+`axvisor_api` 是 AxVisor 的 Host Runtime 抽象层。它把 Hypervisor Core
+依赖的宿主能力统一收口为一组接口，使下层虚拟化组件不必直接依赖 ArceOS
+运行时内部实现。
 
 > axvisor_api 派生自 https://github.com/arceos-org/axvisor_api
+
+## 当前接口模块
+
+当前 API 主要按能力分组：
+
+- `host`：CPU 枚举与宿主任务/线程辅助能力
+- `memory`：页帧分配与地址转换
+- `time`：单调时间、定时器注册与 one-shot timer 编程
+- `irq`：宿主中断分发与 hook/handler 注册
+- `platform`：启动固件发现与宿主资源交接
+- `vmm`：VM/vCPU 上下文与中断注入辅助能力
+- `arch`：体系结构相关的虚拟化钩子
+- `console`：宿主控制台 I/O
 
 ## 工作区成员
 

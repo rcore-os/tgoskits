@@ -1,9 +1,4 @@
-use core::{
-    ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
-
-use std::os::arceos::modules::ax_hal::{irq, time};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use axvcpu::InterruptTriggerMode;
 use axvm::config::VMInterruptMode;
@@ -21,11 +16,9 @@ static IOAPIC_IRQ_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
 static IOAPIC_IRQ_FORWARD_VM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static IOAPIC_IRQ_FORWARD_VCPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static IOAPIC_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
-static IOAPIC_IRQ_HANDLES: [AtomicUsize; IOAPIC_GSI_COUNT] =
-    [const { AtomicUsize::new(0) }; IOAPIC_GSI_COUNT];
 
 pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
-    if !ioapic_irq_hook_registered(vector) {
+    if !IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
         forward_passthrough_irq(vm, vcpu, vector);
     }
 }
@@ -35,7 +28,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    let now_ns = time::monotonic_time_nanos() as u64;
+    let now_ns = axvisor_api::time::current_time_nanos();
     if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
         return;
     }
@@ -141,26 +134,21 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
+    if axvisor_api::irq::register_irq_hook(ioapic_irq_forwarding_hook) {
+        IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
+    } else {
+        warn!(
+            "x86 IOAPIC IRQ forwarding hook is already registered; VM-exit forwarding fallback remains active"
+        );
+    }
+
     let mut registered = 0;
     for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END {
-        let gsi = vector - IOAPIC_VECTOR_BASE;
-        if IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0 {
-            continue;
+        if axvisor_api::irq::register_irq_handler(vector, no_op_irq_handler) {
+            registered += 1;
+        } else {
+            trace!("x86 IOAPIC host vector {vector:#x} already has a host handler");
         }
-        match irq::request_shared_irq(vector, ioapic_irq_forwarding_handler, NonNull::dangling()) {
-            Ok(handle) => {
-                IOAPIC_IRQ_HANDLES[gsi].store(handle.id() as usize, Ordering::Release);
-                registered += 1;
-            }
-            Err(err) => {
-                warn!(
-                    "failed to request x86 IOAPIC forwarding IRQ action for vector {vector:#x}: {err:?}"
-                );
-            }
-        }
-    }
-    if registered != 0 {
-        IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     }
     info!(
         "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
@@ -168,15 +156,6 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         IOAPIC_VECTOR_END - 1,
         registered
     );
-}
-
-fn ioapic_irq_hook_registered(vector: usize) -> bool {
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
-        return false;
-    }
-
-    let gsi = vector - IOAPIC_VECTOR_BASE;
-    IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0
 }
 
 pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
@@ -223,22 +202,19 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
     .unwrap();
 }
 
-unsafe fn ioapic_irq_forwarding_handler(
-    ctx: irq::IrqContext,
-    _data: NonNull<()>,
-) -> irq::IrqReturn {
-    let vector = ctx.irq.0;
+fn ioapic_irq_forwarding_hook(vector: usize) {
     if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
-        return irq::IrqReturn::Unhandled;
+        return;
     }
 
     if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
         || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) == usize::MAX
     {
-        return irq::IrqReturn::Unhandled;
+        return;
     }
 
     let bit = 1usize << (vector - IOAPIC_VECTOR_BASE);
     IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
-    irq::IrqReturn::Handled
 }
+
+fn no_op_irq_handler(_vector: usize) {}

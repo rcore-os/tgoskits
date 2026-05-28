@@ -38,7 +38,6 @@ mod shell;
 mod task;
 mod vmm;
 
-use std::os::arceos::api::time::ax_wall_time;
 use std::println;
 
 /// Startup banners printed before the hypervisor begins initialization.
@@ -70,7 +69,7 @@ d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
 /// The banner selection is deliberately best-effort and only depends on the
 /// current wall-clock value. It has no impact on the rest of boot.
 fn print_logo() {
-    let elapsed = ax_wall_time().as_micros() as usize;
+    let elapsed = (axvisor_api::time::current_time_nanos() / 1_000) as usize;
     let logo = LOGO[elapsed % LOGO.len()];
 
     println!();

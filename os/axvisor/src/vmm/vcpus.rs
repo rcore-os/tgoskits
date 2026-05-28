@@ -16,24 +16,14 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::os::arceos::{
-    api::task::{AxCpuMask, ax_wait_queue_wake},
-    modules::{
-        ax_hal,
-        ax_task::{self, AxTaskExt},
-    },
-};
 
 use ax_errno::{AxResult, ax_err_type};
-use ax_task::{AxTaskRef, TaskInner, WaitQueue};
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
 
-use crate::{hal::arch::inject_interrupt, task::VCpuTask};
-use crate::{
-    task::AsVCpuTask,
-    vmm::{VCpuRef, VMRef, sub_running_vm_count},
-};
+use crate::hal::arch::inject_interrupt;
+use crate::hal::task::{self, TaskRef, VmWaitQueue};
+use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
@@ -50,9 +40,9 @@ pub struct VMVCpus {
     // The ID of the VM to which these VCpus belong.
     _vm_id: usize,
     // A wait queue to manage task scheduling for the VCpus.
-    wait_queue: WaitQueue,
+    wait_queue: VmWaitQueue,
     // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
-    vcpu_task_list: Mutex<BTreeMap<usize, AxTaskRef>>,
+    vcpu_task_list: Mutex<BTreeMap<usize, TaskRef>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -74,7 +64,7 @@ impl VMVCpus {
     fn new(vm: VMRef) -> Self {
         Self {
             _vm_id: vm.id(),
-            wait_queue: WaitQueue::new(),
+            wait_queue: VmWaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
@@ -85,7 +75,7 @@ impl VMVCpus {
     /// # Arguments
     ///
     /// * `vcpu_task` - A reference to the task associated with a VCpu that is to be added.
-    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: AxTaskRef) {
+    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: TaskRef) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
     }
 
@@ -105,15 +95,13 @@ impl VMVCpus {
 
     #[allow(dead_code)]
     fn notify_one(&self) {
-        // FIXME: `WaitQueue::len` is removed
-        // info!("Current wait queue length: {}", self.wait_queue.len());
-        self.wait_queue.notify_one(false);
+        self.wait_queue.notify_one();
     }
 
     /// Notify all waiting vCPU threads to wake up.
     /// This is useful when shutting down a VM to ensure all vCPUs can check the shutdown flag.
     fn notify_all(&self) {
-        self.wait_queue.notify_all(false);
+        self.wait_queue.notify_all();
     }
 
     /// Increments the count of running or halting VCpus by one.
@@ -335,12 +323,12 @@ pub fn setup_vm_primary_vcpu(vm: VMRef) {
     VM_VCPU_TASKS.lock().insert(vm_id, vm_vcpus);
 }
 
-/// Finds the [`AxTaskRef`] associated with the specified vCPU of the specified VM.
+/// Finds the task associated with the specified vCPU of the specified VM.
 // pub fn find_vcpu_task(vm_id: usize, vcpu_id: usize) -> Option<AxTaskRef> {
 //     with_vcpu_task(vm_id, vcpu_id, |task| task.clone())
 // }
-/// Executes the provided closure with the [`AxTaskRef`] associated with the specified vCPU of the specified VM.
-pub fn with_vcpu_task<T, F: FnOnce(&AxTaskRef) -> T>(
+/// Executes the provided closure with the task associated with the specified vCPU of the specified VM.
+pub fn with_vcpu_task<T, F: FnOnce(&TaskRef) -> T>(
     vm_id: usize,
     vcpu_id: usize,
     f: F,
@@ -369,28 +357,11 @@ pub fn with_vcpu_task<T, F: FnOnce(&AxTaskRef) -> T>(
 /// * The task associated with the VCpu is created with a kernel stack size of 256 KiB.
 /// * The task is created in blocked state and added to the wait queue directly,
 ///   instead of being added to the ready queue. It will be woken up by notify_primary_vcpu().
-fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
+fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskRef {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
-    let mut vcpu_task = TaskInner::new(
-        vcpu_run,
-        format!("VM[{}]-VCpu[{}]", vm.id(), vcpu.id()),
-        KERNEL_STACK_SIZE,
-    );
-
-    if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(AxCpuMask::from_raw_bits(phys_cpu_set));
-    }
-
-    // Use Weak reference in TaskExt to avoid keeping VM alive
-    let inner = VCpuTask::new(vm, vcpu);
-    *vcpu_task.task_ext_mut() = Some(AxTaskExt::from_impl(inner));
-
-    info!(
-        "VCpu task {} created {:?}",
-        vcpu_task.id_name(),
-        vcpu_task.cpumask()
-    );
-    ax_task::spawn_task(vcpu_task)
+    let task = task::spawn_vcpu_task(vm, vcpu, KERNEL_STACK_SIZE, vcpu_run);
+    info!("VCpu task {} created", task.id_name());
+    task
 }
 
 /// The main routine for VCpu task.
@@ -399,10 +370,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let curr = ax_task::current();
-
-    let vm = curr.as_vcpu_task().vm();
-    let vcpu = curr.as_vcpu_task().vcpu.clone();
+    let (vm, vcpu) = task::current_vm_vcpu();
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
 
@@ -451,7 +419,7 @@ fn vcpu_run() {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
 
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
-                    ax_hal::trap::irq_handler(vector as usize);
+                    axvisor_api::irq::handle_irq(vector as usize);
                     super::timer::check_events();
                     #[cfg(target_arch = "x86_64")]
                     super::devices::x86::forward_passthrough_irq_from_vmexit(
@@ -607,7 +575,7 @@ fn vcpu_run() {
                 super::devices::x86::disable_ioapic_irq_forwarding_for_vm(vm_id);
 
                 sub_running_vm_count(1);
-                ax_wait_queue_wake(&super::VMM, 1);
+                super::VMM.wake(1);
             }
 
             break;
