@@ -932,24 +932,16 @@ impl FileBackend {
             Self::Cached(cached) => cached.read_at(dst, offset),
             Self::Direct(loc) => {
                 let mut total = 0;
-                while dst.remaining_mut() > 0 {
-                    let chunk = dst.remaining_mut().min(ax_io::DEFAULT_BUF_SIZE);
-                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
+                while !dst.is_full() {
+                    let read = dst.read_from(&mut ax_io::read_fn(|buf| {
                         loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
                             offset += *read as u64;
                         })
-                    })) {
-                        Ok(read) => read,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
+                    }))?;
                     if read == 0 {
                         break;
                     }
                     total += read;
-                    if read < chunk {
-                        break;
-                    }
                 }
                 Ok(total)
             }
@@ -962,26 +954,25 @@ impl FileBackend {
             Self::Cached(cached) => cached.write_at(src, offset),
             Self::Direct(loc) => {
                 let mut total = 0;
-                while src.remaining() > 0 {
-                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
-                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
-                        loc.entry()
-                            .as_file()?
-                            .write_at(buf, offset)
-                            .inspect(|written| {
-                                offset += *written as u64;
-                            })
-                    })) {
-                        Ok(written) => written,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
-                    if written == 0 {
+                let mut buf = [0; ax_io::DEFAULT_BUF_SIZE];
+                while !src.is_empty() {
+                    let limit = src.remaining().min(buf.len());
+                    let read = src.read(&mut buf[..limit])?;
+                    if read == 0 {
                         break;
                     }
-                    total += written;
-                    if written < chunk {
-                        break;
+                    let mut chunk_written = 0;
+                    while chunk_written < read {
+                        let written = loc
+                            .entry()
+                            .as_file()?
+                            .write_at(&buf[chunk_written..read], offset)?;
+                        if written == 0 {
+                            return Ok(total);
+                        }
+                        offset += written as u64;
+                        total += written;
+                        chunk_written += written;
                     }
                 }
                 Ok(total)
