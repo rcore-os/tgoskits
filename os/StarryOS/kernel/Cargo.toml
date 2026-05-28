@@ -38,8 +38,6 @@ sg2002 = [
     "dep:tock-registers",
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
-buddy-slab = ["ax-feat/buddy-slab"]
-tlsf = ["ax-feat/alloc-tlsf"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [

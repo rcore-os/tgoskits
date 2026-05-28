@@ -188,9 +188,9 @@ mod tlsf_impl;
 
 #[cfg(buddy_slab)]
 use buddy_slab as imp;
-#[cfg(buddy_slab)]
-pub use imp::init_percpu_slab;
-pub use imp::{DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init};
+pub use imp::{
+    DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init, init_percpu_slab,
+};
 #[cfg(not(any(tlsf, buddy_slab)))]
 use stub_impl as imp;
 #[cfg(tlsf)]

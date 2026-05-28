@@ -44,8 +44,6 @@ aarch64-cntv-timer = ["ax-hal/aarch64-cntv-timer"]
 
 # Memory
 alloc = ["ax-alloc"]
-alloc-tlsf = ["ax-alloc/tlsf"]
-buddy-slab = ["ax-runtime/buddy-slab"]
 paging = ["ax-hal/paging", "ax-runtime/paging"]
 tls = ["ax-hal/tls", "ax-runtime/tls", "ax-task?/tls"]
 dma = ["paging"]

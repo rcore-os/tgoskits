@@ -2,7 +2,6 @@
 target = "riscv64gc-unknown-none-elf"
 env = {}
 features = [
-  "starryos/tlsf",
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
   "ax-driver/sg2002-placeholder",

@@ -275,6 +275,11 @@ pub fn global_allocator() -> &'static GlobalAllocator {
     &GLOBAL_ALLOCATOR
 }
 
+/// Initializes per-CPU allocator state.
+///
+/// TLSF does not use per-CPU slabs, so this is intentionally a no-op.
+pub fn init_percpu_slab(_cpu_id: usize) {}
+
 /// Initializes the global allocator with the given memory region.
 pub fn global_init(start_vaddr: usize, size: usize) -> AllocResult {
     debug!(

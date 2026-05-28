@@ -1,6 +1,5 @@
 env = {}
 features = [
-  "starryos/tlsf",
   "ax-feat/rtc",
   "ax-driver/rtc",
   "ax-driver/virtio-blk",

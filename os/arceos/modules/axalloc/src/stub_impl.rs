@@ -201,6 +201,11 @@ pub fn global_allocator() -> &'static GlobalAllocator {
     &GLOBAL_ALLOCATOR
 }
 
+/// Initializes per-CPU allocator state.
+///
+/// The stub backend has no per-CPU state.
+pub fn init_percpu_slab(_cpu_id: usize) {}
+
 /// Initializes the global allocator (stub).
 pub fn global_init(start_vaddr: usize, size: usize) -> AllocResult {
     GLOBAL_ALLOCATOR.init(start_vaddr, size)
