@@ -166,7 +166,24 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
     match pid {
         1.. => {
             check_kill_permission(pid as _)?;
-            send_signal_to_process(pid as _, sig)?;
+            if let Some(sig) = sig {
+                let curr = current();
+                let thread = curr.as_thread();
+                let signo = sig.signo();
+                if pid as Pid == thread.proc_data.proc.pid() && !thread.signal.signal_blocked(signo)
+                {
+                    // A process-directed signal may be delivered to any
+                    // unblocked thread. Prefer the current thread for
+                    // self-signals so `kill(getpid(), SIGSTOP)` cannot return
+                    // to userspace and race into the next syscall before this
+                    // thread observes the stop.
+                    send_signal_to_thread(None, curr.id().as_u64() as Pid, Some(sig))?;
+                } else {
+                    send_signal_to_process(pid as _, Some(sig))?;
+                }
+            } else {
+                send_signal_to_process(pid as _, None)?;
+            }
         }
         0 => {
             let pgid = current().as_thread().proc_data.proc.group().pgid();

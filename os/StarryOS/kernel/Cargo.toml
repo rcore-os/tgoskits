@@ -63,6 +63,7 @@ ax-alloc = { workspace = true, features = ["default"] }
 ax-config.workspace = true
 ax-display.workspace = true
 ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
