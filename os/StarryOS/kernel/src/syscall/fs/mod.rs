@@ -10,7 +10,6 @@ mod pipe;
 mod signalfd;
 mod stat;
 mod timerfd;
-mod xattr;
 
 pub use self::{
     ctl::*,
@@ -25,5 +24,4 @@ pub use self::{
     signalfd::*,
     stat::*,
     timerfd::*,
-    xattr::*,
 };
