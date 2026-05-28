@@ -89,8 +89,8 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 
 | Job 名称 | Runner | 使用容器 | Cache Key | 功能说明 |
 |----------|--------|----------|-----------|----------|
-| Run clippy | `ubuntu-latest` | 是（`base`） | `clippy` | `cargo xtask clippy --since <base>`；需要完整 git 历史 |
-| Test with std | `ubuntu-latest` | 是（`base`） | `test-std` | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试 |
+| Run clippy | `self-hosted linux qcs` | 否 | 无 | `cargo xtask clippy --since <base>`；需要完整 git 历史；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test with std | `self-hosted linux qcs` | 否 | 无 | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axvisor-loongarch64` | `cargo xtask axvisor test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |
@@ -112,13 +112,13 @@ StarryOS stress 测试条目保留在 workflow 中，但当前处于注释状态
 
 ## Self-Hosted Runner 约定
 
-self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted_owner` 的 QEMU 测试在 fork PR 或非 `rcore-os` 仓库中会回退到 `ubuntu-latest` + 对应容器，避免没有对应 runner 时长时间排队。迁移到 self-hosted 的 QEMU 测试直接在原生 runner 环境中运行，不再套 Docker container。
+self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted_owner` 的任务在 fork PR 或非 `rcore-os` 仓库中会回退到 `ubuntu-latest` + 对应容器，避免没有对应 runner 时长时间排队。迁移到 self-hosted 的任务直接在原生 runner 环境中运行，不再套 Docker container。
 
 现有 label 约定：
 
 | Label | 用途 |
 |-------|------|
-| `self-hosted`, `linux`, `qcs` | ArceOS QEMU 测试、Axvisor aarch64/riscv64 QEMU |
+| `self-hosted`, `linux`, `qcs` | clippy、std 测试、ArceOS QEMU 测试、Axvisor aarch64/riscv64 QEMU |
 | `self-hosted`, `linux`, `intel`, `kvm` | Axvisor x86_64 KVM 测试 |
 | `self-hosted`, `linux`, `board` | 物理板卡测试 |
 
@@ -127,11 +127,9 @@ self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted
 | Cache Key | 使用 Job | 保存时机 | 说明 |
 |-----------|----------|----------|------|
 | `sync-lint` | Run sync-lint | `push` 事件 | xtask 与 sync-lint 工具链编译产物 |
-| `clippy` | Run clippy | `push` 事件 | xtask 与目标 crate 编译产物 |
-| `test-std` | Test with std | `push` 事件 | host std 测试编译产物 |
 | `test-axvisor-loongarch64` | Test axvisor loongarch64 QEMU | `push` 事件 | Axvisor loongarch64 编译产物 |
 | `test-starry-riscv64/aarch64/loongarch64/x86_64` | Test starry riscv64/aarch64/loongarch64/x86_64 QEMU | `push` 事件 | StarryOS QEMU 编译产物 |
-| 无（`cache_key: ""`） | self-hosted runner job | - | 依赖 self-hosted runner 本地磁盘缓存，不使用 GitHub Actions cache |
+| 无（`cache_key: ""`） | self-hosted runner job，包括 Run clippy 和 Test with std | - | 依赖 self-hosted runner 本地磁盘缓存，不使用 GitHub Actions cache |
 
 self-hosted runner 不设置 `cache_key`，避免 `Swatinem/rust-cache@v2` 的 post-job 清理影响 runner 上跨次运行自然积累的共享缓存。
 
@@ -141,7 +139,7 @@ CI 使用两个容器镜像：
 
 | 镜像 | Dockerfile | 用途 |
 |------|------------|------|
-| `base` | `container/Dockerfile` | 常规 clippy、sync-lint、std 测试、StarryOS QEMU，以及 self-hosted QEMU 测试在 fork PR 或非 `rcore-os` 仓库中的回退环境 |
+| `base` | `container/Dockerfile` | sync-lint、StarryOS QEMU，以及 clippy、std、self-hosted QEMU 测试在 fork PR 或非 `rcore-os` 仓库中的回退环境 |
 | `axvisor-lvz` | `container/Dockerfile.axvisor-lvz` | Axvisor loongarch64 QEMU，额外包含 LVZ 支持 |
 
 基础镜像以 `ubuntu:24.04` 为底，内置 Rust 工具链、QEMU、musl cross-toolchain、libav、libudev 等依赖。容器内的 musl cross-toolchain 已通过 `PATH` 配置好，`reusable-command.yml` 会在 container job 启动时验证 QEMU user emulators 和 musl compiler 是否存在，不再在运行时动态下载。

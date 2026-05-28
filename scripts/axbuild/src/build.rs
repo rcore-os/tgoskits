@@ -345,16 +345,12 @@ impl BuildInfo {
         has_myplat: bool,
         metadata: Option<&Metadata>,
     ) {
-        if has_myplat || has_ax_hal_platform_feature(&self.features, metadata) {
+        if plat_dyn || has_myplat || has_ax_hal_platform_feature(&self.features, metadata) {
             return;
         }
 
-        let feature = if plat_dyn {
-            "ax-hal/plat-dyn".to_string()
-        } else {
-            default_ax_hal_platform_feature(target, metadata)
-                .unwrap_or_else(|_| "ax-hal/defplat".to_string())
-        };
+        let feature = default_ax_hal_platform_feature(target, metadata)
+            .unwrap_or_else(|_| "ax-hal/defplat".to_string());
         self.features.push(feature);
     }
 
@@ -474,7 +470,10 @@ pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Re
     };
 
     if plat_dyn {
-        if target != "aarch64-unknown-none-softfloat" {
+        if !matches!(
+            target,
+            "aarch64-unknown-none-softfloat" | "riscv64gc-unknown-none-elf"
+        ) {
             bail!("unsupported PIE target `{target}`");
         }
         Ok(Path::new(TARGET_JSON_ROOT)
@@ -664,7 +663,7 @@ pub(crate) fn resolve_effective_plat_dyn(
 }
 
 fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-")
+    target.starts_with("aarch64-") || target.starts_with("riscv64")
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
@@ -929,7 +928,6 @@ fn ax_hal_platform_feature_name<'a>(
     let platform = feature.strip_prefix("ax-hal/")?;
     match platform {
         "plat-dyn" => Some(platform),
-        "riscv64-qemu-virt-hv" => Some(platform),
         _ if metadata
             .map(|metadata| platform_package_by_name(metadata, platform).is_some())
             .unwrap_or_else(|| is_known_ax_hal_platform_feature(platform)) =>
@@ -1035,10 +1033,6 @@ fn platform_packages(metadata: &Metadata) -> Vec<PlatformPackage> {
 }
 
 fn platform_package_by_name(metadata: &Metadata, platform_name: &str) -> Option<String> {
-    if platform_name == "riscv64-qemu-virt-hv" {
-        return platform_package_by_name(metadata, "riscv64-qemu-virt");
-    }
-
     platform_packages(metadata)
         .into_iter()
         .find(|platform| platform.metadata.platform == platform_name)
@@ -1501,7 +1495,7 @@ mod tests {
         let mut envs = HashMap::new();
         let mut features = vec![
             "ax-hal/riscv64-qemu-virt".to_string(),
-            "ax-driver/pci".to_string(),
+            "ax-driver/plat-dyn".to_string(),
             "ax-driver/virtio-blk".to_string(),
             "ax-driver/virtio-net".to_string(),
             "dns".to_string(),
@@ -1513,7 +1507,8 @@ mod tests {
         assert_eq!(
             envs.get("ARCEOS_RUST_FEATURES"),
             Some(
-                &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
+                &"ax-hal/riscv64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
+                  virtio-net"
                     .to_string()
             )
         );
@@ -1564,10 +1559,10 @@ mod tests {
     }
 
     #[test]
-    fn cargo_target_json_path_rejects_unsupported_pie_target() {
-        let err = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap_err();
+    fn cargo_target_json_path_maps_riscv64_pie_target() {
+        let path = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap();
 
-        assert!(err.to_string().contains("unsupported PIE target"));
+        assert!(path.ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json"));
     }
 
     #[test]

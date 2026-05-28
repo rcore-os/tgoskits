@@ -22,6 +22,7 @@ stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = [
+  "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
   "paging",
   "buddy-slab",

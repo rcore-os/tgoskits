@@ -5,7 +5,7 @@ features = [
   "starryos/tlsf",
   "ax-hal/x86-pc",
   "qemu",
-  "ax-driver/pci",
+  "ax-driver/plat-static",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",

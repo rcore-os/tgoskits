@@ -2,9 +2,13 @@
 target = "riscv64gc-unknown-none-elf"
 env = {}
 features = [
-  "sg2002",
   "starryos/tlsf",
+  "starry-kernel/sg2002",
+  "axplat-dyn/thead-mae",
+  "ax-driver/sg2002-placeholder",
+  "ax-driver/cvsd",
+  "ax-driver/serial",
 ]
 log = "Info"
 max_cpu_num = 1
-plat_dyn = false
+plat_dyn = true

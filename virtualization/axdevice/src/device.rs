@@ -28,11 +28,10 @@ use axaddrspace::{
 };
 use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
-use range_alloc_arceos::RangeAllocator;
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
 
-use crate::AxVmDeviceConfig;
+use crate::{AxVmDeviceConfig, range_alloc::RangeAllocator};
 
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
@@ -88,7 +87,7 @@ pub struct AxVmDevices {
     emu_sys_reg_devices: AxEmuSysRegDevices,
     emu_port_devices: AxEmuPortDevices,
     /// IVC channel range allocator
-    ivc_channel: Option<Mutex<RangeAllocator<usize>>>,
+    ivc_channel: Option<Mutex<RangeAllocator>>,
 }
 
 #[inline]
@@ -321,8 +320,8 @@ impl AxVmDevices {
             allocator
                 .lock()
                 .allocate_range(size)
-                .map_err(|e| {
-                    warn!("Failed to allocate IVC channel range: {e:x?}");
+                .ok_or_else(|| {
+                    warn!("Failed to allocate IVC channel range with size {size:#x}");
                     ax_errno::ax_err_type!(NoMemory, "IVC channel allocation failed")
                 })
                 .map(|range| {
@@ -344,10 +343,13 @@ impl AxVmDevices {
         }
 
         if let Some(allocator) = &self.ivc_channel {
-            allocator
-                .lock()
-                .free_range(addr.as_usize()..addr.as_usize() + size);
-            Ok(())
+            let range = addr.as_usize()..addr.as_usize() + size;
+            if allocator.lock().free_range(range.clone()) {
+                debug!("Released IVC channel range: {range:x?}");
+                Ok(())
+            } else {
+                ax_err!(InvalidInput, "Invalid IVC channel range")
+            }
         } else {
             ax_err!(InvalidInput, "IVC channel not exists")
         }
