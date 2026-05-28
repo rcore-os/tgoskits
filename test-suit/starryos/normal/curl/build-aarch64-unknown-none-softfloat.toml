@@ -4,7 +4,6 @@ features = [
     "ax-hal/plat-dyn",
     "ax-feat/display",
     "ax-feat/rtc",
-    "ax-driver/pci",
     "ax-driver/rtc",
     "ax-driver/virtio-blk",
     "ax-driver/virtio-net",
