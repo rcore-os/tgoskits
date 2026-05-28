@@ -1772,10 +1772,12 @@ dependencies = [
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",
+ "axvisor_api",
  "axvmconfig",
  "cfg-if",
  "log",
  "riscv_vplic",
+ "x86_vlapic",
 ]
 
 [[package]]
@@ -1946,6 +1948,7 @@ name = "axvcpu"
 version = "0.5.9"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "axaddrspace",
@@ -10243,6 +10246,7 @@ name = "x86_vlapic"
 version = "0.4.10"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",

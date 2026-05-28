@@ -13,7 +13,7 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-m",
-  "128M",
+  "512M",
 ]
 fail_regex = []
 success_regex = []

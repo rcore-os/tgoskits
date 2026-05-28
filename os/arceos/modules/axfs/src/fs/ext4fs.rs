@@ -93,6 +93,12 @@ impl Ext4FileSystem {
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
 impl VfsOps for Ext4FileSystem {
+    fn umount(&self) -> VfsResult {
+        let mut fs = self.fs.lock();
+        let mut inner = self.inner.lock();
+        fs.umount(&mut inner).map_err(|_| VfsError::Io)
+    }
+
     fn root_dir(&self) -> VfsNodeRef {
         debug!("Get root_dir");
         Arc::new(FileWrapper::new(
@@ -105,6 +111,12 @@ impl VfsOps for Ext4FileSystem {
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
 impl VfsOps for Ext4FileSystemPartition {
+    fn umount(&self) -> VfsResult {
+        let mut fs = self.fs.lock();
+        let mut inner = self.inner.lock();
+        fs.umount(&mut inner).map_err(|_| VfsError::Io)
+    }
+
     fn root_dir(&self) -> VfsNodeRef {
         debug!("Get root_dir");
         Arc::new(FileWrapper::new(

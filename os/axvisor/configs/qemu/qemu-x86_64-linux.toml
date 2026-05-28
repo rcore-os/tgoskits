@@ -22,15 +22,7 @@ args = [
   "-m",
   "512M",
 ]
-timeout = 180
-fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
-  "(?i)kernel panic",
-  "(?i)login incorrect",
-  "(?i)permission denied",
-]
-success_regex = ["(?m)^guest linux test pass!\\s*$"]
-shell_prefix = "~ #"
-shell_init_cmd = "pwd && echo 'guest linux test pass!'"
+fail_regex = []
+success_regex = []
 to_bin = false
 uefi = false

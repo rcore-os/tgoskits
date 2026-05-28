@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err};
 use axvisor_api::{
-    time::{self, current_ticks, register_timer, ticks_to_nanos, ticks_to_time},
+    time::{self, register_timer},
     vmm::{VCpuId, VMId, inject_interrupt},
 };
 
@@ -27,6 +28,8 @@ use crate::{
         LvtTimerRegisterLocal,
     },
 };
+
+const APIC_TIMER_TICKS_PER_NANO: u64 = 1;
 
 /// A virtual local APIC timer. (SDM Vol. 3C, Section 11.5.4)
 ///
@@ -69,10 +72,18 @@ pub struct ApicTimer {
     // temporary fields untils we find a permanent place for apic and its timer
     cancel_token: Option<usize>,
     where_am_i: (VMId, VCpuId), // (vm_id, vcpu_id)
+    shared: Arc<ApicTimerShared>,
+}
+
+struct ApicTimerShared {
+    generation: AtomicUsize,
+    lvt_timer_register: AtomicU32,
+    interval_ns: AtomicU64,
+    deadline_ns: AtomicU64,
 }
 
 impl ApicTimer {
-    pub(crate) const fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
+    pub(crate) fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
         Self {
             lvt_timer_register: LvtTimerRegisterLocal::new(RESET_LVT_REG), /* masked, one-shot, vector 0 */
             initial_count_register: 0,                                     // 0 (stopped)
@@ -83,6 +94,12 @@ impl ApicTimer {
             deadline_ns: 0,
             cancel_token: None,
             where_am_i: (vm_id, vcpu_id),
+            shared: Arc::new(ApicTimerShared {
+                generation: AtomicUsize::new(0),
+                lvt_timer_register: AtomicU32::new(RESET_LVT_REG),
+                interval_ns: AtomicU64::new(0),
+                deadline_ns: AtomicU64::new(0),
+            }),
         }
     }
 
@@ -113,6 +130,9 @@ impl ApicTimer {
 
         value &= LVT_MASK;
         self.lvt_timer_register.set(value);
+        self.shared
+            .lvt_timer_register
+            .store(value, Ordering::Release);
         Ok(())
     }
 
@@ -167,8 +187,25 @@ impl ApicTimer {
         if !self.is_started() {
             return 0;
         }
-        let remaining_ns = self.deadline_ns.wrapping_sub(time::current_time_nanos());
-        let remaining_ticks = time::nanos_to_ticks(remaining_ns);
+        let mut deadline_ns = self.shared.deadline_ns.load(Ordering::Acquire);
+        let now_ns = time::current_time_nanos();
+        if now_ns >= deadline_ns {
+            if !self.is_periodic() {
+                return 0;
+            }
+
+            let interval_ns = self.shared.interval_ns.load(Ordering::Acquire);
+            if interval_ns == 0 {
+                return 0;
+            }
+
+            deadline_ns = next_periodic_deadline_ns(deadline_ns, interval_ns, now_ns);
+            self.shared
+                .deadline_ns
+                .store(deadline_ns, Ordering::Release);
+        }
+        let remaining_ns = deadline_ns - now_ns;
+        let remaining_ticks = remaining_ns * APIC_TIMER_TICKS_PER_NANO;
         (remaining_ticks >> self.divide_shift) as _
     }
 
@@ -183,11 +220,6 @@ impl ApicTimer {
     #[allow(dead_code)]
     pub fn is_masked(&self) -> bool {
         self.lvt_timer_register.is_set(LVT_TIMER::Mask)
-    }
-
-    /// The timer interrupt vector number.
-    pub fn vector(&self) -> u8 {
-        self.lvt_timer_register.read(LVT_TIMER::Vector) as u8
     }
 
     /// Check whether the timer is started.
@@ -212,30 +244,33 @@ impl ApicTimer {
             return ax_err!(BadState, "Timer already started");
         }
 
-        let current_ticks = current_ticks();
-        let deadline_ticks =
-            current_ticks + ((self.initial_count_register as u64) << self.divide_shift);
+        let current_ns = time::current_time_nanos();
+        let interval_ticks = (self.initial_count_register as u64) << self.divide_shift;
+        let interval_ns = interval_ticks / APIC_TIMER_TICKS_PER_NANO;
+        let deadline_ns = current_ns + interval_ns;
         let (vm_id, vcpu_id) = self.where_am_i;
-        let vector = self.vector();
+        let generation = self.next_generation();
 
         trace!(
-            "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) starts timer @ tick {current_ticks:?}, \
-             deadline tick {deadline_ticks:?}"
+            "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) starts timer @ ns {current_ns:?}, deadline ns \
+             {deadline_ns:?}"
         );
 
-        self.last_start_ticks = current_ticks;
-        self.deadline_ns = ticks_to_nanos(deadline_ticks);
+        self.last_start_ticks = current_ns;
+        self.deadline_ns = deadline_ns;
+        self.shared
+            .interval_ns
+            .store(interval_ns, Ordering::Release);
+        self.shared
+            .deadline_ns
+            .store(self.deadline_ns, Ordering::Release);
 
-        self.cancel_token = Some(register_timer(
-            ticks_to_time(deadline_ticks),
-            Box::new(move |_| {
-                // TODO: read the LVT Timer Register here
-                trace!(
-                    "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt \
-                     {vector}"
-                );
-                inject_interrupt(vm_id, vcpu_id, vector);
-            }),
+        self.cancel_token = Some(schedule_apic_timer(
+            time::current_time() + core::time::Duration::from_nanos(interval_ns),
+            Arc::clone(&self.shared),
+            generation,
+            vm_id,
+            vcpu_id,
         ));
 
         Ok(())
@@ -243,13 +278,14 @@ impl ApicTimer {
 
     pub fn stop_timer(&mut self) -> AxResult {
         // TODO: maybe disable irq here?
-        if self.is_started() {
-            self.last_start_ticks = 0;
-            self.deadline_ns = 0;
+        self.next_generation();
+        self.last_start_ticks = 0;
+        self.deadline_ns = 0;
+        self.shared.interval_ns.store(0, Ordering::Release);
+        self.shared.deadline_ns.store(0, Ordering::Release);
 
-            time::cancel_timer(self.cancel_token.take().unwrap());
-        } else {
-            warn!("`stop_timer` called when timer is not started, bad operation tolerated");
+        if let Some(token) = self.cancel_token.take() {
+            time::cancel_timer(token);
         }
 
         Ok(())
@@ -258,6 +294,10 @@ impl ApicTimer {
     /// Whether the timer mode is periodic.
     pub fn is_periodic(&self) -> bool {
         self.timer_mode() == TimerMode::Periodic
+    }
+
+    fn next_generation(&self) -> usize {
+        self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     // /// Set LVT Timer Register.
@@ -302,6 +342,64 @@ impl ApicTimer {
     // }
 }
 
+fn schedule_apic_timer(
+    deadline: time::TimeValue,
+    shared: Arc<ApicTimerShared>,
+    generation: usize,
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+) -> usize {
+    register_timer(
+        deadline,
+        Box::new(move |_| {
+            if shared.generation.load(Ordering::Acquire) != generation {
+                return;
+            }
+
+            let lvt = shared.lvt_timer_register.load(Ordering::Acquire);
+            let vector = (lvt & 0xff) as u8;
+            let masked = (lvt & LVT_TIMER::Mask::SET.mask()) != 0;
+            let mode = (lvt & LVT_TIMER::TimerMode::SET.mask()) >> 17;
+
+            if !masked {
+                trace!(
+                    "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt \
+                     {vector}"
+                );
+                inject_interrupt(vm_id, vcpu_id, vector);
+            }
+
+            if mode == TimerMode::Periodic as u32
+                && shared.generation.load(Ordering::Acquire) == generation
+            {
+                let interval_ns = shared.interval_ns.load(Ordering::Acquire);
+                if interval_ns != 0 {
+                    let old_deadline = shared.deadline_ns.load(Ordering::Acquire);
+                    let next_deadline_ns = next_periodic_deadline_ns(
+                        old_deadline,
+                        interval_ns,
+                        time::current_time_nanos(),
+                    );
+                    let next_deadline = core::time::Duration::from_nanos(next_deadline_ns);
+                    shared
+                        .deadline_ns
+                        .store(next_deadline_ns, Ordering::Release);
+                    let _ = schedule_apic_timer(next_deadline, shared, generation, vm_id, vcpu_id);
+                }
+            }
+        }),
+    )
+}
+
+fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) -> u64 {
+    if deadline_ns > now_ns {
+        return deadline_ns;
+    }
+
+    let missed_intervals = (now_ns - deadline_ns) / interval_ns + 1;
+    deadline_ns.saturating_add(interval_ns.saturating_mul(missed_intervals))
+}
+
 #[cfg(test)]
 mod tests {
     use axvisor_api::vmm::{VCpuId, VMId};
@@ -320,7 +418,7 @@ mod tests {
         // assert_eq!(timer.read_ccr(), 0);
         assert!(timer.is_masked());
         assert_eq!(timer.timer_mode(), TimerMode::OneShot);
-        assert_eq!(timer.vector(), 0);
+        assert_eq!(timer.read_lvt() & 0xff, 0);
     }
 
     #[test]
@@ -339,7 +437,7 @@ mod tests {
 
         // Test vector number
         assert!(timer.write_lvt(0x50).is_ok()); // vector 0x50
-        assert_eq!(timer.vector(), 0x50);
+        assert_eq!(timer.read_lvt() & 0xff, 0x50);
     }
 
     #[test]
