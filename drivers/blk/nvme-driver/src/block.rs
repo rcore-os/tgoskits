@@ -9,7 +9,7 @@ use dma_api::CoherentArray;
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
     IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueMode, QueueTopology,
-    Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
+    Request, RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
 };
 
 use crate::{
@@ -402,7 +402,10 @@ impl NvmeBlockQueue {
     }
 }
 
-impl IQueue for NvmeBlockQueue {
+// SAFETY: NVMe queues may access submitted request DMA segments until the
+// matching completion is reclaimed by `poll_request`. Slots are freed only
+// after completion/error, and no segment pointers are accessed after that.
+unsafe impl IQueue for NvmeBlockQueue {
     fn id(&self) -> usize {
         self.id
     }
@@ -413,7 +416,7 @@ impl IQueue for NvmeBlockQueue {
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
         let info = self.queue_info();
-        validate_request_shape(info.device, info.limits, &request)?;
+        validate_request(info, &request)?;
         self.drain_completions();
 
         let cid = self.alloc_cid()?;
@@ -504,6 +507,9 @@ fn limits(dma_mask: u64, page_size: usize, namespace: Namespace) -> QueueLimits 
         max_blocks_per_request: max_blocks,
         max_segments: prp_entries + 1,
         max_segment_size: max_bytes,
+        max_transfer_size: max_bytes,
+        preferred_transfer_size: max_bytes.min(16 * 1024),
+        supported_flags: RequestFlags::NONE,
         supports_flush: true,
         supports_discard: false,
         supports_write_zeroes: false,

@@ -11,7 +11,8 @@ use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
     BlkError, Buffer, IQueue, Interface, QueueConfig, QueueInfo, QueueMode, QueueTopology, Request,
-    RequestFlags, RequestId, RequestOp, RequestStatus,
+    RequestFlags, RequestId, RequestOp, RequestStatus, TransferChunk, TransferPlan,
+    TransferPlanConfig, planned_transfer_size,
 };
 use rdrive::Device;
 
@@ -146,20 +147,19 @@ impl Block {
         let info = queues.queue.info();
         validate_io(info, block_id, buf.len())?;
 
-        let block_size = info.device.logical_block_size;
-        let max_transfer_blocks = max_transfer_blocks(info, queues.pool.size)?;
-        for (offset, block_buf) in buf.chunks_mut(block_size * max_transfer_blocks).enumerate() {
-            let block_count = block_buf.len() / block_size;
+        let plan = transfer_plan(info, block_id, buf.len(), queues.pool.size)?;
+        for chunk in plan {
+            let block_buf =
+                &mut buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
             let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
             dma_buffer.sync_for_device(0, block_buf.len());
-            let segment = buffer_from_dma(&mut dma_buffer, block_buf.len());
-            let mut segments = [segment];
+            let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
             let request_id = queues
                 .queue
                 .submit_request(Request {
                     op: RequestOp::Read,
-                    lba: checked_lba(block_id, offset * max_transfer_blocks)?,
-                    block_count: block_count as u32,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
                 })
@@ -176,21 +176,20 @@ impl Block {
         let info = queues.queue.info();
         validate_io(info, block_id, buf.len())?;
 
-        let block_size = info.device.logical_block_size;
-        let max_transfer_blocks = max_transfer_blocks(info, queues.pool.size)?;
-        for (offset, block_buf) in buf.chunks(block_size * max_transfer_blocks).enumerate() {
-            let block_count = block_buf.len() / block_size;
+        let plan = transfer_plan(info, block_id, buf.len(), queues.pool.size)?;
+        for chunk in plan {
+            let block_buf =
+                &buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
             let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
             dma_buffer.write_with(block_buf.len(), |data| data.copy_from_slice(block_buf));
             dma_buffer.sync_for_device(0, block_buf.len());
-            let segment = buffer_from_dma(&mut dma_buffer, block_buf.len());
-            let mut segments = [segment];
+            let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
             let request_id = queues
                 .queue
                 .submit_request(Request {
                     op: RequestOp::Write,
-                    lba: checked_lba(block_id, offset * max_transfer_blocks)?,
-                    block_count: block_count as u32,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
                 })
@@ -377,47 +376,65 @@ fn block_buffer_layout(info: QueueInfo) -> AxResult<Layout> {
 }
 
 fn block_buffer_size(info: QueueInfo) -> AxResult<usize> {
-    let block_size = info.device.logical_block_size;
-    if block_size == 0 || info.limits.max_blocks_per_request == 0 {
-        return Err(AxError::BadState);
-    }
+    transfer_plan_config(info)
+        .and_then(|config| planned_transfer_size(info, config))
+        .map_err(map_blk_err_to_ax_err)
+        .and_then(|size| {
+            if size < info.device.logical_block_size {
+                Err(AxError::BadState)
+            } else {
+                Ok(size)
+            }
+        })
+}
 
-    let max_blocks_size = block_size.saturating_mul(info.limits.max_blocks_per_request as usize);
-    let max_segment_size = if info.limits.max_segment_size == usize::MAX {
-        block_size
+fn transfer_plan(
+    info: QueueInfo,
+    block_id: u64,
+    len: usize,
+    buffer_size: usize,
+) -> AxResult<TransferPlan> {
+    TransferPlan::new(
+        info,
+        block_id,
+        len,
+        TransferPlanConfig::new(buffer_size, info.limits.max_segments),
+    )
+    .map_err(map_blk_err_to_ax_err)
+}
+
+fn transfer_plan_config(info: QueueInfo) -> Result<TransferPlanConfig, BlkError> {
+    Ok(TransferPlanConfig::new(
+        info.limits
+            .preferred_transfer_size
+            .min(runtime_transfer_cap(info)?),
+        info.limits.max_segments,
+    ))
+}
+
+fn runtime_transfer_cap(info: QueueInfo) -> Result<usize, BlkError> {
+    if info.limits.max_segment_size == usize::MAX {
+        Ok(info.device.logical_block_size)
     } else {
-        info.limits.max_segment_size.min(MAX_BLOCK_BUFFER_SIZE)
-    };
-    let size = max_segment_size.min(max_blocks_size);
-    let size = size / block_size * block_size;
-    if size < block_size {
-        return Err(AxError::BadState);
+        Ok(MAX_BLOCK_BUFFER_SIZE)
     }
-    Ok(size)
 }
 
-fn max_transfer_blocks(info: QueueInfo, buffer_size: usize) -> AxResult<usize> {
-    let block_size = info.device.logical_block_size;
-    if block_size == 0 {
-        return Err(AxError::BadState);
+fn segments_from_dma(
+    buffer: &mut ContiguousArray<u8>,
+    chunk: TransferChunk,
+) -> AxResult<Vec<Buffer<'_>>> {
+    let base_virt = buffer.as_ptr().as_ptr();
+    let base_bus = buffer.dma_addr().as_u64();
+    let mut segments = Vec::with_capacity(chunk.segment_count);
+    for segment in chunk.segments() {
+        let virt = unsafe { base_virt.add(segment.byte_offset) };
+        let bus = base_bus
+            .checked_add(segment.byte_offset as u64)
+            .ok_or(AxError::InvalidInput)?;
+        segments.push(unsafe { Buffer::from_raw_parts(virt, bus, segment.byte_len) });
     }
-    let blocks = (buffer_size / block_size)
-        .min(info.limits.max_segment_size / block_size)
-        .min(info.limits.max_blocks_per_request as usize);
-    if blocks == 0 {
-        return Err(AxError::BadState);
-    }
-    Ok(blocks)
-}
-
-fn checked_lba(start: u64, offset: usize) -> AxResult<u64> {
-    start
-        .checked_add(offset as u64)
-        .ok_or(AxError::InvalidInput)
-}
-
-fn buffer_from_dma(buffer: &mut ContiguousArray<u8>, len: usize) -> Buffer<'_> {
-    unsafe { Buffer::from_raw_parts(buffer.as_ptr().as_ptr(), buffer.dma_addr().as_u64(), len) }
+    Ok(segments)
 }
 
 fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
@@ -448,7 +465,7 @@ mod tests {
     use dma_api::{
         DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
     };
-    use rdif_block::{DeviceInfo, DriverGeneric, QueueLimits, validate_request_shape};
+    use rdif_block::{DeviceInfo, DriverGeneric, QueueLimits, validate_request};
 
     use super::*;
 
@@ -563,12 +580,13 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     struct SubmittedRequest {
         op: RequestOp,
         lba: u64,
         block_count: u32,
         data_len: usize,
+        segment_lengths: Vec<usize>,
     }
 
     #[derive(Default)]
@@ -619,7 +637,9 @@ mod tests {
         dma: &'static TrackingDma,
     }
 
-    impl IQueue for TestQueue {
+    // SAFETY: The queue copies data synchronously during `submit_request` and
+    // never stores segment pointers after the call returns.
+    unsafe impl IQueue for TestQueue {
         fn id(&self) -> usize {
             0
         }
@@ -642,7 +662,7 @@ mod tests {
                 self.dma.has_read_device_sync(),
                 "read DMA buffers must be synchronized for device ownership before submit"
             );
-            validate_request_shape(self.info().device, self.info().limits, &request)?;
+            validate_request(self.info(), &request)?;
             request.segments[0].fill(0x5a);
             Ok(RequestId::new(0))
         }
@@ -675,7 +695,9 @@ mod tests {
         }
     }
 
-    impl IQueue for RecordingQueue {
+    // SAFETY: The queue records request metadata synchronously and never
+    // accesses request segments after `submit_request` returns.
+    unsafe impl IQueue for RecordingQueue {
         fn id(&self) -> usize {
             self.info.id
         }
@@ -685,7 +707,7 @@ mod tests {
         }
 
         fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-            validate_request_shape(self.info.device, self.info.limits, &request)?;
+            validate_request(self.info, &request)?;
             if request.op == RequestOp::Read {
                 request.segments[0].fill(request.block_count as u8);
             }
@@ -694,6 +716,7 @@ mod tests {
                 lba: request.lba,
                 block_count: request.block_count,
                 data_len: request.data_len(),
+                segment_lengths: request.segments.iter().map(|segment| segment.len).collect(),
             });
             Ok(RequestId::new(self.log.snapshot().len()))
         }
@@ -745,6 +768,9 @@ mod tests {
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
+            max_transfer_size: 4096,
+            preferred_transfer_size: 4096,
+            supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
             supports_write_zeroes: false,
@@ -762,12 +788,14 @@ mod tests {
                     lba: 4,
                     block_count: 8,
                     data_len: 4096,
+                    segment_lengths: alloc::vec![4096],
                 },
                 SubmittedRequest {
                     op: RequestOp::Write,
                     lba: 12,
                     block_count: 8,
                     data_len: 4096,
+                    segment_lengths: alloc::vec![4096],
                 },
             ]
         );
@@ -790,6 +818,9 @@ mod tests {
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
+            max_transfer_size: 4096,
+            preferred_transfer_size: 4096,
+            supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
             supports_write_zeroes: false,
@@ -807,12 +838,14 @@ mod tests {
                     lba: 4,
                     block_count: 8,
                     data_len: 4096,
+                    segment_lengths: alloc::vec![4096],
                 },
                 SubmittedRequest {
                     op: RequestOp::Read,
                     lba: 12,
                     block_count: 8,
                     data_len: 4096,
+                    segment_lengths: alloc::vec![4096],
                 },
             ]
         );
@@ -849,6 +882,9 @@ mod tests {
                 max_blocks_per_request: 4096,
                 max_segments: 1,
                 max_segment_size: 2 * 1024 * 1024,
+                max_transfer_size: 2 * 1024 * 1024,
+                preferred_transfer_size: 16 * 1024,
+                supported_flags: RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,
                 supports_write_zeroes: false,
@@ -872,5 +908,39 @@ mod tests {
         };
 
         assert_eq!(block_buffer_size(info).unwrap(), 512);
+    }
+
+    #[test]
+    fn write_block_uses_planned_multi_segment_chunks() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let log = Box::leak(Box::<RequestLog>::default());
+        let limits = QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 4096,
+            max_blocks_per_request: 8,
+            max_segments: 4,
+            max_segment_size: 1024,
+            max_transfer_size: 4096,
+            preferred_transfer_size: 4096,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        };
+        let mut block = block_with_queue(Box::new(RecordingQueue::new(log, limits)), dma);
+        let buf = [0x42_u8; 4096];
+
+        block.write_block(4, &buf).unwrap();
+
+        assert_eq!(
+            log.snapshot(),
+            [SubmittedRequest {
+                op: RequestOp::Write,
+                lba: 4,
+                block_count: 8,
+                data_len: 4096,
+                segment_lengths: alloc::vec![1024, 1024, 1024, 1024],
+            }]
+        );
     }
 }

@@ -33,7 +33,7 @@ pub use binding::*;
 #[cfg(sync_block_dev)]
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
-    QueueMode, QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
+    QueueMode, QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request,
 };
 #[cfg(any(
     feature = "virtio-blk",
@@ -138,7 +138,9 @@ impl<D: SyncBlockOps> SyncBlockQueue<D> {
 }
 
 #[cfg(sync_block_dev)]
-impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
+// SAFETY: SyncBlockQueue forwards data to a synchronous block driver and does
+// not retain request segment pointers after `submit_request` returns.
+unsafe impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
     fn id(&self) -> usize {
         self.id
     }
@@ -154,8 +156,7 @@ impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
     }
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        let info = self.device_info();
-        validate_request_shape(info, self.limits(), &request)?;
+        validate_request(self.info(), &request)?;
         match request.op {
             RequestOp::Read => {
                 let segment = request

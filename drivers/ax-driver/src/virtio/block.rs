@@ -122,6 +122,9 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
             max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
             max_segments: 1,
             max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+            max_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+            preferred_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+            supported_flags: rdif_block::RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
             supports_write_zeroes: false,
@@ -176,7 +179,10 @@ struct BlockQueue<T: Transport + 'static> {
     raw: SharedDriver<VirtIoBlkDevice<T>>,
 }
 
-impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
+// SAFETY: virtio-blk operations are submitted to the underlying synchronous
+// driver and completed before `submit_request` returns. No request segment is
+// retained after the call.
+unsafe impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
     fn id(&self) -> usize {
         self.id
     }
@@ -197,6 +203,9 @@ impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
                 max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
                 max_segments: 1,
                 max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+                max_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+                preferred_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
+                supported_flags: rdif_block::RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,
                 supports_write_zeroes: false,
@@ -208,7 +217,7 @@ impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
         &mut self,
         request: rdif_block::Request<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
-        rdif_block::validate_request_shape(self.info().device, self.info().limits, &request)?;
+        rdif_block::validate_request(self.info(), &request)?;
         match request.op {
             rdif_block::RequestOp::Read => {
                 let mut segment = request

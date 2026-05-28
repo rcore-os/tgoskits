@@ -409,6 +409,9 @@ impl rdif_block::Interface for BlockDevice {
             max_blocks_per_request: u16::MAX as u32 + 1,
             max_segments: 1,
             max_segment_size: usize::MAX,
+            max_transfer_size: usize::MAX,
+            preferred_transfer_size: BLOCK_SIZE,
+            supported_flags: rdif_block::RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
             supports_write_zeroes: false,
@@ -519,7 +522,9 @@ fn block_event_from_sdhci_irq(irq_event: sdhci_host::Event) -> rdif_block::Event
     }
 }
 
-impl rdif_block::IQueue for BlockQueue {
+// SAFETY: This queue has one pending request slot and does not retain segment
+// access after the request is completed or failed.
+unsafe impl rdif_block::IQueue for BlockQueue {
     fn id(&self) -> usize {
         self.id
     }
@@ -539,6 +544,9 @@ impl rdif_block::IQueue for BlockQueue {
                 max_blocks_per_request: u16::MAX as u32 + 1,
                 max_segments: 1,
                 max_segment_size: usize::MAX,
+                max_transfer_size: usize::MAX,
+                preferred_transfer_size: BLOCK_SIZE,
+                supported_flags: rdif_block::RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,
                 supports_write_zeroes: false,
@@ -583,7 +591,7 @@ impl BlockQueue {
         request: rdif_block::Request<'_>,
     ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
         let info = self.queue_info();
-        rdif_block::validate_request_shape(info.device, info.limits, &request)?;
+        rdif_block::validate_request(info, &request)?;
         self.reap_pending_request()?;
         let raw = self.raw.clone();
         raw.with_mut(|raw| {

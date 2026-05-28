@@ -7,7 +7,8 @@ use core::{
 use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
-    QueueMode, QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
+    QueueMode, QueueTopology, Request, RequestFlags, RequestId, RequestOp, RequestStatus,
+    validate_request,
 };
 use sg200x_bsp::sdmmc::Sdmmc;
 
@@ -225,6 +226,9 @@ impl Interface for CvsdBlock {
             max_blocks_per_request: 1,
             max_segments: 1,
             max_segment_size: BLOCK_SIZE,
+            max_transfer_size: BLOCK_SIZE,
+            preferred_transfer_size: BLOCK_SIZE,
+            supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
             supports_write_zeroes: false,
@@ -256,7 +260,9 @@ struct CvsdQueue {
     inner: SharedCvsdDriver,
 }
 
-impl IQueue for CvsdQueue {
+// SAFETY: CVSD operations complete synchronously inside `submit_request`; the
+// queue never retains segment pointers beyond the call.
+unsafe impl IQueue for CvsdQueue {
     fn id(&self) -> usize {
         self.id
     }
@@ -279,6 +285,9 @@ impl IQueue for CvsdQueue {
                 max_blocks_per_request: 1,
                 max_segments: 1,
                 max_segment_size: BLOCK_SIZE,
+                max_transfer_size: BLOCK_SIZE,
+                preferred_transfer_size: BLOCK_SIZE,
+                supported_flags: RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,
                 supports_write_zeroes: false,
@@ -287,7 +296,7 @@ impl IQueue for CvsdQueue {
     }
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        validate_request_shape(self.info().device, self.info().limits, &request)?;
+        validate_request(self.info(), &request)?;
         match request.op {
             RequestOp::Read => {
                 let segment = request

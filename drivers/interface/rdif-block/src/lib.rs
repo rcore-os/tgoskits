@@ -95,6 +95,9 @@ pub struct QueueLimits {
     pub max_blocks_per_request: u32,
     pub max_segments: usize,
     pub max_segment_size: usize,
+    pub max_transfer_size: usize,
+    pub preferred_transfer_size: usize,
+    pub supported_flags: RequestFlags,
     pub supports_flush: bool,
     pub supports_discard: bool,
     pub supports_write_zeroes: bool,
@@ -108,6 +111,9 @@ impl QueueLimits {
             max_blocks_per_request: u32::MAX,
             max_segments: 1,
             max_segment_size: usize::MAX,
+            max_transfer_size: usize::MAX,
+            preferred_transfer_size: logical_block_size,
+            supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
             supports_write_zeroes: false,
@@ -168,6 +174,186 @@ pub struct QueueInfo {
     pub mode: QueueMode,
     pub device: DeviceInfo,
     pub limits: QueueLimits,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TransferPlanConfig {
+    pub max_transfer_size: usize,
+    pub max_segments: usize,
+}
+
+impl TransferPlanConfig {
+    pub const fn new(max_transfer_size: usize, max_segments: usize) -> Self {
+        Self {
+            max_transfer_size,
+            max_segments,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferSegment {
+    /// Segment byte offset relative to the containing transfer chunk.
+    pub byte_offset: usize,
+    pub byte_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferChunk {
+    pub lba: u64,
+    pub block_count: u32,
+    pub byte_offset: usize,
+    pub byte_len: usize,
+    pub segment_count: usize,
+    max_segment_size: usize,
+}
+
+impl TransferChunk {
+    pub fn segments(self) -> TransferSegments {
+        TransferSegments {
+            remaining_len: self.byte_len,
+            byte_offset: 0,
+            max_segment_size: self.max_segment_size,
+        }
+    }
+}
+
+pub struct TransferSegments {
+    remaining_len: usize,
+    byte_offset: usize,
+    max_segment_size: usize,
+}
+
+impl Iterator for TransferSegments {
+    type Item = TransferSegment;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining_len == 0 {
+            return None;
+        }
+
+        let byte_len = self.remaining_len.min(self.max_segment_size);
+        let segment = TransferSegment {
+            byte_offset: self.byte_offset,
+            byte_len,
+        };
+        self.byte_offset += byte_len;
+        self.remaining_len -= byte_len;
+        Some(segment)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TransferPlan {
+    next_lba: u64,
+    byte_offset: usize,
+    remaining_bytes: usize,
+    block_size: usize,
+    max_chunk_size: usize,
+    max_segment_size: usize,
+}
+
+impl TransferPlan {
+    pub fn new(
+        info: QueueInfo,
+        lba: u64,
+        byte_len: usize,
+        config: TransferPlanConfig,
+    ) -> Result<Self, BlkError> {
+        let block_size = info.device.logical_block_size;
+        if block_size == 0 || byte_len == 0 || !byte_len.is_multiple_of(block_size) {
+            return Err(BlkError::InvalidRequest);
+        }
+
+        let block_count = byte_len / block_size;
+        let block_count_u64 = u64::try_from(block_count).map_err(|_| BlkError::InvalidRequest)?;
+        if lba >= info.device.num_blocks
+            || lba
+                .checked_add(block_count_u64)
+                .is_none_or(|end| end > info.device.num_blocks)
+        {
+            return Err(BlkError::InvalidBlockIndex(lba));
+        }
+
+        let max_chunk_size = planned_transfer_size(info, config)?;
+
+        Ok(Self {
+            next_lba: lba,
+            byte_offset: 0,
+            remaining_bytes: byte_len,
+            block_size,
+            max_chunk_size,
+            max_segment_size: info.limits.max_segment_size,
+        })
+    }
+}
+
+pub fn planned_transfer_size(
+    info: QueueInfo,
+    config: TransferPlanConfig,
+) -> Result<usize, BlkError> {
+    let block_size = info.device.logical_block_size;
+    let limits = info.limits;
+    let max_segments = limits.max_segments.min(config.max_segments);
+    if block_size == 0
+        || limits.max_blocks_per_request == 0
+        || max_segments == 0
+        || limits.max_segment_size == 0
+        || limits.max_transfer_size == 0
+        || limits.preferred_transfer_size == 0
+        || config.max_transfer_size == 0
+    {
+        return Err(BlkError::InvalidRequest);
+    }
+
+    let max_by_blocks = block_size.saturating_mul(limits.max_blocks_per_request as usize);
+    let max_by_segments = limits.max_segment_size.saturating_mul(max_segments);
+    let max_chunk_size = [
+        max_by_blocks,
+        max_by_segments,
+        limits.max_transfer_size,
+        limits.preferred_transfer_size,
+        config.max_transfer_size,
+    ]
+    .into_iter()
+    .min()
+    .ok_or(BlkError::InvalidRequest)?;
+    let max_chunk_size = align_down(max_chunk_size, block_size);
+    if max_chunk_size < block_size {
+        return Err(BlkError::InvalidRequest);
+    }
+    Ok(max_chunk_size)
+}
+
+impl Iterator for TransferPlan {
+    type Item = TransferChunk;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining_bytes == 0 {
+            return None;
+        }
+
+        let byte_len = self.remaining_bytes.min(self.max_chunk_size);
+        let block_count = byte_len / self.block_size;
+        let block_count_u32 = block_count as u32;
+        let chunk = TransferChunk {
+            lba: self.next_lba,
+            block_count: block_count_u32,
+            byte_offset: self.byte_offset,
+            byte_len,
+            segment_count: byte_len.div_ceil(self.max_segment_size),
+            max_segment_size: self.max_segment_size,
+        };
+
+        self.next_lba += block_count as u64;
+        self.byte_offset += byte_len;
+        self.remaining_bytes -= byte_len;
+        Some(chunk)
+    }
+}
+
+fn align_down(value: usize, align: usize) -> usize {
+    value / align * align
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,13 +503,33 @@ impl RequestFlags {
     pub const META: Self = Self(1 << 3);
     pub const POLLED: Self = Self(1 << 4);
     pub const NOWAIT: Self = Self(1 << 5);
+    pub const ALL_KNOWN: Self = Self(
+        Self::FUA.bits()
+            | Self::PREFLUSH.bits()
+            | Self::SYNC.bits()
+            | Self::META.bits()
+            | Self::POLLED.bits()
+            | Self::NOWAIT.bits(),
+    );
 
     pub const fn bits(self) -> u32 {
         self.0
     }
 
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
+    }
+
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    pub const fn unsupported_by(self, supported: Self) -> Self {
+        Self(self.0 & !supported.0)
     }
 }
 
@@ -408,7 +614,16 @@ impl Request<'_> {
     }
 }
 
-pub trait IQueue: Send + 'static {
+/// A request queue for one block device hardware/software queue.
+///
+/// # Safety
+///
+/// Implementers may access `Request` segments after `submit_request` returns
+/// and until the matching `poll_request` returns `RequestStatus::Complete` or
+/// an error. They must not access any segment before `submit_request` is called
+/// or after completion/error has been reported, and request IDs must not alias
+/// two concurrently pending requests in a way that extends this lifetime.
+pub unsafe trait IQueue: Send + 'static {
     fn id(&self) -> usize;
 
     fn info(&self) -> QueueInfo;
@@ -416,6 +631,11 @@ pub trait IQueue: Send + 'static {
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError>;
 
     fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
+}
+
+pub fn validate_request(info: QueueInfo, request: &Request<'_>) -> Result<(), BlkError> {
+    validate_request_flags(info, request)?;
+    validate_request_shape(info.device, info.limits, request)
 }
 
 pub fn validate_request_shape(
@@ -456,6 +676,9 @@ pub fn validate_request_shape(
             {
                 return Err(BlkError::InvalidRequest);
             }
+            if request.data_len() > limits.max_transfer_size {
+                return Err(BlkError::InvalidRequest);
+            }
         }
         RequestOp::Flush => {
             if !request.segments.is_empty() || request.block_count != 0 {
@@ -485,6 +708,24 @@ pub fn validate_request_shape(
 
     if request.block_count > limits.max_blocks_per_request {
         return Err(BlkError::InvalidRequest);
+    }
+
+    Ok(())
+}
+
+fn validate_request_flags(info: QueueInfo, request: &Request<'_>) -> Result<(), BlkError> {
+    let unknown = request.flags.unsupported_by(RequestFlags::ALL_KNOWN);
+    if !unknown.is_empty() {
+        return Err(BlkError::InvalidRequest);
+    }
+
+    let unsupported = request.flags.unsupported_by(info.limits.supported_flags);
+    if !unsupported.is_empty() {
+        return Err(BlkError::NotSupported);
+    }
+
+    if request.flags.intersects(RequestFlags::PREFLUSH) && !info.limits.supports_flush {
+        return Err(BlkError::NotSupported);
     }
 
     Ok(())
@@ -560,7 +801,9 @@ mod tests {
 
     struct Queue;
 
-    impl IQueue for Queue {
+    // SAFETY: This test queue never stores request segments beyond
+    // `submit_request` and reports completion immediately.
+    unsafe impl IQueue for Queue {
         fn id(&self) -> usize {
             1
         }
@@ -604,5 +847,302 @@ mod tests {
 
         assert_eq!(source.id, 0);
         assert!(source.queues.contains(2));
+    }
+
+    fn queue_info_with(limits: QueueLimits) -> QueueInfo {
+        QueueInfo {
+            id: 0,
+            depth: 8,
+            mode: QueueMode::Polled,
+            device: DeviceInfo::new(64, 512),
+            limits,
+        }
+    }
+
+    fn test_plan_config() -> TransferPlanConfig {
+        TransferPlanConfig {
+            max_transfer_size: 16 * 1024,
+            max_segments: 16,
+        }
+    }
+
+    fn chunk_summary(chunks: &[TransferChunk]) -> alloc::vec::Vec<(u64, u32, usize, usize, usize)> {
+        chunks
+            .iter()
+            .map(|chunk| {
+                (
+                    chunk.lba,
+                    chunk.block_count,
+                    chunk.byte_offset,
+                    chunk.byte_len,
+                    chunk.segment_count,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn simple_limits_prefer_single_block_transfers() {
+        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let plan = TransferPlan::new(info, 0, 2048, test_plan_config()).unwrap();
+        let chunks: alloc::vec::Vec<_> = plan.collect();
+
+        assert_eq!(
+            chunk_summary(&chunks),
+            [
+                (0, 1, 0, 512, 1),
+                (1, 1, 512, 512, 1),
+                (2, 1, 1024, 512, 1),
+                (3, 1, 1536, 512, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn transfer_plan_chunks_by_preferred_size() {
+        let info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 16,
+            max_segments: 4,
+            max_segment_size: 4096,
+            max_transfer_size: 8192,
+            preferred_transfer_size: 2048,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+        let plan = TransferPlan::new(info, 4, 5120, test_plan_config()).unwrap();
+        let chunks: alloc::vec::Vec<_> = plan.collect();
+
+        assert_eq!(
+            chunk_summary(&chunks),
+            [
+                (4, 4, 0, 2048, 1),
+                (8, 4, 2048, 2048, 1),
+                (12, 2, 4096, 1024, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn transfer_chunk_segments_split_by_hard_segment_size() {
+        let info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 16,
+            max_segments: 4,
+            max_segment_size: 1024,
+            max_transfer_size: 4096,
+            preferred_transfer_size: 4096,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+        let mut plan = TransferPlan::new(info, 0, 4096, test_plan_config()).unwrap();
+        let chunk = plan.next().unwrap();
+        let segments: alloc::vec::Vec<_> = chunk.segments().collect();
+
+        assert_eq!(chunk.segment_count, 4);
+        assert_eq!(
+            segments,
+            [
+                TransferSegment {
+                    byte_offset: 0,
+                    byte_len: 1024,
+                },
+                TransferSegment {
+                    byte_offset: 1024,
+                    byte_len: 1024,
+                },
+                TransferSegment {
+                    byte_offset: 2048,
+                    byte_len: 1024,
+                },
+                TransferSegment {
+                    byte_offset: 3072,
+                    byte_len: 1024,
+                },
+            ]
+        );
+        assert!(plan.next().is_none());
+    }
+
+    #[test]
+    fn transfer_plan_clamps_to_hard_transfer_size() {
+        let info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 16,
+            max_segments: 8,
+            max_segment_size: 4096,
+            max_transfer_size: 2048,
+            preferred_transfer_size: 8192,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+        let plan = TransferPlan::new(info, 0, 5120, test_plan_config()).unwrap();
+        let chunks: alloc::vec::Vec<_> = plan.collect();
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.byte_len)
+                .collect::<alloc::vec::Vec<_>>(),
+            [2048, 2048, 1024]
+        );
+    }
+
+    #[test]
+    fn transfer_plan_clamps_to_runtime_limits() {
+        let info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 16,
+            max_segments: 8,
+            max_segment_size: 2048,
+            max_transfer_size: 8192,
+            preferred_transfer_size: 8192,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+        let plan = TransferPlan::new(
+            info,
+            0,
+            4096,
+            TransferPlanConfig {
+                max_transfer_size: 4096,
+                max_segments: 1,
+            },
+        )
+        .unwrap();
+        let chunks: alloc::vec::Vec<_> = plan.collect();
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.byte_len)
+                .collect::<alloc::vec::Vec<_>>(),
+            [2048, 2048]
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_unsupported_flags() {
+        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let mut bytes = [0_u8; 512];
+        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+        let mut segments = [segment];
+        let request = Request {
+            op: RequestOp::Write,
+            lba: 0,
+            block_count: 1,
+            segments: &mut segments,
+            flags: RequestFlags::FUA,
+        };
+
+        assert_eq!(
+            validate_request(info, &request),
+            Err(BlkError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_unknown_flags() {
+        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let mut bytes = [0_u8; 512];
+        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+        let mut segments = [segment];
+        let request = Request {
+            op: RequestOp::Read,
+            lba: 0,
+            block_count: 1,
+            segments: &mut segments,
+            flags: RequestFlags(1 << 24),
+        };
+
+        assert_eq!(
+            validate_request(info, &request),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn request_validation_accepts_supported_flags() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.supported_flags = RequestFlags::FUA;
+        let info = queue_info_with(limits);
+        let mut bytes = [0_u8; 512];
+        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+        let mut segments = [segment];
+        let request = Request {
+            op: RequestOp::Write,
+            lba: 0,
+            block_count: 1,
+            segments: &mut segments,
+            flags: RequestFlags::FUA,
+        };
+
+        assert_eq!(validate_request(info, &request), Ok(()));
+    }
+
+    #[test]
+    fn preflush_flag_requires_flush_support() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.supported_flags = RequestFlags::PREFLUSH;
+        let info = queue_info_with(limits);
+        let mut bytes = [0_u8; 512];
+        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+        let mut segments = [segment];
+        let request = Request {
+            op: RequestOp::Write,
+            lba: 0,
+            block_count: 1,
+            segments: &mut segments,
+            flags: RequestFlags::PREFLUSH,
+        };
+
+        assert_eq!(
+            validate_request(info, &request),
+            Err(BlkError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_transfer_larger_than_hard_limit() {
+        let info = queue_info_with(QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 512,
+            max_blocks_per_request: 8,
+            max_segments: 1,
+            max_segment_size: 4096,
+            max_transfer_size: 1024,
+            preferred_transfer_size: 1024,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        });
+        let mut bytes = [0_u8; 1536];
+        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+        let mut segments = [segment];
+        let request = Request {
+            op: RequestOp::Write,
+            lba: 0,
+            block_count: 3,
+            segments: &mut segments,
+            flags: RequestFlags::NONE,
+        };
+
+        assert_eq!(
+            validate_request(info, &request),
+            Err(BlkError::InvalidRequest)
+        );
     }
 }

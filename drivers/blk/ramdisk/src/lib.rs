@@ -8,9 +8,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
     IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueMode, QueueTopology,
-    Request, RequestId, RequestOp, RequestStatus, validate_request_shape,
+    Request, RequestId, RequestOp, RequestStatus, validate_request,
 };
 use spin::Mutex;
+
+const PREFERRED_TRANSFER_SIZE: usize = 16 * 1024;
 
 struct RamInner {
     storage: Vec<u8>,
@@ -88,8 +90,20 @@ impl RamDisk {
     }
 
     fn limits_for(&self) -> QueueLimits {
-        QueueLimits::simple(self.block_size, u64::MAX)
+        let mut limits = QueueLimits::simple(self.block_size, u64::MAX);
+        let transfer_size = align_down(
+            PREFERRED_TRANSFER_SIZE.max(self.block_size),
+            self.block_size,
+        );
+        limits.max_segment_size = transfer_size;
+        limits.max_transfer_size = transfer_size;
+        limits.preferred_transfer_size = transfer_size;
+        limits
     }
+}
+
+fn align_down(value: usize, align: usize) -> usize {
+    value / align * align
 }
 
 impl DriverGeneric for RamDisk {
@@ -201,7 +215,9 @@ struct RamQueue {
     irq: Arc<RamIrqState>,
 }
 
-impl IQueue for RamQueue {
+// SAFETY: ramdisk copies data synchronously during `submit_request`; it stores
+// only the completed request ID and never retains request segment pointers.
+unsafe impl IQueue for RamQueue {
     fn id(&self) -> usize {
         self.id
     }
@@ -217,7 +233,7 @@ impl IQueue for RamQueue {
     }
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        validate_request_shape(self.device, self.limits, &request)?;
+        validate_request(self.info(), &request)?;
 
         let mut guard = self.inner.lock();
         let req_id = RequestId::new(guard.next_req_id);
