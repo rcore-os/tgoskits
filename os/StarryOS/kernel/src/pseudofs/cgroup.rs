@@ -91,7 +91,7 @@ impl DirectRwFsFileOps for CgroupFile {
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         match self.kind {
             CgroupFileKind::Controllers => {
-                crate::cgroup::controllers_text(self.id)?;
+                crate::cgroup::ensure_node_exists(self.id)?;
                 return Err(VfsError::from(LinuxError::EACCES));
             }
             CgroupFileKind::Procs => crate::cgroup::write_procs(self.id, buf)?,

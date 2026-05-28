@@ -107,7 +107,7 @@ pub fn create_child(parent: CgroupId, name: &str) -> AxResult<CgroupId> {
     }
 
     let id = tree.next_id;
-    tree.next_id += 1;
+    tree.next_id = id.checked_add(1).ok_or(AxError::NoMemory)?;
     tree.nodes.insert(id, CgroupNode::child(id, parent, name));
     tree.nodes
         .get_mut(&parent)
@@ -179,14 +179,8 @@ pub fn path(id: CgroupId) -> AxResult<String> {
 }
 
 pub fn procs_text(id: CgroupId) -> AxResult<String> {
-    let is_root = {
-        let tree = CGROUP_TREE.lock();
-        let node = tree.nodes.get(&id).ok_or(AxError::NotFound)?;
-        debug_assert_eq!(node.id, id);
-        id == ROOT_ID
-    };
-
-    if !is_root {
+    ensure_node_exists(id)?;
+    if id != ROOT_ID {
         return Ok(String::new());
     }
 
@@ -223,7 +217,7 @@ pub fn write_subtree_control(id: CgroupId, _data: &[u8]) -> AxResult<()> {
     Err(AxError::from(LinuxError::EINVAL))
 }
 
-fn ensure_node_exists(id: CgroupId) -> AxResult<()> {
+pub fn ensure_node_exists(id: CgroupId) -> AxResult<()> {
     let tree = CGROUP_TREE.lock();
     let node = tree.nodes.get(&id).ok_or(AxError::NotFound)?;
     debug_assert_eq!(node.id, id);

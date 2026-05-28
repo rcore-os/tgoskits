@@ -46,7 +46,6 @@ static void check_mkdir(const char *path, const char *msg)
     errno = 0;
     int ret = mkdir(path, 0755);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == 0 || saved_errno == EEXIST, msg);
 }
 
@@ -54,8 +53,6 @@ static void expect_mkdir_ok(const char *path, const char *msg)
 {
     errno = 0;
     int ret = mkdir(path, 0755);
-    int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == 0, msg);
 }
 
@@ -64,7 +61,6 @@ static void expect_mkdir_errno(const char *path, int expected_errno, const char 
     errno = 0;
     int ret = mkdir(path, 0755);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == -1 && saved_errno == expected_errno, msg);
 }
 
@@ -72,8 +68,6 @@ static void expect_rmdir_ok(const char *path, const char *msg)
 {
     errno = 0;
     int ret = rmdir(path);
-    int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == 0, msg);
 }
 
@@ -82,7 +76,6 @@ static void expect_rmdir_errno(const char *path, int expected_errno, const char 
     errno = 0;
     int ret = rmdir(path);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == -1 && saved_errno == expected_errno, msg);
 }
 
@@ -115,8 +108,6 @@ static void expect_path_exists(const char *path, const char *msg)
     struct stat st;
     errno = 0;
     int ret = stat(path, &st);
-    int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == 0, msg);
 }
 
@@ -126,7 +117,6 @@ static void expect_path_missing(const char *path, const char *msg)
     errno = 0;
     int ret = stat(path, &st);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == -1 && saved_errno == ENOENT, msg);
 }
 
@@ -158,7 +148,7 @@ static void expect_empty_file(const char *path, const char *msg)
 {
     char buf[16];
     ssize_t nread = read_text_file(path, buf, sizeof(buf));
-    CHECK(nread >= 0 && nread == 0, msg);
+    CHECK(nread == 0, msg);
 }
 
 static int buffer_contains_pid(const char *buf, pid_t pid)
@@ -207,7 +197,6 @@ static void expect_link_errno(const char *old_path, const char *new_path,
     errno = 0;
     int ret = link(old_path, new_path);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == -1 && saved_errno == expected_errno, msg);
 }
 
@@ -217,7 +206,6 @@ static void expect_symlink_errno(const char *target, const char *link_path,
     errno = 0;
     int ret = symlink(target, link_path);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == -1 && saved_errno == expected_errno, msg);
 }
 
@@ -227,7 +215,6 @@ static void expect_rename_errno(const char *old_path, const char *new_path,
     errno = 0;
     int ret = rename(old_path, new_path);
     int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == -1 && saved_errno == expected_errno, msg);
 }
 
@@ -235,8 +222,6 @@ static void expect_chdir_ok(const char *path, const char *msg)
 {
     errno = 0;
     int ret = chdir(path);
-    int saved_errno = errno;
-    errno = saved_errno;
     CHECK(ret == 0, msg);
 }
 
