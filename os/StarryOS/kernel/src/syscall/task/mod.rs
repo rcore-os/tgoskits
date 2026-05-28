@@ -12,6 +12,5 @@ mod wait;
 
 pub use self::{
     clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, namespace::*, ptrace::*, schedule::*,
-    thread::*,
-    wait::*,
+    thread::*, wait::*,
 };
