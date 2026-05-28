@@ -37,6 +37,8 @@ const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
 const R_RISCV_RELATIVE: u32 = 3;
 #[cfg(target_arch = "riscv64")]
 const R_RISCV_JUMP_SLOT: u32 = 5;
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_64: u32 = 2;
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
@@ -255,6 +257,34 @@ fn apply_relocations(
                     let value = (base as i64 + addend) as u64;
                     uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
                     debug!("RELATIVE: [{:#x}] = {:#x}", target, value);
+                }
+                R_RISCV_64 => {
+                    // S + A (symbol value + addend)
+                    let sym_idx = (info >> 32) as usize;
+                    if symtab_addr == 0 || strtab_addr == 0 {
+                        debug!("Missing symtab/strtab for R_RISCV_64");
+                        continue;
+                    }
+
+                    // Read symbol from .dynsym
+                    let sym_offset = (symtab_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
+                    let sym_entry_size = 24; // sizeof(Sym64) = 24 bytes
+                    let sym_entry_offset = sym_offset + sym_idx * sym_entry_size;
+
+                    if sym_entry_offset + sym_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+                        debug!("Symbol entry extends beyond file");
+                        continue;
+                    }
+
+                    let mut sym_data = vec![0u8; sym_entry_size];
+                    cache.read_at(&mut sym_data, sym_entry_offset as u64)?;
+                    // Sym64: st_name(4) + st_info(1) + st_other(1) + st_shndx(2) + st_value(8) + st_size(8)
+                    let st_value = u64::from_le_bytes(sym_data[8..16].try_into().unwrap());
+
+                    let target = base + offset;
+                    let value = (st_value as i64 + addend) as u64;
+                    uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
+                    debug!("R_RISCV_64: [{:#x}] = {:#x} (sym_idx={})", target, value, sym_idx);
                 }
                 _ => {
                     debug!("Unsupported relocation type: {}", reloc_type);
