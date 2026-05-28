@@ -8,8 +8,8 @@ use core::{
 use dma_api::CoherentArray;
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
-    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueMode, QueueTopology,
-    Request, RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
+    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueTopology, Request,
+    RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
 };
 
 use crate::{
@@ -132,7 +132,6 @@ impl Interface for NvmeBlockDriver {
         self.inner.with_mut(|inner| QueueTopology {
             max_queues: inner.nvme.io_queue_count(),
             default_queue_depth: 64,
-            poll_queue_count: 0,
         })
     }
 
@@ -154,7 +153,6 @@ impl Interface for NvmeBlockDriver {
             Some(NvmeBlockQueue::new(
                 id,
                 depth,
-                config.mode,
                 self.name,
                 inner.namespace,
                 inner.nvme.dma_mask(),
@@ -220,7 +218,6 @@ impl IrqHandler for NvmeIrqHandler {
 struct NvmeBlockQueue {
     id: usize,
     depth: usize,
-    mode: QueueMode,
     name: &'static str,
     namespace: Namespace,
     dma_mask: u64,
@@ -256,7 +253,6 @@ impl NvmeBlockQueue {
     fn new(
         id: usize,
         depth: usize,
-        mode: QueueMode,
         name: &'static str,
         namespace: Namespace,
         dma_mask: u64,
@@ -275,7 +271,6 @@ impl NvmeBlockQueue {
         Self {
             id,
             depth,
-            mode,
             name,
             namespace,
             dma_mask,
@@ -292,7 +287,6 @@ impl NvmeBlockQueue {
         QueueInfo {
             id: self.id,
             depth: self.depth,
-            mode: self.mode,
             device: device_info(self.name, self.namespace),
             limits: limits(self.dma_mask, self.page_size, self.namespace),
         }
@@ -507,8 +501,6 @@ fn limits(dma_mask: u64, page_size: usize, namespace: Namespace) -> QueueLimits 
         max_blocks_per_request: max_blocks,
         max_segments: prp_entries + 1,
         max_segment_size: max_bytes,
-        max_transfer_size: max_bytes,
-        preferred_transfer_size: max_bytes.min(16 * 1024),
         supported_flags: RequestFlags::NONE,
         supports_flush: true,
         supports_discard: false,

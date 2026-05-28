@@ -119,8 +119,6 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
             max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
             max_segments: 1,
             max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
-            max_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
-            preferred_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
             supported_flags: rdif_block::RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
@@ -132,7 +130,6 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
         rdif_block::QueueTopology {
             max_queues: 1,
             default_queue_depth: 1,
-            poll_queue_count: 1,
         }
     }
 
@@ -148,7 +145,6 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
             alloc::boxed::Box::new(BlockQueue {
                 id: config.id_hint.unwrap_or(0),
                 depth: config.depth.max(1),
-                mode: config.mode,
                 raw: dev.clone(),
             }) as _
         })
@@ -172,7 +168,6 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
 struct BlockQueue<T: Transport + 'static> {
     id: usize,
     depth: usize,
-    mode: rdif_block::QueueMode,
     raw: SharedDriver<VirtIoBlkDevice<T>>,
 }
 
@@ -189,7 +184,6 @@ unsafe impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
         rdif_block::QueueInfo {
             id: self.id,
             depth: self.depth,
-            mode: self.mode,
             device: rdif_block::DeviceInfo {
                 name: Some("virtio-blk"),
                 ..rdif_block::DeviceInfo::new(blocks, SECTOR_SIZE)
@@ -200,8 +194,6 @@ unsafe impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
                 max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
                 max_segments: 1,
                 max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
-                max_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
-                preferred_transfer_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
                 supported_flags: rdif_block::RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,

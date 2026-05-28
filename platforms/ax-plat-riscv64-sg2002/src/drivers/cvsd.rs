@@ -7,8 +7,7 @@ use core::{
 use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
-    QueueMode, QueueTopology, Request, RequestFlags, RequestId, RequestOp, RequestStatus,
-    validate_request,
+    QueueTopology, Request, RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
 };
 use sg200x_bsp::sdmmc::Sdmmc;
 
@@ -226,8 +225,6 @@ impl Interface for CvsdBlock {
             max_blocks_per_request: 1,
             max_segments: 1,
             max_segment_size: BLOCK_SIZE,
-            max_transfer_size: BLOCK_SIZE,
-            preferred_transfer_size: BLOCK_SIZE,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
@@ -247,7 +244,6 @@ impl Interface for CvsdBlock {
         Some(Box::new(CvsdQueue {
             id: config.id_hint.unwrap_or(0),
             depth: config.depth.max(1),
-            mode: config.mode,
             inner: self.inner.clone(),
         }))
     }
@@ -256,7 +252,6 @@ impl Interface for CvsdBlock {
 struct CvsdQueue {
     id: usize,
     depth: usize,
-    mode: QueueMode,
     inner: SharedCvsdDriver,
 }
 
@@ -271,7 +266,6 @@ unsafe impl IQueue for CvsdQueue {
         QueueInfo {
             id: self.id,
             depth: self.depth,
-            mode: self.mode,
             device: DeviceInfo {
                 name: Some(DEVICE_NAME),
                 ..DeviceInfo::new(
@@ -285,8 +279,6 @@ unsafe impl IQueue for CvsdQueue {
                 max_blocks_per_request: 1,
                 max_segments: 1,
                 max_segment_size: BLOCK_SIZE,
-                max_transfer_size: BLOCK_SIZE,
-                preferred_transfer_size: BLOCK_SIZE,
                 supported_flags: RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,

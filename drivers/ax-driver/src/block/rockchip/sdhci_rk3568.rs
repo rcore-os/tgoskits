@@ -409,8 +409,6 @@ impl rdif_block::Interface for BlockDevice {
             max_blocks_per_request: u16::MAX as u32 + 1,
             max_segments: 1,
             max_segment_size: usize::MAX,
-            max_transfer_size: usize::MAX,
-            preferred_transfer_size: BLOCK_SIZE,
             supported_flags: rdif_block::RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
@@ -533,7 +531,6 @@ unsafe impl rdif_block::IQueue for BlockQueue {
         rdif_block::QueueInfo {
             id: self.id,
             depth: 1,
-            mode: rdif_block::QueueMode::Interrupt,
             device: rdif_block::DeviceInfo {
                 name: Some("rockchip-rk3568-sdhci"),
                 ..rdif_block::DeviceInfo::new(self.capacity_blocks, BLOCK_SIZE)
@@ -544,8 +541,6 @@ unsafe impl rdif_block::IQueue for BlockQueue {
                 max_blocks_per_request: u16::MAX as u32 + 1,
                 max_segments: 1,
                 max_segment_size: usize::MAX,
-                max_transfer_size: usize::MAX,
-                preferred_transfer_size: BLOCK_SIZE,
                 supported_flags: rdif_block::RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,

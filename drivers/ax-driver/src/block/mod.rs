@@ -33,7 +33,7 @@ pub use binding::*;
 #[cfg(sync_block_dev)]
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
-    QueueMode, QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request,
+    QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request,
 };
 #[cfg(any(
     feature = "virtio-blk",
@@ -108,7 +108,6 @@ impl<D: SyncBlockOps> Interface for SyncBlockDevice<D> {
         Some(Box::new(SyncBlockQueue {
             id: config.id_hint.unwrap_or(0),
             depth: config.depth.max(1),
-            mode: config.mode,
             inner: Arc::clone(&self.inner),
         }))
     }
@@ -118,7 +117,6 @@ impl<D: SyncBlockOps> Interface for SyncBlockDevice<D> {
 struct SyncBlockQueue<D> {
     id: usize,
     depth: usize,
-    mode: QueueMode,
     inner: Arc<Mutex<D>>,
 }
 
@@ -149,7 +147,6 @@ unsafe impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
         QueueInfo {
             id: self.id,
             depth: self.depth,
-            mode: self.mode,
             device: self.device_info(),
             limits: self.limits(),
         }

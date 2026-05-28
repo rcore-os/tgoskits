@@ -7,8 +7,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
-    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueMode, QueueTopology,
-    Request, RequestId, RequestOp, RequestStatus, validate_request,
+    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueTopology, Request,
+    RequestId, RequestOp, RequestStatus, validate_request,
 };
 use spin::Mutex;
 
@@ -95,9 +95,8 @@ impl RamDisk {
             PREFERRED_TRANSFER_SIZE.max(self.block_size),
             self.block_size,
         );
+        limits.max_blocks_per_request = (transfer_size / self.block_size).max(1) as u32;
         limits.max_segment_size = transfer_size;
-        limits.max_transfer_size = transfer_size;
-        limits.preferred_transfer_size = transfer_size;
         limits
     }
 }
@@ -133,7 +132,6 @@ impl Interface for RamDisk {
         QueueTopology {
             max_queues: 64,
             default_queue_depth: 64,
-            poll_queue_count: 0,
         }
     }
 
@@ -152,7 +150,6 @@ impl Interface for RamDisk {
         Some(Box::new(RamQueue {
             id,
             depth: config.depth.max(1),
-            mode: config.mode,
             device: self.device_info_for(),
             limits: self.limits_for(),
             inner: Arc::clone(&self.inner),
@@ -208,7 +205,6 @@ impl IrqHandler for RamIrqHandler {
 struct RamQueue {
     id: usize,
     depth: usize,
-    mode: QueueMode,
     device: DeviceInfo,
     limits: QueueLimits,
     inner: Arc<Mutex<RamInner>>,
@@ -226,7 +222,6 @@ unsafe impl IQueue for RamQueue {
         QueueInfo {
             id: self.id,
             depth: self.depth,
-            mode: self.mode,
             device: self.device,
             limits: self.limits,
         }

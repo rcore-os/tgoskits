@@ -10,7 +10,7 @@ use ax_kspin::SpinNoIrq;
 use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
-    BlkError, Buffer, IQueue, Interface, QueueConfig, QueueInfo, QueueMode, QueueTopology, Request,
+    BlkError, Buffer, IQueue, Interface, QueueConfig, QueueInfo, QueueTopology, Request,
     RequestFlags, RequestId, RequestOp, RequestStatus, TransferChunk, TransferPlan,
     TransferPlanner, TransferRuntimeCaps,
 };
@@ -336,11 +336,6 @@ fn default_queue_config(topology: QueueTopology) -> QueueConfig {
     QueueConfig {
         id_hint: Some(0),
         depth: topology.default_queue_depth.max(1),
-        mode: if topology.poll_queue_count > 0 {
-            QueueMode::Polled
-        } else {
-            QueueMode::Interrupt
-        },
     }
 }
 
@@ -622,7 +617,6 @@ mod tests {
             QueueInfo {
                 id: 0,
                 depth: 1,
-                mode: QueueMode::Polled,
                 device: DeviceInfo {
                     name: Some("test-block"),
                     ..DeviceInfo::new(8, 512)
@@ -657,7 +651,6 @@ mod tests {
                 info: QueueInfo {
                     id: 0,
                     depth: 1,
-                    mode: QueueMode::Polled,
                     device: DeviceInfo {
                         name: Some("recording-block"),
                         ..DeviceInfo::new(64, 512)
@@ -744,8 +737,6 @@ mod tests {
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
-            max_transfer_size: 4096,
-            preferred_transfer_size: 4096,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
@@ -794,8 +785,6 @@ mod tests {
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
-            max_transfer_size: 4096,
-            preferred_transfer_size: 4096,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
@@ -847,7 +836,6 @@ mod tests {
         let info = QueueInfo {
             id: 0,
             depth: 1,
-            mode: QueueMode::Polled,
             device: DeviceInfo {
                 name: Some("large-segment-block"),
                 ..DeviceInfo::new(64, 512)
@@ -858,8 +846,6 @@ mod tests {
                 max_blocks_per_request: 4096,
                 max_segments: 1,
                 max_segment_size: 2 * 1024 * 1024,
-                max_transfer_size: 2 * 1024 * 1024,
-                preferred_transfer_size: 16 * 1024,
                 supported_flags: RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,
@@ -878,7 +864,6 @@ mod tests {
         let info = QueueInfo {
             id: 0,
             depth: 1,
-            mode: QueueMode::Polled,
             device: DeviceInfo {
                 name: Some("simple-block"),
                 ..DeviceInfo::new(64, 512)
@@ -894,7 +879,6 @@ mod tests {
         let info = QueueInfo {
             id: 0,
             depth: 1,
-            mode: QueueMode::Polled,
             device: DeviceInfo {
                 name: Some("unbounded-large-preference-block"),
                 ..DeviceInfo::new(128, 512)
@@ -905,8 +889,6 @@ mod tests {
                 max_blocks_per_request: u32::MAX,
                 max_segments: 1,
                 max_segment_size: usize::MAX,
-                max_transfer_size: usize::MAX,
-                preferred_transfer_size: 64 * 1024,
                 supported_flags: RequestFlags::NONE,
                 supports_flush: false,
                 supports_discard: false,
@@ -930,8 +912,6 @@ mod tests {
             max_blocks_per_request: 8,
             max_segments: 4,
             max_segment_size: 1024,
-            max_transfer_size: 4096,
-            preferred_transfer_size: 4096,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
