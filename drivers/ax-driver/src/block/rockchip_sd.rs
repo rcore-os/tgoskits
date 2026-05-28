@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, sync::Arc};
+use alloc::format;
 use core::time::Duration;
 
-use ax_kspin::SpinNoIrq;
 use dwmmc_host::DwMmc;
 use log::{info, warn};
 use rdif_clk::ClockId;
@@ -27,7 +26,7 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    block::{PlatformDeviceBlock, decode_fdt_irq},
+    block::{PlatformDeviceBlock, SharedDriver, decode_fdt_irq},
     mmio::iomap,
     soc::scmi,
 };
@@ -132,12 +131,13 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     }
 
     let irq_num = decode_fdt_irq(&info.interrupts());
-    let raw = Arc::new(SpinNoIrq::new(sd));
+    let raw = SharedDriver::new(sd);
     let dev = SdBlockDevice {
         raw: Some(raw.clone()),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
-        irq_enabled: false,
+        irq_enabled: core::sync::atomic::AtomicBool::new(false),
         queue_created: false,
+        irq_handler_taken: false,
     };
     plat_dev.register_block_with_irq(dev, irq_num);
     info!("rockchip-sd block device registered irq={:?}", irq_num);

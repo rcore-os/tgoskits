@@ -887,11 +887,12 @@ dependencies = [
  "ixgbe-driver",
  "log",
  "mmio-api",
+ "nvme-driver",
  "pcie",
  "phytium-mci-host",
  "ramdisk",
- "rd-block",
  "rd-net",
+ "rdif-block",
  "rdif-clk",
  "rdif-display",
  "rdif-input",
@@ -993,7 +994,6 @@ dependencies = [
  "log",
  "lru 0.16.4",
  "lwext4_rust",
- "rd-block-volume",
  "rsext4",
  "scope-local",
  "slab",
@@ -1462,7 +1462,7 @@ dependencies = [
  "ax-riscv-plic",
  "axklib",
  "log",
- "rd-block",
+ "rdif-block",
  "riscv 0.16.0",
  "sbi-rt 0.0.3",
  "sg200x-bsp",
@@ -1599,7 +1599,6 @@ dependencies = [
  "cfg-if",
  "chrono",
  "indoc",
- "rd-block",
  "rd-net",
  "rdrive",
  "spin 0.12.0",
@@ -4392,9 +4391,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6299f016b246a94207e63da54dbe807655bf9e00044f73ded42c3ac5305fbcca"
+checksum = "eb92f162bf56536459fc83c79b974bb12837acfed43d6bc370a7916d0ae15ecc"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -5714,7 +5713,7 @@ dependencies = [
  "log",
  "mmio-api",
  "pcie",
- "rd-block",
+ "rdif-block",
  "spin 0.12.0",
  "tock-registers 0.10.1",
 ]
@@ -6036,12 +6035,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pin-utils"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pkg-config"
@@ -6380,7 +6373,6 @@ name = "ramdisk"
 version = "0.1.1"
 dependencies = [
  "dma-api",
- "rd-block",
  "rdif-block",
  "spin 0.12.0",
 ]
@@ -6591,20 +6583,6 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
 ]
-
-[[package]]
-name = "rd-block"
-version = "0.1.2"
-dependencies = [
- "dma-api",
- "futures",
- "rdif-block",
- "spin_on",
-]
-
-[[package]]
-name = "rd-block-volume"
-version = "0.1.0"
 
 [[package]]
 name = "rd-net"
@@ -7984,15 +7962,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1527984ca054dfca79333baec451042863f485fbee01b7bf6d911de915cac865"
 dependencies = [
  "lock_api",
-]
-
-[[package]]
-name = "spin_on"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "076e103ed41b9864aa838287efe5f4e3a7a0362dd00671ae62a212e5e4612da2"
-dependencies = [
- "pin-utils",
 ]
 
 [[package]]

@@ -17,7 +17,7 @@ plat-static = []
 plat-dyn = ["dep:fdt-edit"]
 irq = []
 
-block = ["dep:ax-errno", "dep:ax-kspin", "dep:rd-block"]
+block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
 net = ["dep:rd-net"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
@@ -33,8 +33,9 @@ virtio-socket = ["vsock", "virtio"]
 
 ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
-cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
 ahci = ["block", "dep:simple-ahci"]
+nvme = ["block", "plat-static", "dep:nvme-driver"]
+cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
 ixgbe = ["net", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "dep:eth-intel"]
@@ -86,6 +87,7 @@ rk3588-pcie = [
 rockchip-soc = ["plat-dyn", "dep:rdif-clk", "dep:rockchip-soc"]
 rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
 list-pci-devices = []
+pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -108,10 +110,11 @@ heapless.workspace = true
 ixgbe-driver = { workspace = true, optional = true }
 log.workspace = true
 mmio-api.workspace = true
+nvme-driver = { workspace = true, optional = true }
 pcie.workspace = true
 ramdisk = { workspace = true, optional = true }
-rd-block = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
+rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
