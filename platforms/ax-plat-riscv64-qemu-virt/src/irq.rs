@@ -1,12 +1,10 @@
-use core::{
-    num::NonZeroU32,
-    ptr::NonNull,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+#[cfg(feature = "hypervisor")]
+use core::sync::atomic::{AtomicPtr, Ordering};
+use core::{num::NonZeroU32, ptr::NonNull};
 
 use ax_kspin::SpinNoIrq;
 use ax_plat::{
-    irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf},
+    irq::{IpiTarget, IrqIf, dispatch_irq},
     percpu::this_cpu_id,
 };
 use ax_riscv_plic::Plic;
@@ -28,17 +26,8 @@ pub(super) const S_TIMER: usize = INTC_IRQ_BASE + 5;
 /// Supervisor external interrupt in `scause`
 pub(super) const S_EXT: usize = INTC_IRQ_BASE + 9;
 
-static TIMER_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-static IPI_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
 #[cfg(feature = "hypervisor")]
 static VIRTUAL_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-/// The maximum number of IRQs.
-const MAX_IRQ_COUNT: usize = 1024;
-
-static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
 static PLIC: SpinNoIrq<Plic> = SpinNoIrq::new(unsafe {
     Plic::new(NonNull::new((PHYS_VIRT_OFFSET + PLIC_PADDR) as *mut _).unwrap())
@@ -125,85 +114,14 @@ impl IrqIf for IrqIfImpl {
         );
     }
 
-    /// Registers an IRQ handler for the given IRQ.
-    ///
-    /// It also enables the IRQ if the registration succeeds. It returns `false` if
-    /// the registration failed.
-    ///
-    /// The `irq` parameter has the following semantics
-    /// 1. If its highest bit is 1, it means it is an interrupt on the CPU side. Its
-    /// value comes from `scause`, where [`S_SOFT`] represents software interrupt
-    /// and [`S_TIMER`] represents timer interrupt. If its value is [`S_EXT`], it
-    /// means it is an external interrupt, and the real IRQ number needs to
-    /// be obtained from PLIC.
-    /// 2. If its highest bit is 0, it means it is an interrupt on the device side,
-    /// and its value is equal to the IRQ number provided by PLIC.
-    fn register(irq: usize, handler: IrqHandler) -> bool {
-        with_cause!(
-            irq,
-            @S_TIMER => TIMER_HANDLER.compare_exchange(core::ptr::null_mut(), handler as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok(),
-            @S_SOFT => IPI_HANDLER.compare_exchange(core::ptr::null_mut(), handler as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok(),
-            @S_EXT => {
-                warn!("External IRQ should be got from PLIC, not scause");
-                false
-            },
-            @EX_IRQ => {
-                if IRQ_HANDLER_TABLE.register_handler(irq, handler) {
-                    Self::set_enable(irq, true);
-                    true
-                } else {
-                    warn!("register handler for External IRQ {irq} failed");
-                    false
-                }
-            }
-        )
-    }
-
-    /// Unregisters the IRQ handler for the given IRQ.
-    ///
-    /// It also disables the IRQ if the unregistration succeeds. It returns the
-    /// existing handler if it is registered, `None` otherwise.
-    fn unregister(irq: usize) -> Option<IrqHandler> {
-        with_cause!(
-            irq,
-            @S_TIMER => {
-                let handler = TIMER_HANDLER.swap(core::ptr::null_mut(), Ordering::AcqRel);
-                if !handler.is_null() {
-                    Some(unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler) })
-                } else {
-                    None
-                }
-            },
-            @S_SOFT => {
-                let handler = IPI_HANDLER.swap(core::ptr::null_mut(), Ordering::AcqRel);
-                if !handler.is_null() {
-                    Some(unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler) })
-                } else {
-                    None
-                }
-            },
-            @S_EXT => {
-                warn!("External IRQ should be got from PLIC, not scause");
-                None
-            },
-            @EX_IRQ => IRQ_HANDLER_TABLE.unregister_handler(irq).inspect(|_| Self::set_enable(irq, false))
-        )
-    }
-
     /// Handles the IRQ.
-    ///
-    /// It is called by the common interrupt handler. It should look up in the
-    /// IRQ handler table and calls the corresponding handler. If necessary, it
-    /// also acknowledges the interrupt controller after handling.
     fn handle(irq: usize) -> Option<usize> {
         with_cause!(
             irq,
             @S_TIMER => {
                 trace!("IRQ: timer");
-                let handler = TIMER_HANDLER.load(Ordering::Acquire);
-                if !handler.is_null() {
-                    // SAFETY: The handler is guaranteed to be a valid function pointer.
-                    unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)(irq) };
+                if !dispatch_irq(irq).handled {
+                    warn!("Unhandled IRQ: timer");
                 }
                 Some(irq)
             },
@@ -216,10 +134,8 @@ impl IrqIf for IrqIfImpl {
                 unsafe {
                     riscv::register::sip::clear_ssoft();
                 }
-                let handler = IPI_HANDLER.load(Ordering::Acquire);
-                if !handler.is_null() {
-                    // SAFETY: The handler is guaranteed to be a valid function pointer.
-                    unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)(irq) };
+                if !dispatch_irq(irq).handled {
+                    warn!("Unhandled IRQ: IPI");
                 }
                 Some(irq)
             },
@@ -251,8 +167,11 @@ impl IrqIf for IrqIfImpl {
                 #[cfg(not(feature = "hypervisor"))]
                 {
                     trace!("IRQ: external {irq}");
-                    IRQ_HANDLER_TABLE.handle(irq.get() as usize);
-                    plic.complete(this_context(), irq);
+                    drop(plic);
+                    if !dispatch_irq(irq.get() as usize).handled {
+                        debug!("Unhandled external IRQ {irq}");
+                    }
+                    PLIC.lock().complete(this_context(), irq);
                 }
                 Some(irq.get() as usize)
             },

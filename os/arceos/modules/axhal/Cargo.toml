@@ -35,6 +35,7 @@ irq = [
     "ax-plat-x86-qemu-q35?/irq",
     "ax-plat/irq",
     "axplat-dyn?/irq",
+    "dep:ax-kspin",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
@@ -118,6 +119,7 @@ ipi = ["irq"]
 ax-alloc = { workspace = true, optional = true }
 ax-config.workspace = true
 ax-cpu.workspace = true
+ax-kspin = { workspace = true, optional = true }
 ax-plat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"

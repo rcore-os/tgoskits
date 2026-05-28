@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::ptr::NonNull;
 
 use axpoll::PollSet;
 use spin::LazyLock;
@@ -39,6 +40,14 @@ fn handle_console_input_irq(_irq_num: usize) {
     ) {
         CONSOLE_INPUT_SOURCE.wake();
     }
+}
+
+unsafe fn handle_console_input_raw_irq(
+    ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    handle_console_input_irq(ctx.irq.0);
+    ax_runtime::hal::irq::IrqReturn::Handled
 }
 
 fn new_n_tty() -> Arc<NTtyDriver> {
@@ -132,7 +141,13 @@ fn query_console_size() -> Option<(u16, u16)> {
 
 fn console_irq_mode() -> Option<ProcessMode> {
     let irq = ax_runtime::hal::console::irq_num()?;
-    if !ax_runtime::hal::irq::register(irq, handle_console_input_irq) {
+    if ax_runtime::hal::irq::request_shared_irq(
+        irq,
+        handle_console_input_raw_irq,
+        NonNull::dangling(),
+    )
+    .is_err()
+    {
         warn!("Failed to register console IRQ handler for irq {irq}, falling back to polling mode");
         return None;
     }

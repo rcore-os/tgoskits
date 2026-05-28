@@ -167,13 +167,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     }
 
     #[cfg(feature = "irq")]
+    super::init_percpu_irq(cpu_id);
+
+    #[cfg(feature = "irq")]
     ax_hal::asm::enable_irqs();
 
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::mark_current_cpu_ready();
-
-    #[cfg(feature = "irq")]
-    ax_hal::time::set_oneshot_timer(100);
 
     #[cfg(all(feature = "tls", not(feature = "multitask")))]
     super::init_tls();

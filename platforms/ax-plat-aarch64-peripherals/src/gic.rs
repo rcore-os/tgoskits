@@ -31,11 +31,7 @@ use arm_gic_driver::v2::{
 use arm_gic_driver::v3::{Affinity, Gic as GicV3, SGITarget as V3SGITarget};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use ax_plat::irq::{HandlerTable, IpiTarget, IrqHandler};
-
-/// Maximum number of IRQs we dispatch through HandlerTable. Enough for
-/// GIC's 1020 SPI lines + PPIs + SGIs.
-const MAX_IRQ_COUNT: usize = 1024;
+use ax_plat::irq::{IpiTarget, dispatch_irq};
 
 /// Per-backend handle. Stored inside [`GIC`] so every ops call can
 /// match over the variant and forward to the right driver.
@@ -52,7 +48,6 @@ enum Backend {
 }
 
 static GIC: LazyInit<SpinNoIrq<Backend>> = LazyInit::new();
-static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
 /// Enables or disables the given IRQ.
 pub fn set_enable(irq: usize, enabled: bool) {
@@ -81,24 +76,6 @@ enum ActiveIrq {
     V2(V2Ack),
     #[cfg(feature = "gic-v3")]
     V3(IntId),
-}
-
-/// Registers an IRQ handler for the given IRQ.
-pub fn register_handler(irq: usize, handler: IrqHandler) -> bool {
-    if IRQ_HANDLER_TABLE.register_handler(irq, handler) {
-        trace!("register handler IRQ {irq}");
-        set_enable(irq, true);
-        return true;
-    }
-    warn!("register handler for IRQ {irq} failed");
-    false
-}
-
-/// Unregisters the IRQ handler for the given IRQ.
-pub fn unregister_handler(irq: usize) -> Option<IrqHandler> {
-    trace!("unregister handler IRQ {irq}");
-    set_enable(irq, false);
-    IRQ_HANDLER_TABLE.unregister_handler(irq)
 }
 
 /// Handles the IRQ.
@@ -135,7 +112,7 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
     };
 
     trace!("IRQ {irq}");
-    if !IRQ_HANDLER_TABLE.handle(irq) {
+    if !dispatch_irq(irq).handled {
         debug!("Unhandled IRQ {irq}");
     }
 
@@ -279,27 +256,7 @@ macro_rules! irq_if_impl {
                 $crate::gic::set_enable(irq, enabled);
             }
 
-            /// Registers an IRQ handler for the given IRQ.
-            ///
-            /// It also enables the IRQ if the registration succeeds. It returns `false`
-            /// if the registration failed.
-            fn register(irq: usize, handler: ax_plat::irq::IrqHandler) -> bool {
-                $crate::gic::register_handler(irq, handler)
-            }
-
-            /// Unregisters the IRQ handler for the given IRQ.
-            ///
-            /// It also disables the IRQ if the unregistration succeeds. It returns the
-            /// existing handler if it is registered, `None` otherwise.
-            fn unregister(irq: usize) -> Option<ax_plat::irq::IrqHandler> {
-                $crate::gic::unregister_handler(irq)
-            }
-
             /// Handles the IRQ.
-            ///
-            /// It is called by the common interrupt handler. It should look up in the
-            /// IRQ handler table and calls the corresponding handler. If necessary, it
-            /// also acknowledges the interrupt controller after handling.
             fn handle(irq: usize) -> Option<usize> {
                 $crate::gic::handle_irq(irq)
             }

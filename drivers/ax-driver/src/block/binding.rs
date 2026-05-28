@@ -3,14 +3,12 @@ use alloc::{
     vec::Vec,
 };
 #[cfg(feature = "irq")]
-use alloc::{
-    sync::{Arc, Weak},
-    task::Wake,
-};
+use alloc::{sync::Arc, task::Wake};
 #[cfg(feature = "irq")]
 use core::{
     future::Future,
     pin::pin,
+    ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
@@ -53,6 +51,7 @@ impl rdrive::DriverGeneric for PlatformBlockDevice {
 #[cfg(feature = "irq")]
 struct BlockIrqState {
     handler: rd_block::IrqHandler,
+    irq_handle: spin::Once<axklib::irq::IrqHandle>,
 }
 
 #[cfg(feature = "irq")]
@@ -60,6 +59,18 @@ impl BlockIrqState {
     fn handle_irq(&self) {
         self.handler.handle();
     }
+}
+#[cfg(feature = "irq")]
+const BLOCK_IRQ_REPOLL_SPINS: usize = 256;
+
+#[cfg(feature = "irq")]
+unsafe fn handle_block_irq(
+    _ctx: axklib::irq::IrqContext,
+    data: NonNull<()>,
+) -> axklib::irq::IrqReturn {
+    let state = unsafe { data.cast::<BlockIrqState>().as_ref() };
+    state.handle_irq();
+    axklib::irq::IrqReturn::Handled
 }
 
 #[cfg(feature = "irq")]
@@ -77,14 +88,6 @@ impl Wake for BlockIrqWaiter {
         self.woken.store(true, Ordering::Release);
     }
 }
-
-#[cfg(feature = "irq")]
-const BLOCK_IRQ_SLOTS: usize = 16;
-#[cfg(feature = "irq")]
-static IRQ_SOURCES: [SpinNoIrq<Option<Weak<BlockIrqState>>>; BLOCK_IRQ_SLOTS] =
-    [const { SpinNoIrq::new(None) }; BLOCK_IRQ_SLOTS];
-#[cfg(feature = "irq")]
-const BLOCK_IRQ_REPOLL_SPINS: usize = 256;
 
 impl Block {
     pub fn name(&self) -> &str {
@@ -212,18 +215,20 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
 
         #[cfg(feature = "irq")]
         let irq_state = if let (Some(irq_num), Some(handler)) = (irq_num, irq_handler) {
-            let state = Arc::new(BlockIrqState { handler });
-            if let Some(slot) = reserve_block_irq_slot(&state) {
-                if axklib::irq::register(irq_num, BLOCK_IRQ_HANDLERS[slot]) {
+            let mut state = Arc::new(BlockIrqState {
+                handler,
+                irq_handle: spin::Once::new(),
+            });
+            let data = NonNull::from(Arc::get_mut(&mut state).ok_or(AxError::BadState)?).cast();
+            match axklib::irq::request_shared(irq_num, handle_block_irq, data) {
+                Ok(handle) => {
+                    state.irq_handle.call_once(|| handle);
                     Some(state)
-                } else {
-                    release_block_irq_slot(slot, &state);
-                    warn!("failed to register block irq handler for irq {irq_num}");
+                }
+                Err(err) => {
+                    warn!("failed to register block irq handler for irq {irq_num}: {err:?}");
                     None
                 }
-            } else {
-                warn!("no free block irq source slot for irq {irq_num}");
-                None
             }
         } else {
             None
@@ -309,59 +314,13 @@ pub fn take_block_devices() -> Vec<Block> {
 }
 
 #[cfg(feature = "irq")]
-fn handle_block_irq(slot: usize) {
-    let Some(state) = IRQ_SOURCES[slot].lock().as_ref().and_then(Weak::upgrade) else {
-        return;
-    };
-    state.handle_irq();
-}
-
-#[cfg(feature = "irq")]
-fn handle_block_irq_slot<const SLOT: usize>(_: usize) {
-    handle_block_irq(SLOT);
-}
-
-#[cfg(feature = "irq")]
-const BLOCK_IRQ_HANDLERS: [fn(usize); BLOCK_IRQ_SLOTS] = [
-    handle_block_irq_slot::<0>,
-    handle_block_irq_slot::<1>,
-    handle_block_irq_slot::<2>,
-    handle_block_irq_slot::<3>,
-    handle_block_irq_slot::<4>,
-    handle_block_irq_slot::<5>,
-    handle_block_irq_slot::<6>,
-    handle_block_irq_slot::<7>,
-    handle_block_irq_slot::<8>,
-    handle_block_irq_slot::<9>,
-    handle_block_irq_slot::<10>,
-    handle_block_irq_slot::<11>,
-    handle_block_irq_slot::<12>,
-    handle_block_irq_slot::<13>,
-    handle_block_irq_slot::<14>,
-    handle_block_irq_slot::<15>,
-];
-
-#[cfg(feature = "irq")]
-fn reserve_block_irq_slot(state: &Arc<BlockIrqState>) -> Option<usize> {
-    for (slot, source) in IRQ_SOURCES.iter().enumerate() {
-        let mut source = source.lock();
-        if source.as_ref().and_then(Weak::upgrade).is_none() {
-            *source = Some(Arc::downgrade(state));
-            return Some(slot);
+impl Drop for BlockIrqState {
+    fn drop(&mut self) {
+        if let Some(handle) = self.irq_handle.get().copied()
+            && let Err(err) = axklib::irq::free(handle)
+        {
+            warn!("failed to free block irq handler: {err:?}");
         }
-    }
-    None
-}
-
-#[cfg(feature = "irq")]
-fn release_block_irq_slot(slot: usize, state: &Arc<BlockIrqState>) {
-    let mut source = IRQ_SOURCES[slot].lock();
-    if source
-        .as_ref()
-        .and_then(Weak::upgrade)
-        .is_some_and(|registered| Arc::ptr_eq(&registered, state))
-    {
-        *source = None;
     }
 }
 

@@ -146,12 +146,7 @@ pub fn init_secondary() {
 
 #[cfg(feature = "irq")]
 mod irq_impl {
-    use ax_plat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
-
-    /// The maximum number of IRQs.
-    const MAX_IRQ_COUNT: usize = 256;
-
-    static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
+    use ax_plat::irq::{IpiTarget, IrqIf, dispatch_irq};
 
     struct IrqIfImpl;
 
@@ -162,36 +157,10 @@ mod irq_impl {
             super::set_enable(vector, enabled);
         }
 
-        /// Registers an IRQ handler for the given IRQ.
-        ///
-        /// It also enables the IRQ if the registration succeeds. It returns `false` if
-        /// the registration failed.
-        fn register(vector: usize, handler: IrqHandler) -> bool {
-            if IRQ_HANDLER_TABLE.register_handler(vector, handler) {
-                Self::set_enable(vector, true);
-                return true;
-            }
-            warn!("register handler for IRQ {} failed", vector);
-            false
-        }
-
-        /// Unregisters the IRQ handler for the given IRQ.
-        ///
-        /// It also disables the IRQ if the unregistration succeeds. It returns the
-        /// existing handler if it is registered, `None` otherwise.
-        fn unregister(vector: usize) -> Option<IrqHandler> {
-            Self::set_enable(vector, false);
-            IRQ_HANDLER_TABLE.unregister_handler(vector)
-        }
-
         /// Handles the IRQ.
-        ///
-        /// It is called by the common interrupt handler. It should look up in the
-        /// IRQ handler table and calls the corresponding handler. If necessary, it
-        /// also acknowledges the interrupt controller after handling.
         fn handle(vector: usize) -> Option<usize> {
             trace!("IRQ {}", vector);
-            if !IRQ_HANDLER_TABLE.handle(vector) {
+            if !dispatch_irq(vector).handled {
                 warn!("Unhandled IRQ {vector}");
             }
             unsafe { super::local_apic().end_of_interrupt() };

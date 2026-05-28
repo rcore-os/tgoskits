@@ -62,7 +62,10 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 #[cfg(feature = "irq")]
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::{collections::BTreeMap, sync::Arc};
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::{
+        ptr::NonNull,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
@@ -77,16 +80,21 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] =
         [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
+    static IRQ_ACTION_INSTALLED: [AtomicBool; MAX_TRACKED_IRQ] =
+        [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
     static ANY_PENDING: AtomicBool = AtomicBool::new(false);
     static DRAIN_WQ: WaitQueue = WaitQueue::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
-    static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
     static POLL_IRQ: SpinNoIrq<BTreeMap<usize, Arc<PollSet>>> = SpinNoIrq::new(BTreeMap::new());
 
-    fn irq_hook(irq: usize) {
+    unsafe fn irq_waker_handler(
+        ctx: ax_hal::irq::IrqContext,
+        _data: NonNull<()>,
+    ) -> ax_hal::irq::IrqReturn {
         // Runs in IRQ context with interrupts off. Only atomics and a
         // `WaitQueue::notify_one` — no allocation, no PollSet/Inner
         // replacement.
+        let irq = ctx.irq.0;
         if irq < MAX_TRACKED_IRQ {
             IRQ_PENDING[irq].store(true, Ordering::Release);
             ANY_PENDING.store(true, Ordering::Release);
@@ -100,6 +108,7 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         // this path means some other subsystem installed a handler on a
         // high IRQ — leave it alone instead of setting ANY_PENDING and
         // making the drain task spin.
+        ax_hal::irq::IrqReturn::Handled
     }
 
     fn ensure_drain_spawned() {
@@ -153,23 +162,12 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     ensure_drain_spawned();
 
-    // The post-IRQ hook is a single global slot in axhal. Only the
-    // first caller across the kernel may install it; subsequent calls
-    // would return false and silently no-op (leaving wakers waiting on
-    // an unfed pending array). Race the install via `HOOK_INSTALLED`
-    // and panic if the hook slot was already taken by something else,
-    // since that means another subsystem installed an incompatible
-    // hook and our waker bridge cannot function.
-    if HOOK_INSTALLED
+    if IRQ_ACTION_INSTALLED[irq]
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        assert!(
-            ax_hal::irq::register_irq_hook(irq_hook),
-            "axtask IRQ-waker bridge could not install its post-IRQ hook: axhal's single hook \
-             slot is already claimed by another subsystem. Wakers registered here would never \
-             fire."
-        );
+        ax_hal::irq::request_shared_irq(irq, irq_waker_handler, NonNull::dangling())
+            .expect("axtask IRQ-waker bridge could not install shared IRQ action");
     }
 
     POLL_IRQ

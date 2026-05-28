@@ -16,6 +16,7 @@ ax-alloc = { workspace = true }
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 dma-api = { workspace = true }
+irq-framework = { workspace = true }
 mmio-api = { workspace = true }
 trait-ffi = "0.2"
 
