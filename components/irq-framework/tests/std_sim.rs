@@ -21,6 +21,7 @@ struct MockOps {
 struct MockInner {
     current_cpu: AtomicUsize,
     in_irq: AtomicBool,
+    unsupported_status: AtomicBool,
     online: Mutex<Vec<bool>>,
     calls: Mutex<Vec<OpCall>>,
     fail_set_enabled: Mutex<Vec<(usize, Option<usize>, bool)>>,
@@ -68,6 +69,12 @@ impl MockOps {
 
     fn set_in_irq(&self, in_irq: bool) {
         self.inner.in_irq.store(in_irq, Ordering::SeqCst);
+    }
+
+    fn set_unsupported_status(&self, unsupported: bool) {
+        self.inner
+            .unsupported_status
+            .store(unsupported, Ordering::SeqCst);
     }
 
     fn fail_set_enabled(&self, irq: usize, cpu: Option<usize>, enabled: bool) {
@@ -148,6 +155,9 @@ impl IrqOps for MockOps {
             irq: irq.0,
             cpu: cpu.map(|cpu| cpu.0),
         });
+        if self.inner.unsupported_status.load(Ordering::SeqCst) {
+            return Err(IrqError::Unsupported);
+        }
         Ok(true)
     }
 
@@ -156,6 +166,9 @@ impl IrqOps for MockOps {
             irq: irq.0,
             cpu: cpu.map(|cpu| cpu.0),
         });
+        if self.inner.unsupported_status.load(Ordering::SeqCst) {
+            return Err(IrqError::Unsupported);
+        }
         Ok(false)
     }
 
@@ -164,6 +177,9 @@ impl IrqOps for MockOps {
             irq: irq.0,
             cpu: cpu.map(|cpu| cpu.0),
         });
+        if self.inner.unsupported_status.load(Ordering::SeqCst) {
+            return Err(IrqError::Unsupported);
+        }
         Ok(false)
     }
 
@@ -386,12 +402,10 @@ fn failed_per_cpu_enable_rolls_back_action_state() {
 
     assert_eq!(registry.enable(handle), Err(IrqError::Controller));
     assert_eq!(registry.dispatch(IrqNumber(18), CpuId(2)).called, 0);
-    assert!(!registry.status(handle).unwrap().action_enabled);
-    assert!(ops.calls().contains(&OpCall::SetEnabled {
-        irq: 18,
-        cpu: Some(2),
-        enabled: false,
-    }));
+    ops.set_unsupported_status(true);
+    let status = registry.status(handle).unwrap();
+    assert!(!status.action_enabled);
+    assert!(!status.line_enabled);
 }
 
 #[test]
@@ -548,6 +562,160 @@ fn status_queries_controller_state() {
         ops.calls()
             .contains(&OpCall::IsInService { irq: 14, cpu: None })
     );
+}
+
+#[test]
+fn status_uses_framework_line_state_when_controller_status_is_unsupported() {
+    let ops = MockOps::with_cpus(1);
+    ops.set_unsupported_status(true);
+    let registry = Registry::new(ops);
+    let counter = AtomicUsize::new(0);
+    let data = NonNull::from(&counter).cast();
+
+    let handle = registry
+        .request(
+            IrqNumber(20),
+            IrqRequest::new(count_handler, data).auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+
+    let status = registry.status(handle).unwrap();
+    assert!(!status.action_enabled);
+    assert!(!status.line_enabled);
+    assert!(!status.pending);
+    assert!(!status.in_service);
+
+    registry.enable(handle).unwrap();
+    let status = registry.status(handle).unwrap();
+    assert!(status.action_enabled);
+    assert!(status.line_enabled);
+    assert!(!status.pending);
+    assert!(!status.in_service);
+}
+
+#[derive(Clone)]
+struct BlockingLineOps {
+    inner: Arc<BlockingLineInner>,
+}
+
+struct BlockingLineInner {
+    false_entered: Barrier,
+    false_release: Barrier,
+    block_false_once: AtomicBool,
+    line_enabled: AtomicBool,
+    calls: Mutex<Vec<OpCall>>,
+}
+
+impl BlockingLineOps {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(BlockingLineInner {
+                false_entered: Barrier::new(2),
+                false_release: Barrier::new(2),
+                block_false_once: AtomicBool::new(true),
+                line_enabled: AtomicBool::new(false),
+                calls: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+}
+
+impl IrqOps for BlockingLineOps {
+    type LocalIrqState = ();
+
+    fn current_cpu(&self) -> CpuId {
+        CpuId(0)
+    }
+
+    fn cpu_online(&self, cpu: CpuId) -> bool {
+        cpu.0 == 0
+    }
+
+    fn in_irq_context(&self) -> bool {
+        false
+    }
+
+    fn local_irq_save(&self) -> Self::LocalIrqState {}
+
+    fn local_irq_restore(&self, _state: Self::LocalIrqState) {}
+
+    fn run_on_cpu_sync(
+        &self,
+        _cpu: CpuId,
+        _f: unsafe fn(*mut ()),
+        _arg: *mut (),
+    ) -> Result<(), IrqError> {
+        unreachable!("test only uses the current CPU")
+    }
+
+    fn set_enabled(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+        enabled: bool,
+    ) -> Result<(), IrqError> {
+        self.inner.calls.lock().unwrap().push(OpCall::SetEnabled {
+            irq: irq.0,
+            cpu: cpu.map(|cpu| cpu.0),
+            enabled,
+        });
+        if !enabled && self.inner.block_false_once.swap(false, Ordering::SeqCst) {
+            self.inner.false_entered.wait();
+            self.inner.false_release.wait();
+        }
+        self.inner.line_enabled.store(enabled, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn is_enabled(&self, _irq: IrqNumber, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
+    fn is_pending(&self, _irq: IrqNumber, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
+    fn is_in_service(&self, _irq: IrqNumber, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
+    fn relax(&self) {
+        thread::yield_now();
+    }
+}
+
+#[test]
+fn stale_disable_does_not_override_concurrent_enable() {
+    let ops = BlockingLineOps::new();
+    let registry = Arc::new(Registry::new(ops.clone()));
+    let first = AtomicUsize::new(0);
+    let second = AtomicUsize::new(0);
+
+    let first = registry
+        .request(
+            IrqNumber(21),
+            IrqRequest::new(count_handler, NonNull::from(&first).cast())
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let second = registry
+        .request(
+            IrqNumber(21),
+            IrqRequest::new(count_handler, NonNull::from(&second).cast())
+                .share_mode(ShareMode::Shared)
+                .auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+
+    let disable_registry = registry.clone();
+    let disable_thread = thread::spawn(move || disable_registry.disable(first));
+    ops.inner.false_entered.wait();
+
+    registry.enable(second).unwrap();
+    ops.inner.false_release.wait();
+    disable_thread.join().unwrap().unwrap();
+
+    assert!(ops.inner.line_enabled.load(Ordering::SeqCst));
 }
 
 #[test]

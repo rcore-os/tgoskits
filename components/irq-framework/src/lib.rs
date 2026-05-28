@@ -365,6 +365,10 @@ struct Descriptor {
     share_mode: ShareMode,
     trigger: TriggerMode,
     in_flight: AtomicUsize,
+    line_desired: bool,
+    line_applied: bool,
+    percpu_line_desired: CpuMask,
+    percpu_line_applied: CpuMask,
     head: *mut Action,
 }
 
@@ -375,6 +379,10 @@ impl Descriptor {
             share_mode: request.share_mode,
             trigger: request.trigger,
             in_flight: AtomicUsize::new(0),
+            line_desired: false,
+            line_applied: false,
+            percpu_line_desired: CpuMask::empty(),
+            percpu_line_applied: CpuMask::empty(),
             head: ptr::null_mut(),
         }
     }
@@ -409,6 +417,56 @@ impl Descriptor {
 
     fn actions(&self) -> ActionIter {
         ActionIter { next: self.head }
+    }
+
+    fn line_desired(&self, cpu: Option<CpuId>) -> bool {
+        match cpu {
+            Some(cpu) => self.percpu_line_desired.contains(cpu),
+            None => self.line_desired,
+        }
+    }
+
+    fn line_applied(&self, cpu: Option<CpuId>) -> bool {
+        match cpu {
+            Some(cpu) => self.percpu_line_applied.contains(cpu),
+            None => self.line_applied,
+        }
+    }
+
+    fn set_line_desired(&mut self, cpu: Option<CpuId>, enabled: bool) {
+        match cpu {
+            Some(cpu) => {
+                if enabled {
+                    self.percpu_line_desired.insert(cpu);
+                } else {
+                    self.percpu_line_desired.remove(cpu);
+                }
+            }
+            None => self.line_desired = enabled,
+        }
+    }
+
+    fn set_line_applied(&mut self, cpu: Option<CpuId>, enabled: bool) {
+        match cpu {
+            Some(cpu) => {
+                if enabled {
+                    self.percpu_line_applied.insert(cpu);
+                } else {
+                    self.percpu_line_applied.remove(cpu);
+                }
+            }
+            None => self.line_applied = enabled,
+        }
+    }
+
+    fn recompute_line_desired(&mut self, cpu: Option<CpuId>) {
+        let desired = self.actions().any(|action| {
+            let action = unsafe { &*action };
+            !action.detached.load(Ordering::Acquire)
+                && action.enabled.load(Ordering::Acquire)
+                && cpu.is_none_or(|cpu| action_matches_cpu(action.scope, cpu))
+        });
+        self.set_line_desired(cpu, desired);
     }
 }
 
@@ -536,30 +594,7 @@ impl<O: IrqOps> Registry<O> {
             return Err(IrqError::InIrqContext);
         }
         let (action, scope) = self.detach_action(handle)?;
-        let mut result = Ok(());
-        match scope {
-            IrqScope::Global => match self.has_enabled_actions(handle.irq, None) {
-                Ok(false) => result = self.ops.set_enabled(handle.irq, None, false),
-                Ok(true) => {}
-                Err(err) => result = Err(err),
-            },
-            IrqScope::PerCpu { cpus } => {
-                for cpu in cpus.iter() {
-                    match self.has_enabled_actions(handle.irq, Some(cpu)) {
-                        Ok(false) => {
-                            if result.is_ok() {
-                                result = self.apply_percpu_line_enabled(handle.irq, cpu, false);
-                            } else {
-                                let _ = self.apply_percpu_line_enabled(handle.irq, cpu, false);
-                            }
-                        }
-                        Ok(true) => {}
-                        Err(err) if result.is_ok() => result = Err(err),
-                        Err(_) => {}
-                    }
-                }
-            }
-        }
+        let mut result = self.apply_scope_line_state(handle.irq, scope);
         if let Err(err) = self.wait_and_remove_action(handle.irq, action)
             && result.is_ok()
         {
@@ -573,13 +608,9 @@ impl<O: IrqOps> Registry<O> {
 
     /// Enables an IRQ action and its backing line.
     pub fn enable(&self, handle: IrqHandle) -> Result<(), IrqError> {
-        self.with_action(handle, |action| {
-            action.enabled.store(true, Ordering::Release);
-            action.clear_pending_enable_all();
-            action.scope
-        })?;
+        let scope = self.set_action_enabled(handle, true)?;
 
-        if let Err(err) = self.apply_enabled(handle, true) {
+        if let Err(err) = self.apply_enabled(handle, scope, true) {
             let _ = self.disable(handle);
             return Err(err);
         }
@@ -588,31 +619,36 @@ impl<O: IrqOps> Registry<O> {
 
     /// Disables an IRQ action and its backing line.
     pub fn disable(&self, handle: IrqHandle) -> Result<(), IrqError> {
-        let scope = self.disable_action(handle)?;
-        match scope {
-            IrqScope::Global => {
-                if !self.has_enabled_actions(handle.irq, None)? {
-                    self.ops.set_enabled(handle.irq, None, false)?;
-                }
-                Ok(())
-            }
-            IrqScope::PerCpu { cpus } => {
-                for cpu in cpus.iter() {
-                    if !self.has_enabled_actions(handle.irq, Some(cpu))? {
-                        self.apply_percpu_enabled(handle, cpu, false)?;
-                    }
-                }
-                Ok(())
-            }
-        }
+        let scope = self.set_action_enabled(handle, false)?;
+        self.apply_enabled(handle, scope, false)
     }
 
-    fn disable_action(&self, handle: IrqHandle) -> Result<IrqScope, IrqError> {
-        self.with_action(handle, |action| {
-            action.enabled.store(false, Ordering::Release);
-            action.clear_pending_enable_all();
-            action.scope
-        })
+    fn set_action_enabled(&self, handle: IrqHandle, enabled: bool) -> Result<IrqScope, IrqError> {
+        let irq_state = self.lock.lock(&self.ops);
+        let result = (|| {
+            let state = unsafe { &mut *self.state.get() };
+            let descriptor = state
+                .descriptors
+                .iter_mut()
+                .find(|descriptor| descriptor.irq == handle.irq)
+                .ok_or(IrqError::NotFound)?;
+            let action = descriptor
+                .actions()
+                .find(|action| unsafe { (**action).id == handle.id })
+                .ok_or(IrqError::NotFound)?;
+            unsafe {
+                if (*action).detached.load(Ordering::Acquire) {
+                    return Err(IrqError::NotFound);
+                }
+                (*action).enabled.store(enabled, Ordering::Release);
+                (*action).clear_pending_enable_all();
+                let scope = (*action).scope;
+                recompute_scope_line_desired(descriptor, scope);
+                Ok(scope)
+            }
+        })();
+        self.lock.unlock(&self.ops, irq_state);
+        result
     }
 
     /// Returns a status snapshot for an IRQ action.
@@ -629,11 +665,26 @@ impl<O: IrqOps> Registry<O> {
             )
         })?;
         let cpu = status_cpu(scope, self.ops.current_cpu());
+        let line_enabled = match self.ops.is_enabled(handle.irq, cpu) {
+            Ok(enabled) => enabled,
+            Err(IrqError::Unsupported) => self.framework_line_enabled(handle.irq, cpu)?,
+            Err(err) => return Err(err),
+        };
+        let pending = match self.ops.is_pending(handle.irq, cpu) {
+            Ok(pending) => pending,
+            Err(IrqError::Unsupported) => false,
+            Err(err) => return Err(err),
+        };
+        let in_service = match self.ops.is_in_service(handle.irq, cpu) {
+            Ok(in_service) => in_service,
+            Err(IrqError::Unsupported) => false,
+            Err(err) => return Err(err),
+        };
         Ok(IrqStatus {
             action_enabled,
-            line_enabled: self.ops.is_enabled(handle.irq, cpu)?,
-            pending: self.ops.is_pending(handle.irq, cpu)?,
-            in_service: self.ops.is_in_service(handle.irq, cpu)?,
+            line_enabled,
+            pending,
+            in_service,
             in_flight,
         })
     }
@@ -682,7 +733,7 @@ impl<O: IrqOps> Registry<O> {
         }
         let pending = self.pending_enables_for_cpu(cpu);
         for irq in pending {
-            self.ops.set_enabled(irq, Some(cpu), true)?;
+            self.apply_line_state(irq, Some(cpu))?;
             self.clear_pending_enable_for_cpu(irq, cpu);
         }
         Ok(())
@@ -751,6 +802,7 @@ impl<O: IrqOps> Registry<O> {
                 (*action).enabled.store(false, Ordering::Release);
                 (*action).clear_pending_enable_all();
                 let scope = (*action).scope;
+                recompute_scope_line_desired(descriptor, scope);
                 Ok((action, scope))
             }
         })();
@@ -821,10 +873,14 @@ impl<O: IrqOps> Registry<O> {
         result
     }
 
-    fn apply_enabled(&self, handle: IrqHandle, enabled: bool) -> Result<(), IrqError> {
-        let scope = self.with_action(handle, |action| action.scope)?;
+    fn apply_enabled(
+        &self,
+        handle: IrqHandle,
+        scope: IrqScope,
+        enabled: bool,
+    ) -> Result<(), IrqError> {
         match scope {
-            IrqScope::Global => self.ops.set_enabled(handle.irq, None, enabled),
+            IrqScope::Global => self.apply_line_state(handle.irq, None),
             IrqScope::PerCpu { cpus } => {
                 for cpu in cpus.iter() {
                     self.apply_percpu_enabled(handle, cpu, enabled)?;
@@ -841,7 +897,7 @@ impl<O: IrqOps> Registry<O> {
         enabled: bool,
     ) -> Result<(), IrqError> {
         if self.ops.cpu_online(cpu) {
-            self.apply_percpu_line_enabled(handle.irq, cpu, enabled)?;
+            self.apply_line_state(handle.irq, Some(cpu))?;
         } else if enabled {
             self.with_action(handle, |action| {
                 action.insert_pending_enable(cpu);
@@ -854,33 +910,65 @@ impl<O: IrqOps> Registry<O> {
         Ok(())
     }
 
-    fn apply_percpu_line_enabled(
+    fn apply_scope_line_state(&self, irq: IrqNumber, scope: IrqScope) -> Result<(), IrqError> {
+        match scope {
+            IrqScope::Global => self.apply_line_state(irq, None),
+            IrqScope::PerCpu { cpus } => {
+                for cpu in cpus.iter() {
+                    self.apply_line_state(irq, Some(cpu))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn apply_line_state(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<(), IrqError> {
+        loop {
+            if let Some(cpu) = cpu
+                && !self.ops.cpu_online(cpu)
+            {
+                return Ok(());
+            }
+
+            let Some((desired, applied)) = self.line_state(irq, cpu) else {
+                return Err(IrqError::NotFound);
+            };
+            if desired == applied {
+                return Ok(());
+            }
+
+            self.set_controller_enabled(irq, cpu, desired)?;
+            self.set_line_applied(irq, cpu, desired)?;
+        }
+    }
+
+    fn set_controller_enabled(
         &self,
         irq: IrqNumber,
-        cpu: CpuId,
+        cpu: Option<CpuId>,
         enabled: bool,
     ) -> Result<(), IrqError> {
-        if !self.ops.cpu_online(cpu) {
-            return Ok(());
+        match cpu {
+            None => self.ops.set_enabled(irq, None, enabled),
+            Some(cpu) if cpu == self.ops.current_cpu() => {
+                self.ops.set_enabled(irq, Some(cpu), enabled)
+            }
+            Some(cpu) => {
+                let mut request = RemoteEnable {
+                    registry: self as *const Self as *mut (),
+                    irq,
+                    cpu,
+                    enabled,
+                    result: Ok(()),
+                };
+                self.ops.run_on_cpu_sync(
+                    cpu,
+                    remote_enable_thunk::<O>,
+                    (&mut request as *mut RemoteEnable).cast(),
+                )?;
+                request.result
+            }
         }
-        if cpu == self.ops.current_cpu() {
-            self.ops.set_enabled(irq, Some(cpu), enabled)?;
-        } else {
-            let mut request = RemoteEnable {
-                registry: self as *const Self as *mut (),
-                irq,
-                cpu,
-                enabled,
-                result: Ok(()),
-            };
-            self.ops.run_on_cpu_sync(
-                cpu,
-                remote_enable_thunk::<O>,
-                (&mut request as *mut RemoteEnable).cast(),
-            )?;
-            request.result?;
-        }
-        Ok(())
     }
 
     fn begin_dispatch(&self, irq: IrqNumber) -> Option<*mut Action> {
@@ -947,16 +1035,41 @@ impl<O: IrqOps> Registry<O> {
         self.lock.unlock(&self.ops, irq_state);
     }
 
-    fn has_enabled_actions(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError> {
+    fn line_state(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Option<(bool, bool)> {
+        let irq_state = self.lock.lock(&self.ops);
+        let result = self
+            .descriptor(irq)
+            .map(|descriptor| (descriptor.line_desired(cpu), descriptor.line_applied(cpu)));
+        self.lock.unlock(&self.ops, irq_state);
+        result
+    }
+
+    fn set_line_applied(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+        enabled: bool,
+    ) -> Result<(), IrqError> {
+        let irq_state = self.lock.lock(&self.ops);
+        let result = (|| {
+            let state = unsafe { &mut *self.state.get() };
+            let descriptor = state
+                .descriptors
+                .iter_mut()
+                .find(|descriptor| descriptor.irq == irq)
+                .ok_or(IrqError::NotFound)?;
+            descriptor.set_line_applied(cpu, enabled);
+            Ok(())
+        })();
+        self.lock.unlock(&self.ops, irq_state);
+        result
+    }
+
+    fn framework_line_enabled(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError> {
         let irq_state = self.lock.lock(&self.ops);
         let result = (|| {
             let descriptor = self.descriptor(irq).ok_or(IrqError::NotFound)?;
-            Ok(descriptor.actions().any(|action| {
-                let action = unsafe { &*action };
-                !action.detached.load(Ordering::Acquire)
-                    && action.enabled.load(Ordering::Acquire)
-                    && cpu.is_none_or(|cpu| action_matches_cpu(action.scope, cpu))
-            }))
+            Ok(descriptor.line_applied(cpu))
         })();
         self.lock.unlock(&self.ops, irq_state);
         result
@@ -1012,6 +1125,17 @@ fn action_matches_cpu(scope: IrqScope, cpu: CpuId) -> bool {
     match scope {
         IrqScope::Global => true,
         IrqScope::PerCpu { cpus } => cpus.contains(cpu),
+    }
+}
+
+fn recompute_scope_line_desired(descriptor: &mut Descriptor, scope: IrqScope) {
+    match scope {
+        IrqScope::Global => descriptor.recompute_line_desired(None),
+        IrqScope::PerCpu { cpus } => {
+            for cpu in cpus.iter() {
+                descriptor.recompute_line_desired(Some(cpu));
+            }
+        }
     }
 }
 
