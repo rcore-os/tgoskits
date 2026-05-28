@@ -17,7 +17,10 @@ pub struct RawMutex {
     pub(crate) lockdep: crate::lockdep::LockdepMap,
 }
 
+#[cfg(not(feature = "lockdep"))]
 pub type LockSubclass = u32;
+#[cfg(feature = "lockdep")]
+pub type LockSubclass = crate::lockdep::LockSubclass;
 
 pub trait LockdepMutexExt<T: ?Sized> {
     fn lock_nested(&self, subclass: LockSubclass) -> MutexGuard<'_, T>;
@@ -77,7 +80,7 @@ impl Default for RawMutex {
 }
 
 unsafe impl lock_api::RawMutex for RawMutex {
-    type GuardMarker = lock_api::GuardSend;
+    type GuardMarker = lock_api::GuardNoSend;
 
     /// Initial value for an unlocked mutex.
     ///
@@ -96,7 +99,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     #[track_caller]
     fn lock(&self) {
         #[cfg(feature = "lockdep")]
-        self.lock_nested(0);
+        self.lock_nested(ax_lockdep::DEFAULT_LOCK_SUBCLASS);
 
         #[cfg(not(feature = "lockdep"))]
         self.lock_plain();
@@ -107,7 +110,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     fn try_lock(&self) -> bool {
         #[cfg(feature = "lockdep")]
         {
-            self.try_lock_nested(0)
+            self.try_lock_nested(ax_lockdep::DEFAULT_LOCK_SUBCLASS)
         }
 
         #[cfg(not(feature = "lockdep"))]
