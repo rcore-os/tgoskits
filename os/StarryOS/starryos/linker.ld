@@ -1,5 +1,8 @@
 INCLUDE "runtime.x"
 
+PROVIDE(_ex_table_start = 0);
+PROVIDE(_ex_table_end = 0);
+
 SECTIONS {
     .static_keys : {
         __start___static_keys = .;
@@ -8,22 +11,8 @@ SECTIONS {
     }
 
     .dyndbg : {
-        __start___dyndbg = .;
+        __dyndbg_start = .;
         KEEP(*(__dyndbg))
-        __stop___dyndbg = .;
+        __dyndbg_end = .;
     }
-
-    .tracepoint : {
-        __start_tracepoint = .;
-        KEEP(*(.tracepoint .tracepoint.*))
-        __stop_tracepoint = .;
-    }
-
-    .kallsyms : ALIGN(4K) {
-        __kallsyms_start = .;
-        . += 8M; /* reserve space for kallsyms, can be recycled */
-        __kallsyms_end = .;
-    }
-}
-
-INSERT AFTER .data;
+} INSERT AFTER .data;

@@ -27,6 +27,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ─── helpers ──────────────────────────────────────────────────────────────────────
+
 info()  { printf "[self-compile] %s\n" "$*"; }
 error() { printf "[self-compile] ERROR: %s\n" "$*" >&2; exit 1; }
 
@@ -50,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ─── Architecture mapping ───────────────────────────────────────────────────────
+# ─── Architecture mapping ─────────────────────────────────────────────────────────
 
 case "$ARCH" in
     riscv64)
@@ -58,9 +60,8 @@ case "$ARCH" in
         QEMU_BIN="qemu-system-riscv64"
         QEMU_MACHINE="virt"
         QEMU_CPU="rv64"
-        QEMU_EXTRA=""  # extra flags appended after -cpu
+        QEMU_EXTRA=""
         QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
-        QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     x86_64)
         TARGET="x86_64-unknown-none"
@@ -75,7 +76,6 @@ case "$ARCH" in
             info "KVM not available — using TCG emulation (will be slow)"
         fi
         QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
-        QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     aarch64)
         TARGET="aarch64-unknown-none-softfloat"
@@ -84,7 +84,6 @@ case "$ARCH" in
         QEMU_CPU="cortex-a72"
         QEMU_EXTRA=""
         QEMU_BLK_DEV="virtio-blk-device,drive=disk0"
-        QEMU_NET_DEV="virtio-net-device,netdev=net0"
         ;;
     *)
         error "Unsupported arch: $ARCH (valid: riscv64, x86_64, aarch64)"
@@ -102,39 +101,35 @@ if [ -z "$ROOTFS_IMG" ]; then
     esac
 fi
 
+INJECT_SCRIPT="/usr/bin/self-compile-inner.sh"
 QEMU_LOG="/tmp/starryos-selfcompile-$$.log"
 
 info "Architecture: $ARCH | Target: $TARGET | SMP: $SMP | Cargo jobs: $CARGO_BUILD_JOBS"
 
-# ─── Prerequisite checks ───────────────────────────────────────────────────────
+# ─── Prerequisite checks ─────────────────────────────────────────────────────────
 
 for cmd in "$QEMU_BIN" expect debugfs; do
     command -v "$cmd" &>/dev/null || error "$cmd not found"
 done
 
-sudo -n true 2>/dev/null || error "passwordless sudo required for loopback mount"
-
 [ -f "$ROOTFS_IMG" ] || error "Rootfs image not found: $ROOTFS_IMG (use --arch to select an architecture with a prepared rootfs)"
 [ -f "$REPO_ROOT/Cargo.toml" ] || error "Not at repo root"
 
-# ─── Step 1: Build seed kernel ─────────────────────────────────────────────────
+# ─── Step 1: Build seed kernel ───────────────────────────────────────────────────
 
 info "Building seed kernel for $ARCH..."
 cargo xtask starry build --arch "$ARCH" || error "Seed kernel build failed"
 
-# Try release first (xtask builds --release by default), fall back to debug
 SEED_KERNEL="$REPO_ROOT/target/${TARGET}/release/starryos"
 if [ ! -f "$SEED_KERNEL" ]; then
     SEED_KERNEL="$REPO_ROOT/target/${TARGET}/debug/starryos"
 fi
-[ -f "$SEED_KERNEL" ] || error "Seed kernel not found: tried release and debug paths"
+[ -f "$SEED_KERNEL" ] || error "Seed kernel not found"
 info "Seed kernel: $SEED_KERNEL (target: $TARGET)"
 
-# ─── Step 2: Inject files into rootfs via loopback mount ───────────────────
-# Uses loopback mount instead of debugfs -w because debugfs writes raw blocks
-# without proper directory entry updates, corrupting the filesystem.
+# ─── Step 2: Inject files into rootfs via loopback mount ─────────────────────────
 
-# Generate the inner self-compile script first
+# Generate the inner self-compile script
 INNER_SCRIPT="$(mktemp /tmp/self-compile-inner.XXXXXX)"
 cat > "$INNER_SCRIPT" << INNER_EOF
 #!/usr/bin/bash
@@ -149,20 +144,21 @@ export CARGO_HOME=/root/.cargo
 
 cd /opt/starryos
 
-# Pre-extracted registry sources from nspawn are readable by
-# rsext4 — cargo only needs READ access during compilation.
 echo "[self-compile] Using pre-extracted registry sources (no re-extraction)"
-
 echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
-	# Filter workspace for arch-specific crates.
-	echo "[self-compile] Filtering workspace for ${ARCH}..."
-	/usr/bin/filter-workspace.sh "${ARCH}" Cargo.toml
-
-# Patch axalloc to 64G capacity
-echo "[self-compile] Patching page allocator to 64G..."
-if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc/Cargo.toml ]; then
-    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' os/arceos/modules/axalloc/Cargo.toml
+# Filter workspace for arch-specific crates
+echo "[self-compile] Filtering workspace for ${ARCH}..."
+cp Cargo.toml Cargo.toml.orig
+case ${ARCH} in
+    x86_64) grep -v -e '^[ ]*"components/arm_vcpu"' -e '^[ ]*"components/arm_vgic"' -e '^[ ]*"components/aarch64_sysreg"' -e '^[ ]*"components/kasm-aarch64"' -e '^[ ]*"components/riscv-h"' -e '^[ ]*"components/riscv_vcpu"' -e '^[ ]*"components/riscv_vplic"' -e '^[ ]*"components/loongarch_vcpu"' -e '^[ ]*"drivers/tpu/sg2002-tpu"' -e '^[ ]*"apps/starry/orangepi"' -e '^[ ]*"apps/starry/maix"' -e '^[ ]*"components/crate_interface/test_crates/' -e '^[ ]*"drivers/usb/test_crates/' -e '^[ ]*"drivers/usb/usb-device/uvc"' Cargo.toml > Cargo.toml.filtered ;;
+    riscv64) grep -v -e '^[ ]*"components/arm_vcpu"' -e '^[ ]*"components/arm_vgic"' -e '^[ ]*"components/aarch64_sysreg"' -e '^[ ]*"components/kasm-aarch64"' -e '^[ ]*"components/loongarch_vcpu"' -e '^[ ]*"drivers/tpu/sg2002-tpu"' -e '^[ ]*"apps/starry/orangepi"' -e '^[ ]*"apps/starry/maix"' -e '^[ ]*"components/crate_interface/test_crates/' -e '^[ ]*"drivers/usb/test_crates/' Cargo.toml > Cargo.toml.filtered ;;
+    *) cp Cargo.toml Cargo.toml.filtered ;;
+esac
+if [ -s Cargo.toml.filtered ]; then
+    mv Cargo.toml.filtered Cargo.toml
+else
+    echo "WARNING: filtered Cargo.toml is empty, keeping original"
 fi
 
 export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Cincremental=false -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
@@ -173,22 +169,22 @@ echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unkn
 echo "[self-compile] Starting cargo build (target=${TARGET}, jobs=\$CARGO_BUILD_JOBS)..."
 echo "BUILD_START"
 
-		export CARGO_TERM_PROGRESS_WHEN=always
-		export CARGO_TERM_PROGRESS_WIDTH=120
-		set +e
-		export PATH=/root/.cargo/bin:/usr/bin:/bin; /usr/bin/bash -c 'while true; do sleep 30; echo "[self-compile] ... still compiling ..."; done' &
-		HEARTBEAT_PID=\$!
-		# Direct output to serial console (TTY = line-buffered cargo)
-		cargo build --ignore-rust-version -p starryos \
-		            --target ${TARGET} \
-		            --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
-		            --offline
-		BUILD_RC=\$?
-		kill \$HEARTBEAT_PID 2>/dev/null || true
-		wait \$HEARTBEAT_PID 2>/dev/null || true
-		echo "BUILD_END"
-# filter-workspace.sh creates Cargo.toml.bak; restore for cleanliness
-[ -f Cargo.toml.bak ] && mv Cargo.toml.bak Cargo.toml
+export CARGO_TERM_PROGRESS_WHEN=always
+export CARGO_TERM_PROGRESS_WIDTH=120
+set +e
+export PATH=/root/.cargo/bin:/usr/bin:/bin; /usr/bin/bash -c 'while true; do sleep 30; echo "[self-compile] ... still compiling ..."; done' &
+HEARTBEAT_PID=\$!
+cargo build --ignore-rust-version -p starryos \\
+            --target ${TARGET} \\
+            --features qemu,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \\
+            --offline
+BUILD_RC=\$?
+kill \$HEARTBEAT_PID 2>/dev/null || true
+wait \$HEARTBEAT_PID 2>/dev/null || true
+echo "BUILD_END"
+
+# Restore original Cargo.toml
+[ -f Cargo.toml.orig ] && mv Cargo.toml.orig Cargo.toml
 
 BINARY=/tmp/build/${TARGET}/debug/starryos
 if [ \$BUILD_RC -eq 0 ] && [ -f "\$BINARY" ] && [ -s "\$BINARY" ]; then
@@ -200,16 +196,11 @@ else
     echo "SELF_COMPILE_FAILED: rc=\$BUILD_RC binary=\$BINARY"
 fi
 INNER_EOF
-# Mount rootfs via loopback for reliable file injection (kernel ext4 driver)
+
+# Mount rootfs via loopback for reliable file injection
 info "Mounting rootfs via loopback for file injection..."
 MNT_DIR="$(mktemp -d /tmp/rootfs-mount.XXXXXX)"
 MNT_LOOP="$(sudo losetup -f --show "$ROOTFS_IMG")"
-cleanup_mount() {
-    sudo umount "$MNT_DIR" 2>/dev/null || true
-    sudo losetup -d "$MNT_LOOP" 2>/dev/null || true
-    rmdir "$MNT_DIR" 2>/dev/null || true
-}
-trap cleanup_mount EXIT
 sudo mount "$MNT_LOOP" "$MNT_DIR"
 
 # Inject linker.x (generated by seed kernel build)
@@ -227,19 +218,7 @@ if [ -f "$HOST_AXCONFIG" ]; then
     info ".axconfig.toml injected"
 fi
 
-# Inject axalloc Cargo.toml (may have been removed by e2fsck on prior runs)
-HOST_AXALLOC_CARGO="$REPO_ROOT/os/arceos/modules/axalloc/Cargo.toml"
-if [ -f "$HOST_AXALLOC_CARGO" ]; then
-    sudo cp "$HOST_AXALLOC_CARGO" "$MNT_DIR/opt/starryos/os/arceos/modules/axalloc/Cargo.toml"
-    info "axalloc Cargo.toml injected"
-fi
-
-# Inject filter-workspace.sh (deduplicated arch-members filtering)
-sudo cp "$REPO_ROOT/scripts/filter-workspace.sh" "$MNT_DIR/usr/bin/filter-workspace.sh"
-sudo chmod +x "$MNT_DIR/usr/bin/filter-workspace.sh"
-info "filter-workspace.sh injected"
-
-# Inject inner compile script (the only file that changes between runs)
+# Inject inner compile script
 sudo mkdir -p "$MNT_DIR/usr/bin"
 sudo cp "$INNER_SCRIPT" "$MNT_DIR/usr/bin/self-compile-inner.sh"
 sudo chmod +x "$MNT_DIR/usr/bin/self-compile-inner.sh"
@@ -249,13 +228,12 @@ info "Compile script injected at /usr/bin/self-compile-inner.sh"
 # Ensure /run/udev/data exists to prevent init EIO errors
 sudo mkdir -p "$MNT_DIR/run/udev/data"
 
-# Sync before unmount to flush all writes to disk
 sync
 sudo umount "$MNT_DIR"
 sudo losetup -d "$MNT_LOOP"
 rmdir "$MNT_DIR"
 
-# ─── Step 3: Boot QEMU and run the compile via expect ──────────────────────────
+# ─── Step 3: Boot QEMU and run the compile via expect ────────────────────────────
 
 info "Booting QEMU ($QEMU_BIN) for self-compilation (this may take ~2 hours)..."
 info "QEMU log: $QEMU_LOG"
@@ -275,21 +253,19 @@ spawn $QEMU_BIN \
     -kernel $SEED_KERNEL \
     -device $QEMU_BLK_DEV \
     -drive id=disk0,if=none,format=raw,file=$ROOTFS_IMG,file.locking=off \
-    -device $QEMU_NET_DEV \
+    -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0
 
-# Wait for the StarryOS shell prompt
 expect {
     -re {root@starry[:~]} { }
     -re {starry:/[\$#] } { }
     timeout { puts "TIMEOUT waiting for shell prompt"; exit 1 }
-        eof {
-            puts "QEMU_EXITED_EARLY"
-            exit 1
-        }
+    eof {
+        puts "QEMU_EXITED_EARLY"
+        exit 1
+    }
 }
 
-# Launch the inner compile script
 send -- "/usr/bin/self-compile-inner.sh\r"
 expect {
     -re {SELF_COMPILE_SUCCESS} {
@@ -305,7 +281,6 @@ expect {
     }
 }
 
-# Quit QEMU via the QEMU monitor (Ctrl+A c quit)
 send -- "\x01c"
 sleep 1
 send -- "quit\r"
@@ -318,10 +293,9 @@ EXPECT_EOF
 EXPECT_EXIT=$?
 set -e
 
-# ─── Step 4: Verify result ─────────────────────────────────────────────────────
+# ─── Step 4: Verify result ───────────────────────────────────────────────────────
 
 if [ "$EXPECT_EXIT" -eq 0 ]; then
-    # Verify the binary was saved inside the rootfs
     BINARY_SIZE=$(debugfs -R "stat /opt/starryos-selfbuilt" "$ROOTFS_IMG" 2>/dev/null | grep -oP 'Size: \K[0-9]+' | head -1 || echo "0")
     if [ "$BINARY_SIZE" -gt 1000000 ]; then
         info "Self-compilation SUCCESS — binary saved to /opt/starryos-selfbuilt (${BINARY_SIZE} bytes)"
