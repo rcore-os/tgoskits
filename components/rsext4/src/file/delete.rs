@@ -154,8 +154,6 @@ fn remove_dentry_in_dir_block(
 ) -> bool {
     let block_bytes = BLOCK_SIZE;
     let mut offset: usize = 0;
-    let mut prev_off: Option<usize> = None;
-    let mut prev_rec_len: u16 = 0;
     while offset + 8 <= block_bytes {
         let inode = u32::from_le_bytes([
             data[offset],
@@ -178,27 +176,14 @@ fn remove_dentry_in_dir_block(
         if name_len > 0 && offset + 8 + name_len <= entry_end {
             let name = &data[offset + 8..offset + 8 + name_len];
             if inode != 0 && name == name_bytes {
-                if let Some(poff) = prev_off {
-                    // Merge current entry's space into previous entry.
-                    let new_len = prev_rec_len.saturating_add(rec_len);
-                    let bytes = new_len.to_le_bytes();
-                    data[poff + 4] = bytes[0];
-                    data[poff + 5] = bytes[1];
-
-                    // Clear current entry inode so it will be treated as free.
-                    let zero = 0u32.to_le_bytes();
-                    data[offset] = zero[0];
-                    data[offset + 1] = zero[1];
-                    data[offset + 2] = zero[2];
-                    data[offset + 3] = zero[3];
-                } else {
-                    // No previous entry in this block: mark this entry free.
-                    let zero = 0u32.to_le_bytes();
-                    data[offset] = zero[0];
-                    data[offset + 1] = zero[1];
-                    data[offset + 2] = zero[2];
-                    data[offset + 3] = zero[3];
-                }
+                // Mark entry as deleted by zeroing inode. Do NOT merge rec_len
+                // into the previous entry — keeping rec_len unchanged preserves
+                // stable byte offsets for readdir (getdents64) across deletions.
+                let zero = 0u32.to_le_bytes();
+                data[offset] = zero[0];
+                data[offset + 1] = zero[1];
+                data[offset + 2] = zero[2];
+                data[offset + 3] = zero[3];
                 update_ext4_dirblock_csum32(
                     superblock,
                     parent_ino_num.raw(),
@@ -211,8 +196,6 @@ fn remove_dentry_in_dir_block(
         if entry_end >= block_bytes {
             break;
         }
-        prev_off = Some(offset);
-        prev_rec_len = rec_len;
         offset = entry_end;
     }
     false
