@@ -29,6 +29,10 @@ impl TimeIf for TimeImpl {
         vmm::timer::cancel_timer(token)
     }
 
+    fn busy_wait(duration: TimeValue) {
+        ax_hal::time::busy_wait(duration)
+    }
+
     fn set_oneshot_timer(deadline: TimeValue) {
         ax_hal::time::set_oneshot_timer(deadline.as_nanos() as u64)
     }

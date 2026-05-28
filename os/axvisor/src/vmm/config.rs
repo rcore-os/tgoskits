@@ -46,8 +46,8 @@ pub mod vmcfg {
     /// Read VM configs from filesystem
     #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs() -> Vec<String> {
-        use ax_std::fs;
-        use ax_std::io::{BufReader, Read};
+        use crate::hal::fs as host_fs;
+        use crate::hal::fs::{BufReader, Read};
 
         let config_dir = "/guest/vm_default";
 
@@ -55,7 +55,7 @@ pub mod vmcfg {
 
         debug!("Read VM config files from filesystem.");
 
-        let entries = match fs::read_dir(config_dir) {
+        let entries = match host_fs::read_dir(config_dir) {
             Ok(entries) => {
                 info!("Find dir: {}", config_dir);
                 entries
@@ -79,7 +79,7 @@ pub mod vmcfg {
             let path_str = path.as_str();
             debug!("Considering file: {}", path_str);
             if path_str.ends_with(".toml") {
-                let toml_file = match fs::File::open(path_str) {
+                let toml_file = match host_fs::File::open(path_str) {
                     Ok(file) => file,
                     Err(e) => {
                         error!("Failed to open config file {}: {:?}", path_str, e);

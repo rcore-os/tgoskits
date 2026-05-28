@@ -163,6 +163,9 @@ pub trait TimeIf {
     /// * `token` - The cancel token returned by [`register_timer`].
     fn cancel_timer(token: CancelToken);
 
+    /// Busy-wait for the specified duration in host time.
+    fn busy_wait(duration: TimeValue);
+
     /// Program the host one-shot timer to fire at `deadline`.
     ///
     /// The deadline is expressed in the same monotonic time domain as

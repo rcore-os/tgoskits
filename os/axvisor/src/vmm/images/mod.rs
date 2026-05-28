@@ -610,11 +610,11 @@ pub fn load_vm_image_from_memory(
 pub mod fs {
     use super::*;
     use ax_errno::{AxResult, ax_err, ax_err_type};
-    use std::{fs::File, vec::Vec};
+    use std::vec::Vec;
+
+    use crate::hal::fs::{self as host_fs, BufReader, File, Read};
 
     pub fn kernel_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
-        use std::fs::File;
-        use std::io::Read;
         let file_name = &config.kernel.kernel_path;
 
         let mut file = File::open(file_name).map_err(|err| {
@@ -775,7 +775,6 @@ pub mod fs {
         image_load_gpa: GuestPhysAddr,
         vm: VMRef,
     ) -> AxResult {
-        use std::io::{BufReader, Read};
         let (image_file, image_size) = open_image_file(image_path)?;
 
         let image_load_regions = vm.get_image_load_region(image_load_gpa, image_size)?;
@@ -801,7 +800,6 @@ pub mod fs {
 
     #[cfg(target_arch = "x86_64")]
     fn read_image_file(image_path: &str) -> AxResult<Vec<u8>> {
-        use std::io::{BufReader, Read};
         let (image_file, image_size) = open_image_file(image_path)?;
         let mut image = vec![0; image_size];
         BufReader::new(image_file)
@@ -816,7 +814,7 @@ pub mod fs {
     }
 
     pub fn open_image_file(file_name: &str) -> AxResult<(File, usize)> {
-        let file = File::open(file_name).map_err(|err| {
+        let file = host_fs::File::open(file_name).map_err(|err| {
             ax_err_type!(
                 NotFound,
                 format!(

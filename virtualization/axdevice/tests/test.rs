@@ -153,5 +153,7 @@ impl axvisor_api::time::TimeIf for MockTimeIfImpl {
 
     fn cancel_timer(_token: axvisor_api::time::CancelToken) {}
 
+    fn busy_wait(_duration: axvisor_api::time::TimeValue) {}
+
     fn set_oneshot_timer(_deadline: axvisor_api::time::TimeValue) {}
 }

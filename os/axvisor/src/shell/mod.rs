@@ -14,10 +14,11 @@
 
 mod command;
 
-use std::io::prelude::*;
 use std::println;
 use std::string::ToString;
 
+use crate::hal::fs;
+use crate::hal::fs::io::prelude::*;
 use crate::shell::command::{
     CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, prompt_string,
     run_cmd_bytes,
@@ -39,8 +40,8 @@ enum InputState {
 
 // Initialize the console shell.
 pub fn console_init() {
-    let mut stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let mut stdin = fs::stdin();
+    let mut stdout = fs::stdout();
     let mut history = CommandHistory::new(100);
 
     let mut buf = [0; MAX_LINE_LEN];

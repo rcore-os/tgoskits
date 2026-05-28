@@ -24,6 +24,8 @@ AxVisor is a Hypervisor implemented based on the ArceOS kernel. Its goal is to l
 
 The software architecture of AxVisor is divided into five layers as shown in the diagram below. Each box represents an independent component, and components communicate with each other through standard interfaces. The complete architecture description can be found in the [documentation](https://arceos-hypervisor.github.io/axvisorbook/docs/overview).
 
+In the current codebase, host-runtime-dependent logic is intentionally funneled into two boundaries: reusable virtualization components depend on `axvisor_api`, while AxVisor's ArceOS-specific porting glue is kept under `os/axvisor/src/hal/*`. This keeps the hypervisor core largely reusable and makes migration to another host OS primarily a matter of reimplementing the runtime and HAL adapters.
+
 ![Architecture](https://arceos-hypervisor.github.io/doc/assets/arceos-hypervisor-architecture.png)
 
 ## Hardware Platforms

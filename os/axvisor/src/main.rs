@@ -35,7 +35,6 @@ extern crate ax_std as std;
 
 mod hal;
 mod shell;
-mod task;
 mod vmm;
 
 use std::println;

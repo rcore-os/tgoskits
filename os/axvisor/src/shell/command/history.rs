@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::prelude::*;
 use std::{string::String, vec::Vec};
+
+use crate::hal::fs::io::prelude::*;
 
 pub struct CommandHistory {
     history: Vec<String>,

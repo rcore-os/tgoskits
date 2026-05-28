@@ -21,7 +21,8 @@ use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
-// const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
+// const PERIODIC_INTERVAL_NANOS: u64 =
+//     axvisor_api::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
 
 /// Represents a timer event in the virtual machine monitor (VMM).
 ///
@@ -133,10 +134,10 @@ fn rearm_host_timer(next_deadline: Option<TimeValue>) {
 // /// Schedule the next timer event based on the periodic interval
 // pub fn scheduler_next_event() {
 //     trace!("Scheduling next event...");
-//     let now_ns = ax_hal::time::monotonic_time_nanos();
+//     let now_ns = axvisor_api::time::current_time_nanos();
 //     let deadline = now_ns + PERIODIC_INTERVAL_NANOS;
 //     debug!("PHY deadline {} !!!", deadline);
-//     ax_hal::time::set_oneshot_timer(deadline);
+//     axvisor_api::time::set_oneshot_timer(TimeValue::from_nanos(deadline));
 // }
 
 /// Initialize the hypervisor timer system

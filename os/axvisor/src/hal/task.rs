@@ -1,14 +1,58 @@
-use alloc::{format, string::String};
+use alloc::{
+    format,
+    string::String,
+    sync::{Arc, Weak},
+};
 
 use std::os::arceos::{
     api::task::{self, AxCpuMask, AxWaitQueueHandle},
-    modules::ax_task::{self as host_task, AxTaskExt, AxTaskRef, TaskInner, WaitQueue},
+    modules::ax_task::{self as host_task, AxTaskExt, AxTaskRef, TaskExt, TaskInner, WaitQueue},
 };
 
-use crate::{
-    task::{AsVCpuTask, VCpuTask},
-    vmm::{VCpuRef, VMRef},
-};
+use crate::vmm::{VCpuRef, VM, VMRef};
+
+/// Task extended data for the hypervisor.
+pub(crate) struct VCpuTask {
+    /// The VM (Weak reference to avoid keeping VM alive).
+    pub vm: Weak<VM>,
+    /// The virtual CPU.
+    pub vcpu: VCpuRef,
+}
+
+impl VCpuTask {
+    /// Create a new [`VCpuTask`].
+    pub fn new(vm: &VMRef, vcpu: VCpuRef) -> Self {
+        Self {
+            vm: Arc::downgrade(vm),
+            vcpu,
+        }
+    }
+
+    /// Get a strong reference to the VM.
+    pub fn vm(&self) -> VMRef {
+        self.vm.upgrade().expect("VM has been dropped")
+    }
+}
+
+#[extern_trait::extern_trait]
+impl TaskExt for VCpuTask {}
+
+pub(crate) trait AsVCpuTask {
+    fn try_as_vcpu_task(&self) -> Option<&VCpuTask>;
+
+    #[track_caller]
+    fn as_vcpu_task(&self) -> &VCpuTask;
+}
+
+impl AsVCpuTask for TaskInner {
+    fn try_as_vcpu_task(&self) -> Option<&VCpuTask> {
+        self.task_ext().map(|ext| ext.downcast_ref::<VCpuTask>())
+    }
+
+    fn as_vcpu_task(&self) -> &VCpuTask {
+        self.try_as_vcpu_task().expect("Not a VCpuTask")
+    }
+}
 
 pub(crate) struct VmmWaitQueue(AxWaitQueueHandle);
 

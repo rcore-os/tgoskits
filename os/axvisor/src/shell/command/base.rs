@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "fs")]
+use crate::hal::env as host_env;
+#[cfg(feature = "fs")]
+use crate::hal::fs::io::{self, Read, Write};
+#[cfg(feature = "fs")]
+use crate::hal::fs::{self as host_fs, File, FileType};
+use crate::hal::process as host_process;
 use std::collections::BTreeMap;
-#[cfg(feature = "fs")]
-use std::fs::{self, File, FileType};
-#[cfg(feature = "fs")]
-use std::io::{self, Read, Write};
 use std::println;
 use std::string::{String, ToString};
 
@@ -52,7 +55,7 @@ fn do_ls(cmd: &ParsedCommand) {
 
     fn show_entry_info(path: &str, entry: &str, show_long: bool) -> io::Result<()> {
         if show_long {
-            let metadata = fs::metadata(path)?;
+            let metadata = host_fs::metadata(path)?;
             let size = metadata.len();
             let file_type = metadata.file_type();
             let file_type_char = file_type_to_char(file_type);
@@ -68,7 +71,7 @@ fn do_ls(cmd: &ParsedCommand) {
     fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> io::Result<()> {
         use std::vec::Vec;
 
-        let is_dir = fs::metadata(name)?.is_dir();
+        let is_dir = host_fs::metadata(name)?.is_dir();
         if !is_dir {
             return show_entry_info(name, name, show_long);
         }
@@ -77,7 +80,7 @@ fn do_ls(cmd: &ParsedCommand) {
             println!("{}:", name);
         }
 
-        let mut entries = fs::read_dir(name)?
+        let mut entries = host_fs::read_dir(name)?
             .filter_map(|e| e.ok())
             .map(|e| e.file_name())
             .filter(|name| show_all || !name.starts_with('.'))
@@ -191,9 +194,9 @@ fn do_mkdir(cmd: &ParsedCommand) {
 
     fn mkdir_one(path: &str, create_parents: bool) -> io::Result<()> {
         if create_parents {
-            fs::create_dir_all(path)
+            host_fs::create_dir_all(path)
         } else {
-            fs::create_dir(path)
+            host_fs::create_dir(path)
         }
     }
 
@@ -217,7 +220,7 @@ fn do_rm(cmd: &ParsedCommand) {
     }
 
     fn rm_one(path: &str, rm_dir: bool, recursive: bool, force: bool) -> io::Result<()> {
-        let metadata = fs::metadata(path);
+        let metadata = host_fs::metadata(path);
 
         if force && metadata.is_err() {
             return Ok(()); // Ignore non-existent files when in force mode
@@ -229,12 +232,12 @@ fn do_rm(cmd: &ParsedCommand) {
             if recursive {
                 remove_dir_recursive(path, force)
             } else if rm_dir {
-                fs::remove_dir(path)
+                host_fs::remove_dir(path)
             } else {
                 Err(io::Error::Unsupported)
             }
         } else {
-            fs::remove_file(path)
+            host_fs::remove_file(path)
         }
     }
 
@@ -251,7 +254,7 @@ fn do_rm(cmd: &ParsedCommand) {
 #[cfg(feature = "fs")]
 fn remove_dir_recursive(path: &str, _force: bool) -> io::Result<()> {
     // Read directory contents
-    let entries = fs::read_dir(path)?;
+    let entries = host_fs::read_dir(path)?;
 
     // Remove all child items
     for entry_result in entries {
@@ -264,12 +267,12 @@ fn remove_dir_recursive(path: &str, _force: bool) -> io::Result<()> {
             remove_dir_recursive(&entry_path, _force)?;
         } else {
             // Delete file
-            fs::remove_file(&entry_path)?;
+            host_fs::remove_file(&entry_path)?;
         }
     }
 
     // Delete empty directory
-    fs::remove_dir(path)
+    host_fs::remove_dir(path)
 }
 
 #[cfg(feature = "fs")]
@@ -285,7 +288,7 @@ fn do_cd(cmd: &ParsedCommand) {
         return;
     };
 
-    if let Err(e) = std::env::set_current_dir(target) {
+    if let Err(e) = host_env::set_current_dir(target) {
         print_err!("cd", target, e);
     }
 }
@@ -294,7 +297,7 @@ fn do_cd(cmd: &ParsedCommand) {
 fn do_pwd(cmd: &ParsedCommand) {
     let _logical = cmd.flags.contains("logical");
 
-    match std::env::current_dir() {
+    match host_env::current_dir() {
         Ok(pwd) => println!("{}", pwd),
         Err(e) => {
             print_err!("pwd", e);
@@ -347,7 +350,7 @@ fn do_exit(cmd: &ParsedCommand) {
     };
 
     println!("Bye~");
-    std::process::exit(exit_code);
+    host_process::exit(exit_code);
 }
 
 fn do_log(cmd: &ParsedCommand) {
@@ -390,7 +393,7 @@ fn do_mv(cmd: &ParsedCommand) {
         let dest = &args[1];
 
         // Check if destination exists and is a directory
-        if let Ok(dest_meta) = fs::metadata(dest)
+        if let Ok(dest_meta) = host_fs::metadata(dest)
             && dest_meta.is_dir()
         {
             // Move source into destination directory
@@ -416,7 +419,7 @@ fn do_mv(cmd: &ParsedCommand) {
         let sources = &args[..args.len() - 1];
 
         // Check if destination is a directory
-        match fs::metadata(dest) {
+        match host_fs::metadata(dest) {
             Ok(meta) if meta.is_dir() => {
                 // Move each source into destination directory
                 for source in sources {
@@ -454,11 +457,11 @@ fn path_basename(path: &str) -> &str {
 #[cfg(feature = "fs")]
 fn move_file_or_dir(source: &str, dest: &str) -> io::Result<()> {
     // Try simple rename first (works within same filesystem)
-    match fs::rename(source, dest) {
+    match host_fs::rename(source, dest) {
         Ok(()) => Ok(()),
         Err(_) => {
             // If rename fails, try copy + delete (for cross-filesystem moves)
-            let src_meta = fs::metadata(source)?;
+            let src_meta = host_fs::metadata(source)?;
 
             if src_meta.is_dir() {
                 // For directories, use recursive copy then remove
@@ -467,7 +470,7 @@ fn move_file_or_dir(source: &str, dest: &str) -> io::Result<()> {
             } else {
                 // For files, copy then remove
                 copy_file(source, dest)?;
-                fs::remove_file(source)?;
+                host_fs::remove_file(source)?;
             }
             Ok(())
         }
@@ -504,7 +507,7 @@ fn do_cp(cmd: &ParsedCommand) {
     let dest = &args[1];
 
     // Check if source file/directory exists
-    let src_metadata = match fs::metadata(source) {
+    let src_metadata = match host_fs::metadata(source) {
         Ok(metadata) => metadata,
         Err(e) => {
             print_err!("cp", format_args!("cannot access '{source}'"), e);
@@ -548,10 +551,10 @@ fn copy_file(src: &str, dst: &str) -> io::Result<()> {
 #[cfg(feature = "fs")]
 fn copy_dir_recursive(src: &str, dst: &str) -> io::Result<()> {
     // Create target directory
-    fs::create_dir(dst)?;
+    host_fs::create_dir(dst)?;
 
     // Read source directory contents
-    let entries = fs::read_dir(src)?;
+    let entries = host_fs::read_dir(src)?;
 
     for entry_result in entries {
         let entry = entry_result?;

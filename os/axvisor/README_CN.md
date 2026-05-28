@@ -24,6 +24,8 @@ AxVisor 是一个基于 ArceOS 内核实现的 Hypervisor。其目标是利用 A
 
 AxVisor 的软件架构分为如下图所示的五层，其中，每一个框都是一个独立的组件，组件之间通过标准接口进行通信。完整的架构描述可以在[文档](https://arceos-hypervisor.github.io/axvisorbook/docs/overview)中找到。
 
+在当前代码中，依赖宿主 runtime 的逻辑被有意识地收敛到两个边界：可复用的虚拟化组件统一依赖 `axvisor_api`，而 AxVisor 面向 ArceOS 的移植胶水代码集中放在 `os/axvisor/src/hal/*`。这样 Hypervisor Core 可以尽量保持可复用，未来迁移到其他 OS 基座时，主要工作将集中在 runtime 与 HAL 适配层的重实现上。
+
 ![Architecture](https://arceos-hypervisor.github.io/doc/assets/arceos-hypervisor-architecture.png)
 
 ## 硬件平台
