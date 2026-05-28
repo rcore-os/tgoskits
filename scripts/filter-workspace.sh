@@ -33,7 +33,7 @@ for name in \
             filter_member "$name"
             ;;
         riscv64)
-            case "$name" in riscv-*|loongarch_*) continue ;; esac
+            case "$name" in riscv*) continue ;; esac
             # riscv64 also removes x86 and arm members
             filter_member "$name"
             ;;

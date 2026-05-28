@@ -184,8 +184,8 @@ echo "BUILD_START"
 		kill \$HEARTBEAT_PID 2>/dev/null || true
 		wait \$HEARTBEAT_PID 2>/dev/null || true
 		echo "BUILD_END"
-# Restore original Cargo.toml
-[ -f Cargo.toml.orig ] && mv Cargo.toml.orig Cargo.toml
+# filter-workspace.sh creates Cargo.toml.bak; restore for cleanliness
+[ -f Cargo.toml.bak ] && mv Cargo.toml.bak Cargo.toml
 
 BINARY=/tmp/build/${TARGET}/debug/starryos
 if [ \$BUILD_RC -eq 0 ] && [ -f "\$BINARY" ] && [ -s "\$BINARY" ]; then
