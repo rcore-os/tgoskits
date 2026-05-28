@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -9,6 +10,7 @@ use object::{
     Object, ObjectSymbol,
     read::elf::{FileHeader, ProgramHeader},
 };
+use ostool::board::terminal;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -195,7 +197,10 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
 
     let client = HttpBootApiClient::new(&publish_config.server, publish_config.port)?;
     let board_type = publish_config.board_type.as_deref().ok_or_else(|| {
-        anyhow!("missing board_type; set --board-type or httpboot_config.board_type")
+        anyhow!(
+            "missing HTTP Boot board; set `board = \"...\"` in .httpboot.toml, pass \
+             `--httpboot-config PATH`, or override with `--board BOARD`"
+        )
     })?;
     let session = client.create_session(board_type).await?;
     let session_guard = SessionGuard {
@@ -203,6 +208,7 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
         session_id: session.session_id.clone(),
         keep: args.keep_session,
     };
+    let heartbeat_guard = SessionHeartbeat::start(client.clone(), session.session_id.clone());
 
     println!("=== Axvisor x86_64 HTTP Boot publish ===");
     println!("board_type: {board_type}");
@@ -219,8 +225,13 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
         args.keep_session,
     )
     .await;
+    let run_result = match publish_result {
+        Ok(()) => run_httpboot_post_publish(&client, &session, &publish_config).await,
+        Err(err) => Err(err),
+    };
+    heartbeat_guard.stop().await;
     let release_result = session_guard.release().await;
-    publish_result?;
+    run_result?;
     release_result?;
     Ok(())
 }
@@ -315,6 +326,66 @@ async fn publish_artifacts_for_session(
     Ok(())
 }
 
+async fn run_httpboot_post_publish(
+    client: &HttpBootApiClient,
+    session: &SessionCreatedResponse,
+    publish_config: &PublishConfig,
+) -> anyhow::Result<()> {
+    println!("Waiting for board on power or reset...");
+
+    if publish_config.power_cycle {
+        client
+            .power_off_board(&session.session_id)
+            .await
+            .context("failed to power off board")?;
+        client
+            .power_on_board(&session.session_id)
+            .await
+            .context("failed to power on board")?;
+    }
+
+    if !publish_config.open_console {
+        return Ok(());
+    }
+
+    let serial_status = client
+        .get_serial_status(&session.session_id)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to get serial status for session `{}`",
+                session.session_id
+            )
+        })?;
+
+    if serial_status.available {
+        let ws_path = serial_status
+            .ws_url
+            .as_deref()
+            .or(session.ws_url.as_deref())
+            .ok_or_else(|| anyhow!("server did not return a serial websocket URL"))?;
+        if serial_status.connected {
+            println!("serial_console: server reports an existing connection; trying anyway");
+        }
+        if let Some(port) = serial_status.port.as_deref() {
+            if let Some(baud_rate) = serial_status.baud_rate {
+                println!("serial_console: {port} @ {baud_rate}");
+            } else {
+                println!("serial_console: {port}");
+            }
+        }
+        let ws_url = client.resolve_ws_url(ws_path)?;
+        terminal::run_serial_terminal(ws_url).await
+    } else {
+        println!("Board has no serial configuration; keeping session alive until Ctrl+C.");
+        println!("HTTP Boot artifacts are ready. Reset or power on the board now.");
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to wait for Ctrl+C")?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 struct PublishConfig {
     board_type: Option<String>,
@@ -325,6 +396,8 @@ struct PublishConfig {
     loader_file: Option<String>,
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
+    power_cycle: bool,
+    open_console: bool,
 }
 
 impl PublishConfig {
@@ -338,6 +411,8 @@ impl PublishConfig {
             loader_file: Some("BOOTX64.EFI".to_string()),
             kernel_load_addr: None,
             entry_point: None,
+            power_cycle: false,
+            open_console: false,
         };
 
         let default_path = workspace_root.join(".httpboot.toml");
@@ -371,6 +446,12 @@ impl PublishConfig {
         self.loader_file = file.loader_file.or(self.loader_file.take());
         self.kernel_load_addr = file.kernel_load_addr.or(self.kernel_load_addr.take());
         self.entry_point = file.entry_point.or(self.entry_point.take());
+        if let Some(power_cycle) = file.power_cycle {
+            self.power_cycle = power_cycle;
+        }
+        if let Some(open_console) = file.open_console {
+            self.open_console = open_console;
+        }
     }
 
     fn merge_args(mut self, args: &ArgsPublish) -> Self {
@@ -410,6 +491,8 @@ struct PublishConfigFile {
     loader_file: Option<String>,
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
+    power_cycle: Option<bool>,
+    open_console: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -681,21 +764,17 @@ async fn upload_loader_if_configured(
 struct HttpBootApiClient {
     client: Client,
     base_url: Url,
+    ws_base_url: Url,
 }
 
 impl HttpBootApiClient {
     fn new(server: &str, port: u16) -> anyhow::Result<Self> {
-        let mut base_url =
-            Url::parse("http://localhost").context("failed to create ostool-server URL")?;
-        base_url
-            .set_host(Some(server))
-            .map_err(|_| anyhow!("invalid ostool-server host `{server}`"))?;
-        base_url
-            .set_port(Some(port))
-            .map_err(|_| anyhow!("invalid ostool-server port `{port}`"))?;
+        let base_url = build_base_url("http", server, port)?;
+        let ws_base_url = build_base_url("ws", server, port)?;
         Ok(Self {
             client: Client::new(),
             base_url,
+            ws_base_url,
         })
     }
 
@@ -728,6 +807,17 @@ impl HttpBootApiClient {
         self.decode_empty(response).await
     }
 
+    async fn heartbeat(&self, session_id: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(self.endpoint(&format!("/api/v1/sessions/{session_id}/heartbeat")))
+            .send()
+            .await
+            .with_context(|| format!("failed to heartbeat ostool-server session `{session_id}`"))?;
+        let _ignored: serde_json::Value = self.decode_json(response).await?;
+        Ok(())
+    }
+
     async fn get_boot_profile(&self, session_id: &str) -> anyhow::Result<BootProfileResponse> {
         self.decode_json(
             self.client
@@ -739,6 +829,39 @@ impl HttpBootApiClient {
                 })?,
         )
         .await
+    }
+
+    async fn get_serial_status(&self, session_id: &str) -> anyhow::Result<SerialStatusResponse> {
+        self.decode_json(
+            self.client
+                .get(self.endpoint(&format!("/api/v1/sessions/{session_id}/serial")))
+                .send()
+                .await
+                .with_context(|| {
+                    format!("failed to get ostool-server serial status for session `{session_id}`")
+                })?,
+        )
+        .await
+    }
+
+    async fn power_on_board(&self, session_id: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(self.endpoint(&format!("/api/v1/sessions/{session_id}/board/power-on")))
+            .send()
+            .await
+            .with_context(|| format!("failed to power on board for session `{session_id}`"))?;
+        self.decode_empty(response).await
+    }
+
+    async fn power_off_board(&self, session_id: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(self.endpoint(&format!("/api/v1/sessions/{session_id}/board/power-off")))
+            .send()
+            .await
+            .with_context(|| format!("failed to power off board for session `{session_id}`"))?;
+        self.decode_empty(response).await
     }
 
     async fn upload_http_boot_file(
@@ -781,6 +904,16 @@ impl HttpBootApiClient {
             .expect("static API path should be valid")
     }
 
+    fn resolve_ws_url(&self, ws_url: &str) -> anyhow::Result<Url> {
+        if ws_url.starts_with("ws://") || ws_url.starts_with("wss://") {
+            return Url::parse(ws_url).with_context(|| format!("invalid websocket URL `{ws_url}`"));
+        }
+
+        self.ws_base_url
+            .join(ws_url)
+            .with_context(|| format!("failed to resolve websocket URL `{ws_url}`"))
+    }
+
     async fn decode_json<T: DeserializeOwned>(
         &self,
         response: reqwest::Response,
@@ -804,6 +937,39 @@ impl HttpBootApiClient {
     }
 }
 
+fn build_base_url(scheme: &str, server: &str, port: u16) -> anyhow::Result<Url> {
+    let mut url = if server.starts_with("http://") || server.starts_with("https://") {
+        let parsed =
+            Url::parse(server).with_context(|| format!("invalid ostool-server URL `{server}`"))?;
+        let target_scheme = match (scheme, parsed.scheme()) {
+            ("ws", "http") => "ws",
+            ("ws", "https") => "wss",
+            ("http", "http") => "http",
+            ("http", "https") => "https",
+            _ => scheme,
+        };
+        let mut url = parsed;
+        url.set_scheme(target_scheme)
+            .map_err(|_| anyhow!("invalid ostool-server URL scheme `{server}`"))?;
+        if url.port().is_none() {
+            url.set_port(Some(port))
+                .map_err(|_| anyhow!("invalid ostool-server port `{port}`"))?;
+        }
+        url
+    } else {
+        Url::parse(&format!("{scheme}://localhost"))
+            .with_context(|| format!("failed to create {scheme} URL"))?
+    };
+
+    if !server.starts_with("http://") && !server.starts_with("https://") {
+        url.set_host(Some(server))
+            .map_err(|_| anyhow!("invalid ostool-server host `{server}`"))?;
+        url.set_port(Some(port))
+            .map_err(|_| anyhow!("invalid ostool-server port `{port}`"))?;
+    }
+    Ok(url)
+}
+
 #[derive(Debug, Serialize)]
 struct CreateSessionRequest {
     board_type: String,
@@ -816,6 +982,7 @@ struct SessionCreatedResponse {
     session_id: String,
     board_id: String,
     boot_mode: String,
+    ws_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -864,6 +1031,15 @@ struct HttpBootFileResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct SerialStatusResponse {
+    available: bool,
+    connected: bool,
+    port: Option<String>,
+    baud_rate: Option<u32>,
+    ws_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ApiErrorResponse {
     message: String,
 }
@@ -896,5 +1072,86 @@ impl SessionGuard {
             return Ok(());
         }
         self.client.delete_session(&self.session_id).await
+    }
+}
+
+struct SessionHeartbeat {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl SessionHeartbeat {
+    fn start(client: HttpBootApiClient, session_id: String) -> Self {
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                interval.tick().await;
+                if let Err(err) = client.heartbeat(&session_id).await {
+                    eprintln!("session_heartbeat: {err:#}");
+                }
+            }
+        });
+        Self { handle }
+    }
+
+    async fn stop(self) {
+        self.handle.abort();
+        let _ = self.handle.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{PublishConfig, PublishConfigFile, build_base_url};
+
+    #[test]
+    fn publish_config_file_enables_post_publish_console() {
+        let file: PublishConfigFile = toml::from_str(
+            r#"
+            board = "x86-httpboot"
+            power_cycle = true
+            open_console = true
+            "#,
+        )
+        .unwrap();
+        let mut config = PublishConfig {
+            board_type: None,
+            server: "127.0.0.1".to_string(),
+            port: 2999,
+            remote_name: Some("kernel.bin".to_string()),
+            efi_loader_path: Some(PathBuf::from("target/httpboot/BOOTX64.EFI")),
+            loader_file: Some("BOOTX64.EFI".to_string()),
+            kernel_load_addr: None,
+            entry_point: None,
+            power_cycle: false,
+            open_console: false,
+        };
+
+        config.merge_file(file);
+
+        assert_eq!(config.board_type.as_deref(), Some("x86-httpboot"));
+        assert!(config.power_cycle);
+        assert!(config.open_console);
+    }
+
+    #[test]
+    fn build_base_url_accepts_full_server_url() {
+        let http = build_base_url("http", "https://10.3.10.229:9443", 2999).unwrap();
+        let ws = build_base_url("ws", "https://10.3.10.229:9443", 2999).unwrap();
+
+        assert_eq!(http.as_str(), "https://10.3.10.229:9443/");
+        assert_eq!(ws.as_str(), "wss://10.3.10.229:9443/");
+    }
+
+    #[test]
+    fn build_base_url_adds_default_port_for_host_only_server() {
+        let http = build_base_url("http", "10.3.10.229", 2999).unwrap();
+        let ws = build_base_url("ws", "10.3.10.229", 2999).unwrap();
+
+        assert_eq!(http.as_str(), "http://10.3.10.229:2999/");
+        assert_eq!(ws.as_str(), "ws://10.3.10.229:2999/");
     }
 }

@@ -41,6 +41,7 @@ __pycache__/
 .qemu*
 .build*
 .uboot*
+.httpboot*
 
 /.cargo/.config-local.toml
 .axconfig*
