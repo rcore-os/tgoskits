@@ -1,0 +1,17 @@
+args = [
+  "-m",
+  "128M",
+  "-smp",
+  "1",
+  "-machine",
+  "q35",
+  "-nographic",
+  "-accel",
+  "kvm",
+  "-cpu",
+  "host",
+]
+fail_regex = ["panicked at"]
+success_regex = ["Hello, world!"]
+to_bin = false
+uefi = false

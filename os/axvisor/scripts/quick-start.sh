@@ -70,7 +70,7 @@ Platforms:
     qemu-aarch64       QEMU AArch64 (ArceOS/Linux)
     qemu-riscv64       QEMU RISC-V64 (ArceOS)
     qemu-loongarch64   QEMU LoongArch64 (AxVisor shell smoke)
-    qemu-x86_64        QEMU x86_64 (NimbOS)
+    qemu-x86_64        QEMU x86_64 (NimbOS/ArceOS UEFI)
     phytiumpi          Phytium Pi Board (ArceOS/Linux)
     roc-rk3568-pc      ROC-RK3568-PC Board (ArceOS/Linux)
     rdk-s100           D-Robotics RDK S100P Board (ArceOS/Linux)
@@ -97,6 +97,8 @@ Launch Options (for run/start commands):
         --axvisor           Launch AxVisor shell smoke (default)
     QEMU x86_64:
         -n, --nimbos        Launch single NimbOS guest (default)
+        --nimbos-uefi       Launch NimbOS through an external UEFI firmware image
+        --arceos-uefi       Launch a local ArceOS x86_64 UEFI guest image
     Phytium Pi:
         -a, --arceos        Launch single ArceOS guest (default)
         -l, --linux         Launch single Linux guest
@@ -126,6 +128,8 @@ Examples:
 
     # QEMU x86_64
     $0 qemu-x86_64 start --nimbos                   # One-step: prepare + launch NimbOS
+    $0 qemu-x86_64 start --nimbos-uefi              # One-step: prepare + launch NimbOS through UEFI
+    $0 qemu-x86_64 start --arceos-uefi              # One-step: launch local ArceOS x86_64 UEFI image
     $0 qemu-x86_64 start                            # Same as above (default nimbos)
 
     # Phytium Pi (requires --serial for start)
@@ -340,12 +344,127 @@ setup_qemu_x86_64() {
     info "=== QEMU x86_64 Preparation Complete ==="
 }
 
+setup_qemu_x86_64_uefi() {
+    info "=== QEMU x86_64 UEFI Preparation ==="
+
+    setup_qemu_x86_64
+
+    local firmware_path="${AXVISOR_X86_64_UEFI_FIRMWARE:-}"
+    if [ -z "$firmware_path" ]; then
+        for candidate in \
+            "$(pwd)/tmp/images/qemu_x86_64_nimbos/OVMF_CODE.fd" \
+            "/usr/share/OVMF/OVMF_CODE.fd" \
+            "/usr/share/ovmf/OVMF.fd" \
+            "/usr/share/qemu/OVMF.fd"; do
+            if [ -f "$candidate" ]; then
+                firmware_path="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$firmware_path" ] || [ ! -f "$firmware_path" ]; then
+        error "UEFI firmware image not found."
+        echo "Install OVMF or set AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd"
+        exit 1
+    fi
+
+    info "Preparing UEFI guest config file..."
+    run_cmd cp configs/vms/nimbos-x86_64-qemu-uefi-smp1.toml tmp/configs/
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_nimbos/qemu-x86_64"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
+    run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
+
+    info "Preparing UEFI QEMU config file..."
+    run_cmd cp .github/workflows/qemu-x86_64-uefi.toml tmp/configs/qemu-x86_64-uefi-runtime.toml
+
+    local rootfs_path
+    rootfs_path="$(pwd)/tmp/images/qemu_x86_64_nimbos/rootfs.img"
+    run_cmd sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"$rootfs_path"'|g' tmp/configs/qemu-x86_64-uefi-runtime.toml
+
+    info "=== QEMU x86_64 UEFI Preparation Complete ==="
+}
+
+setup_qemu_x86_64_arceos_uefi() {
+    info "=== QEMU x86_64 ArceOS UEFI Preparation ==="
+
+    run_cmd mkdir -p tmp/{configs,images}
+
+    local kernel_path="${AXVISOR_X86_64_ARCEOS_UEFI_KERNEL:-}"
+    if [ -z "$kernel_path" ]; then
+        for candidate in \
+            "$(pwd)/tmp/images/arceos-x86_64-uefi.bin" \
+            "$(pwd)/tmp/images/arceos-x86_64.bin" \
+            "$(pwd)/tmp/images/ax-helloworld-x86_64.bin"; do
+            if [ -f "$candidate" ]; then
+                kernel_path="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$kernel_path" ] || [ ! -f "$kernel_path" ]; then
+        error "ArceOS x86_64 UEFI guest image not found."
+        echo "Build or place the guest image locally, then set:"
+        echo "  AXVISOR_X86_64_ARCEOS_UEFI_KERNEL=/path/to/arceos-x86_64-uefi.bin"
+        exit 1
+    fi
+
+    local firmware_path="${AXVISOR_X86_64_UEFI_FIRMWARE:-}"
+    if [ -z "$firmware_path" ]; then
+        for candidate in \
+            "$(pwd)/tmp/images/OVMF_CODE.fd" \
+            "/usr/share/OVMF/OVMF_CODE.fd" \
+            "/usr/share/ovmf/OVMF.fd" \
+            "/usr/share/qemu/OVMF.fd"; do
+            if [ -f "$candidate" ]; then
+                firmware_path="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$firmware_path" ] || [ ! -f "$firmware_path" ]; then
+        error "UEFI firmware image not found."
+        echo "Install OVMF or set AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd"
+        exit 1
+    fi
+
+    info "Preparing board config file..."
+    run_cmd cp configs/board/qemu-x86_64.toml tmp/configs/
+
+    info "Preparing ArceOS UEFI guest config file..."
+    run_cmd cp configs/vms/arceos-x86_64-qemu-uefi-smp1.toml tmp/configs/
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "'"$kernel_path"'"|g' tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
+    run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
+
+    info "Preparing UEFI QEMU config file..."
+    run_cmd cp .github/workflows/qemu-x86_64-arceos-uefi.toml tmp/configs/qemu-x86_64-arceos-uefi-runtime.toml
+
+    info "=== QEMU x86_64 ArceOS UEFI Preparation Complete ==="
+}
+
 run_qemu_x86_64_nimbos() {
     info "=== Launching QEMU x86_64 NimbOS Guest ==="
     run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/nimbos-x86_64-qemu-smp1.toml"
+}
+
+run_qemu_x86_64_nimbos_uefi() {
+    info "=== Launching QEMU x86_64 NimbOS UEFI Guest ==="
+    run_axvisor_qemu \
+        --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-uefi-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml"
+}
+
+run_qemu_x86_64_arceos_uefi() {
+    info "=== Launching QEMU x86_64 ArceOS UEFI Guest ==="
+    run_axvisor_qemu \
+        --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-arceos-uefi-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml"
 }
 
 # ============================================================================
@@ -913,7 +1032,21 @@ cmd_start_qemu_loongarch64() {
 # ============================================================================
 
 cmd_setup_qemu_x86_64() {
-    setup_qemu_x86_64
+    local mode="${1:-}"
+    case "$mode" in
+        --nimbos-uefi)
+            setup_qemu_x86_64_uefi
+            ;;
+        --arceos-uefi)
+            setup_qemu_x86_64_arceos_uefi
+            ;;
+        -n|--nimbos|"")
+            setup_qemu_x86_64
+            ;;
+        *)
+            cmd_run_qemu_x86_64 "$mode"
+            ;;
+    esac
 }
 
 cmd_run_qemu_x86_64() {
@@ -923,17 +1056,16 @@ cmd_run_qemu_x86_64() {
         -n|--nimbos|"")
             run_qemu_x86_64_nimbos
             ;;
+        --nimbos-uefi)
+            run_qemu_x86_64_nimbos_uefi
+            ;;
+        --arceos-uefi)
+            run_qemu_x86_64_arceos_uefi
+            ;;
         -a|--arceos)
-            error "Unsupported combination: QEMU x86_64 does not support ArceOS"
+            error "QEMU x86_64 ArceOS requires a UEFI guest image; use --arceos-uefi"
             echo ""
-            echo "QEMU x86_64 platform only supports the following guest system:"
-            echo "  - NimbOS (use --nimbos)"
-            echo ""
-            echo "To run ArceOS, please use one of the following platforms:"
-            echo "  $0 qemu-aarch64 start --arceos"
-            echo "  $0 phytiumpi setup && $0 phytiumpi run --arceos"
-            echo "  $0 roc-rk3568-pc setup && $0 roc-rk3568-pc run --arceos"
-            echo "  $0 rdk-s100 setup && $0 rdk-s100 run --arceos"
+            echo "Set AXVISOR_X86_64_ARCEOS_UEFI_KERNEL=/path/to/arceos-x86_64-uefi.bin first."
             exit 1
             ;;
         -l|--linux)
@@ -967,6 +1099,8 @@ cmd_run_qemu_x86_64() {
             echo ""
             echo "QEMU x86_64 platform supports the following options:"
             echo "  -n, --nimbos    Launch NimbOS guest"
+            echo "  --nimbos-uefi   Launch NimbOS guest through UEFI firmware"
+            echo "  --arceos-uefi   Launch a local ArceOS x86_64 UEFI guest"
             exit 1
             ;;
     esac
@@ -979,13 +1113,25 @@ cmd_start_qemu_x86_64() {
         -n|--nimbos|"")
             # Valid parameters, continue
             ;;
+        --nimbos-uefi)
+            # Valid parameters, continue
+            ;;
+        --arceos-uefi)
+            # Valid parameters, continue
+            ;;
         *)
             # Invalid parameters, report error without executing setup
             cmd_run_qemu_x86_64 "$mode"
             return
             ;;
     esac
-    setup_qemu_x86_64
+    if [[ "$mode" == "--nimbos-uefi" ]]; then
+        setup_qemu_x86_64_uefi
+    elif [[ "$mode" == "--arceos-uefi" ]]; then
+        setup_qemu_x86_64_arceos_uefi
+    else
+        setup_qemu_x86_64
+    fi
     echo ""
     cmd_run_qemu_x86_64 "$mode"
 }
@@ -1329,7 +1475,7 @@ case "$PLATFORM" in
         shift
         case "$CMD" in
             setup)
-                cmd_setup_qemu_x86_64
+                cmd_setup_qemu_x86_64 "$@"
                 ;;
             run)
                 cmd_run_qemu_x86_64 "$@"

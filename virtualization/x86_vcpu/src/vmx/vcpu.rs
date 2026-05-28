@@ -53,7 +53,7 @@ use super::{
 };
 use crate::{
     X86VCpuSetupConfig, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters,
-    restore_host_interrupt_flag, xstate::XState,
+    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
@@ -557,6 +557,7 @@ impl VmxVcpu {
     }
 
     fn setup_vmcs_guest(&mut self, entry: GuestPhysAddr) -> AxResult {
+        let entry_state = x86_real_mode_entry_state(entry);
         let cr0_val: Cr0Flags =
             Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE | Cr0Flags::EXTENSION_TYPE;
         self.set_cr(0, cr0_val.bits());
@@ -578,6 +579,8 @@ impl VmxVcpu {
 
         set_guest_segment!(ES, 0x93); // 16-bit, present, data, read/write, accessed
         set_guest_segment!(CS, 0x9b); // 16-bit, present, code, exec/read, accessed
+        VmcsGuest16::CS_SELECTOR.write(entry_state.cs_selector)?;
+        VmcsGuestNW::CS_BASE.write(entry_state.cs_base)?;
         set_guest_segment!(SS, 0x93);
         set_guest_segment!(DS, 0x93);
         set_guest_segment!(FS, 0x93);
@@ -593,7 +596,7 @@ impl VmxVcpu {
         VmcsGuestNW::CR3.write(0)?;
         VmcsGuestNW::DR7.write(0x400)?;
         VmcsGuestNW::RSP.write(0)?;
-        VmcsGuestNW::RIP.write(entry.as_usize())?;
+        VmcsGuestNW::RIP.write(entry_state.rip)?;
         VmcsGuestNW::RFLAGS.write(0x2)?;
         VmcsGuestNW::PENDING_DBG_EXCEPTIONS.write(0)?;
         VmcsGuestNW::IA32_SYSENTER_ESP.write(0)?;

@@ -79,6 +79,8 @@ Guest configuration files are located in the `configs/vms/` directory, defining 
 
 The configuration file naming format is `<os>-<arch>-board_or_cpu-smpx`, where `<os>` is the guest system name (such as `arceos`, `linux`, `nimbos`), `<arch>` is the architecture (such as `aarch64`, `x86_64`, `riscv64`), `board_or_cpu` is the hardware development board or CPU name, and `smpx` is the number of CPUs allocated to the guest.
 
+On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps the legacy `axvm-bios` path and patches the generated multiboot info into the BIOS image, while `uefi` loads the external firmware from `uefi_firmware_path` without multiboot patching. Legacy UEFI configs that still use `bios_path` are accepted as a compatibility fallback. See `configs/vms/linux-x86_64-qemu-uefi-smp1.toml`, `configs/vms/arceos-x86_64-qemu-uefi-smp1.toml`, and the QEMU quickstart for the UEFI guest path.
+
 ## Compilation
 
 AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/category/quickstart) chapter in the configuration documentation.

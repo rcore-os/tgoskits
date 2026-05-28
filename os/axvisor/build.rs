@@ -124,6 +124,25 @@ struct MemoryImage {
     pub ramdisk: Option<PathBuf>,
 }
 
+fn boot_firmware_path<'a>(kernel_config: &'a Table, enable_bios: bool) -> Option<&'a str> {
+    if !enable_bios {
+        return None;
+    }
+
+    let bios_path = || kernel_config.get("bios_path").and_then(|v| v.as_str());
+    let uefi_firmware_path = || {
+        kernel_config
+            .get("uefi_firmware_path")
+            .and_then(|v| v.as_str())
+    };
+
+    match kernel_config.get("boot_protocol").and_then(|v| v.as_str()) {
+        Some("uefi" | "efi") => uefi_firmware_path().or_else(bios_path),
+        Some("direct" | "kernel") => None,
+        _ => bios_path(),
+    }
+}
+
 fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
     let config = config_file.content.parse::<Table>().ok()?;
 
@@ -155,20 +174,12 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let bios = if enable_bios {
-        config
-            .get("kernel")?
-            .as_table()?
-            .get("bios_path")
-            .and_then(|v| v.as_str())
-            .map(|v| convert_to_absolute(&config_file.path, v))
-    } else {
-        None
-    };
+    let kernel_config = config.get("kernel")?.as_table()?;
 
-    let ramdisk = config
-        .get("kernel")?
-        .as_table()?
+    let bios = boot_firmware_path(kernel_config, enable_bios)
+        .map(|v| convert_to_absolute(&config_file.path, v));
+
+    let ramdisk = kernel_config
         .get("ramdisk_path")
         .and_then(|v| v.as_str())
         .map(|v| convert_to_absolute(&config_file.path, v));

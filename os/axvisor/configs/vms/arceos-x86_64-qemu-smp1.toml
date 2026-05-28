@@ -26,6 +26,8 @@ kernel_path = "/path/ax-helloworld-x86_64.bin"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = true
+# Legacy x86 boot flow uses axvm-bios and multiboot info patching.
+boot_protocol = "multiboot"
 # The file path of the BIOS image.
 # bios_path = "/path/axvm-bios.bin"
 # The load address of the BIOS image.
