@@ -1424,6 +1424,385 @@ mod tests {
     }
 
     #[test]
+    fn apk_add_fs_equivalence_qemu_case_covers_package_fs_ops() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir =
+            workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-add-fs-equivalence");
+        let cmake_path = case_dir.join("c/CMakeLists.txt");
+        let source_path = case_dir.join("c/src/main.c");
+
+        assert!(
+            cmake_path.is_file(),
+            "{} must build the filesystem equivalence probe through the C pipeline",
+            cmake_path.display()
+        );
+        assert!(
+            source_path.is_file(),
+            "{} must contain the filesystem equivalence probe source",
+            source_path.display()
+        );
+        assert!(
+            !case_dir.join("sh").exists() && !case_dir.join("python").exists(),
+            "{} must stay a single C pipeline case",
+            case_dir.display()
+        );
+
+        let source = fs::read_to_string(&source_path).unwrap();
+        for forbidden in [
+            "apk update",
+            "apk add",
+            "apt update",
+            "apt install",
+            "curl ",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{} must not depend on package managers or network clients",
+                source_path.display()
+            );
+        }
+        for forbidden in ["http://", "https://"] {
+            assert!(
+                !source.contains(forbidden),
+                "{} must not access external network resources",
+                source_path.display()
+            );
+        }
+        for required in [
+            "mkdir(",
+            "mkdirat(",
+            "stat(",
+            "lstat(",
+            "fstatat(",
+            "opendir(",
+            "readdir(",
+            "open(",
+            "O_CREAT",
+            "O_TRUNC",
+            "O_EXCL",
+            "write(",
+            "read(",
+            "pread(",
+            "pwrite(",
+            "rename(",
+            "unlink(",
+            "chmod(",
+            "fchmod(",
+            "chown(",
+            "fchown(",
+            "lchown(",
+            "truncate(",
+            "ftruncate(",
+            "utimensat(",
+            "symlink(",
+            "readlink(",
+            "link(",
+            "fsync(",
+            "fdatasync(",
+            "sync()",
+            "syncfs(",
+            "APK_ADD_FS_EQUIV_TEST_PASSED",
+            "APK_ADD_FS_EQUIV_TEST_FAILED",
+        ] {
+            assert!(
+                source.contains(required),
+                "{} must cover `{required}`",
+                source_path.display()
+            );
+        }
+        for simulated_path in ["/usr/bin", "/usr/lib", "/lib/apk/db", "/var/lib/dpkg"] {
+            assert!(
+                source.contains(simulated_path),
+                "{} must simulate package install path `{simulated_path}`",
+                source_path.display()
+            );
+        }
+
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+        assert!(
+            cmake.contains("project(apk-add-fs-equivalence C)")
+                && cmake.contains("add_executable(apk-add-fs-equivalence")
+                && cmake.contains("install(TARGETS apk-add-fs-equivalence")
+                && cmake.contains("DESTINATION usr/bin"),
+            "{} must install the C probe into the guest image",
+            cmake_path.display()
+        );
+
+        for arch in ["x86_64", "riscv64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            assert!(
+                config_path.is_file(),
+                "{} must exist after local validation for {arch}",
+                config_path.display()
+            );
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let args = config.get("args").and_then(toml::Value::as_array).unwrap();
+            let args = args
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>();
+
+            assert!(
+                args.iter()
+                    .any(|arg| arg.contains("virtio-blk-pci,drive=disk0")),
+                "{} must exercise virtio-blk",
+                config_path.display()
+            );
+            assert!(
+                args.iter().any(|arg| {
+                    arg.contains(&format!("rootfs-{arch}-alpine.img"))
+                        && arg.contains("tmp/axbuild/rootfs")
+                }),
+                "{} must use the managed Alpine rootfs for {arch}",
+                config_path.display()
+            );
+
+            assert_eq!(
+                config
+                    .get("shell_init_cmd")
+                    .and_then(toml::Value::as_str)
+                    .unwrap(),
+                "/usr/bin/apk-add-fs-equivalence"
+            );
+            let success_regex = config
+                .get("success_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                success_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("APK_ADD_FS_EQUIV_TEST_PASSED")),
+                "{} must require the pass marker",
+                config_path.display()
+            );
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("APK_ADD_FS_EQUIV_TEST_FAILED")),
+                "{} must fail on the probe failure marker",
+                config_path.display()
+            );
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 180,
+                "{} must stay a focused diagnostic case",
+                config_path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn apk_net_equivalence_qemu_case_covers_apk_like_network_ops() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir =
+            workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-net-equivalence");
+        let cmake_path = case_dir.join("c/CMakeLists.txt");
+        let source_path = case_dir.join("c/src/main.c");
+
+        assert!(
+            cmake_path.is_file(),
+            "{} must build the network equivalence probe through the C pipeline",
+            cmake_path.display()
+        );
+        assert!(
+            source_path.is_file(),
+            "{} must contain the network equivalence probe source",
+            source_path.display()
+        );
+        assert!(
+            !case_dir.join("sh").exists() && !case_dir.join("python").exists(),
+            "{} must stay a single C pipeline case",
+            case_dir.display()
+        );
+
+        let source = fs::read_to_string(&source_path).unwrap();
+        for forbidden in ["apk update", "apk add", "curl ", "http://", "https://"] {
+            assert!(
+                !source.contains(forbidden),
+                "{} must not depend on package managers, curl, or external URLs",
+                source_path.display()
+            );
+        }
+        for required in [
+            "socket(",
+            "bind(",
+            "getsockname(",
+            "sendto(",
+            "recvfrom(",
+            "listen(",
+            "accept(",
+            "connect(",
+            "send(",
+            "recv(",
+            "GET /alpine/APKINDEX.tar.gz",
+            "GET /alpine/main/x86_64/fake-package.apk",
+            "Host: apk.local",
+            "Content-Length:",
+            "APK_NET_EQUIV_TEST_PASSED",
+            "APK_NET_EQUIV_TEST_FAILED",
+        ] {
+            assert!(
+                source.contains(required),
+                "{} must cover `{required}`",
+                source_path.display()
+            );
+        }
+
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+        assert!(
+            cmake.contains("project(apk-net-equivalence C)")
+                && cmake.contains("add_executable(apk-net-equivalence")
+                && cmake.contains("install(TARGETS apk-net-equivalence")
+                && cmake.contains("DESTINATION usr/bin"),
+            "{} must install the C probe into the guest image",
+            cmake_path.display()
+        );
+
+        for arch in ["x86_64", "riscv64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            assert!(
+                config_path.is_file(),
+                "{} must exist after local validation for {arch}",
+                config_path.display()
+            );
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let args = config.get("args").and_then(toml::Value::as_array).unwrap();
+            let args = args
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>();
+
+            assert!(
+                args.iter()
+                    .any(|arg| arg.contains("virtio-blk-pci,drive=disk0")),
+                "{} must exercise virtio-blk",
+                config_path.display()
+            );
+            assert!(
+                args.iter()
+                    .any(|arg| arg.contains("virtio-net-pci,netdev=net0")),
+                "{} must exercise virtio-net",
+                config_path.display()
+            );
+            assert!(
+                args.iter().any(|arg| {
+                    arg.contains(&format!("rootfs-{arch}-alpine.img"))
+                        && arg.contains("tmp/axbuild/rootfs")
+                }),
+                "{} must use the managed Alpine rootfs for {arch}",
+                config_path.display()
+            );
+
+            assert_eq!(
+                config
+                    .get("shell_init_cmd")
+                    .and_then(toml::Value::as_str)
+                    .unwrap(),
+                "/usr/bin/apk-net-equivalence"
+            );
+            let success_regex = config
+                .get("success_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                success_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("APK_NET_EQUIV_TEST_PASSED")),
+                "{} must require the pass marker",
+                config_path.display()
+            );
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("APK_NET_EQUIV_TEST_FAILED")),
+                "{} must fail on the probe failure marker",
+                config_path.display()
+            );
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 180,
+                "{} must stay a focused diagnostic case",
+                config_path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn apk_curl_qemu_case_selects_repositories_by_starry_apk_region() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-curl");
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let script = config
+                .get("shell_init_cmd")
+                .and_then(toml::Value::as_str)
+                .unwrap();
+
+            assert!(
+                script.contains("APK_CURL_REGION_$apk_region"),
+                "{} must print the selected APK region for diagnosis",
+                config_path.display()
+            );
+            assert!(
+                script.contains("case \"$original_repos\" in")
+                    && script.contains("*dl-cdn.alpinelinux.org*")
+                    && script.contains("apk_region=us")
+                    && script.contains("apk_region=china"),
+                "{} must infer the region from the repositories prepared by STARRY_APK_REGION",
+                config_path.display()
+            );
+            assert!(
+                script.contains("mirrors.tuna.tsinghua.edu.cn")
+                    && script.contains("mirrors.ustc.edu.cn")
+                    && script.contains("mirrors.aliyun.com"),
+                "{} must provide China mirror candidates",
+                config_path.display()
+            );
+            let aliyun_index = script.find("mirrors.aliyun.com").unwrap();
+            let tuna_index = script.find("mirrors.tuna.tsinghua.edu.cn").unwrap();
+            let ustc_index = script.find("mirrors.ustc.edu.cn").unwrap();
+            assert!(
+                aliyun_index < tuna_index && tuna_index < ustc_index,
+                "{} must try the observed-fast Aliyun mirror before TUNA and USTC",
+                config_path.display()
+            );
+            assert!(
+                script.contains("dl-cdn.alpinelinux.org"),
+                "{} must provide the upstream US mirror candidate",
+                config_path.display()
+            );
+            assert!(
+                !script.contains("mirrors.cernet.edu.cn"),
+                "{} must not use the Cernet mirror that redirects and hangs in QEMU",
+                config_path.display()
+            );
+        }
+    }
+
+    #[test]
     fn lua_qemu_case_installs_lua_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/lua");
