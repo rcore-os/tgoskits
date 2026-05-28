@@ -1803,6 +1803,104 @@ mod tests {
     }
 
     #[test]
+    fn dhcp_qemu_case_checks_local_dhcp_state_without_external_apk_fetch() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let build_group_dir = workspace_root.join("test-suit/starryos/normal/qemu-dhcp");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp");
+
+        for (arch, target) in [
+            ("aarch64", "aarch64-unknown-none-softfloat"),
+            ("loongarch64", "loongarch64-unknown-none-softfloat"),
+            ("riscv64", "riscv64gc-unknown-none-elf"),
+            ("x86_64", "x86_64-unknown-none"),
+        ] {
+            let build_config_path = build_group_dir.join(format!("build-{target}.toml"));
+            let build_content = fs::read_to_string(&build_config_path).unwrap();
+            let build_config: toml::Value = toml::from_str(&build_content).unwrap();
+            assert_eq!(
+                build_config.get("target").and_then(toml::Value::as_str),
+                Some(target),
+                "{} must target {target}",
+                build_config_path.display()
+            );
+            assert!(
+                build_config
+                    .get("env")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(toml::map::Map::is_empty),
+                "{} must leave AX_IP/AX_GW unset so Starry exercises DHCP",
+                build_config_path.display()
+            );
+
+            let config_path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let script = config
+                .get("shell_init_cmd")
+                .and_then(toml::Value::as_str)
+                .unwrap();
+
+            assert!(
+                !script.contains("apk update")
+                    && !script.contains("apk --timeout")
+                    && !script.contains("http://")
+                    && !script.contains("https://"),
+                "{} must not depend on external APK repositories; DHCP is already local to the \
+                 QEMU user network",
+                config_path.display()
+            );
+            for marker in [
+                "DHCP_PROBE_BEGIN",
+                "DHCP_ADDR_OK",
+                "DHCP_RESOLVER_OK",
+                "DHCP_TEST_DONE",
+                "DHCP_TEST_FAILED",
+            ] {
+                assert!(
+                    script.contains(marker),
+                    "{} must print the diagnostic marker `{marker}`",
+                    config_path.display()
+                );
+            }
+            for expected in [
+                "ifconfig eth0",
+                "ip addr show",
+                "/etc/resolv.conf",
+                "10.0.2.15",
+                "10.0.2.3",
+            ] {
+                assert!(
+                    script.contains(expected),
+                    "{} must check `{expected}` in the local QEMU DHCP state",
+                    config_path.display()
+                );
+            }
+
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex.contains("DHCP_TEST_FAILED")),
+                "{} must fail explicitly on the DHCP probe failure marker",
+                config_path.display()
+            );
+            let timeout = config
+                .get("timeout")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or_default();
+            assert!(
+                timeout <= 120,
+                "{} must stay a focused local DHCP diagnostic case",
+                config_path.display()
+            );
+        }
+    }
+
+    #[test]
     fn lua_qemu_case_installs_lua_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/lua");
