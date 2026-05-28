@@ -15,10 +15,11 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer},
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
+use syscalls::Sysno;
 
 #[cfg(target_arch = "riscv64")]
 use crate::mm::UserPtr;
-use crate::task::{AsThread, processes};
+use crate::task::{AsThread, SeccompFilterData, SeccompInsn, processes};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
@@ -709,9 +710,678 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
     Ok(len as _)
 }
 
-pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> AxResult<isize> {
-    warn!("dummy sys_seccomp");
-    Ok(0)
+// ---------------------------------------------------------------------------
+// seccomp(2)
+// ---------------------------------------------------------------------------
+
+/// seccomp(2) operations.
+mod seccomp_op {
+    pub const SET_MODE_STRICT: u32 = 0;
+    pub const SET_MODE_FILTER: u32 = 1;
+    pub const GET_ACTION_AVAIL: u32 = 2;
+    pub const GET_NOTIF_SIZES: u32 = 3;
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SeccompFilterFlags: u32 {
+        const TSYNC = 1 << 0;
+        const LOG = 1 << 1;
+        const SPEC_ALLOW = 1 << 2;
+        const NEW_LISTENER = 1 << 3;
+    }
+}
+
+/// seccomp(2) action / return values.
+pub(crate) mod seccomp_ret {
+    pub const KILL_THREAD: u32 = 0x00000000;
+    pub const KILL_PROCESS: u32 = 0x80000000;
+    pub const TRAP: u32 = 0x00030000;
+    pub const ERRNO: u32 = 0x00050000;
+    pub const TRACE: u32 = 0x7ff00000;
+    pub const LOG: u32 = 0x7ffc0000;
+    pub const ALLOW: u32 = 0x7fff0000;
+
+    pub const ACTION_FULL: u32 = 0xffff0000;
+    #[allow(dead_code)]
+    pub const DATA: u32 = 0x0000ffff;
+}
+
+/// seccomp(2) mode values stored in Thread.
+pub(crate) mod seccomp_mode {
+    pub const DISABLED: u32 = 0;
+    pub const STRICT: u32 = 1;
+    pub const FILTER: u32 = 2;
+}
+
+/// Architecture constant written into `seccomp_data.arch` so that BPF
+/// filters can match `AUDIT_ARCH_*` to validate the calling ABI.
+/// Only referenced when the `ebpf` feature is enabled.
+#[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH: u32 = 0xC000_003E;
+#[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH: u32 = 0xC000_00B7;
+#[allow(dead_code)]
+#[cfg(target_arch = "riscv64")]
+const AUDIT_ARCH: u32 = 0xC000_00F3;
+#[allow(dead_code)]
+#[cfg(target_arch = "loongarch64")]
+const AUDIT_ARCH: u32 = 0xC000_0102;
+
+/// The `seccomp_data` buffer passed to BPF filter programs.
+///
+/// Layout matches Linux's `struct seccomp_data` (64 bytes on 64-bit):
+///   offset  size   field
+///     0      4    nr                    (syscall number, i32)
+///     4      4    arch                  (AUDIT_ARCH_*, u32)
+///     8      8    instruction_pointer   (u64)
+///    16     48    args[6]               (six u64 syscall arguments)
+#[allow(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct SeccompData {
+    /// Syscall number (e.g. `__NR_read`, `__NR_write`).
+    pub nr: i32,
+    /// Architecture token (`AUDIT_ARCH_X86_64`, …).
+    pub arch: u32,
+    /// User-space instruction pointer at the moment of the syscall.
+    pub instruction_pointer: u64,
+    /// Up to six syscall arguments as seen in the trap frame.
+    pub args: [u64; 6],
+}
+
+// SAFETY: all fields are POD.
+unsafe impl bytemuck::Zeroable for SeccompData {}
+unsafe impl bytemuck::AnyBitPattern for SeccompData {}
+unsafe impl bytemuck::NoUninit for SeccompData {}
+
+impl SeccompData {
+    #[allow(dead_code)]
+    pub(crate) fn from_uctx(
+        sysno: Sysno,
+        uctx: &ax_runtime::hal::cpu::uspace::UserContext,
+    ) -> Self {
+        Self {
+            nr: sysno as i32,
+            arch: AUDIT_ARCH,
+            instruction_pointer: uctx.ip() as u64,
+            args: [
+                uctx.arg0() as u64,
+                uctx.arg1() as u64,
+                uctx.arg2() as u64,
+                uctx.arg3() as u64,
+                uctx.arg4() as u64,
+                uctx.arg5() as u64,
+            ],
+        }
+    }
+}
+
+#[repr(C)]
+struct SeccompNotifSizes {
+    seccomp_notif: u16,
+    seccomp_notif_resp: u16,
+    seccomp_data: u16,
+}
+
+/// Userspace representation of `struct sock_fprog` passed to
+/// `seccomp(SECCOMP_SET_MODE_FILTER)`.
+///
+/// `len` is the number of filter instructions; `filter_ptr` is a
+/// userspace pointer to the first `struct sock_filter`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct SockFprog {
+    /// Number of `sock_filter` instructions in the program.
+    pub(crate) len: u16,
+    /// Userspace pointer to the first `sock_filter` instruction.
+    pub(crate) filter_ptr: usize,
+}
+
+// SAFETY: all fields are primitives.
+unsafe impl bytemuck::Zeroable for SockFprog {}
+unsafe impl bytemuck::AnyBitPattern for SockFprog {}
+
+/// Alias for `SeccompInsn` used when reading the raw userspace
+/// `struct sock_filter` array during `SECCOMP_SET_MODE_FILTER`.
+type SockFilter = SeccompInsn;
+
+#[cfg(feature = "ebpf")]
+mod seccomp_ebpf_convert {
+    use alloc::{vec, vec::Vec};
+
+    use crate::{
+        ebpf::bpf_insn::{self, BpfInsn},
+        task::SeccompInsn,
+    };
+
+    /// Convert a classic BPF filter program to eBPF.
+    ///
+    /// cBPF register mapping: A → R0, X → R6.
+    /// Scratch memory M[0..15] → stack slots at fp - 16 - k*4.
+    pub fn cbpf_to_ebpf(insns: &[SeccompInsn]) -> Vec<BpfInsn> {
+        assert!(!insns.is_empty(), "empty cBPF program");
+
+        let n = insns.len();
+
+        // --- pass 1: compute how many eBPF insns each cBPF insn becomes ---
+        let mut expand = vec![0u8; n];
+        for (pc, i) in insns.iter().enumerate() {
+            let class = i.code & 0x07;
+            expand[pc] = match class {
+                0x05 if (i.code & 0xf0) != 0x00 => 2,
+                0x05 => 1,
+                0x06 if (i.code & 0x08) == 0 => 2,
+                0x06 => 1,
+                _ => 1,
+            };
+        }
+
+        // --- build pc map: cBPF pc → starting eBPF pc ---
+        let mut epc_map = vec![0u32; n + 1];
+        for pc in 0..n {
+            epc_map[pc + 1] = epc_map[pc] + expand[pc] as u32;
+        }
+        let total = epc_map[n] as usize;
+        let mut out: Vec<BpfInsn> = Vec::with_capacity(total);
+
+        // --- pass 2: emit eBPF instructions ---
+        for (pc, i) in insns.iter().enumerate() {
+            let code = i.code;
+            let class = code & 0x07;
+            let src = (code & 0x08) != 0;
+            let epc = epc_map[pc] as usize;
+
+            match class {
+                0x00 => {
+                    let mode = (code & 0xe0) as u8;
+                    if mode == 0x00 {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | bpf_insn::BPF_MOV | bpf_insn::BPF_K,
+                            0,
+                            0,
+                            0,
+                            i.k as i32,
+                        ));
+                    } else if mode == 0x20 || mode == 0x40 {
+                        let size_code = (code & 0x18) as u8;
+                        let bpf_size = match size_code {
+                            0x00 => bpf_insn::BPF_W,
+                            0x08 => bpf_insn::BPF_H,
+                            0x10 => bpf_insn::BPF_B,
+                            _ => bpf_insn::BPF_W,
+                        };
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_LD | bpf_size | mode,
+                            0,
+                            0,
+                            0,
+                            i.k as i32,
+                        ));
+                    } else if mode == 0x60 {
+                        let off = -(16i32 + (i.k & 0xf) as i32 * 4) as i16;
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_LDX | bpf_insn::BPF_MEM | bpf_insn::BPF_W,
+                            0,
+                            10,
+                            off,
+                            0,
+                        ));
+                    } else if mode == 0x80 {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_LD | bpf_insn::BPF_LEN,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ));
+                    } else {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | bpf_insn::BPF_MOV | bpf_insn::BPF_K,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ));
+                    }
+                }
+                0x01 => {
+                    let mode = (code & 0xe0) as u8;
+                    if mode == 0x00 {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | bpf_insn::BPF_MOV | bpf_insn::BPF_K,
+                            6,
+                            0,
+                            0,
+                            i.k as i32,
+                        ));
+                    } else if mode == 0x60 {
+                        let off = -(16i32 + (i.k & 0xf) as i32 * 4) as i16;
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_LDX | bpf_insn::BPF_MEM | bpf_insn::BPF_W,
+                            6,
+                            10,
+                            off,
+                            0,
+                        ));
+                    } else if mode == 0xa0 {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_LDX | bpf_insn::BPF_MSH | bpf_insn::BPF_B,
+                            6,
+                            0,
+                            0,
+                            i.k as i32,
+                        ));
+                    } else {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | bpf_insn::BPF_MOV | bpf_insn::BPF_K,
+                            6,
+                            0,
+                            0,
+                            0,
+                        ));
+                    }
+                }
+                0x02 | 0x03 => {
+                    let src_reg = if class == 0x02 { 0u8 } else { 6u8 };
+                    let off = -(16i32 + (i.k & 0xf) as i32 * 4) as i16;
+                    out.push(BpfInsn::new(
+                        bpf_insn::BPF_STX | bpf_insn::BPF_MEM | bpf_insn::BPF_W,
+                        10,
+                        src_reg,
+                        off,
+                        0,
+                    ));
+                }
+                0x04 => {
+                    let op = (code & 0xf0) as u8;
+                    if src {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | op | bpf_insn::BPF_X,
+                            0,
+                            6,
+                            0,
+                            0,
+                        ));
+                    } else {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | op | bpf_insn::BPF_K,
+                            0,
+                            0,
+                            0,
+                            i.k as i32,
+                        ));
+                    }
+                }
+                0x05 => {
+                    let op = (code & 0xf0) as u8;
+                    let jt = i.jt as u32;
+                    let jf = i.jf as u32;
+                    if op == 0x00 {
+                        let target = epc_map[(pc as u32 + 1 + jt) as usize] as isize;
+                        let off = target - epc as isize - 1;
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_JMP | bpf_insn::BPF_JA,
+                            0,
+                            0,
+                            off as i16,
+                            0,
+                        ));
+                    } else {
+                        let t_true = epc_map[(pc as u32 + 1 + jt) as usize] as isize;
+                        let t_false = epc_map[(pc as u32 + 1 + jf) as usize] as isize;
+                        let off_true = t_true - epc as isize - 1;
+                        let off_false = t_false - epc as isize - 2;
+                        if src {
+                            out.push(BpfInsn::new(
+                                bpf_insn::BPF_JMP | op | bpf_insn::BPF_X,
+                                0,
+                                6,
+                                off_true as i16,
+                                0,
+                            ));
+                        } else {
+                            out.push(BpfInsn::new(
+                                bpf_insn::BPF_JMP | op | bpf_insn::BPF_K,
+                                0,
+                                0,
+                                off_true as i16,
+                                i.k as i32,
+                            ));
+                        }
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_JMP | bpf_insn::BPF_JA,
+                            0,
+                            0,
+                            off_false as i16,
+                            0,
+                        ));
+                    }
+                }
+                0x06 => {
+                    if src {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_JMP | bpf_insn::BPF_EXIT,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ));
+                    } else {
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_ALU64 | bpf_insn::BPF_MOV | bpf_insn::BPF_K,
+                            0,
+                            0,
+                            0,
+                            i.k as i32,
+                        ));
+                        out.push(BpfInsn::new(
+                            bpf_insn::BPF_JMP | bpf_insn::BPF_EXIT,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ));
+                    }
+                }
+                _ => {
+                    out.push(BpfInsn::new(
+                        bpf_insn::BPF_ALU64 | bpf_insn::BPF_MOV | bpf_insn::BPF_K,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ));
+                }
+            }
+        }
+
+        debug_assert_eq!(out.len(), total, "eBPF emission count mismatch");
+        out
+    }
+}
+
+/// Assign a precedence rank to a seccomp return action.
+/// Lower rank = higher priority.  Linux precedence:
+///   KILL_PROCESS (0) < KILL_THREAD (1) < TRAP (2) < ERRNO (3)
+///   < TRACE (4) < LOG (5) < ALLOW (6)
+#[allow(dead_code)]
+fn action_precedence(action: u32) -> u8 {
+    match action & seccomp_ret::ACTION_FULL {
+        seccomp_ret::KILL_PROCESS => 0,
+        seccomp_ret::KILL_THREAD => 1,
+        seccomp_ret::TRAP => 2,
+        seccomp_ret::ERRNO => 3,
+        seccomp_ret::TRACE => 4,
+        seccomp_ret::LOG => 5,
+        _ => 6,
+    }
+}
+
+// ----------------------------------------------------------------
+// sys_seccomp
+// ----------------------------------------------------------------
+
+/// `seccomp(2)` syscall — operate on the Secure Computing state of the
+/// calling thread.
+///
+/// Parameters:
+/// - `op`: operation (SET_MODE_STRICT, SET_MODE_FILTER,
+///   GET_ACTION_AVAIL, GET_NOTIF_SIZES)
+/// - `flags`: filter flags (only meaningful for SET_MODE_FILTER)
+/// - `args`: operation-specific pointer (e.g. `sock_fprog*` for FILTER)
+///
+/// Errors: EINVAL, EACCES, EFAULT.
+pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
+    use ax_task::current;
+    use seccomp_mode::{DISABLED, FILTER, STRICT};
+    use starry_vm::VmPtr;
+
+    use crate::task::get_task;
+
+    match op {
+        seccomp_op::SET_MODE_STRICT => {
+            if flags != 0 || !args.is_null() {
+                return Err(AxError::InvalidInput);
+            }
+            let curr = current();
+            let thr = curr.as_thread();
+            if thr.seccomp_mode() != DISABLED {
+                return Err(AxError::InvalidInput);
+            }
+            thr.set_seccomp_mode(STRICT);
+            Ok(0)
+        }
+        seccomp_op::SET_MODE_FILTER => {
+            let filter_flags = SeccompFilterFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+            let curr = current();
+            let thr = curr.as_thread();
+
+            if !thr.no_new_privs() && thr.cred().euid != 0 {
+                return Err(AxError::PermissionDenied);
+            }
+            if thr.seccomp_mode() == STRICT {
+                return Err(AxError::InvalidInput);
+            }
+            if args.is_null() {
+                return Err(AxError::BadAddress);
+            }
+            let prog: SockFprog = (args as *const SockFprog).vm_read()?;
+            if prog.len == 0 || prog.len > 4096 {
+                return Err(AxError::InvalidInput);
+            }
+            let filter_ptr = prog.filter_ptr as *const SockFilter;
+            if filter_ptr.is_null() {
+                return Err(AxError::BadAddress);
+            }
+
+            let mut insns: Vec<SeccompInsn> = Vec::with_capacity(prog.len as usize);
+            for i in 0..prog.len as usize {
+                let sf: SockFilter = filter_ptr.wrapping_add(i).vm_read()?;
+                insns.push(sf);
+            }
+
+            let filter_data = SeccompFilterData { flags, insns };
+
+            // TSYNC: propagate to all threads in the process
+            if filter_flags.contains(SeccompFilterFlags::TSYNC) {
+                let tg = &thr.proc_data.proc;
+                for tid in tg.threads().iter() {
+                    if let Ok(other) = get_task(*tid) {
+                        let other_thr = other.as_thread();
+                        if other_thr.seccomp_mode() == DISABLED
+                            || other_thr.seccomp_mode() == FILTER
+                        {
+                            other_thr.set_seccomp_mode(FILTER);
+                            other_thr.add_seccomp_filter(flags, filter_data.insns.clone());
+                        }
+                    }
+                }
+            }
+
+            thr.set_seccomp_mode(FILTER);
+            thr.add_seccomp_filter(flags, filter_data.insns);
+
+            Ok(0)
+        }
+        seccomp_op::GET_ACTION_AVAIL => {
+            if flags != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            if args.is_null() {
+                return Err(AxError::BadAddress);
+            }
+            let action: u32 = (args as *const u32).vm_read()?;
+            let avail: u32 = match action & seccomp_ret::ACTION_FULL {
+                seccomp_ret::KILL_PROCESS
+                | seccomp_ret::KILL_THREAD
+                | seccomp_ret::TRAP
+                | seccomp_ret::ERRNO
+                | seccomp_ret::TRACE
+                | seccomp_ret::LOG
+                | seccomp_ret::ALLOW => 1,
+                _ => 0,
+            };
+            (args as *mut u32).vm_write(avail)?;
+            Ok(0)
+        }
+        seccomp_op::GET_NOTIF_SIZES => {
+            if flags != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            if args.is_null() {
+                return Err(AxError::BadAddress);
+            }
+            let sizes = SeccompNotifSizes {
+                seccomp_notif: 0,
+                seccomp_notif_resp: 0,
+                seccomp_data: 0,
+            };
+            (args as *mut SeccompNotifSizes).vm_write(sizes)?;
+            Ok(0)
+        }
+        _ => Err(AxError::InvalidInput),
+    }
+}
+
+// ----------------------------------------------------------------
+// check_seccomp_syscall – enforcement called before every syscall
+// ----------------------------------------------------------------
+
+/// Check seccomp enforcement before dispatching a syscall.
+///
+/// Called from the syscall dispatch loop.  In FILTER mode with the
+/// `ebpf` feature enabled, the stored cBPF instructions are converted
+/// to eBPF at runtime and executed through the eBPF VM.
+///
+/// Returns `true` if the syscall should proceed, `false` if seccomp
+/// blocked it (errno set or signal raised).
+pub fn check_seccomp_syscall(
+    sysno: Sysno,
+    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+) -> bool {
+    use ax_task::current;
+    use seccomp_mode::{DISABLED, FILTER, STRICT};
+
+    use crate::task::AsThread;
+
+    let curr = current();
+    let thr = curr.as_thread();
+    match thr.seccomp_mode() {
+        DISABLED => true,
+        STRICT => {
+            let allowed = matches!(
+                sysno,
+                Sysno::read
+                    | Sysno::write
+                    | Sysno::exit
+                    | Sysno::exit_group
+                    | Sysno::rt_sigreturn
+                    | Sysno::readv
+                    | Sysno::writev
+                    | Sysno::seccomp
+            );
+            if !allowed {
+                warn!("seccomp STRICT: killing thread for forbidden syscall {sysno:?}");
+                use starry_signal::{SignalInfo, Signo};
+
+                use crate::task::raise_signal_fatal;
+                let _ = raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSYS), uctx);
+                return false;
+            }
+            true
+        }
+        #[cfg(feature = "ebpf")]
+        FILTER => {
+            let filters = thr.seccomp_filters();
+            if filters.is_empty() {
+                return true;
+            }
+
+            let data = SeccompData::from_uctx(sysno, uctx);
+
+            let (action, data_val) = {
+                let data_ptr = &data as *const SeccompData as u64;
+                let ctx_size = core::mem::size_of::<SeccompData>() as u32;
+                let mut best_action = seccomp_ret::ALLOW;
+                let mut best_data = 0u32;
+                let mut best_rank = action_precedence(seccomp_ret::ALLOW);
+
+                for f in &filters {
+                    let ebpf = seccomp_ebpf_convert::cbpf_to_ebpf(&f.insns);
+                    let ret = crate::ebpf::run_seccomp_bpf(&ebpf, data_ptr, ctx_size);
+                    let rank = action_precedence(ret);
+                    if rank < best_rank {
+                        best_rank = rank;
+                        best_action = ret & seccomp_ret::ACTION_FULL;
+                        best_data = ret & seccomp_ret::DATA;
+                    }
+                }
+                (best_action, best_data)
+            };
+
+            match action {
+                seccomp_ret::ALLOW => true,
+                seccomp_ret::LOG => {
+                    debug!("seccomp LOG: syscall {sysno:?}");
+                    true
+                }
+                seccomp_ret::ERRNO => {
+                    let errno = (data_val as i32).max(1) as usize;
+                    uctx.set_retval(-(errno as isize) as usize);
+                    false
+                }
+                seccomp_ret::TRAP => {
+                    warn!("seccomp TRAP: killing thread for {sysno:?} (data=0x{data_val:x})");
+                    use starry_signal::{SignalInfo, Signo};
+
+                    use crate::task::raise_signal_fatal;
+                    let _ = raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSYS), uctx);
+                    false
+                }
+                seccomp_ret::TRACE => {
+                    warn!("seccomp TRACE: no tracer, killing thread for {sysno:?}");
+                    use starry_signal::{SignalInfo, Signo};
+
+                    use crate::task::raise_signal_fatal;
+                    let _ = raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSYS), uctx);
+                    false
+                }
+                seccomp_ret::KILL_THREAD => {
+                    warn!("seccomp KILL_THREAD: killing thread for {sysno:?}");
+                    use starry_signal::{SignalInfo, Signo};
+
+                    use crate::task::raise_signal_fatal;
+                    let _ = raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSYS), uctx);
+                    false
+                }
+                seccomp_ret::KILL_PROCESS => {
+                    warn!("seccomp KILL_PROCESS: killing process for {sysno:?}");
+                    use starry_signal::{SignalInfo, Signo};
+
+                    use crate::task::raise_signal_fatal;
+                    let _ = raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSYS), uctx);
+                    false
+                }
+                _ => {
+                    warn!("seccomp: unknown action 0x{action:x}, killing thread for {sysno:?}");
+                    use starry_signal::{SignalInfo, Signo};
+
+                    use crate::task::raise_signal_fatal;
+                    let _ = raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSYS), uctx);
+                    false
+                }
+            }
+        }
+        #[cfg(not(feature = "ebpf"))]
+        FILTER => {
+            warn!("seccomp FILTER: ebpf feature required, allowing {sysno:?}");
+            true
+        }
+        _ => true,
+    }
 }
 
 #[cfg(target_arch = "riscv64")]

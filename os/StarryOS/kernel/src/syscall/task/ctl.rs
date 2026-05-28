@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
@@ -5,9 +6,10 @@ use ax_task::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
+use super::super::sys::{seccomp_mode, SockFprog};
 use crate::{
     mm::vm_load_string,
-    task::{AsThread, Cred, get_process_data, get_task},
+    task::{AsThread, Cred, SeccompInsn, get_process_data, get_task},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
@@ -176,7 +178,70 @@ pub fn sys_prctl(
             }
             current().as_thread().proc_data.set_dumpable(arg2 as i32);
         }
-        PR_SET_SECCOMP => {}
+        PR_SET_SECCOMP => {
+            // Enter seccomp mode.
+            //   arg2 = SECCOMP_MODE_STRICT (1) or SECCOMP_MODE_FILTER (2)
+            //   arg3 = pointer to sock_fprog (for FILTER mode); must be 0 for STRICT
+            //
+            // Equivalent to:
+            //   seccomp(SECCOMP_SET_MODE_STRICT, 0, NULL)
+            //   seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog)
+            const SECCOMP_MODE_STRICT: usize = 1;
+            const SECCOMP_MODE_FILTER: usize = 2;
+
+            let curr = current();
+            let thr = curr.as_thread();
+            match arg2 {
+                SECCOMP_MODE_STRICT => {
+                    if arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    if thr.seccomp_mode() != seccomp_mode::DISABLED {
+                        return Err(AxError::InvalidInput);
+                    }
+                    thr.set_seccomp_mode(seccomp_mode::STRICT);
+                }
+                SECCOMP_MODE_FILTER => {
+                    use starry_vm::VmPtr;
+                    // Requires no_new_privs or root
+                    if !thr.no_new_privs() && thr.cred().euid != 0 {
+                        return Err(AxError::PermissionDenied);
+                    }
+                    // STRICT mode is one-way; cannot switch to FILTER after
+                    if thr.seccomp_mode() == seccomp_mode::STRICT {
+                        return Err(AxError::InvalidInput);
+                    }
+                    if arg3 == 0 {
+                        return Err(AxError::BadAddress);
+                    }
+                    // arg3 points to a sock_fprog with the same layout as
+                    // the third argument to seccomp(SECCOMP_SET_MODE_FILTER).
+                    let prog: SockFprog = (arg3 as *const SockFprog).vm_read()?;
+                    if prog.len == 0 || prog.len > 4096 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    let filter_ptr = prog.filter_ptr as *const SeccompInsn;
+                    if filter_ptr.is_null() {
+                        return Err(AxError::BadAddress);
+                    }
+                    let mut insns: Vec<SeccompInsn> = Vec::with_capacity(prog.len as usize);
+                    for i in 0..prog.len as usize {
+                        let sf: SeccompInsn = filter_ptr.wrapping_add(i).vm_read()?;
+                        insns.push(sf);
+                    }
+                    thr.set_seccomp_mode(seccomp_mode::FILTER);
+                    thr.add_seccomp_filter(0, insns);
+                }
+                _ => return Err(AxError::InvalidInput),
+            }
+        }
+        PR_GET_SECCOMP => {
+            // Return the current seccomp mode:
+            //   0 = SECCOMP_MODE_DISABLED
+            //   1 = SECCOMP_MODE_STRICT
+            //   2 = SECCOMP_MODE_FILTER
+            return Ok(current().as_thread().seccomp_mode() as isize);
+        }
         PR_MCE_KILL => {}
         PR_SET_NO_NEW_PRIVS => {
             if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {

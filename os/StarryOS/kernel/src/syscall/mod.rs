@@ -6,7 +6,7 @@ mod net;
 mod resources;
 mod signal;
 mod sync;
-mod sys;
+pub(crate) mod sys;
 mod task;
 mod time;
 
@@ -29,6 +29,11 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         uctx.set_retval(-LinuxError::ENOSYS.code() as _);
         return;
     };
+
+    // Seccomp enforcement.
+    if !check_seccomp_syscall(sysno, uctx) {
+        return;
+    }
 
     trace!("Syscall {sysno:?}");
     // Snapshot sepc before dispatching: if a signal handler is installed

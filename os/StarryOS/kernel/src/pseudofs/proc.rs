@@ -368,6 +368,8 @@ fn task_status(task: &AxTaskRef) -> String {
     let thread = task.as_thread();
     let cred = thread.cred();
     let num_threads = thread.proc_data.proc.threads().len() as u32;
+    let seccomp_mode = thread.seccomp_mode();
+    let seccomp_filter_count = thread.seccomp_filters().len();
     render_task_status(
         thread.proc_data.proc.pid(),
         thread.tid() as u64,
@@ -375,9 +377,12 @@ fn task_status(task: &AxTaskRef) -> String {
         num_threads,
         task.cpumask(),
         ax_runtime::hal::cpu_num(),
+        seccomp_mode,
+        seccomp_filter_count,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_task_status(
     tgid: u32,
     pid: u64,
@@ -385,6 +390,8 @@ fn render_task_status(
     num_threads: u32,
     cpumask: AxCpuMask,
     cpu_num: usize,
+    seccomp_mode: u32,
+    seccomp_filter_count: usize,
 ) -> String {
     let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
     let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
@@ -396,9 +403,12 @@ fn render_task_status(
         num_threads,
         &cpus_allowed,
         &cpus_allowed_list,
+        seccomp_mode,
+        seccomp_filter_count,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 #[rustfmt::skip]
 fn render_task_status_fields(
     tgid: u32,
@@ -407,6 +417,8 @@ fn render_task_status_fields(
     num_threads: u32,
     cpus_allowed: &str,
     cpus_allowed_list: &str,
+    seccomp_mode: u32,
+    seccomp_filter_count: usize,
 ) -> String {
     // NOTE: `Threads:\t<n>` is REQUIRED by psutil. `Process.num_threads()`
     // does `int(re.compile(br'Threads:\t(\d+)').findall(data)[0])`, which
@@ -421,6 +433,8 @@ fn render_task_status_fields(
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
         Threads:\t{num_threads}\n\
+        Seccomp:\t{seccomp_mode}\n\
+        Seccomp_filters:\t{seccomp_filter_count}\n\
         Cpus_allowed:\t{cpus_allowed}\n\
         Cpus_allowed_list:\t{cpus_allowed_list}\n\
         Mems_allowed:\t1\n\
@@ -725,6 +739,8 @@ impl SimpleDirOps for ThreadDir {
                             num_threads,
                             task.cpumask(),
                             ax_runtime::hal::cpu_num(),
+                            thread.seccomp_mode(),
+                            thread.seccomp_filters().len(),
                         ))
                     } else {
                         Ok(task_status(&task))
@@ -1107,6 +1123,8 @@ mod tests {
             1,
             &cpus_allowed,
             &cpus_allowed_list,
+            0,
+            0,
         )
     }
 
@@ -1159,8 +1177,16 @@ mod tests {
         let cpu_presence = collect_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
-        let status =
-            render_task_status_fields(1, 1, &Cred::root(), 3, &cpus_allowed, &cpus_allowed_list);
+        let status = render_task_status_fields(
+            1,
+            1,
+            &Cred::root(),
+            3,
+            &cpus_allowed,
+            &cpus_allowed_list,
+            0,
+            0,
+        );
 
         assert!(status.contains("Threads:\t3\n"));
         // Tab-separated, exactly as the psutil regex expects (not space).

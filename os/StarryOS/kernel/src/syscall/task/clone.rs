@@ -11,6 +11,7 @@ use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::VmMutPtr;
 
+use super::super::sys::seccomp_mode;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
@@ -279,6 +280,10 @@ impl CloneArgs {
         let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
         if curr.as_thread().no_new_privs() {
             thr.set_no_new_privs();
+        }
+        thr.set_seccomp_mode(curr.as_thread().seccomp_mode());
+        if curr.as_thread().seccomp_mode() != seccomp_mode::DISABLED {
+            thr.set_seccomp_filters(curr.as_thread().seccomp_filters());
         }
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);

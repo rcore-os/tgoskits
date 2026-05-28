@@ -23,7 +23,7 @@ use ax_sync::spin::SpinNoIrq;
 use crate::task::AsThread;
 
 #[allow(dead_code)]
-mod bpf_insn {
+pub(crate) mod bpf_insn {
     pub const BPF_LD: u8 = 0x00;
     pub const BPF_LDX: u8 = 0x01;
     pub const BPF_ST: u8 = 0x02;
@@ -1143,13 +1143,17 @@ impl BpfVm {
         Ok(())
     }
 
-    fn execute(&self, insns: &[bpf_insn::BpfInsn], ctx: u64) -> Result<u64, &'static str> {
+    fn execute(
+        &self,
+        insns: &[bpf_insn::BpfInsn],
+        ctx: u64,
+        ctx_size: u32,
+    ) -> Result<u64, &'static str> {
         if insns.is_empty() {
             return Err("empty program");
         }
         let mut regs = [0u64; 11];
         regs[1] = ctx;
-        regs[10] = 0;
         let mut stack = [0u8; BPF_MAX_STACK];
         regs[10] = stack.as_mut_ptr() as u64 + BPF_MAX_STACK as u64;
         let mut pc: usize = 0;
@@ -1217,7 +1221,9 @@ impl BpfVm {
                     pc += 1;
                 }
                 bpf_insn::BPF_LDX => {
-                    Self::exec_load(insn, &mut regs, &stack);
+                    if !Self::exec_pkt_load(insn, &mut regs, ctx, ctx_size) {
+                        Self::exec_load(insn, &mut regs, &stack);
+                    }
                     pc += 1;
                 }
                 bpf_insn::BPF_LD => {
@@ -1228,6 +1234,8 @@ impl BpfVm {
                         let val = (imm_hi << 32) | (imm_lo & 0xffffffff);
                         regs[insn.dst_reg() as usize] = val;
                         pc += 2;
+                    } else if Self::exec_pkt_load(insn, &mut regs, ctx, ctx_size) {
+                        pc += 1;
                     } else {
                         return Err("unsupported LD instruction");
                     }
@@ -1236,6 +1244,76 @@ impl BpfVm {
             }
         }
         Err("max instructions exceeded")
+    }
+
+    /// Handle BPF_ABS / BPF_IND / BPF_LEN / BPF_MSH loads from the
+    /// context buffer.  Returns `true` if the instruction was consumed.
+    fn exec_pkt_load(
+        insn: &bpf_insn::BpfInsn,
+        regs: &mut [u64; 11],
+        ctx: u64,
+        ctx_size: u32,
+    ) -> bool {
+        let mode = insn.mode();
+        match mode {
+            bpf_insn::BPF_LEN => {
+                let dst = insn.dst_reg() as usize;
+                regs[dst] = ctx_size as u64;
+                true
+            }
+            bpf_insn::BPF_MSH => {
+                if ctx_size == 0 || insn.imm as u32 >= ctx_size {
+                    return false;
+                }
+                let byte = unsafe { *((ctx as usize + insn.imm as usize) as *const u8) };
+                let dst = insn.dst_reg() as usize;
+                regs[dst] = 4u64 * (byte as u64 & 0xf);
+                true
+            }
+            bpf_insn::BPF_ABS | bpf_insn::BPF_IND => {
+                if ctx_size == 0 {
+                    return false;
+                }
+                let base_off = if mode == bpf_insn::BPF_IND {
+                    regs[6].wrapping_add(insn.imm as u64) as usize
+                } else {
+                    insn.imm as usize
+                };
+
+                let size = insn.size();
+                let val: u64 = match size {
+                    bpf_insn::BPF_W => {
+                        if base_off + 4 > ctx_size as usize {
+                            return false;
+                        }
+                        unsafe { *((ctx as usize + base_off) as *const u32) as u64 }
+                    }
+                    bpf_insn::BPF_H => {
+                        if base_off + 2 > ctx_size as usize {
+                            return false;
+                        }
+                        unsafe { *((ctx as usize + base_off) as *const u16) as u64 }
+                    }
+                    bpf_insn::BPF_B => {
+                        if base_off + 1 > ctx_size as usize {
+                            return false;
+                        }
+                        unsafe { *((ctx as usize + base_off) as *const u8) as u64 }
+                    }
+                    bpf_insn::BPF_DW => {
+                        if base_off + 8 > ctx_size as usize {
+                            return false;
+                        }
+                        unsafe { *((ctx as usize + base_off) as *const u64) }
+                    }
+                    _ => return false,
+                };
+                let dst = insn.dst_reg() as usize;
+                regs[dst] = val;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn exec_alu(op: u8, dst: u64, src: u64, is_64: bool) -> u64 {
@@ -1384,10 +1462,29 @@ pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
     };
     let _ = prog_type;
     let vm = BpfVm::new();
-    vm.execute(&insns, ctx).map_err(|e| {
+    vm.execute(&insns, ctx, 0).map_err(|e| {
         warn!("bpf: program execution failed: {e}");
         AxError::Io
     })
+}
+
+/// Execute a seccomp BPF filter program directly (no fd table lookup).
+///
+/// The context pointer points to `SeccompData` and `ctx_size` bytes
+/// are readable through BPF_ABS / BPF_IND.
+///
+/// Returns the filter's action value (one of the `SECCOMP_RET_*`
+/// constants), or `SECCOMP_RET_ALLOW` on VM error.
+pub fn run_seccomp_bpf(insns: &[bpf_insn::BpfInsn], ctx: u64, ctx_size: u32) -> u32 {
+    use crate::syscall::sys::seccomp_ret;
+    let vm = BpfVm::new();
+    match vm.execute(insns, ctx, ctx_size) {
+        Ok(v) => v as u32,
+        Err(e) => {
+            warn!("seccomp bpf: execution failed: {e}");
+            seccomp_ret::ALLOW
+        }
+    }
 }
 
 fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {

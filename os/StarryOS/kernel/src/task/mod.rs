@@ -85,6 +85,49 @@ impl NextSignalCheckBlock {
     }
 }
 
+/// A classic BPF (cBPF) filter instruction as defined by `struct sock_filter`.
+///
+/// Used by seccomp SECCOMP_SET_MODE_FILTER to store filter programs that are
+/// evaluated against `seccomp_data` on each syscall.
+///
+/// Field layout matches the Linux kernel's `struct sock_filter`:
+/// - `code`: opcode composed of class (bits 0–2), size (bits 3–4), and mode (bits 5–7)
+/// - `jt`: jump offset (in instructions) when the condition is true
+/// - `jf`: jump offset (in instructions) when the condition is false
+/// - `k`: immediate value or generic constant used by the instruction
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SeccompInsn {
+    /// Instruction opcode (BPF_LD + BPF_W + BPF_ABS, BPF_RET + BPF_K, etc.).
+    pub code: u16,
+    /// Jump-if-true offset, relative to the next instruction.
+    pub jt: u8,
+    /// Jump-if-false offset, relative to the next instruction.
+    pub jf: u8,
+    /// Generic constant / immediate operand for the instruction.
+    pub k: u32,
+}
+
+// SAFETY: all fields are primitives.
+unsafe impl bytemuck::Zeroable for SeccompInsn {}
+unsafe impl bytemuck::AnyBitPattern for SeccompInsn {}
+
+/// An installed seccomp BPF filter program.
+///
+/// Each call to `seccomp(SECCOMP_SET_MODE_FILTER, flags, &prog)` or
+/// `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog)` pushes one
+/// `SeccompFilterData` onto the thread's filter list.  Filters are
+/// evaluated in insertion order and the most restrictive action wins.
+#[derive(Clone, Debug)]
+pub struct SeccompFilterData {
+    /// Filter flags passed at install time (e.g. `SECCOMP_FILTER_FLAG_LOG`).
+    pub flags: u32,
+    /// BPF instruction sequence extracted from the user-space
+    /// `sock_fprog` program.  Stored as cBPF; converted to eBPF at
+    /// execution time when the `ebpf` feature is enabled.
+    pub insns: Vec<SeccompInsn>,
+}
+
 /// The inner data of a thread.
 pub struct Thread {
     /// User-visible thread ID (the `Pid` returned by `gettid`).
@@ -155,6 +198,16 @@ pub struct Thread {
     /// PR_SET_NO_NEW_PRIVS: once set, cannot be unset.
     no_new_privs: AtomicBool,
 
+    /// seccomp(2) mode: 0=DISABLED, 1=STRICT, 2=FILTER.
+    seccomp_mode: AtomicU32,
+
+    /// Installed seccomp BPF filters.  Only meaningful when
+    /// `seccomp_mode == FILTER`.  Multiple filters accumulate
+    /// across successive `SECCOMP_SET_MODE_FILTER` calls and are
+    /// evaluated in insertion order; the action with the highest
+    /// precedence wins.
+    seccomp_filters: SpinNoIrq<Vec<SeccompFilterData>>,
+
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 
@@ -196,6 +249,8 @@ impl Thread {
             rseq_signature: AtomicU32::new(0),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
+            seccomp_mode: AtomicU32::new(0),
+            seccomp_filters: SpinNoIrq::new(Vec::new()),
             cred: SpinNoIrq::new(cred),
 
             fault_dump_signo: AtomicU8::new(0),
@@ -309,6 +364,39 @@ impl Thread {
     /// Set the no_new_privs flag (one-way: once set, cannot be unset).
     pub fn set_no_new_privs(&self) {
         self.no_new_privs.store(true, Ordering::Relaxed);
+    }
+
+    /// Get the seccomp mode.
+    pub fn seccomp_mode(&self) -> u32 {
+        self.seccomp_mode.load(Ordering::Relaxed)
+    }
+
+    /// Set the seccomp mode.
+    pub fn set_seccomp_mode(&self, mode: u32) {
+        self.seccomp_mode.store(mode, Ordering::Relaxed);
+    }
+
+    /// Get a snapshot of the installed seccomp filters.
+    ///
+    /// Returns a cloned `Vec` so the caller does not hold the
+    /// `SpinNoIrq` lock across a potential BPF evaluation.
+    pub fn seccomp_filters(&self) -> Vec<SeccompFilterData> {
+        self.seccomp_filters.lock().clone()
+    }
+
+    /// Append a seccomp filter to this thread's filter list.
+    pub fn add_seccomp_filter(&self, flags: u32, insns: Vec<SeccompInsn>) {
+        self.seccomp_filters
+            .lock()
+            .push(SeccompFilterData { flags, insns });
+    }
+
+    /// Replace this thread's entire seccomp filter list.
+    ///
+    /// Used during clone/fork to inherit the parent's filters
+    /// in one atomic operation.
+    pub fn set_seccomp_filters(&self, filters: Vec<SeccompFilterData>) {
+        *self.seccomp_filters.lock() = filters;
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
