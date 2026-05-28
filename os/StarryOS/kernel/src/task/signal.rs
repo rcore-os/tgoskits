@@ -472,7 +472,7 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         // tkill/tgkill must NOT interrupt the target per POSIX; the signal
         // is queued as pending and stays invisible until unblocked.
         if thread.signal.send_signal(sig) {
-            task.interrupt();
+            ax_task::wake_task(&task);
         }
     }
 
@@ -521,11 +521,9 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             proc_data.clear_ptrace_stop();
         }
         if let Some(tid) = proc_data.signal.send_signal(sig) {
-            // A thread was found that doesn't have the signal blocked.
-            // Mark it interrupted so blocking syscalls wrapped by
-            // `future::interruptible` can return EINTR promptly.
+            // A thread was found that doesn't have the signal blocked — wake it.
             if let Ok(task) = get_task(tid) {
-                task.interrupt();
+                ax_task::wake_task(&task);
             }
         } else {
             // All threads have this signal blocked — the signal is now pending

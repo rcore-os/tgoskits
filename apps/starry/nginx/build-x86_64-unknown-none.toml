@@ -4,6 +4,7 @@ log = "Warn"
 features = [
   "ax-hal/x86-pc",
   "qemu",
+  "ax-driver/pci",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
