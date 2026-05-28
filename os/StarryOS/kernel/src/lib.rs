@@ -17,6 +17,7 @@ pub mod dyn_debug; // Re-export debug macros for use in other modules. It will o
 
 pub mod entry;
 
+mod cgroup;
 mod config;
 #[cfg(feature = "ebpf")]
 mod ebpf;
