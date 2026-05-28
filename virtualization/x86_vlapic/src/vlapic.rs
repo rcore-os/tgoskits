@@ -28,7 +28,7 @@ pub use crate::regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode;
 use crate::{
     consts::{
         APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
-        RESET_SPURIOUS_INTERRUPT_VECTOR,
+        RESET_SPURIOUS_INTERRUPT_VECTOR, xapic::DEFAULT_APIC_BASE,
     },
     regs::{
         APIC_BASE, ApicBaseRegisterMsr,
@@ -48,6 +48,12 @@ use crate::{
     timer::ApicTimer,
     utils::fls32,
 };
+
+const APIC_BASE_ENABLE: u64 = 1 << 11;
+const APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
+const APIC_BASE_BSP: u64 = 1 << 8;
+const APIC_VERSION_INTEGRATED: u32 = 0x14;
+const APIC_VERSION_MAX_LVT_ENTRIES: u32 = 6 << 16;
 
 /// Virtual-APIC Registers.
 pub struct VirtualApicRegs {
@@ -82,7 +88,7 @@ impl VirtualApicRegs {
     /// Create new virtual-APIC registers by allocating a 4-KByte page for the virtual-APIC page.
     pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
         let apic_frame = PhysFrame::alloc_zero().expect("allocate virtual-APIC page failed");
-        Self {
+        let regs = Self {
             // virtual-APIC ID is the same as the VCPU ID.
             vapic_id: vcpu_id as _,
             esr_pending: ErrorStatusRegisterLocal::new(0),
@@ -92,9 +98,18 @@ impl VirtualApicRegs {
             svr_last: SpuriousInterruptVectorRegisterLocal::new(RESET_SPURIOUS_INTERRUPT_VECTOR),
             lvt_last: LocalVectorTable::default(),
             isrv: 0,
-            apic_base: ApicBaseRegisterMsr::new(0),
+            apic_base: ApicBaseRegisterMsr::new(
+                DEFAULT_APIC_BASE as u64
+                    | APIC_BASE_ENABLE
+                    | if vcpu_id == 0 { APIC_BASE_BSP } else { 0 },
+            ),
             virtual_timer: ApicTimer::new(vm_id, vcpu_id),
-        }
+        };
+        regs.regs().ID.set((vcpu_id as u32) << 24);
+        regs.regs()
+            .VERSION
+            .set(APIC_VERSION_INTEGRATED | APIC_VERSION_MAX_LVT_ENTRIES);
+        regs
     }
 
     const fn regs(&self) -> &LocalAPICRegs {
@@ -113,6 +128,19 @@ impl VirtualApicRegs {
     #[allow(dead_code)]
     pub fn apic_base(&self) -> u64 {
         self.apic_base.get()
+    }
+
+    /// Sets the APIC base MSR value.
+    pub fn set_apic_base(&mut self, value: u64) -> AxResult {
+        if value & APIC_BASE_X2APIC_ENABLE != 0 && value & APIC_BASE_ENABLE == 0 {
+            return Err(ax_err_type!(
+                InvalidInput,
+                "x2APIC cannot be enabled while xAPIC is disabled"
+            ));
+        }
+
+        self.apic_base.set(value);
+        Ok(())
     }
 
     /// Returns whether the x2APIC mode is enabled.
@@ -172,11 +200,11 @@ impl VirtualApicRegs {
     /// Process the EOI operation triggered by a write to the EOI register.
     /// 11.8.5 Signaling Interrupt Servicing Completion
     /// 30.1.4 EOI Virtualization
-    fn process_eoi(&mut self) {
+    fn process_eoi(&mut self) -> Option<u8> {
         let vector = self.isrv;
 
         if vector == 0 {
-            return;
+            return None;
         }
 
         let (idx, bitpos) = extract_index_and_bitpos_u32(vector);
@@ -201,18 +229,14 @@ impl VirtualApicRegs {
         // Upon acceptance of an interrupt into the IRR, the corresponding TMR bit is cleared for edge-triggered interrupts and set for leveltriggered interrupts.
         // If a TMR bit is set when an EOI cycle for its corresponding interrupt vector is generated, an EOI message is sent to all I/O APICs.
         // (see 11.8.4 Interrupt Acceptance for Fixed Interrupts)
-        if (self.regs().TMR[idx].get() as u32).bit(bitpos) {
-            // Send EOI to all I/O APICs
-            // Per Intel SDM 10.8.5, Software can inhibit the broadcast of
-            // EOI by setting bit 12 of the Spurious Interrupt Vector
-            // Register of the LAPIC.
-            // TODO: Check if the bit 12 "Suppress EOI Broadcasts" is set.
-            unimplemented!("vioapic_broadcast_eoi(vlapic2vcpu(vlapic)->vm, vector);")
-        }
+        let broadcast_eoi = (self.regs().TMR[idx].get() as u32).bit(bitpos)
+            && !self
+                .regs()
+                .SVR
+                .is_set(SPURIOUS_INTERRUPT_VECTOR::EOIBroadcastSuppression);
 
         debug!("Gratuitous EOI vector: {vector:#010X}");
-
-        unimplemented!("vcpu_make_request(vlapic2vcpu(vlapic), ACRN_REQUEST_EVENT);")
+        broadcast_eoi.then_some(vector as u8)
     }
 
     /// Post an interrupt to the vcpu running on 'hostcpu'.
@@ -343,21 +367,44 @@ impl VirtualApicRegs {
         Ok(dmask)
     }
 
-    fn handle_self_ipi(&mut self) {
-        unimplemented!("x2apic handle_self_ipi");
+    fn handle_self_ipi(&mut self, vector: u32) {
+        if vector < 16 {
+            self.set_err(ERROR_STATUS::SendIllegalVector::SET);
+            warn!("[VLAPIC] ignoring illegal self IPI vector {vector:#x}");
+            return;
+        }
+
+        self.set_intr(self.vapic_id, vector, LAPIC_TRIG_EDGE);
     }
 
-    fn set_intr(&mut self, vcpu_id: u32, vector: u32, level: bool) {
-        unimplemented!(
-            "set_intr, vcpu_id: {}, vector: {}, level: {}",
-            vcpu_id,
-            vector,
-            level
-        );
+    fn set_intr(&mut self, vcpu_id: u32, vector: u32, _level: bool) {
+        if vector > u8::MAX as u32 {
+            warn!("[VLAPIC] ignoring out-of-range vector {vector:#x}");
+            return;
+        }
+
+        debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
+        vmm::inject_interrupt(vmm::current_vm_id(), vcpu_id as usize, vector as u8);
+    }
+
+    /// Record interrupt acceptance in the virtual APIC page.
+    pub fn accept_interrupt(&mut self, vector: u8, level_triggered: bool) {
+        let vector = vector as u32;
+        let (idx, bitpos) = extract_index_and_bitpos_u32(vector);
+        let bit = 1 << bitpos;
+
+        self.regs().ISR[idx].set(self.regs().ISR[idx].get() | bit);
+        self.regs().TMR[idx].set(if level_triggered {
+            self.regs().TMR[idx].get() | bit
+        } else {
+            self.regs().TMR[idx].get() & !bit
+        });
+        self.isrv = self.find_isrv();
+        self.update_ppr();
     }
 
     fn inject_nmi(&mut self, vcpu_id: u32) {
-        unimplemented!("inject_nmi vcpu_id: {}", vcpu_id);
+        warn!("[VLAPIC] ignoring NMI IPI to vcpu {vcpu_id}: NMI injection is not implemented yet");
     }
 
     fn process_init_sipi(
@@ -366,10 +413,11 @@ impl VirtualApicRegs {
         mode: APICDeliveryMode,
         icr_low: InterruptCommandRegisterLowLocal,
     ) {
-        unimplemented!(
-            "process_init_sipi, vcpu_id: {}, mode: {:?} icr_low: {:#010X}",
-            vcpu_id,
+        debug!(
+            "[VLAPIC] ignoring {:?} IPI to vcpu {} in current single-vCPU bring-up path, icr_low: \
+             {:#010X}",
             mode,
+            vcpu_id,
             icr_low.get()
         );
     }
@@ -473,7 +521,7 @@ impl VirtualApicRegs {
         let mode = icr_low
             .read_as_enum::<APICDeliveryMode>(INTERRUPT_COMMAND_LOW::DeliveryMode)
             .ok_or(AxError::InvalidData)?;
-        let is_phys = icr_low.is_set(INTERRUPT_COMMAND_LOW::DestinationMode);
+        let is_phys = !icr_low.is_set(INTERRUPT_COMMAND_LOW::DestinationMode);
         let shorthand = icr_low
             .read_as_enum::<APICDestination>(INTERRUPT_COMMAND_LOW::DestinationShorthand)
             .ok_or(AxError::InvalidData)?;
@@ -544,14 +592,6 @@ impl VirtualApicRegs {
 
     fn write_lvt(&mut self, offset: ApicRegOffset) -> AxResult {
         let mut val = self.extract_lvt_val(offset);
-
-        if self
-            .regs()
-            .SVR
-            .is_set(SPURIOUS_INTERRUPT_VECTOR::APICSoftwareEnableDisable)
-        {
-            val |= APIC_LVT_M;
-        }
 
         // Mask::Masked, Delivery Status:SendPending, Vector::SET(0xff)
         let mut mask = APIC_LVT_M | APIC_LVT_DS | APIC_LVT_VECTOR;
@@ -817,8 +857,11 @@ impl VirtualApicRegs {
                 // Force APIC ID to be read-only.
                 // self.regs().ID.set(val as _);
             }
+            ApicRegOffset::TPR => {
+                self.regs().TPR.set(data32 & 0xff);
+            }
             ApicRegOffset::EOI => {
-                self.process_eoi();
+                let _ = self.process_eoi();
             }
             ApicRegOffset::LDR => {
                 self.regs().LDR.set(data32);
@@ -855,6 +898,15 @@ impl VirtualApicRegs {
                 }
                 self.regs().ICR_LO.set(data32);
                 self.write_icr()?;
+            }
+            ApicRegOffset::ICRHi => {
+                if self.is_x2apic_enabled() {
+                    warn!("[VLAPIC] write ICRHi register: unsupported in x2APIC mode");
+                    return Err(AxError::InvalidInput);
+                }
+                self.regs()
+                    .ICR_HI
+                    .set(data32 & INTERRUPT_COMMAND_HIGH::Destination::SET.mask());
             }
             // Local Vector Table registers.
             ApicRegOffset::LvtCMCI => {
@@ -905,7 +957,7 @@ impl VirtualApicRegs {
             ApicRegOffset::SelfIPI => {
                 if self.is_x2apic_enabled() {
                     self.regs().SELF_IPI.set(data32);
-                    self.handle_self_ipi();
+                    self.handle_self_ipi(data32 & 0xff);
                 } else {
                     warn!("[VLAPIC] write SelfIPI register: unsupported in xAPIC mode");
                     return Err(AxError::InvalidInput);
@@ -920,5 +972,10 @@ impl VirtualApicRegs {
         debug!("[VLAPIC] write {offset} register: {val:#010X}");
 
         Ok(())
+    }
+
+    /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
+    pub fn handle_eoi(&mut self) -> Option<u8> {
+        self.process_eoi()
     }
 }

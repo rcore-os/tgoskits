@@ -113,3 +113,43 @@ fn test_mmio_panic_on_missing_device() {
 
     let _ = devices.handle_mmio_read(invalid_addr, width);
 }
+
+// Mock implementations for axvisor_api interfaces required by x86_vlapic
+// when running `cargo test -p axdevice` on x86_64 host.
+
+struct MockConsoleIfImpl;
+
+#[axvisor_api::api_impl]
+impl axvisor_api::console::ConsoleIf for MockConsoleIfImpl {
+    fn write_bytes(_bytes: &[u8]) {}
+
+    fn read_bytes(_bytes: &mut [u8]) -> usize {
+        0
+    }
+}
+
+struct MockTimeIfImpl;
+
+#[axvisor_api::api_impl]
+impl axvisor_api::time::TimeIf for MockTimeIfImpl {
+    fn current_ticks() -> axvisor_api::time::Ticks {
+        0
+    }
+
+    fn ticks_to_nanos(ticks: axvisor_api::time::Ticks) -> axvisor_api::time::Nanos {
+        ticks
+    }
+
+    fn nanos_to_ticks(nanos: axvisor_api::time::Nanos) -> axvisor_api::time::Ticks {
+        nanos
+    }
+
+    fn register_timer(
+        _deadline: axvisor_api::time::TimeValue,
+        _callback: Box<dyn FnOnce(axvisor_api::time::TimeValue) + Send + 'static>,
+    ) -> axvisor_api::time::CancelToken {
+        0
+    }
+
+    fn cancel_timer(_token: axvisor_api::time::CancelToken) {}
+}
