@@ -233,6 +233,18 @@ pub enum AxVCpuExitReason {
     /// The VCpu can typically be resumed immediately after these checks.
     Nothing,
 
+    /// A hardware virtualization preemption timer expired.
+    ///
+    /// This gives the VMM a chance to poll virtual device timers without relying on an unrelated
+    /// host interrupt or guest I/O exit.
+    PreemptionTimer,
+
+    /// The guest completed interrupt service with EOI.
+    InterruptEnd {
+        /// The EOI vector, when an external interrupt controller needs notification.
+        vector: Option<u8>,
+    },
+
     /// VM entry failed due to invalid VCpu state or configuration.
     ///
     /// This corresponds to `KVM_EXIT_FAIL_ENTRY` in KVM and indicates that

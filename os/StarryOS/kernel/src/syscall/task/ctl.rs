@@ -11,6 +11,7 @@ use crate::{
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
+const PERSONALITY_GET: u32 = 0xffff_ffff;
 
 /// Validate the cap header and return the target pid (0 means self).
 fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u32> {
@@ -84,6 +85,16 @@ pub fn sys_capset(
 pub fn sys_umask(mask: u32) -> AxResult<isize> {
     let curr = current();
     let old = curr.as_thread().proc_data.replace_umask(mask & 0o777);
+    Ok(old as isize)
+}
+
+pub fn sys_personality(persona: usize) -> AxResult<isize> {
+    let curr = current();
+    let proc_data = &curr.as_thread().proc_data;
+    let old = proc_data.personality();
+    if persona as u32 != PERSONALITY_GET {
+        proc_data.replace_personality(persona);
+    }
     Ok(old as isize)
 }
 
