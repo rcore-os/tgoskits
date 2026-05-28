@@ -358,7 +358,9 @@ fn emit_load_imm64(buf: &mut JitBuffer, rd: u32, val: u64) {
     let lower_lo12 = (lower << 20) >> 20;
     let lower_hi20 = (lower.wrapping_sub(lower_lo12).wrapping_add(0x800)) >> 12;
     emit_lui(buf, RV_T1, lower_hi20 & 0xFFFFF);
-    emit_addiw(buf, RV_T1, RV_T1, lower_lo12 as i32);
+    if lower_lo12 != 0 {
+        emit_addiw(buf, RV_T1, RV_T1, lower_lo12 as i32);
+    }
     emit_add(buf, rd, rd, RV_T1);
 }
 
@@ -960,6 +962,8 @@ impl JitBackend for Riscv64Backend {
                     let imm_size = if use_imm {
                         if insn.imm >= -2048 && insn.imm < 2048 {
                             4
+                        } else if (insn.imm as u32) & 0xFFF == 0 {
+                            4
                         } else {
                             8
                         }
@@ -985,6 +989,8 @@ impl JitBackend for Riscv64Backend {
                 };
                 let imm_size = if class == BPF_ST {
                     if insn.imm >= -2048 && insn.imm < 2048 {
+                        4
+                    } else if (insn.imm as u32) & 0xFFF == 0 {
                         4
                     } else {
                         8

@@ -694,7 +694,6 @@ dependencies = [
 name = "ax-alloc"
 version = "0.7.2"
 dependencies = [
- "ax-allocator",
  "ax-errno",
  "ax-kspin",
  "ax-memory-addr",
@@ -704,6 +703,7 @@ dependencies = [
  "buddy-slab-allocator",
  "cfg-if",
  "log",
+ "rlsf",
  "strum 0.27.2",
 ]
 
@@ -901,12 +901,14 @@ dependencies = [
  "rdrive",
  "rdrive-macros",
  "realtek-rtl8125",
+ "riscv_goldfish",
  "rk3588-pci",
  "rockchip-npu",
  "rockchip-pm",
  "rockchip-soc",
  "sdhci-host",
  "sdmmc-protocol",
+ "sg200x-bsp",
  "simple-ahci",
  "some-serial",
  "spin 0.12.0",
@@ -1334,6 +1336,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
  "some-serial",
 ]
@@ -1364,6 +1367,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
 ]
 
@@ -1392,6 +1396,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
 ]
 
@@ -1475,6 +1480,7 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
+ "axklib",
  "log",
  "rdrive",
  "riscv 0.14.0",
@@ -1770,11 +1776,12 @@ dependencies = [
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",
+ "axvisor_api",
  "axvmconfig",
  "cfg-if",
  "log",
- "range-alloc-arceos",
  "riscv_vplic",
+ "x86_vlapic",
 ]
 
 [[package]]
@@ -1845,6 +1852,7 @@ dependencies = [
 name = "axklib"
 version = "0.5.9"
 dependencies = [
+ "ax-alloc",
  "ax-errno",
  "ax-memory-addr",
  "dma-api",
@@ -1945,6 +1953,7 @@ name = "axvcpu"
 version = "0.5.9"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "axaddrspace",
@@ -1971,9 +1980,6 @@ dependencies = [
  "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-riscv64-qemu-virt",
- "ax-plat-x86-qemu-q35",
  "ax-std",
  "ax-timer-list",
  "axaddrspace",
@@ -6456,10 +6462,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
-name = "range-alloc-arceos"
-version = "0.3.9"
-
-[[package]]
 name = "ranges-ext"
 version = "0.6.4"
 dependencies = [
@@ -6937,6 +6939,19 @@ dependencies = [
 
 [[package]]
 name = "riscv"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b05cfa3f7b30c84536a9025150d44d26b8e1cc20ddf436448d74cd9591eefb25"
+dependencies = [
+ "critical-section",
+ "embedded-hal",
+ "paste",
+ "riscv-macros 0.3.0",
+ "riscv-pac",
+]
+
+[[package]]
+name = "riscv"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9251433e48c39d2133cbaff3ae7809ce6a1ecbc8225ca7da33d96d10cf360582"
@@ -6970,6 +6985,17 @@ name = "riscv-macros"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8c4aa1ea1af6dcc83a61be12e8189f9b293c3ba5a487778a4cd89fb060fdbbc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "riscv-macros"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d323d13972c1b104aa036bc692cd08b822c8bbf23d79a27c526095856499799"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7919,12 +7945,15 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
  "arm-gic-driver",
+ "ax-riscv-plic",
  "kernutil",
  "log",
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
  "rdrive",
+ "riscv 0.15.0",
+ "sbi-rt 0.0.3",
  "someboot",
  "somehal-macros",
  "spin 0.12.0",
@@ -8006,6 +8035,7 @@ version = "0.5.12"
 dependencies = [
  "ax-alloc",
  "ax-config",
+ "ax-cpu",
  "ax-display",
  "ax-dma",
  "ax-driver",
@@ -10219,6 +10249,7 @@ name = "x86_vlapic"
 version = "0.4.10"
 dependencies = [
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",
