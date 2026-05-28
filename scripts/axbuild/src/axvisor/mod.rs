@@ -6,13 +6,20 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::context::{
-    AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest, SnapshotPersistence,
+use crate::{
+    axvisor::context::AxvisorContext,
+    context::{
+        AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest,
+        SnapshotPersistence,
+    },
 };
 
 pub mod board;
 pub mod build;
 pub mod config;
+pub mod context;
+pub mod httpboot;
+pub mod image;
 pub mod rootfs;
 pub mod test;
 
@@ -33,6 +40,10 @@ pub enum Command {
     Defconfig(ArgsDefconfig),
     /// Board config helpers
     Config(ArgsConfig),
+    /// Guest image management
+    Image(image::Args),
+    /// HTTP Boot helpers
+    Httpboot(httpboot::Args),
 }
 
 #[derive(Args, Clone)]
@@ -219,6 +230,7 @@ pub enum ConfigCommand {
 
 pub struct Axvisor {
     app: AppContext,
+    ctx: AxvisorContext,
 }
 
 impl From<&ArgsBuild> for AxvisorCliArgs {
@@ -238,7 +250,8 @@ impl From<&ArgsBuild> for AxvisorCliArgs {
 impl Axvisor {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
-        Ok(Self { app })
+        let ctx = AxvisorContext::new()?;
+        Ok(Self { app, ctx })
     }
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
@@ -249,6 +262,8 @@ impl Axvisor {
             Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
+            Command::Image(args) => self.image(args).await,
+            Command::Httpboot(args) => self.httpboot(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -317,6 +332,14 @@ impl Axvisor {
             }
         }
         Ok(())
+    }
+
+    async fn image(&self, args: image::Args) -> anyhow::Result<()> {
+        image::run(args, &self.ctx).await
+    }
+
+    async fn httpboot(&mut self, args: httpboot::Args) -> anyhow::Result<()> {
+        httpboot::run(self, args).await
     }
 
     async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
@@ -486,6 +509,45 @@ mod tests {
                 assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
             }
             _ => panic!("expected board command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_httpboot_check() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "httpboot",
+            "check",
+            "--config",
+            "os/axvisor/configs/board/qemu-x86_64.toml",
+            "--elf",
+            "target/x86_64-unknown-none/release/axvisor",
+            "--vmconfigs",
+            "tmp/vm1.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Httpboot(args) => match args.command {
+                httpboot::Command::Check(args) => {
+                    assert_eq!(
+                        args.build.config,
+                        Some(PathBuf::from("os/axvisor/configs/board/qemu-x86_64.toml"))
+                    );
+                    assert_eq!(
+                        args.elf,
+                        Some(PathBuf::from("target/x86_64-unknown-none/release/axvisor"))
+                    );
+                    assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
+                }
+            },
+            _ => panic!("expected httpboot command"),
         }
     }
 
