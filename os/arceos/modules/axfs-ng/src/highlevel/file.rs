@@ -933,11 +933,15 @@ impl FileBackend {
             Self::Direct(loc) => {
                 let mut total = 0;
                 while !dst.is_full() {
-                    let read = dst.read_from(&mut ax_io::read_fn(|buf| {
+                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
                         loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
                             offset += *read as u64;
                         })
-                    }))?;
+                    })) {
+                        Ok(read) => read,
+                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        Err(err) => return Err(err),
+                    };
                     if read == 0 {
                         break;
                     }
@@ -963,10 +967,15 @@ impl FileBackend {
                     }
                     let mut chunk_written = 0;
                     while chunk_written < read {
-                        let written = loc
+                        let written = match loc
                             .entry()
                             .as_file()?
-                            .write_at(&buf[chunk_written..read], offset)?;
+                            .write_at(&buf[chunk_written..read], offset)
+                        {
+                            Ok(written) => written,
+                            Err(VfsError::WouldBlock) if total > 0 => return Ok(total),
+                            Err(err) => return Err(err),
+                        };
                         if written == 0 {
                             return Ok(total);
                         }
