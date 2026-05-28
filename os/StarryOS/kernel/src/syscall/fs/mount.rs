@@ -133,7 +133,6 @@ pub fn sys_mount(
         }
         return Ok(0);
     }
-    }
 
     match fs_type.as_str() {
         "tmpfs" => {
