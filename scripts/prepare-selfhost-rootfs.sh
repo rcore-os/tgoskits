@@ -56,7 +56,10 @@ while [[ $# -gt 0 ]]; do
         *) die "Unknown option: $1" ;;
     esac
 done
-[ -z "$ARCH" ] && die "--arch is required (riscv64, x86_64, arm)"
+[ -z "$ARCH" ] && die "--arch is required (riscv64, x86_64, aarch64)"
+
+# Normalize `aarch64` to `arm` (internal convention)
+[ "$ARCH" = "aarch64" ] && ARCH="arm"
 
 # ─── Architecture mapping ───────────────────────────────────────────────────────
 
@@ -158,16 +161,22 @@ _loopback_chroot() {
     local loop; loop="$(losetup -f --show "$img")"
     mount "$loop" "$mnt"
 
+    local rc=0
     if [ "$NEED_QEMU" -eq 1 ]; then
         cp "/usr/bin/$QEMU_STATIC" "$mnt/usr/bin/"
-        chroot "$mnt" "/usr/bin/$QEMU_STATIC" /usr/bin/bash -c "$cmd" || true
+        chroot "$mnt" "/usr/bin/$QEMU_STATIC" /usr/bin/bash -c "$cmd" || rc=$?
         rm -f "$mnt/usr/bin/$QEMU_STATIC"
     else
-        chroot "$mnt" /usr/bin/bash -c "$cmd" || true
+        chroot "$mnt" /usr/bin/bash -c "$cmd" || rc=$?
     fi
 
     umount "$mnt"
     losetup -d "$loop"
+
+    if [ "$rc" -ne 0 ]; then
+        warn "_loopback_chroot: command failed (exit code $rc)"
+    fi
+    return "$rc"
 }
 
 expand_image() {
@@ -182,9 +191,9 @@ expand_image() {
 mount_image() {
     local img="$1" mnt="$2"
     mkdir -p "$mnt"
-    MOUNT_LOOP="$(losetup -f --show "$img")"
-    mount "$MOUNT_LOOP" "$mnt"
-    echo "$MOUNT_LOOP"  # caller: LOOP=$(mount_image ...)
+    local loop; loop="$(losetup -f --show "$img")"
+    mount "$loop" "$mnt"
+    echo "$loop"  # caller: LOOP=$(mount_image ...)
 }
 
 umount_image() {
@@ -291,7 +300,12 @@ fi
 
 info "Extracting source tree (git archive)..."
 TEMP_SRC="$(mktemp -d /tmp/starryos-src.XXXXXX)"
-trap 'rm -rf "$TEMP_SRC"' EXIT
+STABLE=""
+cleanup_temp() {
+    rm -rf "$TEMP_SRC" 2>/dev/null || true
+    [ -n "${STABLE:-}" ] && rm -rf "$STABLE" 2>/dev/null || true
+}
+trap cleanup_temp EXIT
 
 git archive HEAD | tar -x -C "$TEMP_SRC/"
 [ -f "$TEMP_SRC/Cargo.toml" ] || die "Cargo.toml missing from git archive"
@@ -395,15 +409,23 @@ nspawn_run "$OUTPUT_IMG" "
     mkdir -p \"\$SRC_DIR\" && \
     cd \"\$CACHE_DIR\" && \
     CRATE_COUNT=0 && \
+    CRATE_FAILS=0 && \
     for crate in *.crate; do \
         [ -f \"\$crate\" ] || continue; \
         dirname=\$(basename \"\$crate\" .crate); \
         if [ ! -d \"\$SRC_DIR/\$dirname\" ]; then \
-            tar xf \"\$crate\" -C \"\$SRC_DIR\" 2>/dev/null && \
-            CRATE_COUNT=\$((CRATE_COUNT + 1)); \
+            if tar xf \"\$crate\" -C \"\$SRC_DIR\" 2>/dev/null; then \
+                CRATE_COUNT=\$((CRATE_COUNT + 1)); \
+            else \
+                echo \"WARNING: failed to extract \$crate\" >&2; \
+                CRATE_FAILS=\$((CRATE_FAILS + 1)); \
+            fi; \
         fi; \
     done && \
-    echo \"Pre-extracted \$CRATE_COUNT crates.\"
+    echo \"Pre-extracted \$CRATE_COUNT crates\" && \
+    if [ \"\$CRATE_FAILS\" -gt 0 ]; then \
+        echo \"WARNING: \$CRATE_FAILS crate(s) failed to extract\" >&2; \
+    fi
 "
 info "Registry pre-extraction complete."
 
