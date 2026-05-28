@@ -645,13 +645,43 @@ impl AxRunQueue {
         }
     }
 
+    /// Steal a runnable task from another CPU's run queue (SMP only).
+    ///
+    /// Iterates over remote CPUs starting from the next CPU (to avoid all
+    /// idle CPUs hammering CPU 0) and tries to pick a task from each.
+    /// Returns [`None`] only when every other CPU's queue is also empty.
+    #[cfg(feature = "smp")]
+    fn try_steal(&self) -> Option<AxTaskRef> {
+        let current_cpu = self.cpu_id;
+        for i in 1..ax_config::plat::MAX_CPU_NUM {
+            let target = (current_cpu + i) % ax_config::plat::MAX_CPU_NUM;
+            if let Some(task) = get_run_queue(target).scheduler.lock().pick_next_task() {
+                #[cfg(feature = "ipi")]
+                kick_remote_cpu(target);
+                return Some(task);
+            }
+        }
+        None
+    }
+
     /// Core reschedule subroutine.
-    /// Pick the next task to run and switch to it.
+    /// Pick the next task to run — from the local queue first, then by
+    /// work-stealing from remote CPUs — and switch to it.
     fn resched(&mut self) {
         let next = self
             .scheduler
             .lock()
             .pick_next_task()
+            .or_else(|| {
+                #[cfg(feature = "smp")]
+                {
+                    self.try_steal()
+                }
+                #[cfg(not(feature = "smp"))]
+                {
+                    None
+                }
+            })
             .unwrap_or_else(|| unsafe {
                 // Safety: IRQs must be disabled at this time.
                 IDLE_TASK.current_ref_raw().get_unchecked().clone()
