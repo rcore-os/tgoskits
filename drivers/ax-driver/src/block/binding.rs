@@ -42,6 +42,8 @@ pub struct PlatformBlockDevice {
     irq_num: Option<usize>,
 }
 
+const MAX_BLOCK_BUFFER_SIZE: usize = 16 * 1024;
+
 impl PlatformBlockDevice {
     fn new(name: String, interface: Box<dyn Interface>, irq_num: Option<usize>) -> Self {
         Self {
@@ -141,48 +143,54 @@ impl Block {
 
     pub fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
         let mut queues = self.queues.lock();
-        validate_io(queues.queue.info(), block_id, buf.len())?;
+        let info = queues.queue.info();
+        validate_io(info, block_id, buf.len())?;
 
-        let block_size = queues.queue.info().device.logical_block_size;
-        for (offset, block_buf) in buf.chunks_exact_mut(block_size).enumerate() {
+        let block_size = info.device.logical_block_size;
+        let max_transfer_blocks = max_transfer_blocks(info, queues.pool.size)?;
+        for (offset, block_buf) in buf.chunks_mut(block_size * max_transfer_blocks).enumerate() {
+            let block_count = block_buf.len() / block_size;
             let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
-            dma_buffer.sync_for_device(0, block_size);
-            let segment = buffer_from_dma(&mut dma_buffer, block_size);
+            dma_buffer.sync_for_device(0, block_buf.len());
+            let segment = buffer_from_dma(&mut dma_buffer, block_buf.len());
             let mut segments = [segment];
             let request_id = queues
                 .queue
                 .submit_request(Request {
                     op: RequestOp::Read,
-                    lba: checked_lba(block_id, offset)?,
-                    block_count: 1,
+                    lba: checked_lba(block_id, offset * max_transfer_blocks)?,
+                    block_count: block_count as u32,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
                 })
                 .map_err(map_blk_err_to_ax_err)?;
             queues.poll_until_complete(request_id)?;
-            dma_buffer.sync_for_cpu(0, block_size);
-            dma_buffer.read_with(block_size, |data| block_buf.copy_from_slice(data));
+            dma_buffer.sync_for_cpu(0, block_buf.len());
+            dma_buffer.read_with(block_buf.len(), |data| block_buf.copy_from_slice(data));
         }
         Ok(())
     }
 
     pub fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
         let mut queues = self.queues.lock();
-        validate_io(queues.queue.info(), block_id, buf.len())?;
+        let info = queues.queue.info();
+        validate_io(info, block_id, buf.len())?;
 
-        let block_size = queues.queue.info().device.logical_block_size;
-        for (offset, block_buf) in buf.chunks_exact(block_size).enumerate() {
+        let block_size = info.device.logical_block_size;
+        let max_transfer_blocks = max_transfer_blocks(info, queues.pool.size)?;
+        for (offset, block_buf) in buf.chunks(block_size * max_transfer_blocks).enumerate() {
+            let block_count = block_buf.len() / block_size;
             let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
-            dma_buffer.write_with(block_size, |data| data.copy_from_slice(block_buf));
-            dma_buffer.sync_for_device(0, block_size);
-            let segment = buffer_from_dma(&mut dma_buffer, block_size);
+            dma_buffer.write_with(block_buf.len(), |data| data.copy_from_slice(block_buf));
+            dma_buffer.sync_for_device(0, block_buf.len());
+            let segment = buffer_from_dma(&mut dma_buffer, block_buf.len());
             let mut segments = [segment];
             let request_id = queues
                 .queue
                 .submit_request(Request {
                     op: RequestOp::Write,
-                    lba: checked_lba(block_id, offset)?,
-                    block_count: 1,
+                    lba: checked_lba(block_id, offset * max_transfer_blocks)?,
+                    block_count: block_count as u32,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
                 })
@@ -200,15 +208,7 @@ impl BlockQueues {
         if block_size == 0 {
             return Err(AxError::BadState);
         }
-        let size = info
-            .limits
-            .max_segment_size
-            .min(block_size.max(info.limits.dma_alignment));
-        if size < block_size {
-            return Err(AxError::BadState);
-        }
-        let layout = Layout::from_size_align(size, info.limits.dma_alignment.max(1))
-            .map_err(|_| AxError::BadState)?;
+        let layout = block_buffer_layout(info)?;
         Ok(Self {
             queue,
             pool: BlockBufferPool {
@@ -367,6 +367,49 @@ fn validate_io(info: QueueInfo, block_id: u64, len: usize) -> AxResult {
     Ok(())
 }
 
+fn block_buffer_layout(info: QueueInfo) -> AxResult<Layout> {
+    let block_size = info.device.logical_block_size;
+    let size = block_buffer_size(info)?;
+    if size < block_size {
+        return Err(AxError::BadState);
+    }
+    Layout::from_size_align(size, info.limits.dma_alignment.max(1)).map_err(|_| AxError::BadState)
+}
+
+fn block_buffer_size(info: QueueInfo) -> AxResult<usize> {
+    let block_size = info.device.logical_block_size;
+    if block_size == 0 || info.limits.max_blocks_per_request == 0 {
+        return Err(AxError::BadState);
+    }
+
+    let max_blocks_size = block_size.saturating_mul(info.limits.max_blocks_per_request as usize);
+    let max_segment_size = if info.limits.max_segment_size == usize::MAX {
+        block_size
+    } else {
+        info.limits.max_segment_size.min(MAX_BLOCK_BUFFER_SIZE)
+    };
+    let size = max_segment_size.min(max_blocks_size);
+    let size = size / block_size * block_size;
+    if size < block_size {
+        return Err(AxError::BadState);
+    }
+    Ok(size)
+}
+
+fn max_transfer_blocks(info: QueueInfo, buffer_size: usize) -> AxResult<usize> {
+    let block_size = info.device.logical_block_size;
+    if block_size == 0 {
+        return Err(AxError::BadState);
+    }
+    let blocks = (buffer_size / block_size)
+        .min(info.limits.max_segment_size / block_size)
+        .min(info.limits.max_blocks_per_request as usize);
+    if blocks == 0 {
+        return Err(AxError::BadState);
+    }
+    Ok(blocks)
+}
+
 fn checked_lba(start: u64, offset: usize) -> AxResult<u64> {
     start
         .checked_add(offset as u64)
@@ -437,6 +480,15 @@ mod tests {
                     }
                 )
             })
+        }
+
+        fn sync_count(&self, expected: SyncOp) -> usize {
+            self.ops
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|op| **op == expected)
+                .count()
         }
     }
 
@@ -511,6 +563,29 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct SubmittedRequest {
+        op: RequestOp,
+        lba: u64,
+        block_count: u32,
+        data_len: usize,
+    }
+
+    #[derive(Default)]
+    struct RequestLog {
+        requests: Mutex<Vec<SubmittedRequest>>,
+    }
+
+    impl RequestLog {
+        fn push(&self, request: SubmittedRequest) {
+            self.requests.lock().unwrap().push(request);
+        }
+
+        fn snapshot(&self) -> Vec<SubmittedRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
     struct TestInterface;
 
     impl DriverGeneric for TestInterface {
@@ -577,10 +652,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_block_syncs_dma_buffer_for_device_before_submit() {
-        let dma = Box::leak(Box::<TrackingDma>::default());
-        let mut block = Block {
+    struct RecordingQueue {
+        info: QueueInfo,
+        log: &'static RequestLog,
+    }
+
+    impl RecordingQueue {
+        fn new(log: &'static RequestLog, limits: QueueLimits) -> Self {
+            Self {
+                info: QueueInfo {
+                    id: 0,
+                    depth: 1,
+                    mode: QueueMode::Polled,
+                    device: DeviceInfo {
+                        name: Some("recording-block"),
+                        ..DeviceInfo::new(64, 512)
+                    },
+                    limits,
+                },
+                log,
+            }
+        }
+    }
+
+    impl IQueue for RecordingQueue {
+        fn id(&self) -> usize {
+            self.info.id
+        }
+
+        fn info(&self) -> QueueInfo {
+            self.info
+        }
+
+        fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
+            validate_request_shape(self.info.device, self.info.limits, &request)?;
+            if request.op == RequestOp::Read {
+                request.segments[0].fill(request.block_count as u8);
+            }
+            self.log.push(SubmittedRequest {
+                op: request.op,
+                lba: request.lba,
+                block_count: request.block_count,
+                data_len: request.data_len(),
+            });
+            Ok(RequestId::new(self.log.snapshot().len()))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Complete)
+        }
+    }
+
+    fn block_with_queue(queue: Box<dyn IQueue>, dma: &'static TrackingDma) -> Block {
+        let info = queue.info();
+        let layout = block_buffer_layout(info).unwrap();
+        Block {
             name: String::from("test-block"),
             irq_num: None,
             irq_enabled: false,
@@ -588,18 +714,163 @@ mod tests {
             irq_handler: None,
             interface: Box::new(TestInterface),
             queues: SpinNoIrq::new(BlockQueues {
-                queue: Box::new(TestQueue { dma }),
+                queue,
                 pool: BlockBufferPool {
                     dma: DeviceDma::new(u64::MAX, dma),
-                    size: 512,
-                    align: 512,
+                    size: layout.size(),
+                    align: layout.align(),
                 },
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn read_block_syncs_dma_buffer_for_device_before_submit() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let mut block = block_with_queue(Box::new(TestQueue { dma }), dma);
         let mut buf = [0_u8; 512];
 
         block.read_block(0, &mut buf).unwrap();
 
         assert_eq!(buf, [0x5a; 512]);
+    }
+
+    #[test]
+    fn write_block_batches_requests_to_queue_limits() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let log = Box::leak(Box::<RequestLog>::default());
+        let limits = QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 4096,
+            max_blocks_per_request: 8,
+            max_segments: 1,
+            max_segment_size: 4096,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        };
+        let mut block = block_with_queue(Box::new(RecordingQueue::new(log, limits)), dma);
+        let buf = [0x42_u8; 8192];
+
+        block.write_block(4, &buf).unwrap();
+
+        assert_eq!(
+            log.snapshot(),
+            [
+                SubmittedRequest {
+                    op: RequestOp::Write,
+                    lba: 4,
+                    block_count: 8,
+                    data_len: 4096,
+                },
+                SubmittedRequest {
+                    op: RequestOp::Write,
+                    lba: 12,
+                    block_count: 8,
+                    data_len: 4096,
+                },
+            ]
+        );
+        assert_eq!(
+            dma.sync_count(SyncOp::ForDevice {
+                size: 4096,
+                direction: DmaDirection::ToDevice,
+            }),
+            2
+        );
+    }
+
+    #[test]
+    fn read_block_batches_requests_to_queue_limits() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let log = Box::leak(Box::<RequestLog>::default());
+        let limits = QueueLimits {
+            dma_mask: u64::MAX,
+            dma_alignment: 4096,
+            max_blocks_per_request: 8,
+            max_segments: 1,
+            max_segment_size: 4096,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        };
+        let mut block = block_with_queue(Box::new(RecordingQueue::new(log, limits)), dma);
+        let mut buf = [0_u8; 8192];
+
+        block.read_block(4, &mut buf).unwrap();
+
+        assert_eq!(
+            log.snapshot(),
+            [
+                SubmittedRequest {
+                    op: RequestOp::Read,
+                    lba: 4,
+                    block_count: 8,
+                    data_len: 4096,
+                },
+                SubmittedRequest {
+                    op: RequestOp::Read,
+                    lba: 12,
+                    block_count: 8,
+                    data_len: 4096,
+                },
+            ]
+        );
+        assert_eq!(buf, [8; 8192]);
+        assert_eq!(
+            dma.sync_count(SyncOp::ForDevice {
+                size: 4096,
+                direction: DmaDirection::FromDevice,
+            }),
+            2
+        );
+        assert_eq!(
+            dma.sync_count(SyncOp::ForCpu {
+                size: 4096,
+                direction: DmaDirection::FromDevice,
+            }),
+            2
+        );
+    }
+
+    #[test]
+    fn block_buffer_size_caps_large_finite_segments() {
+        let info = QueueInfo {
+            id: 0,
+            depth: 1,
+            mode: QueueMode::Polled,
+            device: DeviceInfo {
+                name: Some("large-segment-block"),
+                ..DeviceInfo::new(64, 512)
+            },
+            limits: QueueLimits {
+                dma_mask: u64::MAX,
+                dma_alignment: 4096,
+                max_blocks_per_request: 4096,
+                max_segments: 1,
+                max_segment_size: 2 * 1024 * 1024,
+                supports_flush: false,
+                supports_discard: false,
+                supports_write_zeroes: false,
+            },
+        };
+
+        assert_eq!(block_buffer_size(info).unwrap(), 16 * 1024);
+    }
+
+    #[test]
+    fn block_buffer_size_keeps_unbounded_segments_at_one_block() {
+        let info = QueueInfo {
+            id: 0,
+            depth: 1,
+            mode: QueueMode::Polled,
+            device: DeviceInfo {
+                name: Some("simple-block"),
+                ..DeviceInfo::new(64, 512)
+            },
+            limits: QueueLimits::simple(512, u64::MAX),
+        };
+
+        assert_eq!(block_buffer_size(info).unwrap(), 512);
     }
 }
