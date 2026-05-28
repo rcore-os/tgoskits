@@ -23,7 +23,7 @@ use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
-use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
+use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
 
 use crate::file::{FileLike, get_file_like};
 
@@ -38,6 +38,7 @@ bitflags! {
     pub struct EpollFlags: u32 {
         const EDGE_TRIGGER = EPOLLET;
         const ONESHOT = EPOLLONESHOT;
+        const EXCLUSIVE = EPOLLEXCLUSIVE;
     }
 }
 
