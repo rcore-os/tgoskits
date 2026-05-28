@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// Number of cached blocks.  64 blocks × 4 KiB = 256 KiB cache.
-const CACHE_ENTRIES: usize = 64;
+const CACHE_ENTRIES: usize = 4;
 
 /// One cache line: a 4 KiB data buffer plus housekeeping.
 struct CacheLine {

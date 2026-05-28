@@ -37,24 +37,22 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         system: &mut JBD2DEVSYSTEM,
         raw_dev: &mut B,
         update: Jbd2Update,
-    ) -> Ext4Result<bool> {
+    ) -> Ext4Result<()> {
         if let Some(existing) = system
             .commit_queue
             .iter_mut()
             .find(|queued| queued.0 == update.0)
         {
             *existing = update;
-            return Ok(false);
+            return Ok(());
         }
 
-        let mut committed = false;
         if system.commit_queue.len() >= JBD2_BUFFER_MAX {
             system.commit_transaction(raw_dev)?;
-            committed = true;
         }
 
         system.commit_queue.push(update);
-        Ok(committed)
+        Ok(())
     }
 
     fn make_system(
@@ -116,7 +114,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return ReplayStatus::Incomplete;
         };
 
-        jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks)
+        let status = jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks);
+        self.inner.invalidate_cache();
+        status
     }
 
     /// Enables or disables journal use at runtime.
@@ -160,7 +160,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             system
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
-            self.inner.invalidate_cache();
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -186,10 +185,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
-        if committed {
-            self.inner.invalidate_cache();
-        }
+        Self::enqueue_journal_update(system, raw_dev, updates)?;
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
     }
@@ -255,21 +251,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
-        let mut need_invalidate = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
             let mut boxbuf = Box::new([0; BLOCK_SIZE]);
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
-            if committed {
-                need_invalidate = true;
-            }
-        }
-
-        if need_invalidate {
-            self.inner.invalidate_cache();
+            Self::enqueue_journal_update(system, raw_dev, updates)?;
         }
 
         Ok(())
