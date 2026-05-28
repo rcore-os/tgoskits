@@ -29,6 +29,13 @@ compile_error!("features `vmx` and `svm` are mutually exclusive");
 #[cfg(test)]
 mod test_utils;
 
+/// x86 vCPU setup configuration.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct X86VCpuSetupConfig {
+    /// Intercept COM1 PIO ports and route them to an emulated serial device.
+    pub emulate_com1: bool,
+}
+
 pub(crate) mod msr;
 #[cfg(feature = "vmx")]
 #[macro_use]
@@ -47,7 +54,7 @@ cfg_if::cfg_if! {
 
         pub use vendor::{
             VmxArchPerCpuState, VmxArchPerCpuState as X86ArchPerCpuState, VmxArchVCpu,
-            VmxArchVCpu as X86ArchVCpu,
+            VmxArchVCpu as X86ArchVCpu, X86_APIC_ACCESS_GPA, x86_apic_access_page_addr,
         };
     } else if #[cfg(feature = "svm")] {
         mod svm;
@@ -78,4 +85,11 @@ pub(crate) fn restore_host_interrupt_flag(host_rflags: u64) {
     } else {
         x86_64::instructions::interrupts::disable();
     }
+}
+
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub(crate) fn host_tsc_frequency_mhz() -> Option<u32> {
+    u32::try_from(axvisor_api::time::nanos_to_ticks(1_000))
+        .ok()
+        .filter(|&freq| freq > 0)
 }

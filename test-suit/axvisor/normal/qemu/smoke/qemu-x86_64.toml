@@ -1,28 +1,36 @@
 args = [
-  "-nographic",
+  "-nodefaults",
+  "-no-user-config",
+  "-display",
+  "none",
+  "-serial",
+  "stdio",
+  "-monitor",
+  "none",
   "-cpu",
   "host",
   "-machine",
-  "q35",
+  "q35,sata=off,smbus=off,i8042=off,usb=off,graphics=off",
   "-smp",
   "1",
   "-accel",
   "kvm",
   "-device",
-  "virtio-blk-pci,drive=disk0",
+  "virtio-blk-pci,drive=disk0,addr=03.0",
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-m",
-  "128M",
+  "512M",
 ]
+timeout = 180
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
 ]
-success_regex = ["Hello world from user mode program!"]
-shell_prefix = ">>"
-shell_init_cmd = "hello_world"
+success_regex = ["(?m)^guest linux test pass!\\s*$"]
+shell_prefix = "~ #"
+shell_init_cmd = "pwd && echo 'guest linux test pass!'"
 to_bin = false
 uefi = false

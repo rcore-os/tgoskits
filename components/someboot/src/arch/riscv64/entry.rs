@@ -50,7 +50,8 @@ pub unsafe extern "C" fn kernel_entry(_hart_id: usize, _fdt_addr: usize) -> ! {
         "mv t0, a1",
         "lla sp, __cpu0_stack_top",
         "mv a0, t0",
-        "j {primary_head_entry}",
+        "lla t1, {primary_head_entry}",
+        "jr t1",
         primary_head_entry = sym primary_head_entry,
     )
 }
@@ -98,7 +99,8 @@ pub(crate) unsafe extern "C" fn _secondary_entry(_hartid: usize, _cpu_meta_paddr
         "mv t0, a1",
         "ld sp, {stack_top_offset}(t0)",
         "mv a0, t0",
-        "j {secondary_start}",
+        "lla t1, {secondary_start}",
+        "jr t1",
         secondary_start = sym secondary_start,
         stack_top_offset = const offset_of!(PerCpuMeta, stack_top),
     )

@@ -19,7 +19,6 @@
 //!
 //! # Cargo Features
 //!
-//! - `alloc`: Enable global memory allocator.
 //! - `paging`: Enable page table manipulation support.
 //! - `irq`: Enable interrupt handling support.
 //! - `multitask`: Enable multi-threading support.
@@ -56,15 +55,6 @@ pub use ax_hal as hal;
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
-#[cfg(any(
-    all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")),
-    all(any(feature = "fs", feature = "fs-ng"), feature = "plat-dyn"),
-    feature = "net",
-    feature = "net-ng",
-    feature = "display",
-    feature = "input",
-    feature = "vsock"
-))]
 extern crate alloc;
 
 const LOGO: &str = r#"
@@ -166,8 +156,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
+    // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
@@ -214,7 +204,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         );
     }
 
-    #[cfg(feature = "alloc")]
     init_allocator();
 
     {
@@ -254,13 +243,17 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
-    if !rdrive::is_initialized() {
+    if cfg!(not(feature = "plat-dyn")) && !rdrive::is_initialized() {
         rdrive::init(rdrive::Platform::Static)
             .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
     }
-    registers::append_linker_registers();
-    rdrive::probe_pre_kernel()
-        .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
+    if rdrive::is_initialized() {
+        registers::append_linker_registers();
+        rdrive::probe_pre_kernel()
+            .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
+    } else {
+        warn!("rdrive is not initialized; skip pre-kernel driver probe");
+    }
 
     #[cfg(feature = "multitask")]
     ax_task::init_scheduler();
@@ -353,7 +346,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 }
 
-#[cfg(feature = "alloc")]
 fn init_allocator() {
     use ax_hal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
 

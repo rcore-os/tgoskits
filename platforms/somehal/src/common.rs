@@ -12,13 +12,22 @@ pub trait PlatOp {
 
     fn irq_handler() -> someboot::irq::IrqId;
 
+    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
+        let _ = raw;
+        Some(Self::irq_handler())
+    }
+
     fn systick_irq() -> IrqId;
 
     fn secondary_init();
 
-    fn secondary_init_intc();
+    fn secondary_init_intc(cpu_idx: usize);
 
     fn secondary_init_systick();
+
+    fn send_ipi_to_cpu(cpu_id: usize) {
+        let _ = cpu_id;
+    }
 }
 
 #[allow(dead_code)]

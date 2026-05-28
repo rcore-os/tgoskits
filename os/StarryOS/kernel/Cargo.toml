@@ -22,6 +22,7 @@ ebpf = []
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
+    "ax-feat/plat-dyn",
     "dep:ax-driver",
     "ax-driver/usb",
     "dep:crab-usb",
@@ -37,16 +38,12 @@ sg2002 = [
     "dep:tock-registers",
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
-buddy-slab = ["ax-feat/buddy-slab"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [
     "fp-simd",
     "irq",
     "uspace",
-
-    "page-alloc-4g",
-    "alloc-slab",
 
     "multitask",
     "task-ext",
@@ -58,10 +55,11 @@ ax-feat = { workspace = true, features = [
     "net-ng",
 ] }
 
-ax-alloc = { workspace = true, features = ["default"] }
+ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-display.workspace = true
 ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true

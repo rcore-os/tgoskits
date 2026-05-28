@@ -1,9 +1,7 @@
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
-  "ax-hal/plat-dyn",
   "ax-feat/display",
   "ax-feat/rtc",
-  "ax-driver/pci",
   "ax-driver/rtc",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
@@ -11,9 +9,7 @@ features = [
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
   "starry-kernel/input",
-  "starry-kernel/plat-dyn",
   "starry-kernel/vsock",
-  "starryos/buddy-slab",
 ]
 max_cpu_num = 4
 log = "Warn"

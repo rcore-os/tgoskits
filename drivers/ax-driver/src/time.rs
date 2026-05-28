@@ -1,6 +1,8 @@
-use ax_arm_pl031::Rtc;
+use ax_arm_pl031::Rtc as Pl031Rtc;
 use log::{debug, info};
 use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+#[cfg(target_arch = "riscv64")]
+use riscv_goldfish::Rtc as GoldfishRtc;
 
 use crate::mmio::iomap;
 
@@ -10,11 +12,35 @@ crate::model_register!(
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Fdt {
         compatibles: &["arm,pl031"],
-        on_probe: probe
+        on_probe: probe_pl031
     }],
 );
 
-fn probe(info: FdtInfo<'_>, _plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+#[cfg(target_arch = "riscv64")]
+crate::model_register!(
+    name: "goldfish rtc",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["google,goldfish-rtc"],
+        on_probe: probe_goldfish
+    }],
+);
+
+fn probe_pl031(info: FdtInfo<'_>, _plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    let mmio_base = map_first_reg(&info)?;
+    let rtc = unsafe { Pl031Rtc::new(mmio_base.as_ptr().cast()) };
+    init_epoch_offset(info.node.name(), u64::from(rtc.get_unix_timestamp()))
+}
+
+#[cfg(target_arch = "riscv64")]
+fn probe_goldfish(info: FdtInfo<'_>, _plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    let mmio_base = map_first_reg(&info)?;
+    let rtc = GoldfishRtc::new(mmio_base.as_ptr() as usize);
+    init_epoch_offset(info.node.name(), rtc.get_unix_timestamp())
+}
+
+fn map_first_reg(info: &FdtInfo<'_>) -> Result<core::ptr::NonNull<u8>, OnProbeError> {
     let regs = info.node.regs();
     let Some(base_reg) = regs.first() else {
         return Err(OnProbeError::other(alloc::format!(
@@ -24,24 +50,21 @@ fn probe(info: FdtInfo<'_>, _plat_dev: PlatformDevice) -> Result<(), OnProbeErro
     };
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
-    let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
-    let rtc = unsafe { Rtc::new(mmio_base.as_ptr().cast()) };
-    let unix_timestamp = rtc.get_unix_timestamp();
+    iomap(base_reg.address as usize, mmio_size as usize)
+}
+
+fn init_epoch_offset(node_name: &str, unix_timestamp: u64) -> Result<(), OnProbeError> {
     if unix_timestamp == 0 {
         return Err(OnProbeError::other(alloc::format!(
-            "[{}] returned zero unix timestamp",
-            info.node.name()
+            "[{node_name}] returned zero unix timestamp"
         )));
     }
 
-    let epoch_time_nanos = u64::from(unix_timestamp) * 1_000_000_000;
+    let epoch_time_nanos = unix_timestamp * 1_000_000_000;
     if axklib::time::try_init_epoch_offset(epoch_time_nanos) {
-        info!("Initialized wall clock from {}", info.node.name());
+        info!("Initialized wall clock from {node_name}");
     } else {
-        debug!(
-            "Skipping RTC {} because epoch offset is already initialized",
-            info.node.name()
-        );
+        debug!("Skipping RTC {node_name} because epoch offset is already initialized",);
     }
 
     Ok(())

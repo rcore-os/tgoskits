@@ -30,6 +30,13 @@ sg2002 = [
   "ax-hal/riscv64-sg2002",
   "starry-kernel/sg2002",
 ]
+sg2002-dyn = [
+  "plat-dyn",
+  "axplat-dyn/thead-mae",
+  "starry-kernel/sg2002",
+  "ax-driver/sg2002-placeholder",
+]
+plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 # Enable the GICv3 distributor + redistributor + system-register
 # CPU interface on aarch64. Only meaningful when the target is the
@@ -50,7 +57,6 @@ aarch64-hvf = ["gic-v3", "cntv-timer"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 vf2 = ["ax-hal/riscv64-visionfive2"]
-buddy-slab = ["starry-kernel/buddy-slab"]
 
 [[bin]]
 name = "starryos"

@@ -65,6 +65,17 @@ cargo xtask starry app run -t redis --arch riscv64
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
 
+## GDB Smoke
+
+The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
+rootfs overlay with GDB, GDBServer, and two tiny target programs.
+
+```bash
+cargo xtask starry app run -t gdb-smoke --arch riscv64
+cargo xtask starry app run -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-gdbserver.toml
+```
+
 ## Orange Pi 5 Plus UVC
 
 The `orangepi-5-plus-uvc` case needs `/usr/bin/uvc-fps` to be installed in the

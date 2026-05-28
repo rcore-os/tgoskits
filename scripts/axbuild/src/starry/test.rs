@@ -1340,12 +1340,24 @@ mod tests {
     #[test]
     fn bug_ext4_dir_ops_qemu_configs_fail_on_lockdep_fatal() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bug-ext4-dir-ops");
+        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/bugfix");
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
             let path = case_dir.join(format!("qemu-{arch}.toml"));
             let content = fs::read_to_string(&path).unwrap();
             let config: toml::Value = toml::from_str(&content).unwrap();
+            let test_commands = config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                test_commands
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|command| command == "/usr/bin/bug-ext4-dir-ops"),
+                "{} must include the bug-ext4-dir-ops grouped command",
+                path.display()
+            );
             let fail_regex = config
                 .get("fail_regex")
                 .and_then(toml::Value::as_array)
@@ -1778,8 +1790,8 @@ mod tests {
         fs::create_dir_all(build_config.parent().unwrap()).unwrap();
         fs::write(
             &build_config,
-            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\", \
-             \"starry-kernel/plat-dyn\"]\nlog = \"Warn\"\nplat_dyn = true\n",
+            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
+             \"Warn\"\nplat_dyn = true\n",
         )
         .unwrap();
         let mut request = starry_request(
@@ -1799,9 +1811,10 @@ mod tests {
         let (_group_request, cargo) =
             Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
-        assert!(cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
         assert!(
-            cargo
+            !cargo
                 .features
                 .contains(&"starry-kernel/plat-dyn".to_string())
         );

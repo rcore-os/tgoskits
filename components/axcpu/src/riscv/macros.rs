@@ -15,8 +15,8 @@ macro_rules! __asm_macros {
         .macro _asm_extable, from, to
             .pushsection __ex_table, "a"
             .balign 4
-            .word   \from
-            .word   \to
+            .word   \from - _ex_table_start
+            .word   \to - _ex_table_start
             .popsection
         .endm
 
@@ -40,9 +40,9 @@ macro_rules! __asm_macros {
 
         .macro _asm_extable, from, to
             .pushsection __ex_table, "a"
-            .balign 8
-            .quad   \from
-            .quad   \to
+            .balign 4
+            .word   \from - _ex_table_start
+            .word   \to - _ex_table_start
             .popsection
         .endm
 

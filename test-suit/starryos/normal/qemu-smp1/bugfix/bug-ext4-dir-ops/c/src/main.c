@@ -1,6 +1,6 @@
 /*!
  * bug-ext4-dir-ops.c
- *
+ *！
  * Verifies POSIX rmdir() and rename() semantics on ext4 (rsext4),
  * plus VFS dentry cache correctness after rename (stale parent bug).
  *
@@ -13,7 +13,17 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+/* linux_dirent64 for getdents64 syscall */
+struct linux_dirent64 {
+    unsigned long long d_ino;
+    long long          d_off;
+    unsigned short     d_reclen;
+    unsigned char      d_type;
+    char               d_name[];
+};
 
 #define BASE "/root/bug-ext4-dir-ops-test"
 
@@ -571,6 +581,156 @@ static void test_rename_many_files(void)
     force_remove(dir);
 }
 
+/* ========== readdir offset after delete ========== */
+
+/*
+ * Reproduce the rm -rf bug: read entries with getdents64 using a tiny buffer
+ * (1 entry per call), delete each entry immediately, then continue reading.
+ * On correct kernel (byte offsets), the fd position advances past the deleted
+ * entry and lands on the next one. On buggy kernel (logical indices), the
+ * index shifts after deletion and entries get skipped.
+ */
+static void test_readdir_offset_after_delete(void)
+{
+    char dir[256], path[256], content[64];
+
+    snprintf(dir, sizeof(dir), "%s/readdir_del", BASE);
+    CHECK(mkdir(dir, 0755) == 0, "mkdir readdir_del");
+
+    /* Create 30 files */
+    int ok = 1;
+    for (int i = 0; i < 30; i++) {
+        snprintf(path, sizeof(path), "%s/f%02d", dir, i);
+        snprintf(content, sizeof(content), "%d\n", i);
+        if (write_file(path, content) < 0)
+            ok = 0;
+    }
+    CHECK(ok, "created 30 files");
+
+    /*
+     * Read-delete loop: tiny buffer forces 1 entry per getdents64 call.
+     * After reading each entry, delete it immediately. If offset tracking
+     * is correct, we'll see all 30 entries. If buggy, entries get skipped.
+     */
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    CHECK(dfd >= 0, "open dir for read-delete loop");
+
+    char buf[32]; /* minimum buffer: exactly 1 entry */
+    int total_deleted = 0;
+    int rounds = 0;
+
+    for (;;) {
+        int nread = syscall(SYS_getdents64, dfd, buf, sizeof(buf));
+        if (nread <= 0)
+            break;
+
+        int pos = 0;
+        while (pos < nread) {
+            struct linux_dirent64 *ent =
+                (struct linux_dirent64 *)(buf + pos);
+            if (strcmp(ent->d_name, ".") != 0 &&
+                strcmp(ent->d_name, "..") != 0) {
+                snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+                if (unlink(path) == 0)
+                    total_deleted++;
+            }
+            pos += ent->d_reclen;
+        }
+        rounds++;
+    }
+    close(dfd);
+
+    CHECK(total_deleted == 30,
+          "read-delete loop: all 30 files deleted");
+    CHECK(rounds > 1,
+          "read-delete loop: needed multiple getdents calls (bug trigger)");
+
+    /* If bug exists, some files were skipped and rmdir fails */
+    int rmdir_ret = rmdir(dir);
+    CHECK_RET(rmdir_ret, 0,
+              "rmdir after read-delete loop succeeds (no skipped entries)");
+    if (rmdir_ret != 0)
+        force_remove(dir);
+}
+
+/*
+ * Variant: read-readdir-delete-readdir pattern (simulates rm -rf).
+ * Read all entries via getdents64, delete each batch before reading next.
+ */
+static void test_rm_rf_pattern(void)
+{
+    char dir[256], path[256], content[64];
+
+    snprintf(dir, sizeof(dir), "%s/rmrf", BASE);
+    CHECK(mkdir(dir, 0755) == 0, "mkdir rmrf");
+
+    /* Create 30 files */
+    for (int i = 0; i < 30; i++) {
+        snprintf(path, sizeof(path), "%s/f%02d", dir, i);
+        snprintf(content, sizeof(content), "%d\n", i);
+        write_file(path, content);
+    }
+
+    /*
+     * Simulate rm -rf: open dir, read small batch, delete those files,
+     * repeat until empty. If offset is logical and entries are deleted
+     * between getdents calls, files get skipped and rmdir fails.
+     */
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    CHECK(dfd >= 0, "open dir for rm-rf pattern");
+
+    char buf[80];
+    int total_deleted = 0;
+    int rounds = 0;
+
+    for (;;) {
+        /* Read one batch */
+        int nread = syscall(SYS_getdents64, dfd, buf, sizeof(buf));
+        if (nread <= 0)
+            break;
+
+        /* Collect names from this batch */
+        char names[4][32];
+        int name_count = 0;
+        int pos = 0;
+        while (pos < nread && name_count < 4) {
+            struct linux_dirent64 *ent =
+                (struct linux_dirent64 *)(buf + pos);
+            if (strcmp(ent->d_name, ".") != 0 &&
+                strcmp(ent->d_name, "..") != 0) {
+                strncpy(names[name_count], ent->d_name, 31);
+                names[name_count][31] = '\0';
+                name_count++;
+            }
+            pos += ent->d_reclen;
+        }
+
+        /* Delete this batch */
+        for (int i = 0; i < name_count; i++) {
+            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+            if (unlink(path) == 0)
+                total_deleted++;
+        }
+        rounds++;
+    }
+    close(dfd);
+
+    CHECK(total_deleted == 30,
+          "rm-rf pattern: all 30 files deleted");
+    CHECK(rounds > 1,
+          "rm-rf pattern: needed multiple getdents calls");
+
+    /*
+     * If the bug exists, some files were skipped by getdents and remain.
+     * rmdir should succeed only if all files were deleted.
+     */
+    int rmdir_ret = rmdir(dir);
+    CHECK_RET(rmdir_ret, 0,
+              "rmdir after rm-rf pattern succeeds (no leftover files)");
+    if (rmdir_ret != 0)
+        force_remove(dir);
+}
+
 /* ========== main ========== */
 
 int main(void)
@@ -610,6 +770,10 @@ int main(void)
     test_rename_create_same_name();
     test_pip_upgrade_pattern();
     test_rename_many_files();
+
+    /* readdir offset correctness after deletion (rm -rf bug) */
+    test_readdir_offset_after_delete();
+    test_rm_rf_pattern();
 
     manual_rmdir_recursive(BASE);
 

@@ -14,7 +14,7 @@ crate::model_register!(
     level: ProbeLevel::PreKernel,
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Fdt {
-        compatibles: &["arm,pl011", "snps,dw-apb-uart"],
+        compatibles: &["arm,pl011", "snps,dw-apb-uart", "ns16550a", "ns16550"],
         on_probe: probe
     }],
 );
@@ -49,7 +49,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
             break;
         }
 
-        if compatible == "snps,dw-apb-uart" {
+        if matches!(compatible, "snps,dw-apb-uart" | "ns16550a" | "ns16550") {
             serial = Some(ns16550::Ns16550::new_mmio_boxed(
                 mmio_base, clock_freq, reg_width,
             ));
