@@ -1321,6 +1321,15 @@ mod tests {
                     path.display()
                 );
             }
+            for marker in ["APK_CURL_TEST_PASSED", "APK_CURL_TEST_FAILED"] {
+                assert!(
+                    !shell_init_cmd.contains(marker),
+                    "{} must not embed full {marker} marker in shell_init_cmd; serial echo can \
+                     trigger the success/fail regex before the command actually reaches that \
+                     branch",
+                    path.display()
+                );
+            }
 
             let fail_regex = config
                 .get("fail_regex")

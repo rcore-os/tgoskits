@@ -20,6 +20,10 @@ shell_init_cmd = '''
 fetch_timeout=60
 repo_file=/etc/apk/repositories
 original_repos="$(cat "$repo_file")"
+pass_marker=APK_CURL_TEST_
+pass_marker="${pass_marker}PASSED"
+fail_marker=APK_CURL_TEST_
+fail_marker="${fail_marker}FAILED"
 
 try_apk_curl() {
     mirror="$1"
@@ -50,12 +54,12 @@ do
     label=${repo#* }
     echo "APK_CURL_ATTEMPT_$i"
     if try_apk_curl "$mirror" "$label"; then
-        echo 'APK_CURL_TEST_PASSED'
+        printf '%s\n' "$pass_marker"
         exit 0
     fi
     sleep 2
 done
-echo 'APK_CURL_TEST_FAILED'
+printf '%s\n' "$fail_marker"
 '''
 success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^APK_CURL_TEST_FAILED\\s*$"]
