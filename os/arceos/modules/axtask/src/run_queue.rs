@@ -655,7 +655,11 @@ impl AxRunQueue {
         let current_cpu = self.cpu_id;
         for i in 1..ax_config::plat::MAX_CPU_NUM {
             let target = (current_cpu + i) % ax_config::plat::MAX_CPU_NUM;
-            if let Some(task) = get_run_queue(target).scheduler.lock().pick_next_task() {
+            let task = {
+                let mut sched = get_run_queue(target).scheduler.lock();
+                sched.pick_next_task()
+            };
+            if let Some(task) = task {
                 #[cfg(feature = "ipi")]
                 kick_remote_cpu(target);
                 return Some(task);
@@ -668,10 +672,8 @@ impl AxRunQueue {
     /// Pick the next task to run — from the local queue first, then by
     /// work-stealing from remote CPUs — and switch to it.
     fn resched(&mut self) {
-        let next = self
-            .scheduler
-            .lock()
-            .pick_next_task()
+        let local_task = self.scheduler.lock().pick_next_task();
+        let next = local_task
             .or_else(|| {
                 #[cfg(feature = "smp")]
                 {
