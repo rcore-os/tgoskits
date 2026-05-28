@@ -4,8 +4,8 @@ use ax_kspin::SpinNoIrq;
 
 /// The initial root PID namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWPID)` or `clone(CLONE_NEWPID)`.
-pub static ROOT_PID_NS: spin::Lazy<Arc<SpinNoIrq<PidNamespace>>> =
-    spin::Lazy::new(|| Arc::new(SpinNoIrq::new(PidNamespace::new_root())));
+pub static ROOT_PID_NS: spin::LazyLock<Arc<SpinNoIrq<PidNamespace>>> =
+    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(PidNamespace::new_root())));
 
 /// Per-process PID namespace.
 ///

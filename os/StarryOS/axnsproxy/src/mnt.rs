@@ -5,8 +5,8 @@ use ax_kspin::SpinNoIrq;
 
 /// The initial root mount namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWNS)` or `clone(CLONE_NEWNS)`.
-pub static ROOT_MNT_NS: spin::Lazy<Arc<SpinNoIrq<MntNamespace>>> =
-    spin::Lazy::new(|| Arc::new(SpinNoIrq::new(MntNamespace::new_root())));
+pub static ROOT_MNT_NS: spin::LazyLock<Arc<SpinNoIrq<MntNamespace>>> =
+    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(MntNamespace::new_root())));
 
 const fn pad_mnt_root(root: &str) -> [c_char; 256] {
     let mut data: [c_char; 256] = [0; 256];

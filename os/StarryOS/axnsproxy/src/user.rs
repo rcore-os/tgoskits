@@ -4,8 +4,8 @@ use ax_kspin::SpinNoIrq;
 
 /// The initial root user namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUSER)` or `clone(CLONE_NEWUSER)`.
-pub static ROOT_USER_NS: spin::Lazy<Arc<SpinNoIrq<UserNamespace>>> =
-    spin::Lazy::new(|| Arc::new(SpinNoIrq::new(UserNamespace::new_root())));
+pub static ROOT_USER_NS: spin::LazyLock<Arc<SpinNoIrq<UserNamespace>>> =
+    spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(UserNamespace::new_root())));
 
 /// Per-process user namespace.
 ///
