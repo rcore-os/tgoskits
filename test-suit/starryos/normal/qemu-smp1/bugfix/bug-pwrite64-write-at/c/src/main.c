@@ -25,7 +25,7 @@ static int create_fixture(const char *data)
 
 int main(void)
 {
-    TEST_START("pwrite64 syscall semantics");
+    TEST_START("bug-pwrite64-write-at");
 
     unlink(TMPFILE);
 

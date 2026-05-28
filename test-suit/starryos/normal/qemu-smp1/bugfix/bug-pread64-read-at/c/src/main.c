@@ -22,7 +22,7 @@ static int create_fixture(void)
 
 int main(void)
 {
-    TEST_START("pread64 syscall semantics");
+    TEST_START("bug-pread64-read-at");
 
     unlink(TMPFILE);
 
