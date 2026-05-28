@@ -101,7 +101,6 @@ if [ -z "$ROOTFS_IMG" ]; then
     esac
 fi
 
-INJECT_SCRIPT="/usr/bin/self-compile-inner.sh"
 QEMU_LOG="/tmp/starryos-selfcompile-$$.log"
 
 info "Architecture: $ARCH | Target: $TARGET | SMP: $SMP | Cargo jobs: $CARGO_BUILD_JOBS"

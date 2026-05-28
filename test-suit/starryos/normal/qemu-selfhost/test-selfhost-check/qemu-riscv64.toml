@@ -9,9 +9,8 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-which cc gcc busybox 2>/dev/null || true && \
-echo "CHECK_DONE"
+TOOLS_OK=1; for t in cc gcc busybox; do which "$t" 2>/dev/null || { echo "MISSING: $t"; TOOLS_OK=0; }; done; if [ "$TOOLS_OK" -eq 1 ]; then echo "CHECK_DONE"; else echo "CHECK_FAILED"; fi
 '''
 success_regex = ["(?m)^CHECK_DONE\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', 'CHECK_FAILED']
 timeout = 120
