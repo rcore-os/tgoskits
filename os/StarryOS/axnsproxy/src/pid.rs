@@ -50,7 +50,11 @@ impl PidNamespace {
     }
 
     /// Resolve a global TID to its namespace-local PID.
+    /// In the root namespace (level 0), global and local PIDs are 1:1.
     pub fn local_pid(&self, global_tid: u64) -> Option<u32> {
+        if self.level == 0 {
+            return Some(global_tid as u32);
+        }
         self.pid_map.get(&global_tid).copied()
     }
 }

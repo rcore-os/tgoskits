@@ -308,7 +308,6 @@ phytium-mci-host = { version = "0.1.1", path = "drivers/blk/phytium-mci-host", d
 sdhci-host = { version = "0.1.1", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.1.1", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
-smp-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/smp-kernel" }
 axnsproxy = { version = "0.1.0", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.5.12", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.7", path = "components/starry-process" }
