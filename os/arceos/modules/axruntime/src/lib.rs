@@ -156,8 +156,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(feature = "buddy-slab")]
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
+    // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
@@ -243,13 +243,17 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
-    if !rdrive::is_initialized() {
+    if cfg!(not(feature = "plat-dyn")) && !rdrive::is_initialized() {
         rdrive::init(rdrive::Platform::Static)
             .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
     }
-    registers::append_linker_registers();
-    rdrive::probe_pre_kernel()
-        .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
+    if rdrive::is_initialized() {
+        registers::append_linker_registers();
+        rdrive::probe_pre_kernel()
+            .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
+    } else {
+        warn!("rdrive is not initialized; skip pre-kernel driver probe");
+    }
 
     #[cfg(feature = "multitask")]
     ax_task::init_scheduler();

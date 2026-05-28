@@ -20,12 +20,14 @@ mod vcpu;
 mod vmcs;
 
 use ax_errno::ax_err_type;
+use axaddrspace::HostPhysAddr;
+use x86_vlapic::EmulatedLocalApic;
 
 use self::structs::VmxBasic;
 pub use self::{
     definitions::VmxExitReason,
     percpu::VmxPerCpuState as VmxArchPerCpuState,
-    vcpu::VmxVcpu as VmxArchVCpu,
+    vcpu::{VmxVcpu as VmxArchVCpu, X86_APIC_ACCESS_GPA},
     vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo},
 };
 
@@ -40,6 +42,10 @@ pub fn has_hardware_support() -> bool {
 
 pub fn read_vmcs_revision_id() -> u32 {
     VmxBasic::read().revision_id
+}
+
+pub fn x86_apic_access_page_addr() -> HostPhysAddr {
+    EmulatedLocalApic::virtual_apic_access_addr()
 }
 
 fn as_axerr(err: x86::vmx::VmFail) -> ax_errno::AxError {

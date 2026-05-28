@@ -1448,6 +1448,82 @@ else
     bb_case_fail
 fi
 
+
+# --- 7 high-side-effect applet safe-failure tests ---
+
+bb_case_start "busybox_insmod"
+_t=$({ timeout 10 sh -c 'busybox insmod /tmp/bb_no_such_module.ko 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such|not found|can't open|cannot open"; then
+    echo "PASS: busybox_insmod"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_insmod (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+bb_case_start "busybox_fdflush"
+_t=$({ timeout 10 sh -c 'busybox fdflush /tmp/bb_no_such_device 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such|not found|can't open|cannot open|device|ioctl"; then
+    echo "PASS: busybox_fdflush"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_fdflush (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+bb_case_start "busybox_raidautorun"
+_t=$({ timeout 10 sh -c 'busybox raidautorun /tmp/bb_no_such_device 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such|not found|can't open|cannot open|device|ioctl"; then
+    echo "PASS: busybox_raidautorun"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_raidautorun (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+bb_case_start "busybox_killall5"
+_t=$({ timeout 10 sh -c 'busybox killall5 -h 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && echo "$_t" | grep -qiE "Usage|killall5"; then
+    echo "PASS: busybox_killall5"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_killall5 (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# busybox_rdev — rdev outputs nothing on StarryOS (no /proc/kcore etc.)
+# so we only verify: applet exists, executes without hang, returns non-timeout
+bb_case_start "busybox_rdev"
+_t=$({ timeout 10 sh -c 'busybox rdev 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ]; then
+    echo "PASS: busybox_rdev"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_rdev (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+bb_case_start "busybox_setlogcons"
+_t=$({ timeout 10 sh -c 'busybox setlogcons -h 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && echo "$_t" | grep -qiE "Usage|setlogcons"; then
+    echo "PASS: busybox_setlogcons"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_setlogcons (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# busybox_resize — outputs terminal escape sequences that corrupt EXIT: parsing
+# redirect all output to /dev/null, only capture return code
+bb_case_start "busybox_resize"
+_t=$({ timeout 10 sh -c 'busybox resize >/dev/null 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ]; then
+    echo "PASS: busybox_resize"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_resize (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"

@@ -63,6 +63,8 @@ pub struct RamdiskInfo {
 pub struct VMImageConfig {
     /// The load address in GPA for the kernel image.
     pub kernel_load_gpa: GuestPhysAddr,
+    /// Whether VM images are loaded from the host filesystem.
+    pub loaded_from_filesystem: bool,
     /// The load address in GPA for the BIOS image, `None` if not used.
     pub bios_load_gpa: Option<GuestPhysAddr>,
     /// The load address in GPA for the device tree blob (DTB), `None` if not used.
@@ -110,6 +112,7 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             },
             image_config: VMImageConfig {
                 kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
+                loaded_from_filesystem: cfg.kernel.image_location.as_deref() == Some("fs"),
                 bios_load_gpa,
                 dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
                 ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
@@ -174,6 +177,11 @@ impl AxVMConfig {
     /// Returns configurations related to VM image load addresses.
     pub fn image_config(&self) -> &VMImageConfig {
         &self.image_config
+    }
+
+    /// Returns whether VM images are loaded from the host filesystem.
+    pub fn images_loaded_from_filesystem(&self) -> bool {
+        self.image_config.loaded_from_filesystem
     }
 
     /// Returns the entry address in GPA for the Bootstrap Processor (BSP).

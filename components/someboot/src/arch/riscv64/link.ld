@@ -1,5 +1,5 @@
 PROVIDE(PAGE_SIZE = 0x1000);
-PROVIDE(STACK_SIZE = 0x4000);
+PROVIDE(STACK_SIZE = 0x40000);
 VM_LOAD_ADDRESS = ${kernel_load_vaddr};
 
 OUTPUT_ARCH(riscv)
@@ -54,6 +54,21 @@ SECTIONS
     _edata = .;
     __kernel_load_end = .;
     __bss_start = .;
+
+    .tdata : {
+        _stdata = .;
+        *(.tdata .tdata.*)
+        _etdata = .;
+    }
+
+    .tbss : {
+        _stbss = .;
+        *(.tbss .tbss.*)
+        *(.init.bss)
+        *(.tcommon)
+        _etbss = .;
+    }
+
     .sbss : {
         *(.dynsbss)
         *(.sbss .sbss.*)

@@ -118,7 +118,7 @@ pub fn sys_execve(
     // the pathname (the FS could change while siblings are being reaped).
     let mut new_aspace = new_user_aspace_empty()?;
     copy_from_kernel(&mut new_aspace)?;
-    let (entry_point, user_stack_base) =
+    let (entry_point, user_stack_base, auxv) =
         match load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs) {
             Ok(result) => result,
             Err(AxError::InvalidExecutable) => {
@@ -234,6 +234,7 @@ pub fn sys_execve(
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
     *proc_data.cmdline.write() = Arc::new(args);
+    *proc_data.auxv.write() = auxv;
 
     proc_data.set_heap_top(USER_HEAP_BASE);
 
@@ -325,6 +326,10 @@ pub fn sys_execve(
     // inherits is the address space and the kernel/scheduler bits we
     // explicitly preserved above.
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
+
+    if proc_data.is_ptrace_traceme() {
+        proc_data.set_ptrace_exec_stop_pending();
+    }
 
     // Unblock a vfork parent waiting for this child to exec.
     // Must be last: by now CLOEXEC fds are closed so the parent's pipe

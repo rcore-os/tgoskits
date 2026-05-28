@@ -125,6 +125,9 @@ fn to_cargo_config(
     metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
+    let plat_dyn = config
+        .build_info
+        .effective_plat_dyn(&config.target, request.plat_dyn);
     let mut cargo = config
         .build_info
         .into_prepared_base_cargo_config_with_metadata(
@@ -133,6 +136,15 @@ fn to_cargo_config(
             request.plat_dyn,
             metadata,
         )?;
+    if plat_dyn {
+        cargo.features.retain(|feature| {
+            !matches!(
+                feature.as_str(),
+                "ax-std/plat-dyn" | "ax-feat/plat-dyn" | "dyn-plat"
+            )
+        });
+        cargo.features.push("dyn-plat".to_string());
+    }
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     Ok(cargo)
 }
@@ -398,7 +410,7 @@ mod tests {
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4", "ax-driver/fdt"]
+features = ["ept-level-4"]
 log = "Info"
 plat_dyn = true
 vm_configs = []
@@ -413,7 +425,17 @@ vm_configs = []
         .unwrap();
 
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"ax-driver/fdt".to_string()));
+        assert!(cargo.features.contains(&"dyn-plat".to_string()));
+        assert!(
+            !cargo
+                .features
+                .contains(&concat!("ax-driver/", "plat-dyn").to_string())
+        );
+        assert!(
+            !cargo
+                .features
+                .contains(&concat!("ax-hal/", "plat-dyn").to_string())
+        );
         assert!(path.exists());
     }
 
@@ -600,8 +622,9 @@ plat_dyn = false
             &config_path,
             r#"
 env = {}
-features = ["ept-level-4", "ax-driver/fdt"]
+features = ["ept-level-4"]
 log = "Info"
+plat_dyn = false
 "#,
         )
         .unwrap();

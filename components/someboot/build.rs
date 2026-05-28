@@ -40,7 +40,6 @@ fn main() {
     } else if build.uspace {
         println!("cargo:rustc-cfg=uspace");
     }
-
     if build.page_size == 4096 {
         println!("cargo:rustc-cfg=page_size_4k");
     } else if build.page_size == 16384 {
@@ -158,7 +157,7 @@ impl Build {
     fn prepare_riscv64(&mut self) {
         let ld_src = "src/arch/riscv64/link.ld";
 
-        if self.uspace {
+        if self.uspace || self.hv {
             self.kernel_vaddr = 0xffff_ffff_8000_0000;
         } else {
             self.kernel_vaddr = 0x8020_0000;

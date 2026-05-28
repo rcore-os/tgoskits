@@ -68,13 +68,6 @@ passthrough_devices = [
     0x1,
   ],
   [
-    "Local APIC",
-    0xfee0_0000,
-    0xfee0_0000,
-    0x1000,
-    0x1,
-  ],
-  [
     "HPET",
     0xfed0_0000,
     0xfed0_0000,

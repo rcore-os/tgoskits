@@ -209,7 +209,7 @@ You may also need to select the corrsponding device drivers by setting the `FEAT
 # Build the shell app for raspi4, and use the SD card driver
 make MYPLAT=axplat-aarch64-raspi SMP=4 A=examples/shell FEATURES=page-alloc-4g,ax-driver/bcm2835-sdhci
 # Build httpserver for the bare-metal x86_64 platform, and use the ixgbe and ramdisk driver
-make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml A=examples/httpserver FEATURES=page-alloc-4g,ax-driver/pci,ax-driver/ixgbe,ax-driver/ramdisk SMP=4
+make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml A=examples/httpserver FEATURES=page-alloc-4g,ax-driver/plat-static,ax-driver/ixgbe,ax-driver/ramdisk SMP=4
 ```
 
 ## How to reuse ArceOS modules in your own project

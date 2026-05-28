@@ -15,3 +15,4 @@ ax-memory-addr = { workspace = true }
 ax-percpu = { workspace = true }
 axaddrspace = { workspace = true }
 axvisor_api = { workspace = true }
+ax-kspin = { workspace = true }

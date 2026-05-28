@@ -2,10 +2,8 @@
 target = "aarch64-unknown-none-softfloat"
 env = {}
 features = [
-  "ax-hal/plat-dyn",
-  "starry-kernel/plat-dyn",
   "ax-driver/irq",
-  "ax-driver/pci-list-devices",
+  "ax-driver/list-pci-devices",
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",
   "ax-driver/rockchip-soc",

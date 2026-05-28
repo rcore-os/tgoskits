@@ -11,7 +11,7 @@ license.workspace = true
 copy = ["ax-page-table-multiarch/copy-from"]
 
 [dependencies]
-ax-alloc = { workspace = true, features = ["default"] }
+ax-alloc = { workspace = true }
 ax-errno.workspace = true
 ax-hal = { workspace = true, features = ["paging"] }
 ax-kspin.workspace = true

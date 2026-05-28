@@ -4,6 +4,8 @@ mod binding;
 pub mod ahci;
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835;
+#[cfg(feature = "cvsd")]
+pub mod cvsd;
 #[cfg(feature = "phytium-mci")]
 pub mod phytium_mci;
 #[cfg(feature = "ramdisk")]

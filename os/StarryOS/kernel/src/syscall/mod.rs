@@ -31,7 +31,6 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
-
     // Snapshot sepc before dispatching: if a signal handler is installed
     // during the syscall, the handler redirects uctx.ip() elsewhere.
     // We must not overwrite retval when that happens, because on
@@ -265,6 +264,22 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg5() as _,
         ),
         Sysno::pwritev2 => sys_pwritev2(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
+        Sysno::process_vm_readv => sys_process_vm_readv(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
+        Sysno::process_vm_writev => sys_process_vm_writev(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -517,6 +532,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),
+        Sysno::personality => sys_personality(uctx.arg0()),
         Sysno::setreuid => sys_setreuid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setregid => sys_setregid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setresuid => sys_setresuid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -556,6 +572,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        Sysno::ptrace => sys_ptrace(uctx.arg0() as _, uctx.arg1(), uctx.arg2(), uctx.arg3()),
         Sysno::getsid => sys_getsid(uctx.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(uctx.arg0() as _),

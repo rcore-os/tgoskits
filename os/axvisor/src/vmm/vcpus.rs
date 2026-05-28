@@ -14,7 +14,6 @@
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use ax_cpumask::CpuMask;
-
 use ax_kspin::SpinNoIrq as Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::os::arceos::{
@@ -411,9 +410,14 @@ fn vcpu_run() {
     wait_for(vm_id, || vm.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
+    #[cfg(target_arch = "x86_64")]
+    super::devices::x86::enable_ioapic_irq_forwarding(&vm, &vcpu);
     mark_vcpu_running(vm_id);
 
     loop {
+        #[cfg(target_arch = "x86_64")]
+        super::devices::x86::drain_pending_ioapic_irqs(&vm, &vcpu);
+
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => match exit_reason {
                 AxVCpuExitReason::Hypercall { nr, args } => {
@@ -449,13 +453,41 @@ fn vcpu_run() {
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
                     ax_hal::trap::irq_handler(vector as usize);
                     super::timer::check_events();
+                    #[cfg(target_arch = "x86_64")]
+                    super::devices::x86::forward_passthrough_irq_from_vmexit(
+                        &vm,
+                        &vcpu,
+                        vector as usize,
+                    );
+                    #[cfg(target_arch = "x86_64")]
+                    super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
                     #[cfg(target_arch = "riscv64")]
                     {
                         vcpu.get_arch_vcpu().latch_hvip_from_hw();
                     }
                 }
+                AxVCpuExitReason::PreemptionTimer => {
+                    #[cfg(target_arch = "x86_64")]
+                    super::devices::x86::inject_due_pit_irq0(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
+                }
+                AxVCpuExitReason::InterruptEnd { vector } =>
+                {
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(vector) = vector {
+                        super::devices::x86::inject_pending_ioapic_irq_after_eoi(
+                            &vm, &vcpu, vector,
+                        );
+                    }
+                }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
+                    #[cfg(target_arch = "x86_64")]
+                    super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    continue;
+                    #[cfg(not(target_arch = "x86_64"))]
                     wait(vm_id)
                 }
                 AxVCpuExitReason::Nothing => {}
@@ -570,6 +602,9 @@ fn vcpu_run() {
                 // Transition from Stopping to Stopped
                 vm.set_vm_status(axvm::VMStatus::Stopped);
                 info!("VM[{}] state changed to Stopped", vm_id);
+
+                #[cfg(target_arch = "x86_64")]
+                super::devices::x86::disable_ioapic_irq_forwarding_for_vm(vm_id);
 
                 sub_running_vm_count(1);
                 ax_wait_queue_wake(&super::VMM, 1);

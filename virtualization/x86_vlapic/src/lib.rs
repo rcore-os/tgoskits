@@ -22,9 +22,12 @@ extern crate alloc;
 extern crate log;
 
 mod consts;
+mod pit;
 mod regs;
+mod serial;
 mod timer;
 mod utils;
+mod vioapic;
 mod vlapic;
 
 use core::cell::UnsafeCell;
@@ -56,6 +59,10 @@ pub struct EmulatedLocalApic {
     vlapic_regs: UnsafeCell<VirtualApicRegs>,
 }
 
+pub use pit::EmulatedPit;
+pub use serial::EmulatedSerialPort;
+pub use vioapic::{EmulatedIoApic, IoApicInterrupt};
+
 impl EmulatedLocalApic {
     /// Create a new `EmulatedLocalApic`.
     pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
@@ -68,7 +75,19 @@ impl EmulatedLocalApic {
         unsafe { &*self.vlapic_regs.get() }
     }
 
-    #[allow(clippy::mut_from_ref)] // SAFETY: get_mut_vlapic_regs is never called concurrently.
+    /// Returns mutable access to the virtual APIC register state.
+    ///
+    /// # Safety
+    ///
+    /// `vlapic_regs` is stored in an [`UnsafeCell`] because the vLAPIC MMIO/MSR
+    /// handlers are exposed through shared device references. Callers must
+    /// guarantee that no two execution contexts call this method, or otherwise
+    /// mutate/read the same [`VirtualApicRegs`], concurrently. In the current
+    /// Axvisor x86 path each `EmulatedLocalApic` is owned by one vCPU and vLAPIC
+    /// register accesses are handled synchronously on that vCPU's run path; any
+    /// cross-vCPU interrupt requests are funneled through the vCPU task instead
+    /// of directly mutating another vCPU's local APIC registers.
+    #[allow(clippy::mut_from_ref)]
     fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs {
         unsafe { &mut *self.vlapic_regs.get() }
     }
@@ -92,6 +111,27 @@ impl EmulatedLocalApic {
     /// see Chapter 30.
     pub fn virtual_apic_page_addr(&self) -> HostPhysAddr {
         self.get_vlapic_regs().virtual_apic_page_addr()
+    }
+
+    /// Returns the current IA32_APIC_BASE MSR value.
+    pub fn apic_base(&self) -> u64 {
+        self.get_vlapic_regs().apic_base()
+    }
+
+    /// Sets the IA32_APIC_BASE MSR value.
+    pub fn set_apic_base(&self, value: u64) -> AxResult {
+        self.get_mut_vlapic_regs().set_apic_base(value)
+    }
+
+    /// Record that the local APIC accepted an interrupt.
+    pub fn accept_interrupt(&self, vector: u8, level_triggered: bool) {
+        self.get_mut_vlapic_regs()
+            .accept_interrupt(vector, level_triggered);
+    }
+
+    /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
+    pub fn handle_eoi(&self) -> Option<u8> {
+        self.get_mut_vlapic_regs().handle_eoi()
     }
 }
 
