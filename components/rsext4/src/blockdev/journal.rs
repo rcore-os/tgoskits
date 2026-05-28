@@ -255,6 +255,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
+        let mut need_invalidate = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
             let mut boxbuf = Box::new([0; BLOCK_SIZE]);
@@ -263,8 +264,12 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
             let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
             if committed {
-                self.inner.invalidate_cache();
+                need_invalidate = true;
             }
+        }
+
+        if need_invalidate {
+            self.inner.invalidate_cache();
         }
 
         Ok(())
