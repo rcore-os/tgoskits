@@ -362,6 +362,9 @@ pub fn global_allocator() -> &'static GlobalAllocator {
 }
 
 /// Initializes the per-CPU slab for the current CPU.
+///
+/// Must run after per-CPU storage is initialized and before scheduler, IPI, or
+/// IRQ paths can allocate on this CPU.
 pub fn init_percpu_slab(cpu_id: usize) {
     PERCPU_SLAB.with_current(|slab| slab.init(cpu_id));
 }
