@@ -87,11 +87,33 @@ fn load_build_info_with_makefile_features_and_metadata(
         }
     }
 
+    ensure_default_allocator_backend(&mut build_info, request);
+
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
 
     Ok(build_info)
+}
+
+fn ensure_default_allocator_backend(
+    build_info: &mut ArceosBuildInfo,
+    request: &ResolvedBuildRequest,
+) {
+    if build_info.effective_plat_dyn(&request.target, request.plat_dyn) {
+        return;
+    }
+
+    let has_allocator_backend = build_info.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "alloc-tlsf" | "buddy-slab" | "ax-std/alloc-tlsf" | "ax-std/buddy-slab"
+        )
+    });
+
+    if !has_allocator_backend {
+        build_info.features.push("ax-std/alloc-tlsf".to_string());
+    }
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
@@ -291,7 +313,9 @@ mod tests {
 
         let build_info = load_build_info(&request).unwrap();
 
-        assert_eq!(build_info, ArceosBuildInfo::default_for_target("target"));
+        let mut expected = ArceosBuildInfo::default_for_target("target");
+        expected.features.push("ax-std/alloc-tlsf".to_string());
+        assert_eq!(build_info, expected);
         assert!(path.exists());
         assert!(
             fs::read_to_string(path)
@@ -385,6 +409,59 @@ AX_IP = "10.0.2.15"
 
         assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
         assert!(cargo.features.contains(&"ax-std/smp".to_string()));
+    }
+
+    #[test]
+    fn load_build_info_defaults_axstd_to_tlsf_allocator_backend() {
+        let root = tempdir().unwrap();
+        let request = request(
+            "ax-helloworld",
+            "riscv64gc-unknown-none-elf",
+            Some(false),
+            root.path().join(".build.toml"),
+        );
+
+        let build_info = load_build_info_with_makefile_features(&request, &[]).unwrap();
+
+        assert!(
+            build_info
+                .features
+                .contains(&"ax-std/alloc-tlsf".to_string())
+        );
+    }
+
+    #[test]
+    fn load_build_info_keeps_explicit_buddy_slab_allocator_backend() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build.toml");
+        fs::write(
+            &path,
+            toml::to_string_pretty(&ArceosBuildInfo {
+                features: vec!["ax-std".to_string(), "ax-std/buddy-slab".to_string()],
+                ..ArceosBuildInfo::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let request = request(
+            "ax-helloworld",
+            "riscv64gc-unknown-none-elf",
+            Some(false),
+            path,
+        );
+
+        let build_info = load_build_info_with_makefile_features(&request, &[]).unwrap();
+
+        assert!(
+            build_info
+                .features
+                .contains(&"ax-std/buddy-slab".to_string())
+        );
+        assert!(
+            !build_info
+                .features
+                .contains(&"ax-std/alloc-tlsf".to_string())
+        );
     }
 
     #[test]

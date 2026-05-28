@@ -1,8 +1,10 @@
 # Build-time config template for StarryOS on SG2002.
 target = "riscv64gc-unknown-none-elf"
 env = {}
-features = ["sg2002"]
+features = [
+  "sg2002",
   "starryos/tlsf",
+]
 log = "Info"
 max_cpu_num = 1
 plat_dyn = false
