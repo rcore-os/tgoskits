@@ -7,8 +7,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
-    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueTopology, Request,
-    RequestId, RequestOp, RequestStatus, validate_request,
+    IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestId, RequestOp,
+    RequestStatus, validate_request,
 };
 use spin::Mutex;
 
@@ -128,20 +128,10 @@ impl Interface for RamDisk {
         self.limits_for()
     }
 
-    fn queue_topology(&self) -> QueueTopology {
-        QueueTopology {
-            max_queues: 64,
-            default_queue_depth: 64,
-        }
-    }
-
-    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
+    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
         let mut guard = self.inner.lock();
-        let id = config.id_hint.unwrap_or_else(|| {
-            let id = guard.next_queue_id;
-            guard.next_queue_id += 1;
-            id
-        });
+        let id = guard.next_queue_id;
+        guard.next_queue_id += 1;
 
         if id >= 64 {
             return None;
@@ -149,7 +139,6 @@ impl Interface for RamDisk {
 
         Some(Box::new(RamQueue {
             id,
-            depth: config.depth.max(1),
             device: self.device_info_for(),
             limits: self.limits_for(),
             inner: Arc::clone(&self.inner),
@@ -204,7 +193,6 @@ impl IrqHandler for RamIrqHandler {
 
 struct RamQueue {
     id: usize,
-    depth: usize,
     device: DeviceInfo,
     limits: QueueLimits,
     inner: Arc<Mutex<RamInner>>,
@@ -221,7 +209,6 @@ unsafe impl IQueue for RamQueue {
     fn info(&self) -> QueueInfo {
         QueueInfo {
             id: self.id,
-            depth: self.depth,
             device: self.device,
             limits: self.limits,
         }

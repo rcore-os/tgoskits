@@ -53,45 +53,8 @@ impl QueueLimits {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct QueueTopology {
-    pub max_queues: usize,
-    pub default_queue_depth: usize,
-}
-
-impl QueueTopology {
-    pub const fn single(depth: usize) -> Self {
-        Self {
-            max_queues: 1,
-            default_queue_depth: depth,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct QueueConfig {
-    pub id_hint: Option<usize>,
-    pub depth: usize,
-}
-
-impl QueueConfig {
-    pub const fn new(depth: usize) -> Self {
-        Self {
-            id_hint: None,
-            depth,
-        }
-    }
-}
-
-impl Default for QueueConfig {
-    fn default() -> Self {
-        Self::new(1)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
 pub struct QueueInfo {
     pub id: usize,
-    pub depth: usize,
     pub device: DeviceInfo,
     pub limits: QueueLimits,
 }

@@ -205,24 +205,13 @@ impl rdif_block::Interface for MciBlockDevice {
         }
     }
 
-    fn queue_topology(&self) -> rdif_block::QueueTopology {
-        rdif_block::QueueTopology::single(1)
-    }
-
-    fn create_queue(
-        &mut self,
-        config: rdif_block::QueueConfig,
-    ) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
         if self.queue_created {
             return None;
         }
         self.raw.as_ref().map(|dev| {
             self.queue_created = true;
-            alloc::boxed::Box::new(MciBlockQueue::new(
-                dev.clone(),
-                self.capacity_blocks,
-                config.id_hint.unwrap_or(0),
-            )) as _
+            alloc::boxed::Box::new(MciBlockQueue::new(dev.clone(), self.capacity_blocks, 0)) as _
         })
     }
 
@@ -315,7 +304,6 @@ unsafe impl rdif_block::IQueue for MciBlockQueue {
     fn info(&self) -> rdif_block::QueueInfo {
         rdif_block::QueueInfo {
             id: self.id,
-            depth: 1,
             device: rdif_block::DeviceInfo {
                 name: Some("phytium-mci"),
                 ..rdif_block::DeviceInfo::new(self.capacity_blocks, BLOCK_SIZE)

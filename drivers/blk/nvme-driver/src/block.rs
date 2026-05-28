@@ -8,8 +8,8 @@ use core::{
 use dma_api::CoherentArray;
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
-    IrqSourceInfo, IrqSourceList, QueueConfig, QueueInfo, QueueLimits, QueueTopology, Request,
-    RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
+    IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags, RequestId,
+    RequestOp, RequestStatus, validate_request,
 };
 
 use crate::{
@@ -19,6 +19,7 @@ use crate::{
 };
 
 const MAX_PRP_LIST_PAGES: usize = 1;
+const DEFAULT_QUEUE_DEPTH: usize = 64;
 
 struct NvmeBlockInner {
     nvme: Nvme,
@@ -28,6 +29,7 @@ struct NvmeBlockInner {
 pub struct NvmeBlockDriver {
     name: &'static str,
     inner: Arc<NvmeBlockOwner>,
+    queue_depth: usize,
     irq_handler_taken: bool,
 }
 
@@ -50,7 +52,31 @@ impl NvmeBlockDriver {
         Ok(Self::with_namespace("nvme", nvme, namespace))
     }
 
+    pub fn from_nvme_with_queue_depth(mut nvme: Nvme, queue_depth: usize) -> NvmeResult<Self> {
+        let namespace = nvme
+            .namespace_list()?
+            .into_iter()
+            .next()
+            .ok_or(NvmeError::Unknown("no active namespace found"))?;
+
+        Ok(Self::with_namespace_and_queue_depth(
+            "nvme",
+            nvme,
+            namespace,
+            queue_depth,
+        ))
+    }
+
     pub fn with_namespace(name: &'static str, nvme: Nvme, namespace: Namespace) -> Self {
+        Self::with_namespace_and_queue_depth(name, nvme, namespace, DEFAULT_QUEUE_DEPTH)
+    }
+
+    pub fn with_namespace_and_queue_depth(
+        name: &'static str,
+        nvme: Nvme,
+        namespace: Namespace,
+        queue_depth: usize,
+    ) -> Self {
         Self {
             name,
             inner: Arc::new(NvmeBlockOwner {
@@ -60,6 +86,7 @@ impl NvmeBlockDriver {
                 pending_irq: AtomicU64::new(0),
                 created_queues: AtomicU64::new(0),
             }),
+            queue_depth: queue_depth.max(1),
             irq_handler_taken: false,
         }
     }
@@ -128,27 +155,15 @@ impl Interface for NvmeBlockDriver {
         self.limits_for()
     }
 
-    fn queue_topology(&self) -> QueueTopology {
-        self.inner.with_mut(|inner| QueueTopology {
-            max_queues: inner.nvme.io_queue_count(),
-            default_queue_depth: 64,
-        })
-    }
-
-    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
-        let id = config
-            .id_hint
-            .unwrap_or_else(|| self.inner.next_queue_id.fetch_add(1, Ordering::Relaxed));
+    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
+        let id = self.inner.next_queue_id.fetch_add(1, Ordering::Relaxed);
         if id >= u64::BITS as usize {
             return None;
         }
 
         let queue = self.inner.with_mut(|inner| {
             let queue = inner.nvme.take_io_queue(id)?;
-            let depth = config
-                .depth
-                .max(1)
-                .min(queue.depth().saturating_sub(1).max(1));
+            let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
             let prp_lists = alloc_prp_lists(&inner.nvme, depth).ok()?;
             Some(NvmeBlockQueue::new(
                 id,
@@ -217,7 +232,6 @@ impl IrqHandler for NvmeIrqHandler {
 
 struct NvmeBlockQueue {
     id: usize,
-    depth: usize,
     name: &'static str,
     namespace: Namespace,
     dma_mask: u64,
@@ -270,7 +284,6 @@ impl NvmeBlockQueue {
 
         Self {
             id,
-            depth,
             name,
             namespace,
             dma_mask,
@@ -286,7 +299,6 @@ impl NvmeBlockQueue {
     fn queue_info(&self) -> QueueInfo {
         QueueInfo {
             id: self.id,
-            depth: self.depth,
             device: device_info(self.name, self.namespace),
             limits: limits(self.dma_mask, self.page_size, self.namespace),
         }

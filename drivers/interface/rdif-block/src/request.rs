@@ -318,7 +318,6 @@ mod tests {
     fn queue_info_with(limits: QueueLimits) -> QueueInfo {
         QueueInfo {
             id: 0,
-            depth: 8,
             device: DeviceInfo::new(64, 512),
             limits,
         }

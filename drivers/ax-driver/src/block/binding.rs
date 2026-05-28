@@ -10,9 +10,8 @@ use ax_kspin::SpinNoIrq;
 use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
-    BlkError, Buffer, IQueue, Interface, QueueConfig, QueueInfo, QueueTopology, Request,
-    RequestFlags, RequestId, RequestOp, RequestStatus, TransferChunk, TransferPlan,
-    TransferPlanner, TransferRuntimeCaps,
+    BlkError, Buffer, IQueue, Interface, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
+    RequestStatus, TransferChunk, TransferPlan, TransferPlanner, TransferRuntimeCaps,
 };
 use rdrive::Device;
 
@@ -252,10 +251,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
         let name = dev.name.clone();
         let irq_num = dev.irq_num;
         let mut interface = dev.interface.take().ok_or(AxError::BadState)?;
-        let topology = interface.queue_topology();
-        let queue = interface
-            .create_queue(default_queue_config(topology))
-            .ok_or(AxError::BadState)?;
+        let queue = interface.create_queue().ok_or(AxError::BadState)?;
         let queues = BlockQueues::new(queue)?;
 
         #[cfg(feature = "irq")]
@@ -330,13 +326,6 @@ pub fn take_block_devices() -> Vec<Block> {
             }
         })
         .collect()
-}
-
-fn default_queue_config(topology: QueueTopology) -> QueueConfig {
-    QueueConfig {
-        id_hint: Some(0),
-        depth: topology.default_queue_depth.max(1),
-    }
 }
 
 #[cfg(feature = "irq")]
@@ -593,11 +582,7 @@ mod tests {
             QueueLimits::simple(512, u64::MAX)
         }
 
-        fn queue_topology(&self) -> QueueTopology {
-            QueueTopology::single(1)
-        }
-
-        fn create_queue(&mut self, _config: QueueConfig) -> Option<Box<dyn IQueue>> {
+        fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
             None
         }
     }
@@ -616,7 +601,6 @@ mod tests {
         fn info(&self) -> QueueInfo {
             QueueInfo {
                 id: 0,
-                depth: 1,
                 device: DeviceInfo {
                     name: Some("test-block"),
                     ..DeviceInfo::new(8, 512)
@@ -650,7 +634,6 @@ mod tests {
             Self {
                 info: QueueInfo {
                     id: 0,
-                    depth: 1,
                     device: DeviceInfo {
                         name: Some("recording-block"),
                         ..DeviceInfo::new(64, 512)
@@ -835,7 +818,6 @@ mod tests {
     fn block_transfer_planner_caps_large_finite_segments() {
         let info = QueueInfo {
             id: 0,
-            depth: 1,
             device: DeviceInfo {
                 name: Some("large-segment-block"),
                 ..DeviceInfo::new(64, 512)
@@ -863,7 +845,6 @@ mod tests {
     fn block_transfer_planner_uses_simple_limit_preference_for_unbounded_segments() {
         let info = QueueInfo {
             id: 0,
-            depth: 1,
             device: DeviceInfo {
                 name: Some("simple-block"),
                 ..DeviceInfo::new(64, 512)
@@ -878,7 +859,6 @@ mod tests {
     fn block_transfer_planner_applies_runtime_cap_without_unbounded_segment_special_case() {
         let info = QueueInfo {
             id: 0,
-            depth: 1,
             device: DeviceInfo {
                 name: Some("unbounded-large-preference-block"),
                 ..DeviceInfo::new(128, 512)

@@ -32,8 +32,8 @@ use alloc::{boxed::Box, sync::Arc};
 pub use binding::*;
 #[cfg(sync_block_dev)]
 use rdif_block::{
-    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
-    QueueTopology, Request, RequestId, RequestOp, RequestStatus, validate_request,
+    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits, Request,
+    RequestId, RequestOp, RequestStatus, validate_request,
 };
 #[cfg(any(
     feature = "virtio-blk",
@@ -96,18 +96,13 @@ impl<D: SyncBlockOps> Interface for SyncBlockDevice<D> {
         QueueLimits::simple(self.inner.lock().block_size(), u64::MAX)
     }
 
-    fn queue_topology(&self) -> QueueTopology {
-        QueueTopology::single(1)
-    }
-
-    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
+    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
         if self.queue_created {
             return None;
         }
         self.queue_created = true;
         Some(Box::new(SyncBlockQueue {
-            id: config.id_hint.unwrap_or(0),
-            depth: config.depth.max(1),
+            id: 0,
             inner: Arc::clone(&self.inner),
         }))
     }
@@ -116,7 +111,6 @@ impl<D: SyncBlockOps> Interface for SyncBlockDevice<D> {
 #[cfg(sync_block_dev)]
 struct SyncBlockQueue<D> {
     id: usize,
-    depth: usize,
     inner: Arc<Mutex<D>>,
 }
 
@@ -146,7 +140,6 @@ unsafe impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
     fn info(&self) -> QueueInfo {
         QueueInfo {
             id: self.id,
-            depth: self.depth,
             device: self.device_info(),
             limits: self.limits(),
         }

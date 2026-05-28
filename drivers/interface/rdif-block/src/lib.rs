@@ -11,7 +11,7 @@ mod request;
 
 pub use dma_api;
 pub use error::BlkError;
-pub use info::{DeviceInfo, QueueConfig, QueueInfo, QueueLimits, QueueTopology};
+pub use info::{DeviceInfo, QueueInfo, QueueLimits};
 pub use interface::{IQueue, Interface};
 pub use irq::{Event, IdList, IrqHandler, IrqSourceInfo, IrqSourceList};
 pub use planner::{

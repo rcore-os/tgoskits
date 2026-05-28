@@ -1,8 +1,8 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
-    BlkError, DeviceInfo, DriverGeneric, IrqHandler, IrqSourceList, QueueConfig, QueueInfo,
-    QueueLimits, QueueTopology, Request, RequestId, RequestStatus,
+    BlkError, DeviceInfo, DriverGeneric, IrqHandler, IrqSourceList, QueueInfo, QueueLimits,
+    Request, RequestId, RequestStatus,
 };
 
 pub trait Interface: DriverGeneric {
@@ -10,9 +10,7 @@ pub trait Interface: DriverGeneric {
 
     fn queue_limits(&self) -> QueueLimits;
 
-    fn queue_topology(&self) -> QueueTopology;
-
-    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>>;
+    fn create_queue(&mut self) -> Option<Box<dyn IQueue>>;
 
     fn enable_irq(&self) {}
 
@@ -77,7 +75,6 @@ mod tests {
         fn info(&self) -> QueueInfo {
             QueueInfo {
                 id: 1,
-                depth: 8,
                 device: DeviceInfo::new(8, 512),
                 limits: QueueLimits::simple(512, u64::MAX),
             }

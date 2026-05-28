@@ -126,25 +126,14 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
         }
     }
 
-    fn queue_topology(&self) -> rdif_block::QueueTopology {
-        rdif_block::QueueTopology {
-            max_queues: 1,
-            default_queue_depth: 1,
-        }
-    }
-
-    fn create_queue(
-        &mut self,
-        config: rdif_block::QueueConfig,
-    ) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
         if self.queue_created {
             return None;
         }
         self.dev.as_ref().map(|dev| {
             self.queue_created = true;
             alloc::boxed::Box::new(BlockQueue {
-                id: config.id_hint.unwrap_or(0),
-                depth: config.depth.max(1),
+                id: 0,
                 raw: dev.clone(),
             }) as _
         })
@@ -167,7 +156,6 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
 
 struct BlockQueue<T: Transport + 'static> {
     id: usize,
-    depth: usize,
     raw: SharedDriver<VirtIoBlkDevice<T>>,
 }
 
@@ -183,7 +171,6 @@ unsafe impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
         let blocks = self.raw.with_mut(|raw| raw.raw.capacity());
         rdif_block::QueueInfo {
             id: self.id,
-            depth: self.depth,
             device: rdif_block::DeviceInfo {
                 name: Some("virtio-blk"),
                 ..rdif_block::DeviceInfo::new(blocks, SECTOR_SIZE)

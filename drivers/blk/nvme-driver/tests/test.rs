@@ -22,7 +22,7 @@ mod tests {
         CommandRegister, DeviceType, PciMem32, PciMem64, PcieController, PcieGeneric,
         enumerate_by_controller,
     };
-    use rdif_block::{Interface, QueueConfig, Request, RequestFlags, RequestOp, RequestStatus, Segment};
+    use rdif_block::{Interface, Request, RequestFlags, RequestOp, RequestStatus, Segment};
 
     #[test]
     fn test_framework_boot() {
@@ -59,8 +59,9 @@ mod tests {
         println!("namespace query ok");
 
         let ns = namespace_list[0];
-        let mut block = NvmeBlockDriver::with_namespace("nvme", nvme, ns).into_interface();
-        let mut queue = block.create_queue(QueueConfig::new(64)).unwrap();
+        let mut block =
+            NvmeBlockDriver::with_namespace_and_queue_depth("nvme", nvme, ns, 64).into_interface();
+        let mut queue = block.create_queue().unwrap();
 
         assert_eq!(queue.info().device.logical_block_size, ns.lba_size);
         assert_eq!(queue.info().device.num_blocks, ns.lba_count as u64);

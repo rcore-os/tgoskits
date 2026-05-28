@@ -6,8 +6,8 @@ use core::{
 
 use ax_driver::{PlatformDevice, block::PlatformDeviceBlock, probe::OnProbeError};
 use rdif_block::{
-    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueConfig, QueueInfo, QueueLimits,
-    QueueTopology, Request, RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
+    BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits, Request,
+    RequestFlags, RequestId, RequestOp, RequestStatus, validate_request,
 };
 use sg200x_bsp::sdmmc::Sdmmc;
 
@@ -232,18 +232,13 @@ impl Interface for CvsdBlock {
         }
     }
 
-    fn queue_topology(&self) -> QueueTopology {
-        QueueTopology::single(1)
-    }
-
-    fn create_queue(&mut self, config: QueueConfig) -> Option<Box<dyn IQueue>> {
+    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
         if self.queue_created {
             return None;
         }
         self.queue_created = true;
         Some(Box::new(CvsdQueue {
-            id: config.id_hint.unwrap_or(0),
-            depth: config.depth.max(1),
+            id: 0,
             inner: self.inner.clone(),
         }))
     }
@@ -251,7 +246,6 @@ impl Interface for CvsdBlock {
 
 struct CvsdQueue {
     id: usize,
-    depth: usize,
     inner: SharedCvsdDriver,
 }
 
@@ -265,7 +259,6 @@ unsafe impl IQueue for CvsdQueue {
     fn info(&self) -> QueueInfo {
         QueueInfo {
             id: self.id,
-            depth: self.depth,
             device: DeviceInfo {
                 name: Some(DEVICE_NAME),
                 ..DeviceInfo::new(

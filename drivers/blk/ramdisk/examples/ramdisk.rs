@@ -1,13 +1,9 @@
 use ramdisk::RamDisk;
-use rdif_block::{
-    Interface, QueueConfig, Request, RequestFlags, RequestOp, RequestStatus, Segment,
-};
+use rdif_block::{Interface, Request, RequestFlags, RequestOp, RequestStatus, Segment};
 
 fn main() {
     let mut block = RamDisk::new(16, 1024);
-    let mut queue = block
-        .create_queue(QueueConfig::new(8))
-        .expect("queue must be created");
+    let mut queue = block.create_queue().expect("queue must be created");
 
     let mut read = vec![0; queue.info().device.logical_block_size * 2];
     submit(&mut *queue, RequestOp::Read, 3, &mut read);

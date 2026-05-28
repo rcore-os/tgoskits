@@ -216,7 +216,6 @@ mod tests {
     fn queue_info_with(limits: QueueLimits) -> QueueInfo {
         QueueInfo {
             id: 0,
-            depth: 8,
             device: DeviceInfo::new(64, 512),
             limits,
         }
@@ -407,7 +406,6 @@ mod tests {
         let mut info = queue_info_with(queue_limits(16, 8, 2048));
         let first = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
         info.id = 7;
-        info.depth = 64;
         let second = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
 
         assert_eq!(first.chunk_size(), second.chunk_size());
