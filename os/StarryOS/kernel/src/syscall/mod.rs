@@ -824,7 +824,6 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::timer_gettime => sys_timer_gettime(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
-
         _ => {
             let tid = ax_task::current().id().as_u64() as u32;
             warn!("Unimplemented syscall: {sysno} (tid={tid})");
