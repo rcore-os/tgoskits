@@ -578,7 +578,7 @@ impl JitBackend for Riscv64Backend {
                 }
             }
             BPF_END => {
-                log::warn!("eBPF JIT riscv64: BPF_END (byte-order conversion) not implemented");
+                warn!("eBPF JIT riscv64: BPF_END (byte-order conversion) not implemented");
             }
             _ => {}
         }
