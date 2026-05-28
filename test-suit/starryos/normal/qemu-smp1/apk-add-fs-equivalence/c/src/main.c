@@ -13,6 +13,9 @@
 
 #define BASE_ROOT "/root"
 #define TEST_NAME "apk-add-fs-equivalence"
+#define APK_PAYLOAD_CHUNK_SIZE 16384
+#define APK_PAYLOAD_CHUNKS 128
+#define APK_PAYLOAD_BUDGET_MS 30000
 
 static void fail_at(const char *file, int line, const char *message)
 {
@@ -94,6 +97,13 @@ static void read_exact_at(int fd, void *buf, size_t len, off_t offset)
         offset += n;
         len -= (size_t)n;
     }
+}
+
+static long monotonic_ms(void)
+{
+    struct timespec ts;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &ts) == 0, "clock_gettime failed");
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
 static void read_file(const char *path, char *buf, size_t buf_len)
@@ -351,6 +361,59 @@ static void test_many_small_files(const char *base)
     CHECK(count_regular_entries(dir) == 64, "readdir small file count mismatch");
 }
 
+static unsigned char payload_byte(size_t chunk, size_t offset)
+{
+    return (unsigned char)((chunk * 31 + offset * 17 + 0x5a) & 0xff);
+}
+
+static void fill_payload_chunk(unsigned char *buf, size_t chunk)
+{
+    for (size_t i = 0; i < APK_PAYLOAD_CHUNK_SIZE; i++) {
+        buf[i] = payload_byte(chunk, i);
+    }
+}
+
+static void verify_payload_chunk(const unsigned char *buf, size_t chunk)
+{
+    for (size_t i = 0; i < APK_PAYLOAD_CHUNK_SIZE; i++) {
+        CHECK(buf[i] == payload_byte(chunk, i), "large payload content mismatch");
+    }
+}
+
+static void test_large_apk_payload_io(const char *base)
+{
+    char tmp[PATH_MAX], final[PATH_MAX];
+    unsigned char buf[APK_PAYLOAD_CHUNK_SIZE];
+
+    path_join(tmp, sizeof(tmp), base, "var/cache/apk/large-package.apk-new");
+    path_join(final, sizeof(final), base, "usr/lib/large-package.dat");
+
+    long start_ms = monotonic_ms();
+    int fd = open(tmp, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0, "open large apk payload failed");
+
+    for (size_t chunk = 0; chunk < APK_PAYLOAD_CHUNKS; chunk++) {
+        fill_payload_chunk(buf, chunk);
+        write_all(fd, buf, sizeof(buf));
+    }
+    CHECK(fdatasync(fd) == 0, "fdatasync large apk payload failed");
+    CHECK(fsync(fd) == 0, "fsync large apk payload failed");
+    CHECK(close(fd) == 0, "close large apk payload failed");
+    CHECK(rename(tmp, final) == 0, "rename large apk payload failed");
+
+    fd = open(final, O_RDONLY);
+    CHECK(fd >= 0, "open large apk payload readback failed");
+    for (size_t chunk = 0; chunk < APK_PAYLOAD_CHUNKS; chunk++) {
+        read_exact_at(fd, buf, sizeof(buf), (off_t)(chunk * APK_PAYLOAD_CHUNK_SIZE));
+        verify_payload_chunk(buf, chunk);
+    }
+    CHECK(close(fd) == 0, "close large apk payload readback failed");
+
+    long elapsed_ms = monotonic_ms() - start_ms;
+    printf("APK_ADD_FS_EQUIV_LARGE_PAYLOAD_MS=%ld\n", elapsed_ms);
+    CHECK(elapsed_ms < APK_PAYLOAD_BUDGET_MS, "large apk payload I/O exceeded budget");
+}
+
 static void test_cross_directory_rename_and_cleanup(const char *base)
 {
     char tmp[PATH_MAX], final[PATH_MAX], empty_dir[PATH_MAX], apk_db[PATH_MAX];
@@ -407,6 +470,7 @@ int main(void)
     test_database_rewrite(base);
     test_sparse_library_io(base);
     test_many_small_files(base);
+    test_large_apk_payload_io(base);
     test_cross_directory_rename_and_cleanup(base);
     rm_rf(base);
 

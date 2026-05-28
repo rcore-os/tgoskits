@@ -16,7 +16,7 @@ times = []
 std = ["lwext4_rust?/std"]
 
 [dependencies]
-ax-alloc = { workspace = true, features = ["default"] }
+ax-alloc = { workspace = true }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-hal = { workspace = true }

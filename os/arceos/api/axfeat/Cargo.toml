@@ -44,12 +44,6 @@ aarch64-cntv-timer = ["ax-hal/aarch64-cntv-timer"]
 
 # Memory
 alloc = ["ax-alloc"]
-alloc-tlsf = ["ax-alloc/tlsf"]
-alloc-slab = ["ax-alloc/slab"]
-alloc-buddy = ["ax-alloc/buddy"]
-buddy-slab = ["ax-runtime/buddy-slab"]
-page-alloc-64g = ["ax-alloc/page-alloc-64g"]                  # up to 64G memory capacity
-page-alloc-4g = ["ax-alloc/page-alloc-4g"]                    # up to 4G memory capacity
 paging = ["ax-hal/paging", "ax-runtime/paging"]
 tls = ["ax-hal/tls", "ax-runtime/tls", "ax-task?/tls"]
 dma = ["paging"]
@@ -117,7 +111,7 @@ backtrace = ["axbacktrace/alloc"]
 dwarf = ["axbacktrace/dwarf"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true, features = ["default"] }
+ax-alloc = { workspace = true, optional = true }
 axbacktrace.workspace = true
 ax-config = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }

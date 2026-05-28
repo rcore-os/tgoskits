@@ -25,7 +25,7 @@ ax-config-macros = { workspace = true }
 ax-cpu.workspace = true
 ax-driver = { workspace = true, features = ["plat-dyn"] }
 ax-errno.workspace = true
-axklib.workspace = true
+axklib = { workspace = true, features = ["buddy-slab"] }
 ax-plat.workspace = true
 heapless = "0.9"
 log.workspace = true

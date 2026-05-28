@@ -25,6 +25,7 @@ ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+axklib = { workspace = true, features = ["tlsf"] }
 
 [package.metadata.axplat]
 platform = "aarch64-bsta1000b"
