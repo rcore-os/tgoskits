@@ -1,4 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, anyhow, bail};
 use clap::{Args as ClapArgs, Subcommand};
@@ -6,23 +9,30 @@ use object::{
     Object, ObjectSymbol,
     read::elf::{FileHeader, ProgramHeader},
 };
+use reqwest::{Client, StatusCode, Url};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     axvisor::{ArgsBuild, Axvisor},
     backtrace,
-    context::SnapshotPersistence,
+    context::{SnapshotPersistence, axbuild_tmp_dir},
 };
 
 #[derive(ClapArgs)]
 pub struct Args {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
+
+    #[command(flatten)]
+    pub publish: ArgsPublish,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
     /// Check whether the built Axvisor ELF matches the bare-bin HTTP Boot shape.
     Check(ArgsCheck),
+    /// Build/pack Axvisor and publish HTTP Boot artifacts to ostool-server.
+    Publish(ArgsPublish),
 }
 
 #[derive(ClapArgs)]
@@ -35,9 +45,66 @@ pub struct ArgsCheck {
     pub elf: Option<PathBuf>,
 }
 
+#[derive(ClapArgs)]
+pub struct ArgsPublish {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    /// Read HTTP Boot publish defaults from a TOML file. Defaults to .httpboot.toml.
+    #[arg(long = "httpboot-config", value_name = "PATH")]
+    pub httpboot_config: Option<PathBuf>,
+
+    /// Build output ELF to publish; skips the build step when set.
+    #[arg(long, value_name = "PATH")]
+    pub elf: Option<PathBuf>,
+
+    /// Output path for the generated flat kernel image.
+    #[arg(long = "kernel-bin", value_name = "PATH")]
+    pub kernel_bin: Option<PathBuf>,
+
+    /// ostool-server board type/name to lease.
+    #[arg(
+        short = 'b',
+        long = "board",
+        alias = "board-type",
+        value_name = "BOARD"
+    )]
+    pub board_type: Option<String>,
+
+    /// ostool-server host.
+    #[arg(long)]
+    pub server: Option<String>,
+
+    /// ostool-server port.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Remote kernel filename under the board current HTTP Boot directory.
+    #[arg(long = "remote-name", value_name = "NAME")]
+    pub remote_name: Option<String>,
+
+    /// Optional BOOTX64.EFI to upload together with the kernel.
+    #[arg(long = "efi-loader", value_name = "PATH")]
+    pub efi_loader_path: Option<PathBuf>,
+
+    /// Override manifest.kernel_load_addr.
+    #[arg(long = "kernel-load-addr", value_name = "HEX")]
+    pub kernel_load_addr: Option<String>,
+
+    /// Override manifest.entry_point.
+    #[arg(long = "entry-point", value_name = "HEX")]
+    pub entry_point: Option<String>,
+
+    /// Keep the board session after publishing, useful when the next command needs ownership.
+    #[arg(long)]
+    pub keep_session: bool,
+}
+
 pub(super) async fn run(axvisor: &mut Axvisor, args: Args) -> anyhow::Result<()> {
     match args.command {
-        Command::Check(args) => check(axvisor, args).await,
+        Some(Command::Check(args)) => check(axvisor, args).await,
+        Some(Command::Publish(args)) => publish(axvisor, args).await,
+        None => publish(axvisor, args.publish).await,
     }
 }
 
@@ -78,6 +145,271 @@ async fn check(axvisor: &mut Axvisor, args: ArgsCheck) -> anyhow::Result<()> {
     let report = inspect_elf(&elf_path)?;
     report.print(&elf_path);
     Ok(())
+}
+
+async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()> {
+    let publish_config = PublishConfig::load(
+        args.httpboot_config.as_deref(),
+        axvisor.app.workspace_root(),
+    )?
+    .merge_args(&args);
+    let request = axvisor.prepare_request(
+        (&args.build).into(),
+        None,
+        None,
+        SnapshotPersistence::Discard,
+    )?;
+
+    if request.arch != "x86_64" {
+        bail!(
+            "Axvisor HTTP Boot publish currently targets x86_64, got {}",
+            request.arch
+        );
+    }
+
+    axvisor.app.set_debug_mode(request.debug)?;
+    let elf_path = match args.elf {
+        Some(path) => path,
+        None => {
+            let cargo = super::build::load_cargo_config(&request)?;
+            axvisor
+                .app
+                .build(cargo, request.build_info_path.clone())
+                .await?;
+            backtrace::arceos_rust_elf_path(
+                axvisor.app.workspace_root(),
+                &request.target,
+                &request.package,
+                request.debug,
+            )
+        }
+    };
+
+    let report = inspect_elf(&elf_path)?;
+    let kernel_bin = args.kernel_bin.unwrap_or_else(|| {
+        axbuild_tmp_dir(axvisor.app.workspace_root())
+            .join("httpboot")
+            .join("axvisor-x86_64-kernel.bin")
+    });
+    write_flat_binary_from_elf(&elf_path, &report, &kernel_bin)?;
+
+    let client = HttpBootApiClient::new(&publish_config.server, publish_config.port)?;
+    let board_type = publish_config.board_type.as_deref().ok_or_else(|| {
+        anyhow!("missing board_type; set --board-type or httpboot_config.board_type")
+    })?;
+    let session = client.create_session(board_type).await?;
+    let session_guard = SessionGuard {
+        client: client.clone(),
+        session_id: session.session_id.clone(),
+        keep: args.keep_session,
+    };
+
+    println!("=== Axvisor x86_64 HTTP Boot publish ===");
+    println!("board_type: {board_type}");
+    println!("board_id: {}", session.board_id);
+    println!("session_id: {}", session.session_id);
+
+    let publish_result = publish_artifacts_for_session(
+        &client,
+        &session,
+        &publish_config,
+        &elf_path,
+        &kernel_bin,
+        &report,
+        args.keep_session,
+    )
+    .await;
+    let release_result = session_guard.release().await;
+    publish_result?;
+    release_result?;
+    Ok(())
+}
+
+async fn publish_artifacts_for_session(
+    client: &HttpBootApiClient,
+    session: &SessionCreatedResponse,
+    publish_config: &PublishConfig,
+    elf_path: &Path,
+    kernel_bin: &Path,
+    report: &HttpbootElfReport,
+    keep_session: bool,
+) -> anyhow::Result<()> {
+    if session.boot_mode != "uefi_http" {
+        bail!(
+            "unsupported remote boot mode `{}`; only `uefi_http` is supported",
+            session.boot_mode
+        );
+    }
+
+    let boot_profile = client.get_boot_profile(&session.session_id).await?;
+    let profile = boot_profile.uefi_http_profile()?;
+    let loader_file = publish_config
+        .loader_file
+        .clone()
+        .or(profile.loader_file.clone())
+        .unwrap_or_else(|| "BOOTX64.EFI".to_string());
+    let remote_name = publish_config
+        .remote_name
+        .clone()
+        .or(profile.kernel_file.clone())
+        .unwrap_or_else(|| "kernel.bin".to_string());
+    let kernel_load_addr = publish_config
+        .kernel_load_addr
+        .clone()
+        .or(profile.kernel_load_addr.clone())
+        .unwrap_or_else(|| hex(report.load_addr));
+    let entry_point = publish_config
+        .entry_point
+        .clone()
+        .or(profile.entry_point.clone())
+        .unwrap_or_else(|| hex(report.entry_paddr));
+    let arch = profile.boot_arch.as_deref().unwrap_or("x86_64").to_string();
+    if arch != "x86_64" {
+        bail!("HTTP Boot board arch is `{arch}`, expected `x86_64`");
+    }
+
+    validate_manifest_address("kernel_load_addr", &kernel_load_addr, report.load_addr)?;
+    validate_manifest_address("entry_point", &entry_point, report.entry_paddr)?;
+
+    let kernel_bytes = fs::read(&kernel_bin)
+        .with_context(|| format!("failed to read {}", kernel_bin.display()))?;
+    let kernel_size = kernel_bytes.len() as u64;
+    let kernel_file = client
+        .upload_http_boot_file(&session.session_id, &remote_name, kernel_bytes)
+        .await
+        .with_context(|| format!("failed to upload HTTP Boot file `{remote_name}`"))?;
+
+    let loader_url = upload_loader_if_configured(
+        &client,
+        &session.session_id,
+        &loader_file,
+        publish_config.efi_loader_path.as_deref(),
+    )
+    .await?;
+    let manifest = HttpBootManifest {
+        kernel_url: kernel_file.http_url.clone(),
+        kernel_size,
+        kernel_load_addr,
+        entry_point,
+        arch,
+    };
+    let manifest_file = client
+        .upload_http_boot_manifest(&session.session_id, &manifest)
+        .await
+        .context("failed to upload HTTP Boot manifest")?;
+
+    println!("elf: {}", elf_path.display());
+    println!("kernel_bin: {}", kernel_bin.display());
+    println!("kernel_size: {}", hex(kernel_size));
+    println!("kernel_url: {}", kernel_file.http_url);
+    println!("manifest_url: {}", manifest_file.http_url);
+    if let Some(loader_url) = loader_url {
+        println!("loader_url: {loader_url}");
+    } else {
+        println!("loader_url: not uploaded; using existing {loader_file} if already published");
+    }
+    println!(
+        "session_release: {}",
+        if keep_session { "kept" } else { "requested" }
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+struct PublishConfig {
+    board_type: Option<String>,
+    server: String,
+    port: u16,
+    remote_name: Option<String>,
+    efi_loader_path: Option<PathBuf>,
+    loader_file: Option<String>,
+    kernel_load_addr: Option<String>,
+    entry_point: Option<String>,
+}
+
+impl PublishConfig {
+    fn load(path: Option<&Path>, workspace_root: &Path) -> anyhow::Result<Self> {
+        let mut config = Self {
+            board_type: None,
+            server: "127.0.0.1".to_string(),
+            port: 2999,
+            remote_name: Some("kernel.bin".to_string()),
+            efi_loader_path: Some(PathBuf::from("target/httpboot/BOOTX64.EFI")),
+            loader_file: Some("BOOTX64.EFI".to_string()),
+            kernel_load_addr: None,
+            entry_point: None,
+        };
+
+        let default_path = workspace_root.join(".httpboot.toml");
+        let path = path
+            .map(Path::to_path_buf)
+            .or_else(|| default_path.exists().then_some(default_path));
+
+        if let Some(path) = path {
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let file_config: PublishConfigFile = toml::from_str(&content)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            config.merge_file(file_config);
+        }
+
+        Ok(config)
+    }
+
+    fn merge_file(&mut self, file: PublishConfigFile) {
+        if let Some(board) = file.board.or(file.board_type) {
+            self.board_type = Some(board);
+        }
+        if let Some(server) = file.server {
+            self.server = server;
+        }
+        if let Some(port) = file.port {
+            self.port = port;
+        }
+        self.remote_name = file.remote_name.or(self.remote_name.take());
+        self.efi_loader_path = file.efi_loader_path.or(self.efi_loader_path.take());
+        self.loader_file = file.loader_file.or(self.loader_file.take());
+        self.kernel_load_addr = file.kernel_load_addr.or(self.kernel_load_addr.take());
+        self.entry_point = file.entry_point.or(self.entry_point.take());
+    }
+
+    fn merge_args(mut self, args: &ArgsPublish) -> Self {
+        if let Some(board_type) = args.board_type.clone() {
+            self.board_type = Some(board_type);
+        }
+        if let Some(server) = args.server.clone() {
+            self.server = server;
+        }
+        if let Some(port) = args.port {
+            self.port = port;
+        }
+        if let Some(remote_name) = args.remote_name.clone() {
+            self.remote_name = Some(remote_name);
+        }
+        if let Some(efi_loader_path) = args.efi_loader_path.clone() {
+            self.efi_loader_path = Some(efi_loader_path);
+        }
+        if let Some(kernel_load_addr) = args.kernel_load_addr.clone() {
+            self.kernel_load_addr = Some(kernel_load_addr);
+        }
+        if let Some(entry_point) = args.entry_point.clone() {
+            self.entry_point = Some(entry_point);
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PublishConfigFile {
+    board: Option<String>,
+    board_type: Option<String>,
+    server: Option<String>,
+    port: Option<u16>,
+    remote_name: Option<String>,
+    efi_loader_path: Option<PathBuf>,
+    loader_file: Option<String>,
+    kernel_load_addr: Option<String>,
+    entry_point: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,8 +474,9 @@ impl HttpbootElfReport {
 
 fn inspect_elf(path: &PathBuf) -> anyhow::Result<HttpbootElfReport> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let elf = object::read::elf::ElfFile64::parse(bytes.as_slice())
-        .map_err(|e| anyhow!("failed to parse x86_64 ELF {}: {e}", path.display()))?;
+    let elf: object::read::elf::ElfFile64<'_, object::Endianness> =
+        object::read::elf::ElfFile64::parse(bytes.as_slice())
+            .map_err(|e| anyhow!("failed to parse x86_64 ELF {}: {e}", path.display()))?;
     let endian = elf.endian();
     let entry: u64 = elf.elf_header().e_entry(endian).into();
 
@@ -197,6 +530,70 @@ fn inspect_elf(path: &PathBuf) -> anyhow::Result<HttpbootElfReport> {
     })
 }
 
+fn write_flat_binary_from_elf(
+    elf_path: &Path,
+    report: &HttpbootElfReport,
+    output_path: &Path,
+) -> anyhow::Result<()> {
+    let bytes =
+        fs::read(elf_path).with_context(|| format!("failed to read {}", elf_path.display()))?;
+    let elf: object::read::elf::ElfFile64<'_, object::Endianness> =
+        object::read::elf::ElfFile64::parse(bytes.as_slice())
+            .map_err(|e| anyhow!("failed to parse x86_64 ELF {}: {e}", elf_path.display()))?;
+    let endian = elf.endian();
+    let image_len = usize::try_from(report.image_mem_size)
+        .context("flat binary memory span does not fit usize")?;
+    let mut image = vec![0; image_len];
+
+    for header in elf.elf_program_headers() {
+        if header.p_type(endian) != object::elf::PT_LOAD {
+            continue;
+        }
+        let file_size: u64 = header.p_filesz(endian).into();
+        if file_size == 0 {
+            continue;
+        }
+        let paddr: u64 = header.p_paddr(endian).into();
+        let offset = paddr.checked_sub(report.load_addr).ok_or_else(|| {
+            anyhow!(
+                "PT_LOAD segment paddr {} is below load addr {}",
+                hex(paddr),
+                hex(report.load_addr)
+            )
+        })?;
+        let output_start = usize::try_from(offset).context("segment output offset overflow")?;
+        let output_len = usize::try_from(file_size).context("segment file size overflow")?;
+        let output_end = output_start
+            .checked_add(output_len)
+            .context("segment output range overflow")?;
+        if output_end > image.len() {
+            bail!(
+                "PT_LOAD segment ending at {} exceeds flat image span {}",
+                hex(paddr + file_size),
+                hex(report.load_addr + report.image_mem_size)
+            );
+        }
+
+        let file_offset: u64 = header.p_offset(endian).into();
+        let input_start = usize::try_from(file_offset).context("segment file offset overflow")?;
+        let input_end = input_start
+            .checked_add(output_len)
+            .context("segment input range overflow")?;
+        let data = bytes
+            .get(input_start..input_end)
+            .ok_or_else(|| anyhow!("PT_LOAD segment data is outside {}", elf_path.display()))?;
+        image[output_start..output_end].copy_from_slice(data);
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(output_path, image)
+        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    Ok(())
+}
+
 fn max_segment_end(
     segments: &[SegmentInfo],
     size: impl Fn(&SegmentInfo) -> u64,
@@ -227,4 +624,277 @@ fn hex(value: u64) -> String {
 
 fn option_hex(value: Option<u64>) -> String {
     value.map(hex).unwrap_or_else(|| "missing".to_string())
+}
+
+fn parse_hex_u64(value: &str) -> anyhow::Result<u64> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    u64::from_str_radix(value, 16).with_context(|| format!("invalid hex value `{value}`"))
+}
+
+fn validate_manifest_address(name: &str, actual: &str, expected: u64) -> anyhow::Result<()> {
+    let actual_value = parse_hex_u64(actual)?;
+    if actual_value != expected {
+        bail!(
+            "{name} `{actual}` does not match inspected ELF value {}",
+            hex(expected)
+        );
+    }
+    Ok(())
+}
+
+async fn upload_loader_if_configured(
+    client: &HttpBootApiClient,
+    session_id: &str,
+    loader_file: &str,
+    efi_loader_path: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    let Some(efi_loader_path) = efi_loader_path else {
+        return Ok(None);
+    };
+    if !efi_loader_path.exists() {
+        println!(
+            "loader_upload: skipped; {} does not exist",
+            efi_loader_path.display()
+        );
+        return Ok(None);
+    }
+
+    let bytes = fs::read(efi_loader_path)
+        .with_context(|| format!("failed to read {}", efi_loader_path.display()))?;
+    let uploaded = client
+        .upload_http_boot_file(session_id, loader_file, bytes)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to upload HTTP Boot `{loader_file}` from {}",
+                efi_loader_path.display()
+            )
+        })?;
+    Ok(Some(uploaded.http_url))
+}
+
+#[derive(Debug, Clone)]
+struct HttpBootApiClient {
+    client: Client,
+    base_url: Url,
+}
+
+impl HttpBootApiClient {
+    fn new(server: &str, port: u16) -> anyhow::Result<Self> {
+        let mut base_url =
+            Url::parse("http://localhost").context("failed to create ostool-server URL")?;
+        base_url
+            .set_host(Some(server))
+            .map_err(|_| anyhow!("invalid ostool-server host `{server}`"))?;
+        base_url
+            .set_port(Some(port))
+            .map_err(|_| anyhow!("invalid ostool-server port `{port}`"))?;
+        Ok(Self {
+            client: Client::new(),
+            base_url,
+        })
+    }
+
+    async fn create_session(&self, board_type: &str) -> anyhow::Result<SessionCreatedResponse> {
+        self.decode_json(
+            self.client
+                .post(self.endpoint("/api/v1/sessions"))
+                .json(&CreateSessionRequest {
+                    board_type: board_type.to_string(),
+                    required_tags: Vec::new(),
+                    client_name: Some("axbuild-httpboot".to_string()),
+                })
+                .send()
+                .await
+                .context("failed to create ostool-server session")?,
+        )
+        .await
+    }
+
+    async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .delete(self.endpoint(&format!("/api/v1/sessions/{session_id}")))
+            .send()
+            .await
+            .with_context(|| format!("failed to release ostool-server session `{session_id}`"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        self.decode_empty(response).await
+    }
+
+    async fn get_boot_profile(&self, session_id: &str) -> anyhow::Result<BootProfileResponse> {
+        self.decode_json(
+            self.client
+                .get(self.endpoint(&format!("/api/v1/sessions/{session_id}/boot-profile")))
+                .send()
+                .await
+                .with_context(|| {
+                    format!("failed to get ostool-server boot profile for session `{session_id}`")
+                })?,
+        )
+        .await
+    }
+
+    async fn upload_http_boot_file(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<HttpBootFileResponse> {
+        self.decode_json(
+            self.client
+                .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/files")))
+                .header("X-File-Path", relative_path)
+                .body(bytes)
+                .send()
+                .await
+                .with_context(|| format!("failed to upload HTTP Boot file `{relative_path}`"))?,
+        )
+        .await
+    }
+
+    async fn upload_http_boot_manifest(
+        &self,
+        session_id: &str,
+        manifest: &HttpBootManifest,
+    ) -> anyhow::Result<HttpBootFileResponse> {
+        self.decode_json(
+            self.client
+                .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/manifest")))
+                .json(manifest)
+                .send()
+                .await
+                .context("failed to upload HTTP Boot manifest")?,
+        )
+        .await
+    }
+
+    fn endpoint(&self, path: &str) -> Url {
+        self.base_url
+            .join(path.trim_start_matches('/'))
+            .expect("static API path should be valid")
+    }
+
+    async fn decode_json<T: DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> anyhow::Result<T> {
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<T>()
+                .await
+                .context("failed to decode ostool-server JSON response");
+        }
+        Err(api_error(status, response.text().await.unwrap_or_default()))
+    }
+
+    async fn decode_empty(&self, response: reqwest::Response) -> anyhow::Result<()> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        Err(api_error(status, response.text().await.unwrap_or_default()))
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CreateSessionRequest {
+    board_type: String,
+    required_tags: Vec<String>,
+    client_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionCreatedResponse {
+    session_id: String,
+    board_id: String,
+    boot_mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BootProfileResponse {
+    boot: RemoteBootConfig,
+}
+
+impl BootProfileResponse {
+    fn uefi_http_profile(&self) -> anyhow::Result<&UefiHttpProfile> {
+        match &self.boot {
+            RemoteBootConfig::UefiHttp(profile) => Ok(profile),
+            _ => bail!("server returned a non-uefi_http boot profile"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RemoteBootConfig {
+    Uboot,
+    Pxe,
+    UefiHttp(UefiHttpProfile),
+}
+
+#[derive(Debug, Deserialize)]
+struct UefiHttpProfile {
+    boot_arch: Option<String>,
+    loader_file: Option<String>,
+    kernel_file: Option<String>,
+    kernel_load_addr: Option<String>,
+    entry_point: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct HttpBootManifest {
+    kernel_url: String,
+    kernel_size: u64,
+    kernel_load_addr: String,
+    entry_point: String,
+    arch: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HttpBootFileResponse {
+    http_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiErrorResponse {
+    message: String,
+}
+
+fn api_error(status: StatusCode, body: String) -> anyhow::Error {
+    match serde_json::from_str::<ApiErrorResponse>(&body) {
+        Ok(error) => anyhow!(
+            "ostool-server request failed with {status}: {}",
+            error.message
+        ),
+        Err(_) if !body.trim().is_empty() => {
+            anyhow!(
+                "ostool-server request failed with {status}: {}",
+                body.trim()
+            )
+        }
+        Err(_) => anyhow!("ostool-server request failed with {status}"),
+    }
+}
+
+struct SessionGuard {
+    client: HttpBootApiClient,
+    session_id: String,
+    keep: bool,
+}
+
+impl SessionGuard {
+    async fn release(self) -> anyhow::Result<()> {
+        if self.keep {
+            return Ok(());
+        }
+        self.client.delete_session(&self.session_id).await
+    }
 }
