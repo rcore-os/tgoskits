@@ -251,6 +251,11 @@ impl SvmVcpu {
 
         state.cr0.set(cr0_val.bits());
         state.cr3.set(0);
+        // CR4 is initialized to zero here which is always a subset of
+        // SVM_UNSUPPORTED_GUEST_CR4. If a non-zero CR4 baseline is ever
+        // needed, apply the mask: value & !SVM_UNSUPPORTED_GUEST_CR4.
+        // handle_cr_write(4) already masks unsupported bits on every
+        // guest CR4 write.
         state.cr4.set(0);
 
         state.cs.selector.set(0);
@@ -584,7 +589,7 @@ impl SvmVcpu {
             Ok(SvmExitCode::MSR)
                 if matches!(self.regs().rcx as u32, IA32_UMWAIT_CONTROL | AMD64_DE_CFG) =>
             {
-                Some(self.handle_zero_msr_access(exit_info))
+                Some(self.handle_ignored_msr_access(exit_info))
             }
             _ => None,
         }
@@ -665,9 +670,11 @@ impl SvmVcpu {
         self.advance_rip(VM_EXIT_INSTR_LEN_MSR)
     }
 
-    fn handle_zero_msr_access(&mut self, exit_info: &super::vmcb::SvmExitInfo) -> AxResult {
+    fn handle_ignored_msr_access(&mut self, exit_info: &super::vmcb::SvmExitInfo) -> AxResult {
         const VM_EXIT_INSTR_LEN_MSR: u8 = 2;
 
+        // Reads return zero, writes are silently discarded. Only call this
+        // for known-ignorable MSRs (UMWAIT_CONTROL, AMD64_DE_CFG).
         if exit_info.exit_info_1 == 0 {
             self.write_edx_eax(0);
         }
@@ -752,9 +759,11 @@ impl SvmVcpu {
             LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if regs_clone.rcx == 0 {
+                    // EBX feature flags.
                     const FEATURE_FSGSBASE: u32 = 1 << 0;
                     const FEATURE_SMEP: u32 = 1 << 7;
                     const FEATURE_SMAP: u32 = 1 << 20;
+                    // ECX feature flags.
                     const FEATURE_UMIP: u32 = 1 << 2;
                     const FEATURE_PKU: u32 = 1 << 3;
                     const FEATURE_OSPKE: u32 = 1 << 4;
@@ -762,6 +771,7 @@ impl SvmVcpu {
                     const FEATURE_CET_SS: u32 = 1 << 7;
                     const FEATURE_LA57: u32 = 1 << 16;
                     const FEATURE_PKS: u32 = 1 << 31;
+                    // EDX feature flags.
                     const FEATURE_IBT: u32 = 1 << 20;
 
                     res.ebx &= !(FEATURE_FSGSBASE | FEATURE_SMEP | FEATURE_SMAP);
