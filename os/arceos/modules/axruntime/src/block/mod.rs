@@ -1,6 +1,16 @@
 #[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 use alloc::vec::Vec;
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 use core::ptr::NonNull;
 
 #[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
@@ -11,21 +21,61 @@ mod root;
 ))]
 pub(crate) mod volume;
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 struct BlockIrqState {
     handler: ax_driver::block::BlockIrqHandler,
     irq_handle: spin::Once<axklib::irq::IrqHandle>,
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 pub(crate) struct BlockIrqRegistration {
     _state: alloc::boxed::Box<BlockIrqState>,
 }
 
-#[cfg(not(all(feature = "irq", any(feature = "fs", feature = "fs-ng"))))]
-pub(crate) struct BlockIrqRegistration;
+#[cfg(all(
+    not(feature = "irq"),
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
+pub(crate) type BlockIrqRegistration = ();
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 unsafe fn handle_block_irq(
     _ctx: axklib::irq::IrqContext,
     data: NonNull<()>,
@@ -35,7 +85,17 @@ unsafe fn handle_block_irq(
     axklib::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "irq", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(
+    feature = "irq",
+    any(
+        all(
+            feature = "fs",
+            not(feature = "fs-ng"),
+            any(not(feature = "plat-dyn"), target_os = "none")
+        ),
+        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    )
+))]
 impl Drop for BlockIrqState {
     fn drop(&mut self) {
         if let Some(handle) = self.irq_handle.get().copied()
@@ -101,9 +161,7 @@ pub(crate) fn register_irq_handler(
     #[cfg(feature = "irq")]
     {
         let name = alloc::string::String::from(block.name());
-        let Some((irq_num, handler)) = block.take_irq_handler() else {
-            return None;
-        };
+        let (irq_num, handler) = block.take_irq_handler()?;
         let mut state = alloc::boxed::Box::new(BlockIrqState {
             handler,
             irq_handle: spin::Once::new(),
