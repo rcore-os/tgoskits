@@ -52,7 +52,16 @@ EOF
 start_nginx() {
     nginx -t -c "$CONF" -p "$BASE/" || return 1
     nginx -c "$CONF" -p "$BASE/" > "$LOGDIR/nginx-stdout.log" 2>&1 &
-    i=0; while [ "$i" -lt 6 ]; do run_with_timeout 1 curl -fsS -o /dev/null http://127.0.0.1:8080/ >/dev/null 2>&1 && return 0; i=$((i+1)); sleep 1; done
+    i=0
+    while [ "$i" -lt 6 ]; do
+        run_with_timeout 1 curl -fsS -o /dev/null http://127.0.0.1:8080/small.txt >/dev/null 2>&1 && return 0
+        i=$((i + 1))
+        sleep 1
+    done
+    if [ -f "$LOGDIR/nginx-stdout.log" ]; then
+        tail_line=$(sed -n '$p' "$LOGDIR/nginx-stdout.log" || true)
+        [ -n "$tail_line" ] && log "start_nginx stdout tail: $tail_line"
+    fi
     return 1
 }
 
@@ -69,7 +78,11 @@ if command -v nc >/dev/null 2>&1 || busybox nc 2>&1 | grep -qi 'usage'; then
     NC='nc'; command -v nc >/dev/null 2>&1 || NC='busybox nc'
     { printf 'BAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'; } | run_with_timeout 1 sh -c "$NC 127.0.0.1 8080" > "$OUT/bad.raw" || true
     tr -d '\r' < "$OUT/bad.raw" > "$OUT/bad.norm"
-    grep -Eq '^HTTP/1.1 (400|405)' "$OUT/bad.norm" || log "KNOWN_ISSUE: BAD method raw request path unstable or blocked"
+    bad_status=$(sed -n '1p' "$OUT/bad.norm" || true)
+    if ! grep -Eq '^HTTP/1.1 (400|405)' "$OUT/bad.norm"; then
+        [ -n "$bad_status" ] || bad_status='<empty>'
+        log "KNOWN_ISSUE: BAD method raw request path unstable or blocked, status=$bad_status"
+    fi
 fi
 cleanup_nginx
 printf 'NGINX_PHASE2_TEST_PASSED\n'
