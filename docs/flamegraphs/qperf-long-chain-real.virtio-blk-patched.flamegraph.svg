@@ -1,0 +1,491 @@
+<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg version="1.1" width="3200" height="219" onload="init(evt)" viewBox="0 0 3200 219" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:fg="http://github.com/jonhoo/inferno"><!--Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples.--><!--NOTES: --><defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs><style type="text/css">
+text { font-family:monospace; font-size:13px }
+#title { text-anchor:middle; font-size:18px; }
+#matched { text-anchor:end; }
+#search { text-anchor:end; opacity:0.1; cursor:pointer; }
+#search:hover, #search.show { opacity:1; }
+#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+#unzoom { cursor:pointer; }
+#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+.hide { display:none; }
+.parent { opacity:0.5; }
+</style><script type="text/ecmascript"><![CDATA[
+        var nametype = 'Function:';
+        var fontsize = 13;
+        var fontwidth = 0.59;
+        var xpad = 10;
+        var inverted = false;
+        var searchcolor = 'rgb(230,0,230)';
+        var fluiddrawing = false;
+        var truncate_text_right = false;
+    ]]><![CDATA["use strict";
+var details, searchbtn, unzoombtn, matchedtxt, svg, searching, frames, known_font_width;
+function init(evt) {
+    details = document.getElementById("details").firstChild;
+    searchbtn = document.getElementById("search");
+    unzoombtn = document.getElementById("unzoom");
+    matchedtxt = document.getElementById("matched");
+    svg = document.getElementsByTagName("svg")[0];
+    frames = document.getElementById("frames");
+    known_font_width = get_monospace_width(frames);
+    total_samples = parseInt(frames.attributes.total_samples.value);
+    searching = 0;
+
+    // Use GET parameters to restore a flamegraph's state.
+    var restore_state = function() {
+        var params = get_params();
+        if (params.x && params.y)
+            zoom(find_group(document.querySelector('[*|x="' + params.x + '"][y="' + params.y + '"]')));
+        if (params.s)
+            search(params.s);
+    };
+
+    if (fluiddrawing) {
+        // Make width dynamic so the SVG fits its parent's width.
+        svg.removeAttribute("width");
+        // Edge requires us to have a viewBox that gets updated with size changes.
+        var isEdge = /Edge\/\d./i.test(navigator.userAgent);
+        if (!isEdge) {
+            svg.removeAttribute("viewBox");
+        }
+        var update_for_width_change = function() {
+            if (isEdge) {
+                svg.attributes.viewBox.value = "0 0 " + svg.width.baseVal.value + " " + svg.height.baseVal.value;
+            }
+
+            // Keep consistent padding on left and right of frames container.
+            frames.attributes.width.value = svg.width.baseVal.value - xpad * 2;
+
+            // Text truncation needs to be adjusted for the current width.
+            update_text_for_elements(frames.children);
+
+            // Keep search elements at a fixed distance from right edge.
+            var svgWidth = svg.width.baseVal.value;
+            searchbtn.attributes.x.value = svgWidth - xpad;
+            matchedtxt.attributes.x.value = svgWidth - xpad;
+        };
+        window.addEventListener('resize', function() {
+            update_for_width_change();
+        });
+        // This needs to be done asynchronously for Safari to work.
+        setTimeout(function() {
+            unzoom();
+            update_for_width_change();
+            restore_state();
+        }, 0);
+    } else {
+        restore_state();
+    }
+}
+// event listeners
+window.addEventListener("click", function(e) {
+    var target = find_group(e.target);
+    if (target) {
+        if (target.nodeName == "a") {
+            if (e.ctrlKey === false) return;
+            e.preventDefault();
+        }
+        if (target.classList.contains("parent")) unzoom();
+        zoom(target);
+
+        // set parameters for zoom state
+        var el = target.querySelector("rect");
+        if (el && el.attributes && el.attributes.y && el.attributes["fg:x"]) {
+            var params = get_params()
+            params.x = el.attributes["fg:x"].value;
+            params.y = el.attributes.y.value;
+            history.replaceState(null, null, parse_params(params));
+        }
+    }
+    else if (e.target.id == "unzoom") {
+        unzoom();
+
+        // remove zoom state
+        var params = get_params();
+        if (params.x) delete params.x;
+        if (params.y) delete params.y;
+        history.replaceState(null, null, parse_params(params));
+    }
+    else if (e.target.id == "search") search_prompt();
+}, false)
+// mouse-over for info
+// show
+window.addEventListener("mouseover", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = nametype + " " + g_to_text(target);
+}, false)
+// clear
+window.addEventListener("mouseout", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = ' ';
+}, false)
+// ctrl-F for search
+window.addEventListener("keydown",function (e) {
+    if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+        e.preventDefault();
+        search_prompt();
+    }
+}, false)
+// functions
+function get_params() {
+    var params = {};
+    var paramsarr = window.location.search.substr(1).split('&');
+    for (var i = 0; i < paramsarr.length; ++i) {
+        var tmp = paramsarr[i].split("=");
+        if (!tmp[0] || !tmp[1]) continue;
+        params[tmp[0]]  = decodeURIComponent(tmp[1]);
+    }
+    return params;
+}
+function parse_params(params) {
+    var uri = "?";
+    for (var key in params) {
+        uri += key + '=' + encodeURIComponent(params[key]) + '&';
+    }
+    if (uri.slice(-1) == "&")
+        uri = uri.substring(0, uri.length - 1);
+    if (uri == '?')
+        uri = window.location.href.split('?')[0];
+    return uri;
+}
+function find_child(node, selector) {
+    var children = node.querySelectorAll(selector);
+    if (children.length) return children[0];
+    return;
+}
+function find_group(node) {
+    var parent = node.parentElement;
+    if (!parent) return;
+    if (parent.id == "frames") return node;
+    return find_group(parent);
+}
+function orig_save(e, attr, val) {
+    if (e.attributes["fg:orig_" + attr] != undefined) return;
+    if (e.attributes[attr] == undefined) return;
+    if (val == undefined) val = e.attributes[attr].value;
+    e.setAttribute("fg:orig_" + attr, val);
+}
+function orig_load(e, attr) {
+    if (e.attributes["fg:orig_"+attr] == undefined) return;
+    e.attributes[attr].value = e.attributes["fg:orig_" + attr].value;
+    e.removeAttribute("fg:orig_" + attr);
+}
+function g_to_text(e) {
+    var text = find_child(e, "title").firstChild.nodeValue;
+    return (text)
+}
+function g_to_func(e) {
+    var func = g_to_text(e);
+    // if there's any manipulation we want to do to the function
+    // name before it's searched, do it here before returning.
+    return (func);
+}
+function get_monospace_width(frames) {
+    // Given the id="frames" element, return the width of text characters if
+    // this is a monospace font, otherwise return 0.
+    text = find_child(frames.children[0], "text");
+    originalContent = text.textContent;
+    text.textContent = "!";
+    bangWidth = text.getComputedTextLength();
+    text.textContent = "W";
+    wWidth = text.getComputedTextLength();
+    text.textContent = originalContent;
+    if (bangWidth === wWidth) {
+        return bangWidth;
+    } else {
+        return 0;
+    }
+}
+function update_text_for_elements(elements) {
+    // In order to render quickly in the browser, you want to do one pass of
+    // reading attributes, and one pass of mutating attributes. See
+    // https://web.dev/avoid-large-complex-layouts-and-layout-thrashing/ for details.
+
+    // Fall back to inefficient calculation, if we're variable-width font.
+    // TODO This should be optimized somehow too.
+    if (known_font_width === 0) {
+        for (var i = 0; i < elements.length; i++) {
+            update_text(elements[i]);
+        }
+        return;
+    }
+
+    var textElemNewAttributes = [];
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var r = find_child(e, "rect");
+        var t = find_child(e, "text");
+        var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+        var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+        var newX = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+        // Smaller than this size won't fit anything
+        if (w < 2 * known_font_width) {
+            textElemNewAttributes.push([newX, ""]);
+            continue;
+        }
+
+        // Fit in full text width
+        if (txt.length * known_font_width < w) {
+            textElemNewAttributes.push([newX, txt]);
+            continue;
+        }
+
+        var substringLength = Math.floor(w / known_font_width) - 2;
+        if (truncate_text_right) {
+            // Truncate the right side of the text.
+            textElemNewAttributes.push([newX, txt.substring(0, substringLength) + ".."]);
+            continue;
+        } else {
+            // Truncate the left side of the text.
+            textElemNewAttributes.push([newX, ".." + txt.substring(txt.length - substringLength, txt.length)]);
+            continue;
+        }
+    }
+
+    console.assert(textElemNewAttributes.length === elements.length, "Resize failed, please file a bug at https://github.com/jonhoo/inferno/");
+
+    // Now that we know new textContent, set it all in one go so we don't refresh a bazillion times.
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var values = textElemNewAttributes[i];
+        var t = find_child(e, "text");
+        t.attributes.x.value = values[0];
+        t.textContent = values[1];
+    }
+}
+
+function update_text(e) {
+    var r = find_child(e, "rect");
+    var t = find_child(e, "text");
+    var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+    var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+    t.attributes.x.value = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+    // Smaller than this size won't fit anything
+    if (w < 2 * fontsize * fontwidth) {
+        t.textContent = "";
+        return;
+    }
+    t.textContent = txt;
+    // Fit in full text width
+    if (t.getComputedTextLength() < w)
+        return;
+    if (truncate_text_right) {
+        // Truncate the right side of the text.
+        for (var x = txt.length - 2; x > 0; x--) {
+            if (t.getSubStringLength(0, x + 2) <= w) {
+                t.textContent = txt.substring(0, x) + "..";
+                return;
+            }
+        }
+    } else {
+        // Truncate the left side of the text.
+        for (var x = 2; x < txt.length; x++) {
+            if (t.getSubStringLength(x - 2, txt.length) <= w) {
+                t.textContent = ".." + txt.substring(x, txt.length);
+                return;
+            }
+        }
+    }
+    t.textContent = "";
+}
+// zoom
+function zoom_reset(e) {
+    if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * parseInt(e.attributes["fg:x"].value) / total_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / total_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_reset(c[i]);
+    }
+}
+function zoom_child(e, x, zoomed_width_samples) {
+    if (e.tagName == "text") {
+        var parent_x = parseFloat(find_child(e.parentNode, "rect[x]").attributes.x.value);
+        e.attributes.x.value = format_percent(parent_x + (100 * 3 / frames.attributes.width.value));
+    } else if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * (parseInt(e.attributes["fg:x"].value) - x) / zoomed_width_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / zoomed_width_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_child(c[i], x, zoomed_width_samples);
+    }
+}
+function zoom_parent(e) {
+    if (e.attributes) {
+        if (e.attributes.x != undefined) {
+            e.attributes.x.value = "0.0%";
+        }
+        if (e.attributes.width != undefined) {
+            e.attributes.width.value = "100.0%";
+        }
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_parent(c[i]);
+    }
+}
+function zoom(node) {
+    var attr = find_child(node, "rect").attributes;
+    var width = parseInt(attr["fg:w"].value);
+    var xmin = parseInt(attr["fg:x"].value);
+    var xmax = xmin + width;
+    var ymin = parseFloat(attr.y.value);
+    unzoombtn.classList.remove("hide");
+    var el = frames.children;
+    var to_update_text = [];
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        var a = find_child(e, "rect").attributes;
+        var ex = parseInt(a["fg:x"].value);
+        var ew = parseInt(a["fg:w"].value);
+        // Is it an ancestor
+        if (!inverted) {
+            var upstack = parseFloat(a.y.value) > ymin;
+        } else {
+            var upstack = parseFloat(a.y.value) < ymin;
+        }
+        if (upstack) {
+            // Direct ancestor
+            if (ex <= xmin && (ex+ew) >= xmax) {
+                e.classList.add("parent");
+                zoom_parent(e);
+                to_update_text.push(e);
+            }
+            // not in current path
+            else
+                e.classList.add("hide");
+        }
+        // Children maybe
+        else {
+            // no common path
+            if (ex < xmin || ex >= xmax) {
+                e.classList.add("hide");
+            }
+            else {
+                zoom_child(e, xmin, width);
+                to_update_text.push(e);
+            }
+        }
+    }
+    update_text_for_elements(to_update_text);
+}
+function unzoom() {
+    unzoombtn.classList.add("hide");
+    var el = frames.children;
+    for(var i = 0; i < el.length; i++) {
+        el[i].classList.remove("parent");
+        el[i].classList.remove("hide");
+        zoom_reset(el[i]);
+    }
+    update_text_for_elements(el);
+}
+// search
+function reset_search() {
+    var el = document.querySelectorAll("#frames rect");
+    for (var i = 0; i < el.length; i++) {
+        orig_load(el[i], "fill")
+    }
+    var params = get_params();
+    delete params.s;
+    history.replaceState(null, null, parse_params(params));
+}
+function search_prompt() {
+    if (!searching) {
+        var term = prompt("Enter a search term (regexp " +
+            "allowed, eg: ^ext4_)", "");
+        if (term != null) {
+            search(term)
+        }
+    } else {
+        reset_search();
+        searching = 0;
+        searchbtn.classList.remove("show");
+        searchbtn.firstChild.nodeValue = "Search"
+        matchedtxt.classList.add("hide");
+        matchedtxt.firstChild.nodeValue = ""
+    }
+}
+function search(term) {
+    var re = new RegExp(term);
+    var el = frames.children;
+    var matches = new Object();
+    var maxwidth = 0;
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        // Skip over frames which are either not visible, or below the zoomed-to frame
+        if (e.classList.contains("hide") || e.classList.contains("parent")) {
+            continue;
+        }
+        var func = g_to_func(e);
+        var rect = find_child(e, "rect");
+        if (func == null || rect == null)
+            continue;
+        // Save max width. Only works as we have a root frame
+        var w = parseInt(rect.attributes["fg:w"].value);
+        if (w > maxwidth)
+            maxwidth = w;
+        if (func.match(re)) {
+            // highlight
+            var x = parseInt(rect.attributes["fg:x"].value);
+            orig_save(rect, "fill");
+            rect.attributes.fill.value = searchcolor;
+            // remember matches
+            if (matches[x] == undefined) {
+                matches[x] = w;
+            } else {
+                if (w > matches[x]) {
+                    // overwrite with parent
+                    matches[x] = w;
+                }
+            }
+            searching = 1;
+        }
+    }
+    if (!searching)
+        return;
+    var params = get_params();
+    params.s = term;
+    history.replaceState(null, null, parse_params(params));
+
+    searchbtn.classList.add("show");
+    searchbtn.firstChild.nodeValue = "Reset Search";
+    // calculate percent matched, excluding vertical overlap
+    var count = 0;
+    var lastx = -1;
+    var lastw = 0;
+    var keys = Array();
+    for (k in matches) {
+        if (matches.hasOwnProperty(k))
+            keys.push(k);
+    }
+    // sort the matched frames by their x location
+    // ascending, then width descending
+    keys.sort(function(a, b){
+        return a - b;
+    });
+    // Step through frames saving only the biggest bottom-up frames
+    // thanks to the sort order. This relies on the tree property
+    // where children are always smaller than their parents.
+    for (var k in keys) {
+        var x = parseInt(keys[k]);
+        var w = matches[keys[k]];
+        if (x >= lastx + lastw) {
+            count += w;
+            lastx = x;
+            lastw = w;
+        }
+    }
+    // display matched percent
+    matchedtxt.classList.remove("hide");
+    var pct = 100 * count / maxwidth;
+    if (pct != 100) pct = pct.toFixed(1);
+    matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+}
+function format_percent(n) {
+    return n.toFixed(4) + "%";
+}
+]]></script><rect x="0" y="0" width="100%" height="219" fill="url(#background)"/><text id="title" fill="rgb(0,0,0)" x="50.0000%" y="26.00">StarryOS qperf Flame Graph</text><text id="details" fill="rgb(0,0,0)" x="10" y="201.00"> </text><text id="unzoom" class="hide" fill="rgb(0,0,0)" x="10" y="26.00">Reset Zoom</text><text id="search" fill="rgb(0,0,0)" x="3190" y="26.00">Search</text><text id="matched" fill="rgb(0,0,0)" x="3190" y="201.00"> </text><svg id="frames" x="10" width="3180" total_samples="178906"><g><title>&lt;starry_kernel::mm::aspace::backend::Backend as starry_kernel::mm::aspace::backend::BackendOps&gt;::populate (858 samples, 0.48%)</title><rect x="0.1470%" y="112" width="0.4796%" height="23" fill="rgb(245,179,45)" fg:x="263" fg:w="858"/><text x="0.2408%" y="126.50"></text></g><g><title>0x109b (1,514 samples, 0.85%)</title><rect x="0.0106%" y="136" width="0.8463%" height="23" fill="rgb(238,112,37)" fg:x="19" fg:w="1514"/><text x="0.1044%" y="150.50">0..</text></g><g><title>&lt;alloc::collections::btree::map::BTreeMap&lt;u32, starry_kernel::syscall::ipc::shm::BiBTreeMap&lt;i32, ax_memory_addr::addr::VirtAddr&gt;&gt;&gt;::remove::&lt;u32&gt; (546 samples, 0.31%)</title><rect x="2.2772%" y="136" width="0.3052%" height="23" fill="rgb(242,184,41)" fg:x="4074" fg:w="546"/><text x="2.3709%" y="150.50"></text></g><g><title>&lt;core::option::Option&lt;(u32, starry_kernel::syscall::ipc::shm::BiBTreeMap&lt;i32, ax_memory_addr::addr::VirtAddr&gt;)&gt;&gt;::map::&lt;starry_kernel::syscall::ipc::shm::BiBTreeMap&lt;i32, ax_memory_addr::addr::VirtAddr&gt;, &lt;alloc::collections::btree::map::BTreeMap&lt;u32, starry_kernel::syscall::ipc::shm::BiBTreeMap&lt;i32, ax_memory_addr::addr::VirtAddr&gt;&gt;&gt;::remove&lt;u32&gt;::{closure#0}&gt; (546 samples, 0.31%)</title><rect x="2.2772%" y="112" width="0.3052%" height="23" fill="rgb(247,220,46)" fg:x="4074" fg:w="546"/><text x="2.3709%" y="126.50"></text></g><g><title>&lt;core::option::Option&lt;ax_task::future::poll::poll_io&lt;ax_net_ng::unix::stream::StreamTransport, &lt;ax_net_ng::unix::stream::StreamTransport as ax_net_ng::unix::TransportOps&gt;::send&lt;&amp;mut dyn starry_kernel::file::ReadBuf&gt;::{closure#0}, usize&gt;::{closure#0}&gt;&gt;::as_pin_mut (700 samples, 0.39%)</title><rect x="4.4057%" y="136" width="0.3913%" height="23" fill="rgb(236,220,34)" fg:x="7882" fg:w="700"/><text x="4.4994%" y="150.50"></text></g><g><title>&lt;core::option::Option&lt;ax_task::future::poll::poll_io&lt;ax_net_ng::vsock::stream::VsockStreamTransport, &lt;ax_net_ng::vsock::stream::VsockStreamTransport as ax_net_ng::vsock::VsockTransportOps&gt;::recv&lt;&amp;mut dyn starry_kernel::file::WriteBuf&gt;::{closure#0}, usize&gt;::{closure#0}&gt;&gt;::as_pin_mut (546 samples, 0.31%)</title><rect x="5.4453%" y="136" width="0.3052%" height="23" fill="rgb(236,220,34)" fg:x="9742" fg:w="546"/><text x="5.5391%" y="150.50"></text></g><g><title>&lt;hashbrown::raw::FullBucketsIndices as core::iter::traits::iterator::Iterator&gt;::next (19,622 samples, 10.97%)</title><rect x="8.4173%" y="64" width="10.9678%" height="23" fill="rgb(230,201,27)" fg:x="15059" fg:w="19622"/><text x="8.5110%" y="78.50">&lt;hashbrown::raw::FullBucketsIndices as core..</text></g><g><title>&lt;hashbrown::raw::FullBucketsIndices&gt;::next_impl (19,085 samples, 10.67%)</title><rect x="8.7174%" y="40" width="10.6676%" height="23" fill="rgb(238,201,36)" fg:x="15596" fg:w="19085"/><text x="8.8112%" y="54.50">&lt;hashbrown::raw::FullBucketsIndices&gt;::next..</text></g><g><title>&lt;hashbrown::raw::RawTable&lt;(alloc::sync::Arc&lt;[u8]&gt;, ax_net_ng::unix::BindSlot)&gt;&gt;::reserve_rehash::&lt;hashbrown::map::make_hasher&lt;alloc::sync::Arc&lt;[u8]&gt;, ax_net_ng::unix::BindSlot, hashbrown::hasher::DefaultHashBuilder&gt;::{closure#0}&gt; (20,957 samples, 11.71%)</title><rect x="7.7040%" y="136" width="11.7140%" height="23" fill="rgb(247,201,46)" fg:x="13783" fg:w="20957"/><text x="7.7978%" y="150.50">&lt;hashbrown::raw::RawTable&lt;(alloc::sync::Arc&lt;[u..</text></g><g><title>&lt;hashbrown::raw::RawTableInner&gt;::reserve_rehash_inner::&lt;allocator_api2::stable::alloc::global::Global&gt; (20,952 samples, 11.71%)</title><rect x="7.7068%" y="112" width="11.7112%" height="23" fill="rgb(240,201,39)" fg:x="13788" fg:w="20952"/><text x="7.8006%" y="126.50">&lt;hashbrown::raw::RawTableInner&gt;::reserve_rehas..</text></g><g><title>&lt;hashbrown::raw::RawTableInner&gt;::resize_inner::&lt;allocator_api2::stable::alloc::global::Global&gt; (20,945 samples, 11.71%)</title><rect x="7.7108%" y="88" width="11.7073%" height="23" fill="rgb(240,201,39)" fg:x="13795" fg:w="20945"/><text x="7.8045%" y="102.50">&lt;hashbrown::raw::RawTableInner&gt;::resize_inner:..</text></g><g><title>&lt;hashbrown::raw::RawTable&lt;(smoltcp::wire::ip::Address, ax_net_ng::device::ethernet::PendingNeighbor)&gt;&gt;::remove_entry::&lt;hashbrown::map::equivalent_key&lt;smoltcp::wire::ip::Address, smoltcp::wire::ip::Address, ax_net_ng::device::ethernet::PendingNeighbor&gt;::{closure#0}&gt; (4,091 samples, 2.29%)</title><rect x="19.4180%" y="136" width="2.2867%" height="23" fill="rgb(247,201,46)" fg:x="34740" fg:w="4091"/><text x="19.5118%" y="150.50">&lt;hashbr..</text></g><g><title>&lt;hashbrown::raw::RawTable&lt;(usize, alloc::sync::Arc&lt;starry_kernel::task::futex::FutexEntry&gt;)&gt;&gt;::get::&lt;hashbrown::map::equivalent_key&lt;usize, usize, alloc::sync::Arc&lt;starry_kernel::task::futex::FutexEntry&gt;&gt;::{closure#0}&gt; (692 samples, 0.39%)</title><rect x="21.8813%" y="136" width="0.3868%" height="23" fill="rgb(247,201,46)" fg:x="39147" fg:w="692"/><text x="21.9751%" y="150.50"></text></g><g><title>&lt;hashbrown::raw::RawTable&lt;(usize, alloc::sync::Arc&lt;starry_kernel::task::futex::FutexEntry&gt;)&gt;&gt;::insert::&lt;hashbrown::map::make_hasher&lt;usize, alloc::sync::Arc&lt;starry_kernel::task::futex::FutexEntry&gt;, hashbrown::hasher::DefaultHashBuilder&gt;::{closure#0}&gt; (1,561 samples, 0.87%)</title><rect x="22.2681%" y="136" width="0.8725%" height="23" fill="rgb(247,201,46)" fg:x="39839" fg:w="1561"/><text x="22.3619%" y="150.50">&lt;..</text></g><g><title>&lt;hashbrown::raw::RawTableInner&gt;::rehash_in_place (29,142 samples, 16.29%)</title><rect x="23.3547%" y="88" width="16.2890%" height="23" fill="rgb(252,201,52)" fg:x="41783" fg:w="29142"/><text x="23.4485%" y="102.50">&lt;hashbrown::raw::RawTableInner&gt;::rehash_in_place</text></g><g><title>hashbrown::util::likely (12,224 samples, 6.83%)</title><rect x="32.8111%" y="64" width="6.8326%" height="23" fill="rgb(239,130,38)" fg:x="58701" fg:w="12224"/><text x="32.9048%" y="78.50">hashbrown::util::likely</text></g><g><title>&lt;hashbrown::raw::RawTable&lt;(usize, alloc::sync::Arc&lt;starry_kernel::task::futex::FutexEntry&gt;)&gt;&gt;::reserve_rehash::&lt;hashbrown::map::make_hasher&lt;usize, alloc::sync::Arc&lt;starry_kernel::task::futex::FutexEntry&gt;, hashbrown::hasher::DefaultHashBuilder&gt;::{closure#0}&gt; (30,425 samples, 17.01%)</title><rect x="23.1552%" y="136" width="17.0061%" height="23" fill="rgb(247,201,46)" fg:x="41426" fg:w="30425"/><text x="23.2489%" y="150.50">&lt;hashbrown::raw::RawTable&lt;(usize, alloc::sync::Arc&lt;starry_kernel::ta..</text></g><g><title>&lt;hashbrown::raw::RawTableInner&gt;::reserve_rehash_inner::&lt;allocator_api2::stable::alloc::global::Global&gt; (30,402 samples, 16.99%)</title><rect x="23.1680%" y="112" width="16.9933%" height="23" fill="rgb(240,201,39)" fg:x="41449" fg:w="30402"/><text x="23.2618%" y="126.50">&lt;hashbrown::raw::RawTableInner&gt;::reserve_rehash_inner::&lt;allocator_ap..</text></g><g><title>&lt;hashbrown::raw::RawTableInner&gt;::resize_inner::&lt;allocator_api2::stable::alloc::global::Global&gt; (926 samples, 0.52%)</title><rect x="39.6437%" y="88" width="0.5176%" height="23" fill="rgb(240,201,39)" fg:x="70925" fg:w="926"/><text x="39.7375%" y="102.50"></text></g><g><title>&lt;starry_kernel::mm::aspace::backend::Backend as starry_kernel::mm::aspace::backend::BackendOps&gt;::populate (1,559 samples, 0.87%)</title><rect x="40.8024%" y="112" width="0.8714%" height="23" fill="rgb(245,179,45)" fg:x="72998" fg:w="1559"/><text x="40.8962%" y="126.50">&lt;..</text></g><g><title>&lt;rsext4::jbd2::jbdstruct::JournalSuperBllockS as rsext4::endian::DiskFormat&gt;::from_disk_bytes (2,835 samples, 1.58%)</title><rect x="40.5431%" y="136" width="1.5846%" height="23" fill="rgb(238,187,36)" fg:x="72534" fg:w="2835"/><text x="40.6368%" y="150.50">&lt;rse..</text></g><g><title>starry_vm::alloc::vm_load_until_nul::&lt;*const u8&gt; (808 samples, 0.45%)</title><rect x="41.6761%" y="112" width="0.4516%" height="23" fill="rgb(244,156,43)" fg:x="74561" fg:w="808"/><text x="41.7698%" y="126.50"></text></g><g><title>&lt;starry_kernel::mm::loader::load_user_app::{closure#3} as core::str::pattern::Pattern&gt;::into_searcher (631 samples, 0.35%)</title><rect x="42.7213%" y="136" width="0.3527%" height="23" fill="rgb(240,179,38)" fg:x="76431" fg:w="631"/><text x="42.8151%" y="150.50"></text></g><g><title>&lt;starry_kernel::pseudofs::dev::event::EventDev as starry_kernel::pseudofs::device::DeviceOps&gt;::ioctl (647 samples, 0.36%)</title><rect x="43.7073%" y="136" width="0.3616%" height="23" fill="rgb(232,179,30)" fg:x="78195" fg:w="647"/><text x="43.8011%" y="150.50"></text></g><g><title>&lt;starry_kernel::syscall::task::clone::CloneArgs&gt;::do_clone (1,064 samples, 0.59%)</title><rect x="44.7727%" y="136" width="0.5947%" height="23" fill="rgb(251,179,50)" fg:x="80101" fg:w="1064"/><text x="44.8664%" y="150.50"></text></g><g><title>&lt;starry_kernel::syscall::task::clone::CloneArgs&gt;::validate (28,394 samples, 15.87%)</title><rect x="45.3674%" y="136" width="15.8709%" height="23" fill="rgb(245,179,45)" fg:x="81165" fg:w="28394"/><text x="45.4611%" y="150.50">&lt;starry_kernel::syscall::task::clone::CloneArgs&gt;::validate</text></g><g><title>&lt;starry_kernel::task::timer::EVENT_NEW_TIMER as core::ops::deref::Deref&gt;::deref (14,081 samples, 7.87%)</title><rect x="61.3685%" y="136" width="7.8706%" height="23" fill="rgb(245,179,44)" fg:x="109792" fg:w="14081"/><text x="61.4623%" y="150.50">&lt;starry_kernel::task::timer::E..</text></g><g><title>&lt;starry_kernel::task::timer::ITimerType as core::fmt::Debug&gt;::fmt (37,928 samples, 21.20%)</title><rect x="69.2431%" y="136" width="21.2000%" height="23" fill="rgb(229,179,26)" fg:x="123880" fg:w="37928"/><text x="69.3368%" y="150.50">&lt;starry_kernel::task::timer::ITimerType as core::fmt::Debug&gt;::fmt</text></g><g><title>core::ptr::drop_in_place::&lt;async_channel::TrySendError&lt;ax_net_ng::unix::dgram::Packet&gt;&gt; (605 samples, 0.34%)</title><rect x="91.9572%" y="136" width="0.3382%" height="23" fill="rgb(238,133,36)" fg:x="164517" fg:w="605"/><text x="92.0510%" y="150.50"></text></g><g><title>core::ptr::drop_in_place::&lt;core::result::Result&lt;alloc::boxed::Box&lt;starry_kernel::syscall::net::cmsg::CMsg&gt;, alloc::boxed::Box&lt;dyn core::any::Any + core::marker::Send + core::marker::Sync&gt;&gt;&gt; (621 samples, 0.35%)</title><rect x="94.2596%" y="136" width="0.3471%" height="23" fill="rgb(242,133,41)" fg:x="168636" fg:w="621"/><text x="94.3533%" y="150.50"></text></g><g><title>starry_kernel::pseudofs::dev::builder (1,639 samples, 0.92%)</title><rect x="96.4708%" y="136" width="0.9161%" height="23" fill="rgb(243,156,41)" fg:x="172592" fg:w="1639"/><text x="96.5645%" y="150.50">s..</text></g><g><title>starry_kernel::pseudofs::dev::event::return_zero_bits (782 samples, 0.44%)</title><rect x="97.3869%" y="136" width="0.4371%" height="23" fill="rgb(233,156,31)" fg:x="174231" fg:w="782"/><text x="97.4806%" y="150.50"></text></g><g><title>starry_kernel::pseudofs::mount_all (793 samples, 0.44%)</title><rect x="97.8246%" y="136" width="0.4432%" height="23" fill="rgb(230,156,28)" fg:x="175014" fg:w="793"/><text x="97.9183%" y="150.50"></text></g><g><title>starry_kernel::syscall::net::opt::sys_setsockopt (1,390 samples, 0.78%)</title><rect x="98.5423%" y="136" width="0.7769%" height="23" fill="rgb(240,156,38)" fg:x="176298" fg:w="1390"/><text x="98.6360%" y="150.50">s..</text></g><g><title>all (178,906 samples, 100%)</title><rect x="0.0000%" y="160" width="100.0000%" height="23" fill="rgb(255,230,55)" fg:x="0" fg:w="178906"/><text x="0.0938%" y="174.50"></text></g></svg></svg>

@@ -28,6 +28,7 @@ pub enum Command {
     /// Build StarryOS application
     Build(ArgsBuild),
     /// Build and run StarryOS application
+    #[command(alias = "run")]
     Qemu(ArgsQemu),
     /// Generate a default StarryOS board config
     Defconfig(ArgsDefconfig),
@@ -77,26 +78,98 @@ pub struct ArgsQemu {
     /// Override the rootfs disk image path (skips auto-download).
     #[arg(long, value_name = "IMAGE")]
     pub rootfs: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub perf: ArgsQemuPerf,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsQemuPerf {
+    /// Profile this run with qperf instead of launching a plain QEMU session.
+    #[arg(long)]
+    pub perf: bool,
+    #[arg(long = "perf-case", value_name = "NAME")]
+    pub case: Option<String>,
+    #[arg(long = "perf-workload", value_name = "CMD")]
+    pub workload: Option<String>,
+    #[arg(long = "perf-shell-prefix", value_name = "PREFIX")]
+    pub shell_prefix: Option<String>,
+    #[arg(long = "perf-output-dir", value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+    #[arg(long = "perf-start-marker", value_name = "MARKER")]
+    pub start_marker: Option<String>,
+    #[arg(long = "perf-stop-marker", value_name = "MARKER")]
+    pub stop_marker: Option<String>,
+    #[arg(long = "perf-timeout", value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+    #[arg(long = "perf-workload-timeout", value_name = "SECONDS")]
+    pub workload_timeout: Option<u64>,
+    #[arg(long = "perf-freq", value_name = "HZ")]
+    pub freq: Option<u32>,
+    #[arg(long = "perf-max-depth", value_name = "DEPTH")]
+    pub max_depth: Option<usize>,
+    #[arg(long = "perf-mode", value_enum)]
+    pub mode: Option<PerfMode>,
+    #[arg(long = "perf-format", value_enum)]
+    pub format: Option<PerfFormat>,
+    #[arg(long = "perf-top", value_name = "N")]
+    pub top: Option<usize>,
+    #[arg(long = "perf-min-percent", value_name = "PERCENT")]
+    pub min_percent: Option<f64>,
+    #[arg(long = "perf-host-time")]
+    pub host_time: bool,
+    #[arg(long = "perf-no-host-time")]
+    pub no_host_time: bool,
+    #[arg(long = "perf-host-perf")]
+    pub host_perf: bool,
+    #[arg(long = "perf-host-perf-events", value_name = "EVENTS")]
+    pub host_perf_events: Option<String>,
+    #[arg(long = "perf-qperf-metrics")]
+    pub qperf_metrics: bool,
+    #[arg(long = "perf-qemu-arg", value_name = "ARG", allow_hyphen_values = true)]
+    pub qemu_args: Vec<String>,
+    #[arg(long = "perf-flamegraph")]
+    pub flamegraph: bool,
+    #[arg(long = "perf-flamegraph-kind", value_enum)]
+    pub flamegraph_kind: Option<PerfFlamegraphKind>,
+    #[arg(long = "perf-full-stack")]
+    pub full_stack: bool,
+    #[arg(long = "perf-demangle")]
+    pub demangle: bool,
+    #[arg(long = "perf-no-truncate")]
+    pub no_truncate: bool,
+    #[arg(long = "perf-symbol-style", value_enum)]
+    pub symbol_style: Option<PerfSymbolStyle>,
+    #[arg(long = "perf-focus", value_name = "REGEX")]
+    pub focus: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsPerf {
+    /// Profile case name used in the default output path.
+    #[arg(long, default_value = "boot")]
+    pub case: String,
     #[arg(long)]
     pub arch: Option<String>,
     #[arg(long, default_value_t = 99)]
     pub freq: u32,
-    #[arg(long)]
+    #[arg(long = "out", hide = true)]
     pub out: Option<PathBuf>,
+    /// Output root. Final reports go under <DIR>/perf/<arch>/latest.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = PerfFormat::All)]
     pub format: PerfFormat,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 128)]
     pub max_depth: usize,
     #[arg(long, value_name = "SECONDS", default_value_t = 20)]
     pub timeout: u64,
     #[arg(long, value_enum, default_value_t = PerfMode::Tb)]
     pub mode: PerfMode,
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 80)]
     pub top: usize,
+    #[arg(long, default_value_t = 0.3)]
+    pub min_percent: f64,
     #[arg(long)]
     pub debug: bool,
     #[arg(long)]
@@ -104,6 +177,9 @@ pub struct ArgsPerf {
     /// Collect host wall/user/system CPU time metrics for the QEMU process wrapper.
     #[arg(long)]
     pub host_time: bool,
+    /// Disable the cargo starry perf default host-time metrics.
+    #[arg(long)]
+    pub no_host_time: bool,
     /// Run QEMU under host perf stat. These are host/QEMU process metrics, not guest PMU values.
     #[arg(long)]
     pub host_perf: bool,
@@ -115,7 +191,7 @@ pub struct ArgsPerf {
     )]
     pub host_perf_events: String,
     /// Send this command to the guest shell after the qperf boot prompt appears.
-    #[arg(long)]
+    #[arg(long, visible_alias = "workload")]
     pub shell_init_cmd: Option<String>,
     /// Prompt substring used before sending --shell-init-cmd.
     #[arg(long)]
@@ -135,6 +211,33 @@ pub struct ArgsPerf {
     /// Enable feature-gated in-guest qperf metric counters.
     #[arg(long)]
     pub qperf_metrics: bool,
+    /// Request SVG flamegraph generation even when --format is folded.
+    #[arg(long)]
+    pub flamegraph: bool,
+    /// Flamegraph view format.
+    #[arg(long, value_enum, default_value_t = PerfFlamegraphKind::Svg)]
+    pub flamegraph_kind: PerfFlamegraphKind,
+    /// Preserve the deepest stack qperf can collect for this build.
+    #[arg(long)]
+    pub full_stack: bool,
+    /// Force Rust demangling in qperf-analyzer.
+    #[arg(long)]
+    pub demangle: bool,
+    /// Keep tiny frames in SVG output by setting flamegraph min width to zero.
+    #[arg(long)]
+    pub no_truncate: bool,
+    /// Include kernel symbols in symbolized stacks. This is the default for StarryOS kernels.
+    #[arg(long)]
+    pub include_kernel_symbols: bool,
+    /// Include user symbols when available. Current StarryOS qperf only resolves the kernel ELF.
+    #[arg(long)]
+    pub include_user_symbols: bool,
+    /// Folded-stack symbol style.
+    #[arg(long, value_enum, default_value_t = PerfSymbolStyle::Full)]
+    pub symbol_style: PerfSymbolStyle,
+    /// Generate an additional focused folded stack/flamegraph for matching frames.
+    #[arg(long, value_name = "REGEX")]
+    pub focus: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -151,11 +254,45 @@ pub enum PerfMode {
     Insn,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfFlamegraphKind {
+    Svg,
+    Html,
+    Folded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfSymbolStyle {
+    Full,
+    Short,
+    Module,
+}
+
 impl fmt::Display for PerfMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Tb => "tb",
             Self::Insn => "insn",
+        })
+    }
+}
+
+impl fmt::Display for PerfFlamegraphKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Svg => "svg",
+            Self::Html => "html",
+            Self::Folded => "folded",
+        })
+    }
+}
+
+impl fmt::Display for PerfSymbolStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Full => "full",
+            Self::Short => "short",
+            Self::Module => "module",
         })
     }
 }
@@ -220,6 +357,94 @@ impl From<&ArgsBuild> for StarryCliArgs {
     }
 }
 
+impl ArgsQemuPerf {
+    fn has_overrides(&self) -> bool {
+        self.case.is_some()
+            || self.workload.is_some()
+            || self.shell_prefix.is_some()
+            || self.output_dir.is_some()
+            || self.start_marker.is_some()
+            || self.stop_marker.is_some()
+            || self.timeout.is_some()
+            || self.workload_timeout.is_some()
+            || self.freq.is_some()
+            || self.max_depth.is_some()
+            || self.mode.is_some()
+            || self.format.is_some()
+            || self.top.is_some()
+            || self.min_percent.is_some()
+            || self.host_time
+            || self.no_host_time
+            || self.host_perf
+            || self.host_perf_events.is_some()
+            || self.qperf_metrics
+            || !self.qemu_args.is_empty()
+            || self.flamegraph
+            || self.flamegraph_kind.is_some()
+            || self.full_stack
+            || self.demangle
+            || self.no_truncate
+            || self.symbol_style.is_some()
+            || self.focus.is_some()
+    }
+}
+
+fn perf_args_from_qemu(args: ArgsQemu) -> anyhow::Result<ArgsPerf> {
+    if args.qemu_config.is_some() || args.rootfs.is_some() {
+        anyhow::bail!(
+            "cargo starry run --perf currently uses the default StarryOS qperf QEMU/rootfs flow; \
+             --qemu-config and --rootfs are not supported with --perf yet"
+        );
+    }
+    if args.build.config.is_some() || args.build.target.is_some() || args.build.smp.is_some() {
+        anyhow::bail!(
+            "cargo starry run --perf currently supports --arch and --debug build overrides; use \
+             cargo starry perf for the default qperf path or plain cargo starry qemu for custom \
+             --config/--target/--smp runs"
+        );
+    }
+    let perf = args.perf;
+    Ok(ArgsPerf {
+        case: perf.case.unwrap_or_else(|| "boot".to_string()),
+        arch: args.build.arch,
+        freq: perf.freq.unwrap_or(99),
+        out: None,
+        output_dir: perf.output_dir,
+        format: perf.format.unwrap_or(PerfFormat::All),
+        max_depth: perf.max_depth.unwrap_or(128),
+        timeout: perf.timeout.unwrap_or(20),
+        mode: perf.mode.unwrap_or(PerfMode::Tb),
+        top: perf.top.unwrap_or(80),
+        min_percent: perf.min_percent.unwrap_or(0.3),
+        debug: args.build.debug,
+        kernel_filter: false,
+        host_time: perf.host_time,
+        no_host_time: perf.no_host_time,
+        host_perf: perf.host_perf,
+        host_perf_events: perf.host_perf_events.unwrap_or_else(|| {
+            "task-clock,cycles,instructions,cache-references,cache-misses,context-switches,\
+             cpu-migrations,page-faults"
+                .to_string()
+        }),
+        shell_init_cmd: perf.workload,
+        shell_prefix: perf.shell_prefix,
+        qemu_args: perf.qemu_args,
+        start_marker: perf.start_marker,
+        stop_marker: perf.stop_marker,
+        workload_timeout: perf.workload_timeout,
+        qperf_metrics: perf.qperf_metrics,
+        flamegraph: perf.flamegraph,
+        flamegraph_kind: perf.flamegraph_kind.unwrap_or(PerfFlamegraphKind::Svg),
+        full_stack: perf.full_stack,
+        demangle: perf.demangle,
+        no_truncate: perf.no_truncate,
+        include_kernel_symbols: true,
+        include_user_symbols: false,
+        symbol_style: perf.symbol_style.unwrap_or(PerfSymbolStyle::Full),
+        focus: perf.focus,
+    })
+}
+
 impl Starry {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
@@ -249,6 +474,12 @@ impl Starry {
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        if args.perf.perf {
+            return self.perf(perf_args_from_qemu(args)?).await;
+        }
+        if args.perf.has_overrides() {
+            anyhow::bail!("--perf-* options require --perf");
+        }
         let request = self.prepare_request(
             (&args.build).into(),
             args.qemu_config,
@@ -797,6 +1028,89 @@ mod tests {
                 assert!(args.qperf_metrics);
             }
             _ => panic!("expected perf command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_perf_flamegraph_options() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "perf",
+            "--case",
+            "blk-read",
+            "--workload",
+            "echo qperf",
+            "--flamegraph-kind",
+            "html",
+            "--full-stack",
+            "--no-truncate",
+            "--symbol-style",
+            "module",
+            "--focus",
+            "virtio|VirtQueue",
+            "--min-percent",
+            "0",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Perf(args) => {
+                assert_eq!(args.case, "blk-read");
+                assert_eq!(args.shell_init_cmd.as_deref(), Some("echo qperf"));
+                assert_eq!(args.flamegraph_kind, PerfFlamegraphKind::Html);
+                assert!(args.full_stack);
+                assert!(args.no_truncate);
+                assert_eq!(args.symbol_style, PerfSymbolStyle::Module);
+                assert_eq!(args.focus.as_deref(), Some("virtio|VirtQueue"));
+                assert_eq!(args.min_percent, 0.0);
+            }
+            _ => panic!("expected perf command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_run_perf_alias() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "run",
+            "--arch",
+            "riscv64",
+            "--perf",
+            "--perf-case",
+            "net-wget",
+            "--perf-workload",
+            "echo qperf",
+            "--perf-qperf-metrics",
+            "--perf-symbol-style",
+            "short",
+            "--perf-focus",
+            "memcpy|memmove",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Qemu(args) => {
+                assert_eq!(args.build.arch.as_deref(), Some("riscv64"));
+                assert!(args.perf.perf);
+                assert_eq!(args.perf.case.as_deref(), Some("net-wget"));
+                assert_eq!(args.perf.workload.as_deref(), Some("echo qperf"));
+                assert!(args.perf.qperf_metrics);
+                assert_eq!(args.perf.symbol_style, Some(PerfSymbolStyle::Short));
+                assert_eq!(args.perf.focus.as_deref(), Some("memcpy|memmove"));
+            }
+            _ => panic!("expected qemu command"),
         }
     }
 

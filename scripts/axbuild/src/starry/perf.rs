@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     fs::File,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -14,7 +16,7 @@ use object::{Object, ObjectSection};
 use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
-use super::{ArgsBuild, ArgsPerf, PerfFormat, Starry, build, rootfs};
+use super::{ArgsBuild, ArgsPerf, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs};
 use crate::{
     context::{SnapshotPersistence, StarryCliArgs, starry_target_for_arch_checked},
     support::process::ProcessExt,
@@ -44,10 +46,20 @@ struct QperfTools {
 }
 
 struct PerfOutputs {
+    work_dir: PathBuf,
     dir: PathBuf,
     raw: PathBuf,
     folded: PathBuf,
     flamegraph: PathBuf,
+    folded_boot: PathBuf,
+    flamegraph_boot: PathBuf,
+    folded_workload: PathBuf,
+    flamegraph_workload: PathBuf,
+    folded_post: PathBuf,
+    flamegraph_post: PathBuf,
+    folded_focus: PathBuf,
+    flamegraph_focus: PathBuf,
+    flamegraph_html: PathBuf,
     summary: PathBuf,
     qemu_config: PathBuf,
     host_time: PathBuf,
@@ -55,6 +67,12 @@ struct PerfOutputs {
     resolve_stats: PathBuf,
     window: PathBuf,
     qmp_socket: PathBuf,
+    profile_stdout: PathBuf,
+    profile_stderr: PathBuf,
+    report_json: PathBuf,
+    report_md: PathBuf,
+    hotspots_csv: PathBuf,
+    hotspot_categories_csv: PathBuf,
 }
 
 #[derive(Default, Serialize)]
@@ -135,8 +153,20 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         .clone()
         .unwrap_or_else(|| crate::context::DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
-    let outputs = prepare_outputs(starry.app.workspace_root(), &arch, args.out.as_deref())?;
-    let generate_svg = matches!(args.format, PerfFormat::Svg | PerfFormat::All);
+    let outputs = prepare_outputs(
+        starry.app.workspace_root(),
+        &arch,
+        &args.case,
+        args.out.as_deref(),
+        args.output_dir.as_deref(),
+    )?;
+    let _axbuild_tmp_dir = set_env_if_missing(
+        "AXBUILD_TMP_DIR",
+        outputs.work_dir.join("axbuild-tmp").into_os_string(),
+    )?;
+    let generate_svg = args.flamegraph
+        || matches!(args.format, PerfFormat::Svg | PerfFormat::All)
+            && !matches!(args.flamegraph_kind, PerfFlamegraphKind::Folded);
 
     let tools = build_qperf_tools(starry.app.workspace_root(), generate_svg)?;
 
@@ -196,7 +226,21 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         top_n: args.top,
         start_sec: qemu_run.window.start_time,
         stop_sec: qemu_run.window.stop_time,
+        symbol_style: args.symbol_style.to_string(),
+        demangle: true,
+        focus: None,
+        min_percent: flamegraph_min_percent(&args),
     })?;
+
+    generate_phase_flamegraphs(
+        &tools,
+        &elf,
+        &outputs,
+        &args,
+        &qemu_run.window,
+        generate_svg,
+    )?;
+    generate_focus_flamegraph(&tools, &elf, &outputs, &args, generate_svg)?;
 
     let flamegraph_generated = if generate_svg && !file_nonempty(&outputs.flamegraph) {
         try_generate_flamegraph(&outputs.folded, &outputs.flamegraph)?
@@ -214,7 +258,9 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         flamegraph_generated,
         window: &qemu_run.window,
     })?;
-    print_report(&outputs, flamegraph_generated);
+    write_flamegraph_html(&outputs, args.flamegraph_kind, flamegraph_generated)?;
+    run_report_postprocess(&outputs, &args, &arch, exit_status_code(&qemu_run.status))?;
+    print_report(&outputs);
     Ok(())
 }
 
@@ -232,6 +278,9 @@ fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
     }
     if args.max_depth == 0 {
         bail!("--max-depth must be greater than 0");
+    }
+    if args.min_percent < 0.0 {
+        bail!("--min-percent must be non-negative");
     }
     if matches!(args.format, PerfFormat::Pprof) {
         bail!("--format pprof is not supported yet; use --format folded, svg, or all");
@@ -253,6 +302,13 @@ fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
     if args.host_perf && args.host_perf_events.trim().is_empty() {
         bail!("--host-perf-events must not be empty when --host-perf is set");
     }
+    if args.include_user_symbols {
+        eprintln!(
+            "qperf: --include-user-symbols requested, but current analyzer resolves only the \
+             StarryOS kernel ELF; user symbols will remain unresolved unless they are present in \
+             the kernel image"
+        );
+    }
     if args
         .start_marker
         .as_deref()
@@ -273,19 +329,126 @@ fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn prepare_outputs(root: &Path, arch: &str, out: Option<&Path>) -> anyhow::Result<PerfOutputs> {
-    let dir = out.map(PathBuf::from).unwrap_or_else(|| {
-        root.join("target")
-            .join("qperf")
-            .join(arch)
-            .join(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string())
-    });
+fn host_time_enabled(args: &ArgsPerf) -> bool {
+    args.host_time || !args.no_host_time
+}
+
+fn flamegraph_min_percent(args: &ArgsPerf) -> f64 {
+    if args.no_truncate {
+        0.0
+    } else {
+        args.min_percent
+    }
+}
+
+fn effective_max_depth(args: &ArgsPerf) -> usize {
+    if args.full_stack {
+        args.max_depth.max(256)
+    } else {
+        args.max_depth
+    }
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    previous: Option<OsString>,
+    active: bool,
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        match &self.previous {
+            Some(value) => {
+                // SAFETY: qperf runs this CLI flow serially and restores the process
+                // environment before returning to the caller.
+                unsafe { env::set_var(self.key, value) };
+            }
+            None => {
+                // SAFETY: qperf runs this CLI flow serially and restores the process
+                // environment before returning to the caller.
+                unsafe { env::remove_var(self.key) };
+            }
+        }
+    }
+}
+
+fn set_env_if_missing(key: &'static str, value: OsString) -> anyhow::Result<ScopedEnvVar> {
+    let previous = env::var_os(key);
+    if previous.as_ref().is_some_and(|value| !value.is_empty()) {
+        return Ok(ScopedEnvVar {
+            key,
+            previous,
+            active: false,
+        });
+    }
+    let path = PathBuf::from(&value);
+    fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create {key} directory {}", path.display()))?;
+    // SAFETY: qperf runs this CLI flow serially before spawning worker threads that depend on
+    // axbuild paths.
+    unsafe { env::set_var(key, &value) };
+    Ok(ScopedEnvVar {
+        key,
+        previous,
+        active: true,
+    })
+}
+
+fn prepare_outputs(
+    root: &Path,
+    arch: &str,
+    case: &str,
+    out: Option<&Path>,
+    output_dir: Option<&Path>,
+) -> anyhow::Result<PerfOutputs> {
+    let (work_dir, dir) = if let Some(out) = out {
+        let dir = PathBuf::from(out);
+        let work_dir = dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| dir.clone());
+        (work_dir, dir)
+    } else {
+        let output_root = output_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("target").join("qperf").join(case));
+        let work_dir = output_root.join("perf").join(arch).join("latest");
+        let dir = work_dir.join("qperf");
+        (work_dir, dir)
+    };
+    if out.is_none() && work_dir.exists() {
+        fs::remove_dir_all(&work_dir).with_context(|| {
+            format!(
+                "failed to remove previous qperf output directory {}",
+                work_dir.display()
+            )
+        })?;
+    }
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create qperf output directory {}", dir.display()))?;
+    fs::create_dir_all(&work_dir).with_context(|| {
+        format!(
+            "failed to create qperf work directory {}",
+            work_dir.display()
+        )
+    })?;
     Ok(PerfOutputs {
+        work_dir: work_dir.clone(),
         raw: dir.join("qperf.bin"),
         folded: dir.join("stack.folded"),
         flamegraph: dir.join("flamegraph.svg"),
+        folded_boot: dir.join("stack.boot.folded"),
+        flamegraph_boot: dir.join("flamegraph.boot.svg"),
+        folded_workload: dir.join("stack.workload.folded"),
+        flamegraph_workload: dir.join("flamegraph.workload.svg"),
+        folded_post: dir.join("stack.post.folded"),
+        flamegraph_post: dir.join("flamegraph.post.svg"),
+        folded_focus: dir.join("stack.focus.folded"),
+        flamegraph_focus: dir.join("flamegraph.focus.svg"),
+        flamegraph_html: dir.join("flamegraph.html"),
         summary: dir.join("summary.txt"),
         qemu_config: dir.join("qemu.toml"),
         host_time: dir.join("qemu.time.txt"),
@@ -293,6 +456,12 @@ fn prepare_outputs(root: &Path, arch: &str, out: Option<&Path>) -> anyhow::Resul
         resolve_stats: dir.join("resolve.stats.json"),
         window: dir.join("window.json"),
         qmp_socket: dir.join("qmp.sock"),
+        profile_stdout: work_dir.join("profile.stdout"),
+        profile_stderr: work_dir.join("profile.stderr"),
+        report_json: work_dir.join("report.json"),
+        report_md: work_dir.join("report.md"),
+        hotspots_csv: work_dir.join("hotspots.csv"),
+        hotspot_categories_csv: work_dir.join("hotspot_categories.csv"),
         dir,
     })
 }
@@ -355,7 +524,7 @@ fn write_qemu_config(
         "{},freq={},max_depth={},queue_size={},mode={},out={}",
         tools.plugin.display(),
         args.freq,
-        args.max_depth,
+        effective_max_depth(args),
         QPERF_QUEUE_SIZE,
         args.mode,
         outputs.raw.display()
@@ -494,7 +663,7 @@ fn run_qemu_direct(
             window: window_report_from_config(&config),
         }
     };
-    if args.host_time {
+    if host_time_enabled(args) {
         write_host_time_metrics(
             &outputs.host_time,
             host_wall_start.elapsed(),
@@ -504,15 +673,30 @@ fn run_qemu_direct(
         )?;
     }
     write_window_report(&outputs.window, &qemu_run.window)?;
+    if !outputs.profile_stdout.exists() {
+        File::create(&outputs.profile_stdout)
+            .with_context(|| format!("failed to create {}", outputs.profile_stdout.display()))?;
+    }
+    if !outputs.profile_stderr.exists() {
+        File::create(&outputs.profile_stderr)
+            .with_context(|| format!("failed to create {}", outputs.profile_stderr.display()))?;
+    }
     Ok(qemu_run)
 }
 
 fn qemu_executable(arch: &str) -> anyhow::Result<&'static str> {
-    match arch {
-        "riscv64" => Ok("qemu-system-riscv64"),
-        "loongarch64" => Ok("qemu-system-loongarch64"),
+    let name = match arch {
+        "riscv64" => "qemu-system-riscv64",
+        "loongarch64" => "qemu-system-loongarch64",
         _ => bail!("qperf currently supports StarryOS riscv64 and loongarch64 only"),
+    };
+    if find_executable(name).is_none() {
+        bail!(
+            "qperf requires `{name}` in PATH; install the matching QEMU system emulator or run \
+             the Docker-based harness perf-profile entrypoint"
+        );
     }
+    Ok(name)
 }
 
 fn qemu_config_from_path(path: &Path) -> anyhow::Result<PerfQemuConfig> {
@@ -598,6 +782,8 @@ fn run_qemu_with_stdout_monitor(
 
     let started = Instant::now();
     let mut host_stdout = std::io::stdout().lock();
+    let mut profile_stdout = File::create(&outputs.profile_stdout)
+        .with_context(|| format!("failed to create {}", outputs.profile_stdout.display()))?;
     let mut prompt_window = Vec::new();
     let mut marker_window = Vec::new();
     let mut injected = false;
@@ -630,6 +816,9 @@ fn run_qemu_with_stdout_monitor(
 
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(chunk) => {
+                profile_stdout
+                    .write_all(&chunk)
+                    .context("failed to write qperf profile stdout")?;
                 host_stdout
                     .write_all(&chunk)
                     .context("failed to forward QEMU stdout")?;
@@ -985,6 +1174,10 @@ struct AnalyzerRun<'a> {
     top_n: usize,
     start_sec: Option<f64>,
     stop_sec: Option<f64>,
+    symbol_style: String,
+    demangle: bool,
+    focus: Option<&'a str>,
+    min_percent: f64,
 }
 
 fn run_analyzer(args: AnalyzerRun<'_>) -> anyhow::Result<()> {
@@ -1006,13 +1199,267 @@ fn run_analyzer(args: AnalyzerRun<'_>) -> anyhow::Result<()> {
     if let Some(stop_sec) = args.stop_sec {
         command.arg("--stop-sec").arg(format!("{stop_sec:.9}"));
     }
+    command
+        .arg("--symbol-style")
+        .arg(&args.symbol_style)
+        .arg("--min-percent")
+        .arg(args.min_percent.to_string());
+    if !args.demangle {
+        command.arg("--no-demangle");
+    }
+    if let Some(focus) = args.focus {
+        command.arg("--focus").arg(focus);
+    }
     command.arg("--stats").arg(args.resolve_stats);
     if args.generate_svg {
         command.arg("--flamegraph").arg(args.flamegraph);
     }
     command.exec().context("failed to run qperf-analyzer")?;
-    ensure_file(args.folded, "folded stack output")?;
+    if !args.folded.exists() {
+        bail!("folded stack output not found at {}", args.folded.display());
+    }
     Ok(())
+}
+
+fn generate_phase_flamegraphs(
+    tools: &QperfTools,
+    elf: &Path,
+    outputs: &PerfOutputs,
+    args: &ArgsPerf,
+    window: &PerfWindowReport,
+    generate_svg: bool,
+) -> anyhow::Result<()> {
+    if window.start_time.is_some() && window.stop_time.is_some() {
+        fs::copy(&outputs.folded, &outputs.folded_workload).with_context(|| {
+            format!(
+                "failed to copy workload folded stack to {}",
+                outputs.folded_workload.display()
+            )
+        })?;
+        if file_nonempty(&outputs.flamegraph) {
+            fs::copy(&outputs.flamegraph, &outputs.flamegraph_workload).with_context(|| {
+                format!(
+                    "failed to copy workload flamegraph to {}",
+                    outputs.flamegraph_workload.display()
+                )
+            })?;
+        }
+    }
+    if let Some(start_sec) = window.start_time {
+        run_analyzer(AnalyzerRun {
+            analyzer: &tools.analyzer,
+            elf,
+            raw: &outputs.raw,
+            folded: &outputs.folded_boot,
+            flamegraph: &outputs.flamegraph_boot,
+            resolve_stats: &outputs
+                .resolve_stats
+                .with_file_name("resolve.boot.stats.json"),
+            generate_svg,
+            top_n: 0,
+            start_sec: None,
+            stop_sec: Some(start_sec),
+            symbol_style: args.symbol_style.to_string(),
+            demangle: true,
+            focus: None,
+            min_percent: flamegraph_min_percent(args),
+        })?;
+    }
+    if let Some(stop_sec) = window.stop_time {
+        run_analyzer(AnalyzerRun {
+            analyzer: &tools.analyzer,
+            elf,
+            raw: &outputs.raw,
+            folded: &outputs.folded_post,
+            flamegraph: &outputs.flamegraph_post,
+            resolve_stats: &outputs
+                .resolve_stats
+                .with_file_name("resolve.post.stats.json"),
+            generate_svg,
+            top_n: 0,
+            start_sec: Some(stop_sec),
+            stop_sec: None,
+            symbol_style: args.symbol_style.to_string(),
+            demangle: true,
+            focus: None,
+            min_percent: flamegraph_min_percent(args),
+        })?;
+    }
+    Ok(())
+}
+
+fn generate_focus_flamegraph(
+    tools: &QperfTools,
+    elf: &Path,
+    outputs: &PerfOutputs,
+    args: &ArgsPerf,
+    generate_svg: bool,
+) -> anyhow::Result<()> {
+    let Some(focus) = args.focus.as_deref() else {
+        return Ok(());
+    };
+    run_analyzer(AnalyzerRun {
+        analyzer: &tools.analyzer,
+        elf,
+        raw: &outputs.raw,
+        folded: &outputs.folded_focus,
+        flamegraph: &outputs.flamegraph_focus,
+        resolve_stats: &outputs
+            .resolve_stats
+            .with_file_name("resolve.focus.stats.json"),
+        generate_svg,
+        top_n: 0,
+        start_sec: None,
+        stop_sec: None,
+        symbol_style: args.symbol_style.to_string(),
+        demangle: true,
+        focus: Some(focus),
+        min_percent: flamegraph_min_percent(args),
+    })
+}
+
+fn write_flamegraph_html(
+    outputs: &PerfOutputs,
+    kind: PerfFlamegraphKind,
+    flamegraph_generated: bool,
+) -> anyhow::Result<()> {
+    if !matches!(kind, PerfFlamegraphKind::Html) || !flamegraph_generated {
+        return Ok(());
+    }
+    let svg = outputs
+        .flamegraph
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("flamegraph.svg");
+    let html = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>StarryOS qperf Flame \
+         Graph</title><style>body{{margin:0}}object{{width:100vw;height:100vh;border:0}}</\
+         style><object data=\"{svg}\" type=\"image/svg+xml\"></object>\n"
+    );
+    fs::write(&outputs.flamegraph_html, html)
+        .with_context(|| format!("failed to write {}", outputs.flamegraph_html.display()))
+}
+
+fn run_report_postprocess(
+    outputs: &PerfOutputs,
+    args: &ArgsPerf,
+    arch: &str,
+    returncode: i32,
+) -> anyhow::Result<()> {
+    let harness = workspace_harness_path(&outputs.work_dir)
+        .unwrap_or_else(|| PathBuf::from("tools/starry-syscall-harness/harness.py"));
+    if !harness.exists() {
+        eprintln!(
+            "qperf: harness postprocess script not found at {}; report.json/report.md not \
+             generated",
+            harness.display()
+        );
+        return Ok(());
+    }
+    let mut command = Command::new("python3");
+    command
+        .arg(&harness)
+        .arg("perf-postprocess")
+        .arg("--repo-root")
+        .arg(workspace_root_from_harness(&harness))
+        .arg("--arch")
+        .arg(arch)
+        .arg("--work-dir")
+        .arg(&outputs.work_dir)
+        .arg("--qperf-dir")
+        .arg(&outputs.dir)
+        .arg("--returncode")
+        .arg(returncode.to_string())
+        .arg("--timeout")
+        .arg(args.timeout.to_string())
+        .arg("--format")
+        .arg(format!("{:?}", args.format).to_ascii_lowercase())
+        .arg("--freq")
+        .arg(args.freq.to_string())
+        .arg("--max-depth")
+        .arg(effective_max_depth(args).to_string())
+        .arg("--mode")
+        .arg(args.mode.to_string())
+        .arg("--top")
+        .arg(args.top.to_string())
+        .arg("--min-percent")
+        .arg(args.min_percent.to_string())
+        .arg("--symbol-style")
+        .arg(args.symbol_style.to_string())
+        .arg("--profile-stdout")
+        .arg(&outputs.profile_stdout)
+        .arg("--profile-stderr")
+        .arg(&outputs.profile_stderr);
+    if args.debug {
+        command.arg("--debug");
+    }
+    if args.kernel_filter {
+        command.arg("--kernel-filter");
+    }
+    if host_time_enabled(args) {
+        command.arg("--host-time");
+    }
+    if args.host_perf {
+        command
+            .arg("--host-perf")
+            .arg("--host-perf-events")
+            .arg(&args.host_perf_events);
+    }
+    if let Some(cmd) = &args.shell_init_cmd {
+        command.arg("--shell-init-cmd").arg(cmd);
+    }
+    if let Some(prefix) = &args.shell_prefix {
+        command.arg("--shell-prefix").arg(prefix);
+    }
+    if let Some(marker) = &args.start_marker {
+        command.arg("--start-marker").arg(marker);
+    }
+    if let Some(marker) = &args.stop_marker {
+        command.arg("--stop-marker").arg(marker);
+    }
+    if let Some(timeout) = args.workload_timeout {
+        command.arg("--workload-timeout").arg(timeout.to_string());
+    }
+    if args.qperf_metrics {
+        command.arg("--qperf-metrics");
+    }
+    if let Some(focus) = &args.focus {
+        command.arg("--focus").arg(focus);
+    }
+    if args.no_truncate {
+        command.arg("--no-truncate");
+    }
+    for qemu_arg in &args.qemu_args {
+        command.arg("--qemu-arg").arg(qemu_arg);
+    }
+    let status = command
+        .status()
+        .context("failed to run qperf report postprocess")?;
+    if !status.success() {
+        bail!("qperf report postprocess failed with {status}");
+    }
+    Ok(())
+}
+
+fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
+    let mut current = Some(work_dir);
+    while let Some(path) = current {
+        let candidate = path.join("tools/starry-syscall-harness/harness.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = path.parent();
+    }
+    None
+}
+
+fn workspace_root_from_harness(harness: &Path) -> PathBuf {
+    harness
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn try_generate_flamegraph(folded: &Path, svg: &Path) -> anyhow::Result<bool> {
@@ -1088,11 +1535,22 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     writeln!(file, "arch = {}", input.arch)?;
     writeln!(file, "target = {}", input.target)?;
     writeln!(file, "frequency_hz = {}", args.freq)?;
-    writeln!(file, "max_stack_depth = {}", args.max_depth)?;
+    writeln!(file, "max_stack_depth = {}", effective_max_depth(args))?;
     writeln!(file, "sampling_mode = {}", args.mode)?;
+    writeln!(file, "case = {}", args.case)?;
+    writeln!(file, "symbol_style = {}", args.symbol_style)?;
+    writeln!(file, "flamegraph_kind = {}", args.flamegraph_kind)?;
+    writeln!(
+        file,
+        "flamegraph_min_percent = {}",
+        flamegraph_min_percent(args)
+    )?;
+    if let Some(focus) = args.focus.as_deref() {
+        writeln!(file, "focus = {focus}")?;
+    }
     writeln!(file, "kernel_filter = {}", args.kernel_filter)?;
-    writeln!(file, "host_time = {}", args.host_time)?;
-    if args.host_time {
+    writeln!(file, "host_time = {}", host_time_enabled(args))?;
+    if host_time_enabled(args) {
         writeln!(file, "host_time_output = {}", outputs.host_time.display())?;
     }
     writeln!(file, "host_perf = {}", args.host_perf)?;
@@ -1157,6 +1615,21 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     writeln!(file, "analyzer = {}", input.tools.analyzer.display())?;
     writeln!(file, "raw_samples = {}", outputs.raw.display())?;
     writeln!(file, "folded_stack = {}", outputs.folded.display())?;
+    writeln!(
+        file,
+        "workload_folded_stack = {}",
+        outputs.folded_workload.display()
+    )?;
+    writeln!(
+        file,
+        "boot_folded_stack = {}",
+        outputs.folded_boot.display()
+    )?;
+    writeln!(
+        file,
+        "post_folded_stack = {}",
+        outputs.folded_post.display()
+    )?;
     writeln!(file, "folded_stack_lines = {folded_lines}")?;
     writeln!(
         file,
@@ -1165,6 +1638,21 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     )?;
     if input.flamegraph_generated {
         writeln!(file, "flamegraph = {}", outputs.flamegraph.display())?;
+        writeln!(
+            file,
+            "workload_flamegraph = {}",
+            outputs.flamegraph_workload.display()
+        )?;
+        writeln!(
+            file,
+            "boot_flamegraph = {}",
+            outputs.flamegraph_boot.display()
+        )?;
+        writeln!(
+            file,
+            "post_flamegraph = {}",
+            outputs.flamegraph_post.display()
+        )?;
     }
     if let Some(plugin_summary_text) = plugin_summary_text {
         writeln!(file)?;
@@ -1181,14 +1669,41 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_report(outputs: &PerfOutputs, flamegraph_generated: bool) {
+fn print_report(outputs: &PerfOutputs) {
     println!("qperf report generated:");
-    println!("  output dir: {}", outputs.dir.display());
-    println!("  raw samples: {}", outputs.raw.display());
+    println!("  report: {}", outputs.report_md.display());
+    println!("  flamegraph: {}", outputs.flamegraph.display());
     println!("  folded stack: {}", outputs.folded.display());
-    if flamegraph_generated {
-        println!("  flamegraph: {}", outputs.flamegraph.display());
+    println!("  json: {}", outputs.report_json.display());
+    println!("  hotspots: {}", outputs.hotspots_csv.display());
+    println!(
+        "  hotspot categories: {}",
+        outputs.hotspot_categories_csv.display()
+    );
+    println!("  qperf dir: {}", outputs.dir.display());
+    println!("  raw samples: {}", outputs.raw.display());
+    if outputs.flamegraph_workload.exists() {
+        println!(
+            "  workload flamegraph: {}",
+            outputs.flamegraph_workload.display()
+        );
     }
+    if outputs.flamegraph_boot.exists() {
+        println!("  boot flamegraph: {}", outputs.flamegraph_boot.display());
+    }
+    if outputs.flamegraph_post.exists() {
+        println!("  post flamegraph: {}", outputs.flamegraph_post.display());
+    }
+    if outputs.flamegraph_focus.exists() {
+        println!(
+            "  focused flamegraph: {}",
+            outputs.flamegraph_focus.display()
+        );
+    }
+    if outputs.flamegraph_html.exists() {
+        println!("  html flamegraph: {}", outputs.flamegraph_html.display());
+    }
+    println!("  qemu config: {}", outputs.qemu_config.display());
     if outputs.host_time.exists() {
         println!("  host time: {}", outputs.host_time.display());
     }
@@ -1199,6 +1714,12 @@ fn print_report(outputs: &PerfOutputs, flamegraph_generated: bool) {
         println!("  window: {}", outputs.window.display());
     }
     println!("  summary: {}", outputs.summary.display());
+    println!(
+        "  compare hint: cargo starry perf-compare is not a cargo subcommand; use python3 \
+         tools/starry-syscall-harness/harness.py perf-compare --baseline {} --candidate \
+         <other-report.json>",
+        outputs.report_json.display()
+    );
 }
 
 fn kernel_elf_path(root: &Path, target: &str, debug: bool) -> PathBuf {

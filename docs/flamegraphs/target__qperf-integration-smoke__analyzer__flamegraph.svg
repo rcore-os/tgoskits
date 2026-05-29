@@ -1,0 +1,491 @@
+<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg version="1.1" width="3200" height="123" onload="init(evt)" viewBox="0 0 3200 123" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:fg="http://github.com/jonhoo/inferno"><!--Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples.--><!--NOTES: --><defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs><style type="text/css">
+text { font-family:monospace; font-size:13px }
+#title { text-anchor:middle; font-size:18px; }
+#matched { text-anchor:end; }
+#search { text-anchor:end; opacity:0.1; cursor:pointer; }
+#search:hover, #search.show { opacity:1; }
+#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+#unzoom { cursor:pointer; }
+#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+.hide { display:none; }
+.parent { opacity:0.5; }
+</style><script type="text/ecmascript"><![CDATA[
+        var nametype = 'Function:';
+        var fontsize = 13;
+        var fontwidth = 0.59;
+        var xpad = 10;
+        var inverted = false;
+        var searchcolor = 'rgb(230,0,230)';
+        var fluiddrawing = false;
+        var truncate_text_right = false;
+    ]]><![CDATA["use strict";
+var details, searchbtn, unzoombtn, matchedtxt, svg, searching, frames, known_font_width;
+function init(evt) {
+    details = document.getElementById("details").firstChild;
+    searchbtn = document.getElementById("search");
+    unzoombtn = document.getElementById("unzoom");
+    matchedtxt = document.getElementById("matched");
+    svg = document.getElementsByTagName("svg")[0];
+    frames = document.getElementById("frames");
+    known_font_width = get_monospace_width(frames);
+    total_samples = parseInt(frames.attributes.total_samples.value);
+    searching = 0;
+
+    // Use GET parameters to restore a flamegraph's state.
+    var restore_state = function() {
+        var params = get_params();
+        if (params.x && params.y)
+            zoom(find_group(document.querySelector('[*|x="' + params.x + '"][y="' + params.y + '"]')));
+        if (params.s)
+            search(params.s);
+    };
+
+    if (fluiddrawing) {
+        // Make width dynamic so the SVG fits its parent's width.
+        svg.removeAttribute("width");
+        // Edge requires us to have a viewBox that gets updated with size changes.
+        var isEdge = /Edge\/\d./i.test(navigator.userAgent);
+        if (!isEdge) {
+            svg.removeAttribute("viewBox");
+        }
+        var update_for_width_change = function() {
+            if (isEdge) {
+                svg.attributes.viewBox.value = "0 0 " + svg.width.baseVal.value + " " + svg.height.baseVal.value;
+            }
+
+            // Keep consistent padding on left and right of frames container.
+            frames.attributes.width.value = svg.width.baseVal.value - xpad * 2;
+
+            // Text truncation needs to be adjusted for the current width.
+            update_text_for_elements(frames.children);
+
+            // Keep search elements at a fixed distance from right edge.
+            var svgWidth = svg.width.baseVal.value;
+            searchbtn.attributes.x.value = svgWidth - xpad;
+            matchedtxt.attributes.x.value = svgWidth - xpad;
+        };
+        window.addEventListener('resize', function() {
+            update_for_width_change();
+        });
+        // This needs to be done asynchronously for Safari to work.
+        setTimeout(function() {
+            unzoom();
+            update_for_width_change();
+            restore_state();
+        }, 0);
+    } else {
+        restore_state();
+    }
+}
+// event listeners
+window.addEventListener("click", function(e) {
+    var target = find_group(e.target);
+    if (target) {
+        if (target.nodeName == "a") {
+            if (e.ctrlKey === false) return;
+            e.preventDefault();
+        }
+        if (target.classList.contains("parent")) unzoom();
+        zoom(target);
+
+        // set parameters for zoom state
+        var el = target.querySelector("rect");
+        if (el && el.attributes && el.attributes.y && el.attributes["fg:x"]) {
+            var params = get_params()
+            params.x = el.attributes["fg:x"].value;
+            params.y = el.attributes.y.value;
+            history.replaceState(null, null, parse_params(params));
+        }
+    }
+    else if (e.target.id == "unzoom") {
+        unzoom();
+
+        // remove zoom state
+        var params = get_params();
+        if (params.x) delete params.x;
+        if (params.y) delete params.y;
+        history.replaceState(null, null, parse_params(params));
+    }
+    else if (e.target.id == "search") search_prompt();
+}, false)
+// mouse-over for info
+// show
+window.addEventListener("mouseover", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = nametype + " " + g_to_text(target);
+}, false)
+// clear
+window.addEventListener("mouseout", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = ' ';
+}, false)
+// ctrl-F for search
+window.addEventListener("keydown",function (e) {
+    if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+        e.preventDefault();
+        search_prompt();
+    }
+}, false)
+// functions
+function get_params() {
+    var params = {};
+    var paramsarr = window.location.search.substr(1).split('&');
+    for (var i = 0; i < paramsarr.length; ++i) {
+        var tmp = paramsarr[i].split("=");
+        if (!tmp[0] || !tmp[1]) continue;
+        params[tmp[0]]  = decodeURIComponent(tmp[1]);
+    }
+    return params;
+}
+function parse_params(params) {
+    var uri = "?";
+    for (var key in params) {
+        uri += key + '=' + encodeURIComponent(params[key]) + '&';
+    }
+    if (uri.slice(-1) == "&")
+        uri = uri.substring(0, uri.length - 1);
+    if (uri == '?')
+        uri = window.location.href.split('?')[0];
+    return uri;
+}
+function find_child(node, selector) {
+    var children = node.querySelectorAll(selector);
+    if (children.length) return children[0];
+    return;
+}
+function find_group(node) {
+    var parent = node.parentElement;
+    if (!parent) return;
+    if (parent.id == "frames") return node;
+    return find_group(parent);
+}
+function orig_save(e, attr, val) {
+    if (e.attributes["fg:orig_" + attr] != undefined) return;
+    if (e.attributes[attr] == undefined) return;
+    if (val == undefined) val = e.attributes[attr].value;
+    e.setAttribute("fg:orig_" + attr, val);
+}
+function orig_load(e, attr) {
+    if (e.attributes["fg:orig_"+attr] == undefined) return;
+    e.attributes[attr].value = e.attributes["fg:orig_" + attr].value;
+    e.removeAttribute("fg:orig_" + attr);
+}
+function g_to_text(e) {
+    var text = find_child(e, "title").firstChild.nodeValue;
+    return (text)
+}
+function g_to_func(e) {
+    var func = g_to_text(e);
+    // if there's any manipulation we want to do to the function
+    // name before it's searched, do it here before returning.
+    return (func);
+}
+function get_monospace_width(frames) {
+    // Given the id="frames" element, return the width of text characters if
+    // this is a monospace font, otherwise return 0.
+    text = find_child(frames.children[0], "text");
+    originalContent = text.textContent;
+    text.textContent = "!";
+    bangWidth = text.getComputedTextLength();
+    text.textContent = "W";
+    wWidth = text.getComputedTextLength();
+    text.textContent = originalContent;
+    if (bangWidth === wWidth) {
+        return bangWidth;
+    } else {
+        return 0;
+    }
+}
+function update_text_for_elements(elements) {
+    // In order to render quickly in the browser, you want to do one pass of
+    // reading attributes, and one pass of mutating attributes. See
+    // https://web.dev/avoid-large-complex-layouts-and-layout-thrashing/ for details.
+
+    // Fall back to inefficient calculation, if we're variable-width font.
+    // TODO This should be optimized somehow too.
+    if (known_font_width === 0) {
+        for (var i = 0; i < elements.length; i++) {
+            update_text(elements[i]);
+        }
+        return;
+    }
+
+    var textElemNewAttributes = [];
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var r = find_child(e, "rect");
+        var t = find_child(e, "text");
+        var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+        var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+        var newX = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+        // Smaller than this size won't fit anything
+        if (w < 2 * known_font_width) {
+            textElemNewAttributes.push([newX, ""]);
+            continue;
+        }
+
+        // Fit in full text width
+        if (txt.length * known_font_width < w) {
+            textElemNewAttributes.push([newX, txt]);
+            continue;
+        }
+
+        var substringLength = Math.floor(w / known_font_width) - 2;
+        if (truncate_text_right) {
+            // Truncate the right side of the text.
+            textElemNewAttributes.push([newX, txt.substring(0, substringLength) + ".."]);
+            continue;
+        } else {
+            // Truncate the left side of the text.
+            textElemNewAttributes.push([newX, ".." + txt.substring(txt.length - substringLength, txt.length)]);
+            continue;
+        }
+    }
+
+    console.assert(textElemNewAttributes.length === elements.length, "Resize failed, please file a bug at https://github.com/jonhoo/inferno/");
+
+    // Now that we know new textContent, set it all in one go so we don't refresh a bazillion times.
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var values = textElemNewAttributes[i];
+        var t = find_child(e, "text");
+        t.attributes.x.value = values[0];
+        t.textContent = values[1];
+    }
+}
+
+function update_text(e) {
+    var r = find_child(e, "rect");
+    var t = find_child(e, "text");
+    var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+    var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+    t.attributes.x.value = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+    // Smaller than this size won't fit anything
+    if (w < 2 * fontsize * fontwidth) {
+        t.textContent = "";
+        return;
+    }
+    t.textContent = txt;
+    // Fit in full text width
+    if (t.getComputedTextLength() < w)
+        return;
+    if (truncate_text_right) {
+        // Truncate the right side of the text.
+        for (var x = txt.length - 2; x > 0; x--) {
+            if (t.getSubStringLength(0, x + 2) <= w) {
+                t.textContent = txt.substring(0, x) + "..";
+                return;
+            }
+        }
+    } else {
+        // Truncate the left side of the text.
+        for (var x = 2; x < txt.length; x++) {
+            if (t.getSubStringLength(x - 2, txt.length) <= w) {
+                t.textContent = ".." + txt.substring(x, txt.length);
+                return;
+            }
+        }
+    }
+    t.textContent = "";
+}
+// zoom
+function zoom_reset(e) {
+    if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * parseInt(e.attributes["fg:x"].value) / total_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / total_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_reset(c[i]);
+    }
+}
+function zoom_child(e, x, zoomed_width_samples) {
+    if (e.tagName == "text") {
+        var parent_x = parseFloat(find_child(e.parentNode, "rect[x]").attributes.x.value);
+        e.attributes.x.value = format_percent(parent_x + (100 * 3 / frames.attributes.width.value));
+    } else if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * (parseInt(e.attributes["fg:x"].value) - x) / zoomed_width_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / zoomed_width_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_child(c[i], x, zoomed_width_samples);
+    }
+}
+function zoom_parent(e) {
+    if (e.attributes) {
+        if (e.attributes.x != undefined) {
+            e.attributes.x.value = "0.0%";
+        }
+        if (e.attributes.width != undefined) {
+            e.attributes.width.value = "100.0%";
+        }
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_parent(c[i]);
+    }
+}
+function zoom(node) {
+    var attr = find_child(node, "rect").attributes;
+    var width = parseInt(attr["fg:w"].value);
+    var xmin = parseInt(attr["fg:x"].value);
+    var xmax = xmin + width;
+    var ymin = parseFloat(attr.y.value);
+    unzoombtn.classList.remove("hide");
+    var el = frames.children;
+    var to_update_text = [];
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        var a = find_child(e, "rect").attributes;
+        var ex = parseInt(a["fg:x"].value);
+        var ew = parseInt(a["fg:w"].value);
+        // Is it an ancestor
+        if (!inverted) {
+            var upstack = parseFloat(a.y.value) > ymin;
+        } else {
+            var upstack = parseFloat(a.y.value) < ymin;
+        }
+        if (upstack) {
+            // Direct ancestor
+            if (ex <= xmin && (ex+ew) >= xmax) {
+                e.classList.add("parent");
+                zoom_parent(e);
+                to_update_text.push(e);
+            }
+            // not in current path
+            else
+                e.classList.add("hide");
+        }
+        // Children maybe
+        else {
+            // no common path
+            if (ex < xmin || ex >= xmax) {
+                e.classList.add("hide");
+            }
+            else {
+                zoom_child(e, xmin, width);
+                to_update_text.push(e);
+            }
+        }
+    }
+    update_text_for_elements(to_update_text);
+}
+function unzoom() {
+    unzoombtn.classList.add("hide");
+    var el = frames.children;
+    for(var i = 0; i < el.length; i++) {
+        el[i].classList.remove("parent");
+        el[i].classList.remove("hide");
+        zoom_reset(el[i]);
+    }
+    update_text_for_elements(el);
+}
+// search
+function reset_search() {
+    var el = document.querySelectorAll("#frames rect");
+    for (var i = 0; i < el.length; i++) {
+        orig_load(el[i], "fill")
+    }
+    var params = get_params();
+    delete params.s;
+    history.replaceState(null, null, parse_params(params));
+}
+function search_prompt() {
+    if (!searching) {
+        var term = prompt("Enter a search term (regexp " +
+            "allowed, eg: ^ext4_)", "");
+        if (term != null) {
+            search(term)
+        }
+    } else {
+        reset_search();
+        searching = 0;
+        searchbtn.classList.remove("show");
+        searchbtn.firstChild.nodeValue = "Search"
+        matchedtxt.classList.add("hide");
+        matchedtxt.firstChild.nodeValue = ""
+    }
+}
+function search(term) {
+    var re = new RegExp(term);
+    var el = frames.children;
+    var matches = new Object();
+    var maxwidth = 0;
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        // Skip over frames which are either not visible, or below the zoomed-to frame
+        if (e.classList.contains("hide") || e.classList.contains("parent")) {
+            continue;
+        }
+        var func = g_to_func(e);
+        var rect = find_child(e, "rect");
+        if (func == null || rect == null)
+            continue;
+        // Save max width. Only works as we have a root frame
+        var w = parseInt(rect.attributes["fg:w"].value);
+        if (w > maxwidth)
+            maxwidth = w;
+        if (func.match(re)) {
+            // highlight
+            var x = parseInt(rect.attributes["fg:x"].value);
+            orig_save(rect, "fill");
+            rect.attributes.fill.value = searchcolor;
+            // remember matches
+            if (matches[x] == undefined) {
+                matches[x] = w;
+            } else {
+                if (w > matches[x]) {
+                    // overwrite with parent
+                    matches[x] = w;
+                }
+            }
+            searching = 1;
+        }
+    }
+    if (!searching)
+        return;
+    var params = get_params();
+    params.s = term;
+    history.replaceState(null, null, parse_params(params));
+
+    searchbtn.classList.add("show");
+    searchbtn.firstChild.nodeValue = "Reset Search";
+    // calculate percent matched, excluding vertical overlap
+    var count = 0;
+    var lastx = -1;
+    var lastw = 0;
+    var keys = Array();
+    for (k in matches) {
+        if (matches.hasOwnProperty(k))
+            keys.push(k);
+    }
+    // sort the matched frames by their x location
+    // ascending, then width descending
+    keys.sort(function(a, b){
+        return a - b;
+    });
+    // Step through frames saving only the biggest bottom-up frames
+    // thanks to the sort order. This relies on the tree property
+    // where children are always smaller than their parents.
+    for (var k in keys) {
+        var x = parseInt(keys[k]);
+        var w = matches[keys[k]];
+        if (x >= lastx + lastw) {
+            count += w;
+            lastx = x;
+            lastw = w;
+        }
+    }
+    // display matched percent
+    matchedtxt.classList.remove("hide");
+    var pct = 100 * count / maxwidth;
+    if (pct != 100) pct = pct.toFixed(1);
+    matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+}
+function format_percent(n) {
+    return n.toFixed(4) + "%";
+}
+]]></script><rect x="0" y="0" width="100%" height="123" fill="url(#background)"/><text id="title" fill="rgb(0,0,0)" x="50.0000%" y="26.00">StarryOS qperf Flame Graph</text><text id="details" fill="rgb(0,0,0)" x="10" y="105.00"> </text><text id="unzoom" class="hide" fill="rgb(0,0,0)" x="10" y="26.00">Reset Zoom</text><text id="search" fill="rgb(0,0,0)" x="3190" y="26.00">Search</text><text id="matched" fill="rgb(0,0,0)" x="3190" y="105.00"> </text><svg id="frames" x="10" width="3180" total_samples="590"><g><title>&lt;alloc[22389da7bd10ef6f]::collections::btree::map::BTreeMap&lt;rsext4[d387a3b1449c130e]::bmalloc::AbsoluteBN, rsext4[d387a3b1449c130e]::cache::data_block::CachedBlock&gt;&gt;::insert+0x460 (3 samples, 0.51%)</title><rect x="1.3559%" y="40" width="0.5085%" height="23" fill="rgb(227,184,24)" fg:x="8" fg:w="3"/><text x="1.4497%" y="54.50"></text></g><g><title>&lt;alloc[22389da7bd10ef6f]::collections::btree::node::BalancingContext&lt;rsext4[d387a3b1449c130e]::bmalloc::AbsoluteBN, rsext4[d387a3b1449c130e]::cache::data_block::CachedBlock&gt;&gt;::bulk_steal_left+0x42 (2 samples, 0.34%)</title><rect x="2.8814%" y="40" width="0.3390%" height="23" fill="rgb(246,184,45)" fg:x="17" fg:w="2"/><text x="2.9751%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::alloc (7 samples, 1.19%)</title><rect x="3.5593%" y="40" width="1.1864%" height="23" fill="rgb(238,184,36)" fg:x="21" fg:w="7"/><text x="3.6531%" y="54.50">&lt;a..</text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::alloc+0x20a (2 samples, 0.34%)</title><rect x="5.2542%" y="40" width="0.3390%" height="23" fill="rgb(237,184,35)" fg:x="31" fg:w="2"/><text x="5.3480%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::alloc+0xc2 (2 samples, 0.34%)</title><rect x="6.4407%" y="40" width="0.3390%" height="23" fill="rgb(255,184,55)" fg:x="38" fg:w="2"/><text x="6.5344%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x11a (2 samples, 0.34%)</title><rect x="7.9661%" y="40" width="0.3390%" height="23" fill="rgb(236,184,34)" fg:x="47" fg:w="2"/><text x="8.0599%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x13e (2 samples, 0.34%)</title><rect x="8.3051%" y="40" width="0.3390%" height="23" fill="rgb(244,184,43)" fg:x="49" fg:w="2"/><text x="8.3988%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x144 (2 samples, 0.34%)</title><rect x="8.6441%" y="40" width="0.3390%" height="23" fill="rgb(242,184,40)" fg:x="51" fg:w="2"/><text x="8.7378%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x18 (2 samples, 0.34%)</title><rect x="9.3220%" y="40" width="0.3390%" height="23" fill="rgb(239,184,37)" fg:x="55" fg:w="2"/><text x="9.4158%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x37e (2 samples, 0.34%)</title><rect x="10.1695%" y="40" width="0.3390%" height="23" fill="rgb(251,184,50)" fg:x="60" fg:w="2"/><text x="10.2632%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x3a (2 samples, 0.34%)</title><rect x="10.8475%" y="40" width="0.3390%" height="23" fill="rgb(235,184,33)" fg:x="64" fg:w="2"/><text x="10.9412%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x4a (2 samples, 0.34%)</title><rect x="11.6949%" y="40" width="0.3390%" height="23" fill="rgb(234,184,31)" fg:x="69" fg:w="2"/><text x="11.7887%" y="54.50"></text></g><g><title>&lt;ax_alloc[e6793b4fc39b793d]::buddy_slab::GlobalAllocator&gt;::dealloc+0x76 (2 samples, 0.34%)</title><rect x="13.2203%" y="40" width="0.3390%" height="23" fill="rgb(248,184,47)" fg:x="78" fg:w="2"/><text x="13.3141%" y="54.50"></text></g><g><title>&lt;ax_runtime[4ca9a3a5d57819d0]::devices::FsBlockDevice as ax_fs_ng[ae106d1ca4859199]::block::FsBlockDevice&gt;::write_block+0x64a (2 samples, 0.34%)</title><rect x="19.1525%" y="40" width="0.3390%" height="23" fill="rgb(229,184,27)" fg:x="113" fg:w="2"/><text x="19.2463%" y="54.50"></text></g><g><title>&lt;ax_task[e1e9fe55ba492fb1]::run_queue::AxRunQueue&gt;::switch_to+0x2fc (2 samples, 0.34%)</title><rect x="20.6780%" y="40" width="0.3390%" height="23" fill="rgb(234,184,32)" fg:x="122" fg:w="2"/><text x="20.7717%" y="54.50"></text></g><g><title>&lt;ax_task[e1e9fe55ba492fb1]::run_queue::AxRunQueue&gt;::switch_to+0x300 (2 samples, 0.34%)</title><rect x="21.0169%" y="40" width="0.3390%" height="23" fill="rgb(234,184,32)" fg:x="124" fg:w="2"/><text x="21.1107%" y="54.50"></text></g><g><title>&lt;ax_task[e1e9fe55ba492fb1]::task::TaskInner&gt;::current_check_preempt_pending+0x2e0 (2 samples, 0.34%)</title><rect x="21.5254%" y="40" width="0.3390%" height="23" fill="rgb(237,184,35)" fg:x="127" fg:w="2"/><text x="21.6192%" y="54.50"></text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::data_block::DataBlockCache&gt;::modify::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk, rsext4[d387a3b1449c130e]::file::delete::try_remove_dentry_in_block&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;::{closure#0}&gt;+0x3e (6 samples, 1.02%)</title><rect x="23.8983%" y="40" width="1.0169%" height="23" fill="rgb(245,187,44)" fg:x="141" fg:w="6"/><text x="23.9921%" y="54.50">&lt;r..</text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::data_block::DataBlockCache&gt;::modify::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk, rsext4[d387a3b1449c130e]::file::delete::try_remove_dentry_in_block&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;::{closure#0}&gt;+0x4c (5 samples, 0.85%)</title><rect x="24.9153%" y="40" width="0.8475%" height="23" fill="rgb(230,187,28)" fg:x="147" fg:w="5"/><text x="25.0090%" y="54.50">&lt;..</text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::data_block::DataBlockCache&gt;::modify::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk, rsext4[d387a3b1449c130e]::file::delete::try_remove_dentry_in_block&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;::{closure#0}&gt;+0x4e (3 samples, 0.51%)</title><rect x="25.7627%" y="40" width="0.5085%" height="23" fill="rgb(244,187,43)" fg:x="152" fg:w="3"/><text x="25.8565%" y="54.50"></text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::data_block::DataBlockCache&gt;::modify::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk, rsext4[d387a3b1449c130e]::file::delete::try_remove_dentry_in_block&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;::{closure#0}&gt;+0x58 (7 samples, 1.19%)</title><rect x="26.2712%" y="40" width="1.1864%" height="23" fill="rgb(234,187,32)" fg:x="155" fg:w="7"/><text x="26.3649%" y="54.50">&lt;r..</text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::data_block::DataBlockCache&gt;::modify::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk, rsext4[d387a3b1449c130e]::file::delete::try_remove_dentry_in_block&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;::{closure#0}&gt;+0xf4 (2 samples, 0.34%)</title><rect x="27.6271%" y="40" width="0.3390%" height="23" fill="rgb(248,187,47)" fg:x="163" fg:w="2"/><text x="27.7209%" y="54.50"></text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::data_block::DataBlockCache&gt;::modify::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk, rsext4[d387a3b1449c130e]::file::rename::mv&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;::{closure#0}&gt;+0x1a (2 samples, 0.34%)</title><rect x="27.9661%" y="40" width="0.3390%" height="23" fill="rgb(237,187,35)" fg:x="165" fg:w="2"/><text x="28.0599%" y="54.50"></text></g><g><title>&lt;rsext4[d387a3b1449c130e]::cache::inode_table::InodeCache&gt;::evict_lru::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x3dc (2 samples, 0.34%)</title><rect x="28.4746%" y="40" width="0.3390%" height="23" fill="rgb(236,187,34)" fg:x="168" fg:w="2"/><text x="28.5683%" y="54.50"></text></g><g><title>&lt;virtio_drivers[764ba4b562043b66]::queue::VirtQueue&lt;ax_driver[a4b561a240288da2]::virtio::VirtIoHalImpl, 16usize&gt;&gt;::add_notify_wait_pop::&lt;virtio_drivers[764ba4b562043b66]::transport::pci::PciTransport&gt;+0xaa (3 samples, 0.51%)</title><rect x="31.3559%" y="40" width="0.5085%" height="23" fill="rgb(232,160,30)" fg:x="185" fg:w="3"/><text x="31.4497%" y="54.50"></text></g><g><title>&lt;virtio_drivers[764ba4b562043b66]::queue::VirtQueue&lt;ax_driver[a4b561a240288da2]::virtio::VirtIoHalImpl, 16usize&gt;&gt;::add_notify_wait_pop::&lt;virtio_drivers[764ba4b562043b66]::transport::pci::PciTransport&gt;+0xc8 (9 samples, 1.53%)</title><rect x="31.8644%" y="40" width="1.5254%" height="23" fill="rgb(244,160,43)" fg:x="188" fg:w="9"/><text x="31.9582%" y="54.50">&lt;vir..</text></g><g><title>&lt;virtio_drivers[764ba4b562043b66]::queue::VirtQueue&lt;ax_driver[a4b561a240288da2]::virtio::VirtIoHalImpl, 16usize&gt;&gt;::add_notify_wait_pop::&lt;virtio_drivers[764ba4b562043b66]::transport::pci::PciTransport&gt;+0xca (62 samples, 10.51%)</title><rect x="33.3898%" y="40" width="10.5085%" height="23" fill="rgb(242,160,41)" fg:x="197" fg:w="62"/><text x="33.4836%" y="54.50">&lt;virtio_drivers[764ba4b562043b66]::queue:..</text></g><g><title>&lt;virtio_drivers[764ba4b562043b66]::queue::VirtQueue&lt;ax_driver[a4b561a240288da2]::virtio::VirtIoHalImpl, 16usize&gt;&gt;::add_notify_wait_pop::&lt;virtio_drivers[764ba4b562043b66]::transport::pci::PciTransport&gt;+0xce (75 samples, 12.71%)</title><rect x="43.8983%" y="40" width="12.7119%" height="23" fill="rgb(253,160,53)" fg:x="259" fg:w="75"/><text x="43.9921%" y="54.50">&lt;virtio_drivers[764ba4b562043b66]::queue::VirtQueue..</text></g><g><title>_head+0x1144 (5 samples, 0.85%)</title><rect x="57.2881%" y="40" width="0.8475%" height="23" fill="rgb(242,148,40)" fg:x="338" fg:w="5"/><text x="57.3819%" y="54.50">_..</text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x2d6 (2 samples, 0.34%)</title><rect x="59.4915%" y="40" width="0.3390%" height="23" fill="rgb(245,149,44)" fg:x="351" fg:w="2"/><text x="59.5853%" y="54.50"></text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x2ec (3 samples, 0.51%)</title><rect x="59.8305%" y="40" width="0.5085%" height="23" fill="rgb(235,149,33)" fg:x="353" fg:w="3"/><text x="59.9243%" y="54.50"></text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x2f2 (159 samples, 26.95%)</title><rect x="60.5085%" y="40" width="26.9492%" height="23" fill="rgb(250,149,49)" fg:x="357" fg:w="159"/><text x="60.6022%" y="54.50">compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x2f2</text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x300 (3 samples, 0.51%)</title><rect x="87.4576%" y="40" width="0.5085%" height="23" fill="rgb(234,149,32)" fg:x="516" fg:w="3"/><text x="87.5514%" y="54.50"></text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x32a (2 samples, 0.34%)</title><rect x="88.1356%" y="40" width="0.3390%" height="23" fill="rgb(234,149,32)" fg:x="520" fg:w="2"/><text x="88.2293%" y="54.50"></text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x4a0 (2 samples, 0.34%)</title><rect x="88.4746%" y="40" width="0.3390%" height="23" fill="rgb(228,149,25)" fg:x="522" fg:w="2"/><text x="88.5683%" y="54.50"></text></g><g><title>compiler_builtins[7242cd7a182d5fa8]::int::specialized_div_rem::u128_div_rem+0x5ba (3 samples, 0.51%)</title><rect x="89.6610%" y="40" width="0.5085%" height="23" fill="rgb(228,149,25)" fg:x="529" fg:w="3"/><text x="89.7548%" y="54.50"></text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x1c0 (11 samples, 1.86%)</title><rect x="90.6780%" y="40" width="1.8644%" height="23" fill="rgb(240,156,38)" fg:x="535" fg:w="11"/><text x="90.7717%" y="54.50">rsext..</text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x1c4 (6 samples, 1.02%)</title><rect x="92.5424%" y="40" width="1.0169%" height="23" fill="rgb(250,156,50)" fg:x="546" fg:w="6"/><text x="92.6361%" y="54.50">rs..</text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x1cc (4 samples, 0.68%)</title><rect x="93.5593%" y="40" width="0.6780%" height="23" fill="rgb(238,156,36)" fg:x="552" fg:w="4"/><text x="93.6531%" y="54.50"></text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x1d0 (12 samples, 2.03%)</title><rect x="94.2373%" y="40" width="2.0339%" height="23" fill="rgb(239,156,37)" fg:x="556" fg:w="12"/><text x="94.3310%" y="54.50">rsext4..</text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x1dc (8 samples, 1.36%)</title><rect x="96.2712%" y="40" width="1.3559%" height="23" fill="rgb(237,156,35)" fg:x="568" fg:w="8"/><text x="96.3649%" y="54.50">rse..</text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x220 (4 samples, 0.68%)</title><rect x="97.9661%" y="40" width="0.6780%" height="23" fill="rgb(233,156,30)" fg:x="578" fg:w="4"/><text x="98.0599%" y="54.50"></text></g><g><title>rsext4[d387a3b1449c130e]::dir::mkdir::mkdir_internal::&lt;ax_fs_ng[ae106d1ca4859199]::fs::ext4::rsext4::Ext4Disk&gt;+0x23c (2 samples, 0.34%)</title><rect x="98.6441%" y="40" width="0.3390%" height="23" fill="rgb(230,156,27)" fg:x="582" fg:w="2"/><text x="98.7378%" y="54.50"></text></g><g><title>all (590 samples, 100%)</title><rect x="0.0000%" y="64" width="100.0000%" height="23" fill="rgb(255,230,55)" fg:x="0" fg:w="590"/><text x="0.0938%" y="78.50"></text></g></svg></svg>

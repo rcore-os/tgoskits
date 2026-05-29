@@ -15,6 +15,17 @@ python3 tools/starry-syscall-harness/harness.py perf-diff --baseline target/star
 
 Reports are written under `target/starry-syscall-harness`.
 
+For day-to-day qperf profiling, prefer the cargo-integrated entrypoint:
+
+```bash
+cargo starry perf --case boot
+tools/starry-syscall-harness/scripts/qperf-smoke.sh blk-read
+```
+
+The harness `perf-profile` command remains the Docker-first compatibility
+entrypoint and now forwards flamegraph readability options such as
+`--symbol-style`, `--focus`, and `--no-truncate`.
+
 Useful qperf options:
 
 ```bash

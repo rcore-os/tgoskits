@@ -1026,6 +1026,25 @@ def write_perf_markdown(path: Path, report: dict[str, Any]) -> None:
         lines.append(f"- workload elapsed seconds: `{normalized['workload_elapsed_seconds']}`")
     if normalized.get("samples_per_MB") is not None:
         lines.append(f"- samples per MB: `{normalized['samples_per_MB']}`")
+    artifact_paths = report.get("artifacts") or {}
+    lines.extend(["", "## Artifacts", ""])
+    for label in (
+        "markdown",
+        "report",
+        "flamegraph",
+        "flamegraph_workload",
+        "flamegraph_boot",
+        "flamegraph_post",
+        "flamegraph_focus",
+        "flamegraph_html",
+        "folded",
+        "hotspots_csv",
+        "hotspot_categories_csv",
+        "summary_txt",
+    ):
+        value = artifact_paths.get(label)
+        if value:
+            lines.append(f"- {label}: `{value}`")
     lines.extend(
         [
             "",
@@ -1128,6 +1147,10 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
         args.mode,
         "--top",
         str(args.top),
+        "--min-percent",
+        str(args.min_percent),
+        "--symbol-style",
+        args.symbol_style,
         "--out",
         str(qperf_dir),
     ]
@@ -1137,6 +1160,8 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
         command.append("--kernel-filter")
     if args.host_time:
         command.append("--host-time")
+    else:
+        command.append("--no-host-time")
     if args.host_perf:
         command.append("--host-perf")
         command.extend(["--host-perf-events", args.host_perf_events])
@@ -1152,6 +1177,10 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
         command.extend(["--workload-timeout", str(args.workload_timeout)])
     if args.qperf_metrics:
         command.append("--qperf-metrics")
+    if args.focus:
+        command.extend(["--focus", args.focus])
+    if args.no_truncate:
+        command.append("--no-truncate")
     for qemu_arg in args.qemu_arg:
         command.append(f"--qemu-arg={qemu_arg}")
     run_result = run(command, cwd=repo_root, check=False, capture=True)
@@ -1220,6 +1249,9 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
             "mode": args.mode,
             "top": args.top,
             "min_percent": args.min_percent,
+            "symbol_style": args.symbol_style,
+            "focus": args.focus,
+            "no_truncate": args.no_truncate,
             "debug": args.debug,
             "kernel_filter": args.kernel_filter,
             "host_time": args.host_time,
@@ -1259,6 +1291,11 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
             "raw_samples": str(qperf_dir / "qperf.bin"),
             "folded": str(folded),
             "flamegraph": str(qperf_dir / "flamegraph.svg"),
+            "flamegraph_workload": str(qperf_dir / "flamegraph.workload.svg"),
+            "flamegraph_boot": str(qperf_dir / "flamegraph.boot.svg"),
+            "flamegraph_post": str(qperf_dir / "flamegraph.post.svg"),
+            "flamegraph_focus": str(qperf_dir / "flamegraph.focus.svg"),
+            "flamegraph_html": str(qperf_dir / "flamegraph.html"),
             "summary_txt": str(qperf_dir / "summary.txt"),
             "plugin_summary": str(qperf_dir / "qperf.summary.txt"),
             "qemu_config": str(qperf_dir / "qemu.toml"),
@@ -1302,6 +1339,150 @@ def print_perf_summary(report: dict[str, Any]) -> None:
             print(f"- {candidate['id']}: {candidate['trigger']} ({candidate['percent']:.2f}%)")
 
 
+def perf_postprocess(args: argparse.Namespace) -> int:
+    repo_root = repo_root_from(Path(args.repo_root)) if args.repo_root else script_repo_root()
+    work_dir = Path(args.work_dir)
+    if not work_dir.is_absolute():
+        work_dir = repo_root / work_dir
+    qperf_dir = Path(args.qperf_dir)
+    if not qperf_dir.is_absolute():
+        qperf_dir = repo_root / qperf_dir
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    stdout_path = Path(args.profile_stdout) if args.profile_stdout else work_dir / "profile.stdout"
+    stderr_path = Path(args.profile_stderr) if args.profile_stderr else work_dir / "profile.stderr"
+    stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+    stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+    write_text(work_dir / "profile.stdout", stdout_text)
+    write_text(work_dir / "profile.stderr", stderr_text)
+
+    folded = qperf_dir / "stack.folded"
+    hotspots = parse_folded(folded, args.top)
+    summary = parse_kv_summary(qperf_dir / "summary.txt")
+    plugin_summary = parse_kv_summary(qperf_dir / "qperf.summary.txt")
+    host_time_metrics = parse_gnu_time_metrics(qperf_dir / "qemu.time.txt")
+    host_perf_metrics = parse_perf_stat_metrics(qperf_dir / "qemu.perf.csv") if args.host_perf else {
+        "enabled": False,
+        "note": "未启用 host perf",
+        "events": {},
+        "errors": [],
+    }
+    if args.host_perf:
+        host_perf_metrics["enabled"] = True
+    workload_metrics = parse_workload_stdout_metrics(stdout_text)
+    window = load_json_file(qperf_dir / "window.json")
+    if not window:
+        window = {
+            "enabled": bool(args.start_marker or args.stop_marker or args.workload_timeout),
+            "start_marker": args.start_marker,
+            "stop_marker": args.stop_marker,
+            "start_time": None,
+            "stop_time": None,
+            "duration_sec": None,
+            "workload_timeout": args.workload_timeout,
+            "truncated_by_timeout": False,
+            "boot_samples_excluded": None,
+            "warnings": [],
+            "method": "qperf_raw_elapsed_timestamp_filter" if (args.start_marker or args.stop_marker) else "disabled",
+        }
+    resolve_stats = load_json_file(qperf_dir / "resolve.stats.json")
+    if resolve_stats:
+        window["boot_samples_excluded"] = resolve_stats.get("samples_excluded_before")
+        window["post_window_samples_excluded"] = resolve_stats.get("samples_excluded_after")
+        if resolve_stats.get("warning"):
+            window.setdefault("warnings", []).append(resolve_stats["warning"])
+    if args.start_marker and not window.get("start_time"):
+        window.setdefault("warnings", []).append("start marker missing; report may include boot samples")
+    if args.stop_marker and not window.get("stop_time"):
+        window.setdefault("warnings", []).append("stop marker missing; report may include post-workload samples")
+    complete_workload_metrics(workload_metrics, window)
+    normalized_metrics = compute_normalized_metrics(
+        hotspots,
+        plugin_summary,
+        host_time_metrics,
+        host_perf_metrics,
+        workload_metrics,
+        window,
+    )
+    candidates = perf_fix_candidates(hotspots["top_functions"], args.min_percent)
+    result = "ok" if args.returncode == 0 and hotspots["total_samples"] > 0 else "incomplete"
+    artifacts = {
+        "work_dir": str(work_dir),
+        "qperf_dir": str(qperf_dir),
+        "report": str(work_dir / "report.json"),
+        "markdown": str(work_dir / "report.md"),
+        "hotspots_csv": str(work_dir / "hotspots.csv"),
+        "hotspot_categories_csv": str(work_dir / "hotspot_categories.csv"),
+        "profile_stdout": str(work_dir / "profile.stdout"),
+        "profile_stderr": str(work_dir / "profile.stderr"),
+        "raw_samples": str(qperf_dir / "qperf.bin"),
+        "folded": str(folded),
+        "flamegraph": str(qperf_dir / "flamegraph.svg"),
+        "flamegraph_workload": str(qperf_dir / "flamegraph.workload.svg"),
+        "flamegraph_boot": str(qperf_dir / "flamegraph.boot.svg"),
+        "flamegraph_post": str(qperf_dir / "flamegraph.post.svg"),
+        "flamegraph_focus": str(qperf_dir / "flamegraph.focus.svg"),
+        "flamegraph_html": str(qperf_dir / "flamegraph.html"),
+        "summary_txt": str(qperf_dir / "summary.txt"),
+        "plugin_summary": str(qperf_dir / "qperf.summary.txt"),
+        "qemu_config": str(qperf_dir / "qemu.toml"),
+        "host_time": str(qperf_dir / "qemu.time.txt"),
+        "host_perf": str(qperf_dir / "qemu.perf.csv"),
+        "window": str(qperf_dir / "window.json"),
+        "resolve_stats": str(qperf_dir / "resolve.stats.json"),
+    }
+    report = {
+        "arch": args.arch,
+        "result": result,
+        "returncode": args.returncode,
+        "parameters": {
+            "timeout": args.timeout,
+            "format": args.format,
+            "freq": args.freq,
+            "max_depth": args.max_depth,
+            "mode": args.mode,
+            "top": args.top,
+            "min_percent": args.min_percent,
+            "symbol_style": getattr(args, "symbol_style", None),
+            "focus": getattr(args, "focus", None),
+            "no_truncate": getattr(args, "no_truncate", False),
+            "debug": args.debug,
+            "kernel_filter": args.kernel_filter,
+            "host_time": args.host_time,
+            "host_perf": args.host_perf,
+            "host_perf_events": args.host_perf_events,
+            "shell_init_cmd": args.shell_init_cmd,
+            "shell_prefix": args.shell_prefix,
+            "start_marker": args.start_marker,
+            "stop_marker": args.stop_marker,
+            "workload_timeout": args.workload_timeout,
+            "qperf_metrics": args.qperf_metrics,
+            "qemu_args": args.qemu_arg,
+        },
+        "window": window,
+        "resolve_stats": resolve_stats,
+        "hotspots": hotspots,
+        "summary": summary,
+        "plugin_summary": plugin_summary,
+        "host_time_metrics": host_time_metrics,
+        "host_perf_metrics": host_perf_metrics,
+        "workload_metrics": workload_metrics,
+        "normalized_metrics": normalized_metrics,
+        "fix_candidates": candidates,
+        "linux_alignment": {
+            "status": "baseline_required",
+            "note": "Provide a Linux workload baseline or a previous optimized folded stack to perf-diff for quantitative alignment.",
+        },
+        "artifacts": artifacts,
+    }
+    write_text(work_dir / "report.json", json.dumps(report, indent=2, sort_keys=True))
+    write_perf_markdown(work_dir / "report.md", report)
+    write_hotspots_csv(work_dir / "hotspots.csv", hotspots)
+    write_hotspot_categories_csv(work_dir / "hotspot_categories.csv", hotspots)
+    print_perf_summary(report)
+    return 0
+
+
 def perf_profile(args: argparse.Namespace) -> int:
     repo_root = repo_root_from(Path(args.repo_root)) if args.repo_root else script_repo_root()
     if not args.no_docker and not is_inside_docker():
@@ -1325,10 +1506,16 @@ def perf_profile(args: argparse.Namespace) -> int:
             str(args.top),
             "--min-percent",
             str(args.min_percent),
+            "--symbol-style",
+            args.symbol_style,
             "--output-dir",
             args.output_dir,
             "--no-docker",
         ]
+        if args.focus:
+            forwarded.extend(["--focus", args.focus])
+        if args.no_truncate:
+            forwarded.append("--no-truncate")
         if args.debug:
             forwarded.append("--debug")
         if args.kernel_filter:
@@ -2059,6 +2246,9 @@ def main(argv: list[str] | None = None) -> int:
     perf_parser.add_argument("--mode", default="tb", choices=["tb", "insn"])
     perf_parser.add_argument("--top", type=int, default=20)
     perf_parser.add_argument("--min-percent", type=float, default=5.0)
+    perf_parser.add_argument("--symbol-style", default="full", choices=["full", "short", "module"])
+    perf_parser.add_argument("--focus")
+    perf_parser.add_argument("--no-truncate", action="store_true")
     perf_parser.add_argument("--output-dir", default="target/starry-syscall-harness")
     perf_parser.add_argument("--no-docker", action="store_true")
     perf_parser.add_argument("--debug", action="store_true")
@@ -2077,6 +2267,38 @@ def main(argv: list[str] | None = None) -> int:
     perf_parser.add_argument("--qperf-metrics", action="store_true")
     perf_parser.add_argument("--qemu-arg", action="append", default=[])
     perf_parser.set_defaults(func=perf_profile)
+
+    perf_post_parser = sub.add_parser("perf-postprocess", help="generate qperf report files from existing qperf artifacts")
+    perf_post_parser.add_argument("--repo-root")
+    perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])
+    perf_post_parser.add_argument("--work-dir", required=True)
+    perf_post_parser.add_argument("--qperf-dir", required=True)
+    perf_post_parser.add_argument("--profile-stdout")
+    perf_post_parser.add_argument("--profile-stderr")
+    perf_post_parser.add_argument("--returncode", type=int, default=0)
+    perf_post_parser.add_argument("--timeout", type=int, default=20)
+    perf_post_parser.add_argument("--format", default="all", choices=["folded", "svg", "pprof", "all"])
+    perf_post_parser.add_argument("--freq", type=int, default=99)
+    perf_post_parser.add_argument("--max-depth", type=int, default=128)
+    perf_post_parser.add_argument("--mode", default="tb", choices=["tb", "insn"])
+    perf_post_parser.add_argument("--top", type=int, default=80)
+    perf_post_parser.add_argument("--min-percent", type=float, default=0.3)
+    perf_post_parser.add_argument("--symbol-style", default="full", choices=["full", "short", "module"])
+    perf_post_parser.add_argument("--focus")
+    perf_post_parser.add_argument("--no-truncate", action="store_true")
+    perf_post_parser.add_argument("--debug", action="store_true")
+    perf_post_parser.add_argument("--kernel-filter", action="store_true")
+    perf_post_parser.add_argument("--host-time", action="store_true")
+    perf_post_parser.add_argument("--host-perf", action="store_true")
+    perf_post_parser.add_argument("--host-perf-events", default="task-clock,cycles,instructions,cache-references,cache-misses,context-switches,cpu-migrations,page-faults")
+    perf_post_parser.add_argument("--shell-init-cmd")
+    perf_post_parser.add_argument("--shell-prefix", default="root@starry:")
+    perf_post_parser.add_argument("--start-marker")
+    perf_post_parser.add_argument("--stop-marker")
+    perf_post_parser.add_argument("--workload-timeout", type=int)
+    perf_post_parser.add_argument("--qperf-metrics", action="store_true")
+    perf_post_parser.add_argument("--qemu-arg", action="append", default=[])
+    perf_post_parser.set_defaults(func=perf_postprocess)
 
     perf_diff_parser = sub.add_parser("perf-diff", help="compare two qperf folded stack outputs")
     perf_diff_parser.add_argument("--repo-root")

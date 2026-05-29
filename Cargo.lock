@@ -6318,6 +6318,8 @@ dependencies = [
  "clap",
  "inferno",
  "object 0.37.3",
+ "regex",
+ "rustc-demangle",
 ]
 
 [[package]]

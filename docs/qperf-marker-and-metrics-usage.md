@@ -1,5 +1,21 @@
 # qperf Marker And Metrics Usage
 
+`cargo starry perf` is now the preferred entrypoint for local qperf runs. The
+lower-level harness commands below remain supported for Docker-wrapped syscall
+harness workflows and compatibility.
+
+```bash
+cargo starry perf \
+  --case blk-read \
+  --qperf-metrics \
+  --start-marker QPERF_BEGIN \
+  --stop-marker QPERF_END \
+  --workload 'echo reset > /proc/qperf_metrics; echo QPERF_BEGIN:blk-read; dd if=/usr/bin/lto-dump of=/dev/null bs=64k; cat /proc/qperf_metrics; echo QPERF_END:blk-read'
+```
+
+See also `docs/qperf-cargo-starry-integration.md` and
+`docs/qperf-flamegraph-guide.md`.
+
 ## Basic Marker Run
 
 Use explicit guest stdout markers around the workload:
@@ -63,6 +79,39 @@ pattern is to start `python3 -m http.server 8000 --bind 0.0.0.0` in the wrapper
 before invoking `harness.py --no-docker`.
 
 The parser merges `QPERF_METRIC key=value` fields into `report.json.workload_metrics.values`.
+
+## Counter Interpretation
+
+The current counters are driver-visible counters exported by StarryOS through
+`/proc/qperf_metrics`. They are useful for A/B validation, but they should not
+be described as exact virtqueue ring-level accounting.
+
+Important blk counters:
+
+- `virtqueue_add_notify_wait_pop_count`: synchronous virtqueue submit/notify/wait/pop path count.
+- `virtqueue_add_count`: driver-visible virtqueue add count.
+- `virtio_notify_kick_count`: driver-visible notify/kick count.
+- `virtqueue_pop_complete_count`: driver-visible completion pop count.
+- `virtqueue_depth_max` and `virtqueue_depth_hist_*`: approximate queue depth observation.
+- `virtio_blk_read_requests` and `virtio_blk_read_bytes`: blk read request count and bytes recorded by the driver.
+
+One existing marker-aware blk profile at
+`target/qperf-validation/blk/perf/riscv64/latest/report.json` reported:
+
+| metric | value |
+| --- | ---: |
+| `dd` bytes | 53,601,104 |
+| `dd` elapsed | 5.794463 s |
+| `virtqueue_add_notify_wait_pop_count` | 13,780 |
+| `virtio_notify_kick_count` | 13,847 |
+| `virtio_blk_read_requests` | 13,478 |
+| `virtio_blk_read_bytes` | 55,195,136 |
+| average blk read request size | 4,095.20 bytes |
+
+This is a useful bottleneck signal: even when the guest command uses
+`bs=64k`, the driver-visible blk request size is still about 4 KiB and the
+number of notify/kick events is close to the number of virtqueue adds. See
+`docs/qperf-current-blk-bottleneck-analysis.md` for the full analysis.
 
 ## Host Perf
 

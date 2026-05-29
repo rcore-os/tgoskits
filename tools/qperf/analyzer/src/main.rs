@@ -6,8 +6,9 @@ use std::{
 };
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use object::{Object, ObjectSymbol};
+use regex::Regex;
 
 #[derive(Parser)]
 struct Cli {
@@ -30,6 +31,18 @@ struct Cli {
     stop_sec: Option<f64>,
     #[clap(long, value_name = "JSON")]
     stats: Option<PathBuf>,
+    /// Folded-stack symbol style.
+    #[clap(long, value_enum, default_value_t = SymbolStyle::Full)]
+    symbol_style: SymbolStyle,
+    /// Disable Rust symbol demangling.
+    #[clap(long)]
+    no_demangle: bool,
+    /// Keep only samples whose resolved stack matches this regex.
+    #[clap(long, value_name = "REGEX")]
+    focus: Option<String>,
+    /// Inferno flamegraph minimum frame width.
+    #[clap(long, value_name = "PERCENT", default_value_t = 0.3)]
+    min_percent: f64,
 }
 
 #[derive(Subcommand)]
@@ -63,6 +76,18 @@ struct ResolveArgs {
     /// Write resolve/filter statistics as JSON.
     #[clap(long, value_name = "JSON")]
     stats: Option<PathBuf>,
+    /// Folded-stack symbol style.
+    #[clap(long, value_enum, default_value_t = SymbolStyle::Full)]
+    symbol_style: SymbolStyle,
+    /// Disable Rust symbol demangling.
+    #[clap(long)]
+    no_demangle: bool,
+    /// Keep only samples whose resolved stack matches this regex.
+    #[clap(long, value_name = "REGEX")]
+    focus: Option<String>,
+    /// Inferno flamegraph minimum frame width.
+    #[clap(long, value_name = "PERCENT", default_value_t = 0.3)]
+    min_percent: f64,
 }
 
 #[derive(Args)]
@@ -76,6 +101,13 @@ struct DiffArgs {
     /// Print top N changed functions to stderr.
     #[clap(long, value_name = "N", default_value_t = 20)]
     top: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SymbolStyle {
+    Full,
+    Short,
+    Module,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -96,6 +128,10 @@ fn main() -> anyhow::Result<()> {
                 start_sec: cli.start_sec,
                 stop_sec: cli.stop_sec,
                 stats: cli.stats,
+                symbol_style: cli.symbol_style,
+                no_demangle: cli.no_demangle,
+                focus: cli.focus,
+                min_percent: cli.min_percent,
             })
         }
     }
@@ -141,6 +177,12 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("failed to parse ELF: {err}"))?;
     let loader = addr2line::Loader::new(&args.elf)
         .map_err(|err| anyhow::anyhow!("failed to create addr2line loader: {err}"))?;
+    let focus = args
+        .focus
+        .as_deref()
+        .map(Regex::new)
+        .transpose()
+        .context("invalid --focus regex")?;
 
     let mut output =
         BufWriter::new(File::create(&args.output).context("failed to create output file")?);
@@ -187,14 +229,26 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
                 continue;
             }
             let lookup_ip = if idx == 0 { ip } else { ip - 1 };
-            let symbols = symbol_cache
-                .entry(lookup_ip)
-                .or_insert_with(|| resolve_symbols(&loader, &elf_obj, lookup_ip));
+            let symbols = symbol_cache.entry(lookup_ip).or_insert_with(|| {
+                resolve_symbols(
+                    &loader,
+                    &elf_obj,
+                    lookup_ip,
+                    !args.no_demangle,
+                    args.symbol_style,
+                )
+            });
             result.extend(symbols.iter().cloned());
         }
         if result.is_empty() {
             stats.bad_records += 1;
             result.push("??".into());
+        }
+        if focus
+            .as_ref()
+            .is_some_and(|focus| !result.iter().any(|frame| focus.is_match(frame)))
+        {
+            continue;
         }
         stats.selected_frames += result.len() as u64;
 
@@ -214,7 +268,7 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
     }
 
     if let Some(svg_path) = args.flamegraph {
-        generate_flamegraph(&args.output, &svg_path)?;
+        generate_flamegraph(&args.output, &svg_path, args.min_percent)?;
     }
 
     Ok(())
@@ -421,7 +475,7 @@ fn cmd_diff(args: DiffArgs) -> anyhow::Result<()> {
         if let Some(mut output) = diff_output {
             output.flush().ok();
         }
-        generate_flamegraph(&folded, &svg)?;
+        generate_flamegraph(&folded, &svg, 0.3)?;
     }
 
     Ok(())
@@ -463,28 +517,47 @@ fn print_hotspots(hotspots: &HashMap<String, u64>, total: u64, top_n: usize) {
     }
 }
 
-fn resolve_symbols(loader: &addr2line::Loader, elf_obj: &object::File<'_>, ip: u64) -> Vec<String> {
+fn resolve_symbols(
+    loader: &addr2line::Loader,
+    elf_obj: &object::File<'_>,
+    ip: u64,
+    demangle: bool,
+    style: SymbolStyle,
+) -> Vec<String> {
     let mut result = Vec::new();
     let Ok(mut frames) = loader.find_frames(ip) else {
-        return symtab_fallback(elf_obj, ip);
+        return symtab_fallback(elf_obj, ip, demangle, style);
     };
     while let Ok(Some(frame)) = frames.next() {
-        let func = frame
-            .function
-            .as_ref()
-            .and_then(|func| func.demangle().ok())
-            .unwrap_or("??".into())
-            .into_owned();
-        result.push(func);
+        let func = if demangle {
+            frame
+                .function
+                .as_ref()
+                .and_then(|func| func.demangle().ok())
+                .map(|name| name.into_owned())
+        } else {
+            frame
+                .function
+                .as_ref()
+                .and_then(|func| func.raw_name().ok())
+                .map(|name| name.into_owned())
+        }
+        .unwrap_or_else(|| "??".to_string());
+        result.push(format_symbol_style(&func, style));
     }
     if result.is_empty() {
-        symtab_fallback(elf_obj, ip)
+        symtab_fallback(elf_obj, ip, demangle, style)
     } else {
         result
     }
 }
 
-fn symtab_fallback(elf_obj: &object::File<'_>, ip: u64) -> Vec<String> {
+fn symtab_fallback(
+    elf_obj: &object::File<'_>,
+    ip: u64,
+    demangle: bool,
+    style: SymbolStyle,
+) -> Vec<String> {
     let nearest = elf_obj
         .symbols()
         .filter_map(|symbol| {
@@ -500,7 +573,7 @@ fn symtab_fallback(elf_obj: &object::File<'_>, ip: u64) -> Vec<String> {
                 return None;
             }
             let offset = ip - addr;
-            Some((offset, format_symbol_name(name, offset)))
+            Some((offset, format_symbol_name(name, offset, demangle, style)))
         })
         .min_by_key(|(offset, _)| *offset);
 
@@ -513,15 +586,45 @@ fn should_skip_symbol_name(name: &str) -> bool {
     name.starts_with(".L") || name == "$x"
 }
 
-fn format_symbol_name(name: &str, offset: u64) -> String {
-    if offset == 0 {
+fn demangle_symbol(name: &str, demangle: bool) -> String {
+    if demangle {
+        rustc_demangle::try_demangle(name)
+            .map(|name| name.to_string())
+            .unwrap_or_else(|_| name.to_string())
+    } else {
         name.to_string()
+    }
+}
+
+fn format_symbol_style(name: &str, style: SymbolStyle) -> String {
+    match style {
+        SymbolStyle::Full => name.to_string(),
+        SymbolStyle::Short => name.rsplit("::").next().unwrap_or(name).to_string(),
+        SymbolStyle::Module => {
+            let mut parts: Vec<_> = name.split("::").collect();
+            if parts.len() <= 4 {
+                return name.to_string();
+            }
+            let tail = parts.split_off(parts.len() - 3);
+            format!("{}::{}", parts[0], tail.join("::"))
+        }
+    }
+}
+
+fn format_symbol_name(name: &str, offset: u64, demangle: bool, style: SymbolStyle) -> String {
+    let name = format_symbol_style(&demangle_symbol(name, demangle), style);
+    if offset == 0 {
+        name
     } else {
         format!("{name}+0x{offset:x}")
     }
 }
 
-fn generate_flamegraph(folded_path: &Path, svg_path: &Path) -> anyhow::Result<()> {
+fn generate_flamegraph(
+    folded_path: &Path,
+    svg_path: &Path,
+    min_percent: f64,
+) -> anyhow::Result<()> {
     #[cfg(feature = "flamegraph")]
     {
         let input = File::open(folded_path)
@@ -534,7 +637,7 @@ fn generate_flamegraph(folded_path: &Path, svg_path: &Path) -> anyhow::Result<()
         opts.image_width = Some(3200);
         opts.frame_height = 24;
         opts.font_size = 13;
-        opts.min_width = 0.35;
+        opts.min_width = min_percent.max(0.0);
         opts.hash = true;
         opts.deterministic = true;
         inferno::flamegraph::from_reader(&mut opts, input, output)
@@ -550,6 +653,7 @@ fn generate_flamegraph(folded_path: &Path, svg_path: &Path) -> anyhow::Result<()
             folded_path.display(),
             svg_path.display()
         );
+        let _ = min_percent;
         Ok(())
     }
 }
