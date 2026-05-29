@@ -15,9 +15,10 @@
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_page_table_multiarch::PagingHandler;
 
-pub struct PagingHandlerImpl;
+/// Paging handler backed by host memory capabilities from `axvisor_api`.
+pub struct HostPagingHandler;
 
-impl PagingHandler for PagingHandlerImpl {
+impl PagingHandler for HostPagingHandler {
     fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
         if !align.is_multiple_of(PAGE_SIZE_4K) {
             panic!("align must be multiple of PAGE_SIZE_4K")

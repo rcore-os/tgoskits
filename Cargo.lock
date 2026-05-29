@@ -1972,7 +1972,6 @@ dependencies = [
  "ax-crate-interface",
  "ax-driver",
  "ax-errno",
- "ax-hal",
  "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",

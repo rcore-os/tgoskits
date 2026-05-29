@@ -35,8 +35,7 @@ use crate::vcpu::AxVCpuCreateConfig;
 use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
-    hal::PagingHandlerImpl,
-    has_hardware_support,
+    host_paging::HostPagingHandler,
     vcpu::AxArchVCpuImpl,
 };
 
@@ -109,7 +108,7 @@ impl VMMemoryRegion {
 
 struct AxVMInnerMut {
     // Todo: use more efficient lock.
-    address_space: AddrSpace<PagingHandlerImpl>,
+    address_space: AddrSpace<HostPagingHandler>,
     memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
     vm_status: VMStatus,
@@ -516,9 +515,7 @@ impl AxVM {
 
     /// Boots the VM by transitioning to Running state.
     pub fn boot(&self) -> AxResult {
-        if !has_hardware_support() {
-            ax_err!(Unsupported, "Hardware does not support virtualization")
-        } else if self.running() {
+        if self.running() {
             ax_err!(BadState, format!("VM[{}] is already running", self.id()))
         } else {
             info!("Booting VM[{}]", self.id());

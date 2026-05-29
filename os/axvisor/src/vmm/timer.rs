@@ -16,13 +16,11 @@ use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
 use alloc::boxed::Box;
-use ax_hal;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
-// const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
 
 /// Represents a timer event in the virtual machine monitor (VMM).
 ///
@@ -112,7 +110,7 @@ pub fn check_events() {
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
-        let now = ax_hal::time::monotonic_time();
+        let now = crate::host::time::monotonic_time();
         let event = timer_list.lock().expire_one(now);
         if let Some((_deadline, event)) = event {
             trace!("pick one {_deadline:#?} to handle!!!");
@@ -127,18 +125,9 @@ pub fn check_events() {
 
 fn rearm_host_timer(next_deadline: Option<TimeValue>) {
     if let Some(deadline) = next_deadline {
-        ax_hal::time::set_oneshot_timer(deadline.as_nanos() as u64);
+        crate::host::time::set_oneshot_timer(deadline.as_nanos() as u64);
     }
 }
-
-// /// Schedule the next timer event based on the periodic interval
-// pub fn scheduler_next_event() {
-//     trace!("Scheduling next event...");
-//     let now_ns = ax_hal::time::monotonic_time_nanos();
-//     let deadline = now_ns + PERIODIC_INTERVAL_NANOS;
-//     debug!("PHY deadline {} !!!", deadline);
-//     ax_hal::time::set_oneshot_timer(deadline);
-// }
 
 /// Initialize the hypervisor timer system
 pub fn init_percpu() {

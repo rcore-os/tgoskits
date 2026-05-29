@@ -30,13 +30,10 @@ pub mod vm_list;
 pub mod fdt;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::os::arceos::{
-    api::task::{self, AxWaitQueueHandle},
-    modules::ax_task,
-};
 
 use ax_errno::{AxResult, ax_err_type};
 
+use crate::host::task::HostWaitQueueHandle;
 use crate::task::AsVCpuTask;
 pub use timer::init_percpu as init_timer_percpu;
 
@@ -47,7 +44,7 @@ pub type VMRef = axvm::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
 pub type VCpuRef = axvm::AxVCpuRef;
 
-static VMM: AxWaitQueueHandle = AxWaitQueueHandle::new();
+static VMM: HostWaitQueueHandle = HostWaitQueueHandle::new();
 
 /// The number of running VMs. This is used to determine when to exit the VMM.
 static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -74,8 +71,6 @@ pub fn init() {
 
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 fn release_host_filesystem_for_guest_passthrough() -> AxResult {
-    use std::os::arceos::modules::ax_fs;
-
     let has_conflicting_guest_ownership = vm_list::get_vm_list()
         .into_iter()
         .any(|vm| vm.has_host_fs_passthrough_conflict());
@@ -83,7 +78,7 @@ fn release_host_filesystem_for_guest_passthrough() -> AxResult {
         return Ok(());
     }
 
-    ax_fs::shutdown_filesystems()?;
+    crate::host::fs::shutdown_filesystems()?;
     info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     Ok(())
 }
@@ -103,7 +98,7 @@ pub fn start() {
     }
 
     // Do not exit until all VMs are stopped.
-    task::ax_wait_queue_wait_until(
+    crate::host::task::wait_queue_wait_until(
         &VMM,
         || {
             let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
@@ -147,8 +142,9 @@ pub fn with_vm_and_vcpu_on_pcpu(
     // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
     let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
-    let current_vm = ax_task::current().as_vcpu_task().vm().id();
-    let current_vcpu = ax_task::current().as_vcpu_task().vcpu.id();
+    let current = crate::host::task::current();
+    let current_vm = current.as_vcpu_task().vm().id();
+    let current_vcpu = current.as_vcpu_task().vcpu.id();
 
     // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {

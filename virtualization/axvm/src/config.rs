@@ -31,18 +31,9 @@ const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(target_arch = "x86_64")]
 const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
-// /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
-// ///
-// /// The concrete type of configuration is defined in `AxArchVCpuImpl`.
-// #[derive(Clone, Copy, Debug, Default)]
-// pub struct AxArchVCpuConfig<H: AxVMHal> {
-//     pub create_config: <AxArchVCpuImpl<H> as AxArchVCpu>::CreateConfig,
-//     pub setup_config: <AxArchVCpuImpl<H> as AxArchVCpu>::SetupConfig,
-// }
 /// A part of `AxVMConfig`, which represents a `VCpu`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxVCpuConfig {
-    // pub arch_config: AxArchVCpuConfig,
     /// The entry address in GPA for the Bootstrap Processor (BSP).
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).

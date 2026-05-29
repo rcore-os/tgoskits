@@ -16,20 +16,17 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::os::arceos::{
-    api::task::{AxCpuMask, ax_wait_queue_wake},
-    modules::{
-        ax_hal,
-        ax_task::{self, AxTaskExt},
-    },
-};
 
 use ax_errno::{AxResult, ax_err_type};
-use ax_task::{AxTaskRef, TaskInner, WaitQueue};
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
 
-use crate::{hal::arch::inject_interrupt, task::VCpuTask};
+use crate::host::{
+    cpu::HostCpuMask,
+    irq,
+    task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue},
+};
+use crate::task::VCpuTask;
 use crate::{
     task::AsVCpuTask,
     vmm::{VCpuRef, VMRef, sub_running_vm_count},
@@ -378,7 +375,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
     );
 
     if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(AxCpuMask::from_raw_bits(phys_cpu_set));
+        vcpu_task.set_cpumask(HostCpuMask::from_raw_bits(phys_cpu_set));
     }
 
     // Use Weak reference in TaskExt to avoid keeping VM alive
@@ -390,7 +387,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
         vcpu_task.id_name(),
         vcpu_task.cpumask()
     );
-    ax_task::spawn_task(vcpu_task)
+    crate::host::task::spawn_task(vcpu_task)
 }
 
 /// The main routine for VCpu task.
@@ -399,7 +396,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let curr = ax_task::current();
+    let curr = crate::host::task::current();
 
     let vm = curr.as_vcpu_task().vm();
     let vcpu = curr.as_vcpu_task().vcpu.clone();
@@ -451,7 +448,7 @@ fn vcpu_run() {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
 
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
-                    ax_hal::trap::irq_handler(vector as usize);
+                    irq::handle_irq(vector as usize);
                     super::timer::check_events();
                     #[cfg(target_arch = "x86_64")]
                     super::devices::x86::forward_passthrough_irq_from_vmexit(
@@ -472,10 +469,9 @@ fn vcpu_run() {
                     #[cfg(target_arch = "x86_64")]
                     super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
                 }
-                AxVCpuExitReason::InterruptEnd { vector } =>
-                {
+                AxVCpuExitReason::InterruptEnd { vector: _vector } => {
                     #[cfg(target_arch = "x86_64")]
-                    if let Some(vector) = vector {
+                    if let Some(vector) = _vector {
                         super::devices::x86::inject_pending_ioapic_irq_after_eoi(
                             &vm, &vcpu, vector,
                         );
@@ -555,7 +551,7 @@ fn vcpu_run() {
                     }
 
                     if target_cpu == vcpu_id as u64 || send_to_self {
-                        inject_interrupt(vector as _);
+                        irq::inject_interrupt(vector as _);
                     } else if let Err(err) =
                         vm.inject_interrupt_to_vcpu(CpuMask::one_shot(target_cpu as _), vector as _)
                     {
@@ -607,7 +603,7 @@ fn vcpu_run() {
                 super::devices::x86::disable_ioapic_irq_forwarding_for_vm(vm_id);
 
                 sub_running_vm_count(1);
-                ax_wait_queue_wake(&super::VMM, 1);
+                crate::host::task::wait_queue_wake(&super::VMM, 1);
             }
 
             break;

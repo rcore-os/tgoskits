@@ -23,7 +23,7 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-mod hal;
+mod host_paging;
 mod vcpu;
 mod vm;
 
@@ -33,8 +33,3 @@ pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
-
-/// Whether the hardware has virtualization support.
-pub fn has_hardware_support() -> bool {
-    vcpu::has_hardware_support()
-}

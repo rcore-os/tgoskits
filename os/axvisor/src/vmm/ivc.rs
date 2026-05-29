@@ -19,19 +19,16 @@ use alloc::vec::Vec;
 use std::sync::Mutex;
 
 use ax_errno::AxResult;
-use ax_hal::paging::PagingHandlerImpl;
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 
 /// A global btree map to store IVC channels,
 /// indexed by (publisher_vm_id, channel_key).
-static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), IVCChannel<PagingHandlerImpl>>> =
-    Mutex::new(BTreeMap::new());
+type HostIVCChannel = IVCChannel<crate::host::paging::HostPagingHandler>;
 
-pub fn insert_channel(
-    publisher_vm_id: usize,
-    channel: IVCChannel<PagingHandlerImpl>,
-) -> AxResult<()> {
+static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::new(BTreeMap::new());
+
+pub fn insert_channel(publisher_vm_id: usize, channel: HostIVCChannel) -> AxResult<()> {
     let mut channels = IVC_CHANNELS.lock();
     if channels
         .insert((publisher_vm_id, channel.key), channel)

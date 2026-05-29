@@ -1,7 +1,5 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use std::os::arceos::modules::ax_hal::{irq, time};
-
 use axvcpu::InterruptTriggerMode;
 use axvm::config::VMInterruptMode;
 
@@ -31,7 +29,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    let now_ns = time::monotonic_time_nanos() as u64;
+    let now_ns = crate::host::time::monotonic_time_nanos() as u64;
     if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
         return;
     }
@@ -137,7 +135,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    if irq::register_irq_hook(ioapic_irq_forwarding_hook) {
+    if crate::host::irq::register_irq_hook(ioapic_irq_forwarding_hook) {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     } else {
         warn!(
@@ -147,7 +145,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
 
     let mut registered = 0;
     for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END {
-        if irq::register(vector, |_| {}) {
+        if crate::host::irq::register(vector, |_| {}) {
             registered += 1;
         } else {
             trace!("x86 IOAPIC host vector {vector:#x} already has a host handler");

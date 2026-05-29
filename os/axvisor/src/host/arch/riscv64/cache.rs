@@ -1,5 +1,5 @@
 use ax_memory_addr::VirtAddr;
 
-use crate::hal::CacheOp;
+use crate::host::cache::CacheOp;
 
 pub fn dcache_range(_op: CacheOp, _addr: VirtAddr, _size: usize) {}

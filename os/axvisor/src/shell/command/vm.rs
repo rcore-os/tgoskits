@@ -19,7 +19,6 @@ use std::{
     vec::Vec,
 };
 
-use ax_hal::time::busy_wait;
 use axvm::VMStatus;
 #[cfg(feature = "fs")]
 use std::fs::read_to_string;
@@ -408,7 +407,7 @@ fn restart_vm_by_id(vm_id: usize, force: bool) {
                                 return;
                             }
                             // Sleep for 100ms
-                            busy_wait(core::time::Duration::from_millis(100));
+                            crate::host::time::busy_wait(core::time::Duration::from_millis(100));
                         }
                         _ => {
                             println!("⚠ VM[{}] in unexpected state: {:?}", vm_id, vm_status);
@@ -522,7 +521,7 @@ fn suspend_vm_by_id(vm_id: usize) {
                 }
 
                 iterations += 1;
-                busy_wait(core::time::Duration::from_millis(100));
+                crate::host::time::busy_wait(core::time::Duration::from_millis(100));
             }
 
             if all_suspended {

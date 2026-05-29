@@ -16,10 +16,12 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
-use axvm::config::{AxVMCrateConfig, VmMemMappingType};
+use axvm::config::AxVMCrateConfig;
+#[cfg(target_arch = "x86_64")]
+use axvm::config::VmMemMappingType;
 use byte_unit::Byte;
 
-use crate::hal::CacheOp;
+use crate::host::cache::CacheOp;
 use crate::vmm::VMRef;
 use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
@@ -545,7 +547,7 @@ pub fn load_vm_image_from_memory(
             );
         }
 
-        crate::hal::arch::cache::dcache_range(
+        crate::host::cache::dcache_range(
             CacheOp::Clean,
             (region.as_ptr() as usize).into(),
             bytes_to_write,
@@ -751,7 +753,7 @@ pub mod fs {
                 )
             })?;
 
-            crate::hal::arch::cache::dcache_range(
+            crate::host::cache::dcache_range(
                 CacheOp::Clean,
                 (buffer.as_ptr() as usize).into(),
                 buffer.len(),

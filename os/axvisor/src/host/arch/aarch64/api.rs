@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_hal::{self, mem::virt_to_phys};
+use ax_std::os::arceos::modules;
 use axvisor_api::arch::ArchIf;
 
 struct ArchImpl;
@@ -20,7 +20,7 @@ struct ArchImpl;
 #[axvisor_api::api_impl]
 impl ArchIf for ArchImpl {
     fn hardware_inject_virtual_interrupt(irq: axvisor_api::vmm::InterruptVector) {
-        crate::hal::arch::inject_interrupt(irq as _);
+        crate::host::irq::inject_interrupt(irq as _);
     }
 
     fn read_vgicd_typer() -> u32 {
@@ -65,13 +65,13 @@ impl ArchIf for ArchImpl {
             .unwrap();
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
             let ptr: *mut u8 = gic.gicd_addr().as_ptr();
-            return virt_to_phys((ptr as usize).into());
+            return crate::host::memory::virt_to_phys((ptr as usize).into());
         }
 
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
             let ptr: *mut u8 = gic.gicd_addr().as_ptr();
             // Use the GICv3 driver to read the typer register
-            return virt_to_phys((ptr as usize).into());
+            return crate::host::memory::virt_to_phys((ptr as usize).into());
         }
         panic!("No GIC driver found");
     }
@@ -83,7 +83,7 @@ impl ArchIf for ArchImpl {
             .unwrap();
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
             let ptr: *mut u8 = gic.gicr_addr().as_ptr();
-            return virt_to_phys((ptr as usize).into());
+            return crate::host::memory::virt_to_phys((ptr as usize).into());
         }
         panic!("No GICv3 driver found");
     }
@@ -104,6 +104,6 @@ impl ArchIf for ArchImpl {
     }
 
     fn handle_irq() {
-        ax_hal::trap::irq_handler(0);
+        modules::ax_hal::trap::irq_handler(0);
     }
 }

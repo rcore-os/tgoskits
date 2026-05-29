@@ -434,7 +434,7 @@ vm_configs = []
         assert!(
             !cargo
                 .features
-                .contains(&concat!("ax-hal/", "plat-dyn").to_string())
+                .contains(&concat!("ax-std/", "plat-dyn").to_string())
         );
         assert!(path.exists());
     }
@@ -537,7 +537,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ax-hal/x86-qemu-q35", "ept-level-4", "fs", "vmx"]
+features = ["ax-std/x86-qemu-q35", "ept-level-4", "fs", "vmx"]
 log = "Info"
 vm_configs = []
 "#,
@@ -568,7 +568,7 @@ vm_configs = []
         assert!(cargo.features.contains(&"vmx".to_string()));
         assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
-        assert!(cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(cargo.features.contains(&"ax-std/x86-qemu-q35".to_string()));
     }
 
     #[test]
@@ -605,7 +605,7 @@ plat_dyn = false
         assert!(
             cargo
                 .features
-                .contains(&"ax-hal/aarch64-qemu-virt".to_string())
+                .contains(&"ax-std/aarch64-qemu-virt".to_string())
         );
         assert!(
             cargo
