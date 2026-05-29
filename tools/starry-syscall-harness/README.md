@@ -80,6 +80,11 @@ python3 tools/starry-syscall-harness/harness.py ui --host 127.0.0.1 --port 8765 
 
 The UI can start syscall scans, qperf profiling, perf diffs, and Doctor checks. It reads JSON reports and qperf flamegraphs from `target/starry-syscall-harness`.
 
+The `Knowledge` tab is independent from the execution jobs. It scans the local
+repository, builds an OS subsystem knowledge graph, highlights the graph nodes
+most related to the current coding task, and shows coarse/fine code explanations
+plus OS textbook-to-practice notes. See `docs/harness-os-knowledge-graph.md`.
+
 ## MCP
 
 `mcp_server.py` exposes the CLI workflows as MCP tools:

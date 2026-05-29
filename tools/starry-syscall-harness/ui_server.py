@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from knowledge_graph import build_knowledge_graph
+
 
 DEFAULT_OUTPUT_DIR = "target/starry-syscall-harness"
 SYSCALL_ARCHES = ("aarch64", "loongarch64", "riscv64", "x86_64")
@@ -89,6 +91,7 @@ class HarnessUiState:
         self.log_root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
+        self.knowledge_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def active_job(self) -> Job | None:
         for job in self.jobs.values():
@@ -279,6 +282,47 @@ class HarnessUiState:
         }
         return report
 
+    def load_knowledge_graph(
+        self,
+        task: str,
+        granularity: str,
+        *,
+        scan_root: str,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        task = task.strip()
+        if len(task) > MAX_TEXT_FIELD_CHARS:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"task must be at most {MAX_TEXT_FIELD_CHARS} characters")
+        if granularity not in {"coarse", "fine"}:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "granularity must be coarse or fine")
+        root = self.resolve_knowledge_root(scan_root)
+        cache_key = (str(root), task, granularity)
+        with self.lock:
+            cached = self.knowledge_cache.get(cache_key)
+        if cached is not None and not refresh:
+            return cached
+        graph = build_knowledge_graph(root, task=task, granularity=granularity)
+        with self.lock:
+            self.knowledge_cache[cache_key] = graph
+        return graph
+
+    def resolve_knowledge_root(self, raw_path: str) -> Path:
+        if not raw_path.strip():
+            return self.repo_root
+        path = Path(raw_path.strip())
+        if not path.is_absolute():
+            path = self.repo_root / path
+        resolved = path.resolve(strict=False)
+        allowed_roots = (self.repo_root, self.repo_root.parent)
+        if not any(is_relative_to(resolved, allowed) for allowed in allowed_roots):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                f"knowledge graph scan root must stay under {self.repo_root} or {self.repo_root.parent}",
+            )
+        if not resolved.is_dir():
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"knowledge graph scan root is not a directory: {resolved}")
+        return resolved
+
     def artifact_state(self, artifacts: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(artifacts, dict):
             return {}
@@ -462,6 +506,14 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 def make_handler(state: HarnessUiState) -> type[BaseHTTPRequestHandler]:
     class HarnessRequestHandler(BaseHTTPRequestHandler):
         server_version = "StarryHarnessUI/1.0"
@@ -481,6 +533,16 @@ def make_handler(state: HarnessUiState) -> type[BaseHTTPRequestHandler]:
                     kind = query.get("kind", [""])[0]
                     arch = query.get("arch", [None])[0]
                     self.send_json(state.load_report(kind, arch))
+                    return
+                if parsed.path == "/api/knowledge-graph":
+                    query = urllib.parse.parse_qs(parsed.query)
+                    task = query.get("task", [""])[0]
+                    granularity = query.get("granularity", ["coarse"])[0]
+                    scan_root = query.get("repo_root", [""])[0]
+                    refresh = query.get("refresh", ["0"])[0] in {"1", "true", "yes"}
+                    self.send_json(
+                        state.load_knowledge_graph(task, granularity, scan_root=scan_root, refresh=refresh)
+                    )
                     return
                 if parsed.path == "/api/file":
                     query = urllib.parse.parse_qs(parsed.query)

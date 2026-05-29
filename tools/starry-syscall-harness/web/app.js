@@ -2,6 +2,8 @@ const state = {
   activeJobId: null,
   pollTimer: null,
   currentTab: "syscall",
+  knowledgeGraph: null,
+  selectedKnowledgeNode: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -237,6 +239,28 @@ async function loadReport(kind, arch) {
 
 async function refreshReports() {
   await Promise.allSettled([refreshSyscallReport(), refreshPerfReport(), refreshDiffReport()]);
+}
+
+async function refreshKnowledgeGraph(refresh = false) {
+  try {
+    $("kg-meta").textContent = "scanning repository";
+    const query = new URLSearchParams({
+      task: textValue("kg-task"),
+      repo_root: textValue("kg-repo-root"),
+      granularity: selectValue("kg-granularity"),
+      refresh: refresh ? "1" : "0",
+    });
+    const graph = await api(`/api/knowledge-graph?${query.toString()}`);
+    state.knowledgeGraph = graph;
+    state.selectedKnowledgeNode = null;
+    renderKnowledgeGraph(graph);
+  } catch (error) {
+    $("kg-meta").textContent = `scan failed: ${error}`;
+    $("kg-summary").innerHTML = summaryItem("Graph", "failed", "bad");
+    $("kg-graph").innerHTML = "";
+    $("kg-detail-title").textContent = "OS 知识图谱";
+    $("kg-detail-body").innerHTML = `<div class="brief-text bad">${escapeHtml(String(error))}</div>`;
+  }
 }
 
 async function refreshSyscallReport() {
@@ -479,6 +503,191 @@ function renderDiff(report) {
     : emptyRow(4, "no changes");
 }
 
+function renderKnowledgeGraph(graph) {
+  const allNodes = graph.graph?.nodes || [];
+  const focusIds = new Set(graph.task?.focus_node_ids || []);
+  const nodes = checked("kg-hide-empty")
+    ? allNodes.filter((node) => focusIds.has(node.id) || Number(node.stats?.files || 0) > 0)
+    : allNodes;
+  const visibleIds = new Set(nodes.map((node) => node.id));
+  const edges = (graph.graph?.edges || []).filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  $("kg-meta").textContent = `扫描仓库：${graph.repo_root} · ${new Date(graph.generated_at * 1000).toLocaleString()}`;
+  $("kg-summary").innerHTML = [
+    summaryItem("Repo", graph.repo_root?.split("/").filter(Boolean).at(-1) || "unknown"),
+    summaryItem("Nodes", nodes.length),
+    summaryItem("Edges", edges.length),
+    summaryItem("Scanned files", graph.scan?.files_seen ?? 0),
+    summaryItem("Focus", (graph.task?.focus_node_ids || []).join(", ") || "auto"),
+  ].join("");
+  drawKnowledgeSvg(nodes, edges, focusIds);
+  renderKnowledgeFocus(graph);
+}
+
+function drawKnowledgeSvg(nodes, edges, focusIds) {
+  const svg = $("kg-graph");
+  svg.innerHTML = "";
+  const width = 1180;
+  const layers = [...new Set(nodes.map((node) => node.layer))];
+  const rowHeight = 132;
+  const height = Math.max(420, layers.length * rowHeight + 50);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+
+  const byLayer = new Map(layers.map((layer) => [layer, nodes.filter((node) => node.layer === layer)]));
+  const positions = new Map();
+  layers.forEach((layer, row) => {
+    const layerNodes = byLayer.get(layer) || [];
+    const gap = width / (layerNodes.length + 1);
+    layerNodes.forEach((node, index) => {
+      positions.set(node.id, { x: Math.round(gap * (index + 1)), y: 48 + row * rowHeight });
+    });
+  });
+
+  const graphLayer = svgEl("g");
+  svg.appendChild(graphLayer);
+  for (const edge of edges) {
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    if (!source || !target) {
+      continue;
+    }
+    const line = svgEl("line", {
+      x1: source.x,
+      y1: source.y + 18,
+      x2: target.x,
+      y2: target.y - 18,
+      class: edge.focus ? "kg-edge focus" : "kg-edge",
+    });
+    graphLayer.appendChild(line);
+  }
+
+  layers.forEach((layer, row) => {
+    const label = svgEl("text", { x: 14, y: 52 + row * rowHeight, class: "kg-layer-label" });
+    label.textContent = layer;
+    graphLayer.appendChild(label);
+  });
+
+  for (const node of nodes) {
+    const pos = positions.get(node.id);
+    if (!pos) {
+      continue;
+    }
+    const group = svgEl("g", {
+      class: [
+        "kg-node",
+        focusIds.has(node.id) ? "focus" : "",
+        state.selectedKnowledgeNode === node.id ? "selected" : "",
+      ].join(" "),
+      tabindex: "0",
+    });
+    group.addEventListener("click", () => selectKnowledgeNode(node.id));
+    group.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        selectKnowledgeNode(node.id);
+      }
+    });
+    group.appendChild(svgEl("rect", { x: pos.x - 70, y: pos.y - 28, width: 140, height: 56, rx: 8 }));
+    const title = svgEl("text", { x: pos.x, y: pos.y - 4, class: "kg-node-title" });
+    title.textContent = shortNodeLabel(node.label);
+    const meta = svgEl("text", { x: pos.x, y: pos.y + 16, class: "kg-node-meta" });
+    meta.textContent = `${node.stats?.files ?? 0} files · ${node.task_score ?? 0}`;
+    group.appendChild(title);
+    group.appendChild(meta);
+    graphLayer.appendChild(group);
+  }
+}
+
+function svgEl(name, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attributes)) {
+    element.setAttribute(key, String(value));
+  }
+  return element;
+}
+
+function shortNodeLabel(label) {
+  const compact = String(label).replace("Linux ", "").replace(" driver", "").replace(" / ", "/");
+  return compact.length > 23 ? `${compact.slice(0, 21)}…` : compact;
+}
+
+function selectKnowledgeNode(nodeId) {
+  state.selectedKnowledgeNode = nodeId;
+  const graph = state.knowledgeGraph;
+  if (!graph) {
+    return;
+  }
+  drawKnowledgeSvg(graph.graph?.nodes || [], graph.graph?.edges || [], new Set(graph.task?.focus_node_ids || []));
+  const node = (graph.graph?.nodes || []).find((item) => item.id === nodeId);
+  if (node) {
+    renderKnowledgeNodeDetail(node);
+  }
+}
+
+function renderKnowledgeFocus(graph) {
+  $("kg-detail-title").textContent = "任务焦点";
+  const focusNodes = new Set(graph.task?.focus_node_ids || []);
+  const focusLabels = (graph.graph?.nodes || [])
+    .filter((node) => focusNodes.has(node.id))
+    .map((node) => node.label);
+  $("kg-detail-body").innerHTML = [
+    `<div class="brief-title">${escapeHtml(graph.focus?.summary || "未识别任务焦点")}</div>`,
+    `<div class="brief-text">焦点节点：${escapeHtml(focusLabels.join("、") || "无")}</div>`,
+    renderTextBlockList("代码讲解", graph.focus?.code_explanation || []),
+    renderTextBlockList("OS 课本知识 - 实践关联", graph.focus?.os_explanation || []),
+    renderTextBlockList("编码建议", graph.focus?.coding_guidance || []),
+  ].join("");
+}
+
+function renderKnowledgeNodeDetail(node) {
+  $("kg-detail-title").textContent = node.label;
+  const hotFiles = (node.hot_files || [])
+    .map((item) => `${item.path}${item.lines ? `:${item.lines} lines` : ""}`)
+    .join("\n");
+  const symbols = (node.symbols || [])
+    .map((item) => `${item.kind} ${item.name} · ${item.path}:${item.line}`)
+    .join("\n");
+  $("kg-detail-body").innerHTML = [
+    `<div class="brief-title">${escapeHtml(node.layer)} · score ${escapeHtml(node.task_score ?? 0)}</div>`,
+    `<div class="brief-text">${escapeHtml(node.summary)}</div>`,
+    renderMetricInline(node.stats || {}),
+    renderCodeBlock("相关目录", (node.paths || []).join("\n")),
+    renderCodeBlock("代表文件", hotFiles || "no files"),
+    renderCodeBlock("代表符号", symbols || "no symbols"),
+    `<div class="brief-block"><div class="brief-title">OS 课本知识</div><div class="brief-text">${escapeHtml(node.textbook)}</div></div>`,
+    `<div class="brief-block"><div class="brief-title">仓库实践关联</div><div class="brief-text">${escapeHtml(node.practice)}</div></div>`,
+  ].join("");
+}
+
+function renderMetricInline(stats) {
+  return `
+    <div class="kg-inline-stats">
+      <span>files ${escapeHtml(stats.files ?? 0)}</span>
+      <span>lines ${escapeHtml(stats.lines ?? 0)}</span>
+      <span>symbols ${escapeHtml(stats.symbols ?? 0)}</span>
+      <span>keyword hits ${escapeHtml(stats.keyword_hits ?? 0)}</span>
+    </div>`;
+}
+
+function renderTextBlockList(title, items) {
+  if (!items.length) {
+    return "";
+  }
+  return `
+    <div class="brief-block">
+      <div class="brief-title">${escapeHtml(title)}</div>
+      ${items.map((item) => `<div class="brief-text">${escapeHtml(item)}</div>`).join("")}
+    </div>`;
+}
+
+function renderCodeBlock(title, value) {
+  return `
+    <div class="brief-block">
+      <div class="brief-title">${escapeHtml(title)}</div>
+      <pre class="kg-code">${escapeHtml(value)}</pre>
+    </div>`;
+}
+
 function emptyRow(colspan, text) {
   return `<tr><td class="muted" colspan="${colspan}">${escapeHtml(text)}</td></tr>`;
 }
@@ -547,6 +756,7 @@ function bindEvents() {
   $("refresh-all").addEventListener("click", async () => {
     await refreshStatus();
     await refreshReports();
+    await refreshKnowledgeGraph(false);
   });
   $("refresh-job").addEventListener("click", pollJob);
   $("run-doctor").addEventListener("click", () => startJob("doctor"));
@@ -584,6 +794,21 @@ function bindEvents() {
       top: numberValue("diff-top"),
     }),
   );
+  $("refresh-kg").addEventListener("click", () => refreshKnowledgeGraph(true));
+  $("kg-reset-focus").addEventListener("click", () => {
+    state.selectedKnowledgeNode = null;
+    if (state.knowledgeGraph) {
+      renderKnowledgeGraph(state.knowledgeGraph);
+    }
+  });
+  $("kg-task").addEventListener("change", () => refreshKnowledgeGraph(true));
+  $("kg-repo-root").addEventListener("change", () => refreshKnowledgeGraph(true));
+  $("kg-hide-empty").addEventListener("change", () => {
+    if (state.knowledgeGraph) {
+      renderKnowledgeGraph(state.knowledgeGraph);
+    }
+  });
+  $("kg-granularity").addEventListener("change", () => refreshKnowledgeGraph(true));
   $("syscall-arch").addEventListener("change", refreshSyscallReport);
   $("perf-arch").addEventListener("change", refreshPerfReport);
 }
@@ -592,6 +817,7 @@ async function init() {
   bindEvents();
   await refreshStatus();
   await refreshReports();
+  await refreshKnowledgeGraph(false);
 }
 
 init().catch((error) => {

@@ -24,6 +24,7 @@
         <nav class="nav-tabs" aria-label="Harness workflows">
           <button class="nav-tab active" data-tab="syscall" type="button">Syscall</button>
           <button class="nav-tab" data-tab="perf" type="button">Performance</button>
+          <button class="nav-tab" data-tab="knowledge" type="button">Knowledge</button>
           <button class="nav-tab" data-tab="diff" type="button">Diff</button>
           <button class="nav-tab" data-tab="jobs" type="button">Jobs</button>
         </nav>
@@ -197,6 +198,63 @@
               <section class="brief-panel">
                 <h3>瓶颈修复候选</h3>
                 <div id="perf-candidates"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="tab-knowledge">
+            <div class="panel-heading">
+              <div>
+                <h2>OS 知识图谱</h2>
+                <div class="meta-line" id="kg-meta">waiting for scan</div>
+              </div>
+              <button class="primary" id="refresh-kg" type="button">扫描图谱</button>
+            </div>
+
+            <div class="control-grid compact kg-controls">
+              <label class="wide">
+                <span>当前开发任务</span>
+                <input
+                  id="kg-task"
+                  type="text"
+                  value="qperf harness GUI OS 知识图谱"
+                  placeholder="例如：优化 virtio-blk read path / 修复 waitpid syscall / 分析 net RX copy"
+                />
+              </label>
+              <label class="wide">
+                <span>扫描仓库路径</span>
+                <input
+                  id="kg-repo-root"
+                  type="text"
+                  value="/home/cg24/tg-arceos-tutorial"
+                  placeholder="默认当前仓库；例如 /home/cg24/tg-arceos-tutorial"
+                />
+              </label>
+              <label class="checkbox-row">
+                <input id="kg-hide-empty" type="checkbox" checked />
+                <span>隐藏未命中节点</span>
+              </label>
+              <label>
+                <span>讲解粒度</span>
+                <select id="kg-granularity">
+                  <option value="coarse">粗粒度</option>
+                  <option value="fine">细粒度</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="summary-strip" id="kg-summary"></div>
+            <div class="kg-layout">
+              <section class="kg-graph-panel">
+                <div class="kg-toolbar">
+                  <span class="meta-line">点击节点查看代码讲解与 OS 课本关联</span>
+                  <button class="secondary" id="kg-reset-focus" type="button">显示任务焦点</button>
+                </div>
+                <svg id="kg-graph" class="kg-graph" role="img" aria-label="OS knowledge graph"></svg>
+              </section>
+              <section class="brief-panel kg-detail">
+                <h3 id="kg-detail-title">任务焦点</h3>
+                <div id="kg-detail-body" class="brief-text">no knowledge graph</div>
               </section>
             </div>
           </section>
