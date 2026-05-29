@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+. /usr/bin/nginx-alpine-mirror.sh
+
 BASE=/tmp/nginx-phase2
 CONF="$BASE/conf/http-basic.conf"
 WWW="$BASE/www"
@@ -22,14 +24,7 @@ run_with_timeout() { sec=$1; shift; $TIMEOUT_CMD "$sec" "$@"; }
 cleanup_nginx() { killall -q nginx 2>/dev/null || true; sleep 1; killall -q -9 nginx 2>/dev/null || true; }
 
 prepare_packages() {
-    repo_file=/etc/apk/repositories
-    original_repos="$(cat "$repo_file")"
-    for mirror in https://mirrors.cernet.edu.cn/alpine https://dl-cdn.alpinelinux.org/alpine; do
-        printf '%s\n' "$original_repos" | sed "s#http://[^/]*/alpine/#$mirror/#g;s#https://[^/]*/alpine/#$mirror/#g" > "$repo_file"
-        rm -f /lib/apk/db/lock
-        if run_with_timeout 40 apk --timeout 40 update && run_with_timeout 40 apk --timeout 40 add nginx curl busybox-extras; then return 0; fi
-    done
-    return 1
+    nginx_apk_add_with_fallback nginx curl busybox-extras || return 1
 }
 
 prepare_tree() {
