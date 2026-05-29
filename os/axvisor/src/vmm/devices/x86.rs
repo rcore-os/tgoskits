@@ -26,7 +26,7 @@ static IOAPIC_IRQ_HANDLES: [AtomicUsize; IOAPIC_GSI_COUNT] =
     [const { AtomicUsize::new(0) }; IOAPIC_GSI_COUNT];
 
 pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
-    if !IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
+    if !ioapic_irq_hook_registered(vector) {
         forward_passthrough_irq(vm, vcpu, vector);
     }
 }
@@ -160,13 +160,24 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
             }
         }
     }
-    IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
+    if registered != 0 {
+        IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
+    }
     info!(
         "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
         IOAPIC_VECTOR_BASE,
         IOAPIC_VECTOR_END - 1,
         registered
     );
+}
+
+fn ioapic_irq_hook_registered(vector: usize) -> bool {
+    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
+        return false;
+    }
+
+    let gsi = vector - IOAPIC_VECTOR_BASE;
+    IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0
 }
 
 pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {

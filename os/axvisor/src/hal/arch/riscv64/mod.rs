@@ -34,6 +34,9 @@ pub fn inject_interrupt(irq_id: usize) -> bool {
     let val: u32 = 1 << (irq_id % 32);
 
     // Use a trick write to set the pending bit.
-    let _ = vplic.handle_write(addr, width, val as _);
+    if let Err(err) = vplic.handle_write(addr, width, val as _) {
+        warn!("failed to inject interrupt id {irq_id} into guest vPLIC: {err:?}");
+        return false;
+    }
     true
 }
