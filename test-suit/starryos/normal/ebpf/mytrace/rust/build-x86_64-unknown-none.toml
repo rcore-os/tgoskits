@@ -1,0 +1,5 @@
+env = {}
+target = "x86_64-unknown-none"
+features = ["qemu"]
+log = "Info"
+plat_dyn = false

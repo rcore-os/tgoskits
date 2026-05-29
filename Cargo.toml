@@ -30,6 +30,7 @@ members = [
     "components/crate_interface",
     "components/handler_table",
     "components/int_ratio",
+    "components/kbpf-basic",
     "components/kasm-aarch64",
     "components/kernel_guard",
     "components/kernutil",

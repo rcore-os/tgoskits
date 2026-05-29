@@ -1,0 +1,5 @@
+env = {}
+target = "aarch64-unknown-none-softfloat"
+features = ["qemu"]
+log = "Info"
+plat_dyn = false

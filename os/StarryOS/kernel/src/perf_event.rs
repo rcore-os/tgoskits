@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Performance event ring buffer infrastructure for StarryOS.
 //!
 //! Provides a Linux-compatible perf event interface for eBPF data output

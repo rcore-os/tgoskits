@@ -18,7 +18,7 @@ default = ["dynamic_debug", "ebpf"]
 dev-log = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
-ebpf = []
+ebpf = ["dep:rbpf", "dep:kbpf-basic"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
@@ -64,6 +64,7 @@ ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
+ax-page-table-entry = { workspace = true }
 axnet = { version = "0.6.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 ax-driver = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
@@ -138,6 +139,9 @@ sg200x-bsp = { workspace = true, optional = true }
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
 ksym = "0.6"
+# Using a personal fork of rbpf temporarily until PR #147 is merged upstream to support RISC-V 64-bit JIT and public jit module.
+rbpf = { git = "https://github.com/CN-TangLin/rbpf.git", branch = "feat/jit-multi-arch", default-features = false, optional = true }
+kbpf-basic = { path = "../../../components/kbpf-basic", optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

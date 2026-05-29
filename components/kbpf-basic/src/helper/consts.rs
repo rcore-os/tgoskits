@@ -1,0 +1,32 @@
+//! Helper function IDs for BPF programs.
+//!
+//! This module defines constants representing various helper function IDs
+//! that can be used within BPF programs to perform specific operations.
+#![allow(missing_docs)]
+pub const HELPER_MAP_LOOKUP_ELEM: u32 = 1;
+pub const HELPER_MAP_UPDATE_ELEM: u32 = 2;
+pub const HELPER_MAP_DELETE_ELEM: u32 = 3;
+pub const HELPER_BPF_PROBE_READ: u32 = 4;
+pub const HELPER_KTIME_GET_NS: u32 = 5;
+pub const HELPER_TRACE_PRINTF: u32 = 6;
+pub const HELPER_PERF_EVENT_OUTPUT: u32 = 25;
+pub const HELPER_MAP_PUSH_ELEM: u32 = 87;
+pub const HELPER_MAP_POP_ELEM: u32 = 88;
+pub const HELPER_MAP_PEEK_ELEM: u32 = 89;
+pub const HELPER_PROBE_READ_USER_STR: u32 = 114;
+
+// Ring Buffer related helpers
+pub const HELPER_BPF_RINGBUF_OUTPUT: u32 = 130;
+pub const HELPER_BPF_RINGBUF_RESERVE: u32 = 131;
+pub const HELPER_BPF_RINGBUF_SUBMIT: u32 = 132;
+pub const HELPER_BPF_RINGBUF_DISCARD: u32 = 133;
+pub const HELPER_BPF_RINGBUF_QUERY: u32 = 134;
+
+pub const HELPER_BPF_RINGBUF_RESERVE_DYNPTR: u32 = 198;
+pub const HELPER_BPF_RINGBUF_SUBMIT_DYNPTR: u32 = 199;
+pub const HELPER_BPF_RINGBUF_DISCARD_DYNPTR: u32 = 200;
+
+pub const HELPER_MAP_FOR_EACH_ELEM: u32 = 164;
+pub const HELPER_MAP_LOOKUP_PERCPU_ELEM: u32 = 195;
+/// Other constants used in BPF programs.
+pub const BPF_F_CURRENT_CPU: u64 = 4294967295;

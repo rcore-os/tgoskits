@@ -1,0 +1,19 @@
+[package]
+name = "kbpf-basic"
+version = "0.5.5"
+edition = "2024"
+authors = ["Godones <chenlinfeng25@outlook.com>"]
+license-file = "LICENSE"
+homepage = "https://github.com/Godones/ext_ktrace"
+repository = "https://github.com/Godones/ext_ktrace"
+documentation = "https://docs.rs/kbpf-basic"
+readme = "README.md"
+keywords = ["bpf", "ebpf", "kernel", "tracing", "no-std"]
+description = "A no_std Rust eBPF foundation library for kernel or kernel-like environments."
+
+[dependencies]
+bitflags = "2"
+lru = "0.16"
+log = "0.4"
+int-enum = "1.2"
+axerrno = { path = "../axerrno", package = "ax-errno" }

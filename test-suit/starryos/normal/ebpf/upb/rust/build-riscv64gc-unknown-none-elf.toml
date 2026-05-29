@@ -1,0 +1,5 @@
+env = {}
+target = "riscv64gc-unknown-none-elf"
+features = ["qemu"]
+log = "Info"
+plat_dyn = false
