@@ -36,6 +36,12 @@ sg2002-dyn = [
   "starry-kernel/sg2002",
   "ax-driver/sg2002-placeholder",
 ]
+k230 = [
+  "plat-dyn",
+  "starry-kernel/k230-kpu",
+  "ax-driver/k230-sdhci",
+  "ax-driver/serial",
+]
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 # Enable the GICv3 distributor + redistributor + system-register

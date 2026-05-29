@@ -9,6 +9,8 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "k230-kpu")]
+mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
@@ -292,6 +294,30 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(CpuDmaLatency),
         ),
     );
+
+    #[cfg(feature = "k230-kpu")]
+    {
+        if let Some(kpu_device) = kpu::KpuDevice::probe().map(Arc::new) {
+            root.add(
+                "kpu",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device.clone(),
+                ),
+            );
+            root.add(
+                "kpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device,
+                ),
+            );
+        }
+    }
 
     // This is mounted to a tmpfs in `new_procfs`
     root.add(

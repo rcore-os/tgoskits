@@ -67,6 +67,13 @@ phytium-mci = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
+k230-sdhci = [
+    "block",
+    "plat-dyn",
+    "dep:sdhci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/sdio",
+]
 rockchip-dwmmc = [
     "block",
     "plat-dyn",

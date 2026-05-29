@@ -1,0 +1,57 @@
+{
+  "name": "file_runtime_arg_table_direct_io_blob",
+  "command_paddr": "0x1032b020",
+  "commands": [
+    "0x2000010e",
+    "0x0010020e",
+    "0x0040028e",
+    "0x00004044",
+    "0x00000306",
+    "0x01484240",
+    "0x000a52c2",
+    "0x080a52c2",
+    "0x000000c6",
+    "0x0000614c",
+    "0x00400386",
+    "0x000000ca",
+    "0x000023ce"
+  ],
+  "sections": [
+    {
+      "kind": "copy_file",
+      "window": "direct_io",
+      "offset": "0x20",
+      "path": "/usr/share/k230-kpu-smoke/runtime-direct-source.bin",
+      "file_offset": 0,
+      "len": 4
+    },
+    {
+      "kind": "fill",
+      "window": "direct_io",
+      "offset": "0x1020",
+      "len": 8,
+      "byte": "0xa5"
+    },
+    {
+      "kind": "copy",
+      "window": "l2",
+      "offset": "0x0",
+      "data_hex": "200050102010501020000010"
+    }
+  ],
+  "checks": [
+    {
+      "window": "direct_io",
+      "offset": "0x1020",
+      "total_len": 8,
+      "tail": "0xa5",
+      "expected_hex": "51525354"
+    },
+    {
+      "window": "direct_io",
+      "offset": "0x1020",
+      "total_len": 8,
+      "fnv1a64": "0x086e6462a0e13289"
+    }
+  ]
+}

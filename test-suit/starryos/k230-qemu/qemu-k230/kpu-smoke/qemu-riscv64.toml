@@ -1,0 +1,26 @@
+args = [
+  "-L",
+  "${workspace}/../../qemu-k230-docker-build/pc-bios",
+  "-machine",
+  "k230",
+  "-smp",
+  "2",
+  "-m",
+  "2G",
+  "-nographic",
+  "-dtb",
+  "${workspace}/os/StarryOS/configs/board/k230-canmv.dtb",
+  "-drive",
+  "if=sd,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/k230-kpu-smoke"
+success_regex = ["(?m)^KPU_SMOKE_PASS$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)illegal instruction",
+  "(?m)^KPU_SMOKE_FAIL:",
+]
+timeout = 180
