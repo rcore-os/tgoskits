@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     X86VCpuSetupConfig, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
-    xstate::XState,
+    x86_real_mode_entry_state, xstate::XState,
 };
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -181,6 +181,7 @@ impl SvmVcpu {
     }
 
     fn setup_vmcb_guest(&mut self, entry: GuestPhysAddr) -> AxResult {
+        let entry_state = x86_real_mode_entry_state(entry);
         let cr0_val =
             Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE | Cr0Flags::EXTENSION_TYPE;
         let vmcb = unsafe { self.vmcb.as_vmcb() };
@@ -190,8 +191,8 @@ impl SvmVcpu {
         state.cr3.set(0);
         state.cr4.set(0);
 
-        state.cs.selector.set(0);
-        state.cs.base.set(0);
+        state.cs.selector.set(entry_state.cs_selector);
+        state.cs.base.set(entry_state.cs_base as u64);
         state.cs.limit.set(0xffff);
         state.cs.attr.set(0x9b);
 
@@ -211,7 +212,7 @@ impl SvmVcpu {
         state.dr7.set(0x400);
         state.dr6.set(0xffff0ff0);
         state.rflags.set(0x2);
-        state.rip.set(entry.as_usize() as u64);
+        state.rip.set(entry_state.rip as u64);
         state.rsp.set(0);
         state.efer.set(EFER_SVME);
         state.g_pat.set(Msr::IA32_PAT.read());

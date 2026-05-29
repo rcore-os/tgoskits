@@ -37,7 +37,7 @@ cargo +stable install ostool --version '^0.15'
 - `cargo-binutils`: provides `rust-objcopy`, `rust-objdump`, etc.
 - `ostool`: custom build runner for AxVisor
 
-## 3. KVM Setup (NimbOS x86_64 Only)
+## 3. KVM and UEFI Firmware Setup (NimbOS x86_64 Only)
 
 NimbOS runs on x86_64 QEMU and requires KVM hardware acceleration. ArceOS and Linux use AArch64 QEMU (TCG mode) and do not need KVM — you can skip this section.
 
@@ -63,6 +63,18 @@ Verify:
 
 ```bash
 id  # output should include "kvm"
+```
+
+The optional x86_64 UEFI guest path uses an external OVMF-compatible firmware image. On Debian/Ubuntu, install it with:
+
+```bash
+sudo apt install ovmf
+```
+
+If your firmware is not installed in a standard location, export:
+
+```bash
+export AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd
 ```
 
 ## 4. Running Guest OSes
@@ -112,6 +124,36 @@ After booting, you will enter the Rust user shell (`>>` prompt). Type `usertests
 
 > **Note**: NimbOS requires VT-x/KVM. If `/dev/kvm` does not exist or has insufficient permissions, you will get a `Permission denied` error. WSL2 requires nested virtualization support in the kernel to use KVM.
 
+### Linux UEFI (x86_64, requires KVM and OVMF)
+
+```bash
+./scripts/setup_qemu.sh linux-x86_64-uefi
+
+cargo xtask qemu \
+  --config configs/board/qemu-x86_64.toml \
+  --qemu-config .github/workflows/qemu-x86_64-uefi.toml \
+  --vmconfigs tmp/vmconfigs/linux-x86_64-qemu-uefi-smp1.generated.toml
+```
+
+The UEFI VM config sets `boot_protocol = "uefi"` and `uefi_firmware_path`, which tells AxVisor to load the external firmware image without applying the legacy axvm-bios multiboot patch. This Linux guest also provides `ramdisk_path` so the initramfs is available before boot.
+
+### ArceOS UEFI (x86_64, requires KVM, OVMF, and a local guest image)
+
+The ArceOS x86_64 UEFI path is provided as a local bring-up flow because the image registry does not currently publish a prebuilt ArceOS x86_64 UEFI guest. Build or place the guest image locally, then export:
+
+```bash
+export AXVISOR_X86_64_ARCEOS_UEFI_KERNEL=/path/to/arceos-x86_64-uefi.bin
+export AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd
+```
+
+Then run:
+
+```bash
+./scripts/quick-start.sh qemu-x86_64 start --arceos-uefi
+```
+
+This flow uses `configs/vms/arceos-x86_64-qemu-uefi-smp1.toml` with `.github/workflows/qemu-x86_64-arceos-uefi.toml`, sets `boot_protocol = "uefi"`, and loads the configured firmware image from `uefi_firmware_path`.
+
 ### ArceOS (RISC-V64)
 
 ```bash
@@ -144,7 +186,7 @@ Success indicator: `Welcome to AxVisor Shell!` appears in the output.
 For guest-image flows, the script automates three steps, eliminating manual work:
 
 1. **Download images**: calls `cargo axvisor image pull` to fetch and extract guest images to `/tmp/.axvisor-images/`
-2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` (and `bios_path` for NimbOS) to actual image paths without modifying tracked files in `configs/vms/*.toml`
+2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` and firmware paths (`bios_path` for legacy NimbOS BIOS mode, `uefi_firmware_path` for UEFI mode) to actual image paths without modifying tracked files in `configs/vms/*.toml`
 3. **Prepare rootfs**: copies `rootfs.img` to the project's `tmp/` directory for QEMU to use
 
 You can also perform these steps manually if you prefer not to use the script.
@@ -158,6 +200,10 @@ The `kernel_path` in the VM config points to a non-existent file. Run `./scripts
 ### `Could not access KVM kernel module: Permission denied`
 
 Your user is not in the `kvm` group. See the "KVM Setup" section above.
+
+### `UEFI firmware image not found`
+
+Install OVMF or set `AXVISOR_X86_64_UEFI_FIRMWARE` to the firmware image path before running `./scripts/setup_qemu.sh linux-x86_64-uefi`.
 
 ### `qemu-system-aarch64: command not found`
 

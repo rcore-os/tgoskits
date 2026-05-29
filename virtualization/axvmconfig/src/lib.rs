@@ -332,6 +332,22 @@ pub struct VMBaseConfig {
     pub phys_cpu_sets: Option<Vec<usize>>,
 }
 
+/// Describes how a guest VM should enter its boot image.
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VMBootProtocol {
+    /// Enter the configured kernel entry directly without a firmware image.
+    #[serde(rename = "direct", alias = "kernel")]
+    #[default]
+    Direct,
+    /// Use the legacy x86 axvm-bios/multiboot trampoline.
+    #[serde(rename = "multiboot", alias = "bios", alias = "axvm-bios")]
+    Multiboot,
+    /// Load an external UEFI firmware image and enter it without multiboot patching.
+    #[serde(rename = "uefi", alias = "efi")]
+    Uefi,
+}
+
 /// The configuration structure for the guest VM kernel.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -345,8 +361,16 @@ pub struct VMKernelConfig {
     /// Whether to enable BIOS boot flow for this VM.
     #[serde(default)]
     pub enable_bios: bool,
+    /// Guest boot protocol. When omitted, legacy configs use `multiboot` if
+    /// `enable_bios = true`, otherwise `direct`.
+    #[serde(default)]
+    pub boot_protocol: Option<VMBootProtocol>,
     /// The file path of the BIOS image, `None` if not used.
+    #[serde(default)]
     pub bios_path: Option<String>,
+    /// The file path of the UEFI firmware image, `None` if not used.
+    #[serde(default)]
+    pub uefi_firmware_path: Option<String>,
     /// The load address of the BIOS image, `None` if not used.
     pub bios_load_addr: Option<usize>,
     /// The file path of the device tree blob (DTB), `None` if not used.
@@ -369,6 +393,128 @@ pub struct VMKernelConfig {
     #[serde(skip)]
     pub configured_memory_region_count: usize,
 }
+
+impl VMKernelConfig {
+    /// Returns the effective boot protocol after applying compatibility defaults.
+    pub fn effective_boot_protocol(&self) -> VMBootProtocol {
+        self.boot_protocol.unwrap_or({
+            if self.enable_bios {
+                VMBootProtocol::Multiboot
+            } else {
+                VMBootProtocol::Direct
+            }
+        })
+    }
+
+    /// Returns the configured boot firmware image path.
+    ///
+    /// For UEFI, prefer the explicit UEFI firmware path and fall back to the
+    /// legacy BIOS path for compatibility with older configs.
+    pub fn boot_firmware_path(&self) -> Option<&str> {
+        match self.effective_boot_protocol() {
+            VMBootProtocol::Uefi => self
+                .uefi_firmware_path
+                .as_deref()
+                .or(self.bios_path.as_deref()),
+            _ => self.bios_path.as_deref(),
+        }
+    }
+
+    /// Validate that the configured boot protocol has the firmware inputs it needs.
+    pub fn validate_boot_config(&self) -> AxResult<()> {
+        self.validate_boot_config_for_arch(BUILD_TARGET_ARCH)
+    }
+
+    fn validate_boot_config_for_arch(&self, arch: &str) -> AxResult<()> {
+        if !self.enable_bios {
+            if matches!(
+                self.effective_boot_protocol(),
+                VMBootProtocol::Multiboot | VMBootProtocol::Uefi
+            ) {
+                return Err(ax_errno::ax_err_type!(
+                    InvalidInput,
+                    "boot_protocol requires enable_bios = true"
+                ));
+            }
+            return Ok(());
+        }
+
+        match self.effective_boot_protocol() {
+            VMBootProtocol::Uefi => {
+                if arch != "x86_64" {
+                    warn!(
+                        "boot_protocol=uefi is only supported on x86_64; rejecting config on \
+                         {arch}"
+                    );
+                    return Err(ax_errno::ax_err_type!(
+                        InvalidInput,
+                        "UEFI boot is only supported on x86_64"
+                    ));
+                }
+                if self.boot_firmware_path().is_none() {
+                    return Err(ax_errno::ax_err_type!(
+                        InvalidInput,
+                        "UEFI boot requires uefi_firmware_path or legacy bios_path"
+                    ));
+                }
+                if self.bios_load_addr.is_none() {
+                    return Err(ax_errno::ax_err_type!(
+                        InvalidInput,
+                        "UEFI boot requires bios_load_addr"
+                    ));
+                }
+            }
+            VMBootProtocol::Multiboot => {
+                if arch != "x86_64" {
+                    warn!(
+                        "boot_protocol=multiboot is only supported on x86_64; rejecting config on \
+                         {arch}"
+                    );
+                    return Err(ax_errno::ax_err_type!(
+                        InvalidInput,
+                        "multiboot firmware boot is only supported on x86_64"
+                    ));
+                }
+                if self.bios_path.is_some() && self.bios_load_addr.is_none() {
+                    return Err(ax_errno::ax_err_type!(
+                        InvalidInput,
+                        "external BIOS boot requires bios_load_addr"
+                    ));
+                }
+            }
+            VMBootProtocol::Direct => {
+                if self.enable_bios {
+                    return Err(ax_errno::ax_err_type!(
+                        InvalidInput,
+                        "direct boot must not set enable_bios = true"
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+const BUILD_TARGET_ARCH: &str = "x86_64";
+
+#[cfg(target_arch = "aarch64")]
+const BUILD_TARGET_ARCH: &str = "aarch64";
+
+#[cfg(target_arch = "riscv64")]
+const BUILD_TARGET_ARCH: &str = "riscv64";
+
+#[cfg(target_arch = "loongarch64")]
+const BUILD_TARGET_ARCH: &str = "loongarch64";
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
+const BUILD_TARGET_ARCH: &str = "unknown";
 
 /// Specifies how the VM should handle interrupts and interrupt controllers.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
@@ -425,6 +571,7 @@ impl AxVMCrateConfig {
             warn!("Config TOML parse error {:?}", err.message());
             ax_errno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
         })?;
+        config.kernel.validate_boot_config()?;
         config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
         Ok(config)
     }
