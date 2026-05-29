@@ -26,7 +26,7 @@ out=$(git stash 2>&1); rc=$?
 echo "$out"
 if echo "$out" | grep -qi "No local changes"; then echo "PASS: git stash clean tree"; PASS=$((PASS+1))
 elif [ $rc -eq 0 ]; then echo "PASS: git stash clean tree (rc=0)"; PASS=$((PASS+1))
-else echo "INFO: git stash clean (rc=$rc)"; PASS=$((PASS+1)); fi
+else echo "INFO: git stash clean (rc=$rc)"; fi
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_STASH_ALL_PASSED" || echo "GIT_STASH_HAS_FAILURES"
