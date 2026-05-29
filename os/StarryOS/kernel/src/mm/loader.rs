@@ -18,7 +18,6 @@ use kernel_elf_parser::{
 use ouroboros::self_referencing;
 use uluru::LRUCache;
 
-
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
@@ -39,6 +38,8 @@ const R_RISCV_RELATIVE: u32 = 3;
 const R_RISCV_JUMP_SLOT: u32 = 5;
 #[cfg(target_arch = "riscv64")]
 const R_RISCV_64: u32 = 2;
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_COPY: u32 = 4;
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
@@ -147,13 +148,27 @@ fn map_elf<'a>(
         // TDOO: flush the I-cache
     }
 
-
     // Apply relocations for static-pie binaries
     #[cfg(target_arch = "riscv64")]
     {
         if elf_parser.headers().header.pt1.class() == xmas_elf::header::Class::SixtyFour {
-            let is_pie = elf_parser.headers().header.pt2.type_().as_type() == xmas_elf::header::Type::SharedObject;
+            let is_pie = elf_parser.headers().header.pt2.type_().as_type()
+                == xmas_elf::header::Type::SharedObject;
             if is_pie {
+                // Populate PT_LOAD segments so relocation writes can access pages
+                for seg in elf_parser
+                    .headers()
+                    .ph
+                    .iter()
+                    .filter(|p| p.get_type() == Ok(xmas_elf::program::Type::Load))
+                {
+                    let seg_start =
+                        VirtAddr::from_usize(base + seg.virtual_addr as usize).align_down_4k();
+                    let seg_pad = (base + seg.virtual_addr as usize).align_offset_4k();
+                    let seg_size =
+                        (seg.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
+                    uspace.populate_area(seg_start, seg_size, mapping_flags(seg.flags))?;
+                }
                 apply_relocations(uspace, base, entry.borrow_cache(), &elf_parser.headers().ph)?;
             }
         }
@@ -162,6 +177,29 @@ fn map_elf<'a>(
     Ok(elf_parser)
 }
 
+/// Convert a virtual address to a file offset using PT_LOAD segments.
+///
+/// This function searches through the program headers to find which PT_LOAD
+/// segment contains the given virtual address, then calculates the
+/// corresponding file offset.
+///
+/// Returns None if the address is not within any PT_LOAD segment.
+#[cfg(target_arch = "riscv64")]
+fn vaddr_to_file_offset(vaddr: u64, ph: &[xmas_elf::program::ProgramHeader64]) -> Option<usize> {
+    let vaddr = vaddr as usize;
+    for seg in ph {
+        if seg.get_type() != Ok(xmas_elf::program::Type::Load) {
+            continue;
+        }
+        let seg_vaddr = seg.virtual_addr as usize;
+        let seg_filesz = seg.file_size as usize;
+        if vaddr >= seg_vaddr && vaddr < seg_vaddr + seg_filesz {
+            let offset_in_segment = vaddr - seg_vaddr;
+            return Some(seg.offset as usize + offset_in_segment);
+        }
+    }
+    None
+}
 
 /// Apply relocations for static-pie binaries.
 ///
@@ -175,9 +213,9 @@ fn apply_relocations(
     ph: &[xmas_elf::program::ProgramHeader64],
 ) -> AxResult {
     // Find PT_DYNAMIC segment
-    let dynamic_ph = ph.iter().find(|p| {
-        p.get_type() == Ok(xmas_elf::program::Type::Dynamic)
-    });
+    let dynamic_ph = ph
+        .iter()
+        .find(|p| p.get_type() == Ok(xmas_elf::program::Type::Dynamic));
 
     let dynamic_ph = match dynamic_ph {
         Some(ph) => ph,
@@ -215,22 +253,23 @@ fn apply_relocations(
         let value = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
 
         match tag {
-            7 => rela_addr = value,      // DT_RELA
-            8 => rela_size = value,      // DT_RELASZ
-            23 => jmprel_addr = value,   // DT_JMPREL
-            2 => jmprel_size = value,    // DT_PLTRELSZ
-            6 => symtab_addr = value,    // DT_SYMTAB
-            5 => strtab_addr = value,    // DT_STRTAB
-            0 => break,                  // DT_NULL
+            7 => rela_addr = value,    // DT_RELA
+            8 => rela_size = value,    // DT_RELASZ
+            23 => jmprel_addr = value, // DT_JMPREL
+            2 => jmprel_size = value,  // DT_PLTRELSZ
+            6 => symtab_addr = value,  // DT_SYMTAB
+            5 => strtab_addr = value,  // DT_STRTAB
+            0 => break,                // DT_NULL
             _ => {}
         }
     }
 
     // Process .rela.dyn (R_RISCV_RELATIVE)
     if rela_addr != 0 && rela_size != 0 {
-        let rela_offset = (rela_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
+        let rela_offset = vaddr_to_file_offset(rela_addr, ph).ok_or(AxError::InvalidData)?;
         let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
         let rela_count = rela_size as usize / rela_entry_size;
+        let mut copy_count: usize = 0;
 
         debug!("Processing {} RELATIVE relocations", rela_count);
 
@@ -266,36 +305,42 @@ fn apply_relocations(
                         continue;
                     }
 
-                    // Read symbol from .dynsym
-                    let sym_offset = (symtab_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
-                    let sym_entry_size = 24; // sizeof(Sym64) = 24 bytes
-                    let sym_entry_offset = sym_offset + sym_idx * sym_entry_size;
-
-                    if sym_entry_offset + sym_entry_size > (cache.location().len().unwrap_or(0) as usize) {
-                        debug!("Symbol entry extends beyond file");
+                    let sym_file_offset =
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                    let sym_entry_offset = sym_file_offset + sym_idx * 24;
+                    let file_len = cache.location().len().unwrap_or(0) as usize;
+                    if sym_entry_offset + 24 > file_len {
                         continue;
                     }
-
-                    let mut sym_data = vec![0u8; sym_entry_size];
+                    let mut sym_data = vec![0u8; 24];
                     cache.read_at(&mut sym_data, sym_entry_offset as u64)?;
-                    // Sym64: st_name(4) + st_info(1) + st_other(1) + st_shndx(2) + st_value(8) + st_size(8)
                     let st_value = u64::from_le_bytes(sym_data[8..16].try_into().unwrap());
-
+                    if st_value == 0 {
+                        continue;
+                    }
                     let target = base + offset;
                     let value = (st_value as i64 + addend) as u64;
                     uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
-                    debug!("R_RISCV_64: [{:#x}] = {:#x} (sym_idx={})", target, value, sym_idx);
+                }
+                R_RISCV_COPY => {
+                    copy_count += 1;
                 }
                 _ => {
-                    debug!("Unsupported relocation type: {}", reloc_type);
+                    debug!("[apply_relocations] unknown .rela.dyn type={}", reloc_type);
                 }
             }
+        }
+        if copy_count > 0 {
+            debug!(
+                "[apply_relocations] skipped {} R_RISCV_COPY relocations",
+                copy_count
+            );
         }
     }
 
     // Process .rela.plt (R_RISCV_JUMP_SLOT)
     if jmprel_addr != 0 && jmprel_size != 0 {
-        let jmprel_offset = (jmprel_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
+        let jmprel_offset = vaddr_to_file_offset(jmprel_addr, ph).ok_or(AxError::InvalidData)?;
         let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
         let jmprel_count = jmprel_size as usize / rela_entry_size;
 
@@ -328,26 +373,23 @@ fn apply_relocations(
                     }
 
                     // Read symbol from .dynsym
-                    let sym_offset = (symtab_addr as usize).checked_sub(base).ok_or(AxError::InvalidData)?;
-                    let sym_entry_size = 24; // sizeof(Sym64) = 24 bytes
-                    let sym_entry_offset = sym_offset + sym_idx * sym_entry_size;
-
-                    if sym_entry_offset + sym_entry_size > (cache.location().len().unwrap_or(0) as usize) {
-                        debug!("Symbol entry extends beyond file");
+                    let sym_file_offset =
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                    let sym_entry_offset = sym_file_offset + sym_idx * 24;
+                    let file_len = cache.location().len().unwrap_or(0) as usize;
+                    if sym_entry_offset + 24 > file_len {
                         continue;
                     }
-
-                    let mut sym_data = vec![0u8; sym_entry_size];
+                    let mut sym_data = vec![0u8; 24];
                     cache.read_at(&mut sym_data, sym_entry_offset as u64)?;
-                    // Sym64: st_name(4) + st_info(1) + st_other(1) + st_shndx(2) + st_value(8) + st_size(8)
                     let st_value = u64::from_le_bytes(sym_data[8..16].try_into().unwrap());
 
-                    // For static-pie, the symbol value is relative to load base
+                    if st_value == 0 {
+                        continue;
+                    }
                     let target = base + offset;
                     let value = base as u64 + st_value;
-
                     uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
-                    debug!("JUMP_SLOT: [{:#x}] = {:#x} (sym_idx={})", target, value, sym_idx);
                 }
                 _ => {
                     debug!("Unsupported relocation type: {}", reloc_type);
