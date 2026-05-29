@@ -689,6 +689,7 @@ impl Axvisor {
             &mut self.app,
             cargo,
             qemu,
+            None,
             &case.case.case.qemu_config_path,
             prepared_assets,
             prepare_started.elapsed(),

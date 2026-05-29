@@ -375,6 +375,7 @@ fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) -> TestQemuCa
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
+        host_symbolize_success_regex: Vec::new(),
         subcases: Vec::new(),
     }
 }
@@ -1462,6 +1463,7 @@ mod tests {
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),
+            host_symbolize_success_regex: Vec::new(),
             subcases: Vec::new(),
         }
     }

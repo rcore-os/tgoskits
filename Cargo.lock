@@ -7968,7 +7968,6 @@ dependencies = [
  "event-listener",
  "extern-trait",
  "flatten_objects",
- "gimli 0.33.0",
  "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",

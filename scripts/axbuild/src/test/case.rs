@@ -51,6 +51,7 @@ pub(crate) struct TestQemuCase {
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
+    pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
 }
 
@@ -744,6 +745,7 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     app: &mut AppContext,
     cargo: &Cargo,
     qemu: QemuConfig,
+    capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     qemu_config_path: &Path,
     prepared_assets: PreparedCaseAssets,
     prepare_elapsed: Duration,
@@ -766,7 +768,7 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     println!("  rootfs: {}", prepared_assets.rootfs_path.display());
 
     let qemu_started = std::time::Instant::now();
-    let result = app.run_qemu(cargo, qemu, None).await;
+    let result = app.run_qemu(cargo, qemu, capture_backtrace).await;
     println!("  qemu run: {:.2?}", qemu_started.elapsed());
 
     remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
@@ -1001,6 +1003,7 @@ mod tests {
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),
+            host_symbolize_success_regex: Vec::new(),
             subcases: Vec::new(),
         }
     }

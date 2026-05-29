@@ -110,6 +110,8 @@ struct IndexedQemuCase {
 struct QemuCaseExtraConfig {
     #[serde(default)]
     test_commands: Vec<String>,
+    #[serde(default)]
+    host_symbolize_success_regex: Vec<String>,
 }
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
@@ -713,7 +715,9 @@ pub(crate) fn load_test_qemu_case_fields(
     suite_name: &str,
     discover_subcases: bool,
 ) -> anyhow::Result<TestQemuCase> {
-    let test_commands = load_qemu_case_test_commands(&qemu_config_path, suite_name)?;
+    let config = load_qemu_case_extra_config(&qemu_config_path)?;
+    let test_commands =
+        normalize_qemu_test_commands(&qemu_config_path, config.test_commands, suite_name)?;
     let subcases = if discover_subcases && !test_commands.is_empty() {
         let arch = qemu_config_path
             .file_stem()
@@ -729,19 +733,16 @@ pub(crate) fn load_test_qemu_case_fields(
         case_dir,
         qemu_config_path,
         test_commands,
+        host_symbolize_success_regex: config.host_symbolize_success_regex,
         subcases,
     })
 }
 
-fn load_qemu_case_test_commands(
-    qemu_config_path: &Path,
-    suite_name: &str,
-) -> anyhow::Result<Vec<String>> {
+fn load_qemu_case_extra_config(qemu_config_path: &Path) -> anyhow::Result<QemuCaseExtraConfig> {
     let content = fs::read_to_string(qemu_config_path)
         .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
-    let config: QemuCaseExtraConfig = toml::from_str(&content)
-        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
-    normalize_qemu_test_commands(qemu_config_path, config.test_commands, suite_name)
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))
 }
 
 fn discover_qemu_subcases(
