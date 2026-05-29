@@ -183,16 +183,18 @@ impl PitChannel {
     }
 
     fn latch_status(&mut self, now_ns: u64) {
-        let mut status = (self.output_high(now_ns) as u8) << 7;
-        status |= (self.null_count as u8) << 6;
-        status |= match self.access_mode {
-            AccessMode::LatchCount => 0,
-            AccessMode::LowByte => 1,
-            AccessMode::HighByte => 2,
-            AccessMode::LowThenHigh => 3,
-        } << 4;
-        status |= self.mode.raw_bits() << 1;
-        self.latched_status = Some(status);
+        if self.latched_status.is_none() {
+            let mut status = (self.output_high(now_ns) as u8) << 7;
+            status |= (self.null_count as u8) << 6;
+            status |= match self.access_mode {
+                AccessMode::LatchCount => 0,
+                AccessMode::LowByte => 1,
+                AccessMode::HighByte => 2,
+                AccessMode::LowThenHigh => 3,
+            } << 4;
+            status |= self.mode.raw_bits() << 1;
+            self.latched_status = Some(status);
+        }
     }
 
     fn latch_count(&mut self, now_ns: u64) {
