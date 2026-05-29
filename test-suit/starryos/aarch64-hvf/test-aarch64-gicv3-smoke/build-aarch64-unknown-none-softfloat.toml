@@ -1,8 +1,14 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-  "qemu",
+  "ax-feat/display",
+  "ax-feat/rtc",
+  "ax-driver/rtc",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
   "gic-v3",
   "cntv-timer",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
 ]
 # CNTV PPI 11 = IRQ 27. The kernel's `cntv-timer` path programs the
 # virtual-timer registers and the GIC must subscribe IRQ 27 instead
@@ -10,5 +16,5 @@ features = [
 # override over the platform's default axconfig.
 axconfig_overrides = ["devices.timer-irq=27"]
 log = "Warn"
-plat_dyn = false
+plat_dyn = true
 target = "aarch64-unknown-none-softfloat"

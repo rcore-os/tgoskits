@@ -50,7 +50,7 @@ use core::{
 
 use ax_sync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
-use spin::{Lazy, Once};
+use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
@@ -70,8 +70,8 @@ pub use self::{
     socket::*,
 };
 
-static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
-static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
+static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
+static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);

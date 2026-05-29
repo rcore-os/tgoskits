@@ -17,9 +17,6 @@
 //!     - `irq`: Enable interrupt handling support.
 //! - Memory
 //!     - `alloc`: Enable dynamic memory allocation.
-//!     - `alloc-tlsf`: Use the TLSF allocator.
-//!     - `alloc-slab`: Use the slab allocator.
-//!     - `alloc-buddy`: Use the buddy system allocator.
 //!     - `paging`: Enable page table manipulation.
 //!     - `tls`: Enable thread-local storage.
 //! - Task management

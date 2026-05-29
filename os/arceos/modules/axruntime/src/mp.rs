@@ -137,7 +137,8 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         }
     }
     ax_hal::percpu::init_secondary(cpu_id);
-    #[cfg(feature = "buddy-slab")]
+    // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
+    // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 

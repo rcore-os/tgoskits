@@ -1636,7 +1636,6 @@ mod tests {
                 env: Default::default(),
                 target: "x86_64-unknown-none".to_string(),
                 package: package.to_string(),
-                bin: None,
                 features: Vec::new(),
                 log: None,
                 extra_config: None,
@@ -1646,6 +1645,7 @@ mod tests {
                 pre_build_cmds: Vec::new(),
                 post_build_cmds: Vec::new(),
                 to_bin: false,
+                bin: None,
             },
             qemu: QemuConfig::default(),
         }

@@ -26,7 +26,7 @@
 
 - `qemu`：二进制 `[[bin]]` 的必需 feature，同时启用 `ax-feat/defplat`、`ax-feat/bus-pci`、`ax-feat/display`、`ax-feat/fs-ng-times`，以及 `starry-kernel` 的 `input`、`vsock`、`dev-log`。
 - `smp`：启用 `ax-feat/smp`，并在 VisionFive2 平台上联动开启 SMP。
-- `vf2`：引入可选依赖 `axplat-riscv64-visionfive2`，并额外打开 `ax-feat/driver-sdmmc`。
+- `vf2`：引入可选依赖 `ax-plat-riscv64-visionfive2`，并额外打开 `ax-feat/driver-sdmmc`。
 
 这意味着 `starryos` 的主要复杂度不在运行时逻辑，而在于“生成哪一类镜像”。
 
@@ -104,13 +104,13 @@ cargo xtask starry run --arch riscv64 --package starryos
 graph LR
     ax-feat["ax-feat"] --> starryos["starryos"]
     kernel["starry-kernel"] --> starryos
-    vf2["axplat-riscv64-visionfive2 (optional)"] --> starryos
+    vf2["ax-plat-riscv64-visionfive2 (optional)"] --> starryos
 ```
 
 ### 直接依赖
 - `ax-feat`：把底层 ArceOS 运行时、驱动和平台 feature 接到镜像入口包上。
 - `starry-kernel`：真正的内核实现，`starryos` 只在 `main()` 里调用其入口。
-- `axplat-riscv64-visionfive2`：仅在 `vf2` feature 下引入，用于板级适配。
+- `ax-plat-riscv64-visionfive2`：仅在 `vf2` feature 下引入，用于板级适配。
 
 ### 3.2 关键运行时外部条件
 - rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。

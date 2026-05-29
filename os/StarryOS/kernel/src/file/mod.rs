@@ -2,7 +2,7 @@ pub mod epoll;
 pub mod event;
 mod fs;
 pub mod inotify;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod ion;
 pub mod memfd;
 mod net;
@@ -296,12 +296,19 @@ pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
 
 /// Close a file by `fd`.
 pub fn close_file_like(fd: c_int) -> AxResult {
-    let f = FD_TABLE
-        .write()
-        .remove(fd as usize)
-        .ok_or(AxError::BadFileDescriptor)?;
-    debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
-    release_locks_on_close(f);
+    let removed = FD_TABLE.write().remove(fd as usize);
+    if let Some(f) = removed {
+        debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
+        release_locks_on_close(f);
+        return Ok(());
+    }
+    #[cfg(feature = "ebpf")]
+    {
+        if crate::perf_event::perf_event_close(fd as u32).is_ok() {
+            return Ok(());
+        }
+        crate::ebpf::bpf_close_fd(fd as u32)?;
+    }
     Ok(())
 }
 
@@ -394,6 +401,11 @@ pub fn close_all_fds() {
     for key in lock_keys {
         crate::syscall::wake_lock_waiters(key);
         crate::syscall::wake_flock_waiters(key);
+    }
+    #[cfg(feature = "ebpf")]
+    {
+        crate::perf_event::perf_event_close_all();
+        crate::ebpf::bpf_close_all_fds();
     }
 }
 

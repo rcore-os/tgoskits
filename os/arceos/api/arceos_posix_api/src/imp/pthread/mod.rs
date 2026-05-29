@@ -2,18 +2,19 @@ use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 use core::{
     cell::UnsafeCell,
     ffi::{c_int, c_void},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_task::AxTaskRef;
-use spin::{Lazy, RwLock};
+use spin::{LazyLock, RwLock};
 
 use crate::ctypes;
 
 pub mod mutex;
 
-static TID_TO_PTHREAD: Lazy<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
-    Lazy::new(|| {
+static TID_TO_PTHREAD: LazyLock<RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
+    LazyLock::new(|| {
         let mut map = BTreeMap::new();
         let main_task = ax_task::current();
         let main_tid = main_task.id().as_u64();
@@ -52,8 +53,13 @@ impl Pthread {
             result: UnsafeCell::new(core::ptr::null_mut()),
         });
         let their_packet = my_packet.clone();
+        let registered = Arc::new(AtomicBool::new(false));
+        let child_registered = registered.clone();
 
         let main = move || {
+            while !child_registered.load(Ordering::Acquire) {
+                ax_task::yield_now();
+            }
             let arg = arg_wrapper;
             let ret = start_routine(arg.0);
             unsafe { *their_packet.result.get() = ret };
@@ -68,6 +74,7 @@ impl Pthread {
         };
         let ptr = Box::into_raw(Box::new(thread)) as *mut c_void;
         TID_TO_PTHREAD.write().insert(tid, ForceSendSync(ptr));
+        registered.store(true, Ordering::Release);
         Ok(ptr)
     }
 

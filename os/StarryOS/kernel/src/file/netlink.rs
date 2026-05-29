@@ -40,7 +40,7 @@ use linux_raw_sys::{
     net::AF_NETLINK,
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
-use spin::Lazy;
+use spin::LazyLock;
 
 use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
 use crate::{
@@ -248,8 +248,8 @@ pub struct NetlinkSocket {
 /// Global registry of bound netlink sockets, used by [`broadcast`] to dispatch
 /// kernel-side messages. Holds weak refs so socket close drops naturally; dead
 /// entries are pruned on each broadcast.
-static NETLINK_SOCKETS: Lazy<Mutex<Vec<Weak<NetlinkSocket>>>> =
-    Lazy::new(|| Mutex::new(Vec::new()));
+static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
     pub fn new(protocol: u32) -> Arc<Self> {

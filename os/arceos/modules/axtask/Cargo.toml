@@ -11,7 +11,7 @@ version = "0.5.16"
 default = []
 
 irq = ["ax-hal/irq", "dep:ax-timer-list"]
-ipi = ["dep:ax-ipi"]
+ipi = ["irq", "ax-hal/ipi", "dep:ax-ipi"]
 multitask = [
   "stack-canary",
   "dep:ax-config",

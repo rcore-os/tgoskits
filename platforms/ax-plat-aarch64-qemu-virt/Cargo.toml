@@ -1,0 +1,49 @@
+[package]
+name = "ax-plat-aarch64-qemu-virt"
+version = "0.5.10"
+repository = "https://github.com/rcore-os/tgoskits"
+description = "Implementation of `axplat` hardware abstraction layer for QEMU ARM64 virtual machine."
+keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
+
+[features]
+fp-simd = ["ax-cpu/fp-simd"]
+irq = ["ax-plat/irq", "ax-plat-aarch64-peripherals/irq"]
+paging = []
+rtc = []
+smp = ["ax-plat/smp"]
+# Enable the GICv3 distributor + redistributor + system-register CPU
+# interface. Off by default so the legacy GICv2 behavior physical
+# boards rely on is unchanged. Orthogonal to `cntv-timer`.
+gic-v3 = ["ax-plat-aarch64-peripherals/gic-v3"]
+# Use the CNTV (virtual) generic timer and IRQ 27 (PPI 11) instead
+# of the default CNTP + IRQ 30. Required under Apple HVF because
+# CNTP is owned by EL2 there. Orthogonal to `gic-v3`.
+cntv-timer = ["ax-plat-aarch64-peripherals/cntv-timer"]
+
+[dependencies]
+log = "0.4"
+ax-page-table-entry = { workspace = true }
+ax-config-macros = { workspace = true }
+ax-plat-aarch64-peripherals = { workspace = true }
+ax-cpu = { workspace = true }
+ax-driver = { workspace = true, features = ["plat-static", "virtio"] }
+ax-plat = { workspace = true }
+axklib = { workspace = true, features = ["tlsf"] }
+mmio-api.workspace = true
+
+[package.metadata.axplat]
+platform = "aarch64-qemu-virt"
+arch = "aarch64"
+config = "axconfig.toml"
+crate = "ax_plat_aarch64_qemu_virt"
+default-for-arch = true
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none"]
+
+[package.metadata.axbuild.clippy-feature-axconfig-overrides]
+cntv-timer = ["devices.timer-irq=27"]

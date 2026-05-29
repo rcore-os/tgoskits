@@ -422,7 +422,7 @@ impl DirNodeOps for Inode {
         let blocks = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
             .map_err(into_vfs_err)?;
 
-        let mut idx = 0u64;
+        let mut byte_offset: u64 = 0;
         let mut count = 0usize;
         for &phys in blocks.values() {
             let cached = fs
@@ -430,21 +430,44 @@ impl DirNodeOps for Inode {
                 .get_or_load(dev, phys)
                 .map_err(into_vfs_err)?;
             let data = &cached.data[..BLOCK_SIZE];
-            let iter = rsext4::entries::DirEntryIterator::new(data);
-            for (entry, _) in iter {
-                if entry.inode == 0 {
+
+            // Manually iterate entries, tracking byte_offset for ALL entries
+            // (including inode==0 deleted ones) so offset stays physical.
+            let mut pos = 0usize;
+            while pos + 8 <= data.len() {
+                let entry_inode =
+                    u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+                let rec_len = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
+                if rec_len < 8 {
+                    break;
+                }
+                let rec_usize = rec_len as usize;
+                if pos + rec_usize > data.len() {
+                    break;
+                }
+
+                let entry_offset = byte_offset;
+                byte_offset += rec_len as u64;
+                pos += rec_usize;
+
+                if entry_inode == 0 {
                     continue;
                 }
-                if idx < offset {
-                    idx += 1;
+                if entry_offset < offset {
                     continue;
                 }
-                let name = core::str::from_utf8(entry.name)
+
+                let name_len = data[pos - rec_usize + 6] as usize;
+                let file_type = data[pos - rec_usize + 7];
+                let name_start = pos - rec_usize + 8;
+                if name_len > rec_usize - 8 {
+                    continue;
+                }
+                let name = core::str::from_utf8(&data[name_start..name_start + name_len])
                     .map_err(|_| VfsError::InvalidData)?
                     .to_owned();
-                let node_type = dir_entry_type_to_vfs(entry.file_type);
-                idx += 1;
-                if !sink.accept(&name, entry.inode as u64, node_type, idx) {
+                let node_type = dir_entry_type_to_vfs(file_type);
+                if !sink.accept(&name, entry_inode as u64, node_type, byte_offset) {
                     return Ok(count);
                 }
                 count += 1;

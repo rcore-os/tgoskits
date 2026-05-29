@@ -1,7 +1,7 @@
 use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, iter::zip, mem::MaybeUninit, ptr::NonNull};
 
-use spin::Lazy;
+use spin::LazyLock;
 
 use crate::{
     boxed::ItemBox,
@@ -67,7 +67,7 @@ impl Drop for Scope {
     }
 }
 
-static GLOBAL_SCOPE: Lazy<Scope> = Lazy::new(Scope::new);
+static GLOBAL_SCOPE: LazyLock<Scope> = LazyLock::new(Scope::new);
 
 #[ax_percpu::def_percpu]
 pub(crate) static ACTIVE_SCOPE_PTR: usize = 0;

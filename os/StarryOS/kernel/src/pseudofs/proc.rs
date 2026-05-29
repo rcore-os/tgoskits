@@ -11,17 +11,22 @@ use core::{
     ffi::CStr,
     fmt::Write,
     iter,
+    mem::size_of,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_hal::{
+use ax_lazyinit::LazyInit;
+use ax_memory_addr::PAGE_SIZE_4K;
+use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use kernel_elf_parser::{AuxEntry, AuxType};
+use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
+use zerocopy::IntoBytes;
 
 use crate::{
     file::FD_TABLE,
@@ -40,6 +45,36 @@ use crate::{
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 const PROCFS_INIT_PID: Pid = 1;
+
+pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
+
+fn read_kallsyms() -> KallsymsMapped<'static> {
+    unsafe extern "C" {
+        fn _stext();
+        fn _etext();
+        fn __kallsyms_start();
+        fn __kallsyms_end();
+    }
+
+    let kallsyms_start = __kallsyms_start as *const () as usize;
+    let kallsyms_end = __kallsyms_end as *const () as usize;
+    let kallsyms_sec_size = kallsyms_end - kallsyms_start;
+    let kallsyms_sec =
+        unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_sec_size) };
+
+    let total_size =
+        KallsymsMapped::check_total_bytes(kallsyms_sec).expect("Invalid kallsyms format");
+
+    let kallsyms = &kallsyms_sec[..total_size as usize];
+    // TODO: recycle unused space in .kallsyms section
+    info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
+    KallsymsMapped::from_blob(
+        kallsyms,
+        _stext as *const () as u64,
+        _etext as *const () as u64,
+    )
+    .expect("Failed to create KallsymsMapped")
+}
 
 fn procfs_visible_pid(proc: &Arc<Process>) -> Pid {
     if proc.is_init() {
@@ -61,7 +96,7 @@ fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
 }
 
 fn render_meminfo() -> String {
-    let total = ax_hal::mem::total_ram_size();
+    let total = ax_runtime::hal::mem::total_ram_size();
     let usages = ax_alloc::global_allocator().usages();
     // Sum all allocator categories to estimate kernel-consumed memory.
     let used = usages.get(ax_alloc::UsageKind::RustHeap)
@@ -113,7 +148,7 @@ fn render_meminfo() -> String {
 }
 
 fn render_cpuinfo() -> String {
-    let cpu_count = ax_hal::cpu_num();
+    let cpu_count = ax_runtime::hal::cpu_num();
     let mut buf = String::new();
     for i in 0..cpu_count {
         render_cpu_entry(&mut buf, i);
@@ -185,7 +220,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
 
 fn render_stat() -> String {
     let up = monotonic_time();
-    let cpu_count = ax_hal::cpu_num() as u64;
+    let cpu_count = ax_runtime::hal::cpu_num() as u64;
     // Total CPU-time budget in jiffies across all CPUs (USER_HZ = 100).
     let up_jiffies = up.as_secs() * 100 + (up.subsec_millis() / 10) as u64;
     let total_budget = up_jiffies.saturating_mul(cpu_count);
@@ -339,7 +374,7 @@ fn task_status(task: &AxTaskRef) -> String {
         &cred,
         num_threads,
         task.cpumask(),
-        ax_hal::cpu_num(),
+        ax_runtime::hal::cpu_num(),
     )
 }
 
@@ -625,6 +660,16 @@ fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
     ))
 }
 
+fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
+    let mut entries = task.as_thread().proc_data.auxv.read().clone();
+    entries.push(AuxEntry::new(AuxType::NULL, 0));
+    let mut bytes = Vec::with_capacity(entries.len() * size_of::<AuxEntry>());
+    for entry in entries {
+        bytes.extend_from_slice(entry.as_bytes());
+    }
+    bytes
+}
+
 impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
@@ -635,6 +680,7 @@ impl SimpleDirOps for ThreadDir {
                 "oom_score_adj",
                 "task",
                 "maps",
+                "auxv",
                 "mounts",
                 "cmdline",
                 "comm",
@@ -678,7 +724,7 @@ impl SimpleDirOps for ThreadDir {
                             &cred,
                             num_threads,
                             task.cpumask(),
-                            ax_hal::cpu_num(),
+                            ax_runtime::hal::cpu_num(),
                         ))
                     } else {
                         Ok(task_status(&task))
@@ -723,6 +769,7 @@ impl SimpleDirOps for ThreadDir {
                 )
                 .into()
             }
+            "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
@@ -859,7 +906,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             let secs = up.as_secs();
             let cs = up.subsec_millis() / 10;
             // Approximate total idle as uptime × cpu_count (no per-CPU idle accounting yet).
-            let idle_secs = secs.saturating_mul(ax_hal::cpu_num() as u64);
+            let idle_secs = secs.saturating_mul(ax_runtime::hal::cpu_num() as u64);
             Ok(format!("{secs}.{cs:02} {idle_secs}.00\n"))
         }),
     );
@@ -959,6 +1006,23 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
 
         SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))
+    });
+
+    static ALL_SYMS: LazyInit<String> = LazyInit::new();
+
+    let ksym = read_kallsyms();
+    KALLSYMS.init_once(ksym);
+
+    root.add("kallsyms", {
+        if !ALL_SYMS.is_inited() {
+            ALL_SYMS.init_once(KALLSYMS.dump_all_symbols());
+        }
+        let seq_obj = SeqObject::new(|| Ok(ALL_SYMS.as_str()));
+        SpecialFsFile::new_regular_with_perm(
+            fs.clone(),
+            seq_obj,
+            NodePermission::from_bits_truncate(0o444),
+        )
     });
 
     let proc_dir = ProcFsHandler(fs.clone());

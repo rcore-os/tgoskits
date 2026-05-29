@@ -641,6 +641,7 @@ impl Axvisor {
 
     fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
         request.smp = None;
+        request.vmconfigs.clear();
         request
     }
 
@@ -737,6 +738,7 @@ fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
         grouped_runner: test_case::GroupedCaseRunnerConfig {
             runner_name: "axvisor-run-case-tests".to_string(),
             runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+            autorun_profile_script: None,
             begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
@@ -947,6 +949,22 @@ mod tests {
         let request = Axvisor::qemu_test_request(request);
 
         assert_eq!(request.smp, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_vmconfigs() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request
+            .vmconfigs
+            .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert!(request.vmconfigs.is_empty());
     }
 
     #[test]

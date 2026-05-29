@@ -124,14 +124,12 @@ pub(crate) fn enable_virtualization() {
     // Wait for all cores to enable virtualization.
     while CORES.load(Ordering::Acquire) != cpu_count {
         thread::yield_now();
-        for _ in 0..10 {
-            core::hint::spin_loop();
-        }
     }
 
     info!("All cores have enabled hardware virtualization support.");
 }
 
+mod impl_console;
 mod impl_host;
 mod impl_memory;
 mod impl_time;

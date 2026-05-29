@@ -140,6 +140,14 @@ impl<T: InterfaceRaw> DriverGeneric for SerialDyn<T> {
     fn name(&self) -> &str {
         self.inner.name()
     }
+
+    fn raw_any(&self) -> Option<&dyn core::any::Any> {
+        Some(&self.inner)
+    }
+
+    fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+        Some(&mut self.inner)
+    }
 }
 
 pub struct Sender {

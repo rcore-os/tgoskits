@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
+use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 use axvm::{
     VMMemoryRegion,
@@ -31,8 +31,8 @@ use crate::vmm::fdt::*;
 
 use alloc::sync::Arc;
 
-#[allow(clippy::module_inception, dead_code)]
-pub mod config {
+#[allow(dead_code)]
+pub mod vmcfg {
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -64,17 +64,33 @@ pub mod config {
             }
         };
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    warn!("Failed to read config directory entry: {e:?}");
+                    continue;
+                }
+            };
             let path = entry.path();
             // Check if the file has a .toml extension
             let path_str = path.as_str();
             debug!("Considering file: {}", path_str);
             if path_str.ends_with(".toml") {
-                let toml_file = fs::File::open(path_str).expect("Failed to open file");
-                let file_size = toml_file
-                    .metadata()
-                    .expect("Failed to get file metadata")
-                    .len() as usize;
+                let toml_file = match fs::File::open(path_str) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        error!("Failed to open config file {}: {:?}", path_str, e);
+                        continue;
+                    }
+                };
+                let file_size = match toml_file.metadata() {
+                    Ok(metadata) => metadata.len() as usize,
+                    Err(e) => {
+                        error!("Failed to get config file {} metadata: {:?}", path_str, e);
+                        continue;
+                    }
+                };
 
                 info!("File {} size: {}", path_str, file_size);
 
@@ -93,23 +109,28 @@ pub mod config {
                             buffer.len()
                         );
                         // Convert to string
-                        let content = alloc::string::String::from_utf8(buffer)
-                            .expect("Failed to convert bytes to UTF-8 string");
+                        let content = match String::from_utf8(buffer) {
+                            Ok(content) => content,
+                            Err(e) => {
+                                error!("Config file {} is not valid UTF-8: {:?}", path_str, e);
+                                continue;
+                            }
+                        };
 
-                        if content.contains("[base]")
-                            && content.contains("[kernel]")
-                            && content.contains("[devices]")
-                        {
-                            configs.push(content);
-                            info!(
-                                "TOML config: {} is valid, start the virtual machine directly now. ",
-                                path_str
-                            );
-                        } else {
-                            warn!(
-                                "File {} does not appear to contain valid VM config structure",
-                                path_str
-                            );
+                        match axvm::config::AxVMCrateConfig::from_toml(&content) {
+                            Ok(_) => {
+                                configs.push(content);
+                                info!(
+                                    "TOML config: {} is valid, start the virtual machine directly now. ",
+                                    path_str
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "File {} does not contain a valid VM config: {:?}",
+                                    path_str, e
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -158,11 +179,11 @@ pub fn init_guest_vms() {
     }
 
     // First try to get configs from filesystem if fs feature is enabled
-    let mut gvm_raw_configs = config::filesystem_vm_configs();
+    let mut gvm_raw_configs = vmcfg::filesystem_vm_configs();
 
     // If no filesystem configs found, fallback to static configs
     if gvm_raw_configs.is_empty() {
-        let static_configs = config::static_vm_configs();
+        let static_configs = vmcfg::static_vm_configs();
         if static_configs.is_empty() {
             info!("Static VM configs are empty.");
             info!("Now axvisor will entry the shell...");
@@ -182,20 +203,9 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
-    let mut vm_create_config =
-        AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    )))]
-    let vm_create_config =
-        AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
+    #[allow(unused_mut)]
+    let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
+        .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
         debug!(
@@ -204,19 +214,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         );
     }
 
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
+    #[allow(unused_mut)]
     let mut vm_config = AxVMConfig::from(vm_create_config.clone());
-
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    )))]
-    let vm_config = AxVMConfig::from(vm_create_config.clone());
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
     #[cfg(any(
@@ -224,37 +223,44 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         target_arch = "loongarch64",
         target_arch = "riscv64"
     ))]
-    handle_fdt_operations(&mut vm_config, &mut vm_create_config);
+    handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
+
+    #[cfg(target_arch = "x86_64")]
+    let skip_guest_address_adjustment = x86_linux_direct_boot_config(&vm_create_config);
+    #[cfg(not(target_arch = "x86_64"))]
+    let skip_guest_address_adjustment = false;
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
 
     // Create VM.
-    let vm = VM::new(vm_config).expect("Failed to create VM");
+    let vm = VM::new(vm_config)
+        .map_err(|e| ax_err_type!(InvalidData, format!("Failed to create VM: {e:?}")))?;
     let vm_id = vm.id();
-    push_vm(vm.clone());
 
-    vm_alloc_memorys(&vm_create_config, &vm);
+    vm_alloc_memory_regions(&vm_create_config, &vm)?;
 
     let main_mem = vm
         .memory_regions()
         .first()
         .cloned()
-        .expect("VM must have at least one memory region");
+        .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one memory region"))?;
 
-    config_guest_address(&vm, &main_mem);
+    if !skip_guest_address_adjustment {
+        config_guest_address(&vm, &main_mem);
+    }
 
     // Load corresponding images for VM.
     info!("VM[{}] created success, loading images...", vm.id());
 
     let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone());
-    loader.load().expect("Failed to load VM images");
+    loader.load()?;
 
-    if let Err(e) = vm.init() {
-        panic!("VM[{}] setup failed: {:?}", vm.id(), e);
-    }
+    vm.init()
+        .map_err(|e| ax_err_type!(InvalidData, format!("VM[{}] setup failed: {e:?}", vm.id())))?;
 
     vm.set_vm_status(axvm::VMStatus::Loaded);
+    push_vm(vm);
 
     Ok(vm_id)
 }
@@ -273,29 +279,58 @@ fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
     });
 }
 
-fn vm_alloc_memorys(vm_create_config: &AxVMCrateConfig, vm: &VM) {
+#[cfg(target_arch = "x86_64")]
+fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
+    crate::vmm::images::is_x86_linux_image_config(config)
+}
+
+fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &VM) -> AxResult {
     const MB: usize = 1024 * 1024;
     const ALIGN: usize = 2 * MB;
+
+    let make_layout = |memory: &axvm::config::VmMemConfig| {
+        Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
+            ax_err_type!(
+                InvalidInput,
+                format!("Invalid VM memory layout {:?}: {e:?}", memory)
+            )
+        })
+    };
 
     for memory in &vm_create_config.kernel.memory_regions {
         match memory.map_type {
             VmMemMappingType::MapAlloc => {
-                vm.alloc_memory_region(
-                    Layout::from_size_align(memory.size, ALIGN).unwrap(),
-                    Some(GuestPhysAddr::from(memory.gpa)),
-                )
-                .expect("Failed to allocate memory region for VM");
+                vm.alloc_memory_region(make_layout(memory)?, Some(GuestPhysAddr::from(memory.gpa)))
+                    .map_err(|e| {
+                        ax_err_type!(
+                            NoMemory,
+                            format!("Failed to allocate memory region for VM: {e:?}")
+                        )
+                    })?;
             }
             VmMemMappingType::MapIdentical => {
-                vm.alloc_memory_region(Layout::from_size_align(memory.size, ALIGN).unwrap(), None)
-                    .expect("Failed to allocate memory region for VM");
+                vm.alloc_memory_region(make_layout(memory)?, None)
+                    .map_err(|e| {
+                        ax_err_type!(
+                            NoMemory,
+                            format!("Failed to allocate memory region for VM: {e:?}")
+                        )
+                    })?;
             }
             VmMemMappingType::MapReserved => {
                 debug!("VM[{}] map same region: {:#x?}", vm.id(), memory);
-                let layout = Layout::from_size_align(memory.size, ALIGN).unwrap();
-                vm.map_reserved_memory_region(layout, Some(GuestPhysAddr::from(memory.gpa)))
-                    .expect("Failed to map memory region for VM");
+                vm.map_reserved_memory_region(
+                    make_layout(memory)?,
+                    Some(GuestPhysAddr::from(memory.gpa)),
+                )
+                .map_err(|e| {
+                    ax_err_type!(
+                        NoMemory,
+                        format!("Failed to map memory region for VM: {e:?}")
+                    )
+                })?;
             }
         }
     }
+    Ok(())
 }

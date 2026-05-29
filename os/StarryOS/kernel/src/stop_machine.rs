@@ -4,10 +4,10 @@ use core::{
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
-use ax_hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_ipi::run_on_cpu;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinNoIrq;
+use ax_runtime::hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
 
 static STOP_MACHINE_LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 

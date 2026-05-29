@@ -1,6 +1,6 @@
 # `axdevice_base`
 
-> 路径：`components/axdevice_base`
+> 路径：`virtualization/axdevice_base`
 > 类型：库 crate
 > 分层：组件层 / 虚拟设备契约层
 > 版本：`0.2.1`

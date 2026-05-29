@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FileBackend, FileFlags};
-use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use ax_task::current;
 use linux_raw_sys::general::*;
 
@@ -190,8 +190,6 @@ pub fn sys_mmap(
                     .expect("file-backed mmap has cached device_mmap")
                 {
                     Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::SharedPages(_)) | Ok(DeviceMmap::NotConfigured) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
             }
@@ -241,7 +239,7 @@ pub fn sys_mmap(
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
     // 这样可以避免通用路径中 `range.start += offset` 对 Ion buffer 的错误偏移。
-    #[cfg(feature = "sg2002")]
+    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
     if let Some(ref file) = file {
         use crate::file::ion::IonBufferFile;
         if let Some(ion_file) = file.downcast_ref::<IonBufferFile>() {
@@ -311,10 +309,6 @@ pub fn sys_mmap(
                         )
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::NotConfigured) => return Err(AxError::InvalidInput),
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::SharedPages(pages)) => Backend::new_shared(start, pages),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
@@ -352,10 +346,6 @@ pub fn sys_mmap(
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }
-                                    #[cfg(feature = "kcov")]
-                                    DeviceMmap::NotConfigured => {
-                                        return Err(AxError::InvalidInput);
-                                    }
                                     DeviceMmap::Physical(range) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
@@ -378,10 +368,6 @@ pub fn sys_mmap(
                                         &curr.as_thread().proc_data.aspace(),
                                         true,
                                     ),
-                                    #[cfg(feature = "kcov")]
-                                    DeviceMmap::SharedPages(pages) => {
-                                        Backend::new_shared(start, pages)
-                                    }
                                 }
                             }
                         }

@@ -89,7 +89,7 @@ impl ArchIf for ArchImpl {
     }
 
     fn fetch_irq() -> u64 {
-        /// TODO: better implementation
+        // TODO: better implementation
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
             .lock()

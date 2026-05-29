@@ -1,0 +1,26 @@
+[package]
+name = "x86_vlapic"
+version = "0.4.10"
+edition.workspace = true
+description = "x86 Virtual Local APIC"
+authors = ["Keyang Hu <keyang.hu@qq.com>", "Mingxian Su <aarkegz@gmail.com>"]
+categories = ["virtualization"]
+repository = "https://github.com/arceos-hypervisor/x86_vlapic"
+keywords = ["x86", "hypervisor", "arceos"]
+license = "Apache-2.0"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-none"]
+
+[dependencies]
+log = "0.4.19"
+paste = "1.0.15"
+tock-registers = "0.10.0"
+bit = "0.1.1"
+
+ax-memory-addr = { workspace = true }
+ax-errno = { workspace = true }
+ax-kspin = { workspace = true }
+axaddrspace = { workspace = true }
+axdevice_base = { workspace = true }
+axvisor_api = { workspace = true }

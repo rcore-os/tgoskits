@@ -97,8 +97,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::Lazy<Mutex<SyslogState>> =
-    spin::Lazy::new(|| Mutex::new(SyslogState::new()));
+static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
+    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
 /// Mirror of Linux kernel `uid_valid()` / `make_kuid()` rejection: any caller-
 /// supplied UID/GID of `(uid_t)-1` (`u32::MAX`) is invalid outside the NOCHG
@@ -566,7 +566,7 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
 pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
 
-    let total = ax_hal::mem::total_ram_size();
+    let total = ax_runtime::hal::mem::total_ram_size();
     let usages = ax_alloc::global_allocator().usages();
     let used = usages.get(ax_alloc::UsageKind::RustHeap)
         + usages.get(ax_alloc::UsageKind::VirtMem)
@@ -575,7 +575,7 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let free = total.saturating_sub(used);
-    let uptime = ax_hal::time::monotonic_time();
+    let uptime = ax_runtime::hal::time::monotonic_time();
 
     kinfo.uptime = uptime.as_secs() as _;
     kinfo.totalram = total as _;

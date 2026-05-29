@@ -14,11 +14,49 @@ run_dir=${root%/staging-root}
 case_dir=${run_dir%/runs/*}
 apk_cache_dir=$case_dir/cache/apk-cache
 
+find_qemu_runner() {
+    for candidate in "$@"; do
+        if [ -z "$candidate" ]; then
+            continue
+        fi
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 case "$root" in
-    *aarch64*) qemu_runner=/usr/bin/qemu-aarch64-static ;;
-    *x86_64*) qemu_runner=/usr/bin/qemu-x86_64-static ;;
-    *riscv64*) qemu_runner=/usr/bin/qemu-riscv64-static ;;
-    *loongarch64*) qemu_runner=/usr/bin/qemu-loongarch64-static ;;
+    *aarch64*)
+        qemu_runner=$(find_qemu_runner \
+            /usr/bin/qemu-aarch64-static \
+            qemu-aarch64-static \
+            qemu-aarch64)
+        ;;
+    *x86_64*)
+        qemu_runner=$(find_qemu_runner \
+            /usr/bin/qemu-x86_64-static \
+            qemu-x86_64-static \
+            qemu-x86_64)
+        ;;
+    *riscv64*)
+        qemu_runner=$(find_qemu_runner \
+            /usr/bin/qemu-riscv64-static \
+            qemu-riscv64-static \
+            qemu-riscv64)
+        ;;
+    *loongarch64*)
+        qemu_runner=$(find_qemu_runner \
+            /usr/bin/qemu-loongarch64-static \
+            /usr/local/bin/qemu-loongarch64 \
+            qemu-loongarch64-static \
+            qemu-loongarch64)
+        ;;
     *)
         echo "unsupported staging root target: $root" >&2
         exit 1

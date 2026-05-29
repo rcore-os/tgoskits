@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use axpoll::PollSet;
-use spin::Lazy;
+use spin::LazyLock;
 
 use super::{
     Tty,
@@ -17,25 +17,25 @@ pub type NTtyDriver = Tty<Console, Console>;
 pub struct Console;
 impl TtyRead for Console {
     fn read(&mut self, buf: &mut [u8]) -> usize {
-        ax_hal::console::read_bytes(buf)
+        ax_runtime::hal::console::read_bytes(buf)
     }
 }
 impl TtyWrite for Console {
     fn write(&self, buf: &[u8]) {
-        ax_hal::console::write_bytes(buf);
+        ax_runtime::hal::console::write_bytes(buf);
     }
 }
 
 /// The default TTY device.
-pub static N_TTY: Lazy<Arc<NTtyDriver>> = Lazy::new(new_n_tty);
-static CONSOLE_INPUT_SOURCE: Lazy<Arc<PollSet>> = Lazy::new(|| Arc::new(PollSet::new()));
+pub static N_TTY: LazyLock<Arc<NTtyDriver>> = LazyLock::new(new_n_tty);
+static CONSOLE_INPUT_SOURCE: LazyLock<Arc<PollSet>> = LazyLock::new(|| Arc::new(PollSet::new()));
 
 fn handle_console_input_irq(_irq_num: usize) {
-    let events = ax_hal::console::handle_irq();
+    let events = ax_runtime::hal::console::handle_irq();
     if events.intersects(
-        ax_hal::console::ConsoleIrqEvent::RX_READY
-            | ax_hal::console::ConsoleIrqEvent::RX_ERROR
-            | ax_hal::console::ConsoleIrqEvent::OVERRUN,
+        ax_runtime::hal::console::ConsoleIrqEvent::RX_READY
+            | ax_runtime::hal::console::ConsoleIrqEvent::RX_ERROR
+            | ax_runtime::hal::console::ConsoleIrqEvent::OVERRUN,
     ) {
         CONSOLE_INPUT_SOURCE.wake();
     }
@@ -86,19 +86,19 @@ fn new_n_tty() -> Arc<NTtyDriver> {
 /// task is spawned, so there is no concurrent consumer racing on the
 /// UART receive FIFO.
 fn query_console_size() -> Option<(u16, u16)> {
-    ax_hal::console::write_bytes(b"\x1b7\x1b[9999;9999H\x1b[6n\x1b8");
+    ax_runtime::hal::console::write_bytes(b"\x1b7\x1b[9999;9999H\x1b[6n\x1b8");
 
     let mut buf = [0u8; 32];
     let mut len = 0usize;
 
-    // Spin up to ~100 ms (in wall time, polled via ax_hal::time::wall_time)
+    // Spin up to ~100 ms (in wall time, polled via ax_runtime::hal::time::wall_time)
     // for the `R` terminator.  Hosts that ignore CPR (jcode running under
     // a non-interactive serial, automated CI runners) will time out and
     // we fall back to the 24x80 default without blocking boot further.
-    let deadline = ax_hal::time::wall_time() + core::time::Duration::from_millis(100);
-    'collect: while ax_hal::time::wall_time() < deadline {
+    let deadline = ax_runtime::hal::time::wall_time() + core::time::Duration::from_millis(100);
+    'collect: while ax_runtime::hal::time::wall_time() < deadline {
         let mut tmp = [0u8; 1];
-        if ax_hal::console::read_bytes(&mut tmp) > 0 {
+        if ax_runtime::hal::console::read_bytes(&mut tmp) > 0 {
             if len < buf.len() {
                 buf[len] = tmp[0];
                 len += 1;
@@ -131,12 +131,12 @@ fn query_console_size() -> Option<(u16, u16)> {
 }
 
 fn console_irq_mode() -> Option<ProcessMode> {
-    let irq = ax_hal::console::irq_num()?;
-    if !ax_hal::irq::register(irq, handle_console_input_irq) {
+    let irq = ax_runtime::hal::console::irq_num()?;
+    if !ax_runtime::hal::irq::register(irq, handle_console_input_irq) {
         warn!("Failed to register console IRQ handler for irq {irq}, falling back to polling mode");
         return None;
     }
 
-    ax_hal::console::set_input_irq_enabled(true);
+    ax_runtime::hal::console::set_input_irq_enabled(true);
     Some(ProcessMode::InterruptDriven(CONSOLE_INPUT_SOURCE.clone()))
 }

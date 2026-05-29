@@ -138,7 +138,7 @@ pub fn register_static_transport<T: Transport + 'static>(
     Err(rdrive::probe::OnProbeError::NotMatch)
 }
 
-#[cfg(probe = "fdt")]
+#[cfg(plat_dyn)]
 pub fn probe_fdt_mmio_device(
     info: &rdrive::register::FdtInfo<'_>,
 ) -> Result<(DeviceType, MmioTransport<'static>), rdrive::probe::OnProbeError> {

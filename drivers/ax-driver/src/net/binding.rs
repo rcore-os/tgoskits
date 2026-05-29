@@ -7,16 +7,16 @@ use rdrive::{Device, DriverGeneric, probe::pci::EndpointRc};
 
 pub struct PlatformNetDevice {
     name: &'static str,
-    net: Option<rd_net::Net>,
     irq_num: Option<usize>,
+    net: Option<rd_net::Net>,
 }
 
 impl PlatformNetDevice {
     fn new(name: &'static str, net: rd_net::Net, irq_num: Option<usize>) -> Self {
         Self {
             name,
-            net: Some(net),
             irq_num,
+            net: Some(net),
         }
     }
 
@@ -42,32 +42,32 @@ impl DriverGeneric for PlatformNetDevice {
 }
 
 pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
-    #[cfg(feature = "pci")]
-    if let Some(irq) =
-        crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
+    #[cfg(all(
+        plat_dyn,
+        target_os = "none",
+        any(
+            feature = "intel-net",
+            feature = "ixgbe",
+            feature = "realtek-rtl8125",
+            feature = "virtio-net",
+            feature = "xhci-pci",
+        )
+    ))]
     {
-        return Some(irq);
-    }
-
-    let line = endpoint.interrupt_line();
-    if line == 0 || line == u8::MAX {
-        return None;
-    }
-    Some(pci_legacy_line_to_irq(line))
-}
-
-const fn pci_legacy_line_to_irq(line: u8) -> usize {
-    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
-        if cfg!(target_arch = "x86_64") {
-            0x20
-        } else {
-            0
+        let interrupt_pin = endpoint.interrupt_pin();
+        if interrupt_pin != 0 {
+            match crate::pci::fdt_irq_for_endpoint(endpoint.address(), interrupt_pin) {
+                Ok(Some(irq)) => return Some(irq),
+                Ok(None) => {}
+                Err(err) => log::warn!(
+                    "failed to resolve FDT IRQ for net endpoint {}: {err}",
+                    endpoint.address()
+                ),
+            }
         }
-    } else {
-        0
-    };
+    }
 
-    PCI_IRQ_BASE + line as usize
+    crate::pci::endpoint_legacy_irq(endpoint)
 }
 
 pub trait PlatformDeviceNet {

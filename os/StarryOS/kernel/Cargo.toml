@@ -14,14 +14,15 @@ repository.workspace = true
 license.workspace = true
 
 [features]
-default = ["dynamic_debug"]
+default = ["dynamic_debug", "ebpf"]
 dev-log = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
-kcov = ["ax-hal/starry-kcov"]
+ebpf = []
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
+    "ax-feat/plat-dyn",
     "dep:ax-driver",
     "ax-driver/usb",
     "dep:crab-usb",
@@ -32,7 +33,7 @@ dynamic_debug = ["ax-feat/ipi"]
 sg2002 = [
     "dep:ax-dma",
     "dep:sg2002-tpu",
-    "dep:dw_apb_uart",
+    "dep:some-serial",
     "dep:sg200x-bsp",
     "dep:tock-registers",
 ]
@@ -44,9 +45,6 @@ ax-feat = { workspace = true, features = [
     "irq",
     "uspace",
 
-    "page-alloc-4g",
-    "alloc-slab",
-
     "multitask",
     "task-ext",
     "sched-rr",
@@ -57,11 +55,11 @@ ax-feat = { workspace = true, features = [
     "net-ng",
 ] }
 
-ax-alloc = { workspace = true, features = ["default"] }
+ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-display.workspace = true
 ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
-ax-hal.workspace = true
+ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
@@ -118,7 +116,7 @@ rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }
-spin = "0.10"
+spin = { workspace = true }
 starry-process = { workspace = true }
 starry-signal = { workspace = true }
 starry-vm = { workspace = true }
@@ -131,18 +129,21 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
-dw_apb_uart = { workspace = true, features = ["sg2002"], optional = true }
+kprobe = "0.5"
+kmod-loader = "0.2"
+some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 # 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)
 # because Writeable trait must come from the same version as sg200x-bsp's types.
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
+ksym = "0.6"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.16"
+riscv.workspace = true
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
 ax-page-table-multiarch = { workspace = true, features = ["copy-from"] }

@@ -51,10 +51,7 @@ pub fn insert_channel(
 /// (by setting its base GPA to None).
 /// If the channel is successfully unpublished, it will return the base GPA and size of the channel.
 /// If the channel does not exist, it will return an error.
-pub fn unpublish_channel(
-    publisher_vm_id: usize,
-    key: usize,
-) -> AxResult<Option<(GuestPhysAddr, usize)>> {
+pub fn unpublish_channel(publisher_vm_id: usize, key: usize) -> AxResult<(GuestPhysAddr, usize)> {
     let mut channels = IVC_CHANNELS.lock();
     if let Some(mut channel) = channels.remove(&(publisher_vm_id, key)) {
         let base_gpa = channel.base_gpa_in_publisher().ok_or_else(|| {
@@ -67,12 +64,13 @@ pub fn unpublish_channel(
             )
         })?;
         let size = channel.size();
-        if !channel.subscribers().is_empty() {
-            channel.base_gpa = None; // Mark the channel as removed.
-            // If there are still subscribers, just return None.
+        if channel.has_subscribers() {
+            channel.mark_unpublished(); // Mark the channel as removed.
+            // Publisher's GPA mapping will be unmapped; the shared HPA frame
+            // is freed when the last subscriber unsubscribes.
             channels.insert((publisher_vm_id, key), channel);
         }
-        Ok(Some((base_gpa, size)))
+        Ok((base_gpa, size))
     } else {
         Err(ax_errno::ax_err_type!(
             NotFound,
@@ -85,18 +83,19 @@ pub fn unpublish_channel(
 }
 
 pub fn get_channel_size(publisher_vm_id: usize, key: usize) -> AxResult<usize> {
-    let channels = IVC_CHANNELS.lock();
-    if let Some(channel) = channels.get(&(publisher_vm_id, key)) {
-        Ok(channel.size())
-    } else {
-        Err(ax_errno::ax_err_type!(
-            NotFound,
-            format!(
-                "IVC channel for publisher VM {} with key {} not found",
-                publisher_vm_id, key
+    IVC_CHANNELS
+        .lock()
+        .get(&(publisher_vm_id, key))
+        .map(|channel| channel.size())
+        .ok_or_else(|| {
+            ax_errno::ax_err_type!(
+                NotFound,
+                format!(
+                    "IVC channel for publisher VM {} with key {} not found",
+                    publisher_vm_id, key
+                )
             )
-        ))
-    }
+        })
 }
 
 /// Subcribe to a channel of a publisher VM with the given key,
@@ -108,19 +107,18 @@ pub fn subscribe_to_channel_of_publisher(
     subscriber_gpa: GuestPhysAddr,
 ) -> AxResult<(HostPhysAddr, usize)> {
     let mut channels = IVC_CHANNELS.lock();
-    if let Some(channel) = channels.get_mut(&(publisher_vm_id, key)) {
-        // Add the subscriber VM ID to the channel.
-        channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
-        Ok((channel.base_hpa(), channel.size()))
-    } else {
-        Err(ax_errno::ax_err_type!(
+    let channel = channels.get_mut(&(publisher_vm_id, key)).ok_or_else(|| {
+        ax_errno::ax_err_type!(
             NotFound,
             format!(
                 "IVC channel for publisher VM [{}] key {:#x} not found",
                 publisher_vm_id, key
             )
-        ))
-    }
+        )
+    })?;
+    // Add the subscriber VM ID to the channel.
+    channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
+    Ok((channel.base_hpa(), channel.size()))
 }
 
 /// Unsubscribe from a channel of a publisher VM with the given key,
@@ -156,7 +154,7 @@ pub fn unsubscribe_from_channel_of_publisher(
     // remove it from the global map.
     if channels
         .get(&(publisher_vm_id, key))
-        .is_some_and(|c| c.subscribers().is_empty() && c.base_gpa.is_none())
+        .is_some_and(|c| c.subscribers().is_empty() && c.is_unpublished())
     {
         channels.remove(&(publisher_vm_id, key));
     }
@@ -176,7 +174,7 @@ pub struct IVCChannel<H: PagingHandler> {
     /// The base address of the shared memory region in guest physical address of the publisher VM.
     /// `None` if the channel has been unpublished (but still has subscribers).
     base_gpa: Option<GuestPhysAddr>,
-    _phatom: core::marker::PhantomData<H>,
+    _phantom: core::marker::PhantomData<H>,
 }
 
 #[repr(C)]
@@ -187,6 +185,10 @@ pub struct IVCChannelHeader {
 
 impl<H: PagingHandler> IVCChannel<H> {
     #[allow(unused)]
+    /// # Safety
+    ///
+    /// The caller must ensure `shared_region_base` is valid, mapped, and aligned
+    /// for `IVCChannelHeader`, and that no mutable reference to this region exists.
     pub fn header(&self) -> &IVCChannelHeader {
         unsafe {
             // Map the shared region base to the header structure.
@@ -194,6 +196,10 @@ impl<H: PagingHandler> IVCChannel<H> {
         }
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure `shared_region_base` is valid, mapped, and aligned
+    /// for `IVCChannelHeader`, and that no other reference to this region exists.
     pub fn header_mut(&mut self) -> &mut IVCChannelHeader {
         unsafe {
             // Map the shared region base to the mutable header structure.
@@ -202,6 +208,11 @@ impl<H: PagingHandler> IVCChannel<H> {
     }
 
     #[allow(unused)]
+    /// # Safety
+    ///
+    /// The caller must ensure `shared_region_base` is valid, mapped, and that the
+    /// returned pointer is only used within the lifetime of `self` and does not alias
+    /// any mutable reference to the same region.
     pub fn data_region(&self) -> *const u8 {
         unsafe {
             // Return a pointer to the data region, which starts after the header.
@@ -245,6 +256,12 @@ impl<H: PagingHandler> IVCChannel<H> {
         base_gpa: GuestPhysAddr,
     ) -> AxResult<Self> {
         // TODO: support larger shared region sizes with alloc_frames API.
+        if shared_region_size > 4096 {
+            warn!(
+                "IVC channel requested size {shared_region_size:#x} > 4096; \
+                 truncating to 4096 (TODO: support larger sizes)"
+            );
+        }
         let shared_region_size = shared_region_size.min(4096);
         let shared_region_base = H::alloc_frame().ok_or_else(|| {
             ax_errno::ax_err_type!(NoMemory, "Failed to allocate shared region frame")
@@ -257,11 +274,14 @@ impl<H: PagingHandler> IVCChannel<H> {
             shared_region_base,
             shared_region_size,
             base_gpa: Some(base_gpa),
-            _phatom: core::marker::PhantomData,
+            _phantom: core::marker::PhantomData,
         };
 
-        channel.header_mut().publisher_id = publisher_vm_id as u64;
-        channel.header_mut().key = key as u64;
+        {
+            let header = channel.header_mut();
+            header.publisher_id = publisher_vm_id as u64;
+            header.key = key as u64;
+        }
 
         debug!("Allocated IVCChannel: {channel:?}");
 
@@ -295,5 +315,17 @@ impl<H: PagingHandler> IVCChannel<H> {
             .iter()
             .map(|(vm_id, gpa)| (*vm_id, *gpa))
             .collect()
+    }
+
+    pub fn has_subscribers(&self) -> bool {
+        !self.subscriber_vms.is_empty()
+    }
+
+    pub fn mark_unpublished(&mut self) {
+        self.base_gpa = None;
+    }
+
+    pub fn is_unpublished(&self) -> bool {
+        self.base_gpa.is_none()
     }
 }

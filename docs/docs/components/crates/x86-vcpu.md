@@ -1,6 +1,6 @@
 # `x86_vcpu`
 
-> 路径：`components/x86_vcpu`
+> 路径：`virtualization/x86_vcpu`
 > 类型：库 crate
 > 分层：组件层 / x86 虚拟 CPU 后端
 > 版本：`0.2.2`

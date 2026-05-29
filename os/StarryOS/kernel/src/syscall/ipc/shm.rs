@@ -1,11 +1,11 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::{
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{ctypes::c_ushort, general::*};
@@ -108,11 +108,27 @@ impl ShmInner {
         key: i32,
         shmid: i32,
         size: usize,
-        mapping_flags: MappingFlags,
+        shmflg: usize,
         pid: Pid,
         uid: u32,
         gid: u32,
     ) -> Self {
+        let ipc_mode = (shmflg & 0o777) as u16;
+
+        let mut mapping_flags = MappingFlags::from_name("USER").unwrap();
+        if shmflg & 0o400 != 0 {
+            mapping_flags.insert(MappingFlags::READ);
+        }
+        if shmflg & 0o200 != 0 {
+            // RISC-V reserves W=1,R=0 for leaf PTEs; WRITE implies READ here so
+            // the riscv64 PTE layer can auto-correct. This is a page-table-level
+            // workaround and must NOT leak into the user-visible IPC mode.
+            mapping_flags.insert(MappingFlags::WRITE | MappingFlags::READ);
+        }
+        if shmflg & 0o100 != 0 {
+            mapping_flags.insert(MappingFlags::EXECUTE);
+        }
+
         ShmInner {
             shmid,
             page_num: ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K,
@@ -123,7 +139,7 @@ impl ShmInner {
             shmid_ds: ShmidDs::new(
                 key,
                 size,
-                mapping_flags.bits() as __kernel_mode_t,
+                ipc_mode as __kernel_mode_t,
                 pid as __kernel_pid_t,
                 uid,
                 gid,
@@ -428,17 +444,6 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
 }
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
-    let mut mapping_flags = MappingFlags::from_name("USER").unwrap();
-    if shmflg & 0o400 != 0 {
-        mapping_flags.insert(MappingFlags::READ);
-    }
-    if shmflg & 0o200 != 0 {
-        mapping_flags.insert(MappingFlags::WRITE);
-    }
-    if shmflg & 0o100 != 0 {
-        mapping_flags.insert(MappingFlags::EXECUTE);
-    }
-
     let curr = current();
     let thread = curr.as_thread();
     let cur_pid = thread.proc_data.proc.pid();
@@ -476,13 +481,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     // Create a new shm_inner
     let shmid = next_ipc_id();
     let shm_inner = Arc::new(Mutex::new(ShmInner::new(
-        key,
-        shmid,
-        size,
-        mapping_flags,
-        cur_pid,
-        cred.euid,
-        cred.egid,
+        key, shmid, size, shmflg, cur_pid, cred.euid, cred.egid,
     )));
     shm_manager.insert_key_shmid(key, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);
@@ -497,15 +496,20 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
-    // Lock SHM_MANAGER first, then shm_inner, then aspace. This matches
-    // the ordering used by sys_shmget and avoids the AB/BA deadlock that
-    // the old code caused by locking shm_inner before SHM_MANAGER.
-    let mut shm_manager = SHM_MANAGER.lock();
-    let shm_inner_arc = shm_manager
-        .get_inner_by_shmid(shmid)
-        .ok_or(AxError::InvalidInput)?;
+    info!("shmat pid={pid} shmid={shmid} enter");
+
+    // Grab the shm_inner Arc under SHM_MANAGER, then drop it before
+    // mapping work to avoid holding the global lock across aspace ops.
+    let shm_inner_arc = {
+        let shm_manager = SHM_MANAGER.lock();
+        shm_manager
+            .get_inner_by_shmid(shmid)
+            .ok_or(AxError::InvalidInput)?
+    };
+    info!("shmat pid={pid} shmid={shmid} lock shm_inner");
     let mut shm_inner = shm_inner_arc.lock();
     let aspace_arc = proc_data.aspace();
+    info!("shmat pid={pid} shmid={shmid} lock aspace");
     let mut aspace = aspace_arc.lock();
 
     let mut mapping_flags = shm_inner.mapping_flags;
@@ -541,7 +545,6 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let end_addr = VirtAddr::from(start_addr.as_usize() + length);
     let va_range = VirtAddrRange::new(start_addr, end_addr);
 
-    shm_manager.insert_shmid_vaddr(pid, shm_inner.shmid, start_addr);
     info!(
         "Process {} alloc shm virt addr start: {:#x}, size: {}, mapping_flags: {:#x?}",
         pid,
@@ -565,7 +568,15 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         shm_inner.map_to_phys(pages);
     }
 
+    info!("shmat pid={pid} shmid={shmid} mapped; attach_process");
     shm_inner.attach_process(pid, va_range)?;
+    drop(aspace);
+    drop(shm_inner);
+
+    info!("shmat pid={pid} shmid={shmid} lock shm_manager for vaddr");
+    let mut shm_manager = SHM_MANAGER.lock();
+    shm_manager.insert_shmid_vaddr(pid, shmid, start_addr);
+    info!("shmat pid={pid} shmid={shmid} done");
     Ok(start_addr.as_usize() as isize)
 }
 
@@ -641,6 +652,8 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
+    info!("shmdt pid={pid} addr={shmaddr:?} enter");
+
     // Look up shmid and grab the inner Arc while holding SHM_MANAGER.
     let (shmid, shm_inner_arc) = {
         let shm_manager = SHM_MANAGER.lock();
@@ -655,12 +668,14 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
 
     // Snapshot the mapped range for this process.
     let va_range = {
+        info!("shmdt pid={pid} lock shm_inner for range");
         let shm_inner = shm_inner_arc.lock();
         shm_inner.get_addr_range(pid).ok_or(AxError::InvalidInput)?
     };
 
     // Unmap while only holding the aspace lock.
     {
+        info!("shmdt pid={pid} lock aspace for unmap");
         let aspace_arc = proc_data.aspace();
         let mut aspace = aspace_arc.lock();
         aspace.unmap(va_range.start, va_range.size())?;
@@ -668,6 +683,7 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
 
     // Reacquire SHM_MANAGER then shm_inner for bookkeeping, matching
     // the global lock ordering.
+    info!("shmdt pid={pid} lock shm_manager for bookkeeping");
     let mut shm_manager = SHM_MANAGER.lock();
     shm_manager.remove_shmaddr(pid, shmaddr);
     let mut shm_inner = shm_inner_arc.lock();

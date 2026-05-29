@@ -134,7 +134,7 @@ sidebar_label: "平台实现"
 | ArceOS Main | 单个软件断点 + `continue` | `os/arceos/examples/helloworld/src/main.rs:8` |
 | ArceOS Boot | 多个符号/行号断点（不自动 continue） | `ax_plat::call_main`、`axruntime/src/lib.rs:141`、`main.rs:8` |
 | Axvisor Main | 单个软件断点 + `continue` | `os/axvisor/src/main.rs:42` |
-| Axvisor Boot | 多个行号断点（不自动 continue） | `platform/axplat-dyn/src/boot.rs:8`、`axvisor/src/main.rs:42` |
+| Axvisor Boot | 多个行号断点（不自动 continue） | `platforms/axplat-dyn/src/boot.rs:8`、`axvisor/src/main.rs:42` |
 | StarryOS Main | **单个硬件断点** + `continue` | `os/StarryOS/starryos/src/main.rs:12` |
 | StarryOS Boot | 混合符号/行号断点（不自动 continue） | `ax_plat::call_main`、`axruntime/src/lib.rs:141`、`starry_kernel::entry::init`、`starryos/src/main.rs:12` |
 

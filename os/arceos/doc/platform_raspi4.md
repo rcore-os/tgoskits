@@ -19,7 +19,7 @@ And follow this tutorial to run the 08_hw_debug_JTAG chapter.
 It will help you to connect your raspi4 to the JTAG and connect your JTAG to your computer and it will also teach you how to use `make jtagboot` to debug your raspi4.
 
 Because the JTAG only support the first line of code be loaded at `0x80000` and only support single core, so you have to 
-1. Change the file: /modules/axconfig/src/platform/raspi4_aarch64, replace the "kernel-base-vaddr" with "0x8_0000" and replace the "phys-virt-offset" with "0x0"
+1. Change the file: /modules/axconfig/src/platforms/raspi4_aarch64, replace the "kernel-base-vaddr" with "0x8_0000" and replace the "phys-virt-offset" with "0x0"
 2. set the feature `SMP=1`
 
 Then run with features `ARCH=aarch64 MYPLAT=axplat-aarch64-raspi` and 

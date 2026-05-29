@@ -152,6 +152,7 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "riscv64gc-unknown-none-elf"
 features = ["ept-level-4"]
 log = "Info"
+plat_dyn = true
 "#,
         );
 

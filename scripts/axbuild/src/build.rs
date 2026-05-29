@@ -159,7 +159,6 @@ impl BuildInfo {
             env: self.env,
             target,
             package,
-            bin: None,
             features: self.features,
             log: Some(self.log),
             extra_config: None,
@@ -169,6 +168,7 @@ impl BuildInfo {
             pre_build_cmds: vec![],
             post_build_cmds: vec![],
             to_bin,
+            bin: None,
         }
     }
 
@@ -212,12 +212,7 @@ impl BuildInfo {
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
         self.resolve_features_with_metadata(package, target, plat_dyn, metadata);
-        let mut extra_rustflags = toolchain_rustflags(&self.env);
-        if self.features.iter().any(|f| f == "kcov") {
-            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-level=3".to_string());
-            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
-            extra_rustflags.push("-Cpasses=sancov-module".to_string());
-        }
+        let extra_rustflags = toolchain_rustflags(&self.env);
         let cargo_target = cargo_target_json_path(target, plat_dyn)?;
         let cargo_target = cargo_target.display().to_string();
         let args = Self::build_cargo_args(&cargo_target, &extra_rustflags);
@@ -292,6 +287,7 @@ impl BuildInfo {
             target,
             plat_dyn,
             detect_ax_feature_prefix_family(package, metadata),
+            Some(metadata),
         );
     }
 
@@ -301,6 +297,7 @@ impl BuildInfo {
         target: &str,
         plat_dyn: bool,
         prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
+        metadata: Option<&Metadata>,
     ) {
         let prefix_family = self.resolve_ax_feature_prefix_family(package, prefix_family);
         let has_myplat = has_myplat_feature(&self.features);
@@ -335,23 +332,26 @@ impl BuildInfo {
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
         }
-        self.push_platform_feature(target, plat_dyn, has_myplat);
+        self.push_platform_feature(target, plat_dyn, has_myplat, metadata);
 
         self.features.sort();
         self.features.dedup();
     }
 
-    fn push_platform_feature(&mut self, target: &str, plat_dyn: bool, has_myplat: bool) {
-        if has_myplat || has_ax_hal_platform_feature(&self.features) {
+    fn push_platform_feature(
+        &mut self,
+        target: &str,
+        plat_dyn: bool,
+        has_myplat: bool,
+        metadata: Option<&Metadata>,
+    ) {
+        if plat_dyn || has_myplat || has_ax_hal_platform_feature(&self.features, metadata) {
             return;
         }
 
-        let feature = if plat_dyn {
-            "ax-hal/plat-dyn"
-        } else {
-            default_ax_hal_platform_feature(target).unwrap_or("ax-hal/defplat")
-        };
-        self.features.push(feature.to_string());
+        let feature = default_ax_hal_platform_feature(target, metadata)
+            .unwrap_or_else(|_| "ax-hal/defplat".to_string());
+        self.features.push(feature);
     }
 
     fn resolve_ax_feature_prefix_family(
@@ -405,6 +405,7 @@ impl BuildInfo {
                 target,
                 plat_dyn,
                 Err(err.context("failed to load workspace metadata")),
+                None,
             ),
         }
     }
@@ -477,7 +478,10 @@ pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Re
     };
 
     if plat_dyn {
-        if target != "aarch64-unknown-none-softfloat" {
+        if !matches!(
+            target,
+            "aarch64-unknown-none-softfloat" | "riscv64gc-unknown-none-elf"
+        ) {
             bail!("unsupported PIE target `{target}`");
         }
         Ok(Path::new(TARGET_JSON_ROOT)
@@ -537,8 +541,8 @@ pub(crate) fn prepare_std_build_env(
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
     let arch = target_arch_name(target)?;
-    let platform_package = default_platform_package(arch);
-    let platform_config = resolve_platform_config_by_package(platform_package, metadata)?;
+    let platform_package = require_default_platform_package(metadata, arch)?;
+    let platform_config = resolve_platform_config_by_package(&platform_package, metadata)?;
     let out_config = generated_axconfig_path("arceos-rust", target)?;
     generate_axconfig(
         &crate::context::workspace_root_path()?,
@@ -667,7 +671,7 @@ pub(crate) fn resolve_effective_plat_dyn(
 }
 
 fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-")
+    target.starts_with("aarch64-") || target.starts_with("riscv64")
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
@@ -925,54 +929,194 @@ fn has_defplat_feature(features: &[String]) -> bool {
     })
 }
 
-fn ax_hal_platform_feature_name(feature: &str) -> Option<&str> {
+fn ax_hal_platform_feature_name<'a>(
+    feature: &'a str,
+    metadata: Option<&Metadata>,
+) -> Option<&'a str> {
     let platform = feature.strip_prefix("ax-hal/")?;
     match platform {
-        "plat-dyn"
-        | "x86-pc"
-        | "aarch64-qemu-virt"
-        | "aarch64-raspi"
-        | "aarch64-bsta1000b"
-        | "aarch64-phytium-pi"
-        | "riscv64-qemu-virt"
-        | "riscv64-sg2002"
-        | "riscv64-visionfive2"
-        | "riscv64-qemu-virt-hv"
-        | "loongarch64-qemu-virt"
-        | "x86-qemu-q35" => Some(platform),
+        "plat-dyn" => Some(platform),
+        _ if metadata
+            .map(|metadata| platform_package_by_name(metadata, platform).is_some())
+            .unwrap_or_else(|| is_known_ax_hal_platform_feature(platform)) =>
+        {
+            Some(platform)
+        }
         _ => None,
     }
 }
 
-fn has_ax_hal_platform_feature(features: &[String]) -> bool {
-    features
-        .iter()
-        .any(|feature| ax_hal_platform_feature_name(feature).is_some())
+fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
+    matches!(
+        platform,
+        "x86-pc"
+            | "aarch64-qemu-virt"
+            | "aarch64-raspi"
+            | "aarch64-bsta1000b"
+            | "aarch64-phytium-pi"
+            | "riscv64-qemu-virt"
+            | "riscv64-sg2002"
+            | "riscv64-visionfive2"
+            | "loongarch64-qemu-virt"
+            | "x86-qemu-q35"
+    )
 }
 
-fn default_ax_hal_platform_feature(target: &str) -> anyhow::Result<&'static str> {
-    Ok(match target_arch_name(target)? {
+fn has_ax_hal_platform_feature(features: &[String], metadata: Option<&Metadata>) -> bool {
+    features
+        .iter()
+        .any(|feature| ax_hal_platform_feature_name(feature, metadata).is_some())
+}
+
+fn default_ax_hal_platform_feature(
+    target: &str,
+    metadata: Option<&Metadata>,
+) -> anyhow::Result<String> {
+    let arch = target_arch_name(target)?;
+    if let Some(metadata) = metadata
+        && let Some(platform) = platform_packages(metadata)
+            .into_iter()
+            .find(|platform| {
+                platform.metadata.arch == arch
+                    && platform.metadata.default_for_arch
+                    && !platform.metadata.dynamic
+            })
+            .map(|platform| platform.metadata.platform)
+    {
+        return Ok(format!("ax-hal/{platform}"));
+    }
+
+    Ok(match arch {
         "x86_64" => "ax-hal/x86-pc",
         "aarch64" => "ax-hal/aarch64-qemu-virt",
         "riscv64" => "ax-hal/riscv64-qemu-virt",
         "loongarch64" => "ax-hal/loongarch64-qemu-virt",
         _ => unreachable!("unsupported arch"),
+    }
+    .to_string())
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+#[serde(rename_all = "kebab-case")]
+struct AxplatMetadata {
+    platform: String,
+    arch: String,
+    config: Option<PathBuf>,
+    default_for_arch: bool,
+    dynamic: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PlatformPackage {
+    package: String,
+    manifest_dir: PathBuf,
+    metadata: AxplatMetadata,
+}
+
+fn platform_metadata(package: &Package) -> Option<AxplatMetadata> {
+    package
+        .metadata
+        .get("axplat")
+        .cloned()
+        .and_then(|metadata| serde_json::from_value(metadata).ok())
+}
+
+fn platform_packages(metadata: &Metadata) -> Vec<PlatformPackage> {
+    metadata
+        .packages
+        .iter()
+        .filter_map(|package| {
+            let metadata = platform_metadata(package)?;
+            let manifest_dir = Path::new(package.manifest_path.as_std_path())
+                .parent()?
+                .to_path_buf();
+            Some(PlatformPackage {
+                package: package.name.to_string(),
+                manifest_dir,
+                metadata,
+            })
+        })
+        .collect()
+}
+
+fn platform_package_by_name(metadata: &Metadata, platform_name: &str) -> Option<String> {
+    platform_packages(metadata)
+        .into_iter()
+        .find(|platform| platform.metadata.platform == platform_name)
+        .map(|platform| platform.package)
+}
+
+fn platform_package_by_name_with_workspace_fallback(
+    metadata: &Metadata,
+    platform_name: &str,
+) -> Option<String> {
+    platform_package_by_name(metadata, platform_name).or_else(|| {
+        cached_workspace_metadata()
+            .ok()
+            .and_then(|metadata| platform_package_by_name(metadata, platform_name))
     })
 }
 
-fn ax_hal_platform_package(platform: &str) -> Option<&'static str> {
-    match platform {
-        "x86-pc" => Some("ax-plat-x86-pc"),
-        "aarch64-qemu-virt" => Some("ax-plat-aarch64-qemu-virt"),
-        "aarch64-raspi" => Some("ax-plat-aarch64-raspi"),
-        "aarch64-bsta1000b" => Some("ax-plat-aarch64-bsta1000b"),
-        "aarch64-phytium-pi" => Some("ax-plat-aarch64-phytium-pi"),
-        "riscv64-qemu-virt" => Some("ax-plat-riscv64-qemu-virt"),
-        "riscv64-sg2002" => Some("ax-plat-riscv64-sg2002"),
-        "riscv64-visionfive2" => Some("axplat-riscv64-visionfive2"),
-        "riscv64-qemu-virt-hv" => Some("ax-plat-riscv64-qemu-virt"),
-        "loongarch64-qemu-virt" => Some("ax-plat-loongarch64-qemu-virt"),
-        "x86-qemu-q35" => Some("axplat-x86-qemu-q35"),
+fn default_platform_package(metadata: &Metadata, arch: &str) -> Option<String> {
+    platform_packages(metadata)
+        .into_iter()
+        .find(|platform| {
+            platform.metadata.arch == arch
+                && platform.metadata.default_for_arch
+                && !platform.metadata.dynamic
+        })
+        .map(|platform| platform.package)
+}
+
+fn default_platform_package_with_workspace_fallback(
+    metadata: &Metadata,
+    arch: &str,
+) -> Option<String> {
+    default_platform_package(metadata, arch).or_else(|| {
+        cached_workspace_metadata()
+            .ok()
+            .and_then(|metadata| default_platform_package(metadata, arch))
+    })
+}
+
+fn platform_config_path_from_metadata(
+    platform_package: &str,
+    metadata: &Metadata,
+) -> Option<PathBuf> {
+    platform_packages(metadata)
+        .into_iter()
+        .find(|platform| platform.package == platform_package)
+        .and_then(|platform| {
+            platform
+                .metadata
+                .config
+                .map(|config| platform.manifest_dir.join(config))
+        })
+        .filter(|path| path.exists())
+}
+
+fn ax_hal_platform_package(platform: &str, metadata: &Metadata) -> Option<String> {
+    platform_package_by_name_with_workspace_fallback(metadata, platform)
+}
+
+fn require_default_platform_package(metadata: &Metadata, arch: &str) -> anyhow::Result<String> {
+    default_platform_package_with_workspace_fallback(metadata, arch)
+        .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
+}
+
+fn explicit_myplat_platform_package(
+    package: &str,
+    arch: &str,
+    metadata: &Metadata,
+) -> Option<String> {
+    match (package, arch) {
+        ("axvisor", "x86_64") => {
+            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
+        }
+        ("axvisor", "riscv64") => {
+            platform_package_by_name_with_workspace_fallback(metadata, "riscv64-qemu-virt")
+        }
         _ => None,
     }
 }
@@ -988,10 +1132,10 @@ fn resolve_platform_package(
 
     if let Some(platform) = features
         .iter()
-        .find_map(|feature| ax_hal_platform_feature_name(feature))
-        .and_then(ax_hal_platform_package)
+        .find_map(|feature| ax_hal_platform_feature_name(feature, Some(metadata)))
+        .and_then(|platform| ax_hal_platform_package(platform, metadata))
     {
-        return Ok(platform.to_string());
+        return Ok(platform);
     }
 
     let explicit_platform_features: Vec<_> = features
@@ -1017,13 +1161,13 @@ fn resolve_platform_package(
     }
 
     if has_myplat_feature(features) {
-        if let Some(dep_name) = explicit_myplat_platform_package(package, arch)
+        if let Some(dep_name) = explicit_myplat_platform_package(package, arch, metadata)
             && package_info
                 .dependencies
                 .iter()
                 .any(|dep| dep.name == dep_name)
         {
-            return Ok(dep_name.to_string());
+            return Ok(dep_name);
         }
 
         if let Some(dep) = package_info
@@ -1035,7 +1179,7 @@ fn resolve_platform_package(
         }
     }
 
-    Ok(default_platform_package(arch).to_string())
+    require_default_platform_package(metadata, arch)
 }
 
 fn target_arch_name(target: &str) -> anyhow::Result<&'static str> {
@@ -1049,24 +1193,6 @@ fn target_arch_name(target: &str) -> anyhow::Result<&'static str> {
         Ok("loongarch64")
     } else {
         Err(anyhow!("unsupported target triple `{target}`"))
-    }
-}
-
-fn default_platform_package(arch: &str) -> &'static str {
-    match arch {
-        "x86_64" => "ax-plat-x86-pc",
-        "aarch64" => "ax-plat-aarch64-qemu-virt",
-        "riscv64" => "ax-plat-riscv64-qemu-virt",
-        "loongarch64" => "ax-plat-loongarch64-qemu-virt",
-        _ => unreachable!("unsupported arch"),
-    }
-}
-
-fn explicit_myplat_platform_package(package: &str, arch: &str) -> Option<&'static str> {
-    match (package, arch) {
-        ("axvisor", "x86_64") => Some("axplat-x86-qemu-q35"),
-        ("axvisor", "riscv64") => Some("ax-plat-riscv64-qemu-virt"),
-        _ => None,
     }
 }
 
@@ -1192,6 +1318,10 @@ fn find_local_platform_config_path(
     platform_package: &str,
     metadata: &Metadata,
 ) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(candidate) = platform_config_path_from_metadata(platform_package, metadata) {
+        return Ok(Some(candidate));
+    }
+
     if let Some(pkg) = metadata_package(metadata, platform_package) {
         let candidate = Path::new(pkg.manifest_path.as_std_path())
             .parent()
@@ -1204,16 +1334,12 @@ fn find_local_platform_config_path(
     }
 
     let workspace_root = crate::context::workspace_root_path()?;
-    let platform_dir_name = platform_package
-        .strip_prefix("ax-plat-")
-        .map(|suffix| format!("axplat-{suffix}"))
-        .unwrap_or_else(|| platform_package.to_string());
-    let component_candidate = workspace_root
-        .join("components/axplat_crates/platforms")
-        .join(platform_dir_name)
+    let platform_candidate = workspace_root
+        .join("platforms")
+        .join(platform_package)
         .join("axconfig.toml");
 
-    Ok(component_candidate.exists().then_some(component_candidate))
+    Ok(platform_candidate.exists().then_some(platform_candidate))
 }
 
 fn read_platform_name(platform_config: &Path) -> Option<String> {
@@ -1326,7 +1452,7 @@ mod tests {
         package_name: &str,
         config_package_name: &str,
     ) -> anyhow::Result<()> {
-        let platform_dir = workspace.join("platform");
+        let platform_dir = workspace.join("platforms");
         fs::create_dir_all(platform_dir.join("src"))?;
         fs::write(
             platform_dir.join("Cargo.toml"),
@@ -1377,7 +1503,7 @@ mod tests {
         let mut envs = HashMap::new();
         let mut features = vec![
             "ax-hal/riscv64-qemu-virt".to_string(),
-            "ax-driver/pci".to_string(),
+            "ax-driver/plat-dyn".to_string(),
             "ax-driver/virtio-blk".to_string(),
             "ax-driver/virtio-net".to_string(),
             "dns".to_string(),
@@ -1389,7 +1515,8 @@ mod tests {
         assert_eq!(
             envs.get("ARCEOS_RUST_FEATURES"),
             Some(
-                &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
+                &"ax-hal/riscv64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
+                  virtio-net"
                     .to_string()
             )
         );
@@ -1440,10 +1567,10 @@ mod tests {
     }
 
     #[test]
-    fn cargo_target_json_path_rejects_unsupported_pie_target() {
-        let err = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap_err();
+    fn cargo_target_json_path_maps_riscv64_pie_target() {
+        let path = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap();
 
-        assert!(err.to_string().contains("unsupported PIE target"));
+        assert!(path.ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json"));
     }
 
     #[test]
@@ -1573,9 +1700,7 @@ mod tests {
             .unwrap()
             .expect("workspace platform config should exist");
 
-        assert!(path.ends_with(
-            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
-        ));
+        assert!(path.ends_with("platforms/ax-plat-riscv64-qemu-virt/axconfig.toml"));
     }
 
     #[test]
@@ -1586,16 +1711,14 @@ mod tests {
             resolve_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata, &deps_metadata)
                 .unwrap();
 
-        assert!(path.ends_with(
-            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
-        ));
+        assert!(path.ends_with("platforms/ax-plat-riscv64-qemu-virt/axconfig.toml"));
     }
 
     #[test]
     fn resolve_platform_config_path_uses_dependency_config() {
         let workspace = temp_workspace(
             "custom-app",
-            "ax-plat-aarch64-custom = { path = \"../platform\" }\n",
+            "ax-plat-aarch64-custom = { path = \"../platforms\" }\n",
         )
         .unwrap();
         add_platform_package(
@@ -1612,6 +1735,6 @@ mod tests {
             resolve_platform_config_path("ax-plat-aarch64-custom", &metadata, &deps_metadata)
                 .unwrap();
 
-        assert!(path.ends_with("platform/axconfig.toml"));
+        assert!(path.ends_with("platforms/axconfig.toml"));
     }
 }

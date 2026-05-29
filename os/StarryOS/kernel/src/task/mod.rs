@@ -17,16 +17,17 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
+use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
 use starry_process::Process;
 use starry_signal::{
-    Signo,
+    SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
@@ -34,8 +35,14 @@ pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
     timer::*, user::*,
 };
-#[cfg(feature = "kcov")]
-use crate::kcov::KcovThreadState;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SyscallTraceState {
+    #[default]
+    None,
+    Entry,
+    Exit,
+}
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -151,10 +158,6 @@ pub struct Thread {
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 
-    /// KCOV coverage state for this thread.
-    #[cfg(feature = "kcov")]
-    kcov: AssumeSync<RefCell<Option<KcovThreadState>>>,
-
     /// Signo (as u8) of the synchronous user-mode fault that
     /// [`raise_signal_fatal`] last force-delivered to this thread, or 0
     /// for "no fault dump owed". [`check_signals`] only emits the
@@ -165,6 +168,8 @@ pub struct Thread {
     /// wrong context or, if it had a user handler, swallow the dump so
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
+
+    pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 }
 
 impl Thread {
@@ -192,10 +197,9 @@ impl Thread {
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
-            #[cfg(feature = "kcov")]
-            kcov: AssumeSync(RefCell::new(None)),
 
             fault_dump_signo: AtomicU8::new(0),
+            kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
         })
     }
 
@@ -305,26 +309,6 @@ impl Thread {
     /// Set the no_new_privs flag (one-way: once set, cannot be unset).
     pub fn set_no_new_privs(&self) {
         self.no_new_privs.store(true, Ordering::Relaxed);
-    }
-
-    /// Run a closure with a borrow of the current KCOV state for this thread.
-    ///
-    /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
-    /// `borrow_mut` does not panic when the instrumented hot path
-    /// re-enters here. Avoids cloning the `Arc<SharedPages>` on every
-    /// hot-path invocation.
-    #[cfg(feature = "kcov")]
-    pub fn with_kcov<R>(&self, f: impl FnOnce(Option<&KcovThreadState>) -> R) -> R {
-        match self.kcov.0.try_borrow() {
-            Ok(borrow) => f(borrow.as_ref()),
-            Err(_) => f(None),
-        }
-    }
-
-    /// Set the KCOV state for this thread.
-    #[cfg(feature = "kcov")]
-    pub fn set_kcov(&self, state: Option<KcovThreadState>) {
-        *self.kcov.0.borrow_mut() = state;
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
@@ -499,6 +483,22 @@ struct JobControl {
 }
 
 /// [`Process`]-shared data.
+pub struct ProcessImage {
+    pub exe_path: String,
+    pub cmdline: Arc<Vec<String>>,
+    pub auxv: Vec<AuxEntry>,
+}
+
+impl ProcessImage {
+    pub fn new(exe_path: String, cmdline: Arc<Vec<String>>, auxv: Vec<AuxEntry>) -> Self {
+        Self {
+            exe_path,
+            cmdline,
+            auxv,
+        }
+    }
+}
+
 pub struct ProcessData {
     /// The process.
     pub proc: Arc<Process>,
@@ -506,6 +506,8 @@ pub struct ProcessData {
     pub exe_path: RwLock<String>,
     /// The command line arguments
     pub cmdline: RwLock<Arc<Vec<String>>>,
+    /// Auxiliary vector entries exported via `/proc/[pid]/auxv`.
+    pub auxv: RwLock<Vec<AuxEntry>>,
     /// The virtual memory address space.
     // TODO: scopify
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
@@ -563,6 +565,73 @@ pub struct ProcessData {
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
 
+    /// Pid of the process currently tracing this process, if any.
+    ptrace_tracer_pid: AtomicU32,
+
+    /// Set by `ptrace(PTRACE_TRACEME)` to let the parent observe debugger-style
+    /// stops from this process.
+    ptrace_traceme: AtomicBool,
+
+    /// Non-zero signal number while this traced process is stopped.
+    ptrace_stop_signo: AtomicU32,
+
+    /// User register snapshot captured when entering the current ptrace stop.
+    ptrace_stop_uctx: SpinNoIrq<Option<UserContext>>,
+
+    /// siginfo for the current ptrace stop, used by `PTRACE_GETSIGINFO`.
+    ptrace_stop_siginfo: SpinNoIrq<Option<SignalInfo>>,
+
+    /// True when the current SIGTRAP stop is a PTRACE_SYSCALL entry/exit stop.
+    ptrace_stop_is_syscall: AtomicBool,
+
+    /// True after wait* has already reported the current ptrace stop.
+    ptrace_stop_reported: AtomicBool,
+
+    /// Wakes a traced task that is sleeping in a ptrace stop.
+    ptrace_stop_event: Arc<PollSet>,
+
+    /// Signal number to deliver on resume, set by `PTRACE_CONT(sig)`.
+    /// 0 means suppress the signal; non-zero means deliver that signal.
+    ptrace_resume_signo: AtomicU32,
+
+    /// One-shot signal number that came from ptrace resume injection.
+    /// The signal subsystem still handles disposition and handlers, but the
+    /// next matching signal delivery must not stop for ptrace again.
+    ptrace_resume_signal_bypass: AtomicU32,
+
+    /// Set by `execve` when the calling thread was `PTRACE_TRACEME`.
+    /// Cleared after the exec-stop is delivered in the user-return loop.
+    ptrace_exec_stop_pending: AtomicBool,
+
+    /// Set by `PTRACE_ATTACH` / `PTRACE_SEIZE`.
+    ptrace_attached: AtomicBool,
+
+    /// Set by `PTRACE_SINGLESTEP`; causes a temporary EBREAK insertion.
+    ptrace_singlestep: AtomicBool,
+
+    /// Set by `PTRACE_SYSCALL`; causes syscall-entry/exit stops.
+    ptrace_syscall_trace: SpinNoIrq<SyscallTraceState>,
+
+    /// Bitmask of PTRACE_O_* options set via `PTRACE_SETOPTIONS`.
+    ptrace_options: AtomicUsize,
+
+    /// Event message stored by `PTRACE_EVENT_*` (e.g. new child PID).
+    ptrace_event_msg: AtomicUsize,
+
+    /// Pending ptrace event code (PTRACE_EVENT_FORK etc.), or 0 for none.
+    ptrace_event: AtomicU32,
+
+    /// Saved instruction overwritten by single-step EBREAK, if any.
+    ptrace_ss_saved_insn: SpinNoIrq<Option<(usize, usize)>>,
+
+    /// FP register snapshot captured when entering ptrace stop.
+    /// Stored as raw bytes to avoid arch-specific crate dependency.
+    ptrace_stop_fp_data: SpinNoIrq<Option<([u64; 32], usize)>>,
+
+    /// Linux process personality flags. Starry does not randomize userspace
+    /// mappings yet, but debuggers still probe and set ADDR_NO_RANDOMIZE.
+    personality: AtomicUsize,
+
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
 
@@ -591,8 +660,7 @@ impl ProcessData {
     /// Create a new [`ProcessData`].
     pub fn new(
         proc: Arc<Process>,
-        exe_path: String,
-        cmdline: Arc<Vec<String>>,
+        image: ProcessImage,
         aspace: Arc<Mutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
@@ -600,8 +668,9 @@ impl ProcessData {
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             proc,
-            exe_path: RwLock::new(exe_path),
-            cmdline: RwLock::new(cmdline),
+            exe_path: RwLock::new(image.exe_path),
+            cmdline: RwLock::new(image.cmdline),
+            auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
@@ -629,6 +698,28 @@ impl ProcessData {
             dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+
+            ptrace_tracer_pid: AtomicU32::new(0),
+            ptrace_traceme: AtomicBool::new(false),
+            ptrace_stop_signo: AtomicU32::new(0),
+            ptrace_stop_uctx: SpinNoIrq::new(None),
+            ptrace_stop_siginfo: SpinNoIrq::new(None),
+            ptrace_stop_is_syscall: AtomicBool::new(false),
+            ptrace_stop_reported: AtomicBool::new(false),
+            ptrace_stop_event: Arc::default(),
+            ptrace_resume_signo: AtomicU32::new(0),
+            ptrace_resume_signal_bypass: AtomicU32::new(0),
+            ptrace_exec_stop_pending: AtomicBool::new(false),
+            ptrace_attached: AtomicBool::new(false),
+            ptrace_singlestep: AtomicBool::new(false),
+            ptrace_syscall_trace: SpinNoIrq::new(SyscallTraceState::None),
+            ptrace_options: AtomicUsize::new(0),
+            ptrace_event_msg: AtomicUsize::new(0),
+            ptrace_event: AtomicU32::new(0),
+            ptrace_ss_saved_insn: SpinNoIrq::new(None),
+            ptrace_stop_fp_data: SpinNoIrq::new(None),
+
+            personality: AtomicUsize::new(0),
 
             posix_timers: Arc::new(PosixTimerTable::default()),
 
@@ -847,6 +938,297 @@ impl ProcessData {
         let mut time = self.children_cpu_time.lock();
         time.0 += utime;
         time.1 += stime;
+    }
+
+    /// Mark this process as traceable by its parent.
+    pub fn set_ptrace_traceme(&self) {
+        if let Some(parent) = self.proc.parent() {
+            self.set_ptrace_tracer_pid(parent.pid());
+        }
+        self.ptrace_traceme.store(true, Ordering::Release);
+    }
+
+    pub fn clear_ptrace_traceme(&self) {
+        self.ptrace_traceme.store(false, Ordering::Release);
+    }
+
+    pub fn is_ptrace_traceme(&self) -> bool {
+        self.ptrace_traceme.load(Ordering::Acquire)
+    }
+
+    pub fn set_ptrace_tracer_pid(&self, pid: starry_process::Pid) {
+        self.ptrace_tracer_pid.store(pid, Ordering::Release);
+    }
+
+    pub fn clear_ptrace_tracer_pid(&self) {
+        self.ptrace_tracer_pid.store(0, Ordering::Release);
+    }
+
+    pub fn ptrace_tracer_pid(&self) -> Option<starry_process::Pid> {
+        let pid = self.ptrace_tracer_pid.load(Ordering::Acquire);
+        if pid == 0 { None } else { Some(pid) }
+    }
+
+    /// Record that this tracee is stopped by `signo`.
+    pub fn set_ptrace_stop(&self, signo: Signo, uctx: &UserContext) {
+        *self.ptrace_stop_uctx.lock() = Some(*uctx);
+        *self.ptrace_stop_siginfo.lock() = Some(SignalInfo::new_kernel(signo));
+        self.ptrace_stop_is_syscall.store(false, Ordering::Release);
+        self.ptrace_stop_reported.store(false, Ordering::Release);
+        self.ptrace_stop_signo
+            .store(signo as u32, Ordering::Release);
+    }
+
+    /// Record that this tracee is stopped at a syscall entry or exit boundary.
+    pub fn set_ptrace_syscall_stop(&self, signo: Signo, uctx: &UserContext) {
+        self.set_ptrace_stop(signo, uctx);
+        self.ptrace_stop_is_syscall.store(true, Ordering::Release);
+    }
+
+    pub fn is_ptrace_syscall_stop(&self) -> bool {
+        self.ptrace_stop_is_syscall.load(Ordering::Acquire)
+    }
+
+    /// Return the siginfo for the current ptrace stop.
+    pub fn ptrace_stop_siginfo(&self) -> Option<SignalInfo> {
+        self.ptrace_stop_siginfo.lock().clone()
+    }
+
+    /// Replace the siginfo held for the current ptrace stop.
+    pub fn set_ptrace_stop_siginfo(&self, signo: Signo, siginfo: SignalInfo) -> bool {
+        let mut saved = self.ptrace_stop_siginfo.lock();
+        if saved.is_none() {
+            return false;
+        }
+        *saved = Some(siginfo);
+        self.ptrace_stop_signo
+            .store(signo as u32, Ordering::Release);
+        true
+    }
+
+    /// Return the current ptrace stop signal, if any.
+    pub fn ptrace_stop_signo(&self) -> Option<Signo> {
+        let signo = self.ptrace_stop_signo.load(Ordering::Acquire);
+        if signo == 0 {
+            None
+        } else {
+            Signo::from_repr(signo as u8)
+        }
+    }
+
+    /// Return the saved user context for the current ptrace stop.
+    pub fn ptrace_stop_user_context(&self) -> Option<UserContext> {
+        *self.ptrace_stop_uctx.lock()
+    }
+
+    pub fn ptrace_stop_reported(&self) -> bool {
+        self.ptrace_stop_reported.load(Ordering::Acquire)
+    }
+
+    pub fn mark_ptrace_stop_reported(&self) {
+        self.ptrace_stop_reported.store(true, Ordering::Release);
+    }
+
+    /// Replace registers held for a stopped tracee.
+    pub fn set_ptrace_stop_user_context(&self, uctx: UserContext) -> bool {
+        let mut saved = self.ptrace_stop_uctx.lock();
+        if saved.is_none() {
+            return false;
+        }
+        *saved = Some(uctx);
+        true
+    }
+
+    /// Resume the stopped task, optionally injecting a signal.
+    pub fn resume_ptrace_stop_with_signal(&self, signo: u32) {
+        self.ptrace_resume_signo.store(signo, Ordering::Release);
+        *self.ptrace_stop_siginfo.lock() = None;
+        self.ptrace_stop_is_syscall.store(false, Ordering::Release);
+        self.ptrace_stop_reported.store(false, Ordering::Release);
+        self.ptrace_event.store(0, Ordering::Release);
+        self.ptrace_stop_signo.store(0, Ordering::Release);
+        self.ptrace_stop_event.wake();
+    }
+
+    /// Resume the stopped task without injecting a signal.
+    pub fn resume_ptrace_stop(&self) {
+        self.resume_ptrace_stop_with_signal(0);
+    }
+
+    /// Consume the signal chosen by the tracer on resume.
+    pub fn take_ptrace_resume_signo(&self) -> Option<Signo> {
+        let signo = self.ptrace_resume_signo.swap(0, Ordering::AcqRel);
+        Signo::from_repr(signo as u8)
+    }
+
+    pub fn set_ptrace_resume_signal_bypass(&self, signo: Signo) {
+        self.ptrace_resume_signal_bypass
+            .store(signo as u32, Ordering::Release);
+    }
+
+    pub fn take_ptrace_resume_signal_bypass(&self, signo: Signo) -> bool {
+        self.ptrace_resume_signal_bypass
+            .compare_exchange(signo as u32, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Take registers once the stopped task resumes.
+    pub fn take_ptrace_stop_user_context(&self) -> Option<UserContext> {
+        self.ptrace_stop_uctx.lock().take()
+    }
+
+    /// Cancel the current ptrace stop and discard its saved registers.
+    pub fn clear_ptrace_stop(&self) {
+        *self.ptrace_stop_uctx.lock() = None;
+        *self.ptrace_stop_siginfo.lock() = None;
+        self.ptrace_stop_is_syscall.store(false, Ordering::Release);
+        self.ptrace_stop_reported.store(false, Ordering::Release);
+        self.ptrace_event.store(0, Ordering::Release);
+        self.ptrace_stop_signo.store(0, Ordering::Release);
+        self.ptrace_stop_event.wake();
+    }
+
+    pub fn set_ptrace_exec_stop_pending(&self) {
+        self.ptrace_exec_stop_pending
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    pub fn take_ptrace_exec_stop_pending(&self) -> bool {
+        self.ptrace_exec_stop_pending
+            .swap(false, core::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Register a waiter for changes to this process's ptrace stop state.
+    pub fn register_ptrace_stop_waker(&self, waker: &core::task::Waker) {
+        self.ptrace_stop_event.register(waker);
+    }
+
+    pub fn set_ptrace_attached(&self) {
+        self.ptrace_attached.store(true, Ordering::Release);
+    }
+
+    pub fn clear_ptrace_attached(&self) {
+        self.ptrace_attached.store(false, Ordering::Release);
+    }
+
+    pub fn is_ptrace_attached(&self) -> bool {
+        self.ptrace_attached.load(Ordering::Acquire)
+    }
+
+    pub fn set_ptrace_singlestep(&self, val: bool) {
+        self.ptrace_singlestep.store(val, Ordering::Release);
+    }
+
+    pub fn is_ptrace_singlestep(&self) -> bool {
+        self.ptrace_singlestep.load(Ordering::Acquire)
+    }
+
+    pub fn set_ptrace_syscall_trace(&self, trace: bool) {
+        *self.ptrace_syscall_trace.lock() = if trace {
+            SyscallTraceState::Entry
+        } else {
+            SyscallTraceState::None
+        };
+    }
+
+    pub fn set_ptrace_syscall_trace_state(&self, state: SyscallTraceState) {
+        *self.ptrace_syscall_trace.lock() = state;
+    }
+
+    pub fn take_ptrace_syscall_trace(&self) -> SyscallTraceState {
+        core::mem::take(&mut *self.ptrace_syscall_trace.lock())
+    }
+
+    pub fn set_ptrace_options(&self, opts: usize) {
+        self.ptrace_options.store(opts, Ordering::Release);
+    }
+
+    pub fn ptrace_options(&self) -> usize {
+        self.ptrace_options.load(Ordering::Acquire)
+    }
+
+    pub fn set_ptrace_event_msg(&self, msg: usize) {
+        self.ptrace_event_msg.store(msg, Ordering::Release);
+    }
+
+    pub fn ptrace_event_msg(&self) -> usize {
+        self.ptrace_event_msg.load(Ordering::Acquire)
+    }
+
+    pub fn set_ptrace_event(&self, event: u32) {
+        self.ptrace_event.store(event, Ordering::Release);
+    }
+
+    pub fn ptrace_event(&self) -> Option<u32> {
+        let event = self.ptrace_event.load(Ordering::Acquire);
+        if event == 0 { None } else { Some(event) }
+    }
+
+    pub fn take_ptrace_event(&self) -> Option<u32> {
+        let event = self.ptrace_event.swap(0, Ordering::AcqRel);
+        if event == 0 { None } else { Some(event) }
+    }
+
+    pub fn set_ptrace_ss_saved_insn(&self, saved: Option<(usize, usize)>) {
+        *self.ptrace_ss_saved_insn.lock() = saved;
+    }
+
+    pub fn take_ptrace_ss_saved_insn(&self) -> Option<(usize, usize)> {
+        self.ptrace_ss_saved_insn.lock().take()
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn save_current_fp_for_ptrace(&self) {
+        let mut fp = ax_cpu::FpState::default();
+        fp.save();
+        fp.fs = riscv::register::sstatus::read().fs();
+        *self.ptrace_stop_fp_data.lock() = Some((fp.fp, fp.fcsr));
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    pub fn save_current_fp_for_ptrace(&self) {}
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn restore_current_fp_for_ptrace(&self, uctx: &mut UserContext) {
+        let Some((fp, fcsr)) = self.ptrace_stop_fp_data() else {
+            return;
+        };
+
+        let fp_state = ax_cpu::FpState {
+            fp,
+            fcsr,
+            fs: riscv::register::sstatus::FS::Dirty,
+        };
+
+        unsafe {
+            riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Dirty);
+        }
+        fp_state.restore();
+        uctx.sstatus.set_fs(riscv::register::sstatus::FS::Dirty);
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    pub fn restore_current_fp_for_ptrace(&self, _uctx: &mut UserContext) {}
+
+    pub fn ptrace_stop_fp_data(&self) -> Option<([u64; 32], usize)> {
+        *self.ptrace_stop_fp_data.lock()
+    }
+
+    pub fn set_ptrace_stop_fp_data(&self, data: ([u64; 32], usize)) -> bool {
+        let mut guard = self.ptrace_stop_fp_data.lock();
+        if guard.is_none() {
+            return false;
+        }
+        *guard = Some(data);
+        true
+    }
+
+    pub fn personality(&self) -> usize {
+        self.personality.load(Ordering::Acquire)
+    }
+
+    pub fn replace_personality(&self, personality: usize) -> usize {
+        self.personality.swap(personality, Ordering::AcqRel)
     }
 
     /// Returns a clone of the address space Arc.

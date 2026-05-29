@@ -20,6 +20,7 @@ use alloc::{
 use core::ptr::NonNull;
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
+use ax_errno::{AxError, AxResult, ax_err_type};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
@@ -33,6 +34,10 @@ use fdt_parser::{Fdt, Node};
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
 // use crate::vmm::fdt::print::{print_fdt, print_guest_fdt};
+
+fn fdt_write_err(err: impl core::fmt::Display) -> AxError {
+    ax_err_type!(InvalidData, format!("Failed to write guest FDT: {err}"))
+}
 
 fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
     matches!(
@@ -54,8 +59,8 @@ pub fn crate_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &AxVMCrateConfig,
-) -> Vec<u8> {
-    let mut fdt_writer = FdtWriter::new().unwrap();
+) -> AxResult<Vec<u8>> {
+    let mut fdt_writer = FdtWriter::new().map_err(fdt_write_err)?;
     // Track the level of the previously processed node for level change handling
     let mut previous_node_level = 0;
     // Maintain a stack of FDT nodes to correctly start and end nodes
@@ -63,8 +68,8 @@ pub fn crate_guest_fdt(
     let phys_cpu_ids = crate_config
         .base
         .phys_cpu_ids
-        .clone()
-        .expect("ERROR: phys_cpu_ids is None");
+        .as_deref()
+        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
     let all_nodes: Vec<Node> = fdt.all_nodes().collect();
     let all_paths = super::build_all_node_paths(&all_nodes);
@@ -75,18 +80,18 @@ pub fn crate_guest_fdt(
 
         match node_action {
             NodeAction::RootNode => {
-                node_stack.push(fdt_writer.begin_node("").unwrap());
+                node_stack.push(fdt_writer.begin_node("").map_err(fdt_write_err)?);
             }
             NodeAction::CpuNode => {
-                let need = need_cpu_node(&phys_cpu_ids, node, node_path);
+                let need = need_cpu_node(phys_cpu_ids, node, node_path);
                 if need {
                     handle_node_level_change(
                         &mut fdt_writer,
                         &mut node_stack,
                         node.level,
                         previous_node_level,
-                    );
-                    node_stack.push(fdt_writer.begin_node(node.name()).unwrap());
+                    )?;
+                    node_stack.push(fdt_writer.begin_node(node.name()).map_err(fdt_write_err)?);
                 } else {
                     continue;
                 }
@@ -105,8 +110,8 @@ pub fn crate_guest_fdt(
                     &mut node_stack,
                     node.level,
                     previous_node_level,
-                );
-                node_stack.push(fdt_writer.begin_node(node.name()).unwrap());
+                )?;
+                node_stack.push(fdt_writer.begin_node(node.name()).map_err(fdt_write_err)?);
             }
         }
 
@@ -117,18 +122,24 @@ pub fn crate_guest_fdt(
             if node_path.starts_with("/cpus") && should_skip_guest_cpu_prop(prop.name) {
                 continue;
             }
-            fdt_writer.property(prop.name, prop.raw_value()).unwrap();
+            fdt_writer
+                .property(prop.name, prop.raw_value())
+                .map_err(fdt_write_err)?;
         }
     }
 
     // End all unclosed nodes
     while let Some(node) = node_stack.pop() {
-        previous_node_level -= 1;
-        fdt_writer.end_node(node).unwrap();
+        previous_node_level = previous_node_level
+            .checked_sub(1)
+            .ok_or_else(|| ax_err_type!(InvalidData, "Invalid FDT node nesting"))?;
+        fdt_writer.end_node(node).map_err(fdt_write_err)?;
     }
-    assert_eq!(previous_node_level, 0);
+    if previous_node_level != 0 {
+        return Err(ax_err_type!(InvalidData, "Guest FDT has unbalanced nodes"));
+    }
 
-    fdt_writer.finish().unwrap()
+    fdt_writer.finish().map_err(fdt_write_err)
 }
 
 /// Node processing action enumeration
@@ -215,14 +226,15 @@ fn handle_node_level_change(
     node_stack: &mut Vec<FdtWriterNode>,
     current_level: usize,
     previous_level: usize,
-) {
+) -> AxResult {
     if current_level <= previous_level {
         for _ in current_level..=previous_level {
             if let Some(end_node) = node_stack.pop() {
-                fdt_writer.end_node(end_node).unwrap();
+                fdt_writer.end_node(end_node).map_err(fdt_write_err)?;
             }
         }
     }
+    Ok(())
 }
 
 /// Determine if node is an ancestor of passthrough device
@@ -281,7 +293,7 @@ fn add_memory_node(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
     new_fdt: &mut FdtWriter,
-) {
+) -> AxResult {
     let configured_region_count = if crate_config.kernel.configured_memory_region_count == 0 {
         crate_config.kernel.memory_regions.len()
     } else {
@@ -317,8 +329,11 @@ fn add_memory_node(
     info!("Adding memory node with value: {new_value:x?}");
     new_fdt
         .property_array_u32("reg", new_value.as_ref())
-        .unwrap();
-    new_fdt.property_string("device_type", "memory").unwrap();
+        .map_err(fdt_write_err)?;
+    new_fdt
+        .property_string("device_type", "memory")
+        .map_err(fdt_write_err)?;
+    Ok(())
 }
 
 #[cfg(any(target_arch = "aarch64", test))]
@@ -383,8 +398,8 @@ pub fn update_fdt(
     dtb_size: usize,
     vm: VMRef,
     crate_config: &AxVMCrateConfig,
-) {
-    let mut new_fdt = FdtWriter::new().unwrap();
+) -> AxResult {
+    let mut new_fdt = FdtWriter::new().map_err(fdt_write_err)?;
     let mut previous_node_level = 0;
     let mut node_stack: Vec<FdtWriterNode> = Vec::new();
     let initrd_range = vm
@@ -392,12 +407,11 @@ pub fn update_fdt(
 
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
     let fdt = Fdt::from_bytes(fdt_bytes)
-        .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
-        .expect("Failed to parse FDT");
+        .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse FDT: {e:#?}")))?;
 
     for node in fdt.all_nodes() {
         if node.name() == "/" {
-            node_stack.push(new_fdt.begin_node("").unwrap());
+            node_stack.push(new_fdt.begin_node("").map_err(fdt_write_err)?);
         } else if node.name().starts_with("memory") {
             // Skip memory nodes, will add them later
             continue;
@@ -407,9 +421,9 @@ pub fn update_fdt(
                 &mut node_stack,
                 node.level,
                 previous_node_level,
-            );
+            )?;
             // Start new node
-            node_stack.push(new_fdt.begin_node(node.name()).unwrap());
+            node_stack.push(new_fdt.begin_node(node.name()).map_err(fdt_write_err)?);
         }
 
         previous_node_level = node.level;
@@ -424,7 +438,9 @@ pub fn update_fdt(
                             node.name()
                         );
                     } else {
-                        new_fdt.property(prop.name, prop.raw_value()).unwrap();
+                        new_fdt
+                            .property(prop.name, prop.raw_value())
+                            .map_err(fdt_write_err)?;
                     }
                 } else if prop.name == "bootargs" {
                     let bootargs_str = prop.str();
@@ -439,14 +455,16 @@ pub fn update_fdt(
 
                     new_fdt
                         .property_string(prop.name, &modified_bootargs)
-                        .unwrap();
+                        .map_err(fdt_write_err)?;
                 } else {
                     debug!(
                         "Find property: {}, belonging to node: {}",
                         prop.name,
                         node.name()
                     );
-                    new_fdt.property(prop.name, prop.raw_value()).unwrap();
+                    new_fdt
+                        .property(prop.name, prop.raw_value())
+                        .map_err(fdt_write_err)?;
                 }
             }
             if let Some((initrd_start, initrd_end)) = initrd_range {
@@ -456,49 +474,55 @@ pub fn update_fdt(
                 );
                 new_fdt
                     .property_u64("linux,initrd-start", initrd_start)
-                    .unwrap();
+                    .map_err(fdt_write_err)?;
                 new_fdt
                     .property_u64("linux,initrd-end", initrd_end)
-                    .unwrap();
+                    .map_err(fdt_write_err)?;
             }
         } else {
             for prop in node.propertys() {
-                new_fdt.property(prop.name, prop.raw_value()).unwrap();
+                new_fdt
+                    .property(prop.name, prop.raw_value())
+                    .map_err(fdt_write_err)?;
             }
         }
     }
 
     // End all unclosed nodes, and add memory nodes at appropriate positions
     while let Some(node) = node_stack.pop() {
-        previous_node_level -= 1;
-        new_fdt.end_node(node).unwrap();
+        previous_node_level = previous_node_level
+            .checked_sub(1)
+            .ok_or_else(|| ax_err_type!(InvalidData, "Invalid FDT node nesting"))?;
+        new_fdt.end_node(node).map_err(fdt_write_err)?;
 
         // add memory node
         if previous_node_level == 1 {
             let memory_regions = vm.memory_regions();
-            let memory_node = new_fdt.begin_node("memory").unwrap();
-            add_memory_node(&memory_regions, crate_config, &mut new_fdt);
-            new_fdt.end_node(memory_node).unwrap();
+            let memory_node = new_fdt.begin_node("memory").map_err(fdt_write_err)?;
+            add_memory_node(&memory_regions, crate_config, &mut new_fdt)?;
+            new_fdt.end_node(memory_node).map_err(fdt_write_err)?;
         }
     }
 
-    assert_eq!(previous_node_level, 0);
+    if previous_node_level != 0 {
+        return Err(ax_err_type!(InvalidData, "Guest FDT has unbalanced nodes"));
+    }
 
     info!("Updating FDT memory successfully");
 
-    let new_fdt_bytes = new_fdt.finish().unwrap();
+    let new_fdt_bytes = new_fdt.finish().map_err(fdt_write_err)?;
 
     // crate::vmm::fdt::print::print_guest_fdt(new_fdt_bytes.as_slice());
     let vm_clone = vm.clone();
-    let dest_addr = calculate_dtb_load_addr(vm, new_fdt_bytes.len());
+    let dest_addr = calculate_dtb_load_addr(vm, new_fdt_bytes.len())?;
     debug!(
         "New FDT will be loaded at {:x}, size: 0x{:x}",
         dest_addr,
         new_fdt_bytes.len()
     );
     // Load the updated FDT into VM
-    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm_clone)
-        .expect("Failed to load VM images");
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm_clone)?;
+    Ok(())
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -507,25 +531,33 @@ pub fn update_fdt(
     dtb_size: usize,
     vm: VMRef,
     crate_config: &AxVMCrateConfig,
-) {
+) -> AxResult {
     // Fix up the cached DTB against the runtime layout before boot.
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
-    let fdt = Fdt::from_bytes(fdt_bytes)
-        .map_err(|e| format!("Failed to parse cached guest FDT: {e:#?}"))
-        .expect("Failed to parse cached guest FDT");
+    let fdt = Fdt::from_bytes(fdt_bytes).map_err(|e| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse cached guest FDT: {e:#?}")
+        )
+    })?;
     // Keep boot metadata such as /chosen from the host FDT when it is available.
     let host_fdt_bytes = super::try_get_host_fdt();
-    let host_fdt = host_fdt_bytes.map(|bytes| {
-        Fdt::from_bytes(bytes)
-            .map_err(|e| format!("Failed to parse host FDT while updating guest FDT: {e:#?}"))
-            .expect("Failed to parse host FDT while updating guest FDT")
-    });
+    let host_fdt = host_fdt_bytes
+        .map(|bytes| {
+            Fdt::from_bytes(bytes).map_err(|e| {
+                ax_err_type!(
+                    InvalidData,
+                    format!("Failed to parse host FDT while updating guest FDT: {e:#?}")
+                )
+            })
+        })
+        .transpose()?;
     let new_fdt_bytes =
-        patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, host_fdt.as_ref());
+        patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, host_fdt.as_ref())?;
     // Recompute the DTB load address from the runtime memory layout.
-    let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len());
+    let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
 
-    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm).expect("Failed to load VM images");
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm)
 }
 
 #[cfg(test)]
@@ -619,17 +651,16 @@ mod tests {
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub(crate) fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
+pub(crate) fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> AxResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
     // Get main memory from VM memory regions outside the closure
-    let main_memory = vm
-        .memory_regions()
-        .first()
-        .cloned()
-        .expect("VM must have at least one memory region");
+    let main_memory =
+        vm.memory_regions().first().cloned().ok_or_else(|| {
+            ax_err_type!(InvalidInput, "VM has no memory region for DTB placement")
+        })?;
 
-    vm.with_config(|config| {
+    let dtb_addr = vm.with_config(|config| {
         let dtb_addr = if let Some(addr) = config.image_config.dtb_load_gpa
             && !main_memory.is_identical()
         {
@@ -646,7 +677,9 @@ pub(crate) fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAd
         };
         config.image_config.dtb_load_gpa = Some(dtb_addr);
         dtb_addr
-    })
+    });
+
+    Ok(dtb_addr)
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -655,8 +688,8 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     memory_regions: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
     host_fdt: Option<&Fdt>,
-) -> Vec<u8> {
-    let mut new_fdt = FdtWriter::new().unwrap();
+) -> AxResult<Vec<u8>> {
+    let mut new_fdt = FdtWriter::new().map_err(fdt_write_err)?;
     let mut previous_node_level = 0usize;
     let mut node_stack: Vec<FdtWriterNode> = Vec::new();
     let mut has_chosen = false;
@@ -672,65 +705,79 @@ pub(crate) fn patch_guest_fdt_for_runtime(
         }
 
         if node.name() == "/" {
-            node_stack.push(new_fdt.begin_node("").unwrap());
+            node_stack.push(new_fdt.begin_node("").map_err(fdt_write_err)?);
         } else {
             handle_node_level_change(
                 &mut new_fdt,
                 &mut node_stack,
                 node.level,
                 previous_node_level,
-            );
-            node_stack.push(new_fdt.begin_node(node.name()).unwrap());
+            )?;
+            node_stack.push(new_fdt.begin_node(node.name()).map_err(fdt_write_err)?);
         }
         previous_node_level = node.level;
 
         for prop in node.propertys() {
-            new_fdt.property(prop.name, prop.raw_value()).unwrap();
+            new_fdt
+                .property(prop.name, prop.raw_value())
+                .map_err(fdt_write_err)?;
         }
     }
 
     // Return to the root before inserting synthetic nodes.
     while node_stack.len() > 1 {
-        let node = node_stack.pop().unwrap();
-        new_fdt.end_node(node).unwrap();
+        let node = node_stack
+            .pop()
+            .ok_or_else(|| ax_err_type!(InvalidData, "Guest FDT node stack is empty"))?;
+        new_fdt.end_node(node).map_err(fdt_write_err)?;
     }
 
-    assert_eq!(node_stack.len(), 1);
+    if node_stack.len() != 1 {
+        return Err(ax_err_type!(InvalidData, "Guest FDT root node is missing"));
+    }
 
     // Restore /chosen from the host FDT when it is missing.
     if !has_chosen
         && let Some(host_fdt) = host_fdt
         && let Some(chosen_node) = host_fdt.find_nodes("/chosen").next()
     {
-        let chosen = new_fdt.begin_node("chosen").unwrap();
+        let chosen = new_fdt.begin_node("chosen").map_err(fdt_write_err)?;
         for prop in chosen_node.propertys() {
-            new_fdt.property(prop.name, prop.raw_value()).unwrap();
+            new_fdt
+                .property(prop.name, prop.raw_value())
+                .map_err(fdt_write_err)?;
         }
-        new_fdt.end_node(chosen).unwrap();
+        new_fdt.end_node(chosen).map_err(fdt_write_err)?;
     }
 
     // Rebuild /memory from the runtime-visible regions that correspond to the
     // user-configured memory layout.
-    let memory_node = new_fdt.begin_node("memory").unwrap();
-    add_memory_node(memory_regions, crate_config, &mut new_fdt);
-    new_fdt.end_node(memory_node).unwrap();
+    let memory_node = new_fdt.begin_node("memory").map_err(fdt_write_err)?;
+    add_memory_node(memory_regions, crate_config, &mut new_fdt)?;
+    new_fdt.end_node(memory_node).map_err(fdt_write_err)?;
 
-    let root = node_stack.pop().unwrap();
-    new_fdt.end_node(root).unwrap();
+    let root = node_stack
+        .pop()
+        .ok_or_else(|| ax_err_type!(InvalidData, "Guest FDT root node is missing"))?;
+    new_fdt.end_node(root).map_err(fdt_write_err)?;
 
-    new_fdt.finish().unwrap()
+    new_fdt.finish().map_err(fdt_write_err)
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig) -> Vec<u8> {
-    let mut new_fdt = FdtWriter::new().unwrap();
+pub fn update_cpu_node(
+    fdt: &Fdt,
+    host_fdt: &Fdt,
+    crate_config: &AxVMCrateConfig,
+) -> AxResult<Vec<u8>> {
+    let mut new_fdt = FdtWriter::new().map_err(fdt_write_err)?;
     let mut previous_node_level = 0;
     let mut node_stack: Vec<FdtWriterNode> = Vec::new();
     let phys_cpu_ids = crate_config
         .base
         .phys_cpu_ids
-        .clone()
-        .expect("ERROR: phys_cpu_ids is None");
+        .as_deref()
+        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
     // Collect all nodes from both FDTs
     let fdt_all_nodes: Vec<Node> = fdt.all_nodes().collect();
@@ -742,7 +789,7 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
         let node_path = &fdt_all_paths[index];
 
         if node.name() == "/" {
-            node_stack.push(new_fdt.begin_node("").unwrap());
+            node_stack.push(new_fdt.begin_node("").map_err(fdt_write_err)?);
         } else if node_path.starts_with("/cpus") {
             // Skip CPU nodes from fdt, we'll process them from host_fdt later
             continue;
@@ -753,15 +800,17 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
                 &mut node_stack,
                 node.level,
                 previous_node_level,
-            );
-            node_stack.push(new_fdt.begin_node(node.name()).unwrap());
+            )?;
+            node_stack.push(new_fdt.begin_node(node.name()).map_err(fdt_write_err)?);
         }
 
         previous_node_level = node.level;
 
         // Copy all properties of the node (for non-CPU nodes)
         for prop in node.propertys() {
-            new_fdt.property(prop.name, prop.raw_value()).unwrap();
+            new_fdt
+                .property(prop.name, prop.raw_value())
+                .map_err(fdt_write_err)?;
         }
     }
 
@@ -771,22 +820,24 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
 
         if node_path.starts_with("/cpus") {
             // For CPU nodes, apply filtering based on host_fdt nodes
-            let need = need_cpu_node(&phys_cpu_ids, node, &node_path);
+            let need = need_cpu_node(phys_cpu_ids, node, node_path);
             if need {
                 handle_node_level_change(
                     &mut new_fdt,
                     &mut node_stack,
                     node.level,
                     previous_node_level,
-                );
-                node_stack.push(new_fdt.begin_node(node.name()).unwrap());
+                )?;
+                node_stack.push(new_fdt.begin_node(node.name()).map_err(fdt_write_err)?);
 
                 // Copy properties from host CPU node
                 for prop in node.propertys() {
                     if should_skip_guest_cpu_prop(prop.name) {
                         continue;
                     }
-                    new_fdt.property(prop.name, prop.raw_value()).unwrap();
+                    new_fdt
+                        .property(prop.name, prop.raw_value())
+                        .map_err(fdt_write_err)?;
                 }
 
                 previous_node_level = node.level;
@@ -796,10 +847,14 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
 
     // End all unclosed nodes
     while let Some(node) = node_stack.pop() {
-        previous_node_level -= 1;
-        new_fdt.end_node(node).unwrap();
+        previous_node_level = previous_node_level
+            .checked_sub(1)
+            .ok_or_else(|| ax_err_type!(InvalidData, "Invalid FDT node nesting"))?;
+        new_fdt.end_node(node).map_err(fdt_write_err)?;
     }
-    assert_eq!(previous_node_level, 0);
+    if previous_node_level != 0 {
+        return Err(ax_err_type!(InvalidData, "Guest FDT has unbalanced nodes"));
+    }
 
-    new_fdt.finish().unwrap()
+    new_fdt.finish().map_err(fdt_write_err)
 }

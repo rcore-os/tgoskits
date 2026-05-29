@@ -1,10 +1,10 @@
 # `ax-plat`
 
-> 路径：`components/axplat_crates/axplat`
+> 路径：`platforms/ax-plat`
 > 类型：库 crate
 > 分层：组件层 / 平台抽象
 > 版本：`0.3.1-pre.6`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axplat_crates/axplat/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `platforms/ax-plat/README.md`
 
 `ax-plat` 不是某个具体板级平台的驱动集合，而是 ArceOS 平台层对上层内核暴露的统一契约包。它把“平台初始化、物理内存描述、控制台、时间、中断、电源、每核上下文”等能力拆成稳定接口；具体 `ax-plat-*` 平台包通过 `ax-crate-interface` 机制填充实现，内核只面向 `ax-plat` 编程，而不直接依赖某个 UART、GIC、APIC 或 PSCI/SBI 实现。
 
@@ -198,7 +198,6 @@ impl ax_plat::init::InitIf for InitIfImpl {
 
 - 所有具体平台包：如 `ax-plat-aarch64-qemu-virt`、`ax-plat-x86-pc`、`ax-plat-riscv64-qemu-virt`。
 - `ax-hal`：通过选择某个 `ax-plat-*` 平台包把平台实现纳入构建。
-- `components/axplat_crates/examples/*`：示例内核直接使用 `ax-plat` 接口与平台包。
 - 上层 ArceOS/StarryOS/Axvisor 宿主侧内核：通常通过 `ax-hal` 间接消费，而不是直接依赖 `ax-plat`。
 
 ### 3.3 依赖关系示意

@@ -99,7 +99,7 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 #### --plat (平台)
 
-指定目标平台，系统会自动从 `platform/{plat}/axconfig.toml` 读取对应的架构和包配置。
+指定目标平台，系统会自动从 `platforms/{plat}/axconfig.toml` 读取对应的架构和包配置。
 
 ```bash
 --plat aarch64-generic
@@ -212,7 +212,7 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./task.py run
 2. **平台配置找不到**
 
    ```text
-   警告：平台配置文件 platform/xxx/axconfig.toml 不存在
+   警告：平台配置文件 platforms/xxx/axconfig.toml 不存在
    ```
 
    - 检查平台名称是否正确

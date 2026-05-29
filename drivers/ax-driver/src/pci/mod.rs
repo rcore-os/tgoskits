@@ -29,9 +29,19 @@ use virtio_drivers::transport::{
 #[cfg(virtio_dev)]
 use crate::virtio::VirtIoHalImpl;
 
-#[cfg(feature = "pci-fdt")]
+#[cfg(plat_dyn)]
 mod fdt;
-#[cfg(all(feature = "pci-fdt", feature = "xhci-pci", target_os = "none"))]
+#[cfg(all(
+    plat_dyn,
+    target_os = "none",
+    any(
+        feature = "intel-net",
+        feature = "ixgbe",
+        feature = "realtek-rtl8125",
+        feature = "virtio-net",
+        feature = "xhci-pci",
+    )
+))]
 pub(crate) use fdt::fdt_irq_for_endpoint;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
@@ -99,13 +109,14 @@ pub const fn has_static_endpoint_drivers() -> bool {
         feature = "ixgbe",
         feature = "intel-net",
         feature = "realtek-rtl8125",
+        feature = "nvme",
         feature = "xhci-pci",
         feature = "virtio-blk",
         feature = "virtio-net",
         feature = "virtio-gpu",
         feature = "virtio-input",
         feature = "virtio-socket",
-        feature = "pci-list-devices",
+        feature = "list-pci-devices",
     ))
 }
 
@@ -197,6 +208,32 @@ pub fn legacy_irq_for_endpoint(address: PciAddress, interrupt_pin: u8) -> Option
 
 pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
     legacy_irq_for_endpoint(address, 1)
+}
+
+pub fn endpoint_legacy_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
+    if let Some(irq) = legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin()) {
+        return Some(irq);
+    }
+
+    let line = endpoint.interrupt_line();
+    if line == 0 || line == u8::MAX {
+        return None;
+    }
+    Some(pci_legacy_line_to_irq(line))
+}
+
+const fn pci_legacy_line_to_irq(line: u8) -> usize {
+    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
+        if cfg!(target_arch = "x86_64") {
+            0x20
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    PCI_IRQ_BASE + line as usize
 }
 
 pub fn register_legacy_irq_route(bus_start: u8, bus_end: u8, irq: usize) {

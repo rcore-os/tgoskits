@@ -17,11 +17,16 @@ pub mod dyn_debug; // Re-export debug macros for use in other modules. It will o
 
 pub mod entry;
 
+mod cgroup;
 mod config;
+#[cfg(feature = "ebpf")]
+mod ebpf;
 mod file;
-#[cfg(feature = "kcov")]
-mod kcov;
+mod kmod_loader;
+mod kprobe;
 mod mm;
+#[cfg(feature = "ebpf")]
+mod perf_event;
 mod pseudofs;
 mod stop_machine;
 mod syscall;

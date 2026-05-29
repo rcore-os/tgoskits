@@ -1,12 +1,12 @@
-# `axplat-x86-qemu-q35`
+# `ax-plat-x86-qemu-q35`
 
-> 路径：`platform/x86-qemu-q35`
+> 路径：`platforms/ax-plat-x86-qemu-q35`
 > 类型：库 crate
 > 分层：平台层 / x86_64 Q35 板级平台包
 > 版本：`0.2.0`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`build.rs`、`linker.lds.S`、`src/lib.rs`、`src/boot.rs`、`src/multiboot.S`、`src/init.rs`、`src/mem.rs`、`src/console.rs`、`src/time.rs`、`src/apic.rs`、`src/mp.rs`、`src/power.rs`
 
-`axplat-x86-qemu-q35` 是面向 QEMU Q35 机型的 x86_64 `axplat` 平台实现，当前主要服务于 Axvisor 的宿主侧启动路径。它把 Multiboot 引导、临时 GDT/页表、COM1 控制台、TSC/LAPIC/IOAPIC、AP 启动页、Q35 MMIO 窗口和关机/重启策略收敛成 `axplat` 契约。它不是通用 x86 PC 平台抽象，也不是虚拟化核心本身；它解决的是“Axvisor 在 Q35 这台机器上怎样把宿主环境带起来”的问题。
+`ax-plat-x86-qemu-q35` 是面向 QEMU Q35 机型的 x86_64 `axplat` 平台实现，当前主要服务于 Axvisor 的宿主侧启动路径。它把 Multiboot 引导、临时 GDT/页表、COM1 控制台、TSC/LAPIC/IOAPIC、AP 启动页、Q35 MMIO 窗口和关机/重启策略收敛成 `axplat` 契约。它不是通用 x86 PC 平台抽象，也不是虚拟化核心本身；它解决的是“Axvisor 在 Q35 这台机器上怎样把宿主环境带起来”的问题。
 
 ## 架构设计
 
@@ -14,8 +14,8 @@
 
 这个 crate 和仓库里另一个 `ax-plat-x86-pc` 很容易被混淆，但它们的定位并不相同：
 
-- `ax-plat-x86-pc` 位于 `components/axplat_crates`，更偏 ArceOS 侧的标准 PC 参考平台。
-- `axplat-x86-qemu-q35` 位于根目录 `platform/`，是 Axvisor 当前 x86_64 宿主平台依赖。
+- `ax-plat-x86-pc` 位于 `platforms`，更偏 ArceOS 侧的标准 PC 参考平台。
+- `ax-plat-x86-qemu-q35` 位于根目录 `platforms/`，是 Axvisor 当前 x86_64 宿主平台依赖。
 - 前者走 `axplat_crates` 的常规平台组织方式；后者把 Q35 和 Axvisor 的构建约束直接内嵌进自己的 `build.rs` 与链接脚本。
 
 它在平台栈中的职责可以概括为：
@@ -98,7 +98,7 @@ flowchart TD
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
 | `ax-cpu` | trap 初始化、停机等 CPU 原语 | Q35 MMIO 窗口、Multiboot 内存图解析、APIC/TSC/串口接线 |
-| `axplat-x86-qemu-q35` | Multiboot 启动、COM1、TSC/LAPIC/IOAPIC、RAM/MMIO 描述、AP 启动 | VMX/EPT、虚拟设备、客户机管理、通用 HAL 聚合 |
+| `ax-plat-x86-qemu-q35` | Multiboot 启动、COM1、TSC/LAPIC/IOAPIC、RAM/MMIO 描述、AP 启动 | VMX/EPT、虚拟设备、客户机管理、通用 HAL 聚合 |
 | `axplat` | 统一平台契约与 `call_main()` / `call_secondary_main()` | Q35 板级实现细节 |
 | `ax-hal` | 当前仓库里不是它的主要消费者 | 板级启动与 Q35 宿主环境 bring-up |
 | Axvisor 虚拟化核心 | VCPU、VM exit、EPT、设备虚拟化 | 宿主侧 COM1/APIC/TSC/Multiboot 平台初始化 |
@@ -107,9 +107,9 @@ flowchart TD
 
 ### 1.6 与 `ax-plat-x86-pc` 的差异
 
-| 维度 | `ax-plat-x86-pc` | `axplat-x86-qemu-q35` |
+| 维度 | `ax-plat-x86-pc` | `ax-plat-x86-qemu-q35` |
 | --- | --- | --- |
-| 代码位置 | `components/axplat_crates/platforms` | 根目录 `platform/` |
+| 代码位置 | `platforms` | 根目录 `platforms/` |
 | 主要消费者 | ArceOS `ax-hal` 默认 x86 平台 | Axvisor x86_64 宿主平台 |
 | 配置来源 | `axconfig` 体系 | `build.rs` + `linker.lds.S` + `AXVISOR_SMP` |
 | 目标机型 | 标准 PC / Multiboot 参考实现 | QEMU Q35 明确机型 |
@@ -176,7 +176,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[multiboot / x2apic / x86 / x86_64 / uart_16550] --> B[axplat-x86-qemu-q35]
+    A[multiboot / x2apic / x86 / x86_64 / uart_16550] --> B[ax-plat-x86-qemu-q35]
     C[axplat / ax-cpu / ax-percpu / int_ratio / ax-lazyinit / ax-kspin] --> B
     B --> D[Axvisor]
     D --> E[x86_64 Q35 宿主环境]
@@ -190,7 +190,7 @@ graph TD
 
 ```toml
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = [
+ax-plat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = [
     "reboot-on-system-off",
     "irq",
     "smp",
@@ -200,7 +200,7 @@ axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = 
 若单独验证平台包，可在构建前设置：
 
 ```bash
-AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
+AXVISOR_SMP=4 cargo build -p ax-plat-x86-qemu-q35 --target x86_64-unknown-none
 ```
 
 ### 4.2 修改时需要成组验证的点
@@ -250,4 +250,4 @@ AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
 
 ## 总结
 
-`axplat-x86-qemu-q35` 的真正价值，在于它把 Axvisor 在 x86_64 Q35 上的宿主 bring-up 路径压缩成了一份独立而清晰的 `axplat` 实现：配置从哪里来、CPU 数如何注入、Multiboot 怎样切到长模式、APIC 和 TSC 怎样接、Q35 的关键 MMIO 窗口有哪些。它不是通用 PC 平台的重复实现，更不是虚拟化核心，而是 Axvisor 宿主环境最底层的板级基座。
+`ax-plat-x86-qemu-q35` 的真正价值，在于它把 Axvisor 在 x86_64 Q35 上的宿主 bring-up 路径压缩成了一份独立而清晰的 `axplat` 实现：配置从哪里来、CPU 数如何注入、Multiboot 怎样切到长模式、APIC 和 TSC 怎样接、Q35 的关键 MMIO 窗口有哪些。它不是通用 PC 平台的重复实现，更不是虚拟化核心，而是 Axvisor 宿主环境最底层的板级基座。

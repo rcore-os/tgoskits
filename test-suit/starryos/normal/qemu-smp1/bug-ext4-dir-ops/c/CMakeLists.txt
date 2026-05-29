@@ -1,8 +1,0 @@
-cmake_minimum_required(VERSION 3.20)
-project(bug-ext4-dir-ops C)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS OFF)
-add_executable(bug-ext4-dir-ops src/main.c)
-target_compile_options(bug-ext4-dir-ops PRIVATE -Wall -Wextra -Werror)
-install(TARGETS bug-ext4-dir-ops RUNTIME DESTINATION usr/bin)

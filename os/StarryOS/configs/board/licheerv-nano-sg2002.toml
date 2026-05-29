@@ -1,8 +1,11 @@
 env = { UIMAGE = "y" }
 features = [
-  "sg2002",
-  "myplat",
+  "starry-kernel/sg2002",
+  "axplat-dyn/thead-mae",
+  "ax-driver/sg2002-placeholder",
+  "ax-driver/cvsd",
+  "ax-driver/serial",
 ]
 log = "Info"
-plat_dyn = false
+plat_dyn = true
 target = "riscv64gc-unknown-none-elf"

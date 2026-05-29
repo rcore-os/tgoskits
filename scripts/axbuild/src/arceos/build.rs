@@ -182,7 +182,7 @@ mod tests {
         build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", true);
 
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
-        assert!(build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
+        assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
         let args = ArceosBuildInfo::build_cargo_args(
@@ -410,6 +410,11 @@ AX_IP = "10.0.2.15"
             "aarch64-unknown-none-softfloat",
             true,
             Some(false)
+        ));
+        assert!(build::resolve_effective_plat_dyn(
+            "riscv64gc-unknown-none-elf",
+            true,
+            None
         ));
         assert!(!build::resolve_effective_plat_dyn(
             "x86_64-unknown-none",

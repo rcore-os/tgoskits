@@ -45,18 +45,19 @@ crate::model_register!(
 
 pub mod error;
 #[cfg(any(
-    feature = "serial",
-    all(feature = "rtc", feature = "fdt"),
-    all(feature = "rockchip-soc", feature = "fdt"),
-    all(feature = "rockchip-pm", feature = "fdt"),
-    all(feature = "rockchip-dwmmc", feature = "fdt"),
-    all(feature = "rockchip-sdhci", feature = "fdt"),
-    all(feature = "phytium-mci", feature = "fdt"),
-    all(feature = "rk3588-pcie", feature = "fdt"),
-    all(feature = "rknpu", feature = "fdt"),
-    all(feature = "xhci-mmio", target_os = "none"),
+    all(feature = "serial", plat_dyn),
+    all(feature = "rtc", plat_dyn),
+    all(feature = "rockchip-soc", plat_dyn),
+    all(feature = "rockchip-pm", plat_dyn),
+    all(feature = "sg2002-placeholder", plat_dyn),
+    all(feature = "rockchip-dwmmc", plat_dyn),
+    all(feature = "rockchip-sdhci", plat_dyn),
+    all(feature = "phytium-mci", plat_dyn),
+    all(feature = "rk3588-pcie", plat_dyn),
+    all(feature = "rknpu", plat_dyn),
+    all(feature = "xhci-mmio", target_os = "none", plat_dyn),
     all(feature = "xhci-pci", target_os = "none"),
-    all(virtio_dev, probe = "fdt")
+    all(virtio_dev, plat_dyn)
 ))]
 pub mod mmio;
 
@@ -71,7 +72,6 @@ pub mod net;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 
-#[cfg(feature = "pci")]
 pub mod pci;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
@@ -80,6 +80,7 @@ pub mod serial;
 #[cfg(any(
     feature = "rockchip-soc",
     feature = "rockchip-pm",
+    feature = "sg2002-placeholder",
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;

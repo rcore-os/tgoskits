@@ -418,7 +418,7 @@ mod tests {
         let features = c_config_features(&strings(&[
             "ax-libc/net",
             "ax-feat/paging",
-            "ax-driver/pci",
+            "ax-driver/plat-static",
             "ax-driver/virtio-net",
             "ax-hal/riscv64-qemu-virt",
             "some-crate/feature",
@@ -433,13 +433,13 @@ mod tests {
     #[test]
     fn map_c_app_features_preserves_driver_features() {
         let features = map_c_app_features(
-            &strings(&["net", "ax-driver/pci", "ax-driver/virtio-net"]),
+            &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
             &strings(&["ax-hal/riscv64-qemu-virt"]),
         );
 
         assert!(features.contains(&"ax-libc/net".to_string()));
         assert!(features.contains(&"ax-libc/fd".to_string()));
-        assert!(features.contains(&"ax-driver/pci".to_string()));
+        assert!(features.contains(&"ax-driver/plat-static".to_string()));
         assert!(features.contains(&"ax-driver/virtio-net".to_string()));
         assert!(features.contains(&"ax-hal/riscv64-qemu-virt".to_string()));
     }

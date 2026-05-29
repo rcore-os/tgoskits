@@ -50,7 +50,7 @@ sdmmc = [
     "ax-driver/phytium-mci",
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
-serial = ["ax-driver/serial"]
+serial = []
 
 [dependencies]
 spin = { workspace = true }
@@ -96,16 +96,12 @@ ax-driver.workspace = true
 axplat-dyn = { workspace = true, optional = true, default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-axplat-x86-qemu-q35 = { workspace = true, default-features = false, features = ["reboot-on-system-off", "irq", "smp"] }
 ax-config = { workspace = true, features = ["plat-dyn"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 
-[target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { workspace = true, default-features = false, features = ["irq", "smp"] }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-qemu-virt = { workspace = true, features = ["hypervisor"] }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)
@@ -120,5 +116,6 @@ ax-config = { workspace = true, features = ["plat-dyn"] }
 prettyplease = "0.2"
 quote = "1.0"
 syn = "2.0"
+proc-macro2 = "1.0"
 toml = "0.9"
 anyhow = "1.0"

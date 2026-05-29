@@ -132,8 +132,15 @@ pub(crate) fn notify_ap_started(apic_id: usize) {
     AP_BOOTED_ID.store(apic_id, Ordering::Release);
 }
 
+fn current_apic_id() -> usize {
+    x86::cpuid::CpuId::new()
+        .get_feature_info()
+        .map(|info| info.initial_local_apic_id() as usize)
+        .unwrap_or(0)
+}
+
 pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
-    if apic_id == crate::smp::cpu_hart_id() {
+    if apic_id == current_apic_id() {
         return Err(CpuOnError::AlreadyOn);
     }
     let apic_id = u8::try_from(apic_id).map_err(|_| CpuOnError::InvalidParameters)?;

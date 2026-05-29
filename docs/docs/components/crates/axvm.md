@@ -1,6 +1,6 @@
 # `axvm`
 
-> 路径：`components/axvm`
+> 路径：`virtualization/axvm`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.3`
@@ -137,7 +137,7 @@ graph LR
 
 ### 间接依赖
 - `ax-page-table-multiarch`、`ax-page-table-entry`：通过地址空间和页表路径参与 VM 内存管理。
-- `ax-memory-set`、`range-alloc-arceos` 等：在地址空间和内存建模路径上间接提供支撑。
+- `ax-memory-set` 等：在地址空间和内存建模路径上间接提供支撑。
 - `axvisor_api` 生态：更多出现在消费者侧，但会影响 `axvm` 的宿主接入方式。
 
 ### 3.3 关键直接消费者

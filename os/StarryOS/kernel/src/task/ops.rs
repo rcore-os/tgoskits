@@ -6,7 +6,7 @@ use alloc::{
 use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -57,6 +57,7 @@ static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(Weak
 struct ZombieEntry {
     proc: Arc<Process>,
     cred: Arc<Cred>,
+    ptrace_tracer_pid: Option<Pid>,
 }
 
 /// Zombie processes: exited but not yet reaped by waitpid().
@@ -155,8 +156,20 @@ pub fn remove_process(pid: Pid) {
 /// `Arc<Process>` (for `getsid`/`getpgid`/etc.) and a snapshot of the
 /// exiting thread's final credentials (for `check_kill_permission` after
 /// the task has been GC'd).
-pub fn register_zombie(pid: Pid, proc: Arc<Process>, cred: Arc<Cred>) {
-    ZOMBIE_TABLE.write().insert(pid, ZombieEntry { proc, cred });
+pub fn register_zombie(
+    pid: Pid,
+    proc: Arc<Process>,
+    cred: Arc<Cred>,
+    ptrace_tracer_pid: Option<Pid>,
+) {
+    ZOMBIE_TABLE.write().insert(
+        pid,
+        ZombieEntry {
+            proc,
+            cred,
+            ptrace_tracer_pid,
+        },
+    );
 }
 
 /// Removes a PID from the zombie table.
@@ -186,6 +199,15 @@ pub fn get_zombie_process(pid: Pid) -> Option<Arc<Process>> {
 /// (and its `cred`) lives until the zombie is reaped by `waitpid`.
 pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
     ZOMBIE_TABLE.read().get(&pid).map(|e| e.cred.clone())
+}
+
+pub fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
+    ZOMBIE_TABLE
+        .read()
+        .values()
+        .filter(|entry| entry.ptrace_tracer_pid == Some(tracer_pid))
+        .map(|entry| entry.proc.clone())
+        .collect()
 }
 
 /// Finds the process with the given PID.
@@ -468,9 +490,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         ax_task::yield_now();
     }
 
-    #[cfg(feature = "kcov")]
-    crate::kcov::disable_for_thread(curr.id().as_u64() as u32);
-
     let process = &thr.proc_data.proc;
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
@@ -505,7 +524,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // check_kill_permission can still authorise signals to this zombie
         // after the task has been GC'd (mirrors Linux task_struct lifetime).
         let zombie_cred = thr.cred();
-        register_zombie(process.pid(), process.clone(), zombie_cred);
+        let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
+        register_zombie(
+            process.pid(),
+            process.clone(),
+            zombie_cred,
+            ptrace_tracer_pid,
+        );
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
@@ -524,6 +549,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             if let Ok(data) = get_process_data(parent.pid()) {
                 data.child_exit_event.wake();
             }
+        }
+        if let Some(tracer_pid) = ptrace_tracer_pid
+            && process
+                .parent()
+                .is_none_or(|parent| parent.pid() != tracer_pid)
+            && let Ok(data) = get_process_data(tracer_pid)
+        {
+            data.child_exit_event.wake();
         }
         // Send pdeathsig to child processes
         for child in children_snapshot {

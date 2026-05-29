@@ -15,7 +15,6 @@ version = "0.5.12"
 
 [features]
 default = []
-kcov = ["starry-kernel/kcov"]
 myplat = ["ax-feat/myplat"]
 qemu = [
   "ax-feat/defplat",
@@ -25,12 +24,19 @@ qemu = [
   "starry-kernel/input",
   "starry-kernel/vsock", # auxilary features
 ]
-smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
+smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 
 sg2002 = [
-  "dep:ax-plat-riscv64-sg2002",
+  "ax-hal/riscv64-sg2002",
   "starry-kernel/sg2002",
 ]
+sg2002-dyn = [
+  "plat-dyn",
+  "axplat-dyn/thead-mae",
+  "starry-kernel/sg2002",
+  "ax-driver/sg2002-placeholder",
+]
+plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 # Enable the GICv3 distributor + redistributor + system-register
 # CPU interface on aarch64. Only meaningful when the target is the
@@ -50,7 +56,7 @@ cntv-timer = ["ax-feat/aarch64-cntv-timer"]
 aarch64-hvf = ["gic-v3", "cntv-timer"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
-vf2 = ["dep:axplat-riscv64-visionfive2"]
+vf2 = ["ax-hal/riscv64-visionfive2"]
 
 [[bin]]
 name = "starryos"
@@ -66,10 +72,6 @@ ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
-
-[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-ax-plat-riscv64-sg2002 = { workspace = true, features = ["fp-simd", "irq", "rtc"], optional = true }
-axplat-riscv64-visionfive2 = { workspace = true, features = ["fp-simd", "irq", "rtc"], optional = true }
 
 [target.'cfg(any(windows,unix))'.dependencies]
 anyhow = "1.0"

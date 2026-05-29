@@ -14,7 +14,7 @@ use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
-use spin::Lazy;
+use spin::LazyLock;
 
 pub use self::{dgram::DgramTransport, stream::StreamTransport};
 use crate::{
@@ -93,8 +93,8 @@ pub struct BindSlot {
     dgram: Mutex<Option<dgram::Bind>>,
 }
 
-static ABSTRACT_BINDS: Lazy<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn with_slot<R>(
     addr: &UnixSocketAddr,

@@ -14,4 +14,4 @@ task-context = []
 ax-crate-interface = { workspace = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
+sbi-rt = { workspace = true, features = ["legacy"] }

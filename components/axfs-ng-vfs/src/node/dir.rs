@@ -59,6 +59,20 @@ pub trait DirNodeOps: NodeOps {
         true
     }
 
+    /// Returns whether this directory has child entries relevant to rmdir.
+    fn has_children(&self) -> VfsResult<bool> {
+        let mut has_children = false;
+        self.read_dir(0, &mut |name: &str, _, _, _| {
+            if name != DOT && name != DOTDOT {
+                has_children = true;
+                false
+            } else {
+                true
+            }
+        })?;
+        Ok(has_children)
+    }
+
     /// Creates a directory entry.
     fn create(
         &self,
@@ -155,8 +169,8 @@ impl DirNode {
             .map_err(|_| VfsError::InvalidInput)
     }
 
-    fn forget_entry(children: &mut DirChildren, name: &str) {
-        if let Some(entry) = children.remove(name)
+    fn forget_removed_entry(entry: Option<DirEntry>) {
+        if let Some(entry) = entry
             && let Ok(dir) = entry.as_dir()
         {
             dir.forget();
@@ -164,6 +178,10 @@ impl DirNode {
     }
 
     fn lookup_locked(&self, name: &str, children: &mut DirChildren) -> VfsResult<DirEntry> {
+        if !self.ops.is_cacheable() {
+            return self.ops.lookup(name);
+        }
+
         use hashbrown::hash_map::Entry;
         match children.entry(name.to_owned()) {
             Entry::Occupied(e) => Ok(e.get().clone()),
@@ -221,12 +239,11 @@ impl DirNode {
             // source node.  Without this, in-memory filesystems like tmpfs
             // would create a new empty page cache for the link, losing the
             // file content.
-            {
-                let src = node.user_data();
-                let mut dst = entry.user_data();
-                *dst = src.clone();
+            let user_data = node.user_data().clone();
+            *entry.user_data() = user_data;
+            if self.ops.is_cacheable() {
+                self.cache.lock().insert(name.to_owned(), entry.clone());
             }
-            self.cache.lock().insert(name.to_owned(), entry.clone());
         })
     }
 
@@ -234,31 +251,25 @@ impl DirNode {
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         verify_entry_name(name)?;
 
-        let mut children = self.cache.lock();
-        let entry = self.lookup_locked(name, &mut children)?;
-        match (entry.is_dir(), is_dir) {
-            (true, false) => return Err(VfsError::IsADirectory),
-            (false, true) => return Err(VfsError::NotADirectory),
-            _ => {}
-        }
+        let removed = {
+            let mut children = self.cache.lock();
+            let entry = self.lookup_locked(name, &mut children)?;
+            match (entry.is_dir(), is_dir) {
+                (true, false) => return Err(VfsError::IsADirectory),
+                (false, true) => return Err(VfsError::NotADirectory),
+                _ => {}
+            }
 
-        self.ops.unlink(name).inspect(|_| {
-            Self::forget_entry(&mut children, name);
-        })
+            self.ops.unlink(name)?;
+            children.remove(name)
+        };
+        Self::forget_removed_entry(removed);
+        Ok(())
     }
 
     /// Returns whether the directory contains children.
     pub fn has_children(&self) -> VfsResult<bool> {
-        let mut has_children = false;
-        self.read_dir(0, &mut |name: &str, _, _, _| {
-            if name != DOT && name != DOTDOT {
-                has_children = true;
-                false
-            } else {
-                true
-            }
-        })?;
-        Ok(has_children)
+        self.ops.has_children()
     }
 
     fn create_locked(
@@ -269,7 +280,9 @@ impl DirNode {
         children: &mut DirChildren,
     ) -> VfsResult<DirEntry> {
         let entry = self.ops.create(name, node_type, permission)?;
-        children.insert(name.to_owned(), entry.clone());
+        if self.ops.is_cacheable() {
+            children.insert(name.to_owned(), entry.clone());
+        }
         Ok(entry)
     }
 
@@ -328,27 +341,41 @@ impl DirNode {
         drop(dst_children);
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
-            let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
-            let src_entry = src_children.remove(src_name);
-            let dst_children_ref = dst_children
-                .as_mut()
-                .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut);
-            if let Some(prev) = dst_children_ref.remove(dst_name)
-                && let Ok(dir) = prev.as_dir()
-            {
-                dir.forget();
-            }
+            let (src_entry, prev_entry) = {
+                let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
+                let src_entry = src_children.remove(src_name);
+                let dst_children_ref = dst_children
+                    .as_mut()
+                    .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut);
+                let prev_entry = dst_children_ref.remove(dst_name);
+                (src_entry, prev_entry)
+            };
+
+            Self::forget_removed_entry(prev_entry);
+
             if let Some(entry) = src_entry
                 && dst_dir.ops.is_cacheable()
                 && let Ok(fresh_entry) = dst_dir.ops.lookup(dst_name)
             {
-                *fresh_entry.user_data().deref_mut() = mem::take(entry.user_data().deref_mut());
-                if let (Ok(src_dir), Ok(dst_dir)) = (entry.as_dir(), fresh_entry.as_dir()) {
-                    *dst_dir.cache.lock().deref_mut() = mem::take(src_dir.cache.lock().deref_mut());
-                    *dst_dir.mountpoint.lock().deref_mut() =
-                        mem::take(src_dir.mountpoint.lock().deref_mut());
+                let user_data = {
+                    let mut source = entry.user_data();
+                    mem::take(source.deref_mut())
+                };
+                *fresh_entry.user_data().deref_mut() = user_data;
+                if let (Ok(src_dir), Ok(fresh_dir)) = (entry.as_dir(), fresh_entry.as_dir()) {
+                    // Do NOT transfer children cache: child DirEntries retain
+                    // stale Reference.parent pointers to the old directory,
+                    // which makes path-based operations (unlink, rename) resolve
+                    // against the old (now-gone) path and fail with ENOENT.
+                    // Children will be lazily re-looked up from disk with correct
+                    // parent references on next access.
+                    let mountpoint = mem::take(src_dir.mountpoint.lock().deref_mut());
+                    *fresh_dir.mountpoint.lock().deref_mut() = mountpoint;
                 }
-                dst_children_ref.insert(dst_name.to_owned(), fresh_entry);
+                dst_dir
+                    .cache
+                    .lock()
+                    .insert(dst_name.to_owned(), fresh_entry);
             }
         })
     }
@@ -390,7 +417,8 @@ impl DirNode {
     /// Clears the cache of directory entries & user data, allowing them to be
     /// released.
     pub(crate) fn forget(&self) {
-        for (_, child) in mem::take(self.cache.lock().deref_mut()) {
+        let children = mem::take(self.cache.lock().deref_mut());
+        for (_, child) in children {
             if let Ok(dir) = child.as_dir() {
                 dir.forget();
             }

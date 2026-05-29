@@ -20,6 +20,7 @@
 #include <sys/shm.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <sched.h>
 #include <unistd.h>
 
@@ -28,6 +29,7 @@ static volatile int g_running = 1;
 static volatile int g_shmid = -1;
 static volatile int g_deadlock_detected = 0;
 static volatile int g_shmat_started = 0;
+static volatile int g_threads_done = 0;
 
 /* Thread stack size */
 #define STACK_SIZE (64 * 1024)
@@ -90,7 +92,7 @@ static int watchdog_thread(void *arg) {
 
     for (int i = 0; i < SHM_ALARM_SEC * 10; i++) {
         usleep(100000);
-        if (!g_running) {
+        if (g_threads_done) {
             return 0;
         }
     }
@@ -159,6 +161,12 @@ int main(void)
                     int status;
                     waitpid(tid1, &status, __WALL);
                     waitpid(tid2, &status, __WALL);
+                    g_threads_done = 1;
+                    /*
+                     * Ensure watchdog exits even if CLONE_VM isn't honored
+                     * on this platform; avoids false timeouts.
+                     */
+                    kill(tid3, SIGKILL);
                     waitpid(tid3, &status, __WALL);
 
                     CHECK(!g_deadlock_detected, "no deadlock detected");

@@ -5,7 +5,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 
 # rdrive + rdif 驱动框架
 
-本文记录 #606 的宿主物理设备重构目标。新的设备路径硬切到 `rdrive + rdif`：`rdrive` 负责发现、probe、注册和查询，`rdif-*` / `rd-*` 负责能力接口和运行时封装，上层系统按领域能力消费设备。旧驱动接口包组已移除，宿主物理设备初始化与交付主线不再经过 legacy driver crates。
+本文记录 #606 的宿主物理设备重构目标。新的设备路径硬切到 `rdrive + rdif`：`rdrive` 负责发现、probe、注册和查询，`rdif-*` 负责能力接口，必要时由对应领域 crate 提供运行时封装，上层系统按领域能力消费设备。旧驱动接口包组已移除，宿主物理设备初始化与交付主线不再经过 legacy driver crates；块设备路径中原有 runtime 已删除，统一以 `rdif-block` 作为 block capability boundary。
 
 `axdevice` 与 `axdevice_base` 不纳入本轮迁移。它们继续作为 Axvisor / axvm 的 guest emulated device model，不参与宿主物理设备 probe，不作为 FS、NET、display、input、vsock 的设备来源。
 
@@ -51,7 +51,7 @@ flowchart TB
     end
 
     subgraph Capability["Capability Boundary"]
-        RdifBlock["rdif-block + rd-block"]
+        RdifBlock["rdif-block"]
         RdifEth["rdif-eth + rd-net"]
         RdifDisplay["rdif-display"]
         RdifInput["rdif-input"]
@@ -161,16 +161,22 @@ sequenceDiagram
 
 ## Capability Boundary
 
-`rdif-*` 是能力边界，只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。`rd-*` 是 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+`rdif-*` 是能力边界，只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载设备 LBA 语义的 submit/poll block capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
 
 | 能力 | interface crate | runtime crate | 上层消费 |
 | --- | --- | --- | --- |
-| 块设备 | `rdif-block` | `rd-block` | block volume service、FS |
+| 块设备 | `rdif-block` | 已删除，直接消费 `rdif-block` submit/poll 边界 | block volume service、FS |
 | 网络设备 | `rdif-eth` | `rd-net` | net interface service、NET/NET-NG |
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
 | vsock | `rdif-vsock` | `rd-vsock` | vsock service |
 | 平台设备 | `rdif-intc`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial` | 按需 | HAL、Axvisor backend、平台 glue |
+
+`rdif-block` 的块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
+
+块 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回可用 IRQ source 列表，每个 `IrqSourceInfo { id, queues }` 描述该 source 可能影响的 queue mask；`take_irq_handler(source_id)` 只能取走对应 handler。单 INTx/legacy 设备使用 source `0`，未来 NVMe MSI-X 可以把不同 vector 暴露为不同 source。当前 ArceOS `ax-driver` / `ax-runtime` glue 仍只消费 legacy source `0`，保持一个 block 设备一个 IRQ handler 的注册方式。
+
+`IrqHandler::handle_irq()` 只确认中断源并返回可 poll 的 queue mask，不做 OS wake、不阻塞、不持有 OS 锁，也不在中断上下文推进慢路径完成。收到事件后，runtime 或 task-side wrapper 再对相应 queue 调用 `poll_request()`。
 
 新增接口按多文件拆分：
 
@@ -228,10 +234,10 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 | --- | --- | --- | --- |
 | Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`axplat-dyn`、`rdrive::PlatformDevice` |
 | Capability Boundary | `drivers/interface/rdif-*` | `rdif-base`、小型错误和事件类型 | 平台、runtime、任务调度 |
-| OS Glue | `platform/axplat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
-| Runtime | `drivers/*/rd-*` | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
+| OS Glue | `platforms/axplat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
+| Runtime | `drivers/*/rd-*`，块设备除外 | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
 
-Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用。
+Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
 
 ## 领域 Service 与上层消费
 
@@ -266,7 +272,7 @@ pub struct BlockVolume {
 
 block volume 层负责：
 
-- 从 `rd-block` / `rdif-block` 枚举 physical disk。
+- 从 `rdif-block` 枚举 physical disk。
 - 支持 GPT、MBR、raw disk。
 - 产出稳定 volume metadata。
 - 提供裁剪到 `BlockRegion` 的 block reader。
@@ -315,10 +321,10 @@ src/
 
 | 文件 | 当前问题 | 拆分方向 |
 | --- | --- | --- |
-| `platform/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
-| `platform/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rd-block adapter |
-| `platform/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
-| `platform/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
+| `platforms/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
+| `platforms/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rdif-block adapter |
+| `platforms/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
+| `platforms/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 
 `lib.rs` 只做模块声明和 re-export，不承载核心实现。
 

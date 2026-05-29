@@ -1,5 +1,6 @@
 //! Basic virtual filesystem support
 
+pub(crate) mod cgroup;
 pub mod debug;
 pub mod dev;
 mod device;
@@ -8,7 +9,6 @@ mod dyn_debug;
 mod file;
 mod fs;
 mod proc;
-#[cfg(not(feature = "plat-dyn"))]
 mod sysfs;
 mod tmp;
 #[cfg(feature = "plat-dyn")]
@@ -96,10 +96,9 @@ pub fn mount_all() -> LinuxResult<()> {
 
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
-    #[cfg(feature = "plat-dyn")]
-    mount_at(&fs, "/sys", usbfs::new_sysfs())?;
-    #[cfg(not(feature = "plat-dyn"))]
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+    #[cfg(feature = "plat-dyn")]
+    mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
 
     mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs())?;
 

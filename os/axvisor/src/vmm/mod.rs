@@ -16,6 +16,7 @@ mod hvc;
 mod ivc;
 
 pub mod config;
+pub mod devices;
 pub mod images;
 pub mod timer;
 pub mod vcpus;
@@ -64,6 +65,27 @@ pub fn init() {
     for vm in vm_list::get_vm_list() {
         vcpus::setup_vm_primary_vcpu(vm);
     }
+
+    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    release_host_filesystem_for_guest_passthrough().expect(
+        "Failed to release host filesystem before guest passthrough devices take ownership",
+    );
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn release_host_filesystem_for_guest_passthrough() -> AxResult {
+    use std::os::arceos::modules::ax_fs;
+
+    let has_conflicting_guest_ownership = vm_list::get_vm_list()
+        .into_iter()
+        .any(|vm| vm.has_host_fs_passthrough_conflict());
+    if !has_conflicting_guest_ownership {
+        return Ok(());
+    }
+
+    ax_fs::shutdown_filesystems()?;
+    info!("Host filesystem cleanly unmounted before guest passthrough devices start");
+    Ok(())
 }
 
 /// Start the VMM.
@@ -85,7 +107,7 @@ pub fn start() {
         &VMM,
         || {
             let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
-            info!("a VM exited, current running VM count: {vm_count}");
+            debug!("a VM exited, current running VM count: {vm_count}");
             vm_count == 0
         },
         None,
@@ -130,7 +152,7 @@ pub fn with_vm_and_vcpu_on_pcpu(
 
     // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {
-        with_vm_and_vcpu(vm_id, vcpu_id, f).unwrap(); // unwrap is safe here
+        with_vm_and_vcpu(vm_id, vcpu_id, f).ok_or_else(|| ax_err_type!(NotFound))?;
         return Ok(());
     }
 
@@ -140,11 +162,10 @@ pub fn with_vm_and_vcpu_on_pcpu(
     let _pcpu_id = vcpus::with_vcpu_task(vm_id, vcpu_id, |task| task.cpu_id())
         .ok_or_else(|| ax_err_type!(NotFound))?;
 
-    unimplemented!();
-    // use std::os::arceos::modules::axipi;
-    // Ok(ax_ipi::send_ipi_event_to_one(pcpu_id as usize, move || {
-    // with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, f);
-    // }))
+    ax_errno::ax_err!(
+        Unsupported,
+        "cross-CPU vCPU closure dispatch is not implemented"
+    )
 }
 
 pub fn add_running_vm_count(count: usize) {

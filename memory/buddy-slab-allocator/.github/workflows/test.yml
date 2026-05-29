@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  host-test:
+    name: Run Logic Tests (Host)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6 # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run all tests
+        run: cargo test
+
+      - name: Run tests serially
+        run: cargo test -- --test-threads=1
+
+      - name: Run ignored stress tests
+        run: cargo test --test stress_test -- --ignored --nocapture

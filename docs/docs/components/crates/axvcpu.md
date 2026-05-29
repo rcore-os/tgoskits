@@ -1,6 +1,6 @@
 # `axvcpu`
 
-> 路径：`components/axvcpu`
+> 路径：`virtualization/axvcpu`
 > 类型：库 crate
 > 分层：组件层 / 通用 vCPU 抽象
 > 版本：`0.2.2`

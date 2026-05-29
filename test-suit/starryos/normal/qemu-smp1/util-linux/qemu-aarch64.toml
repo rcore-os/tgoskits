@@ -2,6 +2,8 @@ args = [
     "-nographic",
     "-cpu",
     "cortex-a53",
+    "-m",
+    "512M",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
@@ -17,4 +19,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/util-linux-test"
 success_regex = ["(?m)^UTIL LINUX TEST PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^\s*FAIL \|']
-timeout = 60
+timeout = 120

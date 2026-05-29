@@ -1,10 +1,10 @@
 env = {}
 features = [
-  "ax-hal/plat-dyn",
+  "ax-feat/rtc",
+  "ax-driver/rtc",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "starry-kernel/input",
-  "starry-kernel/plat-dyn",
   "starry-kernel/vsock",
   "ax-driver/intel-net",
   "ax-driver/xhci-pci",
