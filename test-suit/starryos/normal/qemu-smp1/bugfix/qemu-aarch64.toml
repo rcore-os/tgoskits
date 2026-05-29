@@ -26,6 +26,8 @@ test_commands = [
     "/usr/bin/bug-open-dir-wronly",
     "/usr/bin/bug-pipe-fd-errno",
     "/usr/bin/bug-setpriority-current",
+    "/usr/bin/bug-pread64-read-at",
+    "/usr/bin/bug-pwrite64-write-at",
     "/usr/bin/bug-preadv2-invalid-flags",
     "/usr/bin/bug-preadv2-offset-neg1",
     "/usr/bin/bug-pwritev2-read-at",
