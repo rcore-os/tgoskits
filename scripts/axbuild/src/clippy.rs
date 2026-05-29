@@ -1457,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    fn package_failures_keep_the_package_out_of_the_pass_list() {
+    fn package_failures_abort_remaining_checks() {
         let root = PathBuf::from("/tmp/workspace");
         let checks = vec![
             ClippyCheck {
@@ -1488,25 +1488,17 @@ mod tests {
             (checks[2].clone(), true),
         ]);
 
-        let report = run_clippy_checks(&mut runner, &root, &checks).unwrap();
+        let err = run_clippy_checks(&mut runner, &root, &checks).unwrap_err();
 
-        assert_eq!(report.passed_packages(), vec!["beta"]);
-        assert_eq!(report.failed_packages(), vec!["alpha"]);
         assert_eq!(
-            report
-                .packages
-                .iter()
-                .find(|package| package.package == "alpha")
-                .unwrap()
-                .failed_checks,
-            vec!["alpha (feature: feat-a)".to_string()]
+            err.to_string(),
+            "clippy failed for alpha (feature: feat-a): aborting (fail-fast, 1 check(s) remaining)"
         );
         assert_eq!(
             runner.invocations,
             vec![
                 (root.clone(), checks[0].clone()),
                 (root.clone(), checks[1].clone()),
-                (root, checks[2].clone()),
             ]
         );
     }
