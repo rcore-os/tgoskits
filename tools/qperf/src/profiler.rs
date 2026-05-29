@@ -5,23 +5,29 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::spawn,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
-use crossbeam_channel::{Sender, TrySendError, bounded};
+use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError, bounded};
 use qemu_plugin::{
     PluginId, TranslationBlock, VCPUIndex,
     install::{Args, Info, Value},
     plugin::{HasCallbacks, Register},
-    qemu_plugin_get_registers, qemu_plugin_read_memory_vaddr,
+    qemu_plugin_get_registers, qemu_plugin_read_memory_vaddr, qemu_plugin_register_atexit_cb,
 };
 use zerocopy::IntoBytes;
 
 use crate::reg::{AllRegs, Frame, Reg, Target};
+
+#[derive(bincode::Encode)]
+struct SampleRecord {
+    elapsed_ns: u64,
+    trace: Vec<u64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SamplingMode {
@@ -202,12 +208,17 @@ struct Stats {
     samples: AtomicU64,
     dropped_samples: AtomicU64,
     sample_failures: AtomicU64,
+    translated_blocks: AtomicU64,
+    translated_instructions: AtomicU64,
+    executed_blocks: AtomicU64,
+    executed_instructions: AtomicU64,
+    execute_callbacks: AtomicU64,
 }
 
 #[derive(Clone)]
 pub struct Profiler {
     target: Target,
-    tx: Sender<Vec<u64>>,
+    tx: Sender<SampleRecord>,
     intvl: Duration,
     max_depth: usize,
     mode: SamplingMode,
@@ -217,6 +228,7 @@ pub struct Profiler {
     filter_alias_end: Option<u64>,
     filter_alias_offset: Option<u64>,
     filter_kernel: bool,
+    started_at: Arc<Instant>,
     last: Arc<Mutex<Instant>>,
     regs: Arc<AllRegs>,
     stats: Arc<Stats>,
@@ -236,6 +248,7 @@ impl Default for Profiler {
             filter_alias_end: None,
             filter_alias_offset: None,
             filter_kernel: false,
+            started_at: Arc::new(Instant::now()),
             last: Arc::new(Mutex::new(Instant::now())),
             regs: Arc::default(),
             stats: Arc::default(),
@@ -281,7 +294,16 @@ impl Profiler {
             }
         }
 
-        match self.tx.try_send(ips) {
+        let elapsed_ns = now
+            .duration_since(*self.started_at)
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let record = SampleRecord {
+            elapsed_ns,
+            trace: ips,
+        };
+
+        match self.tx.try_send(record) {
             Ok(()) => {
                 self.stats.samples.fetch_add(1, Ordering::Relaxed);
             }
@@ -343,20 +365,38 @@ impl HasCallbacks for Profiler {
 
         match self.mode {
             SamplingMode::Tb => {
+                let insns = tb.size() as u64;
+                self.stats.translated_blocks.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .translated_instructions
+                    .fetch_add(insns, Ordering::Relaxed);
+                let stats = self.stats.clone();
                 let mut this = self.clone();
                 tb.register_execute_callback(move |_| {
+                    stats.executed_blocks.fetch_add(1, Ordering::Relaxed);
+                    stats
+                        .executed_instructions
+                        .fetch_add(insns, Ordering::Relaxed);
+                    stats.execute_callbacks.fetch_add(1, Ordering::Relaxed);
                     if this.sample(ip).is_err() {
                         this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                     }
                 });
             }
             SamplingMode::Insn => {
+                self.stats.translated_blocks.fetch_add(1, Ordering::Relaxed);
                 tb.instructions().for_each(|insn| {
                     let Some(ip) = self.sample_ip_for(insn.vaddr()) else {
                         return;
                     };
+                    self.stats
+                        .translated_instructions
+                        .fetch_add(1, Ordering::Relaxed);
+                    let stats = self.stats.clone();
                     let mut this = self.clone();
                     insn.register_execute_callback(move |_| {
+                        stats.executed_instructions.fetch_add(1, Ordering::Relaxed);
+                        stats.execute_callbacks.fetch_add(1, Ordering::Relaxed);
                         if this.sample(ip).is_err() {
                             this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                         }
@@ -381,6 +421,10 @@ impl Register for Profiler {
         let (tx, rx) = bounded(args.queue_size);
         let stats = Arc::<Stats>::default();
         let writer_stats = stats.clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let writer_shutdown = shutdown.clone();
+        let writer_done = Arc::new(AtomicBool::new(false));
+        let writer_done_flag = writer_done.clone();
         let out = args.out.clone();
         let max_depth = args.max_depth;
         let freq = args.freq;
@@ -393,18 +437,33 @@ impl Register for Profiler {
         let filter_kernel = args.filter_kernel;
         let target = info.target_name.to_string();
         spawn(move || {
-            while let Ok(event) = rx.recv() {
-                if bincode::encode_into_std_write(event, &mut file, bincode::config::standard())
-                    .is_err()
-                {
-                    writer_stats.sample_failures.fetch_add(1, Ordering::Relaxed);
-                    break;
+            loop {
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(event) => {
+                        if bincode::encode_into_std_write(
+                            event,
+                            &mut file,
+                            bincode::config::standard(),
+                        )
+                        .is_err()
+                        {
+                            writer_stats.sample_failures.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                        let _ = file.flush();
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if writer_shutdown.load(Ordering::Acquire) {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
-                let _ = file.flush();
             }
             let _ = file.flush();
             if let Ok(mut summary) = File::create(&summary_path).map(BufWriter::new) {
-                let _ = writeln!(summary, "qperf_format_version = 1");
+                let _ = writeln!(summary, "qperf_format_version = 2");
+                let _ = writeln!(summary, "record_timestamp = elapsed_ns");
                 let _ = writeln!(
                     summary,
                     "samples = {}",
@@ -419,6 +478,31 @@ impl Register for Profiler {
                     summary,
                     "sample_failures = {}",
                     writer_stats.sample_failures.load(Ordering::Relaxed)
+                );
+                let _ = writeln!(
+                    summary,
+                    "translated_blocks = {}",
+                    writer_stats.translated_blocks.load(Ordering::Relaxed)
+                );
+                let _ = writeln!(
+                    summary,
+                    "translated_instructions = {}",
+                    writer_stats.translated_instructions.load(Ordering::Relaxed)
+                );
+                let _ = writeln!(
+                    summary,
+                    "executed_blocks = {}",
+                    writer_stats.executed_blocks.load(Ordering::Relaxed)
+                );
+                let _ = writeln!(
+                    summary,
+                    "executed_instructions = {}",
+                    writer_stats.executed_instructions.load(Ordering::Relaxed)
+                );
+                let _ = writeln!(
+                    summary,
+                    "execute_callbacks = {}",
+                    writer_stats.execute_callbacks.load(Ordering::Relaxed)
                 );
                 let _ = writeln!(summary, "max_stack_depth = {max_depth}");
                 let _ = writeln!(summary, "frequency_hz = {freq}");
@@ -439,7 +523,15 @@ impl Register for Profiler {
                 let _ = writeln!(summary, "output = {}", out.display());
                 let _ = summary.flush();
             }
+            writer_done_flag.store(true, Ordering::Release);
         });
+        qemu_plugin_register_atexit_cb(id, move |_| {
+            shutdown.store(true, Ordering::Release);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !writer_done.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })?;
 
         self.target = info.target_name.parse()?;
         self.tx = tx;
@@ -452,6 +544,8 @@ impl Register for Profiler {
         self.filter_alias_end = args.filter_alias_end;
         self.filter_alias_offset = args.filter_alias_offset;
         self.filter_kernel = args.filter_kernel;
+        self.started_at = Arc::new(Instant::now());
+        self.last = Arc::new(Mutex::new(Instant::now()));
         self.stats = stats;
 
         Ok(())

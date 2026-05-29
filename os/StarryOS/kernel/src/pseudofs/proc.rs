@@ -942,6 +942,25 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             }
         }),
     );
+    #[cfg(feature = "qperf-metrics")]
+    root.add(
+        "qperf_metrics",
+        SimpleFile::new_regular(
+            fs.clone(),
+            RwFile::new(|req| match req {
+                SimpleFileOperation::Read => Ok(Some(ax_driver::qperf_metrics::render())),
+                SimpleFileOperation::Write(data) => {
+                    if core::str::from_utf8(data)
+                        .map(|text| text.trim() == "reset")
+                        .unwrap_or(false)
+                    {
+                        ax_driver::qperf_metrics::reset();
+                    }
+                    Ok(None)
+                }
+            }),
+        ),
+    );
     // Timer-tick callbacks registered once on the boot CPU.
     // IRQ counting: increment the module-level IRQ_CNT on every tick.
     ax_task::register_timer_callback(|_| {

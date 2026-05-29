@@ -156,13 +156,13 @@ impl Block {
     }
 
     pub fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
-        let block_size = self.block_size();
+        let use_irq = self.use_irq_completion();
+        let mut queue = self.queue.lock();
+        let block_size = queue.block_size();
         if block_size == 0 || !buf.len().is_multiple_of(block_size) {
             return Err(AxError::InvalidInput);
         }
 
-        let use_irq = self.use_irq_completion();
-        let mut queue = self.queue.lock();
         let block_count = buf.len() / block_size;
         let blocks = Self::read_blocks_wait(&mut queue, block_id as usize, block_count, use_irq);
         let mut copied = 0;
@@ -182,13 +182,13 @@ impl Block {
     }
 
     pub fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
-        let block_size = self.block_size();
+        let use_irq = self.use_irq_completion();
+        let mut queue = self.queue.lock();
+        let block_size = queue.block_size();
         if block_size == 0 || !buf.len().is_multiple_of(block_size) {
             return Err(AxError::InvalidInput);
         }
 
-        let use_irq = self.use_irq_completion();
-        let mut queue = self.queue.lock();
         let blocks = Self::write_blocks_wait(&mut queue, block_id as usize, buf, use_irq);
         for block in blocks {
             block.map_err(map_blk_err_to_ax_err)?;

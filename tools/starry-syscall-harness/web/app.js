@@ -30,6 +30,10 @@ function checked(id) {
   return $(id).checked;
 }
 
+function textValue(id) {
+  return $(id).value.trim();
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -66,6 +70,146 @@ function summaryItem(label, value, className = "") {
       <div class="summary-label">${escapeHtml(label)}</div>
       <div class="summary-value ${className}">${escapeHtml(value)}</div>
     </div>`;
+}
+
+const SAMPLE_METRICS = [
+  { label: "Samples", keys: ["samples", "total_samples", "folded_stack_lines", "sample_count"] },
+  { label: "Dropped", keys: ["dropped", "dropped_samples", "samples_dropped", "dropped_count"] },
+  { label: "Sample failures", keys: ["sample_failures", "sample_failures_total", "failed_samples", "failures"] },
+];
+
+const PLUGIN_COUNTER_METRICS = [
+  ...SAMPLE_METRICS,
+  { label: "Exec insns", keys: ["executed_instructions"] },
+  { label: "Exec blocks", keys: ["executed_blocks"] },
+  { label: "Translated insns", keys: ["translated_instructions"] },
+  { label: "Translated blocks", keys: ["translated_blocks"] },
+  { label: "Callbacks", keys: ["execute_callbacks"] },
+];
+
+const HOST_METRICS = [
+  ...SAMPLE_METRICS,
+  { label: "Elapsed", keys: ["elapsed", "elapsed_sec", "elapsed_seconds", "elapsed_s", "wall_time", "wall_time_sec"] },
+  { label: "User", keys: ["user", "user_sec", "user_seconds", "user_time"] },
+  { label: "Sys", keys: ["sys", "sys_sec", "sys_seconds", "system", "system_sec", "system_time"] },
+  { label: "Max RSS", keys: ["max_rss", "max_rss_kb", "maximum_resident_set_size"] },
+];
+
+const HOST_PERF_METRICS = [
+  ...SAMPLE_METRICS,
+  { label: "Cycles", keys: ["cycles", "cpu-cycles", "cpu_cycles"] },
+  { label: "Instructions", keys: ["instructions"] },
+  { label: "Cache misses", keys: ["cache-misses", "cache_misses"] },
+  { label: "Task clock", keys: ["task-clock", "task_clock", "task_clock_ms"] },
+];
+
+const EXTRA_METRIC_LABELS = {
+  build_profile: "Build profile",
+  flamegraph_generated: "Flamegraph",
+  folded_stack_lines: "Samples",
+  frequency_hz: "Frequency",
+  kernel_filter: "Kernel filter",
+  max_rss: "Max RSS",
+  max_rss_kb: "Max RSS",
+  max_stack_depth: "Max depth",
+  plugin_summary: "Plugin summary",
+  qperf_format_version: "qperf format",
+  queue_size: "Queue size",
+  sampling_mode: "Mode",
+  timeout_seconds: "Timeout",
+  translated_blocks: "Translated blocks",
+  translated_instructions: "Translated insns",
+  executed_blocks: "Executed blocks",
+  executed_instructions: "Executed insns",
+  execute_callbacks: "Callbacks",
+};
+
+function metricObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function flattenPerfEvents(source) {
+  const object = metricObject(source);
+  if (!object) {
+    return null;
+  }
+  const flattened = {};
+  for (const [name, event] of Object.entries(object.events || {})) {
+    if (event && typeof event === "object" && event.value !== null && event.value !== undefined) {
+      flattened[name] = event.unit ? `${event.value} ${event.unit}` : event.value;
+    }
+  }
+  if (object.scope) {
+    flattened.scope = object.scope;
+  }
+  if (object.note) {
+    flattened.note = object.note;
+  }
+  if (Array.isArray(object.errors) && object.errors.length) {
+    flattened.errors = object.errors.join("; ");
+  }
+  return Object.keys(flattened).length ? flattened : object;
+}
+
+function metricLookup(source, keys) {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    if (
+      Object.prototype.hasOwnProperty.call(source, key) &&
+      source[key] !== null &&
+      source[key] !== undefined &&
+      source[key] !== ""
+    ) {
+      return { key, value: source[key] };
+    }
+  }
+  return null;
+}
+
+function firstMetric(sources, keys) {
+  for (const source of sources) {
+    const match = metricLookup(metricObject(source), keys);
+    if (match) {
+      return match.value;
+    }
+  }
+  return null;
+}
+
+function formatMetricValue(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value)
+      ? value.toLocaleString()
+      : value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  if (value && typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function humanMetricLabel(key) {
+  return EXTRA_METRIC_LABELS[key] || key.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function isExtraMetric(key, value) {
+  if (value === null || value === undefined || value === "" || typeof value === "object") {
+    return false;
+  }
+  const lower = key.toLowerCase();
+  return !(
+    lower.includes("path") ||
+    lower.endsWith("_dir") ||
+    ["analyzer", "flamegraph", "folded_stack", "kernel_elf", "plugin", "raw_samples"].includes(lower)
+  );
 }
 
 async function refreshStatus() {
@@ -153,6 +297,7 @@ async function refreshPerfReport() {
   } catch {
     $("perf-report-path").textContent = "no report";
     $("perf-summary").innerHTML = summaryItem("Samples", "none");
+    $("perf-metrics").innerHTML = "";
     $("perf-functions").innerHTML = emptyRow(3, "no qperf report");
     $("perf-candidates").innerHTML = '<div class="brief-text">no candidates</div>';
     setFlamegraph(null, "no qperf report");
@@ -162,13 +307,18 @@ async function refreshPerfReport() {
 function renderPerf(report) {
   const hotspots = report.hotspots || {};
   const functions = hotspots.top_functions || [];
+  const samples = firstMetric(
+    [hotspots, report.plugin_summary, report.summary, report.host_time_metrics, report.host_perf_metrics],
+    ["total_samples", "samples", "folded_stack_lines", "sample_count"],
+  );
   $("perf-report-path").textContent = report._ui.report_path;
   $("perf-summary").innerHTML = [
     summaryItem("Arch", report.arch || "unknown"),
     summaryItem("Result", report.result || "unknown", report.result === "ok" ? "good" : "warn"),
-    summaryItem("Samples", hotspots.total_samples || 0),
+    summaryItem("Samples", samples ?? 0),
     summaryItem("Candidates", (report.fix_candidates || []).length),
   ].join("");
+  $("perf-metrics").innerHTML = renderPerfMetrics(report);
   $("perf-functions").innerHTML = functions.length
     ? functions
         .map(
@@ -187,6 +337,57 @@ function renderPerf(report) {
     flamegraph?.exists ? flamegraph.url : null,
     flamegraphMessage(report, flamegraph),
   );
+}
+
+function renderPerfMetrics(report) {
+  return [
+    renderMetricGroup("Summary", metricObject(report.summary), SAMPLE_METRICS),
+    renderMetricGroup("Guest counters", metricObject(report.plugin_summary), PLUGIN_COUNTER_METRICS),
+    renderMetricGroup("Host time", metricObject(report.host_time_metrics), HOST_METRICS),
+    renderMetricGroup("Host perf", flattenPerfEvents(report.host_perf_metrics), HOST_PERF_METRICS),
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function renderMetricGroup(title, source, specs) {
+  if (!source) {
+    return "";
+  }
+  const rows = [];
+  const usedKeys = new Set();
+  for (const spec of specs) {
+    const match = metricLookup(source, spec.keys);
+    if (match) {
+      usedKeys.add(match.key);
+      rows.push([spec.label, match.value]);
+    }
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (rows.length >= 12) {
+      break;
+    }
+    if (usedKeys.has(key) || !isExtraMetric(key, value)) {
+      continue;
+    }
+    rows.push([humanMetricLabel(key), value]);
+  }
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <section class="metric-group">
+      <h3>${escapeHtml(title)}</h3>
+      ${rows
+        .map(
+          ([label, value]) => `
+            <div class="metric-row">
+              <span class="metric-label">${escapeHtml(label)}</span>
+              <span class="metric-value">${escapeHtml(formatMetricValue(value))}</span>
+            </div>`,
+        )
+        .join("")}
+    </section>`;
 }
 
 function renderPerfCandidates(candidates) {
@@ -366,6 +567,12 @@ function bindEvents() {
       max_depth: numberValue("perf-depth"),
       top: numberValue("perf-top"),
       min_percent: numberValue("perf-min-percent"),
+      host_time: checked("perf-host-time"),
+      host_perf: checked("perf-host-perf"),
+      host_perf_events: textValue("perf-host-perf-events"),
+      shell_init_cmd: textValue("perf-shell-init-cmd"),
+      shell_prefix: textValue("perf-shell-prefix"),
+      qemu_args: textValue("perf-qemu-args"),
       debug: checked("perf-debug"),
       kernel_filter: checked("perf-kernel-filter"),
     }),

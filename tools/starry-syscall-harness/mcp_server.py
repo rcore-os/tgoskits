@@ -93,6 +93,19 @@ def tool_schema() -> list[dict[str, Any]]:
                     "min_percent": {"type": "number", "default": 5.0, "minimum": 0.0},
                     "debug": {"type": "boolean", "default": False},
                     "kernel_filter": {"type": "boolean", "default": False},
+                    "host_time": {"type": "boolean", "default": False},
+                    "host_perf": {"type": "boolean", "default": False},
+                    "host_perf_events": {
+                        "type": "string",
+                        "default": "task-clock,cycles,instructions,cache-references,cache-misses,context-switches,cpu-migrations,page-faults",
+                    },
+                    "shell_init_cmd": {"type": "string"},
+                    "shell_prefix": {"type": "string", "default": "root@starry:"},
+                    "qemu_args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": [],
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -180,6 +193,25 @@ def handle_tool_call(repo: Path, params: dict[str, Any]) -> dict[str, Any]:
             command.append("--debug")
         if arguments.get("kernel_filter", False):
             command.append("--kernel-filter")
+        if arguments.get("host_time", False):
+            command.append("--host-time")
+        if arguments.get("host_perf", False):
+            command.append("--host-perf")
+            command.extend(
+                [
+                    "--host-perf-events",
+                    arguments.get(
+                        "host_perf_events",
+                        "task-clock,cycles,instructions,cache-references,cache-misses,context-switches,cpu-migrations,page-faults",
+                    ),
+                ]
+            )
+        if arguments.get("shell_init_cmd"):
+            command.extend(["--shell-init-cmd", arguments["shell_init_cmd"]])
+        if arguments.get("shell_prefix"):
+            command.extend(["--shell-prefix", arguments["shell_prefix"]])
+        for qemu_arg in arguments.get("qemu_args", []):
+            command.append(f"--qemu-arg={qemu_arg}")
         code, output = run_harness(repo, command)
     elif name == "starry_perf_diff":
         command = [

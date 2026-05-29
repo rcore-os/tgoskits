@@ -24,6 +24,12 @@ struct Cli {
     top: usize,
     #[clap(long, value_name = "SVG")]
     flamegraph: Option<PathBuf>,
+    #[clap(long, value_name = "SECONDS")]
+    start_sec: Option<f64>,
+    #[clap(long, value_name = "SECONDS")]
+    stop_sec: Option<f64>,
+    #[clap(long, value_name = "JSON")]
+    stats: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -48,6 +54,15 @@ struct ResolveArgs {
     /// Generate flamegraph SVG when the analyzer was built with the flamegraph feature.
     #[clap(long, value_name = "SVG")]
     flamegraph: Option<PathBuf>,
+    /// Keep samples at or after this elapsed time in seconds.
+    #[clap(long, value_name = "SECONDS")]
+    start_sec: Option<f64>,
+    /// Keep samples before this elapsed time in seconds.
+    #[clap(long, value_name = "SECONDS")]
+    stop_sec: Option<f64>,
+    /// Write resolve/filter statistics as JSON.
+    #[clap(long, value_name = "JSON")]
+    stats: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -78,13 +93,49 @@ fn main() -> anyhow::Result<()> {
                 elf,
                 top: cli.top,
                 flamegraph: cli.flamegraph,
+                start_sec: cli.start_sec,
+                stop_sec: cli.stop_sec,
+                stats: cli.stats,
             })
         }
     }
 }
 
+#[derive(bincode::Decode)]
+struct SampleRecord {
+    elapsed_ns: u64,
+    trace: Vec<u64>,
+}
+
+struct DecodedRecord {
+    elapsed_ns: Option<u64>,
+    trace: Vec<u64>,
+}
+
+#[derive(Default)]
+struct ResolveStats {
+    format_version: u32,
+    raw_records: u64,
+    selected_records: u64,
+    bad_records: u64,
+    total_frames: u64,
+    selected_frames: u64,
+    samples_excluded_before: u64,
+    samples_excluded_after: u64,
+    first_sample_sec: Option<f64>,
+    last_sample_sec: Option<f64>,
+    start_sec: Option<f64>,
+    stop_sec: Option<f64>,
+    warning: Option<String>,
+}
+
 fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
-    let mut input = BufReader::new(File::open(&args.input).context("failed to open input file")?);
+    if let (Some(start), Some(stop)) = (args.start_sec, args.stop_sec)
+        && start >= stop
+    {
+        anyhow::bail!("--start-sec must be less than --stop-sec");
+    }
+
     let elf_data = std::fs::read(&args.elf).context("failed to read ELF file")?;
     let elf_obj = object::File::parse(&*elf_data)
         .map_err(|err| anyhow::anyhow!("failed to parse ELF: {err}"))?;
@@ -94,28 +145,44 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
     let mut output =
         BufWriter::new(File::create(&args.output).context("failed to create output file")?);
     let mut symbol_cache = HashMap::<u64, Vec<String>>::new();
-    let mut decoded = 0u64;
-    let mut bad_records = 0u64;
     let mut hotspots: HashMap<String, u64> = HashMap::new();
+    let mut stats = ResolveStats {
+        start_sec: args.start_sec,
+        stop_sec: args.stop_sec,
+        ..ResolveStats::default()
+    };
+    let records = read_qperf_records(&args.input, &mut stats)?;
 
-    loop {
-        let trace: Vec<u64> =
-            match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
-                Ok(trace) => trace,
-                Err(err) => {
-                    if decoded == 0 {
-                        return Err(err).context("failed to decode first qperf record");
-                    }
-                    eprintln!(
-                        "qperf-analyzer: stopped after {decoded} records ({bad_records} bad \
-                         records): {err}"
-                    );
-                    break;
-                }
-            };
-        decoded += 1;
+    for record in records {
+        stats.raw_records += 1;
+        stats.total_frames += record.trace.len() as u64;
+        if let Some(elapsed_ns) = record.elapsed_ns {
+            let elapsed_sec = elapsed_ns as f64 / 1_000_000_000.0;
+            stats.first_sample_sec = Some(
+                stats
+                    .first_sample_sec
+                    .map_or(elapsed_sec, |current| current.min(elapsed_sec)),
+            );
+            stats.last_sample_sec = Some(
+                stats
+                    .last_sample_sec
+                    .map_or(elapsed_sec, |current| current.max(elapsed_sec)),
+            );
+            if args.start_sec.is_some_and(|start| elapsed_sec < start) {
+                stats.samples_excluded_before += 1;
+                continue;
+            }
+            if args.stop_sec.is_some_and(|stop| elapsed_sec >= stop) {
+                stats.samples_excluded_after += 1;
+                continue;
+            }
+        } else if args.start_sec.is_some() || args.stop_sec.is_some() {
+            stats.warning =
+                Some("input has no timestamps; elapsed-time filtering was not applied".to_string());
+        }
+        stats.selected_records += 1;
         let mut result = vec![];
-        for (idx, ip) in trace.into_iter().enumerate() {
+        for (idx, ip) in record.trace.into_iter().enumerate() {
             if ip == 0 || ip == u64::MAX {
                 continue;
             }
@@ -126,9 +193,10 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
             result.extend(symbols.iter().cloned());
         }
         if result.is_empty() {
-            bad_records += 1;
+            stats.bad_records += 1;
             result.push("??".into());
         }
+        stats.selected_frames += result.len() as u64;
 
         for func in &result {
             *hotspots.entry(func.clone()).or_insert(0) += 1;
@@ -141,12 +209,152 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
 
     let total = hotspots.values().sum();
     print_hotspots(&hotspots, total, args.top);
+    if let Some(stats_path) = args.stats {
+        write_resolve_stats(&stats_path, &stats)?;
+    }
 
     if let Some(svg_path) = args.flamegraph {
         generate_flamegraph(&args.output, &svg_path)?;
     }
 
     Ok(())
+}
+
+fn read_qperf_records(path: &Path, stats: &mut ResolveStats) -> anyhow::Result<Vec<DecodedRecord>> {
+    match read_qperf_records_v2(path) {
+        Ok(records) => {
+            stats.format_version = 2;
+            Ok(records)
+        }
+        Err(v2_err) => match read_qperf_records_v1(path) {
+            Ok(records) => {
+                stats.format_version = 1;
+                Ok(records)
+            }
+            Err(v1_err) => Err(v2_err).with_context(|| {
+                format!(
+                    "failed to decode qperf input as v2 records; v1 fallback also failed: {v1_err}"
+                )
+            }),
+        },
+    }
+}
+
+fn read_qperf_records_v2(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
+    let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
+    let mut records = Vec::new();
+    loop {
+        match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
+            Ok(SampleRecord { elapsed_ns, trace }) => records.push(DecodedRecord {
+                elapsed_ns: Some(elapsed_ns),
+                trace,
+            }),
+            Err(err) => {
+                if records.is_empty() {
+                    return Err(err).context("failed to decode first qperf v2 record");
+                }
+                eprintln!(
+                    "qperf-analyzer: stopped after {} v2 records: {err}",
+                    records.len()
+                );
+                break;
+            }
+        }
+    }
+    Ok(records)
+}
+
+fn read_qperf_records_v1(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
+    let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
+    let mut records = Vec::new();
+    loop {
+        let trace: Vec<u64> =
+            match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
+                Ok(trace) => trace,
+                Err(err) => {
+                    if records.is_empty() {
+                        return Err(err).context("failed to decode first qperf v1 record");
+                    }
+                    eprintln!(
+                        "qperf-analyzer: stopped after {} v1 records: {err}",
+                        records.len()
+                    );
+                    break;
+                }
+            };
+        records.push(DecodedRecord {
+            elapsed_ns: None,
+            trace,
+        });
+    }
+    Ok(records)
+}
+
+fn write_resolve_stats(path: &Path, stats: &ResolveStats) -> anyhow::Result<()> {
+    let mut output = BufWriter::new(
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?,
+    );
+    writeln!(output, "{{")?;
+    writeln!(output, "  \"format_version\": {},", stats.format_version)?;
+    writeln!(output, "  \"raw_records\": {},", stats.raw_records)?;
+    writeln!(
+        output,
+        "  \"selected_records\": {},",
+        stats.selected_records
+    )?;
+    writeln!(output, "  \"bad_records\": {},", stats.bad_records)?;
+    writeln!(output, "  \"total_frames\": {},", stats.total_frames)?;
+    writeln!(output, "  \"selected_frames\": {},", stats.selected_frames)?;
+    writeln!(
+        output,
+        "  \"samples_excluded_before\": {},",
+        stats.samples_excluded_before
+    )?;
+    writeln!(
+        output,
+        "  \"samples_excluded_after\": {},",
+        stats.samples_excluded_after
+    )?;
+    writeln!(
+        output,
+        "  \"first_sample_sec\": {},",
+        json_optional_f64(stats.first_sample_sec)
+    )?;
+    writeln!(
+        output,
+        "  \"last_sample_sec\": {},",
+        json_optional_f64(stats.last_sample_sec)
+    )?;
+    writeln!(
+        output,
+        "  \"start_sec\": {},",
+        json_optional_f64(stats.start_sec)
+    )?;
+    writeln!(
+        output,
+        "  \"stop_sec\": {},",
+        json_optional_f64(stats.stop_sec)
+    )?;
+    writeln!(
+        output,
+        "  \"warning\": {}",
+        json_optional_string(stats.warning.as_deref())
+    )?;
+    writeln!(output, "}}")?;
+    Ok(())
+}
+
+fn json_optional_f64(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| format!("{value:.9}"))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_optional_string(value: Option<&str>) -> String {
+    value
+        .map(|value| format!("{:?}", value))
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn cmd_diff(args: DiffArgs) -> anyhow::Result<()> {

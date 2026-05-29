@@ -86,6 +86,7 @@ rk3588-pcie = [
 rockchip-soc = ["plat-dyn", "dep:rdif-clk", "dep:rockchip-soc"]
 rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
 list-pci-devices = []
+qperf-metrics = []
 
 [dependencies]
 anyhow = { workspace = true }

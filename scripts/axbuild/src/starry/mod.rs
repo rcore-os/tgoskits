@@ -101,6 +101,40 @@ pub struct ArgsPerf {
     pub debug: bool,
     #[arg(long)]
     pub kernel_filter: bool,
+    /// Collect host wall/user/system CPU time metrics for the QEMU process wrapper.
+    #[arg(long)]
+    pub host_time: bool,
+    /// Run QEMU under host perf stat. These are host/QEMU process metrics, not guest PMU values.
+    #[arg(long)]
+    pub host_perf: bool,
+    /// Comma-separated host perf stat events used with --host-perf.
+    #[arg(
+        long,
+        default_value = "task-clock,cycles,instructions,cache-references,cache-misses,\
+                         context-switches,cpu-migrations,page-faults"
+    )]
+    pub host_perf_events: String,
+    /// Send this command to the guest shell after the qperf boot prompt appears.
+    #[arg(long)]
+    pub shell_init_cmd: Option<String>,
+    /// Prompt substring used before sending --shell-init-cmd.
+    #[arg(long)]
+    pub shell_prefix: Option<String>,
+    /// Append one raw QEMU argument. Repeat for options and values.
+    #[arg(long = "qemu-arg", value_name = "ARG", allow_hyphen_values = true)]
+    pub qemu_args: Vec<String>,
+    /// Guest stdout marker that starts the workload sampling window.
+    #[arg(long)]
+    pub start_marker: Option<String>,
+    /// Guest stdout marker that stops the workload sampling window.
+    #[arg(long)]
+    pub stop_marker: Option<String>,
+    /// Stop QEMU if the workload window stays open longer than this many seconds.
+    #[arg(long, value_name = "SECONDS")]
+    pub workload_timeout: Option<u64>,
+    /// Enable feature-gated in-guest qperf metric counters.
+    #[arg(long)]
+    pub qperf_metrics: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -709,6 +743,60 @@ mod tests {
                 ConfigCommand::Ls => {}
             },
             _ => panic!("expected config ls command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_perf_workload_options() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "perf",
+            "--arch",
+            "riscv64",
+            "--shell-init-cmd",
+            "echo qperf",
+            "--shell-prefix",
+            "root@starry:",
+            "--host-time",
+            "--host-perf",
+            "--host-perf-events",
+            "task-clock,instructions",
+            "--qemu-arg=-device",
+            "--qemu-arg=vhost-vsock-pci,guest-cid=3",
+            "--start-marker",
+            "QPERF_BEGIN",
+            "--stop-marker",
+            "QPERF_END",
+            "--workload-timeout",
+            "5",
+            "--qperf-metrics",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Perf(args) => {
+                assert_eq!(args.arch.as_deref(), Some("riscv64"));
+                assert_eq!(args.shell_init_cmd.as_deref(), Some("echo qperf"));
+                assert_eq!(args.shell_prefix.as_deref(), Some("root@starry:"));
+                assert!(args.host_time);
+                assert!(args.host_perf);
+                assert_eq!(args.host_perf_events, "task-clock,instructions");
+                assert_eq!(
+                    args.qemu_args,
+                    vec!["-device", "vhost-vsock-pci,guest-cid=3"]
+                );
+                assert_eq!(args.start_marker.as_deref(), Some("QPERF_BEGIN"));
+                assert_eq!(args.stop_marker.as_deref(), Some("QPERF_END"));
+                assert_eq!(args.workload_timeout, Some(5));
+                assert!(args.qperf_metrics);
+            }
+            _ => panic!("expected perf command"),
         }
     }
 

@@ -133,6 +133,38 @@
                 <input id="perf-min-percent" min="0" max="100" step="0.1" type="number" value="5" />
               </label>
               <label class="checkbox-row">
+                <input id="perf-host-time" type="checkbox" checked />
+                <span>host time</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="perf-host-perf" type="checkbox" />
+                <span>host perf stat</span>
+              </label>
+              <label class="wide">
+                <span>Host perf events</span>
+                <input
+                  id="perf-host-perf-events"
+                  type="text"
+                  value="task-clock,cycles,instructions,cache-references,cache-misses,context-switches,cpu-migrations,page-faults"
+                />
+              </label>
+              <label class="wide">
+                <span>Shell init cmd</span>
+                <input id="perf-shell-init-cmd" type="text" placeholder="/root/syscall-probe" />
+              </label>
+              <label class="wide">
+                <span>Shell prefix</span>
+                <input id="perf-shell-prefix" type="text" value="root@starry:" />
+              </label>
+              <label class="full">
+                <span>QEMU args</span>
+                <textarea
+                  id="perf-qemu-args"
+                  placeholder="-m&#10;256M&#10;or: -m 256M -smp 2"
+                  rows="3"
+                ></textarea>
+              </label>
+              <label class="checkbox-row">
                 <input id="perf-debug" type="checkbox" />
                 <span>debug symbols</span>
               </label>
@@ -143,6 +175,7 @@
             </div>
 
             <div class="summary-strip" id="perf-summary"></div>
+            <div class="metrics-panel" id="perf-metrics"></div>
             <div class="flamegraph-shell" id="flamegraph-shell">
               <iframe class="flamegraph-frame" id="flamegraph-frame" title="qperf flamegraph"></iframe>
               <div class="empty-state" id="flamegraph-empty">no flamegraph</div>

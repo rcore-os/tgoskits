@@ -151,16 +151,24 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
     ) -> Result<rd_block::RequestId, rd_block::BlkError> {
         match request.kind {
             rd_block::RequestKind::Read(mut buffer) => {
+                #[cfg(feature = "qperf-metrics")]
+                let bytes = buffer.len();
                 self.raw
                     .raw
                     .read_blocks(request.block_id, &mut buffer)
                     .map_err(map_virtio_err_to_blk_err)?;
+                #[cfg(feature = "qperf-metrics")]
+                crate::qperf_metrics::record_blk_read(bytes);
             }
             rd_block::RequestKind::Write(items) => {
+                #[cfg(feature = "qperf-metrics")]
+                let bytes = items.len();
                 self.raw
                     .raw
                     .write_blocks(request.block_id, items)
                     .map_err(map_virtio_err_to_blk_err)?;
+                #[cfg(feature = "qperf-metrics")]
+                crate::qperf_metrics::record_blk_write(bytes);
             }
         }
         Ok(rd_block::RequestId::new(0))

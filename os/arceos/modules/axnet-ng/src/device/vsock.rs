@@ -135,13 +135,14 @@ fn poll_vsock_interfaces() -> AxResult<bool> {
     let mut guard = VSOCK_DEVICE.lock();
     let dev = guard.as_mut().ok_or(AxError::NotFound)?;
     let mut event_count = 0;
-    let mut buf = alloc::vec![0; VSOCK_RX_TMPBUF_SIZE];
+    let mut buf = None;
 
     // Process pending events first
     // Use core::mem::take to atomically move all events out and empty the global queue
     let pending_events = core::mem::take(&mut *PENDING_EVENTS.lock());
     for event in pending_events {
-        handle_vsock_event(event, dev, &mut buf);
+        let buf = buf.get_or_insert_with(|| alloc::vec![0; VSOCK_RX_TMPBUF_SIZE]);
+        handle_vsock_event(event, dev, buf);
     }
 
     loop {
@@ -149,7 +150,8 @@ fn poll_vsock_interfaces() -> AxResult<bool> {
             Ok(None) => break, // no more events
             Ok(Some(event)) => {
                 event_count += 1;
-                handle_vsock_event(event, dev, &mut buf);
+                let buf = buf.get_or_insert_with(|| alloc::vec![0; VSOCK_RX_TMPBUF_SIZE]);
+                handle_vsock_event(event, dev, buf);
             }
             Err(e) => {
                 info!("Failed to poll vsock event: {e:?}");

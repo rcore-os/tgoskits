@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import shlex
 import subprocess
 import sys
 import threading
@@ -24,6 +25,9 @@ PERF_FORMATS = ("all", "folded", "pprof", "svg")
 PERF_MODES = ("insn", "tb")
 MAX_LOG_LINES = 500
 MAX_REQUEST_BYTES = 1_000_000
+MAX_TEXT_FIELD_CHARS = 8192
+MAX_QEMU_ARGS = 256
+MAX_QEMU_ARG_CHARS = 4096
 
 
 class ApiError(Exception):
@@ -161,6 +165,10 @@ class HarnessUiState:
             mode = require_choice(payload.get("mode", "tb"), PERF_MODES, "mode")
             top = require_int(payload.get("top", 20), "top", minimum=1, maximum=200)
             min_percent = require_float(payload.get("min_percent", 5.0), "min_percent", minimum=0.0, maximum=100.0)
+            host_perf_events = optional_text(payload.get("host_perf_events"), "host_perf_events")
+            shell_init_cmd = optional_text(payload.get("shell_init_cmd"), "shell_init_cmd")
+            shell_prefix = optional_text(payload.get("shell_prefix"), "shell_prefix")
+            qemu_args = parse_qemu_args(payload.get("qemu_args"))
             command = [
                 *base,
                 "--arch",
@@ -188,6 +196,18 @@ class HarnessUiState:
                 command.append("--debug")
             if bool(payload.get("kernel_filter", False)):
                 command.append("--kernel-filter")
+            if bool(payload.get("host_time", False)):
+                command.append("--host-time")
+            if bool(payload.get("host_perf", False)):
+                command.append("--host-perf")
+                if host_perf_events is not None:
+                    command.extend(["--host-perf-events", host_perf_events])
+            if shell_init_cmd is not None:
+                command.extend(["--shell-init-cmd", shell_init_cmd])
+            if shell_prefix is not None:
+                command.extend(["--shell-prefix", shell_prefix])
+            for qemu_arg in qemu_args:
+                command.append(f"--qemu-arg={qemu_arg}")
             return command, self.perf_report_path(arch)
 
         baseline = self.resolve_repo_path(str(payload.get("baseline", "")), required=True)
@@ -293,6 +313,7 @@ class HarnessUiState:
                 summary["result"] = report.get("result")
                 summary["samples"] = report.get("hotspots", {}).get("total_samples")
                 summary["fix_candidates"] = len(report.get("fix_candidates", []))
+                summary["host_elapsed_seconds"] = report.get("host_time_metrics", {}).get("elapsed_seconds")
             elif kind == "perf-diff":
                 summary["top_changes"] = len(report.get("top_changes", []))
         except (OSError, json.JSONDecodeError):
@@ -379,6 +400,62 @@ def require_float(value: Any, name: str, *, minimum: float, maximum: float) -> f
     if parsed < minimum or parsed > maximum:
         raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be between {minimum:g} and {maximum:g}")
     return parsed
+
+
+def optional_text(value: Any, name: str, *, maximum: int = MAX_TEXT_FIELD_CHARS) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be a string")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > maximum:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be at most {maximum} characters")
+    if "\x00" in text:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must not contain NUL bytes")
+    return text
+
+
+def parse_qemu_args(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        args = [require_qemu_arg(item, f"qemu_args[{index}]") for index, item in enumerate(value)]
+        return check_qemu_args([arg for arg in args if arg])
+    if not isinstance(value, str):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "qemu_args must be a string or an array of strings")
+
+    text = optional_text(value, "qemu_args")
+    if text is None:
+        return []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) > 1:
+        return check_qemu_args([require_qemu_arg(line, "qemu_args") for line in lines])
+    try:
+        args = [require_qemu_arg(arg, "qemu_args") for arg in shlex.split(text, comments=False, posix=True)]
+        return check_qemu_args(args)
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"qemu_args shell-like parse failed: {exc}") from exc
+
+
+def require_qemu_arg(value: Any, name: str) -> str:
+    if not isinstance(value, str):
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be a string")
+    arg = value.strip()
+    if not arg:
+        return ""
+    if len(arg) > MAX_QEMU_ARG_CHARS:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} entries must be at most {MAX_QEMU_ARG_CHARS} characters")
+    if "\x00" in arg or "\n" in arg or "\r" in arg:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} entries must be single-line strings without NUL bytes")
+    return arg
+
+
+def check_qemu_args(args: list[str]) -> list[str]:
+    if len(args) > MAX_QEMU_ARGS:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"qemu_args must contain at most {MAX_QEMU_ARGS} arguments")
+    return args
 
 
 def read_json(path: Path) -> Any:

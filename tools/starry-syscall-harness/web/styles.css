@@ -30,7 +30,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -221,6 +222,10 @@ label.wide {
   grid-column: span 2;
 }
 
+label.full {
+  grid-column: 1 / -1;
+}
+
 .checkbox-row {
   flex-direction: row;
   align-items: center;
@@ -228,7 +233,8 @@ label.wide {
 }
 
 input,
-select {
+select,
+textarea {
   min-height: 36px;
   width: 100%;
   border: 1px solid var(--line);
@@ -236,6 +242,12 @@ select {
   background: var(--surface);
   color: var(--text);
   padding: 7px 9px;
+}
+
+textarea {
+  min-height: 76px;
+  resize: vertical;
+  line-height: 1.4;
 }
 
 input[type="checkbox"] {
@@ -267,6 +279,47 @@ input[type="checkbox"] {
   margin-top: 6px;
   font-size: 18px;
   font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.metrics-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: -4px 0 14px;
+}
+
+.metric-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px;
+  min-width: 0;
+}
+
+.metric-group h3 {
+  margin-bottom: 7px;
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+
+.metric-row:first-of-type {
+  border-top: 0;
+}
+
+.metric-label {
+  color: var(--muted);
+}
+
+.metric-value {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
   overflow-wrap: anywhere;
 }
 
@@ -434,11 +487,13 @@ td code,
   .control-grid,
   .control-grid.compact,
   .summary-strip,
+  .metrics-panel,
   .split-pane {
     grid-template-columns: 1fr;
   }
 
-  label.wide {
+  label.wide,
+  label.full {
     grid-column: auto;
   }
 }

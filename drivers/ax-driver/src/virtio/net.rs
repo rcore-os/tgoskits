@@ -200,6 +200,8 @@ impl<T: VirtIoTransport> NetInner<T> {
             .map_err(map_net_error)?;
         staging[header_len..header_len + buffer.len].copy_from_slice(packet);
         let token = unsafe { self.raw.transmit_begin(&staging) }.map_err(map_net_error)?;
+        #[cfg(feature = "qperf-metrics")]
+        crate::qperf_metrics::record_net_tx(packet.len(), self.tx_inflight.len() + 1);
         self.tx_inflight.insert(
             token,
             TxInflight {
@@ -214,6 +216,8 @@ impl<T: VirtIoTransport> NetInner<T> {
         let token = self.raw.poll_transmit()?;
         let inflight = self.tx_inflight.remove(&token)?;
         let _ = unsafe { self.raw.transmit_complete(token, &inflight.staging) };
+        #[cfg(feature = "qperf-metrics")]
+        crate::qperf_metrics::record_net_tx_complete(self.tx_inflight.len());
         Some(inflight.bus_addr)
     }
 
@@ -221,6 +225,8 @@ impl<T: VirtIoTransport> NetInner<T> {
         let rx_buffer =
             unsafe { core::slice::from_raw_parts_mut(buffer.virt.as_ptr(), buffer.len) };
         let token = unsafe { self.raw.receive_begin(rx_buffer) }.map_err(map_net_error)?;
+        #[cfg(feature = "qperf-metrics")]
+        crate::qperf_metrics::record_net_rx_submit(self.rx_inflight.len() + 1);
         self.rx_inflight.insert(
             token,
             RxInflight {
@@ -238,6 +244,12 @@ impl<T: VirtIoTransport> NetInner<T> {
         let buffer =
             unsafe { core::slice::from_raw_parts_mut(inflight.virt_addr as *mut u8, inflight.len) };
         let (header_len, packet_len) = unsafe { self.raw.receive_complete(token, buffer) }.ok()?;
+        #[cfg(feature = "qperf-metrics")]
+        crate::qperf_metrics::record_net_rx_complete(
+            packet_len,
+            packet_len,
+            self.rx_inflight.len(),
+        );
         buffer.copy_within(header_len..header_len + packet_len, 0);
         Some((inflight.bus_addr, packet_len))
     }

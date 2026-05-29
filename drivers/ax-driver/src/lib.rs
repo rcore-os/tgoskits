@@ -73,6 +73,8 @@ pub mod net;
 pub mod vsock;
 
 pub mod pci;
+#[cfg(feature = "qperf-metrics")]
+pub mod qperf_metrics;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
 #[cfg(feature = "serial")]

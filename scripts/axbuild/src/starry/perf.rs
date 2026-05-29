@@ -1,13 +1,17 @@
 use std::{
     env, fs,
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
 use object::{Object, ObjectSection};
+use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
 use super::{ArgsBuild, ArgsPerf, PerfFormat, Starry, build, rootfs};
@@ -17,6 +21,7 @@ use crate::{
 };
 
 const QPERF_QUEUE_SIZE: usize = 4096;
+const DEFAULT_STARRY_SHELL_PREFIX: &str = "root@starry:";
 
 #[derive(Deserialize, Serialize)]
 struct PerfQemuConfig {
@@ -28,6 +33,9 @@ struct PerfQemuConfig {
     shell_prefix: Option<String>,
     shell_init_cmd: Option<String>,
     timeout: Option<u64>,
+    start_marker: Option<String>,
+    stop_marker: Option<String>,
+    workload_timeout: Option<u64>,
 }
 
 struct QperfTools {
@@ -42,6 +50,70 @@ struct PerfOutputs {
     flamegraph: PathBuf,
     summary: PathBuf,
     qemu_config: PathBuf,
+    host_time: PathBuf,
+    host_perf: PathBuf,
+    resolve_stats: PathBuf,
+    window: PathBuf,
+    qmp_socket: PathBuf,
+}
+
+#[derive(Default, Serialize)]
+struct PerfWindowReport {
+    enabled: bool,
+    start_marker: Option<String>,
+    stop_marker: Option<String>,
+    start_time: Option<f64>,
+    stop_time: Option<f64>,
+    duration_sec: Option<f64>,
+    workload_timeout: Option<u64>,
+    truncated_by_timeout: bool,
+    boot_samples_excluded: Option<u64>,
+    stop_requested: bool,
+    stop_method: Option<String>,
+    warnings: Vec<String>,
+    method: String,
+}
+
+struct QemuRun {
+    status: ExitStatus,
+    window: PerfWindowReport,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ChildResourceUsage {
+    user_micros: i128,
+    system_micros: i128,
+    major_faults: i128,
+    minor_faults: i128,
+    voluntary_context_switches: i128,
+    involuntary_context_switches: i128,
+}
+
+impl ChildResourceUsage {
+    fn delta_since(self, before: Self) -> Self {
+        Self {
+            user_micros: nonnegative_delta(self.user_micros, before.user_micros),
+            system_micros: nonnegative_delta(self.system_micros, before.system_micros),
+            major_faults: nonnegative_delta(self.major_faults, before.major_faults),
+            minor_faults: nonnegative_delta(self.minor_faults, before.minor_faults),
+            voluntary_context_switches: nonnegative_delta(
+                self.voluntary_context_switches,
+                before.voluntary_context_switches,
+            ),
+            involuntary_context_switches: nonnegative_delta(
+                self.involuntary_context_switches,
+                before.involuntary_context_switches,
+            ),
+        }
+    }
+
+    fn user_seconds(self) -> f64 {
+        self.user_micros as f64 / 1_000_000.0
+    }
+
+    fn system_seconds(self) -> f64 {
+        self.system_micros as f64 / 1_000_000.0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -82,14 +154,16 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         SnapshotPersistence::Store,
     )?;
 
-    let cargo = build::load_cargo_config(&request)?;
+    let mut cargo = build::load_cargo_config(&request)?;
+    apply_perf_cargo_features(&mut cargo, &args);
     starry.app.set_debug_mode(args.debug)?;
     starry
         .app
         .build(cargo, request.build_info_path.clone())
         .await?;
     rootfs::ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
-    let cargo = build::load_cargo_config(&request)?;
+    let mut cargo = build::load_cargo_config(&request)?;
+    apply_perf_cargo_features(&mut cargo, &args);
     let qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
     let elf = kernel_elf_path(starry.app.workspace_root(), &target, args.debug);
     let axconfig_path = cargo.env.get("AX_CONFIG_PATH").map(PathBuf::from);
@@ -97,23 +171,32 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     write_qemu_config(&outputs, &tools, &args, &arch, qemu.args, text_range)?;
 
     let kernel_bin = kernel_bin_path(starry.app.workspace_root(), &target, args.debug);
-    let qemu_status = run_qemu_direct(&outputs, &args, &arch, &kernel_bin)?;
-    if !qemu_status.success() {
+    let qemu_run = run_qemu_direct(&outputs, &args, &arch, &kernel_bin)?;
+    if !qemu_run.status.success() {
         if !file_nonempty(&outputs.raw) {
-            bail!("qperf QEMU run failed before producing samples: {qemu_status}");
+            bail!(
+                "qperf QEMU run failed before producing samples: {}",
+                qemu_run.status
+            );
         }
-        eprintln!("qperf: QEMU ended with {qemu_status} after producing samples");
+        eprintln!(
+            "qperf: QEMU ended with {} after producing samples",
+            qemu_run.status
+        );
     }
 
-    run_analyzer(
-        &tools.analyzer,
-        &elf,
-        &outputs.raw,
-        &outputs.folded,
-        &outputs.flamegraph,
+    run_analyzer(AnalyzerRun {
+        analyzer: &tools.analyzer,
+        elf: &elf,
+        raw: &outputs.raw,
+        folded: &outputs.folded,
+        flamegraph: &outputs.flamegraph,
+        resolve_stats: &outputs.resolve_stats,
         generate_svg,
-        args.top,
-    )?;
+        top_n: args.top,
+        start_sec: qemu_run.window.start_time,
+        stop_sec: qemu_run.window.stop_time,
+    })?;
 
     let flamegraph_generated = if generate_svg && !file_nonempty(&outputs.flamegraph) {
         try_generate_flamegraph(&outputs.folded, &outputs.flamegraph)?
@@ -121,17 +204,26 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         generate_svg && file_nonempty(&outputs.flamegraph)
     };
 
-    write_summary(
-        &outputs,
-        &tools,
-        &elf,
-        &arch,
-        &target,
-        &args,
+    write_summary(SummaryInputs {
+        outputs: &outputs,
+        tools: &tools,
+        elf: &elf,
+        arch: &arch,
+        target: &target,
+        args: &args,
         flamegraph_generated,
-    )?;
+        window: &qemu_run.window,
+    })?;
     print_report(&outputs, flamegraph_generated);
     Ok(())
+}
+
+fn apply_perf_cargo_features(cargo: &mut Cargo, args: &ArgsPerf) {
+    if args.qperf_metrics {
+        cargo.features.push("qperf-metrics".to_string());
+        cargo.features.sort();
+        cargo.features.dedup();
+    }
 }
 
 fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
@@ -143,6 +235,40 @@ fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
     }
     if matches!(args.format, PerfFormat::Pprof) {
         bail!("--format pprof is not supported yet; use --format folded, svg, or all");
+    }
+    if args
+        .shell_init_cmd
+        .as_deref()
+        .is_some_and(|cmd| cmd.trim().is_empty())
+    {
+        bail!("--shell-init-cmd must not be empty");
+    }
+    if args
+        .shell_prefix
+        .as_deref()
+        .is_some_and(|prefix| prefix.is_empty())
+    {
+        bail!("--shell-prefix must not be empty");
+    }
+    if args.host_perf && args.host_perf_events.trim().is_empty() {
+        bail!("--host-perf-events must not be empty when --host-perf is set");
+    }
+    if args
+        .start_marker
+        .as_deref()
+        .is_some_and(|marker| marker.trim().is_empty())
+    {
+        bail!("--start-marker must not be empty");
+    }
+    if args
+        .stop_marker
+        .as_deref()
+        .is_some_and(|marker| marker.trim().is_empty())
+    {
+        bail!("--stop-marker must not be empty");
+    }
+    if args.workload_timeout == Some(0) {
+        bail!("--workload-timeout must be greater than 0");
     }
     Ok(())
 }
@@ -162,6 +288,11 @@ fn prepare_outputs(root: &Path, arch: &str, out: Option<&Path>) -> anyhow::Resul
         flamegraph: dir.join("flamegraph.svg"),
         summary: dir.join("summary.txt"),
         qemu_config: dir.join("qemu.toml"),
+        host_time: dir.join("qemu.time.txt"),
+        host_perf: dir.join("qemu.perf.csv"),
+        resolve_stats: dir.join("resolve.stats.json"),
+        window: dir.join("window.json"),
+        qmp_socket: dir.join("qmp.sock"),
         dir,
     })
 }
@@ -246,7 +377,27 @@ fn write_qemu_config(
         }
     }
     perf_qemu_args.push(plugin_params);
-    perf_qemu_args.extend(direct_qemu_args(arch, qemu_args)?);
+    let mut qemu_args = direct_qemu_args(arch, qemu_args)?;
+    qemu_args.extend(args.qemu_args.iter().cloned());
+    if qemu_stdout_monitor_enabled(args) && !has_qemu_option(&qemu_args, "-qmp") {
+        qemu_args.extend([
+            "-qmp".to_string(),
+            format!("unix:{},server=on,wait=off", outputs.qmp_socket.display()),
+        ]);
+    }
+    perf_qemu_args.extend(qemu_args);
+
+    let shell_init_cmd = args
+        .shell_init_cmd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cmd| !cmd.is_empty())
+        .map(str::to_string);
+    let shell_prefix = shell_init_cmd.as_ref().map(|_| {
+        args.shell_prefix
+            .clone()
+            .unwrap_or_else(|| DEFAULT_STARRY_SHELL_PREFIX.to_string())
+    });
 
     let config = PerfQemuConfig {
         args: perf_qemu_args,
@@ -254,9 +405,12 @@ fn write_qemu_config(
         to_bin: true,
         success_regex: Vec::new(),
         fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
-        shell_prefix: None,
-        shell_init_cmd: None,
+        shell_prefix,
+        shell_init_cmd,
         timeout: (args.timeout > 0).then_some(args.timeout),
+        start_marker: args.start_marker.clone(),
+        stop_marker: args.stop_marker.clone(),
+        workload_timeout: args.workload_timeout,
     };
     fs::write(&outputs.qemu_config, toml::to_string_pretty(&config)?)
         .with_context(|| format!("failed to write {}", outputs.qemu_config.display()))?;
@@ -284,23 +438,73 @@ fn run_qemu_direct(
     args: &ArgsPerf,
     arch: &str,
     kernel_bin: &Path,
-) -> anyhow::Result<ExitStatus> {
+) -> anyhow::Result<QemuRun> {
     ensure_file(kernel_bin, "StarryOS kernel image")?;
     let qemu = qemu_executable(arch)?;
-    let qemu_args = qemu_args_from_config(&outputs.qemu_config)?;
+    let config = qemu_config_from_path(&outputs.qemu_config)?;
+    let qemu_args = config.args.clone();
+    let monitor_stdout = qemu_stdout_monitor_enabled(args);
 
-    let mut command = if args.timeout > 0 {
-        let mut command = Command::new("timeout");
-        command.arg(format!("{}s", args.timeout));
-        command.arg(qemu);
-        command
+    let mut command_args = if args.timeout > 0 && !monitor_stdout {
+        vec![
+            "timeout".to_string(),
+            "--signal=INT".to_string(),
+            "--kill-after=5s".to_string(),
+            format!("{}s", args.timeout),
+            qemu.to_string(),
+        ]
     } else {
-        Command::new(qemu)
+        vec![qemu.to_string()]
     };
+    command_args.extend(qemu_args);
+    command_args.push("-kernel".to_string());
+    command_args.push(kernel_bin.display().to_string());
 
-    command.args(qemu_args).arg("-kernel").arg(kernel_bin);
+    if args.host_perf {
+        if let Some(perf) = find_executable("perf") {
+            let mut wrapped = vec![
+                perf.display().to_string(),
+                "stat".to_string(),
+                "-x".to_string(),
+                ",".to_string(),
+                "-o".to_string(),
+                outputs.host_perf.display().to_string(),
+                "-e".to_string(),
+                args.host_perf_events.clone(),
+                "--".to_string(),
+            ];
+            wrapped.extend(command_args);
+            command_args = wrapped;
+        } else {
+            write_host_perf_unavailable(&outputs.host_perf, "perf not found in PATH")?;
+            eprintln!("qperf: --host-perf requested but `perf` was not found in PATH");
+        }
+    }
+
+    let mut command = Command::new(&command_args[0]);
+    command.args(&command_args[1..]);
     eprintln!("running qperf QEMU: {command:?}");
-    command.status().context("failed to spawn QEMU")
+    let host_wall_start = Instant::now();
+    let host_usage_start = child_resource_usage();
+    let qemu_run = if monitor_stdout {
+        run_qemu_with_stdout_monitor(command, &config, outputs, args.timeout)?
+    } else {
+        QemuRun {
+            status: command.status().context("failed to spawn QEMU")?,
+            window: window_report_from_config(&config),
+        }
+    };
+    if args.host_time {
+        write_host_time_metrics(
+            &outputs.host_time,
+            host_wall_start.elapsed(),
+            host_usage_start,
+            child_resource_usage(),
+            &qemu_run.status,
+        )?;
+    }
+    write_window_report(&outputs.window, &qemu_run.window)?;
+    Ok(qemu_run)
 }
 
 fn qemu_executable(arch: &str) -> anyhow::Result<&'static str> {
@@ -311,40 +515,503 @@ fn qemu_executable(arch: &str) -> anyhow::Result<&'static str> {
     }
 }
 
-fn qemu_args_from_config(path: &Path) -> anyhow::Result<Vec<String>> {
+fn qemu_config_from_path(path: &Path) -> anyhow::Result<PerfQemuConfig> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read qperf QEMU config {}", path.display()))?;
-    let config: PerfQemuConfig = toml::from_str(&text)
-        .with_context(|| format!("failed to parse qperf QEMU config {}", path.display()))?;
-    Ok(config.args)
+    toml::from_str(&text)
+        .with_context(|| format!("failed to parse qperf QEMU config {}", path.display()))
 }
 
-fn run_analyzer(
-    analyzer: &Path,
-    elf: &Path,
-    raw: &Path,
-    folded: &Path,
-    flamegraph: &Path,
+fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
+    args.shell_init_cmd
+        .as_deref()
+        .is_some_and(|cmd| !cmd.trim().is_empty())
+        || args.start_marker.is_some()
+        || args.stop_marker.is_some()
+        || args.workload_timeout.is_some()
+}
+
+fn window_report_from_config(config: &PerfQemuConfig) -> PerfWindowReport {
+    let enabled = config.start_marker.is_some()
+        || config.stop_marker.is_some()
+        || config.workload_timeout.is_some();
+    let mut report = PerfWindowReport {
+        enabled,
+        start_marker: config.start_marker.clone(),
+        stop_marker: config.stop_marker.clone(),
+        workload_timeout: config.workload_timeout,
+        method: if enabled {
+            "qperf_raw_elapsed_timestamp_filter".to_string()
+        } else {
+            "disabled".to_string()
+        },
+        ..PerfWindowReport::default()
+    };
+    if enabled && config.start_marker.is_none() {
+        report
+            .warnings
+            .push("start marker is not configured; boot samples are not excluded".to_string());
+    }
+    if config.workload_timeout.is_some() && config.start_marker.is_none() {
+        report
+            .warnings
+            .push("--workload-timeout requires a start marker to open the window".to_string());
+    }
+    report
+}
+
+fn run_qemu_with_stdout_monitor(
+    mut command: Command,
+    config: &PerfQemuConfig,
+    outputs: &PerfOutputs,
+    overall_timeout: u64,
+) -> anyhow::Result<QemuRun> {
+    let mut window_report = window_report_from_config(config);
+    let shell_init_cmd = config
+        .shell_init_cmd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cmd| !cmd.is_empty());
+    if shell_init_cmd.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn().context("failed to spawn QEMU")?;
+    let mut stdin = child.stdin.take();
+    let stdout = child.stdout.take().context("failed to open QEMU stdout")?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        let mut buf = [0_u8; 1024];
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => break,
+                Ok(len) => {
+                    if tx.send(buf[..len].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let mut host_stdout = std::io::stdout().lock();
+    let mut prompt_window = Vec::new();
+    let mut marker_window = Vec::new();
+    let mut injected = false;
+    let mut echo_disable_deadline = None;
+    let shell_prefix = config
+        .shell_prefix
+        .as_deref()
+        .unwrap_or(DEFAULT_STARRY_SHELL_PREFIX);
+    let prefix = shell_prefix.as_bytes();
+    let start_marker = config.start_marker.as_deref().map(str::as_bytes);
+    let stop_marker = config.stop_marker.as_deref().map(str::as_bytes);
+    let marker_monitoring = start_marker.is_some() || stop_marker.is_some();
+
+    loop {
+        if let Some(status) = child.try_wait().context("failed to poll QEMU")? {
+            if shell_init_cmd.is_some() && !injected {
+                window_report.warnings.push(format!(
+                    "shell prompt `{shell_prefix}` was not observed before QEMU exited"
+                ));
+                eprintln!(
+                    "qperf: shell prompt `{shell_prefix}` was not observed before QEMU exited"
+                );
+            }
+            finalize_window_warnings(&mut window_report);
+            return Ok(QemuRun {
+                status,
+                window: window_report,
+            });
+        }
+
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(chunk) => {
+                host_stdout
+                    .write_all(&chunk)
+                    .context("failed to forward QEMU stdout")?;
+                host_stdout.flush().ok();
+                let elapsed = started.elapsed().as_secs_f64();
+
+                if let Some(cmd) = shell_init_cmd
+                    && !injected
+                    && echo_disable_deadline.is_none()
+                {
+                    prompt_window.extend_from_slice(&chunk);
+                    trim_window(&mut prompt_window, prefix.len().saturating_add(1024));
+                    if contains_subslice(&prompt_window, prefix) {
+                        let stdin = stdin.as_mut().context("failed to open QEMU stdin")?;
+                        if marker_monitoring {
+                            stdin
+                                .write_all(b"stty -echo 2>/dev/null || true\n")
+                                .context("failed to disable shell echo before qperf command")?;
+                            stdin.flush().ok();
+                            echo_disable_deadline =
+                                Some(Instant::now() + Duration::from_millis(150));
+                        } else {
+                            write_shell_init_command(stdin, cmd)?;
+                            injected = true;
+                            eprintln!(
+                                "qperf: injected shell init command after prompt `{shell_prefix}`"
+                            );
+                        }
+                    }
+                }
+
+                if start_marker.is_some() || stop_marker.is_some() {
+                    marker_window.extend_from_slice(&chunk);
+                    let keep = start_marker
+                        .into_iter()
+                        .chain(stop_marker)
+                        .map(<[u8]>::len)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1024);
+                    trim_window(&mut marker_window, keep);
+                }
+
+                if window_report.start_time.is_none()
+                    && start_marker.is_some_and(|marker| contains_subslice(&marker_window, marker))
+                {
+                    window_report.start_time = Some(elapsed);
+                    eprintln!(
+                        "qperf: observed start marker `{}` at {elapsed:.6}s",
+                        config.start_marker.as_deref().unwrap_or("")
+                    );
+                }
+                if window_report.stop_time.is_none()
+                    && stop_marker.is_some_and(|marker| contains_subslice(&marker_window, marker))
+                {
+                    window_report.stop_time = Some(elapsed);
+                    update_window_duration(&mut window_report);
+                    request_qemu_stop(&mut child, outputs, &mut window_report, "stop marker")?;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+
+        if let (Some(cmd), Some(deadline)) = (shell_init_cmd, echo_disable_deadline)
+            && !injected
+            && Instant::now() >= deadline
+        {
+            let stdin = stdin.as_mut().context("failed to open QEMU stdin")?;
+            write_shell_init_command(stdin, cmd)?;
+            injected = true;
+            echo_disable_deadline = None;
+            eprintln!("qperf: injected shell init command after prompt `{shell_prefix}`");
+        }
+
+        let elapsed = started.elapsed().as_secs_f64();
+        if let (Some(start_time), Some(timeout)) =
+            (window_report.start_time, config.workload_timeout)
+            && window_report.stop_time.is_none()
+            && elapsed - start_time >= timeout as f64
+        {
+            window_report.stop_time = Some(elapsed);
+            window_report.truncated_by_timeout = true;
+            update_window_duration(&mut window_report);
+            window_report.warnings.push(format!(
+                "workload window timed out after {timeout}s without stop marker"
+            ));
+            request_qemu_stop(&mut child, outputs, &mut window_report, "workload timeout")?;
+            break;
+        }
+        if overall_timeout > 0 && elapsed >= overall_timeout as f64 {
+            window_report.warnings.push(format!(
+                "QEMU timed out after {overall_timeout}s before workload completed"
+            ));
+            request_qemu_stop(&mut child, outputs, &mut window_report, "overall timeout")?;
+            break;
+        }
+    }
+
+    let status = wait_for_child_exit(&mut child, Duration::from_secs(5))?;
+    if shell_init_cmd.is_some() && !injected {
+        window_report.warnings.push(format!(
+            "shell prompt `{shell_prefix}` was not observed before QEMU exited"
+        ));
+        eprintln!("qperf: shell prompt `{shell_prefix}` was not observed before QEMU exited");
+    }
+    finalize_window_warnings(&mut window_report);
+    Ok(QemuRun {
+        status,
+        window: window_report,
+    })
+}
+
+fn trim_window(window: &mut Vec<u8>, keep: usize) {
+    if window.len() > keep {
+        let drain = window.len() - keep;
+        window.drain(..drain);
+    }
+}
+
+fn write_shell_init_command(stdin: &mut impl Write, cmd: &str) -> anyhow::Result<()> {
+    stdin
+        .write_all(cmd.as_bytes())
+        .context("failed to write qperf shell init command")?;
+    stdin
+        .write_all(b"\n")
+        .context("failed to terminate qperf shell init command")?;
+    stdin.flush().ok();
+    Ok(())
+}
+
+fn update_window_duration(report: &mut PerfWindowReport) {
+    report.duration_sec = match (report.start_time, report.stop_time) {
+        (Some(start), Some(stop)) if stop >= start => Some(stop - start),
+        _ => None,
+    };
+}
+
+fn request_qemu_stop(
+    child: &mut std::process::Child,
+    outputs: &PerfOutputs,
+    report: &mut PerfWindowReport,
+    reason: &str,
+) -> anyhow::Result<()> {
+    if report.stop_requested {
+        return Ok(());
+    }
+    report.stop_requested = true;
+    match request_qmp_quit(&outputs.qmp_socket) {
+        Ok(()) => {
+            report.stop_method = Some("qmp_quit".to_string());
+            eprintln!("qperf: requested QEMU quit via QMP after {reason}");
+        }
+        Err(err) => {
+            report.warnings.push(format!(
+                "QMP quit failed after {reason}: {err}; falling back to SIGINT"
+            ));
+            interrupt_child(child)?;
+            report.stop_method = Some("sigint".to_string());
+            eprintln!("qperf: sent SIGINT to QEMU after {reason}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn request_qmp_quit(socket: &Path) -> anyhow::Result<()> {
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("failed to connect QMP socket {}", socket.display()))?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_millis(200)))
+        .ok();
+    let mut buf = [0_u8; 512];
+    let _ = stream.read(&mut buf);
+    stream.write_all(b"{\"execute\":\"qmp_capabilities\"}\r\n")?;
+    let _ = stream.read(&mut buf);
+    stream.write_all(b"{\"execute\":\"quit\"}\r\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn request_qmp_quit(_socket: &Path) -> anyhow::Result<()> {
+    bail!("QMP unix sockets are not supported on this host")
+}
+
+#[cfg(unix)]
+fn interrupt_child(child: &mut std::process::Child) -> anyhow::Result<()> {
+    let pid = child.id() as libc::pid_t;
+    if unsafe { libc::kill(pid, libc::SIGINT) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).context("failed to send SIGINT to QEMU")
+    }
+}
+
+#[cfg(not(unix))]
+fn interrupt_child(child: &mut std::process::Child) -> anyhow::Result<()> {
+    child.kill().context("failed to kill QEMU")
+}
+
+fn wait_for_child_exit(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> anyhow::Result<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().context("failed to poll QEMU after stop")? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            child.kill().context("failed to kill unresponsive QEMU")?;
+            return child.wait().context("failed to wait for killed QEMU");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn finalize_window_warnings(report: &mut PerfWindowReport) {
+    if !report.enabled {
+        return;
+    }
+    if report.start_marker.is_some() && report.start_time.is_none() {
+        report
+            .warnings
+            .push("start marker was not observed; folded stacks include boot samples".to_string());
+    }
+    if report.start_time.is_some() && report.stop_marker.is_some() && report.stop_time.is_none() {
+        report
+            .warnings
+            .push("stop marker was not observed; workload window extends to QEMU exit".to_string());
+    }
+    update_window_duration(report);
+}
+
+fn write_window_report(path: &Path, report: &PerfWindowReport) -> anyhow::Result<()> {
+    let text = serde_json::to_string_pretty(report).context("failed to serialize qperf window")?;
+    fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn write_host_time_metrics(
+    path: &Path,
+    elapsed: Duration,
+    usage_start: Option<ChildResourceUsage>,
+    usage_end: Option<ChildResourceUsage>,
+    status: &ExitStatus,
+) -> anyhow::Result<()> {
+    let mut file =
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    let elapsed_seconds = elapsed.as_secs_f64();
+    writeln!(file, "Elapsed time: {elapsed_seconds:.6}")?;
+    if let (Some(start), Some(end)) = (usage_start, usage_end) {
+        let usage = end.delta_since(start);
+        let user_seconds = usage.user_seconds();
+        let system_seconds = usage.system_seconds();
+        writeln!(file, "User time: {user_seconds:.6}")?;
+        writeln!(file, "System time: {system_seconds:.6}")?;
+        if elapsed_seconds > 0.0 {
+            let cpu_percent = (user_seconds + system_seconds) / elapsed_seconds * 100.0;
+            writeln!(file, "Percent of CPU this job got: {cpu_percent:.2}%")?;
+        }
+        writeln!(file, "Major page faults: {}", usage.major_faults)?;
+        writeln!(file, "Minor page faults: {}", usage.minor_faults)?;
+        writeln!(
+            file,
+            "Voluntary context switches: {}",
+            usage.voluntary_context_switches
+        )?;
+        writeln!(
+            file,
+            "Involuntary context switches: {}",
+            usage.involuntary_context_switches
+        )?;
+    } else {
+        writeln!(file, "User time: unavailable")?;
+        writeln!(file, "System time: unavailable")?;
+    }
+    writeln!(file, "Exit status: {}", exit_status_code(status))?;
+    Ok(())
+}
+
+fn write_host_perf_unavailable(path: &Path, reason: &str) -> anyhow::Result<()> {
+    let mut file =
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    writeln!(file, "# host perf unavailable: {reason}")?;
+    writeln!(
+        file,
+        "# host perf stat measures the host QEMU process; it is not a guest PMU counter"
+    )?;
+    Ok(())
+}
+
+fn exit_status_code(status: &ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| if status.success() { 0 } else { 1 })
+}
+
+fn nonnegative_delta(after: i128, before: i128) -> i128 {
+    after.saturating_sub(before).max(0)
+}
+
+#[cfg(unix)]
+fn child_resource_usage() -> Option<ChildResourceUsage> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage initializes the provided rusage pointer when it returns 0.
+    if unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: getrusage returned success, so usage is initialized.
+    let usage = unsafe { usage.assume_init() };
+    Some(ChildResourceUsage {
+        user_micros: timeval_micros(usage.ru_utime),
+        system_micros: timeval_micros(usage.ru_stime),
+        major_faults: usage.ru_majflt.into(),
+        minor_faults: usage.ru_minflt.into(),
+        voluntary_context_switches: usage.ru_nvcsw.into(),
+        involuntary_context_switches: usage.ru_nivcsw.into(),
+    })
+}
+
+#[cfg(unix)]
+fn timeval_micros(value: libc::timeval) -> i128 {
+    i128::from(value.tv_sec) * 1_000_000 + i128::from(value.tv_usec)
+}
+
+#[cfg(not(unix))]
+fn child_resource_usage() -> Option<ChildResourceUsage> {
+    None
+}
+
+struct AnalyzerRun<'a> {
+    analyzer: &'a Path,
+    elf: &'a Path,
+    raw: &'a Path,
+    folded: &'a Path,
+    flamegraph: &'a Path,
+    resolve_stats: &'a Path,
     generate_svg: bool,
     top_n: usize,
-) -> anyhow::Result<()> {
-    ensure_file(elf, "StarryOS kernel ELF")?;
-    ensure_file(raw, "qperf raw samples")?;
-    let mut command = Command::new(analyzer);
+    start_sec: Option<f64>,
+    stop_sec: Option<f64>,
+}
+
+fn run_analyzer(args: AnalyzerRun<'_>) -> anyhow::Result<()> {
+    ensure_file(args.elf, "StarryOS kernel ELF")?;
+    ensure_file(args.raw, "qperf raw samples")?;
+    let mut command = Command::new(args.analyzer);
     command
         .arg("resolve")
         .arg("-e")
-        .arg(elf)
-        .arg(raw)
-        .arg(folded);
-    if top_n > 0 {
-        command.arg("--top").arg(top_n.to_string());
+        .arg(args.elf)
+        .arg(args.raw)
+        .arg(args.folded);
+    if args.top_n > 0 {
+        command.arg("--top").arg(args.top_n.to_string());
     }
-    if generate_svg {
-        command.arg("--flamegraph").arg(flamegraph);
+    if let Some(start_sec) = args.start_sec {
+        command.arg("--start-sec").arg(format!("{start_sec:.9}"));
+    }
+    if let Some(stop_sec) = args.stop_sec {
+        command.arg("--stop-sec").arg(format!("{stop_sec:.9}"));
+    }
+    command.arg("--stats").arg(args.resolve_stats);
+    if args.generate_svg {
+        command.arg("--flamegraph").arg(args.flamegraph);
     }
     command.exec().context("failed to run qperf-analyzer")?;
-    ensure_file(folded, "folded stack output")?;
+    ensure_file(args.folded, "folded stack output")?;
     Ok(())
 }
 
@@ -396,15 +1063,21 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn write_summary(
-    outputs: &PerfOutputs,
-    tools: &QperfTools,
-    elf: &Path,
-    arch: &str,
-    target: &str,
-    args: &ArgsPerf,
+struct SummaryInputs<'a> {
+    outputs: &'a PerfOutputs,
+    tools: &'a QperfTools,
+    elf: &'a Path,
+    arch: &'a str,
+    target: &'a str,
+    args: &'a ArgsPerf,
     flamegraph_generated: bool,
-) -> anyhow::Result<()> {
+    window: &'a PerfWindowReport,
+}
+
+fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
+    let outputs = input.outputs;
+    let args = input.args;
+    let window = input.window;
     let folded_lines = count_lines(&outputs.folded).unwrap_or(0);
     let plugin_summary = outputs.raw.with_extension("summary.txt");
     let plugin_summary_text = fs::read_to_string(plugin_summary).ok();
@@ -412,12 +1085,66 @@ fn write_summary(
     let mut file = File::create(&outputs.summary)
         .with_context(|| format!("failed to create {}", outputs.summary.display()))?;
     writeln!(file, "qperf_format_version = 1")?;
-    writeln!(file, "arch = {arch}")?;
-    writeln!(file, "target = {target}")?;
+    writeln!(file, "arch = {}", input.arch)?;
+    writeln!(file, "target = {}", input.target)?;
     writeln!(file, "frequency_hz = {}", args.freq)?;
     writeln!(file, "max_stack_depth = {}", args.max_depth)?;
     writeln!(file, "sampling_mode = {}", args.mode)?;
     writeln!(file, "kernel_filter = {}", args.kernel_filter)?;
+    writeln!(file, "host_time = {}", args.host_time)?;
+    if args.host_time {
+        writeln!(file, "host_time_output = {}", outputs.host_time.display())?;
+    }
+    writeln!(file, "host_perf = {}", args.host_perf)?;
+    if args.host_perf {
+        writeln!(file, "host_perf_events = {}", args.host_perf_events)?;
+        writeln!(file, "host_perf_output = {}", outputs.host_perf.display())?;
+        writeln!(
+            file,
+            "host_perf_note = host perf stat measures the QEMU process on the host; it is not a \
+             guest PMU cache/cycle counter"
+        )?;
+    }
+    if let Some(shell_init_cmd) = args.shell_init_cmd.as_deref() {
+        writeln!(file, "shell_init_cmd = {shell_init_cmd}")?;
+        writeln!(
+            file,
+            "shell_prefix = {}",
+            args.shell_prefix
+                .as_deref()
+                .unwrap_or(DEFAULT_STARRY_SHELL_PREFIX)
+        )?;
+    }
+    if let Some(start_marker) = args.start_marker.as_deref() {
+        writeln!(file, "start_marker = {start_marker}")?;
+    }
+    if let Some(stop_marker) = args.stop_marker.as_deref() {
+        writeln!(file, "stop_marker = {stop_marker}")?;
+    }
+    if let Some(workload_timeout) = args.workload_timeout {
+        writeln!(file, "workload_timeout = {workload_timeout}")?;
+    }
+    writeln!(file, "qperf_metrics = {}", args.qperf_metrics)?;
+    writeln!(file, "window_enabled = {}", window.enabled)?;
+    if let Some(start_time) = window.start_time {
+        writeln!(file, "window_start_time = {start_time:.9}")?;
+    }
+    if let Some(stop_time) = window.stop_time {
+        writeln!(file, "window_stop_time = {stop_time:.9}")?;
+    }
+    if let Some(duration) = window.duration_sec {
+        writeln!(file, "window_duration_sec = {duration:.9}")?;
+    }
+    writeln!(
+        file,
+        "window_truncated_by_timeout = {}",
+        window.truncated_by_timeout
+    )?;
+    writeln!(file, "window_report = {}", outputs.window.display())?;
+    writeln!(file, "resolve_stats = {}", outputs.resolve_stats.display())?;
+    if !args.qemu_args.is_empty() {
+        writeln!(file, "extra_qemu_args = {}", args.qemu_args.join(" "))?;
+    }
     writeln!(
         file,
         "build_profile = {}",
@@ -425,14 +1152,18 @@ fn write_summary(
     )?;
     writeln!(file, "queue_size = {QPERF_QUEUE_SIZE}")?;
     writeln!(file, "timeout_seconds = {}", args.timeout)?;
-    writeln!(file, "kernel_elf = {}", elf.display())?;
-    writeln!(file, "plugin = {}", tools.plugin.display())?;
-    writeln!(file, "analyzer = {}", tools.analyzer.display())?;
+    writeln!(file, "kernel_elf = {}", input.elf.display())?;
+    writeln!(file, "plugin = {}", input.tools.plugin.display())?;
+    writeln!(file, "analyzer = {}", input.tools.analyzer.display())?;
     writeln!(file, "raw_samples = {}", outputs.raw.display())?;
     writeln!(file, "folded_stack = {}", outputs.folded.display())?;
     writeln!(file, "folded_stack_lines = {folded_lines}")?;
-    writeln!(file, "flamegraph_generated = {flamegraph_generated}")?;
-    if flamegraph_generated {
+    writeln!(
+        file,
+        "flamegraph_generated = {}",
+        input.flamegraph_generated
+    )?;
+    if input.flamegraph_generated {
         writeln!(file, "flamegraph = {}", outputs.flamegraph.display())?;
     }
     if let Some(plugin_summary_text) = plugin_summary_text {
@@ -457,6 +1188,15 @@ fn print_report(outputs: &PerfOutputs, flamegraph_generated: bool) {
     println!("  folded stack: {}", outputs.folded.display());
     if flamegraph_generated {
         println!("  flamegraph: {}", outputs.flamegraph.display());
+    }
+    if outputs.host_time.exists() {
+        println!("  host time: {}", outputs.host_time.display());
+    }
+    if outputs.host_perf.exists() {
+        println!("  host perf: {}", outputs.host_perf.display());
+    }
+    if outputs.window.exists() {
+        println!("  window: {}", outputs.window.display());
     }
     println!("  summary: {}", outputs.summary.display());
 }
@@ -490,32 +1230,49 @@ fn detect_kernel_text_range(
         fs::read(elf).with_context(|| format!("failed to read kernel ELF {}", elf.display()))?;
     let obj = object::File::parse(&*data)
         .map_err(|err| anyhow::anyhow!("failed to parse kernel ELF: {err}"))?;
+    let mut virt: Option<AddressRange> = None;
     for section in obj.sections() {
-        if section.name().unwrap_or("") == ".text" {
-            let start = section.address();
-            let size = section.size();
-            if start > 0 && size > 0 {
-                let virt = AddressRange {
-                    start,
-                    end: start + size,
-                };
-                let phys = detect_physical_text_range(virt, size, axconfig_path)?;
-                eprintln!(
-                    "qperf: detected kernel .text virtual range: 0x{:x}..0x{:x} ({size} bytes)",
-                    virt.start, virt.end
-                );
-                if let Some(phys) = phys {
-                    eprintln!(
-                        "qperf: detected kernel .text physical alias: 0x{:x}..0x{:x}",
-                        phys.start, phys.end
-                    );
-                }
-                return Ok(Some(KernelTextRange { virt, phys }));
-            }
+        if !matches!(section.name().unwrap_or(""), ".head.text" | ".text") {
+            continue;
         }
+        let start = section.address();
+        let size = section.size();
+        if start == 0 || size == 0 {
+            continue;
+        }
+        let end = start
+            .checked_add(size)
+            .context("kernel text section end address overflow")?;
+        virt = Some(match virt {
+            Some(range) => AddressRange {
+                start: range.start.min(start),
+                end: range.end.max(end),
+            },
+            None => AddressRange { start, end },
+        });
     }
-    eprintln!("qperf: could not find .text section in kernel ELF, address filter disabled");
-    Ok(None)
+
+    let Some(virt) = virt else {
+        eprintln!(
+            "qperf: could not find .head.text/.text sections in kernel ELF, address filter \
+             disabled"
+        );
+        return Ok(None);
+    };
+    let size = virt.end - virt.start;
+    let phys = detect_physical_text_range(virt, size, axconfig_path)?
+        .or_else(|| detect_low_address_text_alias(virt));
+    eprintln!(
+        "qperf: detected kernel text virtual range: 0x{:x}..0x{:x} ({size} bytes)",
+        virt.start, virt.end
+    );
+    if let Some(phys) = phys {
+        eprintln!(
+            "qperf: detected kernel text physical alias: 0x{:x}..0x{:x}",
+            phys.start, phys.end
+        );
+    }
+    Ok(Some(KernelTextRange { virt, phys }))
 }
 
 fn detect_physical_text_range(
@@ -542,6 +1299,18 @@ fn detect_physical_text_range(
         start: phys_start,
         end: phys_end,
     }))
+}
+
+fn detect_low_address_text_alias(virt: AddressRange) -> Option<AddressRange> {
+    const LOW_32BIT_MASK: u64 = 0x0000_0000_ffff_ffff;
+
+    if virt.end <= LOW_32BIT_MASK || virt.start & !LOW_32BIT_MASK == 0 {
+        return None;
+    }
+    let size = virt.end.checked_sub(virt.start)?;
+    let start = virt.start & LOW_32BIT_MASK;
+    let end = start.checked_add(size)?;
+    Some(AddressRange { start, end })
 }
 
 fn read_kernel_base_addresses(axconfig_path: &Path) -> anyhow::Result<Option<(u64, u64)>> {
