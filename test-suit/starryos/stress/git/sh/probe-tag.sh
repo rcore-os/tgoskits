@@ -15,3 +15,4 @@ section "5. duplicate tag"; git tag v2.0 2>/dev/null && echo "FAIL: dup tag ok" 
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_TAG_ALL_PASSED" || echo "GIT_TAG_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

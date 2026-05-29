@@ -14,7 +14,7 @@ args = [
 uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
-shell_init_cmd = "apk update && apk add git; for p in init config add commit log status diff branch checkout reset merge stash tag; do echo '===PROBE_START:' $p; /usr/bin/probe-$p.sh; echo '===PROBE_END:' $p; done; MSG=ALL_13_PROBES_COMPLETE; echo $MSG"
-success_regex = ["(?m)^ALL_13_PROBES_COMPLETE\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 600
+shell_init_cmd = "apk update && apk add git && /usr/bin/probe-clone.sh"
+success_regex = ["(?m)^GIT_CLONE_ALL_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^\S+_HAS_FAILURES\s*$']
+timeout = 300

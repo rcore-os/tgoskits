@@ -30,3 +30,4 @@ else echo "INFO: git stash clean (rc=$rc)"; PASS=$((PASS+1)); fi
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_STASH_ALL_PASSED" || echo "GIT_STASH_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))
