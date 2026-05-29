@@ -1,186 +1,226 @@
-# StarryOS 自编译全过程
+# StarryOS 自编译：问题与解决方案
 
-在 riscv64 Debian Linux 上运行 StarryOS，并在 StarryOS 内部使用 cargo 编译 StarryOS 自身。
+在 StarryOS 内部使用 cargo 编译 StarryOS 自身——支持 riscv64 和 x86_64 架构。
+
+## 概览
+
+### 跨架构自编译状态
+
+| 架构 | 种子内核 | QEMU 启动 | rootfs | 自编译 | 耗时 | 备注 |
+|------|---------|----------|--------|--------|------|------|
+| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1 |
+| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | 6m53s | KVM + SMP=1, 301 crates |
+| aarch64 | ✅ | ✅ | 需准备 | 待验证 | — | |
+
+### 测试链路
+
+```
+Host (Linux)
+  └─ scripts/self-compile.sh --arch <arch>
+      ├─ cargo xtask starry build        (种子内核)
+      ├─ loopback mount → inject files   (脚本/配置注入)
+      └─ expect + QEMU (-m 8G)
+          └─ StarryOS 内核
+              └─ Debian rootfs (ext4)
+                  └─ /usr/bin/self-compile-inner.sh
+                      ├─ mount tmpfs (8G)
+                      ├─ filter-workspace.sh (架构过滤)
+                      └─ cargo build -p starryos --offline
+```
 
 ## 前置依赖 PR
 
-实现自编译需要两个基础设施 PR 作为前置条件。
+| PR | 内容 | 关联 |
+|----|------|------|
+| #797 | 信号传递修复：`interrupt_waker.wake()` 唤醒被 `future_blocked_resched` 移出运行队列的任务 | 无此修复，cargo 子进程（build script）挂起，父进程 waitpid 永远阻塞 |
+| #1007 | 页回收：内存压力下驱逐干净文件支持页面，`try_page_reclaim()` 最多重试 4 次 | 无此修复，编译 `syn` 时 OOM panic（大量源码/产物占满文件缓存） |
+| #971 | rsext4 clock LRU 缓存（4 入口/16 KiB），减少 virtio 块设备 round-trip | 加速离线 registry 读取，将依赖解析从分钟级降到秒级 |
 
-### PR #797 — 信号传递修复
+## 共通阻塞点（riscv64 + x86_64）
 
-**现象**: cargo/rustc 在执行子进程（build script、proc-macro 等）时，子进程随机挂起无法退出。
+### 1. 内存检测仅识别 512MB
 
-**根因**: 信号传递后缺少 `wake_task` 调用，被信号唤醒的进程没有被加入调度队列。同时缺少 `dumpable`/`no_new_privs` 字段，导致 ptrace 和 `/proc/self/` 相关操作失败——构建工具链（cc、rustc）依赖这些接口来管理子进程。
+**现象**: QEMU `-m 8G` 但内核只识别 ~510MB。
 
-**修复文件**:
-| 文件 | 变更 |
-|------|------|
-| `task/mod.rs` | 添加 `dumpable`/`no_new_privs` 字段到进程结构 |
-| `task/signal.rs` | 信号传递后调用 `wake_task` 唤醒目标进程 |
-| `syscall/signal.rs` | 修正信号相关系统调用的 uid 参数校验 |
+**根因**: `axplat-riscv64-qemu-virt` 的 `axconfig.toml` 硬编码 `phys-memory-size = 0x2000_0000`。
 
-**关联**: 无此修复，cargo 在执行 build script 时会因子进程挂起而永远等待，自编译无法启动。
+**修复**: 改为 `phys-memory-size = "0x2_0000_0000"` (8GB)。x86_64 使用 `axplat-dyn` + `somehal::mem::memory_map()` 动态检测，无此问题。
 
-### PR #1007 — 页回收
-
-**现象**: 编译 `syn`、`proc-macro2` 等大型 crate 时 OOM panic。
-
-**根因**: 8GB 物理内存下，cargo build 会产生大量文件缓存页面（源码、中间产物）。当可用内存不足时，没有机制回收不再使用的干净文件页面，导致帧分配器返回 `NoMemory`。
-
-**修复文件**:
-| 文件 | 变更 |
-|------|------|
-| `axalloc/src/lib.rs` | 注册 `page_cache_reclaim` 回调，分配失败时尝试回收 |
-| `axalloc/src/buddy_slab.rs` | 分配重试逻辑（最多 4 次），每次失败后触发回收 |
-| `axfs-ng/src/highlevel/file.rs` | LRU 页面缓存驱逐：回收干净的文件支持页面 |
-| `axsync/src/mutex.rs` | 移除 `try_lock` 路径中的 `might_sleep()`（try_lock 是单次 CAS，永不应阻塞） |
-| `entry.rs` | 启动时注册回收回调 |
-
-**关联**: 无此修复，`syn` crate（编译第 7/276）会因 OOM 而 panic。
-
-## 阻塞点及修复
-
-### 1. 内存检测：仅识别 512MB
-
-**现象**: QEMU `-m 8G`，但 `phys_ram_ranges()` 只返回 `[0x804f0000, 0xa0000000)`（~510MB）。
-
-**根因**: 静态平台 `axplat-riscv64-qemu-virt` 的 `axconfig.toml` 中 `phys-memory-size = 0x2000_0000`（512MB）是硬编码常量。`phys_ram_ranges()` 使用该常量计算可用内存，忽略 FDT 中的实际物理 RAM。
-
-**修复** (`components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml`):
-```toml
-# Before
-phys-memory-size = 0x2000_0000       # 512M
-# After
-phys-memory-size = 0x2_0000_0000     # 8G
-```
-
-同时修改 `platform/axplat-dyn/src/mem.rs` 的 `phys_ram_ranges()`，从 `somehal::mem::memory_map()` 动态读取 Free 区域（plat_dyn 路径用）。
-
-**关于动态 RAM 检测**: 尝试通过共享物理内存（someboot 写、静态平台读）实现动态检测，但遭遇 someboot（MMU 关闭阶段）与 starryOS（MMU 开启阶段）地址空间不一致的根本性困难。目前采用 hardcoded 8G 作为实用方案。
-
-**注意**: PR #987 重构了 ax-alloc，移除了旧的 bitmap 页分配器（及 `page-alloc-*` 特性），改用 TLSF/buddy-slab 后端。TLSF 没有硬编码容量限制，因此不再需要 `page-alloc-64g` feature passthrough。只需修改 `phys-memory-size` 即可支持 8GB 内存。
+**注**: PR #987 重构了 ax-alloc，移除了旧 bitmap 页分配器（及 `page-alloc-*` 特性），改用 TLSF/buddy-slab。TLSF 无硬编码容量限制，不再需要 `page-alloc-64g` passthrough。
 
 ### 2. TMPFS 挂载失败
 
-**现象**: `mount -t tmpfs` 失败，Debian 根文件系统中 /tmp 不可写。
+**现象**: `mount -t tmpfs -o size=8G tmpfs /tmp` 失败。
 
-**根因**: mount(8) 优先使用新版 mount API（fsopen/fsconfig/fsmount）。StarryOS 将 `fsopen` 等实现为 `sys_dummy_fd`（返回伪 fd），mount(8) 误以为挂载成功，不会回退到传统 mount(2)。
+**根因**: mount(8) 优先使用新版 mount API（`fsopen`/`fsconfig`/`fsmount`）。StarryOS 将 `fsopen` 实现为 `sys_dummy_fd`（返回伪 fd），mount(8) 误以为挂载成功但后续操作失败，不会回退到传统 `mount(2)`。
 
-**修复** (`os/StarryOS/kernel/src/syscall/mod.rs`):
+**修复**: 将 `fsopen`/`fspick`/`open_tree` 返回 `ENOSYS`，mount(8) 收到后回退到传统 `mount(2)` 调用。
+
 ```rust
-// 将 fsopen/fspick/open_tree 从 sys_dummy_fd 改为返回 ENOSYS
-// mount(8) 收到 ENOSYS 后回退到传统 mount(2) 调用来挂载 tmpfs
 Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 ```
 
-**注意**: 此修复已在 upstream/dev 中存在。
+### 3. 链接器 `_ex_table_end` 未定义
 
-### 3. 最终链接: _ex_table_end 未定义
+**现象**: 所有 crate 编译通过，但最终链接失败: `undefined symbol: _ex_table_end`。
 
-**现象**: 所有 crate 编译通过，但 starryos 二进制链接失败:
-```
-rust-lld: error: undefined symbol: _ex_table_end
-```
-
-**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`（host 编译通过 `--config rustflags` 传递）。`ext_linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号不存在。
+**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`ext_linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
 
 **修复** (`os/StarryOS/starryos/ext_linker.ld`):
 ```ld
 PROVIDE(_ex_table_start = 0);
 PROVIDE(_ex_table_end = 0);
 
-SECTIONS {
-    /* ... 原有内容 ... */
-}
+SECTIONS { /* 原有内容 */ }
 INSERT AFTER .data;
 ```
 
-`PROVIDE` 仅在符号未定义时提供回退值（空异常表，不影响正常运行）。
-
 ### 4. 测试正则误匹配
 
-**现象**: 编译 crate `axpanic` 时，cargo 输出 `panic v0.1.0`，触发 fail_regex `\bpanic`。
+**现象**: 编译 crate `axpanic` 时 cargo 输出 `panic v0.1.0`，触发 fail_regex。
 
-**修复**: 改为 `\bpanicked\b` 仅匹配真正的内核 panic 消息。
+**修复**: `\bpanic` → `\bpanicked\b`（仅匹配内核 panic 消息）。
 
-## 测试链路
+### 5. Workspace 架构过滤
 
+**现象**: `cargo build --offline` 解析失败——workspace 包含其他架构的 crate（如 `arm_vcpu`、`loongarch_vcpu`）。
+
+**根因**: 这些 crate 依赖当前目标架构不可用的平台库（如 `aarch64-cpu`），在 `--offline` 模式下无法解析。
+
+**修复**: `scripts/filter-workspace.sh` — 基于目标架构从 `Cargo.toml` 的 workspace members 中精确移除不兼容的行：
+
+```bash
+filter-workspace.sh x86_64 Cargo.toml
+# 移除: arm_vcpu, arm_vgic, aarch64_sysreg, kasm-aarch64, riscv_*, loongarch_vcpu 等
+# 保留: x86_vcpu, x86_vlapic 及所有公共 crate
 ```
-QEMU riscv64 (-m 8G)
-  └─ OpenSBI
-      └─ someboot (加载 FDT 内存布局)
-          └─ StarryOS 内核
-              └─ Debian riscv64 rootfs (ext4)
-                  └─ /usr/bin/self-compile.sh
-                      ├─ mount tmpfs (8G)
-                      ├─ 修补 ext_linker.ld (如需要)
-                      └─ cargo build -p starryos --offline (276 crates)
+
+## x86_64 专有阻塞点
+
+### 6. PCI BAR 64位地址导致 Page Fault
+
+**现象**: 内核启动时 `#PF` panic——64-bit PCI BAR（28GB+ 地址）未映射到页表。
+
+**根因**: QEMU q35 机型的 PCI 设备 BAR 可分配在 4GB 以上地址空间，但页表未建立相应映射。
+
+**修复**: 驱动初始化调用 `ax_mm::iomap()` 动态映射 BAR 物理地址到虚拟地址空间。
+
+### 7. QEMU 镜像文件排他锁
+
+**现象**: QEMU 启动时报文件锁冲突。
+
+**修复**: `-drive id=disk0,if=none,format=raw,file=$IMG,file.locking=off`
+
+### 8. ext4 兼容性 Bug 系列
+
+Linux host 内核 ext4 驱动与 StarryOS rsext4 之间存在多个不兼容点：
+
+| Bug | 现象 | 根因 | 修复 |
+|-----|------|------|------|
+| #1 | mount 后 checksum 失败 | `metadata_csum` 被 `debugfs -w` 破坏 | `mkfs.ext4 -O ^metadata_csum,^metadata_csum_seed` |
+| #2 | Cargo.toml 被截断为 0 字节 | busybox grep 不支持 `[[:space:]]` | 用 `[ ]` 替代 + `[ -s ]` 安全检查 |
+| #3 | 目录项读取 ENOENT | `debugfs -w` 写入目录项不可靠 | 使用 loopback mount + `cp` 替代 debugfs |
+| #4 | 反复 mount/e2fsck 累积损坏 | 多次循环后目录结构不一致 | prepare 阶段（nspawn）完成所有写入，minimize host 修改 |
+| #5 | `--offline` 缺少 crate | Cargo.lock 引用所有平台依赖 | 全量 `cargo fetch`（无 `--target` 过滤） |
+| #6 | init 进程退出，QEMU 终止 | POSIX shell 重定向失败导致 shell 退出 | `: > file` → `touch file 2>/dev/null \|\| true` |
+
+### 9. SMP 死锁
+
+**现象**: SMP=4 + KVM 时，ext4 写入操作后系统冻结；SMP=1 正常完成。
+
+**根因**: `axfs-ng` ext4 状态使用 `SpinNoPreempt` mutex。多 vCPU 并发访问时发生锁顺序死锁：线程 A 持锁等 I/O，线程 B 自旋等锁。
+
+**当前解决方案**: SMP=1 + KVM（性能足够：6m53s 编译 301 crates）。
+
+**未来方向**: 将 `SpinNoPreempt` 替换为 `Spin`（允许抢占），或审计 `sync_to_disk()` 消除锁重入。
+
+### 10. rustc 版本不满足 MSRV
+
+**现象**: Debian 系统 rustc (1.85) 无法编译要求 nightly 特性的代码。
+
+**修复**: 在 rootfs 准备阶段通过 `rustup` 安装 nightly-2026-04-27 工具链（~6.9GB）。
+
+### 11. USB UVC 未供应商化依赖
+
+**现象**: `cargo build --offline` 报 `no matching package named 'qoi' found`。
+
+**根因**: `drivers/usb/usb-device/uvc` (crab-uvc) 的 dev-dependency 引用了未缓存的 `qoi` crate。
+
+**修复**: `filter-workspace.sh` 中移除 `drivers/usb/usb-device/uvc` member 行。该驱动不参与内核编译。
+
+## riscv64 专有阻塞点
+
+### 12. Bitmap 容量溢出（已淘汰）
+
+**现象**: 8GB RAM 下 panic: `need 3145728 pages but CAP is 1048576`。
+
+**根因**: 旧 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。
+
+**状态**: PR #987 移除了整个 bitmap 分配器，改用 TLSF/buddy-slab。TLSF 无硬编码容量限制，**此问题已不存在**。
+
+### 13. 动态 RAM 检测失败
+
+**现象**: 无法通过 someboot 传递实际 FDT 内存大小给静态平台。
+
+**根因**: someboot（MMU 关闭阶段）写入共享内存的地址，在 StarryOS（MMU 开启阶段）无法直接访问——地址空间不一致。
+
+**当前方案**: 硬编码 `phys-memory-size = 0x2_0000_0000` 为实用方案。
+
+## 脚本编排
+
+| 脚本 | 功能 | 运行环境 |
+|------|------|---------|
+| `scripts/prepare-selfhost-rootfs.sh` | 创建 Debian rootfs（debootstrap + rustup + cargo fetch + 预解压 .crate） | Host (sudo) |
+| `scripts/self-compile.sh` | 构建种子内核 → 注入文件 → QEMU expect 自动化 → 验证产物 | Host |
+| `scripts/run-selfbuilt-kernel.sh` | 提取并启动自编译的内核 | Host |
+| `scripts/filter-workspace.sh` | 从 Cargo.toml 移除架构不兼容的 workspace members | Host + Guest |
+
+### 使用流程
+
+```bash
+# 1. 准备 rootfs（首次，每架构一次）
+sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
+
+# 2. 自编译
+./scripts/self-compile.sh --arch x86_64 --smp 4
+
+# 3. 启动自编译内核
+./scripts/run-selfbuilt-kernel.sh --arch x86_64
 ```
 
 ## 测试配置
 
-### 测试用例 (`test-suit/starryos/selfhost-manual/selfhost-full-kernel/`)
+测试用例位于 `test-suit/starryos/selfhost-manual/`，**不在** `normal/` 目录下，不参与标准 CI。
 
-测试用例位于独立的 `selfhost-manual` 目录中（非 `normal/`），避免因缺少 Debian rootfs 镜像（12GB）而阻塞标准 CI。
-
-```toml
-# qemu-riscv64.toml
-args = ["-nographic", "-cpu", "rv64", "-smp", "1", "-m", "8G", ...]
-shell_init_cmd = "/usr/bin/self-compile.sh"
-success_regex = ['(?m)^SELFHOST_SUCCESS\\s*$']
-fail_regex = ['(?i)\bpanicked\b', 'SELFHOST_FAILED']
-timeout = 7200
+```
+test-suit/starryos/selfhost-manual/
+├── build-riscv64gc-unknown-none-elf.toml    # 构建配置
+├── selfhost-full-kernel/                     # 完整编译测试（timeout=7200s）
+│   ├── qemu-riscv64.toml
+│   └── sh/self-compile.sh                   # Guest 内执行的编译脚本
+└── test-selfhost-check/                      # 快速工具检查（timeout=120s）
+    └── qemu-riscv64.toml
 ```
 
-Shell pipeline (`sh/self-compile.sh`) 自动注入到 rootfs 的 `/usr/bin/`:
-1. 挂载 8G tmpfs 到 /tmp
-2. 使用 sed 向 ext_linker.ld 前置 PROVIDE 回退（保留已有 section）
-3. 执行 `cargo build -p starryos --target riscv64gc-unknown-none-elf --offline`
-4. 检查产物并输出 SELFHOST_SUCCESS 或 SELFHOST_FAILED
+**CI 不运行的原因**: Debian rootfs 镜像（~8-12GB）未上传到 tgosimages release，CI 容器无法下载。
 
-### 运行测试
-
+**手动运行**:
 ```bash
-# 在提前准备 rootfs 的环境中
-cargo xtask starry test qemu --arch riscv64 --test-suite test-suit/starryos/selfhost-manual -g selfhost-manual -c selfhost-full-kernel
+cargo xtask starry test qemu --arch riscv64 --test-suite test-suit/starryos/selfhost-manual -c selfhost-full-kernel
 ```
-
-## 构建耗时
-
-| 阶段 | 耗时 |
-|------|------|
-| Debian 启动 | ~5 分钟 |
-| cargo build (276 crates) | ~95 分钟 |
-| 总计 | ~100 分钟 |
-
-## 完整变更清单
-
-### 前置依赖 PR
-| PR | 内容 | 关键文件 |
-|----|------|----------|
-| #797 | 信号传递修复：wake_task + dumpable/no_new_privs | `task/mod.rs`, `task/signal.rs` |
-| #1007 | 页回收：内存压力下驱逐干净文件页面 | `axalloc/`, `axfs-ng/`, `axsync/` |
-
-### 自编译 PR
-| 文件 | 变更 |
-|------|------|
-| `axconfig.toml` | phys-memory-size: 512M → 8G |
-| `syscall/mod.rs` | fsopen/fspick/open_tree → ENOSYS（已在 upstream/dev 中） |
-| `ext_linker.ld` | PROVIDE _ex_table_start/end |
-| `axplat-dyn/src/mem.rs` | phys_ram_ranges 从 memory_map 动态读取 |
-| `selfhost-full-kernel/` | 测试用例及构建脚本 |
-| `scripts/self-compile.sh` | 主机端自动化构建脚本 |
-
-**注意**: 块引用 #1 中的 `axconfig.toml` 已在上游修改为 8G（`0x2_0000_0000`）。块引用 #2（`page-alloc-64g` passthrough）不再需要，因为 PR #987 移除了旧 bitmap 分配器及其特性。
 
 ## 已知限制
 
-1. **`phys-memory-size` 硬编码 8G**: 动态 RAM 检测（someboot→OS 共享内存）因启动阶段地址空间不一致无法实现。使用少于 8G QEMU RAM 的标准测试会 panic。
-2. **自编译测试不在标准 CI 中运行**: Debian rootfs 镜像（12GB）未上传到 tgosimages 发布版。测试用例位于 `test-suit/starryos/selfhost-manual/`，不在 `normal/` 目录下，不会阻塞 CI；需要手动在配备 rootfs 的环境中运行。
+1. **`phys-memory-size` 硬编码 8GB**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。标准 CI 测试使用默认内存配置，自编译需要 `-m 8G`。
+2. **自编译测试不在标准 CI 中运行**: 需要 8-12GB rootfs 镜像，仅支持本地手动测试。
+3. **SMP > 1 未验证**: ext4 `SpinNoPreempt` 死锁 workaround 为 SMP=1。x86_64 通过 KVM 加速弥补单核性能。
+4. **aarch64 待验证**: rootfs 准备脚本已支持 `--arch aarch64`，但端到端自编译尚未测试。
+5. **页面回收仅支持干净页**: 脏页在极端压力下作为最后手段回收（记录 warning），缺少脏页写回机制。
 
-## 环境
+## 环境要求
 
-- **QEMU**: riscv64, `-m 8G`, virt machine
+- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG), `-m 8G`
 - **内核**: StarryOS (dev 分支)
-- **根文件系统**: Debian riscv64, ext4, rustc nightly-2026-04-27
+- **根文件系统**: Debian (per-arch), ext4, rustc nightly-2026-04-27
+- **Host 依赖**: `qemu-system-*`, `expect`, `sudo`（免密）, `systemd-nspawn`
 - **源码**: StarryOS monorepo (离线，预取依赖)
