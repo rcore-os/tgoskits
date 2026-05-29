@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-m",
+    "1G",
+    "-machine",
+    "virt",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-postgresql.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-append",
+    "root=/dev/sda",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/postgresql-test.sh"
+success_regex = ["(?m)^POSTGRESQL_TEST_PASSED\\s*$"]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    "(?m)^POSTGRESQL_TEST_FAILED(?:[: ].*)?$",
+]
+timeout = 1800

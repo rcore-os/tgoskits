@@ -33,6 +33,8 @@ fn mkdir_internal<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
     existing_ok: bool,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
     let norm_path = split_paren_child_and_tranlatevalid(path);
@@ -162,6 +164,8 @@ fn mkdir_internal<B: BlockDevice>(
     );
     build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_dir_ino, &[data_block], device);
     let mut create_update = Ext4InodeMetadataUpdate::create(dir_mode);
+    create_update.uid = Some(uid);
+    create_update.gid = Some(gid);
     if fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)
@@ -199,7 +203,7 @@ pub(crate) fn ensure_directory<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Ext4Result<Ext4Inode> {
-    mkdir_internal(device, fs, path, true)
+    mkdir_internal(device, fs, path, true, 0, 0)
 }
 
 /// Creates a directory and any missing parent directories.
@@ -207,6 +211,8 @@ pub fn mkdir<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
-    mkdir_internal(device, fs, path, false)
+    mkdir_internal(device, fs, path, false, uid, gid)
 }

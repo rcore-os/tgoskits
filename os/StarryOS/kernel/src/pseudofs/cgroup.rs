@@ -220,6 +220,8 @@ impl DirNodeOps for CgroupDir {
         name: &str,
         node_type: NodeType,
         _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         if crate::cgroup::is_interface_file_name(name) {
             return Err(VfsError::AlreadyExists);

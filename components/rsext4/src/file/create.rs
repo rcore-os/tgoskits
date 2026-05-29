@@ -174,6 +174,8 @@ pub fn mkfile<B: BlockDevice>(
     path: &str,
     initial_data: Option<&[u8]>,
     file_type: Option<u8>,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     // Normalize first so all later path splitting uses one canonical form.
     let norm_path = split_paren_child_and_tranlatevalid(path);
@@ -327,6 +329,8 @@ pub fn mkfile<B: BlockDevice>(
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(imode);
+    create_update.uid = Some(uid);
+    create_update.gid = Some(gid);
     if fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)

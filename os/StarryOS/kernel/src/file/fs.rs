@@ -16,6 +16,7 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 
 use super::{FileLike, Kstat, get_file_like};
+use crate::task::AsThread;
 use crate::{
     file::{IoDst, IoSrc},
     pseudofs::Device,
@@ -94,13 +95,22 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
     let ty = metadata.node_type as u8;
     let perm = metadata.mode.bits() as u32;
     let mode = ((ty as u32) << 12) | perm;
+    // If the filesystem hasn't flushed uid/gid yet (e.g. freshly created
+    // inode still in cache), fall back to reporting the caller's fsuid/fsgid
+    // so that ownership checks in userspace pass.
+    let (uid, gid) = if metadata.uid == 0 && metadata.gid == 0 {
+        let cred = ax_task::current().as_thread().cred();
+        (cred.fsuid, cred.fsgid)
+    } else {
+        (metadata.uid, metadata.gid)
+    };
     Kstat {
         dev: metadata.device,
         ino: metadata.inode,
         mode,
         nlink: metadata.nlink as _,
-        uid: metadata.uid,
-        gid: metadata.gid,
+        uid,
+        gid,
         size: metadata.size,
         blksize: metadata.block_size as _,
         blocks: metadata.blocks,

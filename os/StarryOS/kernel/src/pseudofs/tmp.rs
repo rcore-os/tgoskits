@@ -431,6 +431,8 @@ impl DirNodeOps for MemoryNode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();

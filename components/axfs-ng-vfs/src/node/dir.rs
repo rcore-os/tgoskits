@@ -8,7 +8,7 @@ use hashbrown::HashMap;
 
 use super::DirEntry;
 use crate::{
-    MetadataUpdate, Mountpoint, Mutex, MutexGuard, NodeOps, NodePermission, NodeType, VfsError,
+    Mountpoint, Mutex, MutexGuard, NodeOps, NodePermission, NodeType, VfsError,
     VfsResult,
     path::{DOT, DOTDOT, MAX_NAME_LEN, verify_entry_name},
 };
@@ -79,6 +79,8 @@ pub trait DirNodeOps: NodeOps {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<DirEntry>;
 
     /// Creates a link to a node.
@@ -277,9 +279,11 @@ impl DirNode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
         children: &mut DirChildren,
     ) -> VfsResult<DirEntry> {
-        let entry = self.ops.create(name, node_type, permission)?;
+        let entry = self.ops.create(name, node_type, permission, uid, gid)?;
         if self.ops.is_cacheable() {
             children.insert(name.to_owned(), entry.clone());
         }
@@ -292,9 +296,11 @@ impl DirNode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
-        self.create_locked(name, node_type, permission, &mut self.cache.lock())
+        self.create_locked(name, node_type, permission, uid, gid, &mut self.cache.lock())
     }
 
     fn lock_both_cache<'a>(
@@ -395,14 +401,9 @@ impl DirNode {
             Err(err) if err.canonicalize() == VfsError::NotFound && options.create => {}
             Err(err) => return Err(err),
         }
+        let (uid, gid) = options.user.unwrap_or((0, 0));
         let entry =
-            self.create_locked(name, options.node_type, options.permission, &mut children)?;
-        if options.user.is_some() {
-            entry.update_metadata(MetadataUpdate {
-                owner: options.user,
-                ..Default::default()
-            })?;
-        }
+            self.create_locked(name, options.node_type, options.permission, uid, gid, &mut children)?;
         Ok(entry)
     }
 

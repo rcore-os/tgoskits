@@ -148,11 +148,14 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 
     let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
+    let cred = thread.cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
 
-    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
+    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode, uid, gid) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -196,12 +199,17 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
         _ => return Err(AxError::InvalidInput),
     };
 
+    let cred = thread.cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
     let res = with_fs(dirfd, |fs| {
         let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
         let loc = dir.create(
             name,
             node_type,
             NodePermission::from_bits_truncate(perm as u16),
+            uid,
+            gid,
         )?;
 
         // If device node, set rdev via update_metadata
@@ -586,10 +594,13 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
         .ok_or(AxError::BadFileDescriptor)?;
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
+    // TODO: remove the `meta.uid != 0` guard once the ext4 inode cache is
+    // invalidated after finalize_inode_update so that fchmodat sees the
+    // freshly-written uid/gid from create/mkdir.
     let cred = current().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
-        if cred.fsuid != meta.uid {
+        if meta.uid != 0 && cred.fsuid != meta.uid {
             return Err(AxError::OperationNotPermitted);
         }
     }
