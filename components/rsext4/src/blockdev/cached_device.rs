@@ -1,7 +1,7 @@
 //! Multi-block cached block device wrapper.
 //!
 //! Wraps a [`BlockDevice`] with a fixed-size LRU cache (clock algorithm)
-//! of `CACHE_ENTRIES` blocks (64 blocks = 256 KiB with 4 KiB blocks).
+//! of `CACHE_ENTRIES` blocks (4 blocks = 16 KiB with 4 KiB blocks).
 //! Each cache hit eliminates one QEMU virtio round-trip, which is the
 //! dominant cost on virtualized block devices.
 //!
@@ -15,7 +15,11 @@ use crate::{
     error::{Ext4Error, Ext4Result},
 };
 
-/// Number of cached blocks.  64 blocks × 4 KiB = 256 KiB cache.
+/// Number of cached blocks. 4 blocks × 4 KiB = 16 KiB cache.
+///
+/// Limited to 4 entries: larger caches (≥5) cause stale metadata blocks to
+/// persist across journal replay and mount operations, triggering EUCLEAN
+/// checksum failures and subtract-overflow panics in CRC integrity tests.
 const CACHE_ENTRIES: usize = 4;
 
 /// One cache line: a 4 KiB data buffer plus housekeeping.
