@@ -17,9 +17,10 @@ use alloc::format;
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use byte_unit::Byte;
 
+use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
+use axvmconfig::AxVMCrateConfig;
 #[cfg(target_arch = "x86_64")]
-use axvm::config::VmMemMappingType;
-use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion, config::AxVMCrateConfig};
+use axvmconfig::VmMemMappingType;
 
 use crate::config::{get_vm_dtb_arc, vmcfg};
 
@@ -163,7 +164,7 @@ impl ImageLoader {
             self.load_ramdisk_from_memory(buffer)?;
         }
         // Load DTB image
-        let vm_config = axvm::config::AxVMConfig::from(self.config.clone());
+        let vm_config = crate::config::build_axvm_config(&self.config);
 
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
@@ -646,7 +647,7 @@ pub mod fs {
             loader.load_ramdisk_from_filesystem(ramdisk_path)?;
         };
         // Load DTB image if needed.
-        let vm_config = axvm::config::AxVMConfig::from(loader.config.clone());
+        let vm_config = crate::config::build_axvm_config(&loader.config);
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
             #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]

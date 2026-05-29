@@ -14,12 +14,15 @@
 
 use alloc::{format, sync::Arc};
 use core::alloc::Layout;
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
 use axvm::{
     AxVM, AxVMRef, GuestPhysAddr, VMMemoryRegion,
-    config::{AxVMConfig, AxVMCrateConfig, VmMemMappingType, adjusted_kernel_load_gpa},
+    config::{AxVCpuConfig, AxVMConfig, AxVMConfigParams, PhysCpuList, RamdiskInfo, VMImageConfig},
 };
+use axvmconfig::{AxVMCrateConfig, VMType, VmMemConfig, VmMemMappingType};
 
 #[cfg(any(
     target_arch = "aarch64",
@@ -28,6 +31,15 @@ use axvm::{
 ))]
 use crate::fdt::*;
 use crate::images::ImageLoader;
+
+const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
+
+/// Default BIOS load GPA for x86_64 built-in BIOS.
+#[cfg(target_arch = "x86_64")]
+const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
 pub mod vmcfg {
@@ -45,7 +57,7 @@ pub mod vmcfg {
         crate::manager::AxvmManager::filesystem_vm_configs(config_dir)
             .into_iter()
             .filter_map(
-                |content| match axvm::config::AxVMCrateConfig::from_toml(&content) {
+                |content| match axvmconfig::AxVMCrateConfig::from_toml(&content) {
                     Ok(_) => Some(content),
                     Err(e) => {
                         warn!("Filesystem VM config is invalid: {:?}", e);
@@ -120,6 +132,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
+    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    if vm_config_needs_host_filesystem_release(&vm_create_config) {
+        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+    }
+
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
         debug!(
             "VM[{}] Linux header: {:#x?}",
@@ -128,7 +145,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     }
 
     #[allow(unused_mut)]
-    let mut vm_config = AxVMConfig::from(vm_create_config.clone());
+    let mut vm_config = build_axvm_config(&vm_create_config);
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
     #[cfg(any(
@@ -183,6 +200,81 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     Ok(vm_id)
 }
 
+pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
+    AxVMConfig::new(AxVMConfigParams {
+        id: cfg.base.id,
+        name: cfg.base.name.clone(),
+        vm_type: VMType::from(cfg.base.vm_type),
+        phys_cpu_ls: PhysCpuList::new(
+            cfg.base.cpu_num,
+            cfg.base.phys_cpu_ids.clone(),
+            cfg.base.phys_cpu_sets.clone(),
+        ),
+        cpu_config: AxVCpuConfig {
+            bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
+            ap_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
+        },
+        image_config: VMImageConfig {
+            kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
+            bios_load_gpa: configured_bios_load_gpa(cfg),
+            dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
+            ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
+                load_gpa: GuestPhysAddr::from(addr),
+                size: None,
+            }),
+        },
+        emu_devices: cfg.devices.emu_devices.clone(),
+        pass_through_devices: cfg.devices.passthrough_devices.clone(),
+        excluded_devices: cfg.devices.excluded_devices.clone(),
+        pass_through_addresses: cfg.devices.passthrough_addresses.clone(),
+        interrupt_mode: cfg.devices.interrupt_mode,
+    })
+}
+
+fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
+    if !cfg.kernel.enable_bios {
+        return None;
+    }
+
+    if let Some(addr) = cfg.kernel.bios_load_addr {
+        return Some(GuestPhysAddr::from(addr));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if cfg.kernel.bios_path.is_none() {
+        return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
+    }
+
+    None
+}
+
+fn adjusted_kernel_load_gpa(
+    main_memory: &VMMemoryRegion,
+    bios_load_gpa: Option<GuestPhysAddr>,
+) -> Option<GuestPhysAddr> {
+    if !main_memory.is_identical() {
+        return None;
+    }
+
+    let mut kernel_addr = main_memory.gpa;
+    if bios_load_gpa.is_some() {
+        kernel_addr += BIOS_RESERVED_SIZE;
+    }
+    Some(kernel_addr)
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
+    config.kernel.image_location.as_deref() == Some("fs")
+        && (!config.devices.passthrough_devices.is_empty()
+            || !config.devices.passthrough_addresses.is_empty())
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+pub fn host_filesystem_release_required() -> bool {
+    HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
+}
+
 fn config_guest_address(vm: &AxVMRef, main_memory: &VMMemoryRegion) {
     vm.with_config(|config| {
         if let Some(kernel_addr) =
@@ -206,7 +298,7 @@ fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &AxVMRef) -> 
     const MB: usize = 1024 * 1024;
     const ALIGN: usize = 2 * MB;
 
-    let make_layout = |memory: &axvm::config::VmMemConfig| {
+    let make_layout = |memory: &VmMemConfig| {
         Layout::from_size_align(memory.size, ALIGN).map_err(|e| {
             ax_err_type!(
                 InvalidInput,

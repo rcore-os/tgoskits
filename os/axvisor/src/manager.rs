@@ -82,10 +82,7 @@ impl AxvmManager {
 
     #[cfg(all(feature = "fs", target_arch = "x86_64"))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
-        let has_conflicting_guest_ownership = Self::vm_list()
-            .into_iter()
-            .any(|vm| vm.has_host_fs_passthrough_conflict());
-        if !has_conflicting_guest_ownership {
+        if !crate::config::host_filesystem_release_required() {
             return;
         }
 

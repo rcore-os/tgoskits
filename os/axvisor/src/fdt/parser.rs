@@ -21,10 +21,8 @@ use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 #[cfg(target_arch = "aarch64")]
 use crate::fdt::create::update_cpu_node;
-use axvm::{
-    MappingFlags,
-    config::{AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType},
-};
+use axvm::{MappingFlags, config::AxVMConfig};
+use axvmconfig::{AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType};
 
 use crate::fdt::crate_guest_fdt_with_cache;
 

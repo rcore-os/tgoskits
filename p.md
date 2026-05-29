@@ -655,7 +655,39 @@ scripts/axbuild 不直接关心 ax-feat / ax-hal 细节
 scripts/axbuild 只生成 axvisor 顶层 feature
 ```
 
-## 3. 遗留问题
+### 2.13 验证要求
+
+必须通过：
+
+```bash
+cargo fmt
+cargo xtask clippy --package axvm-types
+cargo xtask clippy --package axaddrspace
+cargo xtask clippy --package axvcpu
+cargo xtask clippy --package axvm
+cargo xtask clippy --package arm_vcpu
+cargo xtask clippy --package x86_vcpu
+cargo xtask clippy --package riscv_vcpu
+cargo xtask clippy --package loongarch_vcpu
+cargo xtask clippy --package arm_vgic
+cargo xtask clippy --package x86_vlapic
+cargo xtask clippy --package riscv_vplic
+cargo xtask clippy --package axdevice
+cargo xtask clippy --package axvisor
+```
+
+QEMU 验证：
+
+```bash
+cargo xtask axvisor qemu --arch x86_64
+cargo xtask axvisor qemu --arch aarch64
+cargo xtask axvisor qemu --arch riscv64
+cargo xtask axvisor qemu --arch loongarch64
+```
+
+至少 x86_64 和 aarch64 应启动到 Axvisor shell；其余架构如受工具链或 QEMU 环境限制，需要记录具体阻塞原因。
+
+## 3. 真实遗留问题
 
 ### 3.1 Host trait 是否应该长期留在 axvm
 
@@ -681,44 +713,7 @@ axvm-arceos
 axvm-linux
 ```
 
-### 3.3 `axvm` 与 `os/axvisor` 的边界是否还会继续收敛
-
-当前边界是：
-
-```text
-axvm:
-    单 VM 抽象
-    VM runtime 原语
-    vCPU task / VM exit / timer / IRQ glue
-    私有 ArceOS host adapter
-
-os/axvisor:
-    多 VM 业务编排
-    配置 / 镜像 / FDT
-    shell / 用户命令
-    默认 VM 集合策略
-```
-
-如果后续发现 `axvm::config` 中仍存在配置文件、镜像路径、默认启动策略等产品层语义，应继续迁到 `os/axvisor`。
-
-### 3.4 配置与工具边界
-
-`axvmconfig` 继续作为配置 schema/parser 组件。
-
-`axvm` 可以消费已经解析好的 `AxVMConfig` 或构造 VM 所需的基础参数，但不负责：
-
-```text
-配置文件扫描
-默认路径策略
-CLI 工具
-模板生成
-schema dump
-镜像读取策略
-```
-
-这些属于 `os/axvisor` 或工具层。
-
-### 3.5 Rust native std 支持
+### 3.3 Rust native std 支持
 
 本方案不直接实现 `target_os = "arceos"` native std。
 
@@ -741,63 +736,3 @@ os/axvisor 业务层
 axvm/src/host/arceos.rs
     -> std::os::arceos 或更底层 ArceOS host API
 ```
-
-### 3.6 验证要求
-
-必须通过：
-
-```bash
-cargo fmt
-cargo xtask clippy --package axvm-types
-cargo xtask clippy --package axvcpu
-cargo xtask clippy --package axvm
-cargo xtask clippy --package arm_vcpu
-cargo xtask clippy --package x86_vcpu
-cargo xtask clippy --package riscv_vcpu
-cargo xtask clippy --package loongarch_vcpu
-cargo xtask clippy --package arm_vgic
-cargo xtask clippy --package x86_vlapic
-cargo xtask clippy --package riscv_vplic
-cargo xtask clippy --package axdevice
-cargo xtask clippy --package axvisor
-```
-
-边界检查：
-
-```bash
-rg -n "axvisor_api" virtualization os/axvisor
-```
-
-期望为空。
-
-```bash
-rg -n "ax_std|std::os::arceos|ax_api|ax_hal|ax_task|ax_alloc" virtualization \
-  -g '!axvm/src/host/arceos.rs'
-```
-
-期望只允许 `axvm/src/host/arceos.rs` 命中。
-
-```bash
-rg -n "ax_api|ax_hal|ax_task|ax_alloc|ax_std::os::arceos|std::os::arceos" \
-  os/axvisor/src/main.rs os/axvisor/src/manager.rs os/axvisor/src/config.rs \
-  os/axvisor/src/images os/axvisor/src/fdt os/axvisor/src/shell
-```
-
-期望为空。
-
-```bash
-rg -n "runtime::devices|super::devices|devices::" virtualization/axvm/src os/axvisor/src
-```
-
-期望为空，x86 IRQ runtime glue 应位于 `axvm/src/runtime/x86_irq.rs`。
-
-QEMU 验证：
-
-```bash
-cargo xtask axvisor qemu --arch x86_64
-cargo xtask axvisor qemu --arch aarch64
-cargo xtask axvisor qemu --arch riscv64
-cargo xtask axvisor qemu --arch loongarch64
-```
-
-至少 x86_64 和 aarch64 应启动到 Axvisor shell；其余架构如受工具链或 QEMU 环境限制，需要记录具体阻塞原因。

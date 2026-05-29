@@ -34,7 +34,7 @@ path = "xtask/src/main.rs"
 [features]
 default = []
 ept-level-4 = ["axvm/4-level-ept"]
-fs = ["ax-std/fs", "axvm/fs"]
+fs = ["ax-std/fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["axvm/sstc"]
@@ -72,8 +72,9 @@ hashbrown = "0.14"
 ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
-axvm = { workspace = true }
+axvm = { workspace = true, default-features = false }
 axvm-types = { workspace = true }
+axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
 axklib = { workspace = true }

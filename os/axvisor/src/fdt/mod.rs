@@ -35,7 +35,8 @@ pub use device::build_all_node_paths;
 use fdt_parser::Fdt;
 pub use parser::*;
 
-use axvm::config::{AxVMConfig, AxVMCrateConfig};
+use axvm::config::AxVMConfig;
+use axvmconfig::AxVMCrateConfig;
 
 use crate::config::{get_vm_dtb_arc, vmcfg};
 

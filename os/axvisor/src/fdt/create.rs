@@ -33,7 +33,7 @@ use axvm::AxVMRef;
 use axvm::GuestPhysAddr;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 use axvm::VMMemoryRegion;
-use axvm::config::AxVMCrateConfig;
+use axvmconfig::AxVMCrateConfig;
 
 // use crate::fdt::print::{print_fdt, print_guest_fdt};
 

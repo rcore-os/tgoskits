@@ -1981,6 +1981,7 @@ dependencies = [
  "axklib",
  "axvm",
  "axvm-types",
+ "axvmconfig",
  "bitflags 2.11.1",
  "byte-unit",
  "cfg-if",
