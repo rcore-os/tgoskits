@@ -660,9 +660,14 @@ impl AxRunQueue {
                 sched.pick_next_task()
             };
             if let Some(task) = task {
-                #[cfg(feature = "ipi")]
-                kick_remote_cpu(target);
-                return Some(task);
+                if task.cpumask().get(current_cpu) {
+                    #[cfg(feature = "ipi")]
+                    kick_remote_cpu(target);
+                    return Some(task);
+                }
+                // Affinity mismatch: put the task back on the remote queue.
+                let mut sched = get_run_queue(target).scheduler.lock();
+                sched.put_prev_task(task, false);
             }
         }
         None
