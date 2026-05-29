@@ -667,7 +667,7 @@ fn supports_platform_dynamic(target: &str) -> bool {
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
-    !target.starts_with("x86_64-")
+    !target.starts_with("x86_64-") && !target.starts_with("loongarch64-")
 }
 
 fn normalize_legacy_feature_alias(feature: &str) -> String {
