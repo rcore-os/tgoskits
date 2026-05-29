@@ -176,6 +176,27 @@ impl<T: DmaPod> ContiguousArray<T> {
         self.data.sync_for_cpu(0, self.bytes_len());
     }
 
+    pub fn write_for_device<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+        let ret = self.write_with(len, f);
+        self.sync_for_device(0, len * core::mem::size_of::<T>());
+        ret
+    }
+
+    pub fn read_from_device<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
+        let size = len * core::mem::size_of::<T>();
+        self.sync_for_cpu(0, size);
+        self.read_with(len, f)
+    }
+
+    pub fn copy_to_device_from_slice(&mut self, src: &[T]) {
+        self.copy_from_slice(src);
+        self.sync_for_device(0, core::mem::size_of_val(src));
+    }
+
+    pub fn copy_from_device_to_slice(&self, dst: &mut [T]) {
+        self.read_from_device(dst.len(), |src| dst.copy_from_slice(src));
+    }
+
     pub fn write_with<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
         {

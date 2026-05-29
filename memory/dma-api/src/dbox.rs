@@ -105,6 +105,21 @@ impl<T: DmaPod> ContiguousBox<T> {
         self.data.sync_for_cpu(0, core::mem::size_of::<T>());
     }
 
+    pub fn write_for_device(&mut self, value: T) {
+        self.write(value);
+        self.sync_for_device_all();
+    }
+
+    pub fn modify_for_device(&mut self, f: impl FnOnce(&mut T)) {
+        self.modify(f);
+        self.sync_for_device_all();
+    }
+
+    pub fn read_from_device(&self) -> T {
+        self.sync_for_cpu_all();
+        self.read()
+    }
+
     pub fn as_ptr(&self) -> NonNull<T> {
         self.data.handle.as_ptr().cast::<T>()
     }

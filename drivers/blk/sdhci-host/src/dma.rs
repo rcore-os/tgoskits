@@ -456,7 +456,7 @@ impl Sdhci {
         }
         let block_count = dma_read_block_count(size)?;
         let map = dma
-            .map_streaming_slice(
+            .map_streaming_slice_for_device(
                 unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::FromDevice,
@@ -505,13 +505,12 @@ impl Sdhci {
         }
         let block_count = dma_write_block_count(size)?;
         let map = dma
-            .map_streaming_slice(
+            .map_streaming_slice_for_device(
                 unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::ToDevice,
             )
             .map_err(map_dma_error)?;
-        map.sync_for_device_all();
         let mut desc = dma
             .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
@@ -769,7 +768,7 @@ impl Sdhci {
                 stage,
                 ..
             } => {
-                map.sync_for_cpu_all();
+                map.complete_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }

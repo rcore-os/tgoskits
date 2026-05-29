@@ -16,6 +16,14 @@ surface separates three different concepts that should not be mixed:
   for one transfer of a buffer not owned by `dma-api`. Explicit sync methods
   handle cache maintenance and bounce-buffer copy, and `Drop` unmaps.
 
+The `*_for_device` and `*_from_device` helpers are convenience ownership
+transfer APIs. They wrap the same synchronization operations as
+`sync_for_device(_all)` and `sync_for_cpu(_all)`: CPU writes are made visible
+before the device runs, and device writes are made visible before CPU reads.
+They do not detect device completion, place MMIO doorbells, or provide hardware
+ordering barriers. Drivers still decide when a transfer is submitted and when it
+has completed.
+
 `DmaAddr` is the only portable device-visible address type. Backend-private raw
 handles are split into `DmaAllocHandle` for owned allocations and
 `DmaMapHandle` for streaming mappings.
@@ -122,8 +130,7 @@ let mut tx = dma.contiguous_array_zero_with_align::<u8>(
     64,
     DmaDirection::ToDevice,
 )?;
-tx.copy_from_slice(packet);
-tx.sync_for_device_all();
+tx.copy_to_device_from_slice(packet);
 submit(tx.dma_addr());
 ```
 
@@ -137,18 +144,16 @@ let rx = dma.contiguous_array_zero_with_align::<u8>(
 )?;
 submit(rx.dma_addr());
 wait_complete();
-rx.sync_for_cpu_all();
-consume(rx.as_slice());
+rx.read_from_device(packet_len, consume);
 ```
 
 Streaming mappings:
 
 ```rust,ignore
-let map = dma.map_streaming_slice(buffer, 64, DmaDirection::Bidirectional)?;
-map.sync_for_device_all();
+let map = dma.map_streaming_slice_for_device(buffer, 64, DmaDirection::Bidirectional)?;
 submit(map.dma_addr());
 wait_complete();
-map.sync_for_cpu_all();
+map.complete_for_cpu_all();
 ```
 
 Buffer pools use `ContiguousBufferPool` and return `ContiguousBuffer` values.
