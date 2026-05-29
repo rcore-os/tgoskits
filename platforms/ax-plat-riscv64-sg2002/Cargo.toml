@@ -29,7 +29,7 @@ ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }
 axklib = { workspace = true, features = ["tlsf"] }
-rd-block.workspace = true
+rdif-block.workspace = true
 sg200x-bsp.workspace = true
 some-serial.workspace = true
 spin.workspace = true

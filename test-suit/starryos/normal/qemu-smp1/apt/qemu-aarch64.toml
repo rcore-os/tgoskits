@@ -20,6 +20,7 @@ shell_init_cmd = '''
 rm -f /etc/apt/sources.list.d/*.sources && \
 apt_hello_test() { \
     printf 'deb %s trixie main\n' "$1" > /etc/apt/sources.list && \
+    echo "APT_HELLO_REPO: $1" && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello && \
     hello; \

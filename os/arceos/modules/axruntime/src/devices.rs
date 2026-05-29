@@ -16,10 +16,11 @@ pub(crate) fn take_dyn_fs_block_devices()
         if !rdrive::is_initialized() {
             return alloc::vec::Vec::new();
         }
-        ax_driver::block::take_block_devices()
+        let devices = ax_driver::block::take_block_devices();
+        devices
             .into_iter()
             .map(|dev| {
-                alloc::boxed::Box::new(FsBlockDevice(dev))
+                alloc::boxed::Box::new(FsBlockDevice::new(dev))
                     as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
             })
             .collect()
@@ -32,44 +33,12 @@ pub(crate) fn take_dyn_fs_block_devices()
 #[cfg(all(feature = "fs", not(feature = "fs-ng"), not(feature = "plat-dyn")))]
 pub(crate) fn take_static_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    ax_driver::block::take_block_devices()
+    let devices = ax_driver::block::take_block_devices();
+    devices
         .into_iter()
         .map(|dev| {
-            alloc::boxed::Box::new(FsBlockDevice(dev))
+            alloc::boxed::Box::new(FsBlockDevice::new(dev))
                 as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
-        })
-        .collect()
-}
-
-#[cfg(all(feature = "fs-ng", feature = "plat-dyn"))]
-pub(crate) fn take_dyn_fs_ng_block_devices()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>> {
-    #[cfg(target_os = "none")]
-    {
-        if !rdrive::is_initialized() {
-            return alloc::vec::Vec::new();
-        }
-        ax_driver::block::take_block_devices()
-            .into_iter()
-            .map(|dev| {
-                alloc::boxed::Box::new(FsBlockDevice(dev))
-                    as alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>
-            })
-            .collect()
-    }
-
-    #[cfg(not(target_os = "none"))]
-    alloc::vec::Vec::new()
-}
-
-#[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))]
-pub(crate) fn take_static_fs_ng_block_devices()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>> {
-    ax_driver::block::take_block_devices()
-        .into_iter()
-        .map(|dev| {
-            alloc::boxed::Box::new(FsBlockDevice(dev))
-                as alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>
         })
         .collect()
 }
@@ -257,10 +226,26 @@ fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng:
 }
 
 #[cfg(all(
-    any(feature = "fs", feature = "fs-ng"),
+    feature = "fs",
+    not(feature = "fs-ng"),
     any(not(feature = "plat-dyn"), target_os = "none")
 ))]
-struct FsBlockDevice(ax_driver::block::Block);
+struct FsBlockDevice {
+    _irq: Option<crate::block::BlockIrqRegistration>,
+    block: ax_driver::block::Block,
+}
+
+#[cfg(all(
+    feature = "fs",
+    not(feature = "fs-ng"),
+    any(not(feature = "plat-dyn"), target_os = "none")
+))]
+impl FsBlockDevice {
+    fn new(mut block: ax_driver::block::Block) -> Self {
+        let irq = crate::block::register_irq_handler(&mut block);
+        Self { _irq: irq, block }
+    }
+}
 
 #[cfg(all(
     feature = "fs",
@@ -269,53 +254,26 @@ struct FsBlockDevice(ax_driver::block::Block);
 ))]
 impl ax_fs::FsBlockDevice for FsBlockDevice {
     fn name(&self) -> &str {
-        self.0.name()
+        self.block.name()
     }
 
     fn num_blocks(&self) -> u64 {
-        self.0.num_blocks()
+        self.block.num_blocks()
     }
 
     fn block_size(&self) -> usize {
-        self.0.block_size()
+        self.block.block_size()
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
-        self.0.read_block(block_id, buf)
+        self.block.read_block(block_id, buf)
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
-        self.0.write_block(block_id, buf)
+        self.block.write_block(block_id, buf)
     }
 
     fn flush(&mut self) -> ax_errno::AxResult {
-        self.0.flush()
-    }
-}
-
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
-impl ax_fs_ng::FsBlockDevice for FsBlockDevice {
-    fn name(&self) -> &str {
-        self.0.name()
-    }
-
-    fn num_blocks(&self) -> u64 {
-        self.0.num_blocks()
-    }
-
-    fn block_size(&self) -> usize {
-        self.0.block_size()
-    }
-
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
-        self.0.read_block(block_id, buf)
-    }
-
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
-        self.0.write_block(block_id, buf)
-    }
-
-    fn flush(&mut self) -> ax_errno::AxResult {
-        self.0.flush()
+        self.block.flush()
     }
 }

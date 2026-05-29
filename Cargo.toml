@@ -273,8 +273,6 @@ riscv_vplic = { version = "0.4.12", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.4.2", path = "drivers/blk/nvme-driver" }
 pcie = { version = "0.6.1", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.1", path = "drivers/blk/ramdisk" }
-rd-block = { version = "0.1.2", path = "drivers/blk/rd-block" }
-rd-block-volume = { version = "0.1.0", path = "drivers/blk/rd-block-volume" }
 rd-net = { version = "0.1.1", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.1", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.7.1", path = "drivers/interface/rdif-block" }

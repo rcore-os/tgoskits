@@ -79,29 +79,29 @@ impl SyncBlockOps for AhciBlock {
         self.0.block_size()
     }
 
-    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rd_block::BlkError> {
+    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rdif_block::BlkError> {
         if !buf.len().is_multiple_of(self.block_size())
             || !(buf.as_ptr() as usize).is_multiple_of(4)
         {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
         if self.0.read(block_id, buf) {
             Ok(())
         } else {
-            Err(rd_block::BlkError::Other("AHCI read failed".into()))
+            Err(rdif_block::BlkError::Other("AHCI read failed"))
         }
     }
 
-    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rd_block::BlkError> {
+    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rdif_block::BlkError> {
         if !buf.len().is_multiple_of(self.block_size())
             || !(buf.as_ptr() as usize).is_multiple_of(4)
         {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
         if self.0.write(block_id, buf) {
             Ok(())
         } else {
-            Err(rd_block::BlkError::Other("AHCI write failed".into()))
+            Err(rdif_block::BlkError::Other("AHCI write failed"))
         }
     }
 }

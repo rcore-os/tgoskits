@@ -110,11 +110,11 @@ impl CvsdDriver {
         Ok(Self(sdmmc))
     }
 
-    fn checked_lba(block_id: u64, offset: usize) -> Result<u32, rd_block::BlkError> {
+    fn checked_lba(block_id: u64, offset: usize) -> Result<u32, rdif_block::BlkError> {
         let lba = block_id
             .checked_add(offset as u64)
-            .ok_or(rd_block::BlkError::InvalidBlockIndex(block_id as usize))?;
-        u32::try_from(lba).map_err(|_| rd_block::BlkError::InvalidBlockIndex(block_id as usize))
+            .ok_or(rdif_block::BlkError::InvalidBlockIndex(block_id))?;
+        u32::try_from(lba).map_err(|_| rdif_block::BlkError::InvalidBlockIndex(block_id))
     }
 }
 
@@ -132,28 +132,28 @@ impl SyncBlockOps for CvsdDriver {
         BLOCK_SIZE
     }
 
-    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rd_block::BlkError> {
+    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rdif_block::BlkError> {
         if !buf.len().is_multiple_of(BLOCK_SIZE) {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
 
         for (i, block) in buf.chunks_exact_mut(BLOCK_SIZE).enumerate() {
             self.0
                 .read_block(Self::checked_lba(block_id, i)?, block)
-                .map_err(|_| rd_block::BlkError::Other("CVSD read failed".into()))?;
+                .map_err(|_| rdif_block::BlkError::Other("CVSD read failed"))?;
         }
         Ok(())
     }
 
-    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rd_block::BlkError> {
+    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rdif_block::BlkError> {
         if !buf.len().is_multiple_of(BLOCK_SIZE) {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
 
         for (i, block) in buf.chunks_exact(BLOCK_SIZE).enumerate() {
             self.0
                 .write_block(Self::checked_lba(block_id, i)?, block)
-                .map_err(|_| rd_block::BlkError::Other("CVSD write failed".into()))?;
+                .map_err(|_| rdif_block::BlkError::Other("CVSD write failed"))?;
         }
         Ok(())
     }

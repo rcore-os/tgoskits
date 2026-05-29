@@ -6,7 +6,7 @@
 extern crate ax_std as std;
 
 #[cfg(feature = "ax-std")]
-use core::{hint::spin_loop, sync::atomic::AtomicUsize};
+use core::{cell::Cell, sync::atomic::AtomicUsize};
 #[cfg(feature = "ax-std")]
 use std::os::arceos::{
     api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
@@ -35,6 +35,9 @@ static DONE: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 #[cfg(feature = "ax-std")]
+const WAITER_ENQUEUE_RETRIES: usize = 1024;
+
+#[cfg(feature = "ax-std")]
 fn pin_current_to_cpu(cpu_id: usize) {
     assert!(
         ax_set_current_affinity(AxCpuMask::one_shot(cpu_id)).is_ok(),
@@ -54,14 +57,23 @@ fn pin_current_to_cpu(cpu_id: usize) {
 }
 
 #[cfg(feature = "ax-std")]
-fn wait_for_fast_progress() -> bool {
-    for _ in 0..200_000 {
-        if DONE.load(Ordering::Acquire) {
-            return true;
+fn wake_sleep_queue_after_waiter_enqueued() {
+    for _ in 0..WAITER_ENQUEUE_RETRIES {
+        let woke_waiter = Cell::new(false);
+        // Publish GO only while waking an actual waiter, so an early wake cannot
+        // satisfy the condition before the sleeper blocks on SLEEP_WQ.
+        api::ax_wait_queue_wake_one_with(&SLEEP_WQ, |task_id| {
+            if task_id != 0 {
+                GO.store(true, Ordering::Release);
+                woke_waiter.set(true);
+            }
+        });
+        if woke_waiter.get() {
+            return;
         }
-        spin_loop();
+        thread::yield_now();
     }
-    false
+    panic!("sleeper did not enter wait queue");
 }
 
 #[cfg(all(feature = "ax-std", target_arch = "aarch64"))]
@@ -106,17 +118,19 @@ fn run_remote_wakeup_test() {
     api::ax_wait_queue_wait_until(&READY_WQ, || READY.load(Ordering::Acquire), None);
     assert_eq!(SLEEPER_CPU.load(Ordering::Acquire), sleeper_cpu);
 
-    // Give the sleeper a stable chance to enter the wait queue before the wake.
-    thread::sleep(Duration::from_millis(10));
     assert_eq!(this_cpu_id(), waker_cpu);
-    GO.store(true, Ordering::Release);
-    api::ax_wait_queue_wake(&SLEEP_WQ, 1);
+    wake_sleep_queue_after_waiter_enqueued();
 
+    // Block instead of spinning; single-threaded TCG can otherwise let the
+    // waker consume the emulation window that the remote CPU needs to run.
     assert!(
-        wait_for_fast_progress(),
-        "remote wait-queue wakeup did not make prompt progress"
+        !api::ax_wait_queue_wait_until(
+            &DONE_WQ,
+            || DONE.load(Ordering::Acquire),
+            Some(Duration::from_millis(5)),
+        ),
+        "remote wait-queue wakeup did not make bounded progress"
     );
-    api::ax_wait_queue_wait_until(&DONE_WQ, || DONE.load(Ordering::Acquire), None);
     sleeper.join().unwrap();
 
     println!("wait_queue_remote_wake: test OK!");

@@ -22,6 +22,7 @@ mod tests {
         CommandRegister, DeviceType, PciMem32, PciMem64, PcieController, PcieGeneric,
         enumerate_by_controller,
     };
+    use rdif_block::{Interface, Request, RequestFlags, RequestOp, RequestStatus, Segment};
 
     #[test]
     fn test_framework_boot() {
@@ -59,11 +60,11 @@ mod tests {
 
         let ns = namespace_list[0];
         let mut block =
-            NvmeBlockDriver::with_namespace("nvme", nvme, ns).into_block(kernel_dma_op());
+            NvmeBlockDriver::with_namespace_and_queue_depth("nvme", nvme, ns, 64).into_interface();
         let mut queue = block.create_queue().unwrap();
 
-        assert_eq!(queue.block_size(), ns.lba_size);
-        assert_eq!(queue.num_blocks(), ns.lba_count);
+        assert_eq!(queue.info().device.logical_block_size, ns.lba_size);
+        assert_eq!(queue.info().device.num_blocks, ns.lba_count as u64);
 
         for block in 0..128 {
             let mut write_buf = vec![0u8; ns.lba_size];
@@ -72,11 +73,10 @@ mod tests {
 
             write_buf[..message_bytes.len()].copy_from_slice(message_bytes);
 
-            let write_result = queue.write_blocks_blocking(block, &write_buf);
-            assert!(write_result.into_iter().all(|entry| entry.is_ok()));
+            submit(&mut *queue, RequestOp::Write, block, &mut write_buf);
 
-            let mut read_result = queue.read_blocks_blocking(block, 1).into_iter();
-            let read_buf = read_result.next().unwrap().unwrap();
+            let mut read_buf = vec![0u8; ns.lba_size];
+            submit(&mut *queue, RequestOp::Read, block, &mut read_buf);
 
             assert_eq!(&read_buf[..message_bytes.len()], message_bytes);
 
@@ -86,6 +86,26 @@ mod tests {
         }
 
         println!("nvme io ok");
+    }
+
+    fn submit(queue: &mut dyn rdif_block::IQueue, op: RequestOp, lba: usize, data: &mut [u8]) {
+        let block_size = queue.info().device.logical_block_size;
+        let segment = unsafe {
+            Segment::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len())
+        };
+        let mut segments = [segment];
+        let id = queue
+            .submit_request(Request {
+                op,
+                lba: lba as u64,
+                block_count: (data.len() / block_size) as u32,
+                segments: &mut segments,
+                flags: RequestFlags::NONE,
+            })
+            .expect("submit should succeed");
+        while queue.poll_request(id).expect("poll should succeed") == RequestStatus::Pending {
+            core::hint::spin_loop();
+        }
     }
 
     fn get_nvme() -> Nvme {
