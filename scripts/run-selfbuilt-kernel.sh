@@ -140,7 +140,7 @@ exec "$QEMU_BIN" \
     -cpu "$QEMU_CPU" \
     $QEMU_EXTRA \
     -smp "$SMP" \
-    -m 16G \
+    -m 8G \
     -kernel "$CACHED_KERNEL" \
     -device "$QEMU_BLK_DEV" \
     -drive id=disk0,if=none,format=raw,file="$ROOTFS_IMG",file.locking=off \

@@ -180,7 +180,7 @@ cargo xtask starry test qemu --arch riscv64 -g qemu-selfhost -c selfhost-full-ke
 # 三种架构用法一致
 sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
 sudo ./scripts/prepare-selfhost-rootfs.sh --arch riscv64
-sudo ./scripts/prepare-selfhost-rootfs.sh --arch arm
+sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64
 ```
 
 > **注意**: x86_64 和 aarch64 需要 `sudo`（debootstrap 需要 root 权限创建 rootfs）。riscv64 如已有基础镜像则不需要 sudo。
@@ -192,7 +192,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch arm
 **工作流程**:
 1. 解析 `--arch`（默认 `riscv64`）和 `--smp`（默认 `4`）参数
 2. `cargo xtask starry build --arch $ARCH` 构建种子内核
-3. 通过 `debugfs` 将架构感知的编译脚本注入 rootfs 的 `/usr/bin/self-compile-inner.sh`
+3. 通过 loopback mount + `cp` 将架构感知的编译脚本注入 rootfs 的 `/usr/bin/self-compile-inner.sh`
 4. 使用 `expect` 自动启动 QEMU、等待 shell 提示符、执行编译脚本（传递 ARCH/TARGET/SMP/JOBS 变量）
 5. 编译脚本内部：挂载 8G tmpfs → 修复 `ext_linker.ld` → `cargo build -p starryos --target $TARGET --offline` → 将产物保存到 `/opt/starryos-selfbuilt`
 6. 编译完成后自动关机（`poweroff`），退出后验证 rootfs 中的二进制
@@ -248,7 +248,7 @@ root@starry:~# ls /opt/starryos/
 # 一次性准备 rootfs（需要 sudo，首次约 30-60 分钟）
 sudo ./scripts/prepare-selfhost-rootfs.sh --arch riscv64   # riscv64 (需已有 Debian 镜像)
 sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64    # x86_64 (原生 debootstrap，最快)
-sudo ./scripts/prepare-selfhost-rootfs.sh --arch arm       # aarch64 (交叉 debootstrap)
+sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉 debootstrap)
 
 # 每次自编译
 ./scripts/self-compile.sh --arch riscv64       # ~60 分钟 (SMP 4)

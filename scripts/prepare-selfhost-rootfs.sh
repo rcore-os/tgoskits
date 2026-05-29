@@ -4,12 +4,12 @@
 # and the full StarryOS source tree for offline self-compilation inside QEMU.
 #
 # Usage:
-#   ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|arm [--force]
+#   ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|aarch64 [--force]
 #
 #   --arch    Target architecture (required):
 #               riscv64 — RISC-V 64-bit (needs existing Debian base image)
 #               x86_64  — x86_64, native bootstrap, KVM-capable
-#               arm     — AArch64 (ARM 64-bit), cross-arch bootstrap
+#               aarch64 — AArch64 (ARM 64-bit), cross-arch bootstrap
 #   --force   Overwrite existing output image.
 #
 # Prerequisites (auto-checked):
@@ -46,11 +46,11 @@ while [[ $# -gt 0 ]]; do
         --arch) ARCH="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         --help|-h)
-            echo "Usage: $0 --arch riscv64|x86_64|arm [--force]"
+            echo "Usage: $0 --arch riscv64|x86_64|aarch64 [--force]"
             echo ""
             echo "  riscv64 — RISC-V 64-bit (needs existing Debian base image)"
             echo "  x86_64  — x86_64 native bootstrap + KVM self-compilation"
-            echo "  arm     — AArch64 cross-arch bootstrap"
+            echo "  aarch64 — AArch64 cross-arch bootstrap"
             exit 0
             ;;
         *) die "Unknown option: $1" ;;
@@ -94,7 +94,7 @@ case "$ARCH" in
         OUTPUT_IMG="$ROOTFS_DIR/rootfs-aarch64-debian-selfhost.img"
         NEED_QEMU=1
         ;;
-    *)  die "Unsupported arch: $ARCH (valid: riscv64, x86_64, arm)" ;;
+    *)  die "Unsupported arch: $ARCH (valid: riscv64, x86_64, aarch64)" ;;
 esac
 
 DEST_PATH="/opt/starryos"
