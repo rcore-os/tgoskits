@@ -149,12 +149,13 @@ fn map_elf<'a>(
     }
 
     // Apply relocations for static-pie binaries
-    #[cfg(target_arch = "riscv64")]
-    {
-        if elf_parser.headers().header.pt1.class() == xmas_elf::header::Class::SixtyFour {
-            let is_pie = elf_parser.headers().header.pt2.type_().as_type()
-                == xmas_elf::header::Type::SharedObject;
-            if is_pie {
+    // On non-riscv64 architectures, apply_relocations() is a no-op stub.
+    if elf_parser.headers().header.pt1.class() == xmas_elf::header::Class::SixtyFour {
+        let is_pie = elf_parser.headers().header.pt2.type_().as_type()
+            == xmas_elf::header::Type::SharedObject;
+        if is_pie {
+            #[cfg(target_arch = "riscv64")]
+            {
                 // Populate PT_LOAD segments so relocation writes can access pages
                 for seg in elf_parser
                     .headers()
@@ -169,8 +170,8 @@ fn map_elf<'a>(
                         (seg.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
                     uspace.populate_area(seg_start, seg_size, mapping_flags(seg.flags))?;
                 }
-                apply_relocations(uspace, base, entry.borrow_cache(), &elf_parser.headers().ph)?;
             }
+            apply_relocations(uspace, base, entry.borrow_cache(), &elf_parser.headers().ph)?;
         }
     }
 
