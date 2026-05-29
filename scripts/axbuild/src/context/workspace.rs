@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    env,
     path::{Path, PathBuf},
 };
 
@@ -38,7 +39,17 @@ pub(crate) fn workspace_manifest_path() -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn axbuild_tmp_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("tmp").join("axbuild")
+    env::var_os("AXBUILD_TMP_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_root.join(path)
+            }
+        })
+        .unwrap_or_else(|| workspace_root.join("tmp").join("axbuild"))
 }
 
 pub(crate) fn workspace_manifest_path_in(workspace_root: &Path) -> PathBuf {
