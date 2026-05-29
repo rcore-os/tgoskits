@@ -565,7 +565,44 @@ mod tests {
                     );
                     assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
                 }
+                httpboot::Command::Init(_) => panic!("expected httpboot check command"),
                 httpboot::Command::Publish(_) => panic!("expected httpboot check command"),
+            },
+            _ => panic!("expected httpboot command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_httpboot_init() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "httpboot",
+            "init",
+            "--board",
+            "Asus-nuc15-x86_64-vmx",
+            "--output",
+            "configs/httpboot.toml",
+            "--force",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Httpboot(args) => match args.command.unwrap() {
+                httpboot::Command::Init(args) => {
+                    assert_eq!(args.board, "Asus-nuc15-x86_64-vmx");
+                    assert_eq!(args.output, PathBuf::from("configs/httpboot.toml"));
+                    assert!(args.force);
+                    assert!(!args.no_open_console);
+                }
+                httpboot::Command::Check(_) | httpboot::Command::Publish(_) => {
+                    panic!("expected httpboot init command")
+                }
             },
             _ => panic!("expected httpboot command"),
         }
@@ -595,8 +632,6 @@ mod tests {
             "2999",
             "--remote-name",
             "kernel.bin",
-            "--efi-loader",
-            "target/httpboot/BOOTX64.EFI",
             "--kernel-load-addr",
             "0x200000",
             "--entry-point",
@@ -623,18 +658,35 @@ mod tests {
                     assert_eq!(args.server.as_deref(), Some("127.0.0.1"));
                     assert_eq!(args.port, Some(2999));
                     assert_eq!(args.remote_name.as_deref(), Some("kernel.bin"));
-                    assert_eq!(
-                        args.efi_loader_path,
-                        Some(PathBuf::from("target/httpboot/BOOTX64.EFI"))
-                    );
                     assert_eq!(args.kernel_load_addr.as_deref(), Some("0x200000"));
                     assert_eq!(args.entry_point.as_deref(), Some("0x200000"));
                     assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
                 }
+                httpboot::Command::Init(_) => panic!("expected httpboot publish command"),
                 httpboot::Command::Check(_) => panic!("expected httpboot publish command"),
             },
             _ => panic!("expected httpboot command"),
         }
+    }
+
+    #[test]
+    fn command_rejects_httpboot_publish_efi_loader() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let result = Cli::try_parse_from([
+            "axvisor",
+            "httpboot",
+            "publish",
+            "--efi-loader",
+            "target/httpboot/BOOTX64.EFI",
+        ]);
+
+        let err = result.err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
