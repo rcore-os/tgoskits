@@ -1,4 +1,4 @@
-features = ["ax-std", "ax-hal/riscv64-qemu-virt", "ax-driver/plat-static", "ax-driver/virtio-blk"]
+features = ["ax-std", "ax-std/riscv64-qemu-virt", "ax-driver/plat-static", "ax-driver/virtio-blk"]
 log = "Warn"
 max_cpu_num = 4
 
