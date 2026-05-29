@@ -8,6 +8,38 @@
 
 54 条 full-sequence replay 仍然重要：它复放 kunOS/K230 SDK RT-Smart YOLOv8n 展开后的完整 KPU workload，能稳定看到 `run=54/54`、IRQ 和 `KPU_SMOKE_PASS`。
 
+现场首选命令：
+
+```sh
+cd /Users/joshua/tmp/tgoskits/target/worktrees/tgoskits-k230-upstream-dev
+bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+```
+
+这条命令默认自动进入 `starryos-dev:ubuntu-qemu10.2.1` Docker 镜像，运行原生 NNCase runtime case，并把完整日志保存到：
+
+```text
+target/k230-kpu-demo/teacher-nncase-runtime.log
+```
+
+它会在终端只打印适合展示的证据摘要，例如：
+
+```text
+NNCASE_MINIMAL: load_model ok
+NNCASE_MINIMAL: model io inputs=1 outputs=4
+K230_SDK_COMPAT: mirrored runtime rdata 0x3c000020 -> 0x10000020 bytes=5242848
+K230_SDK_COMPAT: gnne_enable run=54 ... status=0x0000000400000004
+NNCASE_MINIMAL_PASS
+YOLOV8N_DEMO: output[0] bytes=705600 fnv1a64=...
+YOLOV8N_DEMO_PASS
+K230_NNCASE_RUNTIME_PASS
+```
+
+如果现场还想展示 kunOS/RT-Smart 54 条 command replay 兜底，使用：
+
+```sh
+bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh --with-replay
+```
+
 稳定 replay 命令：
 
 ```sh
@@ -166,6 +198,7 @@ grep -E 'NNCASE_MINIMAL: (load_model ok|model io|output\\[0\\])|YOLOV8N_DEMO: ou
 
 | 脚本 | 用途 | 现场是否建议运行 |
 | --- | --- | --- |
+| `test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh` | 老师现场展示入口；默认跑原生 NNCase runtime，并只打印关键证据摘要；`--with-replay` 可追加 54 条 full-sequence replay | 当前首选 |
 | `cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime` | StarryOS 原生 NNCase runtime 展示；加载真实 `.kmodel`，现场生成 54 条 command，验证权重读取和 output tensor 写回 | 当前优先 |
 | `test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nncase-runtime-binaries.sh` | 用官方 K230 SDK Docker 镜像重新交叉编译 runtime demo 二进制 | 展示前准备，不建议现场临时运行 |
 | `test-suit/starryos/k230-qemu/qemu-k230/kpu-smoke/c/tools/demo-yolov8n-full-sequence-replay.sh` | 一键 StarryOS replay 展示，自动提取关键证据 | 当前优先 |
