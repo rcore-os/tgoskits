@@ -2,7 +2,7 @@
 set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-base_rootfs="${STARRY_BASE_ROOTFS:-}"
+base_rootfs="${STARRY_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-apk-cache"
@@ -187,7 +187,7 @@ populate_overlay() {
         "$overlay_dir/usr/bin/gdbserver-smoke.sh"
 }
 
-require_env STARRY_BASE_ROOTFS "$base_rootfs"
+require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
 

@@ -88,7 +88,11 @@ generate_kallsyms() {
 }
 
 refresh_bin_if_present() {
-    bin="${KERNEL_ELF%.elf}.bin"
+    base="$KERNEL_ELF"
+    case "$KERNEL_ELF" in
+        *.elf) base="${KERNEL_ELF%.elf}" ;;
+    esac
+    bin="$base.bin"
     if [ -f "$bin" ]; then
         rust-objcopy --strip-all -O binary "$KERNEL_ELF" "$bin"
     fi

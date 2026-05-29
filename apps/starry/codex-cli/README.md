@@ -16,7 +16,7 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh
 
 ```bash
 apps/starry/codex-cli/prepare_codex_rootfs.sh \
-  --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img \
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img \
   --auth-json target/auth.json \
   --proxy http://10.0.2.2:7890
 ```
@@ -31,7 +31,7 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh \
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex.img
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 期望输出包含：

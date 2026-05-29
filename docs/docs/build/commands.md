@@ -88,7 +88,7 @@ cargo xtask arceos <subcommand> [options]
 
 ## StarryOS
 
-StarryOS 编译整个内核（不需要 `--package`），增加了 rootfs 管理和 app 运行命令，支持 `--stress` 快捷方式选择压力测试组。
+StarryOS 编译整个内核（不需要 `--package`），增加了 rootfs 管理和 app 运行命令。StarryOS 测试按 `test-suit/starryos/` 的一级目录动态分组，例如 `basic`、`board`、`bugfix`、`syscall`。
 
 ```text
 cargo xtask starry <subcommand> [options]
@@ -102,10 +102,10 @@ cargo xtask starry <subcommand> [options]
 | `qemu` | 编译并在 QEMU 中运行（含 rootfs 准备） |
 | `uboot` | 编译并通过 U-Boot 运行 |
 | `board` | 编译并在远程板卡运行 |
-| `test qemu` | QEMU 测试（normal / stress） |
+| `test qemu` | QEMU 测试（动态发现 test-suit/starryos 分组） |
 | `test board` | 板级测试 |
 | `app list` | 列出 `apps/starry/` 下发现的可运行应用 |
-| `app run` | 构建并运行 `apps/starry/` 下发现的应用 |
+| `app qemu` | 构建并运行 `apps/starry/` 下发现的 QEMU 应用 |
 | `app board` | 在远程板卡上运行应用 |
 | `quick-start` | 常见平台便捷入口 |
 | `rootfs` | 下载 rootfs 到 target 目录 |
@@ -123,7 +123,7 @@ cargo xtask starry <subcommand> [options]
 | `quick-start qemu-x86_64 {build,run}` | x86_64 QEMU 平台的构建/运行 |
 | `quick-start orangepi-5-plus {build,run}` | Orange Pi 5 Plus 板卡的构建/运行，run 支持 `--serial`/`--baud`/`--dtb` 参数覆盖 |
 
-`app list` 从 `apps/starry/` 目录发现可运行应用，可通过 `--kind qemu|board` 过滤。`app run` 支持用 `--all` 运行所有匹配应用，或用 `-t/--test-case <case>` 选择单个应用；QEMU 应用可通过 `--arch`、`--qemu-config` 覆盖运行配置，带能力要求的应用可通过 `--cap <CAP>` 声明可用能力。`app board` 从 `apps/starry/<case>/` 目录中按名称发现板端应用，每个应用目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
+`app list` 从 `apps/starry/` 目录发现可运行应用，可通过 `--kind qemu|board` 过滤。`app qemu` 支持用 `--all` 运行所有匹配 QEMU 应用，或用 `-t/--test-case <case>` 选择单个应用；QEMU 应用可通过 `--arch`、`--qemu-config` 覆盖运行配置，带能力要求的应用可通过 `--cap <CAP>` 声明可用能力。`app board` 从 `apps/starry/<case>/` 目录中按名称发现板端应用，每个应用目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
 
 ### 参数
 
@@ -133,13 +133,13 @@ cargo xtask starry <subcommand> [options]
 
 **Board 额外参数**：`--board-config`、`--board-type`、`--server`、`--port`
 
-**测试参数**（`test qemu`）：`--test-group`、`--test-case`、`--stress`、`--list`
+**测试参数**（`test qemu`）：`--test-group`、`--test-case`、`--list`
 
 **测试参数**（`test board`）：`--test-group`、`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
 
 **App 参数**（`app list`）：`--kind`
 
-**App 参数**（`app run`）：`--all`、`--test-case`、`--kind`、`--cap`、`--arch`、`--qemu-config`、`--debug`
+**App 参数**（`app qemu`）：`--all`、`--test-case`、`--cap`、`--arch`、`--qemu-config`、`--debug`
 
 **App 参数**（`app board`）：`--test-case`（必需）、`--board-config`、`--board-type`、`--server`、`--port`、`--debug`
 

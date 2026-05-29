@@ -12,81 +12,68 @@ test-suit/starryos/<group>/<case>/<runtime-config>.toml
 test-suit/starryos/<group>/<build_wrapper>/<case>/<runtime-config>.toml
 ```
 
-- `<group>` 为 `test-suit/starryos/` 下的一级目录，例如 `normal`、`stress` 或项目新增的测试分组。
+- `<group>` 为 `test-suit/starryos/` 下的一级目录。当前主分组为 `basic`、`board`、`bugfix`、`syscall`。
 - `<case>` 是测试用例名，可以直接位于 group 下，也可以放在 `<build_wrapper>` 下。
-- `<build_wrapper>` 用于把同类构建配置和多个 case 放到一个目录中，通常是 `qemu-smp1`、`qemu-smp4`、`board-orangepi-5-plus` 等；如果目录自身同时包含 `build-*` 和 `qemu-*` / `board-*`，它本身也作为 case 发现。
+- `<build_wrapper>` 用于把同类构建配置和多个 case 放到一个目录中，通常是 `qemu-smp1`、`qemu-smp4`、`board-orangepi-5-plus` 等；如果目录自身同时包含 `build-*` 和 `qemu-*` / `board-*`，它本身也作为 case 发现。group 根目录也可以作为 build wrapper/case，例如 `syscall/` 直接放置 `build-*.toml` 和 `qemu-*.toml`。
 - QEMU 用例通过 `<case>/qemu-<arch>.toml` 发现。
 - Board 用例通过 `<case>/board-<board>.toml` 发现。
 - 构建配置位于 case 或 build wrapper 的 `build-<target>.toml`，也支持按 arch 匹配的 `build-<arch>.toml`。
 - 批量运行时，没有匹配 runtime config 的 case 会被跳过。
 - 显式 `-c/--test-case` 时，case 必须在某个可用 build group 中存在，且必须提供当前 arch 对应的 `qemu-<arch>.toml`。
-- `-l/--list` 未指定 `--test-group`、`--arch` 或 `--target` 时，会列出所有一级 group 中发现的用例；真实执行未指定 `--test-group` 时仍默认运行 `normal`。
+- `-l/--list` 未指定 `--test-group`、`--arch` 或 `--target` 时，会列出所有一级 group 中发现的用例；QEMU 和 board 执行未指定 `--test-group` 时默认扫描所有一级 group，并运行当前 arch 或 board 支持的用例。
 
 ## 当前目录概览
 
 ```text
 test-suit/starryos/
-  normal/
+  basic/
     qemu-smp1/
-      build-aarch64-unknown-none-softfloat.toml
-      build-loongarch64-unknown-none-softfloat.toml
-      build-riscv64gc-unknown-none-elf.toml
-      build-x86_64-unknown-none.toml
+      build-<target>.toml
       smoke/
-        qemu-<arch>.toml
-      apk-curl/
-        qemu-<arch>.toml
-      busybox/
-        qemu-<arch>.toml
-        sh/
-          busybox-tests.sh
-      python-hello/
-        qemu-<arch>.toml
-        python/
-          test_hello.py
-      bugfix/
-        qemu-<arch>.toml
-        <subcase>/c/CMakeLists.txt
-      c-regression/
-        qemu-<arch>.toml
-        <subcase>/c/CMakeLists.txt
+      basic-c-tests/
       drm/
-        qemu-<arch>.toml
-        <subcase>/c/CMakeLists.txt
       evdev/
-        qemu-<arch>.toml
-        <subcase>/c/CMakeLists.txt
-      sqlite/
-        qemu-<arch>.toml
-        <subcase>/c/CMakeLists.txt
-      syscall/
-        qemu-<arch>.toml
-        <subcase>/c/CMakeLists.txt
-      usb/
-        qemu-<arch>.toml
-        c/
-          CMakeLists.txt
-          prebuild.sh
-          src/
+      udp/
+      test-user-backtrace/
+    qemu-aarch64-plat-dyn/
+      build-aarch64-unknown-none-softfloat.toml
+      usb-audio-iso/
+      usb-storage/
+    test-aarch64-gicv3-smoke/
+  board/
+    orangepi-5-plus/
+      build-aarch64-unknown-none-softfloat.toml
+      boot/
+      lsusb/
+      net-smoke/
+      npu-yolov8/
+      pcie-enumerate/
+    licheerv-nano-sg2002/
+      build-riscv64gc-unknown-none-elf.toml
+      boot/
+  bugfix/
+    qemu-smp1/
+      build-<target>.toml
+      bugfix-smp1/
+      c-regression/
+      riscv64-regression/
     qemu-smp4/
       build-<target>.toml
-      affinity/
-        qemu-x86_64.toml
-        <subcase>/c/CMakeLists.txt
-      test-shm-deadlock/
-        qemu-<arch>.toml
-        c/CMakeLists.txt
-    board-orangepi-5-plus/
+      bugfix-smp4-tests/
+    qemu-smp4-buddy-slab/
       build-aarch64-unknown-none-softfloat.toml
-      npu-yolov8/
-        board-orangepi-5-plus.toml
-      pcie-enumerate/
-        board-orangepi-5-plus.toml
-  stress/
-    stress-ng-0/
+      test-clone-files-race-buddy-slab/
+  syscall/
+    qemu-smp1/
       build-<target>.toml
-      stress-ng-0/
-        qemu-<arch>.toml
+      qemu-<arch>.toml
+      common/
+      test-*/
+        c/CMakeLists.txt
+    qemu-smp4/
+      build-<target>.toml
+      test-futex-clone-thread/
+      test-openat-umask-smp/
 ```
 
 ## QEMU 用例类型
@@ -270,25 +257,22 @@ cargo xtask starry test board -c pcie-enumerate --board orangepi-5-plus
 ## 运行命令
 
 ```bash
-# normal QEMU
+# 默认 QEMU：所有支持当前 arch 的 group
 cargo xtask starry test qemu --arch riscv64
 cargo xtask starry test qemu --target riscv64gc-unknown-none-elf
 
 # 指定 group 或 case
-cargo xtask starry test qemu --arch x86_64 -g normal -c smoke
-cargo xtask starry test qemu --arch x86_64 -c affinity
+cargo xtask starry test qemu --arch x86_64 -g basic -c smoke
+cargo xtask starry test qemu --arch x86_64 -g syscall -c test-shutdown
+cargo xtask starry test qemu --arch x86_64 -g bugfix -c bugfix-smp1
 
 # 列出发现的用例；不指定 group 时列出全部 group
 cargo xtask starry test qemu -l
 cargo xtask starry test board -l
 
-# stress QEMU
-cargo xtask starry test qemu --stress --arch riscv64
-cargo xtask starry test qemu -g stress --arch riscv64
-
-# board
+# board 默认也扫描所有 group
 cargo xtask starry test board --board orangepi-5-plus
-cargo xtask starry test board -g normal -c npu-yolov8 --board orangepi-5-plus
+cargo xtask starry test board -g board -c npu-yolov8 --board orangepi-5-plus
 ```
 
 ## 维护注意事项
@@ -300,4 +284,4 @@ cargo xtask starry test board -g normal -c npu-yolov8 --board orangepi-5-plus
 - `success_regex` 选择稳定且唯一的成功行。
 - `fail_regex` 保持精确，避免匹配正常输出如 `failed: 0`。
 - 不要在同一个工作区并行运行多个 `cargo xtask starry test qemu`，rootfs 和生成配置可能互相影响。
-- 新增测试分组时直接在 `test-suit/starryos/` 下添加一级目录；`normal/` 应保持稳定且适合常规 CI，`stress/` 或其他重负载分组可以放置更慢、更重的用例。
+- 新增测试分组时直接在 `test-suit/starryos/` 下添加一级目录；常规分类保持在 `basic`、`board`、`bugfix`、`syscall` 中，应用型和重负载 workload 优先放到 `apps/starry/`。

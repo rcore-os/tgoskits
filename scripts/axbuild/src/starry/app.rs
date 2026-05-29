@@ -11,7 +11,10 @@ use serde::Deserialize;
 
 use super::{board, rootfs};
 use crate::{
-    context::starry_target_for_arch_checked, rootfs::inject, support::process::ProcessExt,
+    context::starry_target_for_arch_checked,
+    rootfs::inject,
+    support::process::ProcessExt,
+    test::{case::TestQemuCase, qemu as qemu_test},
 };
 
 #[derive(Args, Debug, Clone)]
@@ -24,8 +27,8 @@ pub struct ArgsApp {
 pub enum AppCommand {
     /// List discovered StarryOS apps
     List(ArgsAppList),
-    /// Build and run discovered StarryOS apps
-    Run(ArgsAppRun),
+    /// Build and run a StarryOS QEMU app
+    Qemu(ArgsAppQemu),
     /// Build and run a StarryOS app on a remote board
     Board(ArgsAppBoard),
 }
@@ -37,17 +40,14 @@ pub struct ArgsAppList {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct ArgsAppRun {
-    /// Run all discovered apps after kind/capability filtering
+pub struct ArgsAppQemu {
+    /// Run all discovered QEMU apps after capability filtering
     #[arg(long)]
     pub all: bool,
 
     /// Select apps/starry/<CASE>
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: Option<String>,
-
-    #[arg(long, value_enum)]
-    pub kind: Option<StarryAppKind>,
 
     /// Declare an available capability, e.g. board:OrangePi-5-Plus
     #[arg(long = "cap", value_name = "CAP")]
@@ -119,6 +119,14 @@ pub(crate) struct StarryAppQemuCase {
     pub(crate) build_config_path: Option<PathBuf>,
     pub(crate) qemu_config_path: Option<PathBuf>,
     pub(crate) rootfs_path: PathBuf,
+    pub(crate) test_commands: Vec<String>,
+    pub(crate) subcases: Vec<crate::test::case::TestQemuSubcase>,
+}
+
+#[derive(Debug)]
+struct LoadedQemuAppCaseFields {
+    test_case: TestQemuCase,
+    rootfs_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,14 +278,19 @@ pub(crate) fn print_apps(workspace_root: &Path, kind: Option<StarryAppKind>) -> 
 
 pub(crate) fn selected_apps(
     workspace_root: &Path,
-    args: &ArgsAppRun,
+    args: &ArgsAppQemu,
+    kind: StarryAppKind,
 ) -> anyhow::Result<Vec<StarryAppCase>> {
     ensure!(
         args.all ^ args.test_case.is_some(),
-        "`starry app run` requires exactly one of --all or -t/--test-case"
+        "`starry app qemu` requires exactly one of --all or -t/--test-case"
     );
 
-    let mut apps = filtered_apps(workspace_root, args.kind)?;
+    let mut apps = filtered_apps(workspace_root, Some(kind))?;
+    if args.all && args.qemu_config.is_none() {
+        let arch = args.arch.as_deref().unwrap_or("x86_64");
+        apps.retain(|app| app.kind != StarryAppKind::Qemu || qemu_app_supports_arch(app, arch));
+    }
     if let Some(case_name) = args.test_case.as_deref() {
         let case_name = validate_case_name(case_name)?;
         apps.retain(|app| app.name == case_name);
@@ -321,7 +334,20 @@ pub(crate) async fn prepare_qemu_app_case(
         .unwrap_or_else(|| "x86_64".to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
     let build_config_path = discover_optional_build_config(&app.case_dir, &target)?;
-    let rootfs_path = prepare_qemu_app_rootfs(workspace_root, app, &arch, &target).await?;
+    let fields = qemu_config_path
+        .as_deref()
+        .map(|path| load_qemu_app_case_fields(workspace_root, app, path))
+        .transpose()?;
+    let rootfs_path = prepare_qemu_app_rootfs(
+        workspace_root,
+        app,
+        &arch,
+        &target,
+        fields
+            .as_ref()
+            .and_then(|fields| fields.rootfs_path.as_deref()),
+    )
+    .await?;
 
     Ok(StarryAppQemuCase {
         name: app.name.clone(),
@@ -330,7 +356,87 @@ pub(crate) async fn prepare_qemu_app_case(
         build_config_path,
         qemu_config_path,
         rootfs_path,
+        test_commands: fields
+            .as_ref()
+            .map(|fields| fields.test_case.test_commands.clone())
+            .unwrap_or_default(),
+        subcases: fields
+            .map(|fields| fields.test_case.subcases)
+            .unwrap_or_default(),
     })
+}
+
+pub(crate) fn app_qemu_test_case(
+    case: &StarryAppQemuCase,
+    case_dir: PathBuf,
+) -> Option<TestQemuCase> {
+    let qemu_config_path = case.qemu_config_path.clone()?;
+    Some(TestQemuCase {
+        name: case.name.clone(),
+        display_name: case.name.clone(),
+        case_dir,
+        qemu_config_path,
+        test_commands: case.test_commands.clone(),
+        subcases: case.subcases.clone(),
+    })
+}
+
+fn load_qemu_app_case_fields(
+    workspace_root: &Path,
+    app: &StarryAppCase,
+    qemu_config_path: &Path,
+) -> anyhow::Result<LoadedQemuAppCaseFields> {
+    let test_case = qemu_test::load_test_qemu_case_fields(
+        app.name.clone(),
+        app.name.clone(),
+        app.case_dir.clone(),
+        qemu_config_path.to_path_buf(),
+        "Starry app",
+        true,
+    )?;
+    let rootfs_path = qemu_app_config_rootfs_path(workspace_root, qemu_config_path)?;
+
+    Ok(LoadedQemuAppCaseFields {
+        test_case,
+        rootfs_path,
+    })
+}
+
+fn qemu_app_config_rootfs_path(
+    workspace_root: &Path,
+    qemu_config_path: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let qemu = read_qemu_app_config(qemu_config_path)?;
+    Ok(qemu_app_managed_rootfs_paths(workspace_root, &qemu)
+        .into_iter()
+        .next())
+}
+
+fn read_qemu_app_config(qemu_config_path: &Path) -> anyhow::Result<ostool::run::qemu::QemuConfig> {
+    let content = fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))
+}
+
+fn qemu_app_managed_rootfs_paths(
+    workspace_root: &Path,
+    qemu: &ostool::run::qemu::QemuConfig,
+) -> Vec<PathBuf> {
+    let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
+    crate::rootfs::qemu::drive_file_paths(qemu)
+        .into_iter()
+        .map(|path| resolve_qemu_app_config_path(workspace_root, path))
+        .filter(|path| path.starts_with(&managed_rootfs_dir))
+        .collect()
+}
+
+fn resolve_qemu_app_config_path(workspace_root: &Path, path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("${workspace}/") {
+        return workspace_root.join(rest);
+    }
+    path
 }
 
 fn optional_file(path: PathBuf) -> Option<PathBuf> {
@@ -418,19 +524,40 @@ fn resolve_qemu_config(
     }
 
     let variants = qemu_config_variants_for_arch(&app.case_dir, arch)?;
-    if variants.is_empty() {
-        return Ok(None);
+    if !variants.is_empty() {
+        bail!(
+            "Starry app `{}` does not provide `{}`; pass --qemu-config to select one of: {}",
+            app.name,
+            qemu_config_name(arch),
+            format_paths(&variants)
+        );
     }
-    bail!(
-        "Starry app `{}` does not provide `{}`; pass --qemu-config to select one of: {}",
-        app.name,
-        qemu_config_name(arch),
-        variants
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+
+    let configs = collect_prefixed_toml_files(&app.case_dir, "qemu-")?;
+    if !configs.is_empty() {
+        bail!(
+            "Starry app `{}` does not provide `{}`; available QEMU configs: {}",
+            app.name,
+            qemu_config_name(arch),
+            format_paths(&configs)
+        );
+    }
+    Ok(None)
+}
+
+fn format_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn qemu_app_supports_arch(app: &StarryAppCase, arch: &str) -> bool {
+    app.case_dir.join(qemu_config_name(arch)).is_file()
+        || !qemu_config_variants_for_arch(&app.case_dir, arch)
+            .unwrap_or_default()
+            .is_empty()
 }
 
 fn qemu_config_name(arch: &str) -> String {
@@ -508,70 +635,71 @@ async fn prepare_qemu_app_rootfs(
     app: &StarryAppCase,
     arch: &str,
     target: &str,
+    configured_rootfs: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
-    let base_rootfs = rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
-    let rootfs_path = app_rootfs_path(workspace_root, arch, &app.name);
+    let rootfs_path = match configured_rootfs {
+        Some(path) => path.to_path_buf(),
+        None => crate::rootfs::store::default_rootfs_path(workspace_root, arch)?,
+    };
+    if app.prebuild_path.is_none() {
+        if let Some(rootfs_path) = configured_rootfs {
+            crate::rootfs::store::ensure_optional_managed_rootfs(
+                workspace_root,
+                arch,
+                Some(rootfs_path),
+            )
+            .await?;
+            return Ok(rootfs_path.to_path_buf());
+        }
+        return rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await;
+    }
+
+    let default_rootfs = rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
     if let Some(parent) = rootfs_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::copy(&base_rootfs, &rootfs_path).with_context(|| {
-        format!(
-            "failed to copy base rootfs {} to {}",
-            base_rootfs.display(),
-            rootfs_path.display()
-        )
-    })?;
+    if !rootfs_path.exists() {
+        fs::copy(&default_rootfs, &rootfs_path).with_context(|| {
+            format!(
+                "failed to copy default rootfs {} to {}",
+                default_rootfs.display(),
+                rootfs_path.display()
+            )
+        })?;
+    }
 
     let layout_root = workspace_root
         .join("tmp/axbuild/starry-app")
         .join(&app.name);
     let staging_root = layout_root.join("staging-root");
     let overlay_dir = layout_root.join("overlay");
-    reset_dir(&staging_root)?;
-    reset_dir(&overlay_dir)?;
 
-    if let Some(prebuild_path) = app.prebuild_path.as_deref() {
-        let mut command = Command::new("bash");
-        command
-            .arg(prebuild_path)
-            .current_dir(&app.case_dir)
-            .env("STARRY_APP_NAME", &app.name)
-            .env("STARRY_APP_DIR", &app.case_dir)
-            .env("STARRY_WORKSPACE", workspace_root)
-            .env("STARRY_ARCH", arch)
-            .env("STARRY_BASE_ROOTFS", &base_rootfs)
-            .env("STARRY_OUTPUT_ROOTFS", &rootfs_path)
-            .env("STARRY_STAGING_ROOT", &staging_root)
-            .env("STARRY_OVERLAY_DIR", &overlay_dir);
-        command
-            .exec()
-            .with_context(|| format!("failed to run {}", prebuild_path.display()))?;
-    }
+    let prepare_result = (|| -> anyhow::Result<()> {
+        reset_dir(&staging_root)?;
+        reset_dir(&overlay_dir)?;
 
-    inject::inject_overlay(&rootfs_path, &overlay_dir)?;
+        if let Some(prebuild_path) = app.prebuild_path.as_deref() {
+            let mut command = Command::new("bash");
+            command
+                .arg(prebuild_path)
+                .current_dir(&app.case_dir)
+                .env("STARRY_APP_NAME", &app.name)
+                .env("STARRY_APP_DIR", &app.case_dir)
+                .env("STARRY_WORKSPACE", workspace_root)
+                .env("STARRY_ARCH", arch)
+                .env("STARRY_ROOTFS", &rootfs_path)
+                .env("STARRY_STAGING_ROOT", &staging_root)
+                .env("STARRY_OVERLAY_DIR", &overlay_dir);
+            command
+                .exec()
+                .with_context(|| format!("failed to run {}", prebuild_path.display()))?;
+        }
+
+        inject::inject_overlay(&rootfs_path, &overlay_dir)
+    })();
+    prepare_result?;
     Ok(rootfs_path)
-}
-
-fn app_rootfs_path(workspace_root: &Path, arch: &str, app_name: &str) -> PathBuf {
-    workspace_root
-        .join("tmp/axbuild/rootfs")
-        .join(format!("rootfs-{arch}-{}.img", app_rootfs_suffix(app_name)))
-}
-
-fn app_rootfs_suffix(app_name: &str) -> String {
-    let trimmed = app_name.strip_suffix("-cli").unwrap_or(app_name);
-    let sanitized = trimmed
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    sanitized.trim_matches('-').to_string()
 }
 
 fn reset_dir(path: &Path) -> anyhow::Result<()> {
@@ -1238,6 +1366,300 @@ plat_dyn = false
         .unwrap();
 
         assert_eq!(selected, explicit);
+    }
+
+    #[test]
+    fn all_qemu_selection_skips_apps_without_matching_arch_config() {
+        let root = tempdir().unwrap();
+        write_case_file(
+            root.path(),
+            "qemu/apk-curl",
+            "qemu-x86_64.toml",
+            "args = []\n",
+        );
+        write_case_file(root.path(), "qemu/apt", "qemu-riscv64.toml", "args = []\n");
+        let args = ArgsAppQemu {
+            all: true,
+            test_case: None,
+            caps: Vec::new(),
+            arch: Some("x86_64".to_string()),
+            qemu_config: None,
+            debug: false,
+        };
+
+        let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
+        let names = apps.into_iter().map(|app| app.name).collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["qemu/apk-curl"]);
+    }
+
+    #[test]
+    fn explicit_qemu_selection_reports_missing_arch_config() {
+        let root = tempdir().unwrap();
+        write_case_file(root.path(), "qemu/apt", "qemu-riscv64.toml", "args = []\n");
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "qemu/apt")
+            .unwrap();
+
+        let err = resolve_qemu_config(&app, Some("x86_64"), None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("qemu-x86_64.toml"));
+        assert!(err.contains("qemu-riscv64.toml"));
+    }
+
+    #[test]
+    fn qemu_prebuild_only_app_does_not_require_case_qemu_fields() {
+        let root = tempdir().unwrap();
+        write_case_file(
+            root.path(),
+            "demo",
+            "prebuild.sh",
+            "#!/usr/bin/env bash\nmkdir -p \"$STARRY_OVERLAY_DIR/etc\"\nprintf demo > \
+             \"$STARRY_OVERLAY_DIR/etc/demo\"\n",
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "demo")
+            .unwrap();
+
+        let qemu_config = resolve_qemu_config(&app, Some("x86_64"), None).unwrap();
+
+        assert!(qemu_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn qemu_plain_app_without_prebuild_uses_shared_rootfs() {
+        let root = tempdir().unwrap();
+        let base_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-x86_64-alpine.img");
+        fs::create_dir_all(base_rootfs.parent().unwrap()).unwrap();
+        fs::write(&base_rootfs, vec![0u8; 1024 * 1024]).unwrap();
+        write_case_file(
+            root.path(),
+            "qemu/apk-curl",
+            "qemu-x86_64.toml",
+            "args = []\n",
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "qemu/apk-curl")
+            .unwrap();
+
+        let selected =
+            prepare_qemu_app_rootfs(root.path(), &app, "x86_64", "x86_64-unknown-none", None)
+                .await
+                .unwrap();
+
+        assert_eq!(selected, base_rootfs);
+    }
+
+    #[test]
+    fn qemu_case_fields_load_grouped_commands_and_subcases() {
+        let root = tempdir().unwrap();
+        write_case_file(
+            root.path(),
+            "qemu/sqlite",
+            "qemu-x86_64.toml",
+            "args = []\nuefi = false\nto_bin = true\nsuccess_regex = []\nfail_regex = \
+             []\ntest_commands = [\"/usr/bin/app-sqlite\", \"/usr/bin/app-sqlite-deep\"]\n",
+        );
+        write_case_file(
+            root.path(),
+            "qemu/sqlite/app-sqlite/c",
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.20)\n",
+        );
+        write_case_file(
+            root.path(),
+            "qemu/sqlite/app-sqlite-deep/c",
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.20)\n",
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "qemu/sqlite")
+            .unwrap();
+        let qemu_config = resolve_qemu_config(&app, Some("x86_64"), None).unwrap();
+
+        let fields =
+            load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
+
+        assert_eq!(
+            fields.test_case.test_commands,
+            vec!["/usr/bin/app-sqlite", "/usr/bin/app-sqlite-deep"]
+        );
+        assert_eq!(fields.test_case.subcases.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn qemu_prebuild_app_exposes_single_rootfs_env() {
+        let root = tempdir().unwrap();
+        let base_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-x86_64-alpine.img");
+        fs::create_dir_all(base_rootfs.parent().unwrap()).unwrap();
+        fs::write(&base_rootfs, vec![0u8; 1024 * 1024]).unwrap();
+        write_case_file(
+            root.path(),
+            "demo",
+            "prebuild.sh",
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+test -n "${STARRY_ROOTFS:-}"
+test -z "${STARRY_BASE_ROOTFS:-}"
+test -z "${STARRY_OUTPUT_ROOTFS:-}"
+test "$STARRY_ROOTFS" = "$STARRY_WORKSPACE/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+mkdir -p "$STARRY_OVERLAY_DIR/etc"
+printf demo > "$STARRY_OVERLAY_DIR/etc/demo"
+"#,
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "demo")
+            .unwrap();
+
+        let selected =
+            prepare_qemu_app_rootfs(root.path(), &app, "x86_64", "x86_64-unknown-none", None)
+                .await
+                .unwrap();
+
+        assert_eq!(selected, base_rootfs);
+    }
+
+    #[test]
+    fn gdb_smoke_prebuild_uses_current_rootfs_env_contract() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        let prebuild = workspace_root.join("apps/starry/gdb-smoke/prebuild.sh");
+        let content = fs::read_to_string(&prebuild).unwrap();
+
+        assert!(content.contains("STARRY_ROOTFS"));
+        assert!(!content.contains("STARRY_BASE_ROOTFS"));
+        assert!(!content.contains("STARRY_OUTPUT_ROOTFS"));
+    }
+
+    #[tokio::test]
+    async fn qemu_prebuild_app_uses_configured_rootfs_as_output() {
+        let root = tempdir().unwrap();
+        let base_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-x86_64-alpine.img");
+        let configured_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-x86_64-demo.img");
+        fs::create_dir_all(base_rootfs.parent().unwrap()).unwrap();
+        fs::write(&base_rootfs, vec![0u8; 1024 * 1024]).unwrap();
+        write_case_file(
+            root.path(),
+            "demo",
+            "qemu-x86_64.toml",
+            "args = []
+uefi = false
+to_bin = true
+success_regex = []
+fail_regex = []
+",
+        );
+        write_case_file(
+            root.path(),
+            "demo",
+            "prebuild.sh",
+            "#!/usr/bin/env bash
+mkdir -p \"$STARRY_OVERLAY_DIR/etc\"
+printf demo > \"$STARRY_OVERLAY_DIR/etc/demo\"
+",
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "demo")
+            .unwrap();
+
+        let selected = prepare_qemu_app_rootfs(
+            root.path(),
+            &app,
+            "x86_64",
+            "x86_64-unknown-none",
+            Some(&configured_rootfs),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(selected, configured_rootfs);
+        assert_eq!(fs::metadata(&selected).unwrap().len(), 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn qemu_prebuild_app_without_config_uses_default_rootfs() {
+        let root = tempdir().unwrap();
+        let base_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-x86_64-alpine.img");
+        fs::create_dir_all(base_rootfs.parent().unwrap()).unwrap();
+        fs::write(&base_rootfs, vec![0u8; 1024 * 1024]).unwrap();
+        write_case_file(
+            root.path(),
+            "demo",
+            "prebuild.sh",
+            "#!/usr/bin/env bash\nmkdir -p \"$STARRY_OVERLAY_DIR/etc\"\nprintf demo > \
+             \"$STARRY_OVERLAY_DIR/etc/demo\"\n",
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "demo")
+            .unwrap();
+
+        let selected =
+            prepare_qemu_app_rootfs(root.path(), &app, "x86_64", "x86_64-unknown-none", None)
+                .await
+                .unwrap();
+
+        assert_eq!(selected, base_rootfs);
+    }
+
+    #[test]
+    fn qemu_case_fields_load_configured_managed_rootfs() {
+        let root = tempdir().unwrap();
+        let rootfs_path = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-debian.img");
+        write_case_file(
+            root.path(),
+            "qemu/apt",
+            "qemu-aarch64.toml",
+            r#"args = [
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-debian.img",
+]
+uefi = false
+to_bin = true
+success_regex = []
+fail_regex = []
+"#,
+        );
+        let app = discover_apps(root.path())
+            .unwrap()
+            .into_iter()
+            .find(|app| app.name == "qemu/apt")
+            .unwrap();
+        let qemu_config = resolve_qemu_config(&app, Some("aarch64"), None).unwrap();
+
+        let fields =
+            load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
+
+        assert_eq!(fields.rootfs_path, Some(rootfs_path));
     }
 
     #[test]

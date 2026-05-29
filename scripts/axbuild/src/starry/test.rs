@@ -65,8 +65,6 @@ pub struct ArgsTestQemu {
         help = "Run only one StarryOS QEMU test case"
     )]
     pub test_case: Option<String>,
-    #[arg(long, help = "Run stress StarryOS qemu test cases")]
-    pub stress: bool,
     #[arg(short = 'l', long, help = "List discovered StarryOS QEMU test cases")]
     pub list: bool,
 }
@@ -116,26 +114,16 @@ pub(super) async fn test(starry: &mut Starry, args: ArgsTest) -> anyhow::Result<
     }
 }
 
-const STARRY_NORMAL_GROUP: &str = "normal";
-const STARRY_STRESS_GROUP: &str = "stress";
-
-pub(crate) fn resolve_qemu_test_group_name(
+pub(crate) fn selected_qemu_test_group_names(
+    workspace_root: &Path,
     selected_group: Option<&str>,
-    stress: bool,
-) -> anyhow::Result<String> {
-    if stress {
-        if let Some(group) = selected_group
-            && group != STARRY_STRESS_GROUP
-        {
-            bail!(
-                "`--stress` is equivalent to `--test-group stress` and cannot be combined with \
-                 `--test-group {group}`"
-            );
-        }
-        return Ok(STARRY_STRESS_GROUP.to_string());
+) -> anyhow::Result<Vec<String>> {
+    if let Some(group) = selected_group {
+        require_test_suite_group_dir(workspace_root, group)?;
+        return Ok(vec![group.to_string()]);
     }
 
-    Ok(selected_group.unwrap_or(STARRY_NORMAL_GROUP).to_string())
+    discover_test_group_names(workspace_root)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,9 +173,11 @@ struct StarryQemuCaseRequirements {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StarryQemuCase {
+    pub(crate) test_group: String,
     case: TestQemuCase,
     build_group: String,
     build_config_path: PathBuf,
+    subcase_filter: Option<String>,
 }
 
 impl qemu_test::BuildConfigRef for StarryQemuCase {
@@ -202,12 +192,14 @@ impl qemu_test::BuildConfigRef for StarryQemuCase {
 
 #[derive(Debug, Clone)]
 struct PreparedStarryQemuCase {
+    test_group: String,
     case: TestQemuCase,
     qemu: QemuConfig,
     build_group: String,
     build_config_path: PathBuf,
     rootfs_path: PathBuf,
     requirements: StarryQemuCaseRequirements,
+    subcase_filter: Option<String>,
 }
 
 impl qemu_test::BuildConfigRef for PreparedStarryQemuCase {
@@ -274,9 +266,113 @@ pub(crate) fn discover_qemu_cases(
     .collect()
 }
 
+pub(crate) fn discover_qemu_cases_in_groups(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    groups: &[String],
+) -> anyhow::Result<Vec<StarryQemuCase>> {
+    let mut discovered = Vec::new();
+    let mut errors = Vec::new();
+
+    for group in groups {
+        match discover_qemu_cases(workspace_root, arch, target, selected_case, group) {
+            Ok(cases) => discovered.extend(cases),
+            Err(err) if qemu_discovery_error_is_missing_match(&err) => errors.push(err),
+            Err(err) => return Err(err),
+        }
+    }
+
+    if !discovered.is_empty() {
+        return Ok(discovered);
+    }
+
+    // Fallback: if a specific case was requested but not found as a top-level
+    // case, try matching it as a sub-case name (STARRY_CASE) inside merged
+    // binary test cases.
+    if let Some(subcase_name) = selected_case {
+        let subcase_cases =
+            discover_subcase_in_groups(workspace_root, arch, target, subcase_name, groups)?;
+        if !subcase_cases.is_empty() {
+            return Ok(subcase_cases);
+        }
+    }
+
+    if let Some(err) = errors.into_iter().next() {
+        return Err(err);
+    }
+
+    bail!(
+        "no Starry qemu test groups found under {}",
+        test_suite_root(workspace_root).display()
+    )
+}
+
+fn qemu_discovery_error_is_missing_match(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.starts_with("no Starry ")
+        || message.starts_with("unknown Starry ")
+        || message.contains(" exists under matching build group(s), but none provide ")
+}
+
+/// Attempt to find `subcase_name` as a directory under `c/` inside any
+/// test case in the given groups. Returns the parent cases with
+/// `subcase_filter` set.
+fn discover_subcase_in_groups(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+    subcase_name: &str,
+    groups: &[String],
+) -> anyhow::Result<Vec<StarryQemuCase>> {
+    let mut results = Vec::new();
+    for group in groups {
+        let Ok(test_suite_dir) = require_test_suite_group_dir(workspace_root, group) else {
+            continue;
+        };
+        // Discover all cases without the sub-case filter.
+        let Ok(cases) =
+            qemu_test::discover_qemu_cases(&test_suite_dir, arch, target, None, "Starry", group)
+        else {
+            continue;
+        };
+        for case in cases {
+            if discover_c_subcase_names(&case.case_dir).contains(&subcase_name.to_string()) {
+                let starry_case = load_qemu_case(qemu_test::DiscoveredQemuCase {
+                    subcase_filter: Some(subcase_name.to_string()),
+                    ..case
+                })?;
+                results.push(starry_case);
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// List sub-case directory names under `<case_dir>/c/`.
+fn discover_c_subcase_names(case_dir: &Path) -> Vec<String> {
+    let c_dir = case_dir.join("c");
+    let Ok(entries) = fs::read_dir(&c_dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                Some(entry.file_name().to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn load_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<StarryQemuCase> {
     let build_group = case.build_group;
     let build_config_path = case.build_config_path;
+    let subcase_filter = case.subcase_filter;
     let test_case = qemu_test::load_test_qemu_case_fields(
         case.display_name,
         case.name,
@@ -286,9 +382,11 @@ fn load_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<StarryQ
         true,
     )?;
     Ok(StarryQemuCase {
+        test_group: case.group_label,
         case: test_case,
         build_group,
         build_config_path,
+        subcase_filter,
     })
 }
 
@@ -326,15 +424,6 @@ fn test_suite_root(workspace_root: &Path) -> PathBuf {
 
 fn discover_test_group_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
     test_suite::discover_group_names(workspace_root, STARRY_TEST_SUITE_OS)
-}
-
-fn discover_all_qemu_cases_in_group(
-    workspace_root: &Path,
-    group: &str,
-    selected_case: Option<&str>,
-) -> qemu_test::ListQemuCasesResult<Vec<String>> {
-    let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
-    qemu_test::discover_all_qemu_cases(&test_suite_dir, selected_case, "Starry", group)
 }
 
 fn discover_all_qemu_cases_with_archs_in_group(
@@ -382,6 +471,22 @@ fn qemu_list_error_is_ignorable(kind: qemu_test::ListQemuCasesErrorKind) -> bool
     )
 }
 
+fn qemu_cases_by_group_for_list(
+    cases: &[StarryQemuCase],
+) -> Vec<(String, Vec<qemu_test::ListedQemuCase>)> {
+    let mut groups = std::collections::BTreeMap::<String, Vec<qemu_test::ListedQemuCase>>::new();
+    for case in cases {
+        groups
+            .entry(case.test_group.clone())
+            .or_default()
+            .push(qemu_test::ListedQemuCase {
+                name: case.case.name.clone(),
+                archs: Vec::new(),
+            });
+    }
+    groups.into_iter().collect()
+}
+
 fn format_duration(duration: Duration) -> String {
     format!("{:.2}s", duration.as_secs_f64())
 }
@@ -415,12 +520,7 @@ fn collect_board_test_groups(
 
 impl Starry {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        if args.list
-            && args.arch.is_none()
-            && args.target.is_none()
-            && args.test_group.is_none()
-            && !args.stress
-        {
+        if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
             let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
@@ -451,55 +551,71 @@ impl Starry {
         }
 
         if args.list && args.arch.is_none() && args.target.is_none() {
-            if args.stress
-                && let Some(group) = args.test_group.as_deref()
-                && group != STARRY_STRESS_GROUP
-            {
+            let group_names = selected_qemu_test_group_names(
+                self.app.workspace_root(),
+                args.test_group.as_deref(),
+            )?;
+            let groups = group_names
+                .into_iter()
+                .filter_map(|group| {
+                    match discover_all_qemu_cases_with_archs_in_group(
+                        self.app.workspace_root(),
+                        &group,
+                        args.test_case.as_deref(),
+                    ) {
+                        Ok(case_names) if !case_names.is_empty() => Some(Ok((group, case_names))),
+                        Ok(_) => None,
+                        Err(err) => {
+                            if qemu_list_error_is_ignorable(err.kind()) {
+                                None
+                            } else {
+                                Some(Err(anyhow::Error::new(err)))
+                            }
+                        }
+                    }
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if groups.is_empty() {
                 bail!(
-                    "`--stress` is equivalent to `--test-group stress` and cannot be combined \
-                     with `--test-group {group}`"
+                    "no Starry qemu test cases found under {}",
+                    test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            let group = args.test_group.as_deref().unwrap_or(if args.stress {
-                STARRY_STRESS_GROUP
-            } else {
-                STARRY_NORMAL_GROUP
-            });
-            let case_names = discover_all_qemu_cases_in_group(
-                self.app.workspace_root(),
-                group,
-                args.test_case.as_deref(),
-            )
-            .map_err(anyhow::Error::new)?;
-            if case_names.is_empty()
-                && let Some(case) = args.test_case.as_deref()
-            {
-                bail!("unknown Starry {group} qemu test case `{case}`");
-            }
-            println!("{}", qemu_test::render_case_tree(group, case_names));
+            println!("{}", qemu_test::render_qemu_case_forest("starry", groups));
             return Ok(());
         }
 
-        let test_group = resolve_qemu_test_group_name(args.test_group.as_deref(), args.stress)?;
+        let test_groups =
+            selected_qemu_test_group_names(self.app.workspace_root(), args.test_group.as_deref())?;
+        let run_group_label = args
+            .test_group
+            .clone()
+            .unwrap_or_else(|| test_groups.join(","));
         let (arch, target) =
             parse_test_target(self.app.workspace_root(), &args.arch, &args.target)?;
-        let cases = discover_qemu_cases(
+        let cases = discover_qemu_cases_in_groups(
             self.app.workspace_root(),
             &arch,
             &target,
             args.test_case.as_deref(),
-            &test_group,
+            &test_groups,
         )?;
         if args.list {
-            let case_names = cases.iter().map(|case| case.case.name.as_str());
-            println!("{}", qemu_test::render_case_tree(&test_group, case_names));
+            if args.test_group.is_some() {
+                let group = &test_groups[0];
+                let case_names = cases.iter().map(|case| case.case.name.as_str());
+                println!("{}", qemu_test::render_case_tree(group, case_names));
+            } else {
+                let groups = qemu_cases_by_group_for_list(&cases);
+                println!("{}", qemu_test::render_qemu_case_forest("starry", groups));
+            }
             return Ok(());
         }
         let package = crate::context::STARRY_PACKAGE;
 
         println!(
             "running starry {} qemu tests for package {} on arch: {} (target: {})",
-            test_group, package, arch, target
+            run_group_label, package, arch, target
         );
 
         let default_board = board::default_board_for_target(self.app.workspace_root(), &target)?;
@@ -567,7 +683,8 @@ impl Starry {
             for case in &cases {
                 completed += 1;
                 let case_name = &case.case.name;
-                println!("[{completed}/{total}] starry qemu {case_name}");
+                let case_label = format!("{}/{}", case.test_group, case_name);
+                println!("[{completed}/{total}] starry qemu {case_label}");
 
                 let case_started = Instant::now();
                 match self
@@ -578,39 +695,47 @@ impl Starry {
                         &asset_config,
                     )
                     .await
-                    .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
+                    .with_context(|| format!("starry qemu test failed for case `{case_label}`"))
                 {
                     Ok(()) => {
-                        println!("ok: {case_name}");
+                        println!("ok: {case_label}");
                         reports.push(StarryQemuCaseReport {
-                            name: case_name.clone(),
+                            name: case_label.clone(),
                             outcome: StarryQemuCaseOutcome::Passed,
                             duration: case_started.elapsed(),
                         });
                     }
                     Err(err) => {
-                        eprintln!("failed: {case_name}: {err:#}");
+                        eprintln!("failed: {case_label}: {err:#}");
                         reports.push(StarryQemuCaseReport {
-                            name: case_name.clone(),
+                            name: case_label.clone(),
                             outcome: StarryQemuCaseOutcome::Failed,
                             duration: case_started.elapsed(),
                         });
-                        finalize_qemu_case_run(&StarryQemuRunReport {
-                            group: test_group,
-                            cases: reports,
-                            total_duration: suite_started.elapsed(),
-                        })?;
-                        bail!("starry qemu test aborted: case `{case_name}` failed");
+                        break;
                     }
                 }
             }
+            if !reports.is_empty()
+                && reports.last().unwrap().outcome == StarryQemuCaseOutcome::Failed
+            {
+                break;
+            }
         }
 
+        let failed_case = reports
+            .iter()
+            .find(|report| report.outcome == StarryQemuCaseOutcome::Failed)
+            .map(|report| report.name.clone());
         finalize_qemu_case_run(&StarryQemuRunReport {
-            group: test_group,
+            group: run_group_label,
             cases: reports,
             total_duration: suite_started.elapsed(),
-        })
+        })?;
+        if let Some(case_name) = failed_case {
+            bail!("starry qemu test aborted: case `{case_name}` failed");
+        }
+        Ok(())
     }
 
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
@@ -649,24 +774,37 @@ impl Starry {
             return Ok(());
         }
 
-        let test_group = args.test_group.as_deref().unwrap_or(STARRY_NORMAL_GROUP);
-        let groups = discover_board_test_groups(
-            self.app.workspace_root(),
-            test_group,
-            args.test_case.as_deref(),
-            args.board.as_deref(),
-        )?;
+        let test_groups =
+            selected_qemu_test_group_names(self.app.workspace_root(), args.test_group.as_deref())?;
+        let mut all_groups = Vec::new();
+        for test_group in &test_groups {
+            let groups = discover_board_test_groups(
+                self.app.workspace_root(),
+                test_group,
+                args.test_case.as_deref(),
+                args.board.as_deref(),
+            )?;
+            all_groups.push((test_group.clone(), groups));
+        }
         if args.list {
-            let case_names = board_test::labeled_board_cases(groups);
+            let groups = all_groups
+                .into_iter()
+                .map(|(group, cases)| {
+                    let labeled = board_test::labeled_board_cases(cases);
+                    (group, labeled)
+                })
+                .collect::<Vec<_>>();
             println!(
                 "{}",
-                qemu_test::render_labeled_case_forest("starry", [(test_group, case_names)])
+                qemu_test::render_labeled_case_forest("starry", groups)
             );
             return Ok(());
         }
 
-        let mut run_state = board_test::BoardTestRunState::new("starry", groups.len());
-        for (index, group) in groups.into_iter().enumerate() {
+        let all_groups: Vec<_> = all_groups.into_iter().flat_map(|(_, g)| g).collect();
+
+        let mut run_state = board_test::BoardTestRunState::new("starry", all_groups.len());
+        for (index, group) in all_groups.into_iter().enumerate() {
             let group_label = run_state.start_group(index, &group);
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
@@ -675,7 +813,7 @@ impl Starry {
                     group_label,
                     anyhow::anyhow!("missing board test config `{board_test_config_summary}`"),
                 );
-                continue;
+                break;
             }
 
             let result = async {
@@ -715,7 +853,10 @@ impl Starry {
 
             match result {
                 Ok(()) => run_state.pass_group(&group_label),
-                Err(err) => run_state.fail_group(group_label, err),
+                Err(err) => {
+                    run_state.fail_group(group_label, err);
+                    break;
+                }
             }
         }
         run_state.finish()
@@ -777,12 +918,14 @@ impl Starry {
                 )
             })?;
             prepared.push(PreparedStarryQemuCase {
+                test_group: starry_case.test_group.clone(),
                 case: starry_case.case.clone(),
                 qemu,
                 build_group: starry_case.build_group.clone(),
                 build_config_path: starry_case.build_config_path.clone(),
                 rootfs_path,
                 requirements,
+                subcase_filter: starry_case.subcase_filter.clone(),
             });
         }
 
@@ -878,6 +1021,14 @@ impl Starry {
         let case = &prepared_case.case;
         let mut qemu = prepared_case.qemu.clone();
         case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_runner);
+
+        // When a sub-case filter is active, inject STARRY_ONLY into the
+        // grouped runner invocation so only matching STARRY_CASE tests run.
+        if let Some(ref filter) = prepared_case.subcase_filter
+            && let Some(ref init_cmd) = qemu.shell_init_cmd
+        {
+            qemu.shell_init_cmd = Some(format!("export STARRY_ONLY='{filter}' && {init_cmd}"));
+        }
 
         qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
         qemu_test::apply_timeout_scale(&mut qemu);
@@ -1021,7 +1172,7 @@ mod tests {
 
     fn write_starry_board_build_config(root: &Path, build_group: &str, target: &str) -> PathBuf {
         let path = root
-            .join("test-suit/starryos/normal")
+            .join("test-suit/starryos/functional")
             .join(build_group)
             .join(format!("build-{target}.toml"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1055,7 +1206,7 @@ mod tests {
         board_name: &str,
     ) -> PathBuf {
         let path = root
-            .join("test-suit/starryos/normal")
+            .join("test-suit/starryos/functional")
             .join(build_group)
             .join(case_name)
             .join(format!("board-{board_name}.toml"));
@@ -1082,7 +1233,7 @@ mod tests {
         let board_test_config =
             write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "functional", None, None).unwrap();
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "smoke");
@@ -1096,7 +1247,7 @@ mod tests {
     #[test]
     fn discovers_board_case_when_case_dir_contains_build_config() {
         let root = tempdir().unwrap();
-        let case_dir = root.path().join("test-suit/starryos/normal/smoke");
+        let case_dir = root.path().join("test-suit/starryos/functional/smoke");
         fs::create_dir_all(&case_dir).unwrap();
         let build_config = case_dir.join("build-aarch64-unknown-none-softfloat.toml");
         fs::write(
@@ -1115,7 +1266,7 @@ mod tests {
         )
         .unwrap();
 
-        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "functional", None, None).unwrap();
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "smoke");
@@ -1137,7 +1288,7 @@ mod tests {
         write_board_test_config(root.path(), "vision-five2", "smoke", "vision-five2");
 
         let groups =
-            discover_board_test_groups(root.path(), "normal", Some("smoke"), None).unwrap();
+            discover_board_test_groups(root.path(), "functional", Some("smoke"), None).unwrap();
 
         assert_eq!(groups.len(), 2);
         assert_eq!(
@@ -1163,7 +1314,7 @@ mod tests {
         write_board_test_config(root.path(), "vision-five2", "smoke", "vision-five2");
 
         let groups =
-            discover_board_test_groups(root.path(), "normal", None, Some("orangepi-5-plus"))
+            discover_board_test_groups(root.path(), "functional", None, Some("orangepi-5-plus"))
                 .unwrap();
 
         assert_eq!(
@@ -1185,8 +1336,8 @@ mod tests {
         );
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-        let err =
-            discover_board_test_groups(root.path(), "normal", None, Some("unknown")).unwrap_err();
+        let err = discover_board_test_groups(root.path(), "functional", None, Some("unknown"))
+            .unwrap_err();
 
         assert!(
             err.to_string()
@@ -1200,7 +1351,7 @@ mod tests {
         let root = tempdir().unwrap();
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-        let err = discover_board_test_groups(root.path(), "normal", None, None)
+        let err = discover_board_test_groups(root.path(), "functional", None, None)
             .unwrap_err()
             .to_string();
 
@@ -1250,7 +1401,7 @@ mod tests {
     #[test]
     fn inotifywait_qemu_case_installs_tool_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/inotifywait");
+        let case_dir = workspace_root.join("apps/starry/qemu/inotifywait");
         let config_path = case_dir.join("qemu-x86_64.toml");
         let cmake_path = case_dir.join("c/CMakeLists.txt");
         let script_path = case_dir.join("c/inotifywait-tests.sh");
@@ -1343,7 +1494,7 @@ mod tests {
     #[test]
     fn procps_qemu_case_installs_tools_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/procps");
+        let case_dir = workspace_root.join("apps/starry/qemu/procps");
         let cmake_path = case_dir.join("c/CMakeLists.txt");
         let script_path = case_dir.join("c/procps-test.sh");
         let prebuild_path = case_dir.join("c/prebuild.sh");
@@ -1426,8 +1577,7 @@ mod tests {
     #[test]
     fn apk_add_fs_equivalence_qemu_case_covers_package_fs_ops() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir =
-            workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-add-fs-equivalence");
+        let case_dir = workspace_root.join("apps/starry/qemu/apk-add-fs-equivalence");
         let cmake_path = case_dir.join("c/CMakeLists.txt");
         let source_path = case_dir.join("c/src/main.c");
 
@@ -1616,8 +1766,7 @@ mod tests {
     #[test]
     fn apk_net_equivalence_qemu_case_covers_apk_like_network_ops() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir =
-            workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-net-equivalence");
+        let case_dir = workspace_root.join("apps/starry/qemu/apk-net-equivalence");
         let cmake_path = case_dir.join("c/CMakeLists.txt");
         let source_path = case_dir.join("c/src/main.c");
 
@@ -1762,7 +1911,7 @@ mod tests {
     #[test]
     fn apk_curl_qemu_case_tries_cernet_before_upstream() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-curl");
+        let case_dir = workspace_root.join("apps/starry/qemu/apk-curl");
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
             let config_path = case_dir.join(format!("qemu-{arch}.toml"));
@@ -1816,8 +1965,8 @@ mod tests {
     #[test]
     fn dhcp_qemu_case_checks_local_dhcp_state_without_external_apk_fetch() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let build_group_dir = workspace_root.join("test-suit/starryos/normal/qemu-dhcp");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-dhcp/dhcp");
+        let build_group_dir = workspace_root.join("apps/starry/qemu/dhcp");
+        let case_dir = workspace_root.join("apps/starry/qemu/dhcp/dhcp");
 
         for (arch, target) in [
             ("aarch64", "aarch64-unknown-none-softfloat"),
@@ -1914,7 +2063,7 @@ mod tests {
     #[test]
     fn lua_qemu_case_installs_lua_before_boot() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/lua");
+        let case_dir = workspace_root.join("apps/starry/qemu/lua");
         let cmake_path = case_dir.join("c/CMakeLists.txt");
         let script_path = case_dir.join("c/lua-app-tests.sh");
         let prebuild_path = case_dir.join("c/prebuild.sh");
@@ -2001,18 +2150,12 @@ mod tests {
     }
 
     #[test]
-    fn bug_ext4_dir_ops_stays_in_bugfix_grouped_qemu_configs() {
+    fn bug_ext4_dir_ops_qemu_configs_fail_on_lockdep_fatal() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let case_dir =
-            workspace_root.join("test-suit/starryos/normal/qemu-smp1/bugfix/bug-ext4-dir-ops");
-        assert!(
-            case_dir.join("c/CMakeLists.txt").is_file(),
-            "{} must remain a grouped C test case",
-            case_dir.display()
-        );
+        let case_dir = workspace_root.join("test-suit/starryos/bugfix/qemu-smp1/bugfix-smp1");
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-            let path = case_dir.parent().unwrap().join(format!("qemu-{arch}.toml"));
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
             let content = fs::read_to_string(&path).unwrap();
             let config: toml::Value = toml::from_str(&content).unwrap();
             let test_commands = config
@@ -2044,124 +2187,43 @@ mod tests {
     }
 
     #[test]
-    fn zombie_bugfix_commands_are_isolated_from_large_bugfix_group() {
+    fn moved_bugfix_commands_remain_in_grouped_qemu_configs() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let qemu_smp1 = workspace_root.join("test-suit/starryos/normal/qemu-smp1");
-        let zombie_case_dir = qemu_smp1.join("zombie-bugfix");
-        let zombie_commands = [
+        let case_dir = workspace_root.join("test-suit/starryos/bugfix/qemu-smp1/bugfix-smp1");
+        let commands = [
             "/usr/bin/bug-kill-zombie-esrch",
             "/usr/bin/bug-kill-zombie-perm",
             "/usr/bin/bug-zombie-syscalls",
             "/usr/bin/bug-waitid-basic",
-        ];
-
-        for command in zombie_commands {
-            let name = command.trim_start_matches("/usr/bin/");
-            assert!(
-                zombie_case_dir
-                    .join(name)
-                    .join("c/CMakeLists.txt")
-                    .is_file(),
-                "{} must be built in the isolated zombie-bugfix case",
-                command
-            );
-        }
-
-        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-            let bugfix_path = qemu_smp1.join("bugfix").join(format!("qemu-{arch}.toml"));
-            let bugfix_content = fs::read_to_string(&bugfix_path).unwrap();
-            let bugfix_config: toml::Value = toml::from_str(&bugfix_content).unwrap();
-            let bugfix_commands = bugfix_config
-                .get("test_commands")
-                .and_then(toml::Value::as_array)
-                .unwrap();
-            for command in zombie_commands {
-                assert!(
-                    !bugfix_commands
-                        .iter()
-                        .filter_map(toml::Value::as_str)
-                        .any(|candidate| candidate == command),
-                    "{} must not keep {} in the long bugfix guest session",
-                    bugfix_path.display(),
-                    command
-                );
-            }
-
-            let zombie_path = zombie_case_dir.join(format!("qemu-{arch}.toml"));
-            let zombie_content = fs::read_to_string(&zombie_path).unwrap();
-            let zombie_config: toml::Value = toml::from_str(&zombie_content).unwrap();
-            let isolated_commands = zombie_config
-                .get("test_commands")
-                .and_then(toml::Value::as_array)
-                .unwrap();
-            for command in zombie_commands {
-                assert!(
-                    isolated_commands
-                        .iter()
-                        .filter_map(toml::Value::as_str)
-                        .any(|candidate| candidate == command),
-                    "{} must include {}",
-                    zombie_path.display(),
-                    command
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn tty_bugfix_commands_are_isolated_from_large_bugfix_group() {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let qemu_smp1 = workspace_root.join("test-suit/starryos/normal/qemu-smp1");
-        let tty_case_dir = qemu_smp1.join("tty-bugfix");
-        let tty_commands = [
             "/usr/bin/bug-raw-terminal-polling",
             "/usr/bin/bug-tty-cursor-report",
         ];
 
-        for command in tty_commands {
+        for command in commands {
             let name = command.trim_start_matches("/usr/bin/");
             assert!(
-                tty_case_dir.join(name).join("c/CMakeLists.txt").is_file(),
-                "{} must be built in the isolated tty-bugfix case",
+                case_dir.join(name).join("c/CMakeLists.txt").is_file(),
+                "{} must be built in the grouped bugfix-smp1 case",
                 command
             );
         }
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-            let bugfix_path = qemu_smp1.join("bugfix").join(format!("qemu-{arch}.toml"));
-            let bugfix_content = fs::read_to_string(&bugfix_path).unwrap();
-            let bugfix_config: toml::Value = toml::from_str(&bugfix_content).unwrap();
-            let bugfix_commands = bugfix_config
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let grouped_commands = config
                 .get("test_commands")
                 .and_then(toml::Value::as_array)
                 .unwrap();
-            for command in tty_commands {
+            for command in commands {
                 assert!(
-                    !bugfix_commands
-                        .iter()
-                        .filter_map(toml::Value::as_str)
-                        .any(|candidate| candidate == command),
-                    "{} must not keep {} in the long bugfix guest session",
-                    bugfix_path.display(),
-                    command
-                );
-            }
-
-            let tty_path = tty_case_dir.join(format!("qemu-{arch}.toml"));
-            let tty_content = fs::read_to_string(&tty_path).unwrap();
-            let tty_config: toml::Value = toml::from_str(&tty_content).unwrap();
-            let isolated_commands = tty_config
-                .get("test_commands")
-                .and_then(toml::Value::as_array)
-                .unwrap();
-            for command in tty_commands {
-                assert!(
-                    isolated_commands
+                    grouped_commands
                         .iter()
                         .filter_map(toml::Value::as_str)
                         .any(|candidate| candidate == command),
                     "{} must include {}",
-                    tty_path.display(),
+                    path.display(),
                     command
                 );
             }
@@ -2171,8 +2233,7 @@ mod tests {
     #[test]
     fn busybox_guest_script_reports_case_start_and_bounds_nologin() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let script_path =
-            workspace_root.join("test-suit/starryos/normal/qemu-smp1/busybox/sh/busybox-tests.sh");
+        let script_path = workspace_root.join("apps/starry/qemu/busybox/sh/busybox-tests.sh");
         let script = fs::read_to_string(&script_path).unwrap();
 
         assert!(
@@ -2205,6 +2266,7 @@ mod tests {
 
     fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQemuCase {
         PreparedStarryQemuCase {
+            test_group: "functional".to_string(),
             case: TestQemuCase {
                 name: name.to_string(),
                 display_name: name.to_string(),
@@ -2218,19 +2280,29 @@ mod tests {
             build_config_path,
             rootfs_path: PathBuf::from("/tmp/rootfs.img"),
             requirements: StarryQemuCaseRequirements { smp: 1 },
+            subcase_filter: None,
         }
     }
 
     #[test]
     fn discovers_only_cases_with_matching_qemu_config() {
         let root = tempdir().unwrap();
-        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
-        write_qemu_test_config(root.path(), "normal", "default", "smoke", "x86_64");
-        fs::create_dir_all(root.path().join("test-suit/starryos/normal/default/usb")).unwrap();
+        write_qemu_build_config(root.path(), "functional", "default", "x86_64-unknown-none");
+        write_qemu_test_config(root.path(), "functional", "default", "smoke", "x86_64");
+        fs::create_dir_all(
+            root.path()
+                .join("test-suit/starryos/functional/default/usb"),
+        )
+        .unwrap();
 
-        let cases =
-            discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None, "normal")
-                .unwrap();
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "functional",
+        )
+        .unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].case.name, "smoke");
@@ -2238,29 +2310,90 @@ mod tests {
         assert!(cases[0].case.subcases.is_empty());
         assert_eq!(
             cases[0].case.case_dir,
-            root.path().join("test-suit/starryos/normal/default/smoke")
+            root.path()
+                .join("test-suit/starryos/functional/default/smoke")
+        );
+    }
+
+    #[test]
+    fn default_qemu_group_selection_discovers_all_groups() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/syscall")).unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/functional")).unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/bugfix")).unwrap();
+
+        let groups = selected_qemu_test_group_names(root.path(), None).unwrap();
+
+        assert_eq!(groups, vec!["bugfix", "functional", "syscall"]);
+    }
+
+    #[test]
+    fn explicit_qemu_group_selection_keeps_single_group() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/syscall")).unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/functional")).unwrap();
+
+        let groups = selected_qemu_test_group_names(root.path(), Some("syscall")).unwrap();
+
+        assert_eq!(groups, vec!["syscall"]);
+    }
+
+    #[test]
+    fn discovers_qemu_cases_from_all_selected_groups() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(
+            root.path(),
+            "functional",
+            "qemu-smp1",
+            "x86_64-unknown-none",
+        );
+        write_qemu_build_config(root.path(), "syscall", "qemu-smp1", "x86_64-unknown-none");
+        write_qemu_test_config(root.path(), "functional", "qemu-smp1", "smoke", "x86_64");
+        write_qemu_test_config(root.path(), "syscall", "qemu-smp1", "openat", "x86_64");
+
+        let groups = vec!["functional".to_string(), "syscall".to_string()];
+        let cases = discover_qemu_cases_in_groups(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            &groups,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cases
+                .iter()
+                .map(|case| format!("{}/{}", case.test_group, case.case.name))
+                .collect::<Vec<_>>(),
+            vec!["functional/smoke", "syscall/openat"]
         );
     }
 
     #[test]
     fn discovers_grouped_case_commands_and_sorted_subcases() {
         let root = tempdir().unwrap();
-        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
-        write_grouped_qemu_test_config(root.path(), "normal", "default", "bugfix", "x86_64");
+        write_qemu_build_config(root.path(), "functional", "default", "x86_64-unknown-none");
+        write_grouped_qemu_test_config(root.path(), "functional", "default", "bugfix", "x86_64");
         fs::create_dir_all(
             root.path()
-                .join("test-suit/starryos/normal/default/bugfix/beta/c"),
+                .join("test-suit/starryos/functional/default/bugfix/beta/c"),
         )
         .unwrap();
         fs::create_dir_all(
             root.path()
-                .join("test-suit/starryos/normal/default/bugfix/alpha/c"),
+                .join("test-suit/starryos/functional/default/bugfix/alpha/c"),
         )
         .unwrap();
 
-        let cases =
-            discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None, "normal")
-                .unwrap();
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "functional",
+        )
+        .unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].case.name, "bugfix");
@@ -2291,15 +2424,15 @@ mod tests {
         let root = tempdir().unwrap();
         write_qemu_build_config(
             root.path(),
-            "normal",
+            "functional",
             "default",
             "riscv64gc-unknown-none-elf",
         );
-        write_grouped_qemu_test_config(root.path(), "normal", "default", "syscall", "riscv64");
+        write_grouped_qemu_test_config(root.path(), "functional", "default", "syscall", "riscv64");
 
         let case_dir = root
             .path()
-            .join("test-suit/starryos/normal/default/syscall");
+            .join("test-suit/starryos/functional/default/syscall");
         fs::create_dir_all(case_dir.join("alpha/c")).unwrap();
         fs::create_dir_all(case_dir.join("x86-only/c")).unwrap();
         fs::write(case_dir.join("x86-only/qemu-x86_64.toml"), "timeout = 1\n").unwrap();
@@ -2309,7 +2442,7 @@ mod tests {
             "riscv64",
             "riscv64gc-unknown-none-elf",
             None,
-            "normal",
+            "functional",
         )
         .unwrap();
 
@@ -2332,10 +2465,10 @@ mod tests {
         // file once.  Therefore, discovery itself should succeed here; the
         // conflict is detected later when QemuConfig is available.
         let root = tempdir().unwrap();
-        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+        write_qemu_build_config(root.path(), "functional", "default", "x86_64-unknown-none");
         let path = root
             .path()
-            .join("test-suit/starryos/normal/default/bugfix/qemu-x86_64.toml");
+            .join("test-suit/starryos/functional/default/bugfix/qemu-x86_64.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
@@ -2351,7 +2484,7 @@ mod tests {
             "x86_64",
             "x86_64-unknown-none",
             Some("bugfix"),
-            "normal",
+            "functional",
         )
         .unwrap();
         assert_eq!(cases.len(), 1);
@@ -2361,10 +2494,10 @@ mod tests {
     #[test]
     fn grouped_case_rejects_empty_test_command() {
         let root = tempdir().unwrap();
-        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+        write_qemu_build_config(root.path(), "functional", "default", "x86_64-unknown-none");
         let path = root
             .path()
-            .join("test-suit/starryos/normal/default/bugfix/qemu-x86_64.toml");
+            .join("test-suit/starryos/functional/default/bugfix/qemu-x86_64.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "test_commands = [\"/usr/bin/ok\", \"  \"]\n").unwrap();
 
@@ -2373,7 +2506,7 @@ mod tests {
             "x86_64",
             "x86_64-unknown-none",
             Some("bugfix"),
-            "normal",
+            "functional",
         )
         .unwrap_err()
         .to_string();
@@ -2384,15 +2517,19 @@ mod tests {
     #[test]
     fn selected_case_requires_matching_qemu_config() {
         let root = tempdir().unwrap();
-        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
-        fs::create_dir_all(root.path().join("test-suit/starryos/normal/default/usb")).unwrap();
+        write_qemu_build_config(root.path(), "functional", "default", "x86_64-unknown-none");
+        fs::create_dir_all(
+            root.path()
+                .join("test-suit/starryos/functional/default/usb"),
+        )
+        .unwrap();
 
         let err = discover_qemu_cases(
             root.path(),
             "x86_64",
             "x86_64-unknown-none",
             Some("usb"),
-            "normal",
+            "functional",
         )
         .unwrap_err()
         .to_string();
@@ -2406,31 +2543,37 @@ mod tests {
         let root = tempdir().unwrap();
         write_qemu_build_config(
             root.path(),
-            "normal",
+            "functional",
             "board-orangepi-5-plus",
             "x86_64-unknown-none",
         );
-        write_qemu_build_config(root.path(), "normal", "qemu-smp1", "x86_64-unknown-none");
+        write_qemu_build_config(
+            root.path(),
+            "functional",
+            "qemu-smp1",
+            "x86_64-unknown-none",
+        );
         fs::create_dir_all(
             root.path()
-                .join("test-suit/starryos/normal/board-orangepi-5-plus/smoke"),
+                .join("test-suit/starryos/functional/board-orangepi-5-plus/smoke"),
         )
         .unwrap();
         fs::write(
             root.path().join(
-                "test-suit/starryos/normal/board-orangepi-5-plus/smoke/board-orangepi-5-plus.toml",
+                "test-suit/starryos/functional/board-orangepi-5-plus/smoke/board-orangepi-5-plus.\
+                 toml",
             ),
             "board_type = \"OrangePi-5-Plus\"\n",
         )
         .unwrap();
-        write_qemu_test_config(root.path(), "normal", "qemu-smp1", "smoke", "x86_64");
+        write_qemu_test_config(root.path(), "functional", "qemu-smp1", "smoke", "x86_64");
 
         let cases = discover_qemu_cases(
             root.path(),
             "x86_64",
             "x86_64-unknown-none",
             Some("smoke"),
-            "normal",
+            "functional",
         )
         .unwrap();
 
@@ -2626,7 +2769,7 @@ mod tests {
         let root = tempdir().unwrap();
         let build_config = write_qemu_build_config_with_max_cpu_num(
             root.path(),
-            "normal",
+            "functional",
             "qemu-smp4",
             "x86_64-unknown-none",
             4,
@@ -2652,8 +2795,8 @@ mod tests {
     fn qemu_group_build_context_uses_group_plat_dyn_over_default_request() {
         let root = tempdir().unwrap();
         let build_config = root.path().join(
-            "test-suit/starryos/normal/qemu-aarch64-plat-dyn/build-aarch64-unknown-none-softfloat.\
-             toml",
+            "test-suit/starryos/functional/qemu-aarch64-plat-dyn/\
+             build-aarch64-unknown-none-softfloat.toml",
         );
         fs::create_dir_all(build_config.parent().unwrap()).unwrap();
         fs::write(
@@ -2704,7 +2847,7 @@ mod tests {
         );
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "functional", None, None).unwrap();
 
         assert_eq!(groups[0].build_config_path, build);
     }
@@ -2715,10 +2858,10 @@ mod tests {
         write_board_test_config(root.path(), "smoke", "smoke", "orangepi-5-plus");
         let legacy = root
             .path()
-            .join("test-suit/starryos/normal/smoke/.build-aarch64-unknown-none-softfloat.toml");
+            .join("test-suit/starryos/functional/smoke/.build-aarch64-unknown-none-softfloat.toml");
         fs::write(&legacy, "").unwrap();
 
-        let err = discover_board_test_groups(root.path(), "normal", None, None)
+        let err = discover_board_test_groups(root.path(), "functional", None, None)
             .unwrap_err()
             .to_string();
 
@@ -2735,7 +2878,7 @@ mod tests {
         );
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "functional", None, None).unwrap();
 
         assert_eq!(groups[0].build_config_path, build);
     }
@@ -2743,7 +2886,7 @@ mod tests {
     #[test]
     fn qemu_summary_lists_passed_and_failed_cases() {
         let report = StarryQemuRunReport {
-            group: "normal".to_string(),
+            group: "functional".to_string(),
             cases: vec![
                 StarryQemuCaseReport {
                     name: "smoke".to_string(),
@@ -2761,27 +2904,10 @@ mod tests {
 
         let summary = render_qemu_case_summary(&report);
 
-        assert!(summary.contains("starry normal qemu test summary:"));
+        assert!(summary.contains("starry functional qemu test summary:"));
         assert!(summary.contains("  PASS smoke (0.50s)"));
         assert!(summary.contains("  FAIL usb (2.00s)"));
         assert!(summary.contains("result: 1/2 case(s) passed"));
         assert!(summary.contains("total: 3.00s"));
-    }
-
-    #[test]
-    fn resolves_stress_alias_as_stress_group() {
-        assert_eq!(resolve_qemu_test_group_name(None, true).unwrap(), "stress");
-        assert_eq!(
-            resolve_qemu_test_group_name(Some("stress"), true).unwrap(),
-            "stress"
-        );
-    }
-
-    #[test]
-    fn rejects_conflicting_stress_alias_and_group() {
-        let err = resolve_qemu_test_group_name(Some("normal"), true).unwrap_err();
-
-        assert!(err.to_string().contains("`--stress` is equivalent"));
-        assert!(err.to_string().contains("`--test-group normal`"));
     }
 }

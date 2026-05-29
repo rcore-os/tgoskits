@@ -59,7 +59,7 @@ Alpine staging root and injects the Redis binaries, scripts, and runtime
 libraries into the app rootfs overlay.
 
 ```bash
-cargo xtask starry app run -t redis --arch riscv64
+cargo xtask starry app qemu -t redis --arch riscv64
 ```
 
 Stress configs are available through explicit QEMU config variants; see
@@ -71,8 +71,8 @@ The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
 rootfs overlay with GDB, GDBServer, and two tiny target programs.
 
 ```bash
-cargo xtask starry app run -t gdb-smoke --arch riscv64
-cargo xtask starry app run -t gdb-smoke --arch riscv64 \
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-gdbserver.toml
 ```
 

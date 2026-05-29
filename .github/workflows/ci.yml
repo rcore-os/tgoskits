@@ -509,7 +509,7 @@ jobs:
           - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board --board orangepi-5-plus
+            command: cargo xtask starry test board -g board --board orangepi-5-plus
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
@@ -517,7 +517,7 @@ jobs:
           - name: Test starry self-hosted board licheerv-nano-sg2002
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board --board licheerv-nano-sg2002
+            command: cargo xtask starry test board -g board --board licheerv-nano-sg2002
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

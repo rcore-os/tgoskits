@@ -24,12 +24,14 @@ pub(crate) struct TestBuildWrapper {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DiscoveredQemuCase {
+    pub(crate) group_label: String,
     pub(crate) name: String,
     pub(crate) display_name: String,
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) build_group: String,
     pub(crate) build_config_path: PathBuf,
+    pub(crate) subcase_filter: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,12 +394,14 @@ pub(crate) fn discover_qemu_cases(
         }
         if let Some(qemu_config_path) = case.qemu_configs.get(arch) {
             cases.push(DiscoveredQemuCase {
+                group_label: group_label.to_string(),
                 name: case.name,
                 display_name: case.display_name,
                 case_dir: case.case_dir,
                 qemu_config_path: qemu_config_path.clone(),
                 build_group: case.build_group,
                 build_config_path: case.build_config_path,
+                subcase_filter: None,
             });
         } else if selected_case.is_some() {
             selected_case_dirs_without_config
@@ -444,6 +448,19 @@ fn discover_qemu_case_index(
 ) -> anyhow::Result<Vec<IndexedQemuCase>> {
     let mut cases = Vec::new();
     let mut build_wrappers = Vec::new();
+
+    let root_build_config_path = match target {
+        Some(target) => resolve_build_config_path(test_group_dir, target)?,
+        None => build_config_paths(test_group_dir)?.into_iter().next(),
+    };
+    if let Some(build_config_path) = root_build_config_path {
+        build_wrappers.push(TestBuildWrapper {
+            name: String::new(),
+            dir: test_group_dir.to_path_buf(),
+            build_config_path,
+        });
+    }
+
     let mut stack = fs::read_dir(test_group_dir)
         .with_context(|| format!("failed to read {}", test_group_dir.display()))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -569,12 +586,17 @@ fn indexed_qemu_case(
     case_dir: PathBuf,
     qemu_configs: BTreeMap<String, PathBuf>,
 ) -> IndexedQemuCase {
+    let display_name = if build_wrapper.name.is_empty() {
+        name.clone()
+    } else {
+        format!("{}/{}", build_wrapper.name, name)
+    };
     IndexedQemuCase {
-        display_name: format!("{}/{}", build_wrapper.name, name),
+        display_name,
         name,
         case_dir,
         qemu_configs,
-        build_group: build_wrapper.name.clone(),
+        build_group: build_wrapper_group_name(build_wrapper),
         build_config_path: build_wrapper.build_config_path.clone(),
     }
 }
@@ -583,14 +605,28 @@ fn indexed_qemu_root_case(
     build_wrapper: &TestBuildWrapper,
     qemu_configs: BTreeMap<String, PathBuf>,
 ) -> IndexedQemuCase {
+    let name = build_wrapper_group_name(build_wrapper);
     IndexedQemuCase {
-        name: build_wrapper.name.clone(),
-        display_name: build_wrapper.name.clone(),
+        name: name.clone(),
+        display_name: name,
         case_dir: build_wrapper.dir.clone(),
         qemu_configs,
-        build_group: build_wrapper.name.clone(),
+        build_group: build_wrapper_group_name(build_wrapper),
         build_config_path: build_wrapper.build_config_path.clone(),
     }
+}
+
+fn build_wrapper_group_name(build_wrapper: &TestBuildWrapper) -> String {
+    if !build_wrapper.name.is_empty() {
+        return build_wrapper.name.clone();
+    }
+
+    build_wrapper
+        .dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn relative_case_name(root: &Path, case_dir: &Path) -> anyhow::Result<String> {
@@ -758,6 +794,9 @@ fn discover_qemu_subcases(
             continue;
         }
 
+        if is_standalone_qemu_case_dir(&path)? {
+            continue;
+        }
         if let Some(arch) = arch
             && let Some(configs) = qemu_configs_in_dir(&path)?
             && !configs.contains_key(arch)
@@ -768,7 +807,7 @@ fn discover_qemu_subcases(
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let kind = if path.join("c").is_dir() {
+        let kind = if path.join("c").is_dir() && path.join("c/CMakeLists.txt").is_file() {
             Some(TestQemuSubcaseKind::C)
         } else if path.join("rust").is_dir() {
             Some(TestQemuSubcaseKind::Rust)
@@ -786,6 +825,23 @@ fn discover_qemu_subcases(
     }
     subcases.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(subcases)
+}
+
+fn is_standalone_qemu_case_dir(path: &Path) -> anyhow::Result<bool> {
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        if !entry_path.is_file() || entry_path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        let Some(stem) = entry_path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if stem.starts_with("qemu-") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn validate_grouped_qemu_commands(
@@ -1295,6 +1351,49 @@ mod tests {
         assert_eq!(cases[0].display_name, "root-case");
         assert_eq!(cases[0].case_dir, case_dir);
         assert_eq!(cases[0].qemu_config_path, qemu_config);
+    }
+
+    #[test]
+    fn discover_qemu_cases_includes_group_root_case() {
+        let root = tempfile::tempdir().unwrap();
+        let group_dir = root.path().join("suite/syscall");
+        fs::create_dir_all(&group_dir).unwrap();
+        fs::write(group_dir.join("build-x86_64-unknown-none.toml"), "").unwrap();
+        let qemu_config = group_dir.join("qemu-x86_64.toml");
+        fs::write(&qemu_config, "").unwrap();
+
+        let cases = discover_qemu_cases(
+            &group_dir,
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "test",
+            "syscall",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "syscall");
+        assert_eq!(cases[0].display_name, "syscall");
+        assert_eq!(cases[0].build_group, "syscall");
+        assert_eq!(cases[0].case_dir, group_dir);
+        assert_eq!(cases[0].qemu_config_path, qemu_config);
+    }
+
+    #[test]
+    fn discover_qemu_subcases_skips_standalone_qemu_case_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let grouped_dir = root.path().join("syscall");
+        fs::create_dir_all(grouped_dir.join("alpha/c")).unwrap();
+        fs::write(grouped_dir.join("alpha/c/CMakeLists.txt"), "").unwrap();
+        fs::create_dir_all(grouped_dir.join("ptrace/c")).unwrap();
+        fs::write(grouped_dir.join("ptrace/c/CMakeLists.txt"), "").unwrap();
+        fs::write(grouped_dir.join("ptrace/qemu-riscv64.toml"), "").unwrap();
+
+        let subcases = discover_qemu_subcases(&grouped_dir).unwrap();
+
+        assert_eq!(subcases.len(), 1);
+        assert_eq!(subcases[0].name, "alpha");
     }
 
     #[test]
