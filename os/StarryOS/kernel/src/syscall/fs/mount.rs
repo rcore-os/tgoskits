@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -70,7 +70,11 @@ pub fn sys_mount(
 ) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
-    let fs_type = vm_load_string(fs_type)?;
+    let fs_type = if fs_type.is_null() {
+        String::new()
+    } else {
+        vm_load_string(fs_type)?
+    };
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
 
     let propagation = flags & PROPAGATION_FLAGS;
