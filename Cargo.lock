@@ -6593,6 +6593,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbpf"
+version = "0.4.1"
+source = "git+https://github.com/CN-TangLin/rbpf.git?branch=feat%2Fjit-multi-arch#4e8cf992d9c9f885906119efa29e8dbe87d69add"
+dependencies = [
+ "byteorder",
+ "combine",
+ "hashbrown 0.16.1",
+ "log",
+]
+
+[[package]]
 name = "rd-block"
 version = "0.1.2"
 dependencies = [
@@ -8088,6 +8099,7 @@ dependencies = [
  "num_enum",
  "ouroboros",
  "rand 0.10.1",
+ "rbpf",
  "rdrive",
  "ringbuf",
  "riscv 0.16.0",

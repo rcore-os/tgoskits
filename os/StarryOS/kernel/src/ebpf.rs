@@ -27,7 +27,7 @@ use crate::task::AsThread;
     target_arch = "riscv64",
     target_arch = "aarch64"
 ))]
-mod ebpf_jit;
+mod rbpf_jit;
 
 #[allow(dead_code)]
 pub(crate) mod bpf_insn {
@@ -1002,7 +1002,7 @@ struct BpfProg {
         target_arch = "riscv64",
         target_arch = "aarch64"
     ))]
-    jitted: Option<ebpf_jit::JitBuffer>,
+    jitted: Option<rbpf_jit::RbpfJitBuffer>,
 }
 
 #[derive(Clone, Debug)]
@@ -1348,7 +1348,7 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
     ))]
     let jitted = {
         let helpers = init_helper_functions();
-        ebpf_jit::try_jit_compile(&insns, &helpers)
+        rbpf_jit::try_jit_compile(&insns, &helpers)
     };
     #[cfg(any(
         target_arch = "x86_64",
@@ -2353,33 +2353,26 @@ impl BpfVm {
     target_arch = "aarch64"
 ))]
 pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
-    let (insns, prog_type, has_jit, jit_entry) = {
+    let (insns, prog_type, has_jit) = {
         let guard = BPF_GLOBAL.lock();
         let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
-        let entry = prog.jitted.as_ref().map(|j| j.entry());
-        (
-            prog.insns.clone(),
-            prog.prog_type,
-            prog.jitted.is_some(),
-            entry,
-        )
+        (prog.insns.clone(), prog.prog_type, prog.jitted.is_some())
     };
     let _ = prog_type;
 
-    if has_jit && let Some(entry) = jit_entry {
-        let result: u64;
-        unsafe {
-            let jit_fn: extern "C" fn(u64) -> u64 = core::mem::transmute(entry);
-            result = jit_fn(ctx);
+    if has_jit {
+        let guard = BPF_GLOBAL.lock();
+        let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
+        if let Some(jitted) = &prog.jitted {
+            return Ok(jitted.execute(ctx));
         }
-        Ok(result)
-    } else {
-        let vm = BpfVm::new();
-        vm.execute(&insns, ctx).map_err(|e| {
-            warn!("bpf: program execution failed: {e}");
-            AxError::Io
-        })
     }
+
+    let vm = BpfVm::new();
+    vm.execute(&insns, ctx).map_err(|e| {
+        warn!("bpf: program execution failed: {e}");
+        AxError::Io
+    })
 }
 
 #[cfg(not(any(
