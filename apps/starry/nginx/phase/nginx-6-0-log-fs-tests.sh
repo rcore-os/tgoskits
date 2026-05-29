@@ -3,6 +3,7 @@ set -eu
 
 BASE=/tmp/nginx-phase60
 CONF="$BASE/conf/log-fs.conf"
+CONF_PREFIX="$BASE/conf/log-fs-prefix.conf"
 WWW="$BASE/www"
 OUT="$BASE/out"
 LOGDIR="$BASE/logs"
@@ -93,6 +94,59 @@ test_reopen_logs() {
     test -s "$LOGDIR/access.log"
 }
 
+test_pid_removed_after_stop() {
+    run_with_timeout 5 nginx -s quit -c "$CONF" -p "$BASE/"
+    i=0
+    while [ "$i" -lt 6 ]; do
+        [ ! -e "$BASE/nginx.pid" ] && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+prepare_prefix_conf() {
+    mkdir -p "$BASE/prefix/conf" "$BASE/prefix/www"
+    printf 'phase60 prefix test\n' > "$BASE/prefix/www/index.html"
+    cat > "$CONF_PREFIX" <<'EOF'
+daemon off;
+master_process off;
+worker_processes 1;
+error_log logs/error.log debug;
+pid run/nginx.pid;
+events { worker_connections 64; }
+http {
+    include /etc/nginx/mime.types;
+    access_log logs/access.log;
+    server {
+        listen 127.0.0.1:8081;
+        root www;
+        location / { index index.html; }
+    }
+}
+EOF
+}
+
+test_prefix_relative_paths() {
+    mkdir -p "$BASE/prefix/logs" "$BASE/prefix/run"
+    nginx -t -c "$CONF_PREFIX" -p "$BASE/prefix/" || return 1
+    nginx -c "$CONF_PREFIX" -p "$BASE/prefix/" > "$LOGDIR/nginx-prefix-stdout.log" 2>&1 &
+    i=0
+    while [ "$i" -lt 6 ]; do
+        if run_with_timeout 1 curl -fsS -o "$OUT/prefix.body" http://127.0.0.1:8081/ >/dev/null 2>&1; then
+            break
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    [ "$i" -lt 6 ] || return 1
+    grep -qx 'phase60 prefix test' "$OUT/prefix.body"
+    test -s "$BASE/prefix/logs/access.log"
+    test -s "$BASE/prefix/run/nginx.pid"
+    run_with_timeout 5 nginx -s quit -c "$CONF_PREFIX" -p "$BASE/prefix/"
+    return 0
+}
+
 init_timeout_cmd
 ( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
 prepare_packages || fail "prepare packages"
@@ -102,5 +156,8 @@ test_access_log_line_growth || fail "access log line growth"
 test_error_log_writable || fail "error log writable"
 test_pid_file_present || fail "pid file present"
 test_reopen_logs || fail "reopen logs"
+test_pid_removed_after_stop || fail "pid removed after stop"
+prepare_prefix_conf || fail "prepare prefix conf"
+test_prefix_relative_paths || fail "prefix relative paths"
 cleanup_nginx
 printf 'NGINX_PHASE60_TEST_PASSED\n'
