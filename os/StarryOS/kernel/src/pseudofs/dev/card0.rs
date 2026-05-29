@@ -435,7 +435,7 @@ impl DeviceOps for Card0 {
             ));
         }
         let dumbs = self.dumbs.lock();
-        for (_, buf) in dumbs.iter() {
+        for buf in dumbs.values() {
             if offset == buf.offset
                 && let Some(paddr) = buf.paddr
             {

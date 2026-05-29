@@ -586,8 +586,12 @@ fn run_clippy_checks<R: CargoRunner>(
             passed_checks += 1;
             println!("ok: {}", check.label());
         } else {
-            eprintln!("failed: {}", check.label());
             package_report.failed_checks.push(check.label());
+            bail!(
+                "clippy failed for {}: aborting (fail-fast, {} check(s) remaining)",
+                check.label(),
+                checks.len() - index - 1
+            );
         }
     }
 
