@@ -8,4 +8,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-rename src/main.c)
 target_compile_options(test-rename PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-rename RUNTIME DESTINATION usr/bin)
+install(TARGETS test-rename RUNTIME DESTINATION usr/bin/starry-test-suit)
