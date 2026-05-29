@@ -844,7 +844,16 @@ impl SimpleDirOps for ThreadDir {
                     SimpleFileOperation::Write(data) => {
                         let input =
                             core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
-                        // Parse "0 <uid> 1" format
+                        // Linux uid_map format: <lower_uid> <upper_uid> <count>
+                        // Maps UIDs in the parent namespace (lower_uid..lower_uid+count)
+                        // to UIDs in this namespace (upper_uid..upper_uid+count).
+                        //
+                        // StarryOS simplified semantics: we do not maintain namespace
+                        // UID mappings; instead we directly set the thread's credentials
+                        // to the upper_uid value (the UID this namespace wants to see).
+                        // For the common `0 0 1` case (map root to root) this is correct.
+                        // For non-trivial mappings this is an intentional simplification
+                        // — StarryOS does not implement full user namespacing.
                         let parts: Vec<&str> = input.split_whitespace().collect();
                         if parts.len() >= 3 {
                             let _mapped: u32 =
@@ -852,7 +861,6 @@ impl SimpleDirOps for ThreadDir {
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
                             let _count: u32 =
                                 parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
-                            // Apply the mapping: set uid to the mapped value (0 = root in namespace)
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
                             cred.uid = orig;
@@ -883,6 +891,11 @@ impl SimpleDirOps for ThreadDir {
                     SimpleFileOperation::Write(data) => {
                         let input =
                             core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
+                        // Linux gid_map format: <lower_gid> <upper_gid> <count>
+                        // Same simplified semantics as uid_map above.
+                        //
+                        // StarryOS does not maintain namespace GID mappings;
+                        // it directly sets the thread's credentials to upper_gid.
                         let parts: Vec<&str> = input.split_whitespace().collect();
                         if parts.len() >= 3 {
                             let _mapped: u32 =
