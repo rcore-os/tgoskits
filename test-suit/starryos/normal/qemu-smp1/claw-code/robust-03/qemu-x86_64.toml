@@ -10,6 +10,6 @@ uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/claw-robust-03"
-success_regex = ["ALL_TESTS_DONE"]
+success_regex = ["ALL_TESTS_DONE", "CLAW_SKIP"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', 'ALL_TESTS_FAILED']
 timeout = 600

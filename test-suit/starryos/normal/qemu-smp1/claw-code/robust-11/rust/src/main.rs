@@ -3,9 +3,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 const CLAW_PATH: &str = "/tmp/claw";
-const API_BASE_URL: Option<&str> = option_env!("CLAW_API_BASE_URL");
-const API_AUTH_TOKEN: Option<&str> = option_env!("CLAW_API_KEY");
-const API_MODEL: Option<&str> = option_env!("CLAW_API_MODEL");
+fn claw_env() -> Option<String> {
+    let api_key = std::env::var("CLAW_API_KEY").ok()?;
+    let api_base = std::env::var("CLAW_API_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com/anthropic".into());
+    let api_model =
+        std::env::var("CLAW_API_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+    Some(format!(
+        "ANTHROPIC_BASE_URL={api_base} ANTHROPIC_AUTH_TOKEN={api_key} ANTHROPIC_MODEL={api_model}",
+    ))
+}
 
 fn main() {
     let claw_bytes: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/claw-binary"));
@@ -17,11 +24,10 @@ fn main() {
     fs::write("/tmp/work/.git/HEAD", "ref: refs/heads/master\n").ok();
     fs::write("/tmp/work/.git/config", "[core]\n\trepositoryformatversion = 0\n\tbare = false\n").ok();
 
-    let env = format!("ANTHROPIC_BASE_URL={} ANTHROPIC_AUTH_TOKEN={} ANTHROPIC_MODEL={}",
-        API_BASE_URL.unwrap_or("https://api.deepseek.com/anthropic"),
-        API_AUTH_TOKEN.expect("CLAW_API_KEY env var not set at build time"),
-        API_MODEL.unwrap_or("deepseek-chat"),
-    );
+    let Some(env) = claw_env() else {
+        println!("CLAW_SKIP: CLAW_API_KEY not set");
+        std::process::exit(0);
+    };
     println!("=== Robust-11: data pipeline with statistics ===");
     let output = Command::new("sh").arg("-c").arg(format!("cd /tmp/work && {env} timeout 900 /tmp/claw --allowedTools bash,write prompt 'write a multi-step data pipeline: generate 100 random numbers, sort them, compute min/max/average/median, and write a summary report to stats.md' 2>&1")).output().unwrap();
     println!("{}", String::from_utf8_lossy(&output.stdout));
