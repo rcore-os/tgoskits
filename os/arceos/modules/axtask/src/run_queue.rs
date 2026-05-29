@@ -661,6 +661,7 @@ impl AxRunQueue {
             };
             if let Some(task) = task {
                 if task.cpumask().get(current_cpu) {
+                    task.set_cpu_id(current_cpu as _);
                     #[cfg(feature = "ipi")]
                     kick_remote_cpu(target);
                     return Some(task);
