@@ -111,6 +111,9 @@ impl FileLike for Pipe {
         if !self.readable() {
             return Err(LinuxError::EPERM);
         }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let mut read_size = 0usize;
         let max_len = buf.len();
         loop {
@@ -131,6 +134,12 @@ impl FileLike for Pipe {
                 }
                 buf[read_size] = ring_buffer.read_byte();
                 read_size += 1;
+                if read_size == max_len {
+                    return Ok(read_size);
+                }
+            }
+            if read_size > 0 {
+                return Ok(read_size);
             }
         }
     }
@@ -138,6 +147,9 @@ impl FileLike for Pipe {
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
         if !self.writable() {
             return Err(LinuxError::EPERM);
+        }
+        if buf.is_empty() {
+            return Ok(0);
         }
         let mut write_size = 0usize;
         let max_len = buf.len();
@@ -156,6 +168,9 @@ impl FileLike for Pipe {
                 }
                 ring_buffer.write_byte(buf[write_size]);
                 write_size += 1;
+                if write_size == max_len {
+                    return Ok(write_size);
+                }
             }
         }
     }
