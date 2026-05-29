@@ -81,7 +81,7 @@ enum Commands {
     /// StarryOS build commands
     Starry {
         #[command(subcommand)]
-        command: starry::Command,
+        command: Box<starry::Command>,
     },
 }
 
@@ -100,6 +100,6 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
-        Commands::Starry { command } => Starry::new()?.execute(command).await,
+        Commands::Starry { command } => Starry::new()?.execute(*command).await,
     }
 }

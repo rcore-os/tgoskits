@@ -20,6 +20,26 @@ impl AllRegs {
             .map(u64::from_le_bytes)
             .map_err(|v| anyhow!("Unexpected size for register {name}: {}", v.len()))
     }
+
+    pub fn find_name(&self, candidates: &[&'static str]) -> Option<String> {
+        candidates
+            .iter()
+            .find(|name| self.0.contains_key(**name))
+            .map(|name| (*name).to_string())
+    }
+
+    pub fn read_first(&self, candidates: &[&'static str]) -> anyhow::Result<(String, u64)> {
+        for name in candidates {
+            if self.0.contains_key(*name) {
+                return self.read(name).map(|value| ((*name).to_string(), value));
+            }
+        }
+        bail!("register not found; tried {}", candidates.join(", "))
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
 }
 
 impl From<Vec<RegisterDescriptor<'static>>> for AllRegs {
@@ -65,15 +85,15 @@ pub struct Frame {
 }
 
 impl Target {
-    pub fn reg(&self, reg: Reg) -> &'static str {
+    pub fn reg_candidates(&self, reg: Reg) -> &'static [&'static str] {
         match self {
             Target::Riscv64 => match reg {
-                Reg::Sp => "sp",
-                Reg::Fp => "fp",
+                Reg::Sp => &["sp", "x2"],
+                Reg::Fp => &["fp", "s0", "x8"],
             },
             Target::LoongArch64 => match reg {
-                Reg::Sp => "r3",
-                Reg::Fp => "r22",
+                Reg::Sp => &["r3", "sp"],
+                Reg::Fp => &["r22", "fp"],
             },
         }
     }
