@@ -350,7 +350,9 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.12"
 ostool = { version = "0.21" }
-uefi = "0.36"
+riscv = { version = "0.16.1", default-features = false }
+sbi-rt = { version = "0.0.4", default-features = false }
+uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
