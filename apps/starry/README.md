@@ -118,6 +118,19 @@ cargo xtask starry app run -t mariadb --arch x86_64
 cargo xtask starry app run -t mariadb --arch riscv64
 ```
 
+## MariaDB
+
+The `mariadb` case is a QEMU app workflow that installs MariaDB in the guest,
+initializes a fresh data directory, runs an InnoDB SQL workload, and checks that
+the data survives a server restart.
+
+```bash
+cargo xtask starry app run -t mariadb --arch aarch64
+cargo xtask starry app run -t mariadb --arch loongarch64
+cargo xtask starry app run -t mariadb --arch x86_64
+cargo xtask starry app run -t mariadb --arch riscv64
+```
+
 ## jcode
 
 The `jcode` case is an x86_64 QEMU app workflow that downloads the jcode AI coding
