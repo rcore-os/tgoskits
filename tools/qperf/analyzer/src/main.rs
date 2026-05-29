@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
@@ -31,6 +31,9 @@ struct Cli {
     stop_sec: Option<f64>,
     #[clap(long, value_name = "JSON")]
     stats: Option<PathBuf>,
+    /// Write selected stack-depth distribution as CSV.
+    #[clap(long, value_name = "CSV")]
+    depth_summary: Option<PathBuf>,
     /// Folded-stack symbol style.
     #[clap(long, value_enum, default_value_t = SymbolStyle::Full)]
     symbol_style: SymbolStyle,
@@ -76,6 +79,9 @@ struct ResolveArgs {
     /// Write resolve/filter statistics as JSON.
     #[clap(long, value_name = "JSON")]
     stats: Option<PathBuf>,
+    /// Write selected stack-depth distribution as CSV.
+    #[clap(long, value_name = "CSV")]
+    depth_summary: Option<PathBuf>,
     /// Folded-stack symbol style.
     #[clap(long, value_enum, default_value_t = SymbolStyle::Full)]
     symbol_style: SymbolStyle,
@@ -128,6 +134,7 @@ fn main() -> anyhow::Result<()> {
                 start_sec: cli.start_sec,
                 stop_sec: cli.stop_sec,
                 stats: cli.stats,
+                depth_summary: cli.depth_summary,
                 symbol_style: cli.symbol_style,
                 no_demangle: cli.no_demangle,
                 focus: cli.focus,
@@ -140,11 +147,27 @@ fn main() -> anyhow::Result<()> {
 #[derive(bincode::Decode)]
 struct SampleRecord {
     elapsed_ns: u64,
+    pc: u64,
+    sp: u64,
+    fp: u64,
+    cpu: u32,
+    callchain: u8,
+    trace: Vec<u64>,
+}
+
+#[derive(bincode::Decode)]
+struct SampleRecordV2 {
+    elapsed_ns: u64,
     trace: Vec<u64>,
 }
 
 struct DecodedRecord {
     elapsed_ns: Option<u64>,
+    pc: Option<u64>,
+    sp: Option<u64>,
+    fp: Option<u64>,
+    cpu: Option<u32>,
+    callchain: Option<u8>,
     trace: Vec<u64>,
 }
 
@@ -156,6 +179,15 @@ struct ResolveStats {
     bad_records: u64,
     total_frames: u64,
     selected_frames: u64,
+    selected_leaf_records: u64,
+    selected_multi_frame_records: u64,
+    samples_with_pc: u64,
+    samples_with_sp: u64,
+    samples_with_fp: u64,
+    samples_with_cpu: u64,
+    max_depth: usize,
+    depth_histogram: BTreeMap<usize, u64>,
+    callchain_method: Option<String>,
     samples_excluded_before: u64,
     samples_excluded_after: u64,
     first_sample_sec: Option<f64>,
@@ -223,6 +255,33 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
                 Some("input has no timestamps; elapsed-time filtering was not applied".to_string());
         }
         stats.selected_records += 1;
+        let raw_depth = record.trace.len().max(1);
+        *stats.depth_histogram.entry(raw_depth).or_insert(0) += 1;
+        stats.max_depth = stats.max_depth.max(raw_depth);
+        if raw_depth > 1 {
+            stats.selected_multi_frame_records += 1;
+        } else {
+            stats.selected_leaf_records += 1;
+        }
+        if record.pc.is_some_and(|pc| pc != 0) {
+            stats.samples_with_pc += 1;
+        }
+        if record.sp.is_some_and(|sp| sp != 0) {
+            stats.samples_with_sp += 1;
+        }
+        if record.fp.is_some_and(|fp| fp != 0) {
+            stats.samples_with_fp += 1;
+        }
+        if record.cpu.is_some() {
+            stats.samples_with_cpu += 1;
+        }
+        if let Some(method) = record.callchain.and_then(callchain_method_name) {
+            match stats.callchain_method.as_deref() {
+                None | Some("leaf") => stats.callchain_method = Some(method.to_string()),
+                Some(current) if current == method => {}
+                Some(_) => stats.callchain_method = Some("mixed".to_string()),
+            }
+        }
         let mut result = vec![];
         for (idx, ip) in record.trace.into_iter().enumerate() {
             if ip == 0 || ip == u64::MAX {
@@ -266,32 +325,85 @@ fn cmd_resolve(args: ResolveArgs) -> anyhow::Result<()> {
     if let Some(stats_path) = args.stats {
         write_resolve_stats(&stats_path, &stats)?;
     }
+    if let Some(depth_summary_path) = args.depth_summary {
+        write_depth_summary(&depth_summary_path, &stats.depth_histogram)?;
+    }
 
-    if let Some(svg_path) = args.flamegraph {
+    if let Some(svg_path) = args.flamegraph
+        && file_nonempty(&args.output)
+    {
         generate_flamegraph(&args.output, &svg_path, args.min_percent)?;
     }
 
     Ok(())
 }
 
+fn file_nonempty(path: &Path) -> bool {
+    path.metadata().is_ok_and(|metadata| metadata.len() > 0)
+}
+
 fn read_qperf_records(path: &Path, stats: &mut ResolveStats) -> anyhow::Result<Vec<DecodedRecord>> {
-    match read_qperf_records_v2(path) {
+    match read_qperf_records_v3(path) {
         Ok(records) => {
-            stats.format_version = 2;
+            stats.format_version = 3;
             Ok(records)
         }
-        Err(v2_err) => match read_qperf_records_v1(path) {
+        Err(v3_err) => match read_qperf_records_v2(path) {
             Ok(records) => {
-                stats.format_version = 1;
+                stats.format_version = 2;
                 Ok(records)
             }
-            Err(v1_err) => Err(v2_err).with_context(|| {
-                format!(
-                    "failed to decode qperf input as v2 records; v1 fallback also failed: {v1_err}"
-                )
-            }),
+            Err(v2_err) => match read_qperf_records_v1(path) {
+                Ok(records) => {
+                    stats.format_version = 1;
+                    Ok(records)
+                }
+                Err(v1_err) => Err(v3_err).with_context(|| {
+                    format!(
+                        "failed to decode qperf input as v3 records; v2 fallback also failed: \
+                         {v2_err}; v1 fallback also failed: {v1_err}"
+                    )
+                }),
+            },
         },
     }
+}
+
+fn read_qperf_records_v3(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
+    let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
+    let mut records = Vec::new();
+    loop {
+        match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
+            Ok(SampleRecord {
+                elapsed_ns,
+                pc,
+                sp,
+                fp,
+                cpu,
+                callchain,
+                trace,
+            }) => records.push(DecodedRecord {
+                elapsed_ns: Some(elapsed_ns),
+                pc: Some(pc),
+                sp: (sp != 0).then_some(sp),
+                fp: (fp != 0).then_some(fp),
+                cpu: Some(cpu),
+                callchain: Some(callchain),
+                trace,
+            }),
+            Err(err) => {
+                if records.is_empty() {
+                    return Err(err).context("failed to decode first qperf v3 record");
+                }
+                eprintln!(
+                    "qperf-analyzer: stopped after {} v3 records: {err}",
+                    records.len()
+                );
+                break;
+            }
+        }
+    }
+    Ok(records)
 }
 
 fn read_qperf_records_v2(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
@@ -299,8 +411,13 @@ fn read_qperf_records_v2(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut records = Vec::new();
     loop {
         match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
-            Ok(SampleRecord { elapsed_ns, trace }) => records.push(DecodedRecord {
+            Ok(SampleRecordV2 { elapsed_ns, trace }) => records.push(DecodedRecord {
                 elapsed_ns: Some(elapsed_ns),
+                pc: trace.first().copied(),
+                sp: None,
+                fp: None,
+                cpu: None,
+                callchain: None,
                 trace,
             }),
             Err(err) => {
@@ -338,10 +455,23 @@ fn read_qperf_records_v1(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
             };
         records.push(DecodedRecord {
             elapsed_ns: None,
+            pc: trace.first().copied(),
+            sp: None,
+            fp: None,
+            cpu: None,
+            callchain: None,
             trace,
         });
     }
     Ok(records)
+}
+
+fn callchain_method_name(value: u8) -> Option<&'static str> {
+    match value {
+        0 => Some("leaf"),
+        1 => Some("fp"),
+        _ => None,
+    }
 }
 
 fn write_resolve_stats(path: &Path, stats: &ResolveStats) -> anyhow::Result<()> {
@@ -359,6 +489,63 @@ fn write_resolve_stats(path: &Path, stats: &ResolveStats) -> anyhow::Result<()> 
     writeln!(output, "  \"bad_records\": {},", stats.bad_records)?;
     writeln!(output, "  \"total_frames\": {},", stats.total_frames)?;
     writeln!(output, "  \"selected_frames\": {},", stats.selected_frames)?;
+    writeln!(
+        output,
+        "  \"selected_leaf_records\": {},",
+        stats.selected_leaf_records
+    )?;
+    writeln!(
+        output,
+        "  \"selected_multi_frame_records\": {},",
+        stats.selected_multi_frame_records
+    )?;
+    writeln!(output, "  \"samples_with_pc\": {},", stats.samples_with_pc)?;
+    writeln!(output, "  \"samples_with_sp\": {},", stats.samples_with_sp)?;
+    writeln!(output, "  \"samples_with_fp\": {},", stats.samples_with_fp)?;
+    writeln!(
+        output,
+        "  \"samples_with_cpu\": {},",
+        stats.samples_with_cpu
+    )?;
+    writeln!(output, "  \"max_depth\": {},", stats.max_depth)?;
+    let avg_depth = if stats.selected_records > 0 {
+        stats.selected_frames as f64 / stats.selected_records as f64
+    } else {
+        0.0
+    };
+    writeln!(output, "  \"avg_depth\": {avg_depth:.9},")?;
+    let callchain_enabled = stats
+        .callchain_method
+        .as_deref()
+        .is_some_and(|method| method != "leaf");
+    let unwind_failed = if callchain_enabled {
+        stats
+            .selected_records
+            .saturating_sub(stats.selected_multi_frame_records)
+    } else {
+        0
+    };
+    writeln!(output, "  \"callchain\": {{")?;
+    writeln!(output, "    \"enabled\": {},", callchain_enabled)?;
+    writeln!(
+        output,
+        "    \"method\": {},",
+        json_optional_string(stats.callchain_method.as_deref())
+    )?;
+    writeln!(
+        output,
+        "    \"samples_with_fp\": {},",
+        stats.samples_with_fp
+    )?;
+    writeln!(
+        output,
+        "    \"unwind_success\": {},",
+        stats.selected_multi_frame_records
+    )?;
+    writeln!(output, "    \"unwind_failed\": {},", unwind_failed)?;
+    writeln!(output, "    \"avg_depth\": {avg_depth:.9},")?;
+    writeln!(output, "    \"max_depth\": {}", stats.max_depth)?;
+    writeln!(output, "  }},")?;
     writeln!(
         output,
         "  \"samples_excluded_before\": {},",
@@ -395,6 +582,17 @@ fn write_resolve_stats(path: &Path, stats: &ResolveStats) -> anyhow::Result<()> 
         json_optional_string(stats.warning.as_deref())
     )?;
     writeln!(output, "}}")?;
+    Ok(())
+}
+
+fn write_depth_summary(path: &Path, histogram: &BTreeMap<usize, u64>) -> anyhow::Result<()> {
+    let mut output = BufWriter::new(
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?,
+    );
+    writeln!(output, "depth,samples")?;
+    for (depth, samples) in histogram {
+        writeln!(output, "{depth},{samples}")?;
+    }
     Ok(())
 }
 

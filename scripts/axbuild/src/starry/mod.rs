@@ -134,6 +134,12 @@ pub struct ArgsQemuPerf {
     pub flamegraph_kind: Option<PerfFlamegraphKind>,
     #[arg(long = "perf-full-stack")]
     pub full_stack: bool,
+    #[arg(long = "perf-callchain", value_enum)]
+    pub callchain: Option<PerfCallchain>,
+    #[arg(long = "perf-debuginfo")]
+    pub debuginfo: bool,
+    #[arg(long = "perf-force-frame-pointers")]
+    pub force_frame_pointers: bool,
     #[arg(long = "perf-demangle")]
     pub demangle: bool,
     #[arg(long = "perf-no-truncate")]
@@ -220,6 +226,15 @@ pub struct ArgsPerf {
     /// Preserve the deepest stack qperf can collect for this build.
     #[arg(long)]
     pub full_stack: bool,
+    /// qperf callchain collection mode. `leaf` is fastest; `fp` requires frame pointers.
+    #[arg(long = "perf-callchain", visible_alias = "callchain", value_enum)]
+    pub callchain: Option<PerfCallchain>,
+    /// Add DWARF debug info and keep symbols for qperf symbolization.
+    #[arg(long = "perf-debuginfo")]
+    pub debuginfo: bool,
+    /// Force frame pointers for qperf FP unwinding.
+    #[arg(long = "perf-force-frame-pointers")]
+    pub force_frame_pointers: bool,
     /// Force Rust demangling in qperf-analyzer.
     #[arg(long)]
     pub demangle: bool,
@@ -255,6 +270,13 @@ pub enum PerfMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfCallchain {
+    Leaf,
+    Fp,
+    Logical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PerfFlamegraphKind {
     Svg,
     Html,
@@ -273,6 +295,16 @@ impl fmt::Display for PerfMode {
         f.write_str(match self {
             Self::Tb => "tb",
             Self::Insn => "insn",
+        })
+    }
+}
+
+impl fmt::Display for PerfCallchain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Leaf => "leaf",
+            Self::Fp => "fp",
+            Self::Logical => "logical",
         })
     }
 }
@@ -382,6 +414,9 @@ impl ArgsQemuPerf {
             || self.flamegraph
             || self.flamegraph_kind.is_some()
             || self.full_stack
+            || self.callchain.is_some()
+            || self.debuginfo
+            || self.force_frame_pointers
             || self.demangle
             || self.no_truncate
             || self.symbol_style.is_some()
@@ -436,6 +471,9 @@ fn perf_args_from_qemu(args: ArgsQemu) -> anyhow::Result<ArgsPerf> {
         flamegraph: perf.flamegraph,
         flamegraph_kind: perf.flamegraph_kind.unwrap_or(PerfFlamegraphKind::Svg),
         full_stack: perf.full_stack,
+        callchain: perf.callchain,
+        debuginfo: perf.debuginfo,
+        force_frame_pointers: perf.force_frame_pointers,
         demangle: perf.demangle,
         no_truncate: perf.no_truncate,
         include_kernel_symbols: true,

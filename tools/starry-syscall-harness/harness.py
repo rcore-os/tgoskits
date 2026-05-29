@@ -532,6 +532,7 @@ def parse_folded(path: Path, limit: int = 20) -> dict[str, Any]:
     category_stacks: dict[str, int] = {}
     category_functions: dict[str, dict[str, int]] = {}
     total = 0
+    total_frames = 0
     if not path.exists():
         return {
             "total_samples": 0,
@@ -552,6 +553,7 @@ def parse_folded(path: Path, limit: int = 20) -> dict[str, Any]:
         total += count
         stack_counts[stack] = stack_counts.get(stack, 0) + count
         functions = [function for function in stack.split(";") if function]
+        total_frames += count * len(functions)
         matched_categories = classify_stack(functions)
         for category in matched_categories:
             category_counts[category] = category_counts.get(category, 0) + count
@@ -564,21 +566,22 @@ def parse_folded(path: Path, limit: int = 20) -> dict[str, Any]:
             if function:
                 function_counts[function] = function_counts.get(function, 0) + count
 
-    def entries(counts: dict[str, int], label: str) -> list[dict[str, Any]]:
+    def entries(counts: dict[str, int], label: str, denominator: int) -> list[dict[str, Any]]:
         ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
         return [
             {
                 label: name,
                 "samples": count,
-                "percent": round((count / total * 100.0) if total else 0.0, 4),
+                "percent": round((count / denominator * 100.0) if denominator else 0.0, 4),
             }
             for name, count in ranked
         ]
 
     return {
         "total_samples": total,
-        "top_functions": entries(function_counts, "function"),
-        "top_stacks": entries(stack_counts, "stack"),
+        "total_frames": total_frames,
+        "top_functions": entries(function_counts, "function", total_frames),
+        "top_stacks": entries(stack_counts, "stack", total),
         "category_totals": category_entries(
             category_counts,
             category_stacks,
@@ -988,6 +991,7 @@ def write_perf_markdown(path: Path, report: dict[str, Any]) -> None:
     workload = report.get("workload_metrics") or {}
     normalized = report.get("normalized_metrics") or {}
     window = report.get("window") or {}
+    callchain = report.get("callchain") or {}
     lines = [
         "# StarryOS qperf Performance Report",
         "",
@@ -1026,6 +1030,11 @@ def write_perf_markdown(path: Path, report: dict[str, Any]) -> None:
         lines.append(f"- workload elapsed seconds: `{normalized['workload_elapsed_seconds']}`")
     if normalized.get("samples_per_MB") is not None:
         lines.append(f"- samples per MB: `{normalized['samples_per_MB']}`")
+    if callchain:
+        lines.append(f"- callchain mode: `{callchain.get('method')}`")
+        lines.append(f"- callchain avg depth: `{callchain.get('avg_depth')}`")
+        lines.append(f"- callchain max depth: `{callchain.get('max_depth')}`")
+        lines.append(f"- callchain unwind success: `{callchain.get('unwind_success')}`")
     artifact_paths = report.get("artifacts") or {}
     lines.extend(["", "## Artifacts", ""])
     for label in (
@@ -1041,6 +1050,7 @@ def write_perf_markdown(path: Path, report: dict[str, Any]) -> None:
         "hotspots_csv",
         "hotspot_categories_csv",
         "summary_txt",
+        "stack_depth_summary",
     ):
         value = artifact_paths.get(label)
         if value:
@@ -1145,6 +1155,8 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
         str(args.max_depth),
         "--mode",
         args.mode,
+        "--perf-callchain",
+        args.callchain,
         "--top",
         str(args.top),
         "--min-percent",
@@ -1177,6 +1189,12 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
         command.extend(["--workload-timeout", str(args.workload_timeout)])
     if args.qperf_metrics:
         command.append("--qperf-metrics")
+    if args.full_stack:
+        command.append("--full-stack")
+    if args.perf_debuginfo:
+        command.append("--perf-debuginfo")
+    if args.perf_force_frame_pointers:
+        command.append("--perf-force-frame-pointers")
     if args.focus:
         command.extend(["--focus", args.focus])
     if args.no_truncate:
@@ -1226,6 +1244,17 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
         window.setdefault("warnings", []).append("start marker missing; report may include boot samples")
     if args.stop_marker and not window.get("stop_time"):
         window.setdefault("warnings", []).append("stop marker missing; report may include post-workload samples")
+    callchain = resolve_stats.get("callchain") if resolve_stats else None
+    if not callchain:
+        callchain = {
+            "enabled": args.callchain != "leaf",
+            "method": args.callchain,
+            "samples_with_fp": None,
+            "unwind_success": None,
+            "unwind_failed": None,
+            "avg_depth": None,
+            "max_depth": None,
+        }
     complete_workload_metrics(workload_metrics, window)
     normalized_metrics = compute_normalized_metrics(
         hotspots,
@@ -1247,6 +1276,7 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
             "freq": args.freq,
             "max_depth": args.max_depth,
             "mode": args.mode,
+            "callchain": args.callchain,
             "top": args.top,
             "min_percent": args.min_percent,
             "symbol_style": args.symbol_style,
@@ -1263,10 +1293,14 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
             "stop_marker": args.stop_marker,
             "workload_timeout": args.workload_timeout,
             "qperf_metrics": args.qperf_metrics,
+            "full_stack": args.full_stack,
+            "perf_debuginfo": args.perf_debuginfo,
+            "perf_force_frame_pointers": args.perf_force_frame_pointers,
             "qemu_args": args.qemu_arg,
         },
         "window": window,
         "resolve_stats": resolve_stats,
+        "callchain": callchain,
         "hotspots": hotspots,
         "summary": summary,
         "plugin_summary": plugin_summary,
@@ -1297,6 +1331,7 @@ def perf_profile_inside(args: argparse.Namespace) -> int:
             "flamegraph_focus": str(qperf_dir / "flamegraph.focus.svg"),
             "flamegraph_html": str(qperf_dir / "flamegraph.html"),
             "summary_txt": str(qperf_dir / "summary.txt"),
+            "stack_depth_summary": str(qperf_dir / "stack-depth-summary.csv"),
             "plugin_summary": str(qperf_dir / "qperf.summary.txt"),
             "qemu_config": str(qperf_dir / "qemu.toml"),
             "host_time": str(qperf_dir / "qemu.time.txt"),
@@ -1395,6 +1430,17 @@ def perf_postprocess(args: argparse.Namespace) -> int:
         window.setdefault("warnings", []).append("start marker missing; report may include boot samples")
     if args.stop_marker and not window.get("stop_time"):
         window.setdefault("warnings", []).append("stop marker missing; report may include post-workload samples")
+    callchain = resolve_stats.get("callchain") if resolve_stats else None
+    if not callchain:
+        callchain = {
+            "enabled": args.callchain != "leaf",
+            "method": args.callchain,
+            "samples_with_fp": None,
+            "unwind_success": None,
+            "unwind_failed": None,
+            "avg_depth": None,
+            "max_depth": None,
+        }
     complete_workload_metrics(workload_metrics, window)
     normalized_metrics = compute_normalized_metrics(
         hotspots,
@@ -1424,6 +1470,7 @@ def perf_postprocess(args: argparse.Namespace) -> int:
         "flamegraph_focus": str(qperf_dir / "flamegraph.focus.svg"),
         "flamegraph_html": str(qperf_dir / "flamegraph.html"),
         "summary_txt": str(qperf_dir / "summary.txt"),
+        "stack_depth_summary": str(qperf_dir / "stack-depth-summary.csv"),
         "plugin_summary": str(qperf_dir / "qperf.summary.txt"),
         "qemu_config": str(qperf_dir / "qemu.toml"),
         "host_time": str(qperf_dir / "qemu.time.txt"),
@@ -1441,6 +1488,7 @@ def perf_postprocess(args: argparse.Namespace) -> int:
             "freq": args.freq,
             "max_depth": args.max_depth,
             "mode": args.mode,
+            "callchain": args.callchain,
             "top": args.top,
             "min_percent": args.min_percent,
             "symbol_style": getattr(args, "symbol_style", None),
@@ -1457,10 +1505,14 @@ def perf_postprocess(args: argparse.Namespace) -> int:
             "stop_marker": args.stop_marker,
             "workload_timeout": args.workload_timeout,
             "qperf_metrics": args.qperf_metrics,
+            "full_stack": args.full_stack,
+            "perf_debuginfo": args.perf_debuginfo,
+            "perf_force_frame_pointers": args.perf_force_frame_pointers,
             "qemu_args": args.qemu_arg,
         },
         "window": window,
         "resolve_stats": resolve_stats,
+        "callchain": callchain,
         "hotspots": hotspots,
         "summary": summary,
         "plugin_summary": plugin_summary,
@@ -1502,6 +1554,8 @@ def perf_profile(args: argparse.Namespace) -> int:
             str(args.max_depth),
             "--mode",
             args.mode,
+            "--callchain",
+            args.callchain,
             "--top",
             str(args.top),
             "--min-percent",
@@ -1537,6 +1591,12 @@ def perf_profile(args: argparse.Namespace) -> int:
             forwarded.extend(["--workload-timeout", str(args.workload_timeout)])
         if args.qperf_metrics:
             forwarded.append("--qperf-metrics")
+        if args.full_stack:
+            forwarded.append("--full-stack")
+        if args.perf_debuginfo:
+            forwarded.append("--perf-debuginfo")
+        if args.perf_force_frame_pointers:
+            forwarded.append("--perf-force-frame-pointers")
         for qemu_arg in args.qemu_arg:
             forwarded.append(f"--qemu-arg={qemu_arg}")
         return docker_reexec(repo_root, args.image, forwarded)
@@ -2244,6 +2304,7 @@ def main(argv: list[str] | None = None) -> int:
     perf_parser.add_argument("--freq", type=int, default=99)
     perf_parser.add_argument("--max-depth", type=int, default=64)
     perf_parser.add_argument("--mode", default="tb", choices=["tb", "insn"])
+    perf_parser.add_argument("--callchain", default="leaf", choices=["leaf", "fp", "logical"])
     perf_parser.add_argument("--top", type=int, default=20)
     perf_parser.add_argument("--min-percent", type=float, default=5.0)
     perf_parser.add_argument("--symbol-style", default="full", choices=["full", "short", "module"])
@@ -2265,6 +2326,9 @@ def main(argv: list[str] | None = None) -> int:
     perf_parser.add_argument("--stop-marker")
     perf_parser.add_argument("--workload-timeout", type=int)
     perf_parser.add_argument("--qperf-metrics", action="store_true")
+    perf_parser.add_argument("--full-stack", action="store_true")
+    perf_parser.add_argument("--perf-debuginfo", action="store_true")
+    perf_parser.add_argument("--perf-force-frame-pointers", action="store_true")
     perf_parser.add_argument("--qemu-arg", action="append", default=[])
     perf_parser.set_defaults(func=perf_profile)
 
@@ -2281,6 +2345,7 @@ def main(argv: list[str] | None = None) -> int:
     perf_post_parser.add_argument("--freq", type=int, default=99)
     perf_post_parser.add_argument("--max-depth", type=int, default=128)
     perf_post_parser.add_argument("--mode", default="tb", choices=["tb", "insn"])
+    perf_post_parser.add_argument("--callchain", default="leaf", choices=["leaf", "fp", "logical"])
     perf_post_parser.add_argument("--top", type=int, default=80)
     perf_post_parser.add_argument("--min-percent", type=float, default=0.3)
     perf_post_parser.add_argument("--symbol-style", default="full", choices=["full", "short", "module"])
@@ -2297,6 +2362,9 @@ def main(argv: list[str] | None = None) -> int:
     perf_post_parser.add_argument("--stop-marker")
     perf_post_parser.add_argument("--workload-timeout", type=int)
     perf_post_parser.add_argument("--qperf-metrics", action="store_true")
+    perf_post_parser.add_argument("--full-stack", action="store_true")
+    perf_post_parser.add_argument("--perf-debuginfo", action="store_true")
+    perf_post_parser.add_argument("--perf-force-frame-pointers", action="store_true")
     perf_post_parser.add_argument("--qemu-arg", action="append", default=[])
     perf_post_parser.set_defaults(func=perf_postprocess)
 

@@ -16,7 +16,9 @@ use object::{Object, ObjectSection};
 use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
-use super::{ArgsBuild, ArgsPerf, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs};
+use super::{
+    ArgsBuild, ArgsPerf, PerfCallchain, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs,
+};
 use crate::{
     context::{SnapshotPersistence, StarryCliArgs, starry_target_for_arch_checked},
     support::process::ProcessExt,
@@ -59,6 +61,7 @@ struct PerfOutputs {
     flamegraph_post: PathBuf,
     folded_focus: PathBuf,
     flamegraph_focus: PathBuf,
+    stack_depth_summary: PathBuf,
     flamegraph_html: PathBuf,
     summary: PathBuf,
     qemu_config: PathBuf,
@@ -222,6 +225,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         folded: &outputs.folded,
         flamegraph: &outputs.flamegraph,
         resolve_stats: &outputs.resolve_stats,
+        depth_summary: Some(&outputs.stack_depth_summary),
         generate_svg,
         top_n: args.top,
         start_sec: qemu_run.window.start_time,
@@ -260,16 +264,51 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     })?;
     write_flamegraph_html(&outputs, args.flamegraph_kind, flamegraph_generated)?;
     run_report_postprocess(&outputs, &args, &arch, exit_status_code(&qemu_run.status))?;
-    print_report(&outputs);
+    print_report(&outputs, &args);
     Ok(())
 }
 
 fn apply_perf_cargo_features(cargo: &mut Cargo, args: &ArgsPerf) {
+    cargo.features.extend([
+        "ax-driver/virtio-blk".to_string(),
+        "ax-driver/virtio-net".to_string(),
+        "ax-driver/virtio-socket".to_string(),
+    ]);
     if args.qperf_metrics {
         cargo.features.push("qperf-metrics".to_string());
-        cargo.features.sort();
-        cargo.features.dedup();
     }
+    cargo.features.sort();
+    cargo.features.dedup();
+    if perf_needs_debuginfo(args) {
+        cargo.env.insert("DWARF".to_string(), "y".to_string());
+    }
+    if perf_needs_frame_pointers(args) {
+        cargo.env.insert("BACKTRACE".to_string(), "y".to_string());
+    }
+    apply_perf_rustflags(cargo, args);
+}
+
+fn apply_perf_rustflags(cargo: &mut Cargo, args: &ArgsPerf) {
+    let mut flags = Vec::new();
+    if perf_needs_debuginfo(args) {
+        flags.push("-Cdebuginfo=2".to_string());
+        flags.push("-Cstrip=none".to_string());
+    }
+    if perf_needs_frame_pointers(args) {
+        flags.push("-Cforce-frame-pointers=yes".to_string());
+    }
+    if flags.is_empty() {
+        return;
+    }
+
+    cargo
+        .env
+        .insert("CARGO_ENCODED_RUSTFLAGS".to_string(), flags.join("\x1f"));
+    cargo.args.push("--config".to_string());
+    let rustflags = toml::Value::Array(flags.into_iter().map(toml::Value::String).collect());
+    cargo
+        .args
+        .push(format!("target.'{}'.rustflags={rustflags}", cargo.target));
 }
 
 fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
@@ -301,6 +340,12 @@ fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
     }
     if args.host_perf && args.host_perf_events.trim().is_empty() {
         bail!("--host-perf-events must not be empty when --host-perf is set");
+    }
+    if matches!(effective_callchain(args), PerfCallchain::Logical) {
+        bail!(
+            "--perf-callchain logical is not implemented yet; use --perf-callchain fp or \
+             --full-stack for frame-pointer unwinding"
+        );
     }
     if args.include_user_symbols {
         eprintln!(
@@ -347,6 +392,24 @@ fn effective_max_depth(args: &ArgsPerf) -> usize {
     } else {
         args.max_depth
     }
+}
+
+fn effective_callchain(args: &ArgsPerf) -> PerfCallchain {
+    if args.full_stack {
+        PerfCallchain::Fp
+    } else {
+        args.callchain.unwrap_or(PerfCallchain::Leaf)
+    }
+}
+
+fn perf_needs_debuginfo(args: &ArgsPerf) -> bool {
+    args.full_stack || args.debuginfo
+}
+
+fn perf_needs_frame_pointers(args: &ArgsPerf) -> bool {
+    args.full_stack
+        || args.force_frame_pointers
+        || matches!(effective_callchain(args), PerfCallchain::Fp)
 }
 
 struct ScopedEnvVar {
@@ -448,6 +511,7 @@ fn prepare_outputs(
         flamegraph_post: dir.join("flamegraph.post.svg"),
         folded_focus: dir.join("stack.focus.folded"),
         flamegraph_focus: dir.join("flamegraph.focus.svg"),
+        stack_depth_summary: dir.join("stack-depth-summary.csv"),
         flamegraph_html: dir.join("flamegraph.html"),
         summary: dir.join("summary.txt"),
         qemu_config: dir.join("qemu.toml"),
@@ -521,12 +585,13 @@ fn write_qemu_config(
 ) -> anyhow::Result<()> {
     let mut perf_qemu_args = vec!["-plugin".to_string()];
     let mut plugin_params = format!(
-        "{},freq={},max_depth={},queue_size={},mode={},out={}",
+        "{},freq={},max_depth={},queue_size={},mode={},callchain={},out={}",
         tools.plugin.display(),
         args.freq,
         effective_max_depth(args),
         QPERF_QUEUE_SIZE,
         args.mode,
+        effective_callchain(args),
         outputs.raw.display()
     );
     plugin_params.push_str(&format!(
@@ -919,7 +984,7 @@ fn run_qemu_with_stdout_monitor(
         }
     }
 
-    let status = wait_for_child_exit(&mut child, Duration::from_secs(5))?;
+    let status = wait_for_child_exit(&mut child, Duration::from_secs(20))?;
     if shell_init_cmd.is_some() && !injected {
         window_report.warnings.push(format!(
             "shell prompt `{shell_prefix}` was not observed before QEMU exited"
@@ -1170,6 +1235,7 @@ struct AnalyzerRun<'a> {
     folded: &'a Path,
     flamegraph: &'a Path,
     resolve_stats: &'a Path,
+    depth_summary: Option<&'a Path>,
     generate_svg: bool,
     top_n: usize,
     start_sec: Option<f64>,
@@ -1211,6 +1277,9 @@ fn run_analyzer(args: AnalyzerRun<'_>) -> anyhow::Result<()> {
         command.arg("--focus").arg(focus);
     }
     command.arg("--stats").arg(args.resolve_stats);
+    if let Some(depth_summary) = args.depth_summary {
+        command.arg("--depth-summary").arg(depth_summary);
+    }
     if args.generate_svg {
         command.arg("--flamegraph").arg(args.flamegraph);
     }
@@ -1255,6 +1324,11 @@ fn generate_phase_flamegraphs(
             resolve_stats: &outputs
                 .resolve_stats
                 .with_file_name("resolve.boot.stats.json"),
+            depth_summary: Some(
+                &outputs
+                    .stack_depth_summary
+                    .with_file_name("stack-depth-summary.boot.csv"),
+            ),
             generate_svg,
             top_n: 0,
             start_sec: None,
@@ -1275,6 +1349,11 @@ fn generate_phase_flamegraphs(
             resolve_stats: &outputs
                 .resolve_stats
                 .with_file_name("resolve.post.stats.json"),
+            depth_summary: Some(
+                &outputs
+                    .stack_depth_summary
+                    .with_file_name("stack-depth-summary.post.csv"),
+            ),
             generate_svg,
             top_n: 0,
             start_sec: Some(stop_sec),
@@ -1307,6 +1386,11 @@ fn generate_focus_flamegraph(
         resolve_stats: &outputs
             .resolve_stats
             .with_file_name("resolve.focus.stats.json"),
+        depth_summary: Some(
+            &outputs
+                .stack_depth_summary
+                .with_file_name("stack-depth-summary.focus.csv"),
+        ),
         generate_svg,
         top_n: 0,
         start_sec: None,
@@ -1380,6 +1464,8 @@ fn run_report_postprocess(
         .arg(effective_max_depth(args).to_string())
         .arg("--mode")
         .arg(args.mode.to_string())
+        .arg("--callchain")
+        .arg(effective_callchain(args).to_string())
         .arg("--top")
         .arg(args.top.to_string())
         .arg("--min-percent")
@@ -1422,6 +1508,15 @@ fn run_report_postprocess(
     }
     if args.qperf_metrics {
         command.arg("--qperf-metrics");
+    }
+    if args.full_stack {
+        command.arg("--full-stack");
+    }
+    if perf_needs_debuginfo(args) {
+        command.arg("--perf-debuginfo");
+    }
+    if perf_needs_frame_pointers(args) {
+        command.arg("--perf-force-frame-pointers");
     }
     if let Some(focus) = &args.focus {
         command.arg("--focus").arg(focus);
@@ -1537,6 +1632,14 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     writeln!(file, "frequency_hz = {}", args.freq)?;
     writeln!(file, "max_stack_depth = {}", effective_max_depth(args))?;
     writeln!(file, "sampling_mode = {}", args.mode)?;
+    writeln!(file, "callchain_mode = {}", effective_callchain(args))?;
+    writeln!(file, "full_stack = {}", args.full_stack)?;
+    writeln!(file, "perf_debuginfo = {}", perf_needs_debuginfo(args))?;
+    writeln!(
+        file,
+        "perf_force_frame_pointers = {}",
+        perf_needs_frame_pointers(args)
+    )?;
     writeln!(file, "case = {}", args.case)?;
     writeln!(file, "symbol_style = {}", args.symbol_style)?;
     writeln!(file, "flamegraph_kind = {}", args.flamegraph_kind)?;
@@ -1617,6 +1720,11 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     writeln!(file, "folded_stack = {}", outputs.folded.display())?;
     writeln!(
         file,
+        "stack_depth_summary = {}",
+        outputs.stack_depth_summary.display()
+    )?;
+    writeln!(
+        file,
         "workload_folded_stack = {}",
         outputs.folded_workload.display()
     )?;
@@ -1669,12 +1777,17 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_report(outputs: &PerfOutputs) {
+fn print_report(outputs: &PerfOutputs, args: &ArgsPerf) {
     println!("qperf report generated:");
     println!("  report: {}", outputs.report_md.display());
     println!("  flamegraph: {}", outputs.flamegraph.display());
     println!("  folded stack: {}", outputs.folded.display());
+    println!(
+        "  stack depth summary: {}",
+        outputs.stack_depth_summary.display()
+    );
     println!("  json: {}", outputs.report_json.display());
+    println!("  callchain mode: {}", effective_callchain(args));
     println!("  hotspots: {}", outputs.hotspots_csv.display());
     println!(
         "  hotspot categories: {}",
