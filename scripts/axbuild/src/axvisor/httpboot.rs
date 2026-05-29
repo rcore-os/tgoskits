@@ -33,6 +33,8 @@ pub struct Args {
 pub enum Command {
     /// Check whether the built Axvisor ELF matches the bare-bin HTTP Boot shape.
     Check(ArgsCheck),
+    /// Generate a minimal .httpboot.toml for local publishing.
+    Init(ArgsInit),
     /// Build/pack Axvisor and publish HTTP Boot artifacts to ostool-server.
     Publish(ArgsPublish),
 }
@@ -45,6 +47,30 @@ pub struct ArgsCheck {
     /// Inspect an existing ELF instead of building first.
     #[arg(long, value_name = "PATH")]
     pub elf: Option<PathBuf>,
+}
+
+#[derive(ClapArgs)]
+pub struct ArgsInit {
+    /// Board id/type to lease from ostool-server.
+    #[arg(
+        short = 'b',
+        long = "board",
+        alias = "board-type",
+        value_name = "BOARD"
+    )]
+    pub board: String,
+
+    /// Output config path.
+    #[arg(short, long, value_name = "PATH", default_value = ".httpboot.toml")]
+    pub output: PathBuf,
+
+    /// Overwrite an existing config file.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Do not open the serial console after publishing.
+    #[arg(long = "no-open-console")]
+    pub no_open_console: bool,
 }
 
 #[derive(ClapArgs)]
@@ -85,10 +111,6 @@ pub struct ArgsPublish {
     #[arg(long = "remote-name", value_name = "NAME")]
     pub remote_name: Option<String>,
 
-    /// Optional BOOTX64.EFI to upload together with the kernel.
-    #[arg(long = "efi-loader", value_name = "PATH")]
-    pub efi_loader_path: Option<PathBuf>,
-
     /// Override manifest.kernel_load_addr.
     #[arg(long = "kernel-load-addr", value_name = "HEX")]
     pub kernel_load_addr: Option<String>,
@@ -105,9 +127,29 @@ pub struct ArgsPublish {
 pub(super) async fn run(axvisor: &mut Axvisor, args: Args) -> anyhow::Result<()> {
     match args.command {
         Some(Command::Check(args)) => check(axvisor, args).await,
+        Some(Command::Init(args)) => init(axvisor, args),
         Some(Command::Publish(args)) => publish(axvisor, args).await,
         None => publish(axvisor, args.publish).await,
     }
+}
+
+fn init(axvisor: &Axvisor, args: ArgsInit) -> anyhow::Result<()> {
+    let output = if args.output.is_absolute() {
+        args.output
+    } else {
+        axvisor.app.workspace_root().join(args.output)
+    };
+    if output.exists() && !args.force {
+        bail!(
+            "{} already exists; pass --force to overwrite it",
+            output.display()
+        );
+    }
+
+    let config = render_init_config(&args.board, !args.no_open_console);
+    fs::write(&output, config).with_context(|| format!("failed to write {}", output.display()))?;
+    println!("generated {}", output.display());
+    Ok(())
 }
 
 async fn check(axvisor: &mut Axvisor, args: ArgsCheck) -> anyhow::Result<()> {
@@ -254,11 +296,6 @@ async fn publish_artifacts_for_session(
 
     let boot_profile = client.get_boot_profile(&session.session_id).await?;
     let profile = boot_profile.uefi_http_profile()?;
-    let loader_file = publish_config
-        .loader_file
-        .clone()
-        .or(profile.loader_file.clone())
-        .unwrap_or_else(|| "BOOTX64.EFI".to_string());
     let remote_name = publish_config
         .remote_name
         .clone()
@@ -290,13 +327,6 @@ async fn publish_artifacts_for_session(
         .await
         .with_context(|| format!("failed to upload HTTP Boot file `{remote_name}`"))?;
 
-    let loader_url = upload_loader_if_configured(
-        &client,
-        &session.session_id,
-        &loader_file,
-        publish_config.efi_loader_path.as_deref(),
-    )
-    .await?;
     let manifest = HttpBootManifest {
         kernel_url: kernel_file.http_url.clone(),
         kernel_size,
@@ -314,11 +344,6 @@ async fn publish_artifacts_for_session(
     println!("kernel_size: {}", hex(kernel_size));
     println!("kernel_url: {}", kernel_file.http_url);
     println!("manifest_url: {}", manifest_file.http_url);
-    if let Some(loader_url) = loader_url {
-        println!("loader_url: {loader_url}");
-    } else {
-        println!("loader_url: not uploaded; using existing {loader_file} if already published");
-    }
     println!(
         "session_release: {}",
         if keep_session { "kept" } else { "requested" }
@@ -392,8 +417,6 @@ struct PublishConfig {
     server: String,
     port: u16,
     remote_name: Option<String>,
-    efi_loader_path: Option<PathBuf>,
-    loader_file: Option<String>,
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
     power_cycle: bool,
@@ -407,8 +430,6 @@ impl PublishConfig {
             server: "127.0.0.1".to_string(),
             port: 2999,
             remote_name: Some("kernel.bin".to_string()),
-            efi_loader_path: Some(PathBuf::from("target/httpboot/BOOTX64.EFI")),
-            loader_file: Some("BOOTX64.EFI".to_string()),
             kernel_load_addr: None,
             entry_point: None,
             power_cycle: false,
@@ -442,8 +463,6 @@ impl PublishConfig {
             self.port = port;
         }
         self.remote_name = file.remote_name.or(self.remote_name.take());
-        self.efi_loader_path = file.efi_loader_path.or(self.efi_loader_path.take());
-        self.loader_file = file.loader_file.or(self.loader_file.take());
         self.kernel_load_addr = file.kernel_load_addr.or(self.kernel_load_addr.take());
         self.entry_point = file.entry_point.or(self.entry_point.take());
         if let Some(power_cycle) = file.power_cycle {
@@ -467,9 +486,6 @@ impl PublishConfig {
         if let Some(remote_name) = args.remote_name.clone() {
             self.remote_name = Some(remote_name);
         }
-        if let Some(efi_loader_path) = args.efi_loader_path.clone() {
-            self.efi_loader_path = Some(efi_loader_path);
-        }
         if let Some(kernel_load_addr) = args.kernel_load_addr.clone() {
             self.kernel_load_addr = Some(kernel_load_addr);
         }
@@ -487,8 +503,6 @@ struct PublishConfigFile {
     server: Option<String>,
     port: Option<u16>,
     remote_name: Option<String>,
-    efi_loader_path: Option<PathBuf>,
-    loader_file: Option<String>,
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
     power_cycle: Option<bool>,
@@ -709,6 +723,18 @@ fn option_hex(value: Option<u64>) -> String {
     value.map(hex).unwrap_or_else(|| "missing".to_string())
 }
 
+fn render_init_config(board: &str, open_console: bool) -> String {
+    let mut config = format!(
+        "# Local defaults for `cargo axvisor httpboot`.\n\
+         # ostool-server defaults to http://127.0.0.1:2999.\n\n\
+         board = \"{board}\"\n"
+    );
+    if open_console {
+        config.push_str("open_console = true\n");
+    }
+    config
+}
+
 fn parse_hex_u64(value: &str) -> anyhow::Result<u64> {
     let value = value.trim();
     let value = value
@@ -727,37 +753,6 @@ fn validate_manifest_address(name: &str, actual: &str, expected: u64) -> anyhow:
         );
     }
     Ok(())
-}
-
-async fn upload_loader_if_configured(
-    client: &HttpBootApiClient,
-    session_id: &str,
-    loader_file: &str,
-    efi_loader_path: Option<&Path>,
-) -> anyhow::Result<Option<String>> {
-    let Some(efi_loader_path) = efi_loader_path else {
-        return Ok(None);
-    };
-    if !efi_loader_path.exists() {
-        println!(
-            "loader_upload: skipped; {} does not exist",
-            efi_loader_path.display()
-        );
-        return Ok(None);
-    }
-
-    let bytes = fs::read(efi_loader_path)
-        .with_context(|| format!("failed to read {}", efi_loader_path.display()))?;
-    let uploaded = client
-        .upload_http_boot_file(session_id, loader_file, bytes)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to upload HTTP Boot `{loader_file}` from {}",
-                efi_loader_path.display()
-            )
-        })?;
-    Ok(Some(uploaded.http_url))
 }
 
 #[derive(Debug, Clone)]
@@ -1010,7 +1005,6 @@ enum RemoteBootConfig {
 #[derive(Debug, Deserialize)]
 struct UefiHttpProfile {
     boot_arch: Option<String>,
-    loader_file: Option<String>,
     kernel_file: Option<String>,
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
@@ -1103,9 +1097,20 @@ impl SessionHeartbeat {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use super::{PublishConfig, PublishConfigFile, build_base_url, render_init_config};
 
-    use super::{PublishConfig, PublishConfigFile, build_base_url};
+    #[test]
+    fn init_config_is_minimal() {
+        let config = render_init_config("Asus-nuc15-x86_64-vmx", true);
+
+        assert!(config.contains("board = \"Asus-nuc15-x86_64-vmx\""));
+        assert!(config.contains("open_console = true"));
+        assert!(!config.contains("server ="));
+        assert!(!config.contains("port ="));
+        assert!(!config.contains("kernel_load_addr ="));
+        assert!(!config.contains("entry_point ="));
+        assert!(!config.contains("efi_loader_path ="));
+    }
 
     #[test]
     fn publish_config_file_enables_post_publish_console() {
@@ -1122,8 +1127,6 @@ mod tests {
             server: "127.0.0.1".to_string(),
             port: 2999,
             remote_name: Some("kernel.bin".to_string()),
-            efi_loader_path: Some(PathBuf::from("target/httpboot/BOOTX64.EFI")),
-            loader_file: Some("BOOTX64.EFI".to_string()),
             kernel_load_addr: None,
             entry_point: None,
             power_cycle: false,
