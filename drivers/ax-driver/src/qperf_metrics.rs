@@ -17,6 +17,8 @@ static BLK_READ_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static BLK_WRITE_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static BLK_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 static BLK_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
+static BLK_DIRECT_READ_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static BLK_DIRECT_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 
 static NET_RX_PACKETS: AtomicU64 = AtomicU64::new(0);
 static NET_TX_PACKETS: AtomicU64 = AtomicU64::new(0);
@@ -34,6 +36,12 @@ pub fn record_blk_read(bytes: usize) {
     BLK_READ_REQUESTS.fetch_add(1, Ordering::Relaxed);
     BLK_READ_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
     record_add_notify_wait_pop(1);
+}
+
+pub fn record_blk_direct_read(bytes: usize) {
+    BLK_DIRECT_READ_REQUESTS.fetch_add(1, Ordering::Relaxed);
+    BLK_DIRECT_READ_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+    record_blk_read(bytes);
 }
 
 pub fn record_blk_write(bytes: usize) {
@@ -132,12 +140,12 @@ pub fn render() -> String {
          virtqueue_depth_hist_2={} virtqueue_depth_hist_3_4={} virtqueue_depth_hist_5_8={} \
          virtqueue_depth_hist_9_16={} virtqueue_depth_hist_17_32={} virtqueue_depth_hist_33_64={} \
          virtqueue_depth_hist_gt64={} virtio_blk_read_requests={} virtio_blk_write_requests={} \
-         virtio_blk_read_bytes={} virtio_blk_write_bytes={} virtio_net_rx_packets={} \
-         virtio_net_tx_packets={} virtio_net_rx_bytes={} virtio_net_tx_bytes={} \
-         virtio_net_rx_copy_within_count={} virtio_net_rx_copy_within_bytes={} \
-         virtio_net_tx_staging_copy_count={} virtio_net_tx_staging_copy_bytes={} \
-         virtio_net_inflight_insert_count={} virtio_net_inflight_remove_count={} \
-         virtio_net_inflight_get_count={}\n",
+         virtio_blk_read_bytes={} virtio_blk_write_bytes={} virtio_blk_direct_read_requests={} \
+         virtio_blk_direct_read_bytes={} virtio_net_rx_packets={} virtio_net_tx_packets={} \
+         virtio_net_rx_bytes={} virtio_net_tx_bytes={} virtio_net_rx_copy_within_count={} \
+         virtio_net_rx_copy_within_bytes={} virtio_net_tx_staging_copy_count={} \
+         virtio_net_tx_staging_copy_bytes={} virtio_net_inflight_insert_count={} \
+         virtio_net_inflight_remove_count={} virtio_net_inflight_get_count={}\n",
         VIRTQUEUE_ADD.load(Ordering::Relaxed),
         VIRTQUEUE_NOTIFY_KICK.load(Ordering::Relaxed),
         VIRTQUEUE_POP_COMPLETE.load(Ordering::Relaxed),
@@ -156,6 +164,8 @@ pub fn render() -> String {
         BLK_WRITE_REQUESTS.load(Ordering::Relaxed),
         BLK_READ_BYTES.load(Ordering::Relaxed),
         BLK_WRITE_BYTES.load(Ordering::Relaxed),
+        BLK_DIRECT_READ_REQUESTS.load(Ordering::Relaxed),
+        BLK_DIRECT_READ_BYTES.load(Ordering::Relaxed),
         NET_RX_PACKETS.load(Ordering::Relaxed),
         NET_TX_PACKETS.load(Ordering::Relaxed),
         NET_RX_BYTES.load(Ordering::Relaxed),
@@ -186,6 +196,8 @@ pub fn reset() {
         &BLK_WRITE_REQUESTS,
         &BLK_READ_BYTES,
         &BLK_WRITE_BYTES,
+        &BLK_DIRECT_READ_REQUESTS,
+        &BLK_DIRECT_READ_BYTES,
         &NET_RX_PACKETS,
         &NET_TX_PACKETS,
         &NET_RX_BYTES,

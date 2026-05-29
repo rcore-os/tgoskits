@@ -6,6 +6,8 @@ use crate::{blockdev::*, bmalloc::AbsoluteBN, config::*, error::*};
 /// Cache key for one physical data block.
 pub type BlockCacheKey = AbsoluteBN;
 
+const DATA_BLOCK_READAHEAD: u32 = 8;
+
 /// Cached data block.
 #[derive(Debug, Clone)]
 pub struct CachedBlock {
@@ -74,6 +76,63 @@ impl DataBlockCache {
         Ok(buffer.to_vec())
     }
 
+    fn readahead_count<B: BlockDevice>(
+        &self,
+        block_dev: &Jbd2Dev<B>,
+        block_num: AbsoluteBN,
+    ) -> Ext4Result<u32> {
+        let total_blocks = block_dev.total_blocks();
+        if block_num.raw() >= total_blocks {
+            return Ok(1);
+        }
+
+        let remaining = total_blocks - block_num.raw();
+        let limit = DATA_BLOCK_READAHEAD
+            .min(u32::try_from(self.max_entries.max(1)).unwrap_or(u32::MAX))
+            .min(u32::try_from(remaining).unwrap_or(u32::MAX));
+        let mut count = 1;
+        while count < limit {
+            let next = block_num.checked_add(count)?;
+            if self.cache.contains_key(&next) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn load_readahead<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        block_num: AbsoluteBN,
+    ) -> Ext4Result<()> {
+        let count = self.readahead_count(block_dev, block_num)?;
+        if count <= 1 {
+            let data = self.load_block(block_dev, block_num)?;
+            self.cache
+                .insert(block_num, CachedBlock::new(data, block_num));
+            return Ok(());
+        }
+
+        while self.cache.len() + count as usize > self.max_entries {
+            self.evict_lru(block_dev)?;
+        }
+
+        let mut data = alloc::vec![0u8; self.block_size * count as usize];
+        block_dev.read_blocks(&mut data, block_num, count)?;
+
+        for idx in 0..count {
+            let cached_block = block_num.checked_add(idx)?;
+            let start = idx as usize * self.block_size;
+            let end = start + self.block_size;
+            self.cache.insert(
+                cached_block,
+                CachedBlock::new(data[start..end].to_vec(), cached_block),
+            );
+        }
+        Ok(())
+    }
+
     /// Returns a cached block, loading it from disk on demand.
     pub fn get_or_load<B: BlockDevice>(
         &mut self,
@@ -86,9 +145,7 @@ impl DataBlockCache {
                 self.evict_lru(block_dev)?;
             }
 
-            let data = self.load_block(block_dev, block_num)?;
-            let cached = CachedBlock::new(data, block_num);
-            self.cache.insert(block_num, cached);
+            self.load_readahead(block_dev, block_num)?;
         }
 
         // Refresh the LRU timestamp on every access.

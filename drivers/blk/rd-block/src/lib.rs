@@ -222,6 +222,10 @@ impl CmdQueue {
         spin_on::spin_on(self.read_blocks(blk_id, blk_count))
     }
 
+    pub fn read_blocks_direct(&mut self, blk_id: usize, buf: &mut [u8]) -> Result<(), BlkError> {
+        self.interface.read_blocks_direct(blk_id, buf)
+    }
+
     pub async fn write_blocks(
         &mut self,
         start_blk_id: usize,

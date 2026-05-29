@@ -164,6 +164,12 @@ impl Block {
         }
 
         let block_count = buf.len() / block_size;
+        match queue.read_blocks_direct(block_id as usize, buf) {
+            Ok(()) => return Ok(()),
+            Err(BlkError::NotSupported) => {}
+            Err(err) => return Err(map_blk_err_to_ax_err(err)),
+        }
+
         let blocks = Self::read_blocks_wait(&mut queue, block_id as usize, block_count, use_irq);
         let mut copied = 0;
         for block in blocks {

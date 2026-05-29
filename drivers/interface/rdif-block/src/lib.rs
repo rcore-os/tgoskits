@@ -245,6 +245,14 @@ pub trait IQueue: Send + 'static {
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError>;
 
+    /// Try to read blocks directly into the caller-provided buffer.
+    ///
+    /// Implementations may return [`BlkError::NotSupported`] when the buffer is
+    /// not suitable for direct DMA or the device does not provide a direct path.
+    fn read_blocks_direct(&mut self, _block_id: usize, _buf: &mut [u8]) -> Result<(), BlkError> {
+        Err(BlkError::NotSupported)
+    }
+
     /// Poll the status of a previously submitted request.
     fn poll_request(&mut self, request: RequestId) -> Result<(), BlkError>;
 }

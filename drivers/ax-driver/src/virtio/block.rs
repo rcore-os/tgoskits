@@ -14,6 +14,7 @@ use virtio_drivers::{
 use crate::{block::PlatformDeviceBlock, virtio::VirtIoHalImpl};
 
 const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 32 * SECTOR_SIZE;
+const VIRTIO_BLK_DIRECT_PAGE_SIZE: usize = 0x1000;
 
 #[cfg(any(plat_static, plat_dyn))]
 crate::model_register!(
@@ -174,9 +175,55 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
         Ok(rd_block::RequestId::new(0))
     }
 
+    fn read_blocks_direct(
+        &mut self,
+        block_id: usize,
+        buf: &mut [u8],
+    ) -> Result<(), rd_block::BlkError> {
+        if !is_physically_contiguous(buf) {
+            return Err(rd_block::BlkError::NotSupported);
+        }
+
+        #[cfg(feature = "qperf-metrics")]
+        let bytes = buf.len();
+        self.raw
+            .raw
+            .read_blocks(block_id, buf)
+            .map_err(map_virtio_err_to_blk_err)?;
+        #[cfg(feature = "qperf-metrics")]
+        crate::qperf_metrics::record_blk_direct_read(bytes);
+        Ok(())
+    }
+
     fn poll_request(&mut self, _request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
         Ok(())
     }
+}
+
+fn is_physically_contiguous(buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+
+    let start = buf.as_ptr() as usize;
+    let Some(end) = start.checked_add(buf.len() - 1) else {
+        return false;
+    };
+
+    let first_page = start & !(VIRTIO_BLK_DIRECT_PAGE_SIZE - 1);
+    let last_page = end & !(VIRTIO_BLK_DIRECT_PAGE_SIZE - 1);
+    let mut page = first_page;
+    let mut expected = axklib::mem::virt_to_phys(page.into()).as_usize();
+
+    while page < last_page {
+        page += VIRTIO_BLK_DIRECT_PAGE_SIZE;
+        expected += VIRTIO_BLK_DIRECT_PAGE_SIZE;
+        if axklib::mem::virt_to_phys(page.into()).as_usize() != expected {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn map_virtio_err_to_blk_err(err: VirtIoError) -> rd_block::BlkError {
