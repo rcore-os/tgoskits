@@ -77,7 +77,7 @@ static void test_epoll_arguments(void)
     expect_errno_int(epoll_ctl(epfd, EPOLL_CTL_ADD, pipefd[0], NULL), EFAULT);
 
     errno = 0;
-    expect_errno_int(epoll_ctl(epfd, EPOLL_CTL_ADD, epfd, &event), ELOOP);
+    expect_errno_int(epoll_ctl(epfd, EPOLL_CTL_ADD, epfd, &event), EINVAL);
 
     close(pipefd[0]);
     close(pipefd[1]);
