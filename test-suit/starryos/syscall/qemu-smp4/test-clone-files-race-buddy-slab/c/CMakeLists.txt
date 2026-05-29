@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 set(TEST_CLONE_FILES_RACE_SRC
-    "${CMAKE_CURRENT_LIST_DIR}/../../../qemu-smp4/bugfix-smp4-tests/test-clone-files-race/c/src/main.c")
+    "${CMAKE_CURRENT_LIST_DIR}/../../test-clone-files-race/c/src/main.c")
 
 add_executable(test-clone-files-race ${TEST_CLONE_FILES_RACE_SRC})
 target_compile_options(test-clone-files-race PRIVATE -Wall -Wextra -Werror)

@@ -1390,7 +1390,7 @@ mod tests {
         fs::write(grouped_dir.join("ptrace/c/CMakeLists.txt"), "").unwrap();
         fs::write(grouped_dir.join("ptrace/qemu-riscv64.toml"), "").unwrap();
 
-        let subcases = discover_qemu_subcases(&grouped_dir).unwrap();
+        let subcases = discover_qemu_subcases(&grouped_dir, None).unwrap();
 
         assert_eq!(subcases.len(), 1);
         assert_eq!(subcases[0].name, "alpha");

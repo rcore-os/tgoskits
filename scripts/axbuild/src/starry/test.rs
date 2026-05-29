@@ -2255,6 +2255,116 @@ mod tests {
     }
 
     #[test]
+    fn basic_qemu_smp1_cgroup_basic_is_in_basic_c_group() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/basic/qemu-smp1/basic-c-tests");
+        let cmake_path = case_dir.join("cgroup-basic/c/CMakeLists.txt");
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+
+        assert!(
+            cmake.contains("RUNTIME DESTINATION usr/bin/starry-basic-tests"),
+            "{} must install cgroup-basic into the grouped basic test directory",
+            cmake_path.display()
+        );
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            assert!(
+                config.get("shell_init_cmd").is_none(),
+                "{} must use grouped test_commands instead of one shell_init_cmd",
+                path.display()
+            );
+            let test_commands = config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                test_commands
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|command| command.contains("/usr/bin/starry-basic-tests/*")),
+                "{} must run the grouped basic test directory",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn syscall_smp4_root_qemu_configs_run_all_common_smp_tests() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let case_dir = workspace_root.join("test-suit/starryos/syscall/qemu-smp4");
+        let grouped_dir = "usr/bin/starry-syscall-smp4-tests";
+        let commands = [
+            "test-sched-family",
+            "test-openat-umask-smp",
+            "test-clone-files-race",
+            "test-futex-clone-thread",
+        ];
+
+        for command in commands {
+            let cmake_path = case_dir.join(command).join("c/CMakeLists.txt");
+            let cmake = fs::read_to_string(&cmake_path).unwrap();
+            assert!(
+                cmake.contains(&format!("RUNTIME DESTINATION {grouped_dir}")),
+                "{} must install {} into the grouped syscall SMP4 directory",
+                cmake_path.display(),
+                command
+            );
+        }
+
+        for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+            let path = case_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            assert!(
+                config.get("shell_init_cmd").is_none(),
+                "{} must not run only one SMP syscall binary",
+                path.display()
+            );
+
+            let test_commands = config
+                .get("test_commands")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            let script = test_commands
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .find(|command| command.contains("STARRY_SYSCALL_SMP4_TESTS_PASSED"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} must include the grouped syscall SMP4 runner",
+                        path.display()
+                    )
+                });
+
+            assert!(
+                script.contains("/usr/bin/starry-syscall-smp4-tests/*"),
+                "{} must iterate over all grouped syscall SMP4 binaries",
+                path.display()
+            );
+            assert!(
+                script.contains("STARRY_SYSCALL_SMP4_TEST_FAILED"),
+                "{} must report grouped syscall SMP4 command failures",
+                path.display()
+            );
+            let fail_regex = config
+                .get("fail_regex")
+                .and_then(toml::Value::as_array)
+                .unwrap();
+            assert!(
+                fail_regex
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|regex| regex == r"(?m)^STARRY_SYSCALL_SMP4_TEST_FAILED: /usr/bin/"),
+                "{} must not match the echoed grouped runner script as a failure",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn starry_grouped_cases_install_profile_autorun() {
         let config = starry_case_asset_config();
 

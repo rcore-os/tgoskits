@@ -1,0 +1,39 @@
+target = "x86_64-unknown-none"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+  "qemu",
+]
+plat_dyn = false
+max_cpu_num = 4
+log = "Warn"
+args = [
+    "-nographic",
+    "-m", "512M",
+    "-smp", "4",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+found=0
+failed=0
+for bin in /usr/bin/starry-syscall-smp4-tests/*; do
+    [ -f "$bin" ] && [ -x "$bin" ] || continue
+    found=1
+    echo "STARRY_SYSCALL_SMP4_TEST_BEGIN: $bin"
+    if ! "$bin"; then
+        echo "STARRY_SYSCALL_SMP4_TEST_FAILED: $bin"
+        failed=1
+    fi
+done
+[ "$found" -eq 1 ] && [ "$failed" -eq 0 ] && echo "STARRY_SYSCALL_SMP4_TESTS_PASSED"
+''',
+]
+success_regex = ["(?m)^STARRY_SYSCALL_SMP4_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_SYSCALL_SMP4_TEST_FAILED: /usr/bin/']
+timeout = 120

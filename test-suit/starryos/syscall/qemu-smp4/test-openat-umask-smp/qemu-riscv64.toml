@@ -11,7 +11,7 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test-openat-umask-smp"
+shell_init_cmd = "/usr/bin/starry-syscall-smp4-tests/test-openat-umask-smp"
 success_regex = ['(?m)^PASS: openat_umask_smp workers=\d+ iterations=\d+\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^FAIL:']
 timeout = 180
