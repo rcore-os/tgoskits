@@ -15,6 +15,7 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
@@ -52,6 +53,7 @@ pub(crate) struct TestQemuCase {
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
     pub(crate) host_symbolize_success_regex: Vec<String>,
+    pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
 }
 
@@ -59,6 +61,23 @@ impl TestQemuCase {
     pub(crate) fn is_grouped(&self) -> bool {
         !self.test_commands.is_empty()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct HostHttpServerConfig {
+    #[serde(default = "default_host_http_bind")]
+    pub(crate) bind: String,
+    pub(crate) port: u16,
+    #[serde(default = "default_host_http_body")]
+    pub(crate) body: String,
+}
+
+fn default_host_http_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_host_http_body() -> String {
+    "ArceOS local HTTP fixture\n".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1004,6 +1023,7 @@ mod tests {
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),
             host_symbolize_success_regex: Vec::new(),
+            host_http_server: None,
             subcases: Vec::new(),
         }
     }

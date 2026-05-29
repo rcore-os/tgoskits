@@ -2314,6 +2314,7 @@ mod tests {
                 qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
                 test_commands: Vec::new(),
                 host_symbolize_success_regex: Vec::new(),
+                host_http_server: None,
                 subcases: Vec::new(),
             },
             qemu: QemuConfig::default(),
