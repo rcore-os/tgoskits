@@ -36,7 +36,10 @@ pub fn sys_unshare(flags: i32) -> AxResult<isize> {
     // so callers can tell their isolation is not really in effect.
     let non_user_flags = flags & !(CLONE_NEWUSER as i32);
     if non_user_flags != 0 {
-        warn!("unshare: namespace flags {non_user_flags:#x} accepted as no-ops (StarryOS does not implement full namespace isolation)");
+        warn!(
+            "unshare: namespace flags {non_user_flags:#x} accepted as no-ops (StarryOS does not \
+             implement full namespace isolation)"
+        );
     }
 
     if flags & CLONE_NEWUSER as i32 != 0 {
