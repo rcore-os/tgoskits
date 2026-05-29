@@ -26,3 +26,4 @@ else echo "FAIL: git merge three-way (rc=$rc)"; FAIL=$((FAIL+1)); fi
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_MERGE_ALL_PASSED" || echo "GIT_MERGE_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

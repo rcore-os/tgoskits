@@ -13,3 +13,4 @@ section "6. status deleted"; rm untracked.txt; git status 2>&1 | grep -q "delete
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_STATUS_ALL_PASSED" || echo "GIT_STATUS_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

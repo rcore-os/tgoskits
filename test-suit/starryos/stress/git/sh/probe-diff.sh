@@ -15,3 +15,4 @@ section "4. diff between commits"; git diff HEAD~1 HEAD -- file.txt 2>&1 | grep 
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_DIFF_ALL_PASSED" || echo "GIT_DIFF_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

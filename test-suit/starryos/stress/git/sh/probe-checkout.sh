@@ -14,3 +14,4 @@ section "4. switch to non-existent"; git checkout nonexistent 2>/dev/null && ech
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_CHECKOUT_ALL_PASSED" || echo "GIT_CHECKOUT_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

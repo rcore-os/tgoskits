@@ -12,3 +12,4 @@ section "5. duplicate name"; git branch renamed 2>/dev/null && echo "FAIL: dup b
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_BRANCH_ALL_PASSED" || echo "GIT_BRANCH_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

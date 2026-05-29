@@ -19,3 +19,4 @@ git reset --hard HEAD~1 2>/dev/null
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_RESET_ALL_PASSED" || echo "GIT_RESET_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

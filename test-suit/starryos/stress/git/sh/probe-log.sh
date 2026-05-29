@@ -15,3 +15,4 @@ git -C /tmp/git-test/log-empty log 2>&1 | grep -q "does not have any commits" &&
 
 echo; echo "RESULT: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] && echo "GIT_LOG_ALL_PASSED" || echo "GIT_LOG_HAS_FAILURES"
+exit $((FAIL > 0 ? 1 : 0))

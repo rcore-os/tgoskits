@@ -92,3 +92,4 @@ if [ "$FAIL" -eq 0 ]; then
 else
     echo "GIT_COMMIT_HAS_FAILURES"
 fi
+exit $((FAIL > 0 ? 1 : 0))
