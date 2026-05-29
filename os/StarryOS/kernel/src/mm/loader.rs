@@ -320,7 +320,7 @@ fn apply_relocations(
                         continue;
                     }
                     let target = base + offset;
-                    let value = (st_value as i64 + addend) as u64;
+                    let value = (base as i64 + st_value as i64 + addend) as u64;
                     uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
                 }
                 R_RISCV_COPY => {

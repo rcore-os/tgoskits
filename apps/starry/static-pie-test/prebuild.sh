@@ -30,5 +30,6 @@ if [[ -f "$TOOLCHAIN" ]]; then
     install -Dm0755 "$TEST_BIN" "$overlay_dir/usr/bin/static-pie-test"
     echo "Static-pie binary compiled and installed to /usr/bin/static-pie-test"
 else
-    echo "Warning: riscv64 toolchain not found, skipping binary"
+    echo "Error: riscv64 toolchain not found" >&2
+    exit 1
 fi
