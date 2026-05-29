@@ -12,53 +12,30 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 
 mod block;
 mod fs;
 mod highlevel;
-mod root;
 
 pub use block::{BlockRegion, FsBlockDevice};
 /// Create a filesystem from a dynamic (boxed) block device.
 #[cfg(feature = "ext4")]
 pub use fs::new_from_dyn as new_filesystem_from_dyn;
 pub use highlevel::*;
-use root::FilesystemKind;
 
-/// Initializes the filesystem subsystem by selecting a root device from the
-/// available block devices and optional boot arguments.
-pub fn init_filesystems(block_devs: Vec<Box<dyn FsBlockDevice>>, bootargs: Option<&str>) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilesystemKind {
+    Ext4,
+    Fat,
+}
+
+/// Initializes the filesystem subsystem from a runtime-selected block region.
+pub fn init_filesystem(dev: Box<dyn FsBlockDevice>, region: BlockRegion, description: &str) {
     info!("Initialize filesystem subsystem...");
-
-    let root_spec = root::parse_root_spec(bootargs);
-    let mut disks = root::collect_disks(block_devs);
-    let candidates = root::collect_root_candidates(&disks);
-    let (selected_disk_index, selected_partition) =
-        root::select_root_candidate(&candidates, &root_spec).unwrap_or_else(|| {
-            panic!("failed to determine root device from available block devices")
-        });
-    let selected_disk_pos = disks
-        .iter()
-        .position(|disk| disk.disk_index == selected_disk_index)
-        .unwrap_or_else(|| panic!("selected root disk disappeared during initialization"));
-    let selected = disks.swap_remove(selected_disk_pos);
-    let (description, region) = {
-        let selected_partition_info = selected_partition.and_then(|part_index| {
-            selected
-                .partitions
-                .iter()
-                .find(|partition| partition.info.index == part_index)
-        });
-        (
-            root::describe_selection(selected.disk_index, selected_partition_info),
-            selected_partition_info
-                .map_or_else(|| full_region(&selected.dev), |part| part.info.region),
-        )
-    };
     info!("  selected root device: {}", description);
 
-    let fs = fs::new_default(selected.dev, region).unwrap_or_else(|err| {
+    let fs = fs::new_default(dev, region).unwrap_or_else(|err| {
         panic!(
             "failed to initialize filesystem on {}: {err:?}",
             description
@@ -70,7 +47,10 @@ pub fn init_filesystems(block_devs: Vec<Box<dyn FsBlockDevice>>, bootargs: Optio
     ROOT_FS_CONTEXT.call_once(|| FsContext::new(mp.root_location()));
 }
 
-fn detect_filesystem(dev: &mut dyn FsBlockDevice, region: BlockRegion) -> Option<FilesystemKind> {
+pub fn detect_filesystem(
+    dev: &mut dyn FsBlockDevice,
+    region: BlockRegion,
+) -> Option<FilesystemKind> {
     #[cfg(not(any(feature = "ext4", feature = "fat")))]
     let _ = (&mut *dev, region);
 
@@ -162,8 +142,4 @@ fn region_has_magic_u16(
     }
 
     u16::from_le_bytes([buf[within_block], buf[within_block + 1]]) == magic
-}
-
-fn full_region(dev: &dyn FsBlockDevice) -> BlockRegion {
-    BlockRegion::from_num_blocks(dev.num_blocks())
 }

@@ -15,4 +15,3 @@ spin = { workspace = true }
 
 [dev-dependencies]
 dma-api = { workspace = true }
-rd-block = { workspace = true }

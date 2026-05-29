@@ -23,6 +23,7 @@ bb_now_ms() {
 bb_case_start() {
     BB_CASE_NAME=$1
     BB_CASE_START_MS=$(bb_now_ms)
+    echo "START: $BB_CASE_NAME"
 }
 
 bb_case_print_time() {
@@ -638,7 +639,7 @@ _t=$({ timeout 10 sh -c "busybox nmeter -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: nmeter"; then echo "PASS: busybox_nmeter"; bb_case_pass; else echo "FAIL_DETAIL: busybox_nmeter"; bb_case_fail; fi
 
 bb_case_start "busybox_nologin"
-_t=$({ timeout 2 sh -c 'busybox rm -f /tmp/bb_nologin.out; busybox nologin >/tmp/bb_nologin.out 2>&1 & _pid=$!; busybox usleep 200000; busybox kill -9 "$_pid" 2>/dev/null || true; busybox cat /tmp/bb_nologin.out 2>/dev/null; busybox rm -f /tmp/bb_nologin.out'; } 2>&1)
+_t=$({ timeout 2 busybox nologin 2>&1 || true; } 2>&1)
 if echo "$_t" | grep -qF "This account is not available"; then echo "PASS: busybox_nologin"; bb_case_pass; else echo "FAIL_DETAIL: busybox_nologin"; bb_case_fail; fi
 
 bb_case_start "busybox_nproc"
@@ -1092,10 +1093,10 @@ busybox mkdir -p /tmp/bb_wget_root
     busybox printf "\r\n"
     busybox printf "busybox wget local ok\n"
 } > /tmp/bb_wget_root/response.http
-busybox nc -l -p 18080 -w 10 < /tmp/bb_wget_root/response.http &
+busybox nc -l -p 18080 -w 10 < /tmp/bb_wget_root/response.http >/tmp/bb_wget_nc.out 2>&1 &
 server_pid=$!
 busybox sleep 1
-busybox wget -O /tmp/bb_wget.html http://127.0.0.1:18080/index.html 2>&1
+timeout 10 busybox wget -O /tmp/bb_wget.html http://127.0.0.1:18080/index.html 2>&1
 wget_status=$?
 busybox kill "$server_pid" 2>/dev/null || true
 busybox test "$wget_status" -eq 0 &&

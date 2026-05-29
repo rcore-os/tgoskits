@@ -19,4 +19,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/lua-app-tests.sh"
 success_regex = ["(?m)^LUA_APP_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^LUA_APP_TEST_FAILED\\s*$"]
-timeout = 600
+timeout = 180

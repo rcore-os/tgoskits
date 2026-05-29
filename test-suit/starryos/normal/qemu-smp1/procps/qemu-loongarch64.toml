@@ -14,4 +14,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/procps-test.sh"
 success_regex = ["(?m)^PROCPS_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^PROCPS_TEST_FAILED\\s*$"]
-timeout = 300
+timeout = 180

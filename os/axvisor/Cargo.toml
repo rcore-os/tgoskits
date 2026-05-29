@@ -50,7 +50,7 @@ sdmmc = [
     "ax-driver/phytium-mci",
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
-serial = ["ax-driver/serial"]
+serial = []
 
 [dependencies]
 spin = { workspace = true }

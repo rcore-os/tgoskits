@@ -71,7 +71,7 @@ graph LR
 - `ax-cpu`
 - `ax-dma`
 - `rdrive`
-- `rd-block`
+- `rdif-block`
 - `rd-net`
 - `rdif-display`
 - 另外还有 `43` 个同类项未在此展开
