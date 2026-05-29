@@ -122,7 +122,110 @@ static void test_pall_wexited(void)
     note_pass("P_ALL WEXITED");
 }
 
-/* 3. WNOHANG: child still running -> return 0, si_pid==0 */
+/* 3. P_PGID + WEXITED with an explicit child process group */
+static void test_ppgid_wexited(void)
+{
+    int ready[2];
+    if (pipe(ready) != 0) {
+        note_fail("P_PGID WEXITED", "pipe failed");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        note_fail("P_PGID WEXITED", "fork failed");
+        close(ready[0]);
+        close(ready[1]);
+        return;
+    }
+    if (pid == 0) {
+        close(ready[0]);
+        int ok = setpgid(0, 0);
+        char marker = ok == 0 ? '1' : '0';
+        ssize_t written = write(ready[1], &marker, 1);
+        (void)written;
+        close(ready[1]);
+        _exit(ok == 0 ? 17 : 91);
+    }
+
+    close(ready[1]);
+    char marker = 0;
+    ssize_t nread = read(ready[0], &marker, 1);
+    close(ready[0]);
+    if (nread != 1 || marker != '1') {
+        waitpid(pid, NULL, 0);
+        note_fail("P_PGID WEXITED", "child failed to create process group");
+        return;
+    }
+
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    errno = 0;
+    int ret = waitid_raw(P_PGID, pid, &si, WEXITED);
+    if (ret != 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "ret=%d errno=%d (%s)", ret, errno, strerror(errno));
+        note_fail("P_PGID WEXITED", buf);
+        waitpid(pid, NULL, 0);
+        return;
+    }
+    if (si.si_signo != SIGCHLD || si.si_code != CLD_EXITED || si.si_pid != pid ||
+        si.si_status != 17) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "signo=%d code=%d pid=%d status=%d, expected SIGCHLD/CLD_EXITED/%d/17",
+                 si.si_signo, si.si_code, si.si_pid, si.si_status, pid);
+        note_fail("P_PGID WEXITED siginfo", buf);
+        return;
+    }
+
+    errno = 0;
+    pid_t wret = waitpid(pid, NULL, WNOHANG);
+    if (wret == -1 && errno == ECHILD) {
+        note_pass("P_PGID WEXITED reaps child");
+    } else {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "waitpid ret=%ld errno=%d, expected -1/ECHILD",
+                 (long)wret, errno);
+        note_fail("P_PGID WEXITED reap", buf);
+    }
+}
+
+/* 4. P_PGID with id 0 waits in the caller's current process group */
+static void test_ppgid_zero_current_group(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        note_fail("P_PGID id 0", "fork failed");
+        return;
+    }
+    if (pid == 0)
+        _exit(23);
+
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    errno = 0;
+    int ret = waitid_raw(P_PGID, 0, &si, WEXITED);
+    if (ret != 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "ret=%d errno=%d (%s)", ret, errno, strerror(errno));
+        note_fail("P_PGID id 0", buf);
+        waitpid(pid, NULL, 0);
+        return;
+    }
+    if (si.si_signo == SIGCHLD && si.si_code == CLD_EXITED && si.si_pid == pid &&
+        si.si_status == 23) {
+        note_pass("P_PGID id 0 uses current process group");
+    } else {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "signo=%d code=%d pid=%d status=%d, expected SIGCHLD/CLD_EXITED/%d/23",
+                 si.si_signo, si.si_code, si.si_pid, si.si_status, pid);
+        note_fail("P_PGID id 0 siginfo", buf);
+    }
+}
+
+/* 5. WNOHANG: child still running -> return 0, si_pid==0 */
 static void test_wnohang(void)
 {
     pid_t pid = fork();
@@ -160,7 +263,7 @@ static void test_wnohang(void)
     waitpid(pid, NULL, 0);
 }
 
-/* 4. WNOWAIT: query siginfo without reaping, then reap with waitpid */
+/* 6. WNOWAIT: query siginfo without reaping, then reap with waitpid */
 static void test_wnowait(void)
 {
     pid_t pid = fork();
@@ -212,7 +315,7 @@ static void test_wnowait(void)
     }
 }
 
-/* 5. Error: ECHILD for non-child pid */
+/* 7. Error: ECHILD for non-child pid */
 static void test_echild(void)
 {
     siginfo_t si;
@@ -230,7 +333,7 @@ static void test_echild(void)
     }
 }
 
-/* 6. Error: EINVAL for bad idtype */
+/* 8. Error: EINVAL for bad idtype */
 static void test_einval_idtype(void)
 {
     siginfo_t si;
@@ -247,7 +350,7 @@ static void test_einval_idtype(void)
     }
 }
 
-/* 7. Error: EINVAL for missing WEXITED */
+/* 9. Error: EINVAL for missing WEXITED */
 static void test_einval_no_wexited(void)
 {
     pid_t pid = fork();
@@ -276,7 +379,24 @@ static void test_einval_no_wexited(void)
     waitpid(pid, NULL, 0);
 }
 
-/* 8. infop == NULL: waitid should succeed and still reap the child */
+/* 10. Error: EINVAL for a negative P_PGID id */
+static void test_einval_negative_ppgid(void)
+{
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    errno = 0;
+    int ret = waitid_raw(P_PGID, -1, &si, WEXITED);
+    if (ret == -1 && errno == EINVAL) {
+        note_pass("negative P_PGID id returns EINVAL");
+    } else {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "ret=%d errno=%d (%s), expected -1/EINVAL",
+                 ret, errno, strerror(errno));
+        note_fail("negative P_PGID id EINVAL", buf);
+    }
+}
+
+/* 11. infop == NULL: waitid should succeed and still reap the child */
 static void test_null_infop(void)
 {
     pid_t pid = fork();
@@ -316,11 +436,14 @@ int main(void)
 
     test_ppid_wexited();
     test_pall_wexited();
+    test_ppgid_wexited();
+    test_ppgid_zero_current_group();
     test_wnohang();
     test_wnowait();
     test_echild();
     test_einval_idtype();
     test_einval_no_wexited();
+    test_einval_negative_ppgid();
     test_null_infop();
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);
