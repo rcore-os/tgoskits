@@ -119,9 +119,9 @@ QEMU riscv64 (-m 8G)
 
 ## 测试配置
 
-### 测试用例 (`test-suit/starryos/normal/qemu-selfhost/selfhost-full-kernel/`)
+### 测试用例 (`test-suit/starryos/selfhost-manual/selfhost-full-kernel/`)
 
-测试用例位于独立的 `qemu-selfhost` 构建组中，避免因缺少 Debian rootfs 镜像（12GB）而阻塞标准 CI。
+测试用例位于独立的 `selfhost-manual` 目录中（非 `normal/`），避免因缺少 Debian rootfs 镜像（12GB）而阻塞标准 CI。
 
 ```toml
 # qemu-riscv64.toml
@@ -142,7 +142,7 @@ Shell pipeline (`sh/self-compile.sh`) 自动注入到 rootfs 的 `/usr/bin/`:
 
 ```bash
 # 在提前准备 rootfs 的环境中
-cargo xtask starry test qemu --arch riscv64 -g qemu-selfhost -c selfhost-full-kernel
+cargo xtask starry test qemu --arch riscv64 --test-suite test-suit/starryos/selfhost-manual -g selfhost-manual -c selfhost-full-kernel
 ```
 
 ## 构建耗时
@@ -176,7 +176,7 @@ cargo xtask starry test qemu --arch riscv64 -g qemu-selfhost -c selfhost-full-ke
 ## 已知限制
 
 1. **`phys-memory-size` 硬编码 8G**: 动态 RAM 检测（someboot→OS 共享内存）因启动阶段地址空间不一致无法实现。使用少于 8G QEMU RAM 的标准测试会 panic。
-2. **自编译测试不在标准 CI 中运行**: Debian rootfs 镜像（12GB）未上传到 tgosimages 发布版，测试用例位于独立 `qemu-selfhost` 构建组，需要手动在配备 rootfs 的环境中运行。
+2. **自编译测试不在标准 CI 中运行**: Debian rootfs 镜像（12GB）未上传到 tgosimages 发布版。测试用例位于 `test-suit/starryos/selfhost-manual/`，不在 `normal/` 目录下，不会阻塞 CI；需要手动在配备 rootfs 的环境中运行。
 
 ## 环境
 
