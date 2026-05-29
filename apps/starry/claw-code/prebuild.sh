@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CLAW_URL="https://github.com/MuZhao2333/tgoskits/releases/download/claw-code-binary/claw"
+CLAW_URL="https://github.com/rcore-os/tgoskits/releases/download/claw-code-binary/claw"
 CLAW_BIN="/tmp/claw"
 
 if [ ! -f "$CLAW_BIN" ]; then

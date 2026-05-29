@@ -6,7 +6,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let claw_out = out_dir.join("claw-binary");
 
-    let url = "https://github.com/MuZhao2333/tgoskits/releases/download/claw-code-binary/claw";
+    let url = "https://github.com/rcore-os/tgoskits/releases/download/claw-code-binary/claw";
     let status = std::process::Command::new("curl")
         .args(["-sL", "-o", claw_out.to_str().unwrap(), url])
         .status()
