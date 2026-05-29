@@ -15,10 +15,13 @@
 use std::sync::{Arc, Mutex};
 
 use ax_errno::AxResult;
+use ax_memory_addr::{PhysAddr, VirtAddr};
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::BaseDeviceOps;
+use axvm_types::{InterruptVector, VCpuId, VMId};
 use axvmconfig::EmulatedDeviceType;
+use x86_vlapic::host::X86VlapicHostIf;
 
 struct MockMmioDevice {
     name: String,
@@ -114,42 +117,67 @@ fn test_mmio_panic_on_missing_device() {
     let _ = devices.handle_mmio_read(invalid_addr, width);
 }
 
-// Mock implementations for axvisor_api interfaces required by x86_vlapic
-// when running `cargo test -p axdevice` on x86_64 host.
+// Mock implementation for x86_vlapic host callbacks when running
+// `cargo test -p axdevice` on x86_64 host.
 
-struct MockConsoleIfImpl;
+struct MockX86VlapicHostIfImpl;
 
-#[axvisor_api::api_impl]
-impl axvisor_api::console::ConsoleIf for MockConsoleIfImpl {
+#[ax_crate_interface::impl_interface]
+impl X86VlapicHostIf for MockX86VlapicHostIfImpl {
+    fn alloc_frame() -> Option<PhysAddr> {
+        None
+    }
+
+    fn dealloc_frame(_paddr: PhysAddr) {}
+
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        VirtAddr::from(paddr.as_usize())
+    }
+
+    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
+        PhysAddr::from(vaddr.as_usize())
+    }
+
+    fn current_time() -> core::time::Duration {
+        core::time::Duration::ZERO
+    }
+
+    fn current_time_nanos() -> u64 {
+        0
+    }
+
+    fn register_timer(
+        _deadline: core::time::Duration,
+        _callback: Box<dyn FnOnce(core::time::Duration) + Send + 'static>,
+    ) -> usize {
+        0
+    }
+
+    fn cancel_timer(_token: usize) {}
+
     fn write_bytes(_bytes: &[u8]) {}
 
     fn read_bytes(_bytes: &mut [u8]) -> usize {
         0
     }
-}
 
-struct MockTimeIfImpl;
-
-#[axvisor_api::api_impl]
-impl axvisor_api::time::TimeIf for MockTimeIfImpl {
-    fn current_ticks() -> axvisor_api::time::Ticks {
+    fn current_vm_id() -> VMId {
         0
     }
 
-    fn ticks_to_nanos(ticks: axvisor_api::time::Ticks) -> axvisor_api::time::Nanos {
-        ticks
+    fn current_vm_vcpu_num() -> usize {
+        1
     }
 
-    fn nanos_to_ticks(nanos: axvisor_api::time::Nanos) -> axvisor_api::time::Ticks {
-        nanos
+    fn current_vm_active_vcpus() -> usize {
+        1
     }
 
-    fn register_timer(
-        _deadline: axvisor_api::time::TimeValue,
-        _callback: Box<dyn FnOnce(axvisor_api::time::TimeValue) + Send + 'static>,
-    ) -> axvisor_api::time::CancelToken {
-        0
+    fn active_vcpus(_vm_id: VMId) -> Option<usize> {
+        Some(1)
     }
 
-    fn cancel_timer(_token: axvisor_api::time::CancelToken) {}
+    fn inject_interrupt(_vm_id: VMId, _vcpu_id: VCpuId, _vector: InterruptVector) -> AxResult {
+        Ok(())
+    }
 }

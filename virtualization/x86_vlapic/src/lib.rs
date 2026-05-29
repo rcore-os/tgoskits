@@ -22,6 +22,7 @@ extern crate alloc;
 extern crate log;
 
 mod consts;
+pub mod host;
 mod pit;
 mod regs;
 mod serial;
@@ -39,10 +40,7 @@ use axaddrspace::{
     device::{AccessWidth, SysRegAddr, SysRegAddrRange},
 };
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvisor_api::{
-    memory,
-    vmm::{VCpuId, VMId},
-};
+use axvm_types::{VCpuId, VMId};
 
 use crate::{
     consts::{x2apic::x2apic_msr_access_reg, xapic::xapic_mmio_access_reg_offset},
@@ -100,7 +98,7 @@ impl EmulatedLocalApic {
     /// access to this page may cause VM exits or be virtualized by the processor.
     /// See Section 30.4.
     pub fn virtual_apic_access_addr() -> HostPhysAddr {
-        memory::virt_to_phys(HostVirtAddr::from_usize(
+        host::virt_to_phys(HostVirtAddr::from_usize(
             VIRTUAL_APIC_ACCESS_PAGE.0.as_ptr() as usize,
         ))
     }

@@ -2,7 +2,8 @@ use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::device::{AccessWidth, Port, PortRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvisor_api::time;
+
+use crate::host;
 
 const PIT_CHANNEL0: u16 = 0x40;
 const PIT_CHANNEL2: u16 = 0x42;
@@ -214,7 +215,7 @@ impl BaseDeviceOps<PortRange> for EmulatedPit {
             return ax_err!(Unsupported, "x86 PIT only supports byte port writes");
         }
 
-        let now_ns = time::current_time_nanos() as u64;
+        let now_ns = host::current_time_nanos();
         let mut state = self.state.lock();
         match port.0 {
             PIT_CHANNEL0 => state.channel0.write_count(val as u8, now_ns),

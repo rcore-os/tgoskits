@@ -15,11 +15,13 @@
 use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use axaddrspace::HostPhysAddr;
-use axvisor_api::memory::PhysFrame;
 use bit_field::BitField;
 use bitflags::bitflags;
 
-use crate::msr::{Msr, MsrReadWrite};
+use crate::{
+    host::PhysFrame,
+    msr::{Msr, MsrReadWrite},
+};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]

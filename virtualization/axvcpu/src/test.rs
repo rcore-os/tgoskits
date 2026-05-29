@@ -25,7 +25,7 @@ mod tests {
 
     use ax_errno::{AxError, AxResult};
     use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-    use axvisor_api::vmm::{VCpuId, VMId};
+    use axvm_types::{VCpuId, VMId};
 
     use crate::{AxArchVCpu, AxVCpu, VCpuState, exit::AxVCpuExitReason};
 

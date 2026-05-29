@@ -35,7 +35,7 @@ axaddrspace = { workspace = true }
 axvcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 axdevice_base = { workspace = true }
-axvisor_api = { workspace = true }
+axvm-types = { workspace = true }
 
 [dev-dependencies]
 ax-kspin = { workspace = true }

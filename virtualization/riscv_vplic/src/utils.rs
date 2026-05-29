@@ -7,9 +7,11 @@ use core::result::Result::Ok;
 use ax_errno::AxResult;
 use axaddrspace::{HostPhysAddr, device::AccessWidth};
 
+use crate::host;
+
 /// Performs a volatile MMIO read operation.
 pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxResult<usize> {
-    let addr = axvisor_api::memory::phys_to_virt(addr).as_ptr();
+    let addr = host::phys_to_virt(addr).as_ptr();
 
     match width {
         AccessWidth::Byte => Ok(unsafe { addr.read_volatile() as _ }),
@@ -25,7 +27,7 @@ pub(crate) fn perform_mmio_write(
     width: AccessWidth,
     val: usize,
 ) -> AxResult<()> {
-    let addr = axvisor_api::memory::phys_to_virt(addr).as_mut_ptr();
+    let addr = host::phys_to_virt(addr).as_mut_ptr();
 
     match width {
         AccessWidth::Byte => unsafe {

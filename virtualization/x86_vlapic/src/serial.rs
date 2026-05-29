@@ -2,7 +2,8 @@ use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::device::{AccessWidth, Port, PortRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvisor_api::console;
+
+use crate::host;
 
 const COM1_BASE: u16 = 0x3f8;
 const COM1_END: u16 = COM1_BASE + 7;
@@ -128,7 +129,7 @@ impl EmulatedSerialPort {
 
     fn poll_host_input(state: &mut SerialState) {
         let mut buf = [0u8; 32];
-        let read = console::read_bytes(&mut buf);
+        let read = host::read_bytes(&mut buf);
         for &byte in &buf[..read] {
             state.push_rx(byte);
         }
@@ -191,7 +192,7 @@ impl BaseDeviceOps<PortRange> for EmulatedSerialPort {
         let value = val as u8;
         match offset {
             REG_RBR_THR_DLL if state.dlab() => state.dll = value,
-            REG_RBR_THR_DLL => console::write_bytes(&[value]),
+            REG_RBR_THR_DLL => host::write_bytes(&[value]),
             REG_IER_DLM if state.dlab() => state.dlm = value,
             REG_IER_DLM => state.ier = value & 0x0f,
             REG_IIR_FCR => {

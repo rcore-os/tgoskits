@@ -33,4 +33,5 @@ riscv_vplic = { workspace = true }
 x86_vlapic = { workspace = true }
 
 [dev-dependencies]
-axvisor_api = { workspace = true }
+ax-crate-interface = { workspace = true }
+axvm-types = { workspace = true }

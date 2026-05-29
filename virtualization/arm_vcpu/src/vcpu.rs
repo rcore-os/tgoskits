@@ -152,7 +152,7 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {
-        axvisor_api::arch::hardware_inject_virtual_interrupt(vector as u8);
+        crate::host::hardware_inject_virtual_interrupt(vector as u8);
         Ok(())
     }
 
@@ -329,7 +329,7 @@ impl Aarch64VCpu {
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
             TrapKind::Irq => Ok(AxVCpuExitReason::ExternalInterrupt {
-                vector: axvisor_api::arch::fetch_irq(),
+                vector: crate::host::fetch_irq() as u64,
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };

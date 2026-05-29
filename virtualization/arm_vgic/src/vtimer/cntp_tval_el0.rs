@@ -21,8 +21,9 @@ use aarch64_sysreg::SystemRegType;
 use ax_errno::AxResult;
 use axaddrspace::device::{AccessWidth, DeviceAddrRange, SysRegAddr, SysRegAddrRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvisor_api::time::{current_time_nanos, register_timer};
 use log::info;
+
+use crate::host;
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
     fn emu_type(&self) -> EmuDeviceType {
@@ -51,9 +52,9 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         val: usize,
     ) -> AxResult {
         info!("Write to emulator register: {addr:?}, value: {val}");
-        let now = current_time_nanos();
+        let now = host::current_time_nanos();
         info!("Current time: {}, deadline: {}", now, now + val as u64);
-        register_timer(
+        host::register_timer(
             Duration::from_nanos(now + val as u64),
             Box::new(|_| {
                 crate::api_reexp::hardware_inject_virtual_interrupt(30);

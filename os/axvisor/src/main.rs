@@ -33,17 +33,20 @@ extern crate alloc;
 
 extern crate ax_std as std;
 
-mod host;
+mod config;
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
+mod fdt;
+mod images;
+mod manager;
 mod shell;
-mod task;
-mod vmm;
 
 use std::println;
 
 /// Startup banners printed before the hypervisor begins initialization.
-///
-/// A banner is selected at runtime using the wall clock. This keeps boot output
-/// slightly varied without introducing any state or configuration dependency.
 const LOGO: [&str; 2] = [
     r#"
        d8888            888     888  d8b
@@ -65,15 +68,9 @@ d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
 ];
 
 /// Prints the startup banner to the console.
-///
-/// The banner selection is deliberately best-effort and only depends on the
-/// current wall-clock value. It has no impact on the rest of boot.
 fn print_logo() {
-    let elapsed = host::time::wall_time().as_micros() as usize;
-    let logo = LOGO[elapsed % LOGO.len()];
-
     println!();
-    println!("{}", logo);
+    println!("{}", LOGO[0]);
     println!();
     println!("by AxVisor Team");
     println!();
@@ -92,10 +89,10 @@ fn main() {
     print_logo();
 
     info!("Starting virtualization...");
-    host::platform::enable_virtualization_on_all_cpus();
+    let manager = manager::AxvmManager::new().expect("failed to initialize AxVM manager");
 
-    vmm::init();
-    vmm::start();
+    manager.init_default_vms();
+    manager.start_default_vms();
 
     info!("[OK] Default guest initialized");
 

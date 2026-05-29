@@ -27,10 +27,7 @@ use axaddrspace::{
 };
 use axdevice_base::BaseDeviceOps;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::{
-    memory::{self, PhysAddr},
-    vmm::{VCpuId, VMId},
-};
+use axvm_types::{VCpuId, VMId};
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -52,7 +49,7 @@ use super::{
     },
 };
 use crate::{
-    X86VCpuSetupConfig, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters,
+    X86VCpuSetupConfig, ept::GuestPageWalkInfo, host, msr::Msr, regs::GeneralRegisters,
     restore_host_interrupt_flag, xstate::XState,
 };
 
@@ -834,7 +831,7 @@ impl VmxVcpu {
 // the host physical address. A non-identity guest memory backend should
 // replace this helper with an explicit GPA-to-HVA translation.
 fn read_guest_phys_u64(gpa: usize) -> u64 {
-    let hva = memory::phys_to_virt(PhysAddr::from(gpa));
+    let hva = host::phys_to_virt(HostPhysAddr::from(gpa));
     unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) }
 }
 
@@ -1237,7 +1234,7 @@ impl VmxVcpu {
 
     fn read_guest_u8(&self, gva: GuestVirtAddr) -> AxResult<u8> {
         let gpa = self.translate_guest_linear(gva)?;
-        let hva = memory::phys_to_virt(PhysAddr::from(gpa.as_usize()));
+        let hva = host::phys_to_virt(HostPhysAddr::from(gpa.as_usize()));
         Ok(unsafe { core::ptr::read_volatile(hva.as_ptr()) })
     }
 

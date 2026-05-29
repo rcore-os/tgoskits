@@ -11,19 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvisor_api, axvcpu
+- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvcpu
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.7...arm_vcpu-v0.5.8) - 2026-05-19
 
 ### Other
 
-- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvisor_api, axvcpu
+- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvcpu
 
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.6...arm_vcpu-v0.5.7) - 2026-05-18
 
 ### Other
 
-- updated the following local packages: axaddrspace, axdevice_base, axvisor_api, axvcpu
+- updated the following local packages: axaddrspace, axdevice_base, axvcpu
 
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.5...arm_vcpu-v0.5.6) - 2026-05-15
 

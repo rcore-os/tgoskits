@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvisor_api, axvcpu, x86_vlapic
+- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvcpu, x86_vlapic
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.7...x86_vcpu-v0.5.8) - 2026-05-19
 
 ### Other
 
-- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvisor_api, axvcpu, x86_vlapic
+- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvcpu, x86_vlapic
 
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.6...x86_vcpu-v0.5.7) - 2026-05-15
 

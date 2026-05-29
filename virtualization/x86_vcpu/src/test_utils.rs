@@ -16,7 +16,8 @@
 pub mod mock {
     use ax_kspin::SpinNoIrq as Mutex;
     use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
-    use axvisor_api::{api_impl, memory::MemoryIf};
+
+    use crate::host::X86VcpuHostIf;
 
     static GLOBAL_LOCK: Mutex<MockMmHalState> = Mutex::new(MockMmHalState::new());
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -42,8 +43,8 @@ pub mod mock {
     #[derive(Debug)]
     pub struct MockMmHal;
 
-    #[api_impl]
-    impl MemoryIf for MockMmHal {
+    #[ax_crate_interface::impl_interface]
+    impl X86VcpuHostIf for MockMmHal {
         /// Allocate a frame.
         fn alloc_frame() -> Option<PhysAddr> {
             let mut state = GLOBAL_LOCK.lock();
@@ -150,6 +151,10 @@ pub mod mock {
                 ax_memory_addr::PhysAddr::from(vaddr.as_usize())
             }
         }
+
+        fn nanos_to_ticks(nanos: u64) -> u64 {
+            nanos
+        }
     }
 
     impl MockMmHal {
@@ -208,9 +213,7 @@ pub mod mock {
 
 #[cfg(test)]
 mod tests {
-    use axvisor_api::memory::MemoryIf;
-
-    use crate::test_utils::mock::MockMmHal;
+    use crate::{host::X86VcpuHostIf, test_utils::mock::MockMmHal};
 
     #[test]
     fn test_mock_allocator() {

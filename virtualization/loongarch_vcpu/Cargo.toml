@@ -21,6 +21,7 @@ ax-percpu = { workspace = true }
 axaddrspace = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-page-table-multiarch = { workspace = true }
+ax-crate-interface = { workspace = true }
 axvcpu = { workspace = true }
-axvisor_api = { workspace = true }
+axvm-types = { workspace = true }
 loongArch64 = "0.2"

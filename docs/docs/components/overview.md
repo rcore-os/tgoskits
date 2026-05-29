@@ -173,7 +173,7 @@ flowchart TB
 | `ax-std` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](crates/ax-std) |
 | `ax-sync` | ArceOS 层 | `os/arceos/modules/axsync` | 2 | 9 | [查看](crates/ax-sync) |
 | `ax-task` | ArceOS 层 | `os/arceos/modules/axtask` | 13 | 8 | [查看](crates/ax-task) |
-| `axaddrspace` | 组件层 | `memory/axaddrspace` | 6 | 12 | [查看](crates/axaddrspace) |
+| `axaddrspace` | 组件层 | `virtualization/axaddrspace` | 6 | 12 | [查看](crates/axaddrspace) |
 | `axbacktrace` | 组件层 | `components/axbacktrace` | 0 | 5 | [查看](crates/axbacktrace) |
 | `axbuild` | 工具层 | `scripts/axbuild` | 1 | 3 | [查看](crates/axbuild) |
 | `axdevice` | 组件层 | `virtualization/axdevice` | 8 | 2 | [查看](crates/axdevice) |

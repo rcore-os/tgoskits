@@ -24,7 +24,6 @@ use axaddrspace::{
 };
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::InterruptVector;
 use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
@@ -35,7 +34,7 @@ use crate::vcpu::AxVCpuCreateConfig;
 use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
-    host_paging::HostPagingHandler,
+    host::paging::{HostPagingHandler, virt_to_phys},
     vcpu::AxArchVCpuImpl,
 };
 
@@ -97,7 +96,7 @@ impl VMMemoryRegion {
 
     /// Returns the host physical address backing this guest memory region.
     pub fn host_paddr(&self) -> HostPhysAddr {
-        axvisor_api::memory::virt_to_phys(self.hva)
+        virt_to_phys(self.hva)
     }
 
     /// Returns `true` if the guest physical address is identical to the host physical address.
@@ -586,7 +585,7 @@ impl AxVM {
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;
             trace!("{exit_reason:#x?}");
-            let handled = match &exit_reason {
+            match exit_reason {
                 AxVCpuExitReason::MmioRead {
                     addr,
                     width,
@@ -594,61 +593,53 @@ impl AxVM {
                     reg_width,
                     signed_ext,
                 } => {
-                    let raw = self.get_devices().handle_mmio_read(*addr, *width)?;
-                    let masked = raw & width_mask(*width);
-                    let val = if *signed_ext {
-                        sign_extend_value(masked, *width)
+                    let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                    let masked = raw & width_mask(width);
+                    let val = if signed_ext {
+                        sign_extend_value(masked, width)
                     } else {
-                        masked & width_mask(*reg_width)
+                        masked & width_mask(reg_width)
                     };
-                    vcpu.set_gpr(*reg, val);
-                    true
+                    vcpu.set_gpr(reg, val);
                 }
                 AxVCpuExitReason::MmioWrite { addr, width, data } => {
                     self.get_devices()
-                        .handle_mmio_write(*addr, *width, *data as usize)?;
-                    true
+                        .handle_mmio_write(addr, width, data as usize)?;
                 }
                 AxVCpuExitReason::IoRead { port, width } => {
-                    let val = self.get_devices().handle_port_read(*port, *width)?;
+                    let val = self.get_devices().handle_port_read(port, width)?;
                     #[cfg(not(target_arch = "riscv64"))]
                     vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
 
                     #[cfg(target_arch = "riscv64")]
                     vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
-
-                    true
                 }
                 AxVCpuExitReason::IoWrite { port, width, data } => {
                     self.get_devices()
-                        .handle_port_write(*port, *width, *data as usize)?;
-                    true
+                        .handle_port_write(port, width, data as usize)?;
                 }
                 AxVCpuExitReason::SysRegRead { addr, reg } => {
                     let val = self.get_devices().handle_sys_reg_read(
-                        *addr,
+                        addr,
                         // Generally speaking, the width of system register is fixed and needless to be specified.
                         // AccessWidth::Qword here is just a placeholder, may be changed in the future.
                         AccessWidth::Qword,
                     )?;
-                    vcpu.set_gpr(*reg, val);
-                    true
+                    vcpu.set_gpr(reg, val);
                 }
                 AxVCpuExitReason::SysRegWrite { addr, value } => {
                     self.get_devices().handle_sys_reg_write(
-                        *addr,
+                        addr,
                         AccessWidth::Qword,
-                        *value as usize,
+                        value as usize,
                     )?;
-                    true
                 }
                 AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
-                    self.handle_nested_page_fault(*addr, *access_flags)
+                    if !self.handle_nested_page_fault(addr, access_flags) {
+                        break AxVCpuExitReason::NestedPageFault { addr, access_flags };
+                    }
                 }
-                _ => false,
-            };
-            if !handled {
-                break exit_reason;
+                exit_reason => break exit_reason,
             }
         };
 
@@ -780,19 +771,11 @@ impl AxVM {
         targets: CpuMask<TEMP_MAX_VCPU_NUM>,
         irq: usize,
     ) -> AxResult {
-        let vm_id = self.id();
-        // Check if the current running vm is self.
-        //
-        // It is not supported to inject interrupt to a vcpu in another VM yet.
-        //
-        // It may be supported in the future, as a essential feature for cross-VM communication.
-        let current_running_vm = axvisor_api::vmm::current_vm_id();
-        if current_running_vm != vm_id {
-            panic!("Injecting interrupt to a vcpu in another VM is not supported");
+        for vcpu in self.vcpu_list() {
+            if targets.get(vcpu.id()) {
+                vcpu.inject_interrupt(irq)?;
+            }
         }
-
-        axvisor_api::vmm::inject_interrupt_to_cpus(vm_id, targets, irq as InterruptVector);
-
         Ok(())
     }
 
@@ -948,7 +931,7 @@ impl AxVM {
         let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
         let hva = HostVirtAddr::from_mut_ptr_of(hva);
 
-        let hpa = axvisor_api::memory::virt_to_phys(hva);
+        let hpa = virt_to_phys(hva);
 
         let gpa = gpa.unwrap_or_else(|| hpa.as_usize().into());
 

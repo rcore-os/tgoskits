@@ -22,6 +22,7 @@
 
 mod consts;
 mod devops_impl;
+pub mod host;
 mod utils;
 mod vplic;
 

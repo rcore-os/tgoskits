@@ -2,6 +2,7 @@ use ax_errno::{AxResult, ax_err};
 use axvcpu::AxArchPerCpu;
 
 use crate::{
+    host::PhysFrame,
     msr::Msr,
     svm::{
         flags::{VmCr, VmCrFlags},
@@ -15,13 +16,13 @@ const EFER_SVME: u64 = 1 << 12;
 /// Per-CPU AMD SVM state.
 #[derive(Debug)]
 pub struct SvmPerCpuState {
-    hsave_page: axvisor_api::memory::PhysFrame,
+    hsave_page: PhysFrame,
 }
 
 impl AxArchPerCpu for SvmPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
-            hsave_page: unsafe { axvisor_api::memory::PhysFrame::uninit() },
+            hsave_page: unsafe { PhysFrame::uninit() },
         })
     }
 
@@ -42,7 +43,7 @@ impl AxArchPerCpu for SvmPerCpuState {
 
         enable_xsave();
 
-        self.hsave_page = axvisor_api::memory::PhysFrame::alloc_zero()?;
+        self.hsave_page = PhysFrame::alloc_zero()?;
         let hsave_pa = self.hsave_page.start_paddr().as_usize() as u64;
         unsafe {
             Msr::VM_HSAVE_PA.write(hsave_pa);
@@ -62,7 +63,7 @@ impl AxArchPerCpu for SvmPerCpuState {
             Msr::IA32_EFER.write(Msr::IA32_EFER.read() & !EFER_SVME);
             Msr::VM_HSAVE_PA.write(0);
         }
-        self.hsave_page = unsafe { axvisor_api::memory::PhysFrame::uninit() };
+        self.hsave_page = unsafe { PhysFrame::uninit() };
 
         info!("[AxVM] succeeded to turn off SVM.");
         Ok(())

@@ -14,7 +14,7 @@
 
 //! This build script reads config file paths from the `AXVISOR_VM_CONFIGS` environment variable,
 //! reads them, and then outputs them to `$(OUT_DIR)/vm_configs.rs` to be used by
-//! `src/vmm/config.rs`.
+//! `src/runtime/config.rs`.
 //!
 //! The `AXVISOR_VM_CONFIGS` environment variable should follow the format convention for the `PATH`
 //! environment variable on the building platform, i.e., paths are separated by colons (`:`) on
@@ -24,7 +24,7 @@
 //! `Vec<&'static str>` containing the contents of the configuration files.
 //!
 //! If the `AXVISOR_VM_CONFIGS` environment variable is not set, `static_vm_configs` will call the
-//! `default_static_vm_configs` function from `src/vmm/config.rs` to return the default
+//! `default_static_vm_configs` function from `src/runtime/config.rs` to return the default
 //! configurations.
 //!
 //! If the `AXVISOR_VM_CONFIGS` environment variable is set but the configuration files cannot be

@@ -4,6 +4,8 @@ use ax_errno::{AxResult, ax_err_type};
 use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use axaddrspace::HostPhysAddr;
 
+use crate::host;
+
 /// Contiguous physical frames for SVM structures such as IOPM and MSRPM.
 #[derive(Debug)]
 pub struct ContiguousPhysFrames {
@@ -14,7 +16,7 @@ pub struct ContiguousPhysFrames {
 
 impl ContiguousPhysFrames {
     pub fn alloc(frame_count: usize) -> AxResult<Self> {
-        let start_paddr = axvisor_api::memory::alloc_contiguous_frames(frame_count, PAGE_SIZE)
+        let start_paddr = host::alloc_contiguous_frames(frame_count, PAGE_SIZE)
             .ok_or_else(|| ax_err_type!(NoMemory, "allocate contiguous frames failed"))?;
 
         assert_ne!(start_paddr.as_usize(), 0);
@@ -41,7 +43,7 @@ impl ContiguousPhysFrames {
     }
 
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        axvisor_api::memory::phys_to_virt(self.start_paddr()).as_mut_ptr()
+        host::phys_to_virt(self.start_paddr()).as_mut_ptr()
     }
 
     pub fn fill(&mut self, byte: u8) {
@@ -54,7 +56,7 @@ impl ContiguousPhysFrames {
 impl Drop for ContiguousPhysFrames {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
-            axvisor_api::memory::dealloc_contiguous_frames(start_paddr, self.frame_count);
+            host::dealloc_contiguous_frames(start_paddr, self.frame_count);
             debug!(
                 "[AxVM] deallocated ContiguousPhysFrames({:#x}, {} frames)",
                 start_paddr, self.frame_count

@@ -1,10 +1,9 @@
 use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use axaddrspace::HostPhysAddr;
-use axvisor_api::memory::PhysFrame;
 
 use super::frame::ContiguousPhysFrames;
-use crate::svm::vmcb::VmcbStruct;
+use crate::{host::PhysFrame, svm::vmcb::VmcbStruct};
 
 /// Virtual-machine control block backing page.
 #[derive(Debug)]

@@ -11,7 +11,7 @@ use axaddrspace::{
 };
 use axdevice_base::BaseDeviceOps;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::{VCpuId, VMId};
+use axvm_types::{VCpuId, VMId};
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86_64::registers::control::Cr0Flags;

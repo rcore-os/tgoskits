@@ -14,5 +14,5 @@ ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-percpu = { workspace = true }
 axaddrspace = { workspace = true }
-axvisor_api = { workspace = true }
+axvm-types = { workspace = true }
 ax-kspin = { workspace = true }

@@ -18,7 +18,6 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use axdevice_base::BaseDeviceOps;
-use axvisor_api::memory::phys_to_virt;
 use log::{debug, trace};
 use spin::Once;
 
@@ -26,6 +25,7 @@ use super::{
     registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
+use crate::host;
 
 /// Default size per GICR region.
 pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then 64K for LPI
@@ -232,7 +232,7 @@ pub struct LpiPropTable {
 impl Drop for LpiPropTable {
     fn drop(&mut self) {
         trace!("LpiPropTable dropped, frame: {:?}", self.frame);
-        axvisor_api::memory::dealloc_contiguous_frames(self.frame, self.frame_pages);
+        host::dealloc_contiguous_frames(self.frame, self.frame_pages);
     }
 }
 
@@ -252,13 +252,12 @@ impl LpiPropTable {
              {size_per_gicr}"
         );
 
-        let f =
-            axvisor_api::memory::alloc_contiguous_frames(page_num, ax_memory_addr::PAGE_SIZE_4K)
-                .expect("Failed to allocate contiguous frames for LPI prop table");
+        let f = host::alloc_contiguous_frames(page_num, ax_memory_addr::PAGE_SIZE_4K)
+            .expect("Failed to allocate contiguous frames for LPI prop table");
         let propreg = f.as_usize() | 0x78f;
         for id in 0..cpu_num {
             let propbaser = host_gicr_base + id * size_per_gicr + GICR_PROPBASER;
-            let propbaser = phys_to_virt(propbaser);
+            let propbaser = host::phys_to_virt(propbaser);
             debug!("Setting propbaser for CPU {id}: {propbaser:#x} -> {propreg:#x}");
             unsafe {
                 ptr::write_volatile(propbaser.as_mut_ptr_of::<u64>(), propreg as _);
@@ -276,7 +275,7 @@ impl LpiPropTable {
         let addr = self.frame + lpi;
         let val = 0b1;
 
-        let addr = phys_to_virt(addr);
+        let addr = host::phys_to_virt(addr);
         // no priority
         unsafe {
             ptr::write_volatile(addr.as_mut_ptr_of::<u8>(), val);
@@ -299,7 +298,7 @@ pub fn get_lpt(
                 host_gicd_typer,
                 host_gicr_base,
                 size_per_gicr,
-                axvisor_api::host::get_host_cpu_num(),
+                host::host_cpu_num(),
             ))
         });
     }

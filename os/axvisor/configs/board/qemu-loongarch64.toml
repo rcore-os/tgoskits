@@ -1,6 +1,6 @@
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
-  "ax-std/loongarch64-qemu-virt",
+  "loongarch64-qemu-virt",
   "ax-driver/virtio-blk",
   "ax-driver/plat-static",
   "ept-level-4",

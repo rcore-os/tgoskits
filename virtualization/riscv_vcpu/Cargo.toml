@@ -42,4 +42,3 @@ ax-page-table-entry = { workspace = true }
 ax-memory-addr = { workspace = true }
 axaddrspace = { workspace = true }
 axvcpu = { workspace = true }
-axvisor_api = { workspace = true }

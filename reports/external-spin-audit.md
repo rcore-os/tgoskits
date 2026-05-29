@@ -112,7 +112,7 @@ Workspace manifests that declare external `spin` directly:
 ```text
 virtualization/arm_vcpu/Cargo.toml:23: spin = "0.10"
 virtualization/arm_vgic/Cargo.toml:34: spin = "0.10"
-memory/axaddrspace/Cargo.toml:41: spin = "0.10"
+virtualization/axaddrspace/Cargo.toml:41: spin = "0.10"
 components/axbacktrace/Cargo.toml:20: spin = { version = "0.10", default-features = false, features = ["once"] }
 virtualization/axdevice/Cargo.toml:20: spin = "0.10"
 components/axdriver_crates/axdriver_net/Cargo.toml:29: spin = "0.9"
@@ -200,7 +200,7 @@ Grouped by area:
  1 components/axdriver_crates/axdriver_net
  1 virtualization/axdevice/src
  1 components/axbacktrace/src
- 1 memory/axaddrspace/tests
+ 1 virtualization/axaddrspace/tests
 ```
 
 The `components/kspin/src/base.rs` entry is documentation text referencing
@@ -317,7 +317,7 @@ platforms/somehal/src/arch/aarch64/systick.rs
 These direct uses are in test utilities or tests:
 
 ```text
-memory/axaddrspace/tests/test_utils/mod.rs
+virtualization/axaddrspace/tests/test_utils/mod.rs
 virtualization/x86_vcpu/src/test_utils.rs
 drivers/serial/some-serial/tests/test.rs
 drivers/soc/rockchip/rockchip-soc/tests/test.rs
