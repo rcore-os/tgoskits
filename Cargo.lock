@@ -797,7 +797,7 @@ dependencies = [
  "cfg-if",
  "log",
  "loongArch64",
- "riscv 0.16.0",
+ "riscv",
  "tock-registers 0.10.1",
  "x86",
  "x86_64",
@@ -1177,7 +1177,7 @@ name = "ax-lockdep"
 version = "0.1.1"
 dependencies = [
  "ax-crate-interface",
- "sbi-rt 0.0.3",
+ "sbi-rt",
 ]
 
 [[package]]
@@ -1286,7 +1286,7 @@ dependencies = [
  "bitmaps",
  "log",
  "rand 0.10.1",
- "riscv 0.16.0",
+ "riscv",
  "x86",
 ]
 
@@ -1443,9 +1443,9 @@ dependencies = [
  "axklib",
  "log",
  "mmio-api",
- "riscv 0.16.0",
+ "riscv",
  "riscv_goldfish",
- "sbi-rt 0.0.3",
+ "sbi-rt",
  "some-serial",
 ]
 
@@ -1463,8 +1463,8 @@ dependencies = [
  "axklib",
  "log",
  "rdif-block",
- "riscv 0.16.0",
- "sbi-rt 0.0.3",
+ "riscv",
+ "sbi-rt",
  "sg200x-bsp",
  "some-serial",
  "spin 0.12.0",
@@ -1483,9 +1483,9 @@ dependencies = [
  "axklib",
  "log",
  "rdrive",
- "riscv 0.14.0",
+ "riscv",
  "riscv_goldfish",
- "sbi-rt 0.0.3",
+ "sbi-rt",
  "uart_16550 0.4.0",
 ]
 
@@ -5894,6 +5894,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
 name = "pci_types"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6904,40 +6910,13 @@ dependencies = [
 
 [[package]]
 name = "riscv"
-version = "0.14.0"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f1671c79a01a149fe000af2429ce9ccc8e58cdecda72672355d50e5536b363c"
+checksum = "e42cdafa0aa3f0f956b7993cace26de5dafff7bb4f2c5b1dcb2c3723f4267a4f"
 dependencies = [
  "critical-section",
  "embedded-hal",
- "paste",
- "riscv-macros 0.2.0",
- "riscv-pac",
-]
-
-[[package]]
-name = "riscv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b05cfa3f7b30c84536a9025150d44d26b8e1cc20ddf436448d74cd9591eefb25"
-dependencies = [
- "critical-section",
- "embedded-hal",
- "paste",
- "riscv-macros 0.3.0",
- "riscv-pac",
-]
-
-[[package]]
-name = "riscv"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9251433e48c39d2133cbaff3ae7809ce6a1ecbc8225ca7da33d96d10cf360582"
-dependencies = [
- "critical-section",
- "embedded-hal",
- "paste",
- "riscv-macros 0.4.0",
+ "pastey",
  "riscv-types",
 ]
 
@@ -6955,47 +6934,8 @@ dependencies = [
  "bit_field",
  "bitflags 2.11.1",
  "log",
- "riscv 0.14.0",
+ "riscv",
 ]
-
-[[package]]
-name = "riscv-macros"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8c4aa1ea1af6dcc83a61be12e8189f9b293c3ba5a487778a4cd89fb060fdbbc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "riscv-macros"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d323d13972c1b104aa036bc692cd08b822c8bbf23d79a27c526095856499799"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "riscv-macros"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d47d1fb716349455b8e5e3ebbf1eff95344dbdf9f782a4e1359d2f16f51e3dce"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "riscv-pac"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
 
 [[package]]
 name = "riscv-types"
@@ -7025,12 +6965,12 @@ dependencies = [
  "cfg-if",
  "log",
  "memoffset",
- "riscv 0.14.0",
+ "riscv",
  "riscv-decode",
  "riscv-h",
  "rustsbi",
- "sbi-rt 0.0.4",
- "sbi-spec 0.0.9",
+ "sbi-rt",
+ "sbi-spec",
  "tock-registers 0.10.1",
 ]
 
@@ -7310,8 +7250,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0da89e7936845ca69a9c12307862828180f10e55cc3b313ace4a0efee5f20622"
 dependencies = [
  "rustsbi-macros",
- "sbi-rt 0.0.4",
- "sbi-spec 0.0.9",
+ "sbi-rt",
+ "sbi-spec",
 ]
 
 [[package]]
@@ -7366,27 +7306,12 @@ dependencies = [
 
 [[package]]
 name = "sbi-rt"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fbaa69be1eedc61c426e6d489b2260482e928b465360576900d52d496a58bd0"
-dependencies = [
- "sbi-spec 0.0.7",
-]
-
-[[package]]
-name = "sbi-rt"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48f7bf85822c8b453d7e3fca7de39684032f5c06c1ed338ad8d47f4a79c1d49a"
 dependencies = [
- "sbi-spec 0.0.9",
+ "sbi-spec",
 ]
-
-[[package]]
-name = "sbi-spec"
-version = "0.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e36312fb5ddc10d08ecdc65187402baba4ac34585cb9d1b78522ae2358d890"
 
 [[package]]
 name = "sbi-spec"
@@ -7903,7 +7828,7 @@ dependencies = [
  "quote",
  "ranges-ext",
  "rgb",
- "sbi-rt 0.0.3",
+ "sbi-rt",
  "smccc",
  "some-serial",
  "somehal-macros",
@@ -7930,8 +7855,8 @@ dependencies = [
  "page-table-generic",
  "rdif-intc",
  "rdrive",
- "riscv 0.15.0",
- "sbi-rt 0.0.3",
+ "riscv",
+ "sbi-rt",
  "someboot",
  "somehal-macros",
  "spin 0.12.0",
@@ -8059,7 +7984,7 @@ dependencies = [
  "rand 0.10.1",
  "rdrive",
  "ringbuf",
- "riscv 0.16.0",
+ "riscv",
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
@@ -9087,9 +9012,9 @@ dependencies = [
 
 [[package]]
 name = "uefi"
-version = "0.36.1"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71fe9058b73ee2b6559524af9e33199c13b2485ddbf3ad1181b68051cdc50c17"
+checksum = "66ab9569afdd1e33a31d8002343aa1df594f055347b1a66136bf9dd6cbc3ec37"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
@@ -9114,9 +9039,9 @@ dependencies = [
 
 [[package]]
 name = "uefi-raw"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f64fe59e11af447d12fd60a403c74106eb104309f34b4c6dbce6e927d97da9d"
+checksum = "f3775e5934877acaef4b00f254f252df1e2266903c31e51455c117f4f2824eda"
 dependencies = [
  "bitflags 2.11.1",
  "uguid",
