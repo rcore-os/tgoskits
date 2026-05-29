@@ -12,6 +12,6 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/self-compile.sh"
-success_regex = ['(?m)^SELFHOST_SUCCESS\\s*$']
+success_regex = ["(?m)^SELFHOST_SUCCESS\\s*$"]
 fail_regex = ['(?i)\bpanicked\b', 'SELFHOST_FAILED']
 timeout = 7200
