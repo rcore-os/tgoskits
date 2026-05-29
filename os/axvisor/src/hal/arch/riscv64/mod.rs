@@ -1,9 +1,8 @@
 mod api;
 pub mod cache;
 
-use crate::vmm::vm_list::get_vm_by_id;
+use crate::{task::AsVCpuTask, vmm::vm_list::get_vm_by_id};
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
-use axvisor_api::vmm::current_vm_id;
 
 const GUEST_PLIC_PADDR: usize = 0x0c00_0000;
 
@@ -13,11 +12,16 @@ pub fn hardware_check() {
     // check page table level like aarch64
 }
 
-pub fn inject_interrupt(irq_id: usize) {
+pub fn inject_interrupt(irq_id: usize) -> bool {
     debug!("injecting interrupt id: {}", irq_id);
 
+    let current = std::os::arceos::modules::ax_task::current();
+    let Some(vcpu_task) = current.try_as_vcpu_task() else {
+        return false;
+    };
+
     // Get the instance of the vplic, and then inject virtual interrupt.
-    let vplic = get_vm_by_id(current_vm_id())
+    let vplic = get_vm_by_id(vcpu_task.vm().id())
         .unwrap()
         .get_devices()
         .find_mmio_dev(GuestPhysAddr::from_usize(GUEST_PLIC_PADDR))
@@ -31,4 +35,5 @@ pub fn inject_interrupt(irq_id: usize) {
 
     // Use a trick write to set the pending bit.
     let _ = vplic.handle_write(addr, width, val as _);
+    true
 }
