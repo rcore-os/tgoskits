@@ -61,7 +61,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         config: None,
         arch: Some(arch.clone()),
         target: None,
-        smp: None,
+        smp: args.smp,
         debug: true,
     };
     let request = starry.prepare_request(

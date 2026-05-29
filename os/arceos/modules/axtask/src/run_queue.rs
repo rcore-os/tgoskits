@@ -1,7 +1,7 @@
-#[cfg(feature = "smp")]
-use alloc::sync::Weak;
 use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
+#[cfg(feature = "smp")]
+use core::ptr::NonNull;
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
@@ -34,9 +34,12 @@ percpu_static! {
     EXITED_TASKS: VecDeque<AxTaskRef> = VecDeque::new(),
     WAIT_FOR_EXIT: WaitQueue = WaitQueue::new(),
     IDLE_TASK: LazyInit<AxTaskRef> = LazyInit::new(),
-    /// Stores the weak reference to the previous task that is running on this CPU.
+    /// Stores a raw pointer to the previous task running on this CPU.
+    /// The pointer is valid only within the window between `switch_to` storing it
+    /// and `clear_prev_task_on_cpu` consuming it — both in the same non-preemptible
+    /// call chain, so the task cannot be freed while the pointer is held.
     #[cfg(feature = "smp")]
-    PREV_TASK: Weak<crate::AxTask> = Weak::new(),
+    PREV_TASK: Option<NonNull<crate::AxTask>> = None,
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
@@ -699,10 +702,13 @@ impl AxRunQueue {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();
 
-            // Store the weak pointer of **prev_task** in ax-percpu variable `PREV_TASK`.
+            // Store a raw pointer to prev_task in PREV_TASK.
+            // Safety: prev_task is alive (Arc held on caller's stack) and will
+            // remain so through clear_prev_task_on_cpu() below.
             #[cfg(feature = "smp")]
             {
-                *PREV_TASK.current_ref_mut_raw() = Arc::downgrade(&prev_task);
+                *PREV_TASK.current_ref_mut_raw() =
+                    Some(NonNull::new(Arc::as_ptr(&prev_task) as *mut _).unwrap());
             }
 
             // The strong reference count of `prev_task` will be decremented by 1,
@@ -777,13 +783,12 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
 /// Clear the `on_cpu` field of previous task running on this CPU.
 #[cfg(feature = "smp")]
 pub(crate) unsafe fn clear_prev_task_on_cpu() {
-    unsafe {
-        PREV_TASK
-            .current_ref_raw()
-            .upgrade()
-            .expect("Invalid prev_task pointer or prev_task has been dropped")
-            .set_on_cpu(false);
-    }
+    let prev = unsafe { PREV_TASK.current_ref_mut_raw() }
+        .take()
+        .expect("PREV_TASK should have been set by switch_to");
+    // Safety: prev_task's Arc is still alive on the caller's stack at this point
+    // (switch_to has not yet returned), so the pointer is valid.
+    unsafe { prev.as_ref() }.set_on_cpu(false);
 }
 pub(crate) fn init() {
     let cpu_id = this_cpu_id();

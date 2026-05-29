@@ -561,6 +561,11 @@ pub struct ProcessData {
     /// Linux stores this on `mm_struct`; StarryOS keeps it process-wide.
     dumpable: AtomicI32,
 
+    /// PR_GET_THP_DISABLE / PR_SET_THP_DISABLE value.
+    /// StarryOS does not implement transparent huge pages, but userspace may
+    /// set this as a compatibility hint and later query it.
+    thp_disable: AtomicU32,
+
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
@@ -696,6 +701,7 @@ impl ProcessData {
             nice: AtomicI32::new(0),
             membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
+            thp_disable: AtomicU32::new(0),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
@@ -827,6 +833,16 @@ impl ProcessData {
     /// (SUID_DUMP_USER). Callers must validate before storing.
     pub fn set_dumpable(&self, dumpable: i32) {
         self.dumpable.store(dumpable, Ordering::SeqCst);
+    }
+
+    /// Get the transparent huge page disable state (PR_GET_THP_DISABLE).
+    pub fn thp_disable(&self) -> u32 {
+        self.thp_disable.load(Ordering::SeqCst)
+    }
+
+    /// Set the transparent huge page disable state (PR_SET_THP_DISABLE).
+    pub fn set_thp_disable(&self, thp_disable: u32) {
+        self.thp_disable.store(thp_disable, Ordering::SeqCst);
     }
 
     /// Returns true if the process is currently job-control stopped.

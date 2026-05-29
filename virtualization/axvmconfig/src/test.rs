@@ -15,7 +15,8 @@
 use enumerable::Enumerable;
 
 use crate::{
-    AxVMCrateConfig, EmulatedDeviceType, VMDevicesConfig, VMInterruptMode, VmMemMappingType,
+    AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol, VMDevicesConfig, VMInterruptMode,
+    VmMemMappingType,
 };
 
 #[test]
@@ -72,6 +73,10 @@ interrupt_mode = "passthrough"
     assert_eq!(config.kernel.kernel_path, "amazing-os.bin");
     assert_eq!(config.kernel.kernel_load_addr, 0xdeadbeef);
     assert!(config.kernel.enable_bios);
+    assert_eq!(
+        config.kernel.effective_boot_protocol(),
+        VMBootProtocol::Multiboot
+    );
     assert_eq!(config.kernel.bios_path, Some("test-bios.bin".to_string()));
     assert_eq!(config.kernel.bios_load_addr, Some(0x8000));
     assert_eq!(
@@ -117,6 +122,131 @@ interrupt_mode = "passthrough"
         EmulatedDeviceType::GPPTITS
     );
     assert_eq!(config.devices.interrupt_mode, VMInterruptMode::Passthrough);
+}
+
+#[test]
+fn test_boot_protocol_deser_and_legacy_defaults() {
+    const UEFI_KERNEL_CONFIG: &str = r#"
+entry_point = 0xffff_fff0
+image_location = "fs"
+kernel_path = "guest-loader.efi"
+kernel_load_addr = 0x20_0000
+enable_bios = true
+boot_protocol = "uefi"
+uefi_firmware_path = "OVMF_CODE.fd"
+bios_path = "legacy-OVMF_CODE.fd"
+bios_load_addr = 0xffc0_0000
+memory_regions = []
+    "#;
+
+    let uefi_config: crate::VMKernelConfig = toml::from_str(UEFI_KERNEL_CONFIG).unwrap();
+    assert_eq!(uefi_config.boot_protocol, Some(VMBootProtocol::Uefi));
+    assert_eq!(uefi_config.effective_boot_protocol(), VMBootProtocol::Uefi);
+    assert_eq!(uefi_config.boot_firmware_path(), Some("OVMF_CODE.fd"));
+    assert!(uefi_config.validate_boot_config().is_ok());
+
+    let legacy_uefi_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        bios_path: Some("OVMF_CODE.fd".to_string()),
+        bios_load_addr: Some(0xffc0_0000),
+        ..Default::default()
+    };
+    assert_eq!(
+        legacy_uefi_config.boot_firmware_path(),
+        Some("OVMF_CODE.fd")
+    );
+    assert!(legacy_uefi_config.validate_boot_config().is_ok());
+
+    let direct_config = crate::VMKernelConfig {
+        enable_bios: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        direct_config.effective_boot_protocol(),
+        VMBootProtocol::Direct
+    );
+
+    let legacy_bios_config = crate::VMKernelConfig {
+        enable_bios: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        legacy_bios_config.effective_boot_protocol(),
+        VMBootProtocol::Multiboot
+    );
+}
+
+#[test]
+fn test_boot_config_validation_requires_uefi_inputs() {
+    let mut missing_firmware = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        bios_load_addr: Some(0xffc0_0000),
+        ..Default::default()
+    };
+
+    assert!(missing_firmware.validate_boot_config().is_err());
+
+    missing_firmware.uefi_firmware_path = Some("OVMF_CODE.fd".to_string());
+    assert!(missing_firmware.validate_boot_config().is_ok());
+}
+
+#[test]
+fn test_boot_config_validation_rejects_x86_firmware_protocols_on_other_arches() {
+    let uefi_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        uefi_firmware_path: Some("OVMF_CODE.fd".to_string()),
+        bios_load_addr: Some(0xffc0_0000),
+        ..Default::default()
+    };
+
+    assert!(
+        uefi_config
+            .validate_boot_config_for_arch("aarch64")
+            .is_err()
+    );
+    assert!(
+        uefi_config
+            .validate_boot_config_for_arch("riscv64")
+            .is_err()
+    );
+    assert!(
+        uefi_config
+            .validate_boot_config_for_arch("loongarch64")
+            .is_err()
+    );
+    assert!(uefi_config.validate_boot_config_for_arch("x86_64").is_ok());
+
+    let multiboot_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Multiboot),
+        ..Default::default()
+    };
+
+    assert!(
+        multiboot_config
+            .validate_boot_config_for_arch("aarch64")
+            .is_err()
+    );
+    assert!(
+        multiboot_config
+            .validate_boot_config_for_arch("x86_64")
+            .is_ok()
+    );
+}
+
+#[test]
+fn test_boot_config_validation_rejects_direct_bios_mix() {
+    let direct_with_bios = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Direct),
+        bios_load_addr: Some(0x8000),
+        ..Default::default()
+    };
+
+    assert!(direct_with_bios.validate_boot_config().is_err());
 }
 
 #[test]
@@ -306,7 +436,13 @@ fn test_default_implementations() {
     assert_eq!(vm_kernel_config.kernel_path, "");
     assert_eq!(vm_kernel_config.kernel_load_addr, 0);
     assert!(!vm_kernel_config.enable_bios);
+    assert!(vm_kernel_config.boot_protocol.is_none());
+    assert_eq!(
+        vm_kernel_config.effective_boot_protocol(),
+        VMBootProtocol::Direct
+    );
     assert!(vm_kernel_config.bios_path.is_none());
+    assert!(vm_kernel_config.uefi_firmware_path.is_none());
     assert!(vm_kernel_config.bios_load_addr.is_none());
     assert!(vm_kernel_config.dtb_path.is_none());
     assert!(vm_kernel_config.dtb_load_addr.is_none());

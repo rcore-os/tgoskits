@@ -24,10 +24,26 @@
 
 #define _GNU_SOURCE
 #include "test_framework.h"
-#include <linux/capability.h>
+#include <stdint.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <string.h>
+
+/* Minimal capability UAPI definitions used by capset(2). */
+#define _LINUX_CAPABILITY_VERSION_3 0x20080522
+#define _LINUX_CAPABILITY_U32S_3 2
+
+typedef uint32_t __u32;
+struct __user_cap_header_struct {
+    __u32 version;
+    int pid;
+};
+
+struct __user_cap_data_struct {
+    __u32 effective;
+    __u32 permitted;
+    __u32 inheritable;
+};
 
 typedef struct __user_cap_header_struct cap_header_t;
 typedef struct __user_cap_data_struct   cap_data_t;

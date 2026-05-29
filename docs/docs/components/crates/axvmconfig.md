@@ -62,6 +62,7 @@
 
 - `entry_point`
 - `kernel_path` / `kernel_load_addr`
+- `boot_protocol`
 - `bios_path` / `bios_load_addr`
 - `dtb_path` / `dtb_load_addr`
 - `ramdisk_path` / `ramdisk_load_addr`
@@ -69,6 +70,8 @@
 - `cmdline`
 - `disk_path`
 - `memory_regions: Vec<VmMemConfig>`
+
+`boot_protocol` describes how the guest enters its boot image. It defaults to `direct` when `enable_bios = false`, and keeps the historical `multiboot` behavior when `enable_bios = true` and the field is omitted. x86_64 guests can set `boot_protocol = "uefi"` to load an external UEFI firmware image without applying the legacy axvm-bios multiboot patch.
 
 `VmMemConfig` 则把每段 guest 物理内存刻画为：
 

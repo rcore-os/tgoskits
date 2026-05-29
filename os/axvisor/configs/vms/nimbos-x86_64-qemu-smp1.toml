@@ -27,6 +27,8 @@ kernel_path = "/guest/nimbos/nimbos-qemu"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = true
+# Legacy x86 boot flow uses axvm-bios and multiboot info patching.
+boot_protocol = "multiboot"
 # The file path of the BIOS image.
 # NimbOS x86_64 needs axvm-bios at 0x8000 to bootstrap.
 # bios_path = "/guest/nimbos/axvm-bios.bin"

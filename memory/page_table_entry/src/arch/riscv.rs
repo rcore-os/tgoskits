@@ -159,8 +159,11 @@ impl GenericPTE for Rv64PTE {
     }
 
     fn set_flags(&mut self, mflags: MappingFlags, _is_huge: bool) {
-        let flags = PTEFlags::from(mflags) | PTEFlags::A | PTEFlags::D;
-        debug_assert!(flags.intersects(PTEFlags::R | PTEFlags::X));
+        let mut flags = PTEFlags::from(mflags) | PTEFlags::A | PTEFlags::D;
+        // RISC-V reserves any leaf PTE encoding with R=0 and W=1.
+        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R) {
+            flags |= PTEFlags::R;
+        }
         self.0 = (self.0 & Self::PHYS_ADDR_MASK) | flags.bits() as u64;
         self.set_extended_flags(mflags, 0);
     }

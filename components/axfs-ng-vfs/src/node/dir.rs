@@ -59,6 +59,20 @@ pub trait DirNodeOps: NodeOps {
         true
     }
 
+    /// Returns whether this directory has child entries relevant to rmdir.
+    fn has_children(&self) -> VfsResult<bool> {
+        let mut has_children = false;
+        self.read_dir(0, &mut |name: &str, _, _, _| {
+            if name != DOT && name != DOTDOT {
+                has_children = true;
+                false
+            } else {
+                true
+            }
+        })?;
+        Ok(has_children)
+    }
+
     /// Creates a directory entry.
     fn create(
         &self,
@@ -164,6 +178,10 @@ impl DirNode {
     }
 
     fn lookup_locked(&self, name: &str, children: &mut DirChildren) -> VfsResult<DirEntry> {
+        if !self.ops.is_cacheable() {
+            return self.ops.lookup(name);
+        }
+
         use hashbrown::hash_map::Entry;
         match children.entry(name.to_owned()) {
             Entry::Occupied(e) => Ok(e.get().clone()),
@@ -223,7 +241,9 @@ impl DirNode {
             // file content.
             let user_data = node.user_data().clone();
             *entry.user_data() = user_data;
-            self.cache.lock().insert(name.to_owned(), entry.clone());
+            if self.ops.is_cacheable() {
+                self.cache.lock().insert(name.to_owned(), entry.clone());
+            }
         })
     }
 
@@ -249,16 +269,7 @@ impl DirNode {
 
     /// Returns whether the directory contains children.
     pub fn has_children(&self) -> VfsResult<bool> {
-        let mut has_children = false;
-        self.read_dir(0, &mut |name: &str, _, _, _| {
-            if name != DOT && name != DOTDOT {
-                has_children = true;
-                false
-            } else {
-                true
-            }
-        })?;
-        Ok(has_children)
+        self.ops.has_children()
     }
 
     fn create_locked(
@@ -269,7 +280,9 @@ impl DirNode {
         children: &mut DirChildren,
     ) -> VfsResult<DirEntry> {
         let entry = self.ops.create(name, node_type, permission)?;
-        children.insert(name.to_owned(), entry.clone());
+        if self.ops.is_cacheable() {
+            children.insert(name.to_owned(), entry.clone());
+        }
         Ok(entry)
     }
 

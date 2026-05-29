@@ -94,6 +94,8 @@ pub struct ArgsPerf {
     pub mode: String,
     #[arg(long, default_value_t = 20)]
     pub top: usize,
+    #[arg(long, value_name = "CPUS")]
+    pub smp: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

@@ -66,6 +66,7 @@ jobs:
         uses: dorny/paths-filter@v4
         with:
           base: ${{ github.event_name == 'push' && github.ref || '' }}
+          token: ""
           filters: |
             ci_checks:
               - ".cargo/**"
@@ -315,6 +316,14 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
+          - name: Test axvmconfig config validation
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo test -p axvmconfig --lib
+            cache_key: test-axvmconfig
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
           - name: Test axvisor aarch64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
@@ -458,6 +467,39 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test axvisor self-hosted x86_64 UEFI
+            use_container: false
+            runs_on: '["self-hosted","linux","intel","kvm"]'
+            timeout_minutes: 20
+            command: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ovmf
+              UEFI_FIRMWARE=""
+              for candidate in \
+                /usr/share/OVMF/OVMF_CODE_4M.fd \
+                /usr/share/OVMF/OVMF_CODE.fd \
+                /usr/share/ovmf/OVMF.fd \
+                /usr/share/qemu/OVMF.fd; do
+                if [ -f "${candidate}" ]; then
+                  UEFI_FIRMWARE="${candidate}"
+                  break
+                fi
+              done
+              if [ -z "${UEFI_FIRMWARE}" ]; then
+                echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
+                exit 1
+              fi
+              export AXVISOR_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
+              cd os/axvisor
+              ./scripts/setup_qemu.sh nimbos-uefi
+              grep -q 'boot_protocol = "uefi"' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
+              grep -q 'uefi_firmware_path = "' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
+              cd ../..
+              cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
           - name: Test axvisor x86_64 svm hosted
             use_container: false
             runs_on: '["ubuntu-latest"]'
@@ -564,6 +606,7 @@ jobs:
       limit_to_owner: ${{ matrix.limit_to_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
 
   publish_base_container:
     name: Publish base container image

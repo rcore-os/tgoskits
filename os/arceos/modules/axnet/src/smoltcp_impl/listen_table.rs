@@ -77,39 +77,48 @@ impl ListenTable {
 
     pub fn unlisten(&self, port: u16) {
         debug!("TCP socket unlisten on {port}");
-        *self.tcp[port as usize].lock() = None;
+        let entry = self.tcp[port as usize].lock().take();
+        drop(entry);
     }
 
     pub fn can_accept(&self, port: u16) -> AxResult<bool> {
-        if let Some(entry) = self.tcp[port as usize].lock().deref() {
-            Ok(entry.syn_queue.iter().any(|&handle| is_connected(handle)))
-        } else {
-            ax_err!(InvalidInput, "socket accept() failed: not listen")
-        }
+        SOCKET_SET.with_socket_set_mut(|sockets| {
+            if let Some(entry) = self.tcp[port as usize].lock().deref() {
+                Ok(entry
+                    .syn_queue
+                    .iter()
+                    .any(|&handle| is_connected(sockets, handle)))
+            } else {
+                ax_err!(InvalidInput, "socket accept() failed: not listen")
+            }
+        })
     }
 
     pub fn accept(&self, port: u16) -> AxResult<(SocketHandle, (IpEndpoint, IpEndpoint))> {
-        if let Some(entry) = self.tcp[port as usize].lock().deref_mut() {
-            let syn_queue = &mut entry.syn_queue;
-            let (idx, addr_tuple) = syn_queue
-                .iter()
-                .enumerate()
-                .find_map(|(idx, &handle)| {
-                    is_connected(handle).then(|| (idx, get_addr_tuple(handle)))
-                })
-                .ok_or(AxError::WouldBlock)?; // wait for connection
-            if idx > 0 {
-                warn!(
-                    "slow SYN queue enumeration: index = {}, len = {}!",
-                    idx,
-                    syn_queue.len()
-                );
+        SOCKET_SET.with_socket_set_mut(|sockets| {
+            if let Some(entry) = self.tcp[port as usize].lock().deref_mut() {
+                let syn_queue = &mut entry.syn_queue;
+                let (idx, addr_tuple) = syn_queue
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, &handle)| {
+                        is_connected(sockets, handle)
+                            .then(|| (idx, get_addr_tuple(sockets, handle)))
+                    })
+                    .ok_or(AxError::WouldBlock)?; // wait for connection
+                if idx > 0 {
+                    warn!(
+                        "slow SYN queue enumeration: index = {}, len = {}!",
+                        idx,
+                        syn_queue.len()
+                    );
+                }
+                let handle = syn_queue.swap_remove_front(idx).unwrap();
+                Ok((handle, addr_tuple))
+            } else {
+                ax_err!(InvalidInput, "socket accept() failed: not listen")
             }
-            let handle = syn_queue.swap_remove_front(idx).unwrap();
-            Ok((handle, addr_tuple))
-        } else {
-            ax_err!(InvalidInput, "socket accept() failed: not listen")
-        }
+        })
     }
 
     pub fn incoming_tcp_packet(
@@ -141,17 +150,15 @@ impl ListenTable {
     }
 }
 
-fn is_connected(handle: SocketHandle) -> bool {
-    SOCKET_SET.with_socket::<tcp::Socket, _, _>(handle, |socket| {
-        !matches!(socket.state(), State::Listen | State::SynReceived)
-    })
+fn is_connected(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+    let socket = sockets.get::<tcp::Socket>(handle);
+    !matches!(socket.state(), State::Listen | State::SynReceived)
 }
 
-fn get_addr_tuple(handle: SocketHandle) -> (IpEndpoint, IpEndpoint) {
-    SOCKET_SET.with_socket::<tcp::Socket, _, _>(handle, |socket| {
-        (
-            socket.local_endpoint().unwrap(),
-            socket.remote_endpoint().unwrap(),
-        )
-    })
+fn get_addr_tuple(sockets: &SocketSet<'_>, handle: SocketHandle) -> (IpEndpoint, IpEndpoint) {
+    let socket = sockets.get::<tcp::Socket>(handle);
+    (
+        socket.local_endpoint().unwrap(),
+        socket.remote_endpoint().unwrap(),
+    )
 }

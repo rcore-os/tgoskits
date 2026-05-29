@@ -12,6 +12,7 @@ use crate::{
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
 const PERSONALITY_GET: u32 = 0xffff_ffff;
+const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
 
 /// Validate the cap header and return the target pid (0 means self).
 fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u32> {
@@ -185,6 +186,35 @@ pub fn sys_prctl(
         }
         PR_GET_NO_NEW_PRIVS => {
             return Ok(current().as_thread().no_new_privs() as isize);
+        }
+        PR_SET_THP_DISABLE => {
+            // Linux reserves arg4/arg5 for this option; non-zero values are invalid.
+            if arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            // StarryOS does not implement transparent huge pages, but userspace
+            // may use this prctl as a compatibility hint and query it later.
+            // Linux returns 0, 1, or 3 from PR_GET_THP_DISABLE:
+            //   0: enabled, 1: disabled, 3: disabled except advised mappings.
+            let thp_disable = match (arg2, arg3) {
+                (0, 0) => 0,
+                (0, _) => return Err(AxError::InvalidInput),
+                (_, 0) => 1,
+                (_, PR_THP_DISABLE_EXCEPT_ADVISED) => 1 | PR_THP_DISABLE_EXCEPT_ADVISED,
+                _ => return Err(AxError::InvalidInput),
+            };
+            current()
+                .as_thread()
+                .proc_data
+                .set_thp_disable(thp_disable as u32);
+        }
+        PR_GET_THP_DISABLE => {
+            // PR_GET_THP_DISABLE takes no additional arguments and returns the
+            // process-local state recorded by PR_SET_THP_DISABLE.
+            if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return Ok(current().as_thread().proc_data.thp_disable() as isize);
         }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings

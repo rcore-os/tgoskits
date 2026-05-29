@@ -16,6 +16,8 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
+#[cfg(target_arch = "x86_64")]
+use axvm::config::VMBootProtocol;
 use axvm::config::{AxVMCrateConfig, VmMemMappingType};
 use byte_unit::Byte;
 
@@ -114,6 +116,7 @@ impl ImageLoader {
     }
 
     pub fn load(&mut self) -> AxResult {
+        self.config.kernel.validate_boot_config()?;
         info!(
             "Loading VM[{}] images into memory region: gpa={:#x}, hva={:#x}, size={:#}",
             self.vm.id(),
@@ -252,11 +255,41 @@ impl ImageLoader {
         if let Some(buffer) = bios {
             let load_gpa = self
                 .bios_load_gpa
-                .ok_or_else(|| ax_err_type!(NotFound, "BIOS load address is missing"))?;
+                .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
             load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())?;
             #[cfg(target_arch = "x86_64")]
-            self.load_x86_multiboot_info(buffer, load_gpa)?;
+            if should_patch_x86_multiboot_info(&self.config) {
+                self.load_x86_multiboot_info(buffer, load_gpa)?;
+            }
             return Ok(());
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+            let firmware_path = self.config.kernel.boot_firmware_path().ok_or_else(|| {
+                ax_errno::ax_err_type!(NotFound, "UEFI firmware image path is missed")
+            })?;
+            let load_gpa = self.bios_load_gpa.ok_or_else(|| {
+                ax_errno::ax_err_type!(NotFound, "UEFI firmware load addr is missed")
+            })?;
+
+            #[cfg(feature = "fs")]
+            {
+                info!(
+                    "Loading UEFI firmware image {} at GPA {:#x}",
+                    firmware_path,
+                    load_gpa.as_usize()
+                );
+                return fs::load_vm_image(firmware_path, load_gpa, self.vm.clone());
+            }
+
+            #[cfg(not(feature = "fs"))]
+            {
+                return Err(ax_errno::ax_err_type!(
+                    Unsupported,
+                    "UEFI firmware path requires the fs feature when no firmware image buffer is available"
+                ));
+            }
         }
 
         #[cfg(target_arch = "x86_64")]
@@ -280,7 +313,9 @@ impl ImageLoader {
 
     #[cfg(target_arch = "x86_64")]
     fn should_load_default_x86_boot_image(&self) -> bool {
-        self.config.kernel.enable_bios && self.config.kernel.bios_path.is_none()
+        self.config.kernel.enable_bios
+            && self.config.kernel.boot_firmware_path().is_none()
+            && self.config.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -630,23 +665,26 @@ pub mod fs {
             loader.kernel_load_gpa,
             loader.vm.clone(),
         )?;
-        // Load BIOS image if needed.
+        // Load boot firmware image if needed.
         if loader.config.kernel.enable_bios
-            && let Some(bios_path) = &loader.config.kernel.bios_path
+            && let Some(bios_path) = loader.config.kernel.boot_firmware_path()
         {
             if let Some(bios_load_addr) = loader.bios_load_gpa {
                 #[cfg(target_arch = "x86_64")]
-                let bios_image = read_image_file(bios_path)?;
-                #[cfg(target_arch = "x86_64")]
                 {
-                    validate_x86_bios_patch_region(&bios_image)?;
-                    load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
-                    loader.load_x86_multiboot_info(&bios_image, bios_load_addr)?;
+                    if should_patch_x86_multiboot_info(&loader.config) {
+                        let bios_image = read_image_file(bios_path)?;
+                        validate_x86_bios_patch_region(&bios_image)?;
+                        load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
+                        loader.load_x86_multiboot_info(&bios_image, bios_load_addr)?;
+                    } else {
+                        load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                    }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
             } else {
-                return ax_err!(NotFound, "BIOS load addr is missed");
+                return ax_err!(NotFound, "boot firmware load addr is missed");
             }
         };
         #[cfg(target_arch = "x86_64")]
@@ -804,6 +842,11 @@ pub mod fs {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn should_patch_x86_multiboot_info(config: &AxVMCrateConfig) -> bool {
+    config.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
+}
+
+#[cfg(target_arch = "x86_64")]
 fn detect_x86_linux_image(image: &[u8]) -> Option<x86_linux::X86LinuxHeader> {
     match x86_linux::X86LinuxHeader::parse(image) {
         Ok(header) => Some(header),
@@ -922,5 +965,22 @@ mod tests {
         let invalid_gpa = GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA + 0x1000);
 
         assert!(builtin_x86_bios_load_gpa(Some(invalid_gpa)).is_err());
+    }
+
+    #[test]
+    fn legacy_x86_bios_config_uses_multiboot_patch() {
+        let mut cfg = AxVMCrateConfig::default();
+        cfg.kernel.enable_bios = true;
+
+        assert!(should_patch_x86_multiboot_info(&cfg));
+    }
+
+    #[test]
+    fn x86_uefi_config_skips_multiboot_patch() {
+        let mut cfg = AxVMCrateConfig::default();
+        cfg.kernel.enable_bios = true;
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+
+        assert!(!should_patch_x86_multiboot_info(&cfg));
     }
 }
