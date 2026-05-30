@@ -129,10 +129,13 @@ pub struct ShmInner {
     pub mapping_flags: MappingFlags,
     /// c type struct, used in shm_ctl
     pub shmid_ds: ShmidDs,
+    /// IPC namespace ID that owns this segment
+    pub ns_id: u64,
 }
 
 impl ShmInner {
     /// Creates a new [`ShmInner`].
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         key: i32,
         shmid: i32,
@@ -141,6 +144,7 @@ impl ShmInner {
         pid: Pid,
         uid: u32,
         gid: u32,
+        ns_id: u64,
     ) -> Self {
         ShmInner {
             shmid,
@@ -157,6 +161,7 @@ impl ShmInner {
                 uid,
                 gid,
             ),
+            ns_id,
         }
     }
 
@@ -313,8 +318,19 @@ impl ShmManager {
     }
 
     /// Returns the shared memory inner structure [`ShmInner`] associated with
-    /// the given shared memory ID.
-    pub fn get_inner_by_shmid(&self, shmid: i32) -> Option<Arc<Mutex<ShmInner>>> {
+    /// the given shared memory ID, validating that it belongs to the specified
+    /// IPC namespace.
+    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<Mutex<ShmInner>>> {
+        self.shmid_inner
+            .get(&shmid)
+            .filter(|inner| inner.lock().ns_id == ns_id)
+            .cloned()
+    }
+
+    /// Lookup a shm_inner by shmid without namespace validation. Only for
+    /// internal cleanup paths (process exit) where the caller has already
+    /// scoped the lookup by pid.
+    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<Mutex<ShmInner>>> {
         self.shmid_inner.get(&shmid).cloned()
     }
 
@@ -422,7 +438,7 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
         shmids
             .into_iter()
             .filter_map(|shmid| {
-                let inner = shm_manager.get_inner_by_shmid(shmid)?;
+                let inner = shm_manager.get_inner_by_shmid_unchecked(shmid)?;
                 Some((shmid, inner))
             })
             .collect()
@@ -485,7 +501,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
                 return Err(AxError::AlreadyExists);
             }
             let shm_inner = shm_manager
-                .get_inner_by_shmid(shmid)
+                .get_inner_by_shmid(shmid, ns_id)
                 .ok_or(AxError::NotFound)?;
             let mut shm_inner = shm_inner.lock();
             return shm_inner.try_update(size, cur_pid);
@@ -514,6 +530,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         cur_pid,
         cred.euid,
         cred.egid,
+        ns_id,
     )));
     shm_manager.insert_key_shmid(key, ns_id, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);
@@ -534,8 +551,9 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     // mapping work to avoid holding the global lock across aspace ops.
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
+        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         shm_manager
-            .get_inner_by_shmid(shmid)
+            .get_inner_by_shmid(shmid, ns_id)
             .ok_or(AxError::InvalidInput)?
     };
     info!("shmat pid={pid} shmid={shmid} lock shm_inner");
@@ -615,6 +633,11 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
 pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize> {
     let cmd = cmd as i32;
 
+    let curr = current();
+    let thread = curr.as_thread();
+    let cred = thread.cred();
+    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+
     // IPC_INFO: system-wide shared memory limits (no segment lookup).
     if cmd == IPC_INFO {
         let shm_manager = SHM_MANAGER.lock();
@@ -627,17 +650,26 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         };
         let ptr = buf.as_ptr() as *mut ShmInfo64;
         ptr.vm_write(info)?;
-        let max_idx = shm_manager.shmid_inner.len().saturating_sub(1) as isize;
+        let ns_count = shm_manager
+            .shmid_inner
+            .values()
+            .filter(|inner| inner.lock().ns_id == ns_id)
+            .count();
+        let max_idx = ns_count.saturating_sub(1) as isize;
         return Ok(max_idx);
     }
 
-    // SHM_INFO: shared memory usage statistics.
+    // SHM_INFO: shared memory usage statistics for this namespace.
     if cmd == SHM_INFO {
         let shm_manager = SHM_MANAGER.lock();
-        let used_ids = shm_manager.shmid_inner.len() as i32;
+        let mut used_ids: i32 = 0;
         let mut shm_tot: u64 = 0;
         for inner in shm_manager.shmid_inner.values() {
-            shm_tot += inner.lock().page_num as u64;
+            let guard = inner.lock();
+            if guard.ns_id == ns_id {
+                used_ids += 1;
+                shm_tot += guard.page_num as u64;
+            }
         }
         let info = ShmInfo {
             used_ids,
@@ -650,17 +682,18 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         };
         let ptr = buf.as_ptr() as *mut ShmInfo;
         ptr.vm_write(info)?;
-        let max_idx = shm_manager.shmid_inner.len().saturating_sub(1) as isize;
+        let max_idx = used_ids.saturating_sub(1) as isize;
         return Ok(max_idx);
     }
 
-    // SHM_STAT: return the shmid_ds for the shmid at the given index.
+    // SHM_STAT: return the shmid_ds for the shmid at the given index,
+    // counting only segments in this namespace.
     if cmd == SHM_STAT {
-        let cred = current().as_thread().cred();
         let shm_manager = SHM_MANAGER.lock();
         let result = shm_manager
             .shmid_inner
             .iter()
+            .filter(|(_, inner)| inner.lock().ns_id == ns_id)
             .nth(shmid as usize)
             .ok_or(AxError::InvalidInput)
             .and_then(|(actual_shmid, inner)| {
@@ -682,7 +715,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         // do_shm_rmid() in ipc/shm.c.
         let mut shm_manager = SHM_MANAGER.lock();
         let shm_inner_arc = shm_manager
-            .get_inner_by_shmid(shmid)
+            .get_inner_by_shmid(shmid, ns_id)
             .ok_or(AxError::InvalidInput)?;
         let mut shm_inner = shm_inner_arc.lock();
 
@@ -704,7 +737,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
         shm_manager
-            .get_inner_by_shmid(shmid)
+            .get_inner_by_shmid(shmid, ns_id)
             .ok_or(AxError::InvalidInput)?
     };
     let mut shm_inner = shm_inner_arc.lock();
@@ -749,11 +782,12 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
     // Look up shmid and grab the inner Arc while holding SHM_MANAGER.
     let (shmid, shm_inner_arc) = {
         let shm_manager = SHM_MANAGER.lock();
+        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         let shmid = shm_manager
             .get_shmid_by_vaddr(pid, shmaddr)
             .ok_or(AxError::InvalidInput)?;
         let shm_inner_arc = shm_manager
-            .get_inner_by_shmid(shmid)
+            .get_inner_by_shmid(shmid, ns_id)
             .ok_or(AxError::InvalidInput)?;
         (shmid, shm_inner_arc)
     };

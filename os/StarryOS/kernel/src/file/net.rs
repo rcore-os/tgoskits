@@ -24,17 +24,20 @@ use linux_raw_sys::{
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
-use super::{
-    FileLike, Kstat,
-    packet::{ETH0_IFINDEX, LO_IFINDEX},
-};
+use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
 };
 
+/// Real eth0 MAC address. Uses the QEMU default; TODO: query
+/// `EthernetDriver::mac_address()` from axnet at init time once the API is
+/// exposed, then replace this with a `static` or `LazyLock`.
+pub const ETH0_REAL_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+
+pub(super) const ETH0_IFINDEX: i32 = 2;
+pub(super) const LO_IFINDEX: i32 = 1;
 const ETH0_NAME: &[u8] = b"eth0";
-const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const LO_NAME: &[u8] = b"lo";
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
@@ -294,7 +297,7 @@ impl FileLike for Socket {
                 write_ifreq_sockaddr(arg, addr)?;
             }
             SIOCGIFHWADDR => match read_ifreq_interface(arg)? {
-                NetInterface::Eth0 => write_ifreq_hwaddr(arg, ARPHRD_ETHER, &ETH0_HWADDR)?,
+                NetInterface::Eth0 => write_ifreq_hwaddr(arg, ARPHRD_ETHER, &ETH0_REAL_MAC)?,
                 NetInterface::Loopback => write_ifreq_hwaddr(arg, ARPHRD_LOOPBACK, &[])?,
             },
             SIOCGIFMTU => {

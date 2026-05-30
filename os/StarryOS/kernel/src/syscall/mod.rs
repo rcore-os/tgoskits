@@ -565,6 +565,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         #[cfg(target_arch = "x86_64")]
         Sysno::vfork => sys_vfork(uctx),
         Sysno::unshare => sys_unshare(uctx.arg0() as _),
+        Sysno::setns => sys_setns(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

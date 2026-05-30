@@ -42,7 +42,7 @@ use linux_raw_sys::{
 };
 use spin::LazyLock;
 
-use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
+use super::net::{ETH0_IFINDEX, ETH0_REAL_MAC};
 use crate::{
     file::{FileLike, IoDst, IoSrc},
     syscall::in_root_net_ns,
@@ -207,7 +207,7 @@ const LINKS: &[LinkInfo] = &[
         qlen: 1000,
         qdisc: "mq",
         operstate: IF_OPER_UP,
-        address: ETH0_HWADDR,
+        address: ETH0_REAL_MAC,
         broadcast: [0xff; 6],
     },
 ];

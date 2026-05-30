@@ -4,8 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 description = "Namespace proxy for Starry OS"
 keywords = ["starry-os"]
-repository = "https://github.com/Starry-OS/StarryOS"
-license = "Apache-2.0"
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [dependencies]
 ax-config = { workspace = true }

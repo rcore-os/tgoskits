@@ -115,4 +115,38 @@ impl NsProxy {
         let new_inner = self.user_ns.lock().clone_ns();
         self.user_ns = Arc::new(SpinNoIrq::new(new_inner));
     }
+
+    /// Replace the UTS namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_uts(&mut self, ns: Arc<SpinNoIrq<UtNamespace>>) {
+        self.uts_ns = ns;
+    }
+
+    /// Replace the IPC namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_ipc(&mut self, ns: Arc<SpinNoIrq<IpcNamespace>>) {
+        self.ipc_ns = ns;
+    }
+
+    /// Replace the mount namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_mnt(&mut self, ns: Arc<SpinNoIrq<MntNamespace>>) {
+        self.mnt_ns = ns;
+    }
+
+    /// Replace the PID namespace with an existing one (used by `setns(2)`).
+    ///
+    /// Note: `setns(CLONE_NEWPID)` does not change the calling process's
+    /// PID; it only affects the PID namespace for child processes created
+    /// afterwards.  The caller must be single-threaded.
+    pub fn set_ns_pid(&mut self, ns: Arc<SpinNoIrq<PidNamespace>>) {
+        self.pid_ns = ns;
+    }
+
+    /// Replace the network namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_net(&mut self, ns: Arc<SpinNoIrq<NetNamespace>>) {
+        self.net_ns = ns;
+    }
+
+    /// Replace the user namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_user(&mut self, ns: Arc<SpinNoIrq<UserNamespace>>) {
+        self.user_ns = ns;
+    }
 }

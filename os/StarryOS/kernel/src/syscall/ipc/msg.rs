@@ -93,11 +93,14 @@ pub struct MessageQueue {
     pub recv_wait_queue: Arc<MsgWaitQueue>,
     /// Marked for removal
     pub mark_removed: bool,
+    /// IPC namespace ID that owns this queue
+    pub ns_id: u64,
 }
 
 impl MessageQueue {
     /// Creates a new [`MessageQueue`].
-    pub fn new(key: i32, mode: __kernel_mode_t, pid: Pid, uid: u32, gid: u32) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(key: i32, mode: __kernel_mode_t, pid: Pid, uid: u32, gid: u32, ns_id: u64) -> Self {
         MessageQueue {
             msqid_ds: msqid_ds::new(key, mode, pid as __kernel_pid_t, uid, gid),
             messages: BTreeMap::new(),
@@ -106,6 +109,7 @@ impl MessageQueue {
             send_wait_queue: Arc::new(MsgWaitQueue::new()),
             recv_wait_queue: Arc::new(MsgWaitQueue::new()),
             mark_removed: false,
+            ns_id,
         }
     }
 
@@ -310,9 +314,13 @@ impl MsgManager {
         self.key_msqid.get(&(key, ns_id)).cloned()
     }
 
-    /// Returns the message queue associated with the given ID.
-    pub fn get_queue_by_msqid(&self, msqid: i32) -> Option<Arc<Mutex<MessageQueue>>> {
-        self.msqid_queues.get(&msqid).cloned()
+    /// Returns the message queue associated with the given ID, validating
+    /// that it belongs to the specified IPC namespace.
+    pub fn get_queue_by_msqid(&self, msqid: i32, ns_id: u64) -> Option<Arc<Mutex<MessageQueue>>> {
+        self.msqid_queues
+            .get(&msqid)
+            .filter(|q| q.lock().ns_id == ns_id)
+            .cloned()
     }
 
     /// Inserts a mapping from a key to a message queue ID.
@@ -334,16 +342,6 @@ impl MsgManager {
     pub fn remove_msqid(&mut self, msqid: i32) {
         self.key_msqid.retain(|_, &mut v| v != msqid);
         self.msqid_queues.remove(&msqid);
-    }
-
-    /// get total bytes in all queues
-    pub fn total_bytes(&self) -> usize {
-        self.iter_active_queues()
-            .map(|(_, queue)| {
-                let guard = queue.lock();
-                guard.total_bytes
-            })
-            .sum()
     }
 }
 
@@ -415,6 +413,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
             current_pid,
             current_uid,
             current_gid,
+            ns_id,
         )));
 
         msg_manager.insert_msqid_queues(msqid, msg_queue);
@@ -424,7 +423,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     // Look for existing message queue
     if let Some(msqid) = msg_manager.get_msqid_by_key(key, ns_id) {
         let msg_queue = msg_manager
-            .get_queue_by_msqid(msqid)
+            .get_queue_by_msqid(msqid, ns_id)
             .ok_or(AxError::from(LinuxError::ENOENT))?; // ENOENT
 
         let msg_queue = msg_queue.lock();
@@ -464,6 +463,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
         current_pid,
         current_uid,
         current_gid,
+        ns_id,
     )));
 
     msg_manager.insert_key_msqid(key, ns_id, msqid);
@@ -493,8 +493,9 @@ pub fn sys_msgsnd(
 
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
+        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         msg_manager
-            .get_queue_by_msqid(msqid)
+            .get_queue_by_msqid(msqid, ns_id)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL - queue does not exist
     };
 
@@ -602,8 +603,9 @@ pub fn sys_msgrcv(
     // Get the message queue
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
+        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
         msg_manager
-            .get_queue_by_msqid(msqid)
+            .get_queue_by_msqid(msqid, ns_id)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL
     };
 
@@ -721,10 +723,13 @@ pub fn sys_msgrcv(
 
 pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     //  Get current process information
-    let cred = current().as_thread().cred();
+    let current = current();
+    let thread = current.as_thread();
+    let cred = thread.cred();
     let current_uid = cred.euid;
     let current_gid = cred.egid;
     let is_privileged = current_uid == 0; // root user check
+    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
 
     // Validate command code
     if cmd != IPC_STAT
@@ -774,7 +779,16 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     // MSG_INFO (put before looking up the queue!)
     if cmd == MSG_INFO {
         let msg_manager = MSG_MANAGER.lock();
-        // Manually create IpcPerm
+        let ns_queues_count = msg_manager
+            .iter_active_queues()
+            .filter(|(_, q)| q.lock().ns_id == ns_id)
+            .count();
+        let ns_total_bytes: usize = msg_manager
+            .iter_active_queues()
+            .filter(|(_, q)| q.lock().ns_id == ns_id)
+            .map(|(_, q)| q.lock().total_bytes)
+            .sum();
+
         let msg_perm = IpcPerm {
             key: 0,
             uid: current_uid,
@@ -788,27 +802,22 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             unused1: 0,
         };
 
-        // Create a temporary msqid_ds to return information
         let info_ds = msqid_ds {
             msg_perm,
             msg_stime: 0,
             msg_rtime: 0,
             msg_ctime: 0,
-            msg_cbytes: msg_manager.total_bytes() as u64,
-            // Use msg_qnum to return the number of allocated queues
-            msg_qnum: msg_manager.queue_count() as u64,
-            // Use msg_qbytes to return system limits or usage
+            msg_cbytes: ns_total_bytes as u64,
+            msg_qnum: ns_queues_count as u64,
             msg_qbytes: MSGMNB as u64,
             msg_lspid: Pid::from(0u32) as _,
             msg_lrpid: Pid::from(0u32) as _,
         };
 
-        // Copy to user space
         let ptr = buf as *mut msqid_ds;
         ptr.vm_write(info_ds)?;
 
-        // Return the current number of allocated queues
-        return Ok(msg_manager.queue_count() as isize);
+        return Ok(ns_queues_count as isize);
     }
     // MSG_STAT handling
     if cmd == MSG_STAT {
@@ -816,17 +825,13 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
 
         let result = msg_manager
             .iter_active_queues()
+            .filter(|(_, q)| q.lock().ns_id == ns_id)
             .nth(msqid as usize)
             .ok_or(AxError::from(LinuxError::EINVAL))
             .and_then(|(actual_msqid, queue)| {
                 let guard = queue.lock();
 
-                if !has_ipc_permission(
-                    &guard.msqid_ds.msg_perm,
-                    current_uid,
-                    current_gid,
-                    false, // read permission check
-                ) {
+                if !has_ipc_permission(&guard.msqid_ds.msg_perm, current_uid, current_gid, false) {
                     return Err(AxError::from(LinuxError::EACCES));
                 }
 
@@ -842,7 +847,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     let msg_queue = {
         let msg_manager = MSG_MANAGER.lock();
         msg_manager
-            .get_queue_by_msqid(msqid)
+            .get_queue_by_msqid(msqid, ns_id)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL - Queue does not exist
     };
 
