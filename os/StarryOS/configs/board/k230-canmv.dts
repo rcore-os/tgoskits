@@ -1,0 +1,415 @@
+// SPDX-License-Identifier: MIT
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    model = "Canaan CanMV-K230";
+    compatible = "canaan,k230-canmv", "canaan,k230";
+
+    aliases {
+        serial0 = &uart0;
+        serial1 = &uart1;
+        serial2 = &uart2;
+        serial3 = &uart3;
+        serial4 = &uart4;
+        i2c0 = &i2c0;
+        i2c1 = &i2c1;
+        i2c2 = &i2c2;
+        i2c3 = &i2c3;
+        i2c4 = &i2c4;
+        spi0 = &spi0;
+        spi1 = &spi1;
+        spi2 = &spi2;
+        mmc0 = &sd0;
+        mmc1 = &sd1;
+    };
+
+    chosen {
+        stdout-path = "serial0:115200n8";
+        bootargs = "console=ttyS0,115200 earlycon=sbi root=/dev/mmcblk0 rootwait rw";
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <27000000>;
+
+        cpu0: cpu@0 {
+            device_type = "cpu";
+            reg = <0>;
+            compatible = "thead,c908v", "thead,c908", "riscv";
+            riscv,isa = "rv64imafdcv_zicsr_zifencei";
+            mmu-type = "riscv,sv39";
+            status = "okay";
+
+            cpu0_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+    };
+
+    memory@8200000 {
+        device_type = "memory";
+        /*
+         * Match K230 SDK memory layout:
+         *   0x00000000-0x001fffff  reserved (bootrom, 2 MiB)
+         *   0x00200000-0x07ffffff  RTT big-core firmware (126 MiB)
+         *   0x08000000-0x081fffff  OpenSBI (2 MiB, runtime-reserved)
+         *   0x08200000-0x7fffffff  Linux (1918 MiB)
+         */
+        reg = <0x0 0x08200000 0x0 0x77e00000>;
+    };
+
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        kpu_fake_output: kpu-fake-output@10090000 {
+            compatible = "canaan,k230-kpu-qemu-fake-output";
+            reg = <0x0 0x10090000 0x0 0x100000>;
+            no-map;
+        };
+
+        kpu_runtime_rdata: kpu-runtime-rdata@10000000 {
+            compatible = "canaan,k230-kpu-qemu-runtime-rdata";
+            reg = <0x0 0x10000000 0x0 0x90000>;
+            no-map;
+        };
+
+        kpu_runtime_command: kpu-runtime-command@10190000 {
+            compatible = "canaan,k230-kpu-qemu-runtime-command";
+            reg = <0x0 0x10190000 0x0 0x370000>;
+            no-map;
+        };
+
+        kpu_runtime_direct_io: kpu-runtime-direct-io@10500000 {
+            compatible = "canaan,k230-kpu-qemu-runtime-direct-io";
+            reg = <0x0 0x10500000 0x0 0xb00000>;
+            no-map;
+        };
+
+        kpu_runtime_ddr: kpu-runtime-ddr@3c000000 {
+            compatible = "canaan,k230-kpu-qemu-runtime-ddr";
+            reg = <0x0 0x3c000000 0x0 0x4000000>;
+            no-map;
+        };
+    };
+
+    qemu_finisher: test@100000 {
+        compatible = "sifive,test1", "sifive,test0", "syscon";
+        reg = <0x0 0x00100000 0x0 0x1000>;
+    };
+
+    reboot {
+        compatible = "syscon-reboot";
+        regmap = <&qemu_finisher>;
+        offset = <0x0>;
+        value = <0x7777>;
+    };
+
+    poweroff {
+        compatible = "syscon-poweroff";
+        regmap = <&qemu_finisher>;
+        offset = <0x0>;
+        value = <0x5555>;
+    };
+
+    apb_clk: apb-clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <50000000>;
+        clock-output-names = "apb";
+    };
+
+    sd_clk: sd-clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <100000000>;
+        clock-output-names = "sd";
+    };
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "simple-bus";
+        ranges;
+
+        clint: clint@f04000000 {
+            compatible = "sifive,clint0", "riscv,clint0";
+            reg = <0xf 0x04000000 0x0 0x400000>;
+            interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>;
+        };
+
+        plic: interrupt-controller@f00000000 {
+            compatible = "sifive,plic-1.0.0";
+            reg = <0xf 0x00000000 0x0 0x400000>;
+            #interrupt-cells = <1>;
+            interrupt-controller;
+            riscv,ndev = <208>;
+            interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 9>;
+        };
+
+        reset: reset-controller@91101000 {
+            compatible = "canaan,k230-rst";
+            reg = <0x0 0x91101000 0x0 0x1000>;
+            #reset-cells = <1>;
+            status = "disabled";
+        };
+
+        pinctrl: pinctrl@91105000 {
+            compatible = "canaan,k230-pinctrl";
+            reg = <0x0 0x91105000 0x0 0x100>;
+            status = "disabled";
+        };
+
+        watchdog0: watchdog@91106000 {
+            compatible = "snps,dw-wdt";
+            reg = <0x0 0x91106000 0x0 0x800>;
+            interrupts = <107>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "tclk";
+            status = "disabled";
+        };
+
+        uart0: serial@91400000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x0 0x91400000 0x0 0x1000>;
+            interrupts = <16>;
+            interrupt-parent = <&plic>;
+            clock-frequency = <50000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            status = "okay";
+        };
+
+        uart1: serial@91401000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x0 0x91401000 0x0 0x1000>;
+            interrupts = <17>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "baudclk";
+            clock-frequency = <50000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            current-speed = <115200>;
+            status = "disabled";
+        };
+
+        uart2: serial@91402000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x0 0x91402000 0x0 0x1000>;
+            interrupts = <18>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "baudclk";
+            clock-frequency = <50000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            current-speed = <115200>;
+            status = "disabled";
+        };
+
+        uart3: serial@91403000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x0 0x91403000 0x0 0x1000>;
+            interrupts = <19>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "baudclk";
+            clock-frequency = <50000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            current-speed = <115200>;
+            status = "disabled";
+        };
+
+        uart4: serial@91404000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x0 0x91404000 0x0 0x1000>;
+            interrupts = <20>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "baudclk";
+            clock-frequency = <50000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            current-speed = <115200>;
+            status = "disabled";
+        };
+
+        i2c0: i2c@91405000 {
+            compatible = "snps,designware-i2c";
+            reg = <0x0 0x91405000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <21>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ref";
+            clock-frequency = <100000>;
+            status = "disabled";
+        };
+
+        i2c1: i2c@91406000 {
+            compatible = "snps,designware-i2c";
+            reg = <0x0 0x91406000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <22>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ref";
+            clock-frequency = <400000>;
+            status = "disabled";
+        };
+
+        i2c2: i2c@91407000 {
+            compatible = "snps,designware-i2c";
+            reg = <0x0 0x91407000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <23>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ref";
+            clock-frequency = <400000>;
+            status = "disabled";
+        };
+
+        i2c3: i2c@91408000 {
+            compatible = "snps,designware-i2c";
+            reg = <0x0 0x91408000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <24>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ref";
+            clock-frequency = <400000>;
+            status = "disabled";
+        };
+
+        i2c4: i2c@91409000 {
+            compatible = "snps,designware-i2c";
+            reg = <0x0 0x91409000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <25>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ref";
+            clock-frequency = <400000>;
+            status = "disabled";
+        };
+
+        spi1: spi@91582000 {
+            compatible = "snps,dwc-ssi-1.01a";
+            reg = <0x0 0x91582000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <155>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ssi_clk";
+            num-cs = <1>;
+            reg-io-width = <4>;
+            status = "disabled";
+        };
+
+        spi2: spi@91583000 {
+            compatible = "snps,dwc-ssi-1.01a";
+            reg = <0x0 0x91583000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <164>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ssi_clk";
+            num-cs = <1>;
+            reg-io-width = <4>;
+            status = "disabled";
+        };
+
+        spi0: spi@91584000 {
+            compatible = "snps,dwc-ssi-1.01a";
+            reg = <0x0 0x91584000 0x0 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            interrupts = <146>;
+            interrupt-parent = <&plic>;
+            clocks = <&apb_clk>;
+            clock-names = "ssi_clk";
+            rx-sample-delay-ns = <5>;
+            num-cs = <1>;
+            reg-io-width = <4>;
+            status = "disabled";
+        };
+
+        sd0: mmc@91580000 {
+            compatible = "canaan,k230-sdhci", "snps,dwcmshc-sdhci";
+            reg = <0x0 0x91580000 0x0 0x1000>;
+            interrupts = <142>;
+            interrupt-parent = <&plic>;
+            clocks = <&sd_clk>, <&apb_clk>;
+            clock-names = "core", "bus";
+            bus-width = <4>;
+            max-frequency = <50000000>;
+            status = "disabled";
+        };
+
+        sd1: mmc@91581000 {
+            compatible = "canaan,k230-sdhci", "snps,dwcmshc-sdhci";
+            reg = <0x0 0x91581000 0x0 0x1000>;
+            interrupts = <144>;
+            interrupt-parent = <&plic>;
+            clocks = <&sd_clk>, <&apb_clk>;
+            clock-names = "core", "bus";
+            bus-width = <4>;
+            max-frequency = <50000000>;
+            cap-sd-highspeed;
+            disable-wp;
+            no-mmc;
+            no-sdio;
+            status = "okay";
+        };
+
+        kpu: kpu@80400000 {
+            compatible = "canaan,k230-kpu";
+            reg = <0x0 0x80400000 0x0 0x800>,
+                  <0x0 0x80000000 0x0 0x200000>;
+            reg-names = "cfg", "l2";
+            memory-region = <&kpu_fake_output>;
+            canaan,qemu-runtime-rdata = <&kpu_runtime_rdata>;
+            canaan,qemu-runtime-command = <&kpu_runtime_command>;
+            canaan,qemu-runtime-direct-io = <&kpu_runtime_direct_io>;
+            canaan,qemu-runtime-ddr = <&kpu_runtime_ddr>;
+            interrupts = <189>;
+            interrupt-parent = <&plic>;
+            status = "okay";
+        };
+
+        usb0: usb@91500000 {
+            compatible = "snps,dwc2";
+            reg = <0x0 0x91500000 0x0 0x10000>;
+            interrupts = <173>;
+            interrupt-parent = <&plic>;
+            dr_mode = "host";
+            status = "disabled";
+        };
+
+        usb1: usb@91540000 {
+            compatible = "snps,dwc2";
+            reg = <0x0 0x91540000 0x0 0x10000>;
+            interrupts = <174>;
+            interrupt-parent = <&plic>;
+            dr_mode = "host";
+            status = "okay";
+        };
+    };
+};
