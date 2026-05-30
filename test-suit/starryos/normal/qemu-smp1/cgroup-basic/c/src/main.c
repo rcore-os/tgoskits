@@ -151,6 +151,24 @@ static void expect_empty_file(const char *path, const char *msg)
     CHECK(nread == 0, msg);
 }
 
+static void expect_file_equals(const char *path, const char *expected, const char *msg)
+{
+    char buf[4096];
+    errno = 0;
+    ssize_t nread = read_text_file(path, buf, sizeof(buf));
+    int saved_errno = errno;
+    errno = saved_errno;
+    if (nread < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    CHECK(strcmp(buf, expected) == 0, msg);
+    if (strcmp(buf, expected) != 0) {
+        printf("  OBSERVE | expected='%s' got='%s'\n", expected, buf);
+    }
+}
+
 static int buffer_contains_pid(const char *buf, pid_t pid)
 {
     const char *cursor = buf;
@@ -189,6 +207,50 @@ static void expect_write_errno(const char *path, const char *data,
     close(fd);
     errno = saved_errno;
     CHECK(written == -1 && saved_errno == expected_errno, msg);
+}
+
+static void expect_write_ok(const char *path, const char *data, const char *msg)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    size_t len = strlen(data);
+    errno = 0;
+    ssize_t written = write(fd, data, len);
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    CHECK(written == (ssize_t)len, msg);
+}
+
+static void expect_write_pid_ok(const char *path, pid_t pid, const char *msg)
+{
+    char data[32];
+    snprintf(data, sizeof(data), "%ld", (long)pid);
+    expect_write_ok(path, data, msg);
+}
+
+static void expect_file_contains_pid(const char *path, pid_t pid, const char *msg)
+{
+    char buf[4096];
+    errno = 0;
+    ssize_t nread = read_text_file(path, buf, sizeof(buf));
+    int saved_errno = errno;
+    errno = saved_errno;
+    CHECK(nread >= 0 && buffer_contains_pid(buf, pid), msg);
+}
+
+static void expect_file_not_contains_pid(const char *path, pid_t pid, const char *msg)
+{
+    char buf[4096];
+    errno = 0;
+    ssize_t nread = read_text_file(path, buf, sizeof(buf));
+    int saved_errno = errno;
+    errno = saved_errno;
+    CHECK(nread >= 0 && !buffer_contains_pid(buf, pid), msg);
 }
 
 static void expect_link_errno(const char *old_path, const char *new_path,
@@ -314,6 +376,48 @@ int main(void)
     expect_path_exists(CGROUP2_PATH "/ren", "rename failure keeps original cgroup");
     expect_path_missing(CGROUP2_PATH "/renamed", "rename failure leaves destination missing");
     expect_rmdir_ok(CGROUP2_PATH "/ren", "cleanup rename negative test cgroup");
+
+    pid_t self_pid = getpid();
+    expect_file_equals("/proc/self/cgroup", "0::/\n",
+                       "proc self cgroup initially points to root");
+
+    expect_mkdir_ok(CGROUP2_PATH "/migrate", "mkdir migrate cgroup succeeds");
+    expect_write_errno(CGROUP2_PATH "/migrate/cgroup.procs", " \n", EINVAL,
+                       "writing whitespace-only cgroup.procs fails with EINVAL");
+    expect_write_errno(CGROUP2_PATH "/migrate/cgroup.procs", "not-a-pid", EINVAL,
+                       "writing non-number cgroup.procs fails with EINVAL");
+    expect_write_errno(CGROUP2_PATH "/migrate/cgroup.procs", "0", EINVAL,
+                       "writing pid 0 cgroup.procs fails with EINVAL");
+    expect_write_errno(CGROUP2_PATH "/migrate/cgroup.procs", "99999999", ESRCH,
+                       "writing missing pid cgroup.procs fails with ESRCH");
+    expect_file_equals("/proc/self/cgroup", "0::/\n",
+                       "failed cgroup.procs writes keep process in root");
+
+    expect_write_pid_ok(CGROUP2_PATH "/migrate/cgroup.procs", self_pid,
+                        "writing current pid to child cgroup.procs succeeds");
+    expect_file_equals("/proc/self/cgroup", "0::/migrate\n",
+                       "proc self cgroup points to migrated cgroup");
+    expect_file_contains_pid(CGROUP2_PATH "/migrate/cgroup.procs", self_pid,
+                             "child cgroup.procs contains migrated process");
+    expect_file_not_contains_pid(CGROUP2_PATH "/cgroup.procs", self_pid,
+                                 "root cgroup.procs no longer contains migrated process");
+    expect_rmdir_errno(CGROUP2_PATH "/migrate", EBUSY,
+                       "rmdir populated cgroup fails with EBUSY");
+    expect_path_exists(CGROUP2_PATH "/migrate",
+                       "populated cgroup remains after failed rmdir");
+
+    expect_write_pid_ok(CGROUP2_PATH "/cgroup.procs", self_pid,
+                        "writing current pid to root cgroup.procs succeeds");
+    expect_file_equals("/proc/self/cgroup", "0::/\n",
+                       "proc self cgroup points back to root");
+    expect_file_contains_pid(CGROUP2_PATH "/cgroup.procs", self_pid,
+                             "root cgroup.procs contains migrated-back process");
+    expect_empty_file(CGROUP2_PATH "/migrate/cgroup.procs",
+                      "child cgroup.procs is empty after migrating back");
+    expect_rmdir_ok(CGROUP2_PATH "/migrate", "rmdir empty migrate cgroup succeeds");
+
+    expect_write_errno(CGROUP2_PATH "/cgroup.controllers", "x", EACCES,
+                       "writing cgroup.controllers fails with EACCES");
 
     check_mkdir(CGROUP_V1_PATH, "mkdir cgroup v1 mountpoint");
 

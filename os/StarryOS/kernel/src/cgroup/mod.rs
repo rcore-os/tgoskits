@@ -8,6 +8,7 @@ use core::fmt::Write;
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq;
 use spin::LazyLock;
+use starry_process::Pid;
 
 pub type CgroupId = u64;
 
@@ -150,6 +151,66 @@ pub fn remove_child(parent: CgroupId, name: &str) -> AxResult<()> {
     Ok(())
 }
 
+pub fn register_process(id: CgroupId) {
+    let mut tree = CGROUP_TREE.lock();
+    if let Some(node) = tree.nodes.get_mut(&id) {
+        node.live_processes = node.live_processes.saturating_add(1);
+    }
+}
+
+pub fn unregister_process(id: CgroupId) {
+    let mut tree = CGROUP_TREE.lock();
+    if let Some(node) = tree.nodes.get_mut(&id) {
+        node.live_processes = node.live_processes.saturating_sub(1);
+    }
+}
+
+pub fn attach_process(target: CgroupId, pid: Pid) -> AxResult<()> {
+    if pid == 0 {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+
+    let proc_data =
+        crate::task::get_process_data(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+
+    let mut tree = CGROUP_TREE.lock();
+    if !tree.nodes.contains_key(&target) {
+        return Err(AxError::NotFound);
+    }
+
+    let old = proc_data.cgroup_id();
+    if !tree.nodes.contains_key(&old) {
+        return Err(AxError::NotFound);
+    }
+    if old == target {
+        return Ok(());
+    }
+
+    let target_live_processes = tree
+        .nodes
+        .get(&target)
+        .expect("target was checked above")
+        .live_processes
+        .checked_add(1)
+        .ok_or(AxError::NoMemory)?;
+    let old_live_processes = tree
+        .nodes
+        .get(&old)
+        .expect("old cgroup was checked above")
+        .live_processes
+        .saturating_sub(1);
+    tree.nodes
+        .get_mut(&old)
+        .expect("old cgroup was checked above")
+        .live_processes = old_live_processes;
+    tree.nodes
+        .get_mut(&target)
+        .expect("target was checked above")
+        .live_processes = target_live_processes;
+    proc_data.set_cgroup_id(target);
+    Ok(())
+}
+
 pub fn path(id: CgroupId) -> AxResult<String> {
     let tree = CGROUP_TREE.lock();
     let mut current = id;
@@ -180,12 +241,10 @@ pub fn path(id: CgroupId) -> AxResult<String> {
 
 pub fn procs_text(id: CgroupId) -> AxResult<String> {
     ensure_node_exists(id)?;
-    if id != ROOT_ID {
-        return Ok(String::new());
-    }
 
     let mut pids: Vec<_> = crate::task::processes()
         .into_iter()
+        .filter(|proc_data| proc_data.cgroup_id() == id)
         .map(|proc_data| proc_data.proc.pid())
         .collect();
     pids.sort_unstable();
@@ -194,6 +253,13 @@ pub fn procs_text(id: CgroupId) -> AxResult<String> {
     for pid in pids {
         let _ = writeln!(text, "{pid}");
     }
+    Ok(text)
+}
+
+pub fn proc_cgroup_text(proc_data: &crate::task::ProcessData) -> AxResult<String> {
+    let path = path(proc_data.cgroup_id())?;
+    let mut text = String::new();
+    let _ = writeln!(text, "0::{path}");
     Ok(text)
 }
 
@@ -207,9 +273,10 @@ pub fn subtree_control_text(id: CgroupId) -> AxResult<&'static str> {
     Ok("")
 }
 
-pub fn write_procs(id: CgroupId, _data: &[u8]) -> AxResult<()> {
+pub fn write_procs(id: CgroupId, data: &[u8]) -> AxResult<()> {
     ensure_node_exists(id)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
+    let pid = parse_procs_pid(data)?;
+    attach_process(id, pid)
 }
 
 pub fn write_subtree_control(id: CgroupId, _data: &[u8]) -> AxResult<()> {
@@ -222,4 +289,42 @@ pub fn ensure_node_exists(id: CgroupId) -> AxResult<()> {
     let node = tree.nodes.get(&id).ok_or(AxError::NotFound)?;
     debug_assert_eq!(node.id, id);
     Ok(())
+}
+
+pub fn parse_procs_pid(data: &[u8]) -> AxResult<Pid> {
+    let data = trim_ascii_whitespace(data);
+    if data.is_empty() {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+
+    let mut value = 0u64;
+    for byte in data {
+        if !byte.is_ascii_digit() {
+            return Err(AxError::from(LinuxError::EINVAL));
+        }
+        value = value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(u64::from(byte - b'0')))
+            .ok_or_else(|| AxError::from(LinuxError::EINVAL))?;
+        if value > u64::from(Pid::MAX) {
+            return Err(AxError::from(LinuxError::EINVAL));
+        }
+    }
+
+    if value == 0 {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+    Ok(value as Pid)
+}
+
+fn trim_ascii_whitespace(data: &[u8]) -> &[u8] {
+    let start = data
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(data.len());
+    let end = data
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &data[start..end]
 }
