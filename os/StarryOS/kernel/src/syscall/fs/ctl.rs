@@ -594,13 +594,10 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
         .ok_or(AxError::BadFileDescriptor)?;
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
-    // TODO: remove the `meta.uid != 0` guard once the ext4 inode cache is
-    // invalidated after finalize_inode_update so that fchmodat sees the
-    // freshly-written uid/gid from create/mkdir.
     let cred = current().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
-        if meta.uid != 0 && cred.fsuid != meta.uid {
+        if cred.fsuid != meta.uid {
             return Err(AxError::OperationNotPermitted);
         }
     }
