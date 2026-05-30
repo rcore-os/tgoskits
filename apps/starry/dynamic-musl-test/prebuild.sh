@@ -13,19 +13,40 @@ if [[ -z "$base_rootfs" ]]; then
     echo "error: STARRY_BASE_ROOTFS is required" >&2
     exit 1
 fi
-command -v clang >/dev/null 2>&1 || { echo "ERROR: clang not found"; exit 1; }
-command -v lld >/dev/null 2>&1 || { echo "ERROR: lld not found"; exit 1; }
-command -v debugfs >/dev/null 2>&1 || { echo "ERROR: debugfs not found"; exit 1; }
+
+case "$STARRY_ARCH" in
+    aarch64)
+        MUSL_TARGET="aarch64-linux-musl"
+        MUSL_ARCH="aarch64"
+        ;;
+    riscv64)
+        MUSL_TARGET="riscv64-linux-musl"
+        MUSL_ARCH="riscv64"
+        ;;
+    *)
+        echo "ERROR: unsupported arch: $STARRY_ARCH" >&2
+        exit 1
+        ;;
+esac
+
+command -v debugfs >/dev/null 2>&1 || { echo "ERROR: debugfs not found" >&2; exit 1; }
 
 sysroot="$(mktemp -d)"
 trap 'rm -rf "$sysroot"' EXIT
 debugfs -R "rdump / $sysroot" "$base_rootfs" >/dev/null 2>&1
 
-clang --target=aarch64-linux-musl \
-    --sysroot="$sysroot" \
-    -isystem "$sysroot/usr/include" \
-    -fuse-ld=lld \
-    -nostdlib \
+if command -v clang >/dev/null 2>&1 && command -v lld >/dev/null 2>&1; then
+    CC="clang"
+    CC_FLAGS="--target=$MUSL_TARGET --sysroot=$sysroot -isystem $sysroot/usr/include -fuse-ld=lld -nostdlib -Wl,--strip-debug"
+elif command -v "${MUSL_TARGET}-gcc" >/dev/null 2>&1; then
+    CC="${MUSL_TARGET}-gcc"
+    CC_FLAGS="--sysroot=$sysroot"
+else
+    echo "ERROR: no compiler for $MUSL_TARGET (tried clang+lld, ${MUSL_TARGET}-gcc)" >&2
+    exit 1
+fi
+
+$CC $CC_FLAGS \
     -L"$sysroot/usr/lib" \
     -Wl,--library-path="$sysroot/usr/lib" \
     "$sysroot/usr/lib/Scrt1.o" \
@@ -37,14 +58,14 @@ clang --target=aarch64-linux-musl \
 
 INTERP=$(readelf -l "$app_dir/dynamic-test" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
 echo "INTERP path: $INTERP"
-[[ -n "$INTERP" ]] || { echo "ERROR: no PT_INTERP found"; exit 1; }
+[[ -n "$INTERP" ]] || { echo "ERROR: no PT_INTERP found" >&2; exit 1; }
 
 INTERP_BASENAME=$(basename "$INTERP")
 MUSL_LD="$sysroot/lib/$INTERP_BASENAME"
 if [[ ! -f "$MUSL_LD" ]]; then
-    MUSL_LD="$sysroot/lib/libc.musl-aarch64.so.1"
+    MUSL_LD="$sysroot/lib/libc.musl-$MUSL_ARCH.so.1"
 fi
-[[ -f "$MUSL_LD" ]] || { echo "ERROR: musl ld not found"; exit 1; }
+[[ -f "$MUSL_LD" ]] || { echo "ERROR: musl ld not found" >&2; exit 1; }
 
 install -Dm0755 "$app_dir/dynamic-test" "$overlay_dir/usr/bin/dynamic-test"
 install -Dm0755 "$MUSL_LD" "$overlay_dir/$INTERP"
