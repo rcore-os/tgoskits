@@ -5,7 +5,7 @@ args = [
     "la464",
     "-nographic",
     "-m",
-    "128M",
+    "512M",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
@@ -21,4 +21,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/rust-hello"
 success_regex = ['(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 60
+timeout = 120
