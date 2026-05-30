@@ -51,6 +51,7 @@ case "$ARCH" in
         QEMU_CPU="rv64"
         QEMU_EXTRA=""
         QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     x86_64)
         TARGET="x86_64-unknown-none"
@@ -64,6 +65,7 @@ case "$ARCH" in
             QEMU_EXTRA=""
         fi
         QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     aarch64)
         TARGET="aarch64-unknown-none-softfloat"
@@ -72,6 +74,7 @@ case "$ARCH" in
         QEMU_CPU="cortex-a72"
         QEMU_EXTRA=""
         QEMU_BLK_DEV="virtio-blk-device,drive=disk0"
+        QEMU_NET_DEV="virtio-net-device,netdev=net0"
         ;;
     *)
         printf "[run-selfbuilt] ERROR: Unsupported arch: %s (valid: riscv64, x86_64, aarch64)\n" "$ARCH" >&2
@@ -144,5 +147,5 @@ exec "$QEMU_BIN" \
     -kernel "$CACHED_KERNEL" \
     -device "$QEMU_BLK_DEV" \
     -drive id=disk0,if=none,format=raw,file="$ROOTFS_IMG",file.locking=off \
-    -device virtio-net-pci,netdev=net0 \
+    -device "$QEMU_NET_DEV" \
     -netdev user,id=net0

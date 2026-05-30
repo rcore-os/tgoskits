@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/env bash
 # Filter workspace Cargo.toml to exclude crates incompatible with the target arch.
 # Only removes workspace MEMBERS (lines starting with whitespace + "components/).
 # Keeps ALL [workspace.dependencies] entries untouched.
