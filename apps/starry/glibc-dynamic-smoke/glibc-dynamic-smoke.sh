@@ -1,6 +1,6 @@
 #!/bin/sh
 echo "=== GLIBC BASIC TEST ==="
-/usr/bin/glibc-test
+/usr/bin/glibc-dynamic-smoke
 echo "GLIBC_TEST_DONE RC=$?"
 
 echo "=== PROC_SELF_EXE TEST ==="

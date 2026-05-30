@@ -1,13 +1,18 @@
-# glibc-test
+# glibc-dynamic-smoke
 
-验证 StarryOS 运行 glibc 动态链接 binary 的可行性。
+> Debian/glibc 用户态动态链接兼容性 smoke workflow
+
+This case is an operator-facing StarryOS app workflow, not a unit test.
+It verifies that StarryOS can boot a QEMU guest, prepare a rootfs overlay,
+install the glibc dynamic loader and shared libraries, and execute a dynamically
+linked Linux user program through PT_INTERP.
 
 ## 测试命令
 
 ```bash
-cargo xtask starry app run -t glibc-test --arch aarch64
-cargo xtask starry app run -t glibc-test --arch riscv64
-cargo xtask starry app run -t glibc-test --arch x86_64
+cargo xtask starry app run -t glibc-dynamic-smoke --arch aarch64
+cargo xtask starry app run -t glibc-dynamic-smoke --arch riscv64
+cargo xtask starry app run -t glibc-dynamic-smoke --arch x86_64
 ```
 
 ## Result
@@ -49,7 +54,7 @@ StarryOS can load glibc dynamic ELF through PT_INTERP on aarch64, riscv64, and x
 - `pthread-test.c` - pthread 测试程序
 - `regex-test.c` - regex 测试程序
 - `prebuild.sh` - 编译 + 安装到 overlay（多架构支持）
-- `glibc-test.sh` - QEMU 内运行的测试脚本
+- `glibc-dynamic-smoke.sh` - QEMU 内运行的测试脚本
 - `qemu-aarch64.toml` / `qemu-riscv64.toml` / `qemu-x86_64.toml` - QEMU 运行配置
 - `build-aarch64-unknown-none-softfloat.toml` / `build-riscv64gc-unknown-none-elf.toml` / `build-x86_64-unknown-none.toml` - 内核构建配置
 
