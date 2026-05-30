@@ -129,7 +129,13 @@ unsafe impl lock_api::RawMutex for RawMutex {
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
-        // wake up one waiting thread.
+        // Wake one waiting thread.  The callback receives the waiter's ID.
+        // When the wait queue is empty, notify_one_with calls the callback
+        // with id=0, which clears owner_id via the swap below.  This is
+        // what makes is_locked_inner() return false — the unlock handoff
+        // DEPENDS on notify_one_with always invoking the callback, even
+        // for empty queues.  If that contract changes, add an explicit
+        // owner_id.store(0, Ordering::Release) fallback here.
         self.wq.notify_one_with(true, |id: u64| {
             self.owner_id.swap(id, Ordering::Release);
         });

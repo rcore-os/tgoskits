@@ -178,10 +178,12 @@ impl GlobalAllocator {
 
     /// Gives back the allocated region to the byte allocator.
     pub fn dealloc(&self, pos: NonNull<u8>, layout: Layout) {
+        // Lock order: inner then usages (consistent with alloc/alloc_pages).
+        // Guards are temporary — locks are never held simultaneously.
+        unsafe { self.inner.lock().dealloc(pos, layout) };
         self.usages
             .lock()
             .dealloc(UsageKind::RustHeap, layout.size());
-        unsafe { self.inner.lock().dealloc(pos, layout) };
     }
 
     /// Allocates contiguous pages.
@@ -194,6 +196,12 @@ impl GlobalAllocator {
         let mut result = self.inner.lock().alloc_pages(num_pages, alignment);
         if result.is_err() {
             for _ in 0..4 {
+                // Reclaim num_pages (at least 16 to build free-pool headroom).
+                // page_cache_reclaim doubles this target internally.
+                // NOTE: for very large contiguous requests, reclaimed pages
+                // may be too fragmented to satisfy the allocation even when
+                // the target is met.  Consider geometric growth across retries
+                // if this becomes a problem in practice.
                 let reclaimed = crate::try_page_reclaim(num_pages.max(16));
                 // Retry allocation regardless of whether reclaim ran;
                 // concurrent reclaim may have freed pages.
@@ -249,8 +257,10 @@ impl GlobalAllocator {
 
     /// Gives back the allocated pages starts from `pos` to the page allocator.
     pub fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
-        self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
+        // Lock order: inner then usages (consistent with alloc_pages).
+        // Guards are temporary — locks are never held simultaneously.
         self.inner.lock().dealloc_pages(pos, num_pages);
+        self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
     }
 
     /// Returns the number of allocated bytes in the allocator backend.
