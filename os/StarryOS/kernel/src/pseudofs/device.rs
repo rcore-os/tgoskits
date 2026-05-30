@@ -21,6 +21,9 @@ pub enum DeviceMmap {
     /// Maps to a physical address range.
     Physical(PhysAddrRange),
 
+    /// Maps to a physical address range while keeping an owner object alive.
+    PhysicalAnchored(PhysAddrRange, Arc<dyn Any + Send + Sync>),
+
     /// Maps to a cached file.
     Cache(CachedFile),
 }

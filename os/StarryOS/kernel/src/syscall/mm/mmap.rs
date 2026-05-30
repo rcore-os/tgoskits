@@ -192,7 +192,9 @@ pub fn sys_mmap(
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
+                    Ok(DeviceMmap::Physical(_))
+                    | Ok(DeviceMmap::PhysicalAnchored(..))
+                    | Ok(DeviceMmap::Cache(_)) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
             }
@@ -296,9 +298,8 @@ pub fn sys_mmap(
                     .take()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(mut range)) => {
+                    Ok(DeviceMmap::Physical(range)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
-                        range.start += offset;
                         if range.is_empty() {
                             return Err(AxError::InvalidInput);
                         }
@@ -307,6 +308,19 @@ pub fn sys_mmap(
                             start,
                             start.as_usize() as isize - range.start.as_usize() as isize,
                             true,
+                        )
+                    }
+                    Ok(DeviceMmap::PhysicalAnchored(range, anchor)) => {
+                        mapping_flags |= MappingFlags::UNCACHED;
+                        if range.is_empty() {
+                            return Err(AxError::InvalidInput);
+                        }
+                        length = length.min(range.size().align_down(page_size));
+                        Backend::new_linear_anchored(
+                            start,
+                            start.as_usize() as isize - range.start.as_usize() as isize,
+                            true,
+                            anchor,
                         )
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
@@ -359,6 +373,21 @@ pub fn sys_mmap(
                                             start.as_usize() as isize
                                                 - range.start.as_usize() as isize,
                                             true,
+                                        )
+                                    }
+                                    DeviceMmap::PhysicalAnchored(range, anchor) => {
+                                        mapping_flags |= MappingFlags::UNCACHED;
+                                        if range.is_empty() {
+                                            return Err(AxError::InvalidInput);
+                                        }
+                                        length =
+                                            capped_device_map_len(length, range.size(), page_size);
+                                        Backend::new_linear_anchored(
+                                            start,
+                                            start.as_usize() as isize
+                                                - range.start.as_usize() as isize,
+                                            true,
+                                            anchor,
                                         )
                                     }
                                     DeviceMmap::Cache(cache) => Backend::new_file(

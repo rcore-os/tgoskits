@@ -2,6 +2,7 @@ pub mod epoll;
 pub mod event;
 mod fs;
 pub mod inotify;
+pub mod io_uring;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod ion;
 pub mod memfd;
@@ -32,6 +33,7 @@ use spin::RwLock;
 
 pub use self::{
     fs::{Directory, File, resolve_at, with_fs},
+    io_uring::IoUring,
     net::Socket,
     packet::{PacketSocket, SockAddrLl},
     pidfd::PidFd,

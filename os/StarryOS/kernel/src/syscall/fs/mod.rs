@@ -4,6 +4,7 @@ mod event;
 mod fd_ops;
 mod inotify;
 mod io;
+mod io_uring;
 mod lock;
 mod memfd;
 mod mount;
@@ -20,6 +21,7 @@ pub use self::{
     fd_ops::*,
     inotify::*,
     io::*,
+    io_uring::*,
     lock::{release_inode_posix_locks, release_pid_locks, wake_flock_waiters, wake_lock_waiters},
     memfd::*,
     mount::*,
