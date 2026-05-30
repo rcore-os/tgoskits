@@ -411,5 +411,38 @@ int main(void)
         }
     }
 
+    /* ---- Section 12: write-only IPC mode preserved in IPC_STAT ---- */
+    {
+        /*
+         * Regression: the RISC-V PTE layer adds READ when WRITE is set
+         * (W=1,R=0 is reserved in RISC-V). The kernel must keep that
+         * workaround inside the page-table layer and NOT leak it into
+         * the user-visible shm_perm.mode reported by IPC_STAT.
+         */
+        int seg = shmget(IPC_PRIVATE, SEG_SIZE, IPC_CREAT | 0200);
+        CHECK(seg >= 0, "shmget IPC_CREAT|0200 creates a write-only segment");
+
+        void *p = shmat(seg, NULL, 0);
+        CHECK(p != (void *)-1, "shmat on a write-only segment succeeds");
+        if (p != (void *)-1)
+        {
+            /* The segment must be writable (kernel may also make it readable
+             * internally, but write access must work regardless). */
+            *(volatile unsigned int *)p = 0xbeef0200u;
+            CHECK(*(volatile unsigned int *)p == 0xbeef0200u,
+                  "write-only segment is readable and writable after attach");
+            CHECK_RET(shmdt(p), 0, "shmdt the write-only segment");
+        }
+
+        struct shmid_ds info;
+        memset(&info, 0, sizeof(info));
+        CHECK_RET(shmctl(seg, IPC_STAT, &info), 0,
+                  "shmctl IPC_STAT on write-only segment");
+        CHECK((info.shm_perm.mode & 0777u) == 0200u,
+              "IPC_STAT reports write-only permission, not kernel-internal flags");
+
+        shmctl(seg, IPC_RMID, NULL);
+    }
+
     TEST_DONE();
 }

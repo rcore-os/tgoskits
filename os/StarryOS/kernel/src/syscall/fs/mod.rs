@@ -1,3 +1,4 @@
+mod aio;
 mod ctl;
 mod event;
 mod fd_ops;
@@ -13,6 +14,7 @@ mod stat;
 mod timerfd;
 
 pub use self::{
+    aio::*,
     ctl::*,
     event::*,
     fd_ops::*,

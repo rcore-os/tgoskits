@@ -375,6 +375,8 @@ fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) -> TestQemuCa
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
+        host_symbolize_success_regex: Vec::new(),
+        host_http_server: case.host_http_server.clone(),
         subcases: Vec::new(),
     }
 }
@@ -1428,6 +1430,7 @@ mod tests {
             grouped_runner: case_assets::GroupedCaseRunnerConfig {
                 runner_name: "suite-run-case-tests".to_string(),
                 runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                autorun_profile_script: None,
                 begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
                 passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
                 failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
@@ -1461,6 +1464,8 @@ mod tests {
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),
+            host_symbolize_success_regex: Vec::new(),
+            host_http_server: None,
             subcases: Vec::new(),
         }
     }

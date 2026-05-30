@@ -14,6 +14,7 @@ use std::cell::RefCell;
 
 #[cfg(feature = "task-context")]
 use ax_crate_interface::call_interface;
+use ax_kernel_guard::IrqSave;
 
 const MAX_LOCK_CLASSES: usize = 1024;
 const MAX_HELD_LOCKS: usize = 32;
@@ -475,10 +476,13 @@ struct GraphState {
 
 unsafe impl Sync for GraphState {}
 
-struct GraphGuard;
+struct GraphGuard {
+    _irq_guard: IrqSave,
+}
 
 impl GraphGuard {
     fn acquire() -> Self {
+        let irq_guard = IrqSave::new();
         while GRAPH_STATE
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -488,7 +492,9 @@ impl GraphGuard {
                 core::hint::spin_loop();
             }
         }
-        Self
+        Self {
+            _irq_guard: irq_guard,
+        }
     }
 }
 
@@ -669,6 +675,8 @@ fn pop_current_task_held_lock(lock_addr: usize) {
 
 #[cfg(all(feature = "task-context", not(any(test, doctest))))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
+    let _oops_guard = axpanic::enter_oops();
+
     struct ConsoleWriter;
 
     impl fmt::Write for ConsoleWriter {

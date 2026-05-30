@@ -239,6 +239,7 @@ impl CloneArgs {
             // supposed to enforce. Verified via Linux host: parent sets 0,
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
+            proc_data.set_thp_disable(old_proc_data.thp_disable());
 
             // Inherit the parent's namespace proxy, then unshare
             // each namespace for which a CLONE_NEW* flag is set.

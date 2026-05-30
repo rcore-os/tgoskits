@@ -24,6 +24,7 @@ original_repos="$(cat "$repo_file")"
 try_apk_curl() {
     mirror="$1"
     label="$2"
+    probe_url="$mirror/MIRRORS.txt"
     printf '%s\n' "$original_repos" | \
         sed "s#http://[^/]*/alpine/#$mirror/#g;s#https://[^/]*/alpine/#$mirror/#g" > "$repo_file"
     rm -f /lib/apk/db/lock
@@ -36,7 +37,7 @@ try_apk_curl() {
     echo "APK_CURL_ADD_DONE" && \
     echo "APK_CURL_PROBE_BEGIN" && \
     curl --version && \
-    curl --connect-timeout 10 --max-time 30 -i https://baidu.com && \
+    curl --connect-timeout 10 --max-time 30 -fsSL "$probe_url" -o /dev/null && \
     echo "APK_CURL_PROBE_DONE"
 }
 

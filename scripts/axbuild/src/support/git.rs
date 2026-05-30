@@ -1,11 +1,17 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
 use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package, PackageId};
+use toml::Value;
+
+const ROOT_MANIFEST: &str = "Cargo.toml";
+const WORKSPACE_TABLE: &str = "workspace";
+const WORKSPACE_DEPENDENCIES_TABLE: &str = "dependencies";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IncrementalPackageSelection {
@@ -27,11 +33,21 @@ pub(crate) fn select_incremental_packages(
             });
         }
     };
-    select_incremental_packages_for_paths(
+    let root_manifest_change = if changed_paths
+        .iter()
+        .any(|path| path == Path::new(ROOT_MANIFEST))
+    {
+        Some(root_manifest_change_since(workspace_root, since)?)
+    } else {
+        None
+    };
+
+    select_incremental_packages_for_paths_with_root_manifest_change(
         workspace_root,
         metadata,
         workspace_packages,
         changed_paths,
+        root_manifest_change,
     )
 }
 
@@ -111,7 +127,8 @@ fn git_safe_directory_args(workspace_root: &Path) -> [String; 2] {
     ]
 }
 
-pub(crate) fn select_incremental_packages_for_paths<I>(
+#[cfg(test)]
+fn select_incremental_packages_for_paths<I>(
     workspace_root: &Path,
     metadata: &Metadata,
     workspace_packages: &[Package],
@@ -120,18 +137,38 @@ pub(crate) fn select_incremental_packages_for_paths<I>(
 where
     I: IntoIterator<Item = PathBuf>,
 {
+    select_incremental_packages_for_paths_with_root_manifest_change(
+        workspace_root,
+        metadata,
+        workspace_packages,
+        changed_paths,
+        None,
+    )
+}
+
+fn select_incremental_packages_for_paths_with_root_manifest_change<I>(
+    workspace_root: &Path,
+    metadata: &Metadata,
+    workspace_packages: &[Package],
+    changed_paths: I,
+    root_manifest_change: Option<RootManifestChange>,
+) -> anyhow::Result<IncrementalPackageSelection>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
     let package_index = PackagePathIndex::new(workspace_root, workspace_packages)?;
-    let changed_packages = match package_index.changed_packages(changed_paths)? {
-        ChangedPackages::Packages(packages) => packages,
-        ChangedPackages::Full { path } => {
-            return Ok(IncrementalPackageSelection::Full {
-                reason: format!(
-                    "changed path `{}` is outside any workspace package",
-                    path.display()
-                ),
-            });
-        }
-    };
+    let changed_packages =
+        match package_index.changed_packages(changed_paths, root_manifest_change)? {
+            ChangedPackages::Packages(packages) => packages,
+            ChangedPackages::Full { path } => {
+                return Ok(IncrementalPackageSelection::Full {
+                    reason: format!(
+                        "changed path `{}` is outside any workspace package",
+                        path.display()
+                    ),
+                });
+            }
+        };
 
     let affected = affected_workspace_packages(metadata, workspace_packages, &changed_packages);
     Ok(IncrementalPackageSelection::Packages(affected))
@@ -145,6 +182,12 @@ enum ChangedPackages {
 enum GlobalClippyInput {
     Hard,
     Soft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RootManifestChange {
+    Hard,
+    LocalWorkspaceDependencies(BTreeSet<String>),
 }
 
 struct PackagePathIndex {
@@ -206,7 +249,11 @@ impl PackagePathIndex {
         Ok(Self { packages })
     }
 
-    fn changed_packages<I>(&self, changed_paths: I) -> anyhow::Result<ChangedPackages>
+    fn changed_packages<I>(
+        &self,
+        changed_paths: I,
+        root_manifest_change: Option<RootManifestChange>,
+    ) -> anyhow::Result<ChangedPackages>
     where
         I: IntoIterator<Item = PathBuf>,
     {
@@ -215,6 +262,19 @@ impl PackagePathIndex {
         for path in changed_paths {
             let path = normalize_git_path(path)?;
             if path.as_os_str().is_empty() {
+                continue;
+            }
+            if path == Path::new(ROOT_MANIFEST) {
+                match root_manifest_change
+                    .clone()
+                    .unwrap_or(RootManifestChange::Hard)
+                {
+                    RootManifestChange::Hard => return Ok(ChangedPackages::Full { path }),
+                    RootManifestChange::LocalWorkspaceDependencies(dependencies) => {
+                        packages.extend(dependencies);
+                        soft_global_inputs.push(path);
+                    }
+                }
                 continue;
             }
             let Some(package) = self.package_for_path(&path) else {
@@ -250,24 +310,123 @@ fn global_clippy_input(path: &Path) -> Option<GlobalClippyInput> {
         // *only* change, however, transitive-dep/proc-macro/build-script changes
         // can still break compilation, so fall back to Full in that case.
         Some(GlobalClippyInput::Soft)
-    } else if path == Path::new("Cargo.toml")
-        || path == Path::new("rust-toolchain")
+    } else if path == Path::new("rust-toolchain")
         || path == Path::new("rust-toolchain.toml")
         || path == Path::new("clippy.toml")
         || path == Path::new(".clippy.toml")
         || path.starts_with(".cargo")
         || path.starts_with("os/arceos/configs")
     {
-        // Hard: root Cargo.toml is not limited to [workspace.members]; it also
-        // carries [workspace.dependencies], [workspace.package], [patch], and
-        // [profile] sections.  A workspace-dep bump alongside any code change
-        // would otherwise leave all other consumers unchecked.  We cannot
-        // distinguish "only added a member" from "bumped a global dep" without
-        // parsing diff hunks, so Hard is the only sound choice here.
         Some(GlobalClippyInput::Hard)
     } else {
         None
     }
+}
+
+fn root_manifest_change_since(
+    workspace_root: &Path,
+    since: &str,
+) -> anyhow::Result<RootManifestChange> {
+    let old_manifest = git_show_file(workspace_root, since, ROOT_MANIFEST).with_context(|| {
+        format!("failed to read `{ROOT_MANIFEST}` from `{since}` for incremental clippy")
+    })?;
+    let new_manifest =
+        fs::read_to_string(workspace_root.join(ROOT_MANIFEST)).with_context(|| {
+            format!(
+                "failed to read current `{}`",
+                workspace_root.join(ROOT_MANIFEST).display()
+            )
+        })?;
+
+    classify_root_manifest_change(&old_manifest, &new_manifest).with_context(|| {
+        format!("failed to classify `{ROOT_MANIFEST}` changes for incremental clippy")
+    })
+}
+
+fn git_show_file(workspace_root: &Path, rev: &str, path: &str) -> anyhow::Result<String> {
+    let spec = format!("{rev}:{path}");
+    let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["show", spec.as_str()])
+        .output()
+        .with_context(|| format!("failed to run git show `{spec}`"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "git show `{spec}` exited with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        );
+    }
+
+    String::from_utf8(output.stdout).context("git show output was not valid UTF-8")
+}
+
+fn classify_root_manifest_change(
+    old_manifest: &str,
+    new_manifest: &str,
+) -> anyhow::Result<RootManifestChange> {
+    let old: Value = toml::from_str(old_manifest).context("failed to parse old root Cargo.toml")?;
+    let new: Value = toml::from_str(new_manifest).context("failed to parse new root Cargo.toml")?;
+
+    if without_workspace_dependencies(old.clone()) != without_workspace_dependencies(new.clone()) {
+        return Ok(RootManifestChange::Hard);
+    }
+
+    let old_dependencies = workspace_dependencies(&old);
+    let new_dependencies = workspace_dependencies(&new);
+    let mut changed = BTreeSet::new();
+    for dependency in old_dependencies
+        .keys()
+        .chain(new_dependencies.keys())
+        .collect::<BTreeSet<_>>()
+    {
+        let old_dependency = old_dependencies.get(dependency.as_str());
+        let new_dependency = new_dependencies.get(dependency.as_str());
+        if old_dependency == new_dependency {
+            continue;
+        }
+        if !old_dependency.is_some_and(is_local_workspace_dependency)
+            && !new_dependency.is_some_and(is_local_workspace_dependency)
+        {
+            return Ok(RootManifestChange::Hard);
+        }
+        changed.insert(dependency.to_string());
+    }
+
+    Ok(RootManifestChange::LocalWorkspaceDependencies(changed))
+}
+
+fn without_workspace_dependencies(mut manifest: Value) -> Value {
+    if let Some(workspace) = manifest
+        .get_mut(WORKSPACE_TABLE)
+        .and_then(Value::as_table_mut)
+    {
+        workspace.remove(WORKSPACE_DEPENDENCIES_TABLE);
+    }
+    manifest
+}
+
+fn workspace_dependencies(manifest: &Value) -> toml::Table {
+    manifest
+        .get(WORKSPACE_TABLE)
+        .and_then(|workspace| workspace.get(WORKSPACE_DEPENDENCIES_TABLE))
+        .and_then(Value::as_table)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn is_local_workspace_dependency(dependency: &Value) -> bool {
+    dependency
+        .as_table()
+        .and_then(|table| table.get("path"))
+        .is_some_and(Value::is_str)
 }
 
 fn normalize_git_path(path: PathBuf) -> anyhow::Result<PathBuf> {
@@ -603,6 +762,77 @@ mod tests {
             selected,
             IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.toml")
         ));
+    }
+
+    #[test]
+    fn root_cargo_toml_workspace_dependency_change_keeps_incremental_package_selection() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from("Cargo.toml"),
+                PathBuf::from("crates/beta/Cargo.toml"),
+            ],
+            Some(RootManifestChange::LocalWorkspaceDependencies(
+                BTreeSet::from(["beta".to_string()]),
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
+        );
+    }
+
+    #[test]
+    fn root_manifest_classifier_accepts_local_workspace_dependency_removal() {
+        let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+            beta = { version = "0.1.0", path = "crates/beta" }
+        "#;
+        let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+        "#;
+
+        let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+
+        assert_eq!(
+            change,
+            RootManifestChange::LocalWorkspaceDependencies(BTreeSet::from(["beta".to_string()]))
+        );
+    }
+
+    #[test]
+    fn root_manifest_classifier_keeps_external_dependency_changes_hard() {
+        let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            anyhow = "1.0"
+        "#;
+        let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            anyhow = "2.0"
+        "#;
+
+        let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+
+        assert_eq!(change, RootManifestChange::Hard);
     }
 
     #[test]

@@ -641,6 +641,7 @@ impl Axvisor {
 
     fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
         request.smp = None;
+        request.vmconfigs.clear();
         request
     }
 
@@ -688,6 +689,7 @@ impl Axvisor {
             &mut self.app,
             cargo,
             qemu,
+            None,
             &case.case.case.qemu_config_path,
             prepared_assets,
             prepare_started.elapsed(),
@@ -736,6 +738,7 @@ fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
         grouped_runner: test_case::GroupedCaseRunnerConfig {
             runner_name: "axvisor-run-case-tests".to_string(),
             runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+            autorun_profile_script: None,
             begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
@@ -949,6 +952,22 @@ mod tests {
     }
 
     #[test]
+    fn qemu_test_request_ignores_inherited_vmconfigs() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request
+            .vmconfigs
+            .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert!(request.vmconfigs.is_empty());
+    }
+
+    #[test]
     fn discovers_only_cases_with_matching_qemu_config() {
         let root = tempdir().unwrap();
         let build_config = write_qemu_build_config(
@@ -1117,6 +1136,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["load"]
         );
+    }
+
+    #[test]
+    fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "normal",
+            "default",
+            "baseline",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+        write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "uefi",
+            "qemu-nimbos",
+            "smoke",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+
+        let normal_cases =
+            discover_qemu_cases(root.path(), "normal", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(normal_cases.len(), 1);
+        assert_eq!(normal_cases[0].case.name, "baseline");
+
+        let uefi_cases =
+            discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(uefi_cases.len(), 1);
+        assert_eq!(uefi_cases[0].case.name, "smoke");
+        assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
     }
 
     #[test]

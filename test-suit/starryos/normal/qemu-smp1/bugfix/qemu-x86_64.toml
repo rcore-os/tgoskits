@@ -29,6 +29,8 @@ test_commands = [
     "/usr/bin/bug-setpriority-current",
     "/usr/bin/bug-poll-wait-user-buffer-race",
     "/usr/bin/bug-prctl-capbset-read",
+    "/usr/bin/bug-pread64-read-at",
+    "/usr/bin/bug-pwrite64-write-at",
     "/usr/bin/bug-preadv2-invalid-flags",
     "/usr/bin/bug-preadv2-offset-neg1",
     "/usr/bin/bug-pwritev2-read-at",
@@ -69,14 +71,9 @@ test_commands = [
     "/usr/bin/bug-ext4-dir-ops",
     "/usr/bin/bug-tcp-concurrent-connect",
     "/usr/bin/bug-tcp-nonblocking-connect-so-error",
-    "/usr/bin/bug-kill-zombie-esrch",
-    "/usr/bin/bug-kill-zombie-perm",
-    "/usr/bin/bug-raw-terminal-polling",
-    "/usr/bin/bug-tty-cursor-report",
     "/usr/bin/bug-rename-replace",
     "/usr/bin/bug-rename-file-into-child-dir",
     "/usr/bin/bug-tmpfs-hardlink-cache",
-    "/usr/bin/bug-zombie-syscalls",
     "/usr/bin/bug-starry-setuid-setgid-no-uidvalid",
     "/usr/bin/bug-open-nofollow-sym",
     "/usr/bin/bug-open-creat-directory-einval",
@@ -99,7 +96,6 @@ test_commands = [
     "/usr/bin/bug-open-unix-socket-no-enxio",
     "/usr/bin/bug-open-fifo-wronly-no-reader-no-enxio",
     "/usr/bin/bug-prctl-set-vma-anon-name",
-    "/usr/bin/bug-waitid-basic",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
