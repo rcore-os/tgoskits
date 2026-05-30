@@ -18,7 +18,7 @@ default = ["dynamic_debug", "ebpf"]
 dev-log = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
-ebpf = []
+ebpf = ["dep:kbpf-basic", "dep:rbpf"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
@@ -138,6 +138,8 @@ sg200x-bsp = { workspace = true, optional = true }
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
 ksym = "0.6"
+kbpf-basic = { version = "0.5", optional = true }
+rbpf = { version = "0.4", default-features = false, optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

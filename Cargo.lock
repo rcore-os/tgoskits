@@ -4995,6 +4995,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "753ac4e7753fa007b8f7828d0e01e9ececa48b689460e6380fb36bbf74654a8d"
 
 [[package]]
+name = "kbpf-basic"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1acf87cd66e7107697846ab7758fc50681173540017963b7138fa7c6a779d0c9"
+dependencies = [
+ "axerrno",
+ "bitflags 2.11.1",
+ "int-enum",
+ "log",
+ "lru 0.16.4",
+ "printf-compat",
+]
+
+[[package]]
 name = "kernel-elf-parser"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6173,6 +6187,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "printf-compat"
+version = "0.3.1"
+source = "git+https://github.com/LorenzLorentz/printf-compat.git?branch=nightly-fix-0.3#c8cdff509b29231e9159f6b485ecc8d3f543df04"
+dependencies = [
+ "bitflags 2.11.1",
+ "itertools 0.14.0",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6627,6 +6650,18 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rbpf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c7fd1b4fdf96615efe17cfd01307737988fd17ece498e36f34d30e98726027d"
+dependencies = [
+ "byteorder",
+ "combine",
+ "hashbrown 0.16.1",
+ "log",
 ]
 
 [[package]]
@@ -8010,6 +8045,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",
+ "kbpf-basic",
  "kernel-elf-parser",
  "kmod-loader",
  "kprobe",
@@ -8020,6 +8056,7 @@ dependencies = [
  "num_enum",
  "ouroboros",
  "rand 0.10.1",
+ "rbpf",
  "rdrive",
  "ringbuf",
  "riscv",

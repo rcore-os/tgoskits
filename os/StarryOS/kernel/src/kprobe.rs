@@ -17,10 +17,59 @@
 //! - [`handle_breakpoint`]: Entry point for breakpoint exceptions (INT3/EBREAK/BRK)
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
+#[cfg(feature = "ebpf")]
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use kprobe::KprobeAuxiliaryOps;
+#[cfg(feature = "ebpf")]
+use kprobe::{
+    KretprobeBuilder, ProbeBuilder, ProbePointList,
+    register_kprobe as kprobe_crate_register_kprobe,
+    register_kretprobe as kprobe_crate_register_kretprobe,
+    unregister_kprobe as kprobe_crate_unregister_kprobe,
+    unregister_kretprobe as kprobe_crate_unregister_kretprobe,
+};
+use lock_api::RawMutex;
 
 use crate::task::AsThread;
+
+/// A `lock_api::RawMutex` backed by a single atomic flag, used as the `L`
+/// type parameter for the `kprobe` crate's `ProbeManager` / `Kprobe` /
+/// `Kretprobe`. The perf subsystem refers to the concrete probe types
+/// parameterized on this mutex (see [`KernelKprobe`] / [`KernelKretprobe`]).
+pub struct KernelRawMutex {
+    locked: AtomicBool,
+}
+
+unsafe impl RawMutex for KernelRawMutex {
+    const INIT: Self = KernelRawMutex {
+        locked: AtomicBool::new(false),
+    };
+
+    type GuardMarker = lock_api::GuardNoSend;
+
+    fn lock(&self) {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn try_lock(&self) -> bool {
+        self.locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    unsafe fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Debug)]
 pub struct KernelKprobeOps;
@@ -135,9 +184,25 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 }
 
-type KprobeManager = kprobe::ProbeManager<spin::Mutex<()>, KernelKprobeOps>;
+type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
+#[cfg(feature = "ebpf")]
+type KprobePointList = ProbePointList<KernelKprobeOps>;
+
+/// Concrete `kprobe::Kprobe` parameterized on the kernel's `RawMutex` and
+/// auxiliary ops, named to match what the perf module expects.
+#[cfg(feature = "ebpf")]
+pub type KernelKprobe = kprobe::Kprobe<KernelRawMutex, KernelKprobeOps>;
+/// Concrete `kprobe::Kretprobe`.
+#[cfg(feature = "ebpf")]
+pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
+/// The `KprobeAuxiliaryOps` impl, aliased under the name the perf module uses.
+#[cfg(feature = "ebpf")]
+pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
+    ax_sync::spin::SpinNoIrq::new(None);
+#[cfg(feature = "ebpf")]
+static KPROBE_POINT_LIST: ax_sync::spin::SpinNoIrq<Option<KprobePointList>> =
     ax_sync::spin::SpinNoIrq::new(None);
 
 fn with_manager<F, R>(f: F) -> R
@@ -149,6 +214,46 @@ where
         *guard = Some(KprobeManager::default());
     }
     f(guard.as_mut().expect("kprobe: manager not initialized"))
+}
+
+#[cfg(feature = "ebpf")]
+fn with_manager_and_list<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut KprobeManager, &mut KprobePointList) -> R,
+{
+    let mut mgr = KPROBE_MANAGER.lock();
+    if mgr.is_none() {
+        *mgr = Some(KprobeManager::default());
+    }
+    let mut list = KPROBE_POINT_LIST.lock();
+    if list.is_none() {
+        *list = Some(KprobePointList::new());
+    }
+    f(mgr.as_mut().unwrap(), list.as_mut().unwrap())
+}
+
+/// Register a kprobe into the global manager, returning the live handle.
+#[cfg(feature = "ebpf")]
+pub fn register_kprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelKprobe> {
+    with_manager_and_list(|mgr, list| kprobe_crate_register_kprobe(mgr, list, builder))
+}
+
+/// Unregister a previously registered kprobe.
+#[cfg(feature = "ebpf")]
+pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
+    with_manager_and_list(|mgr, list| kprobe_crate_unregister_kprobe(mgr, list, kprobe));
+}
+
+/// Register a kretprobe and return its live handle.
+#[cfg(feature = "ebpf")]
+pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
+    with_manager_and_list(|mgr, list| kprobe_crate_register_kretprobe(mgr, list, builder))
+}
+
+/// Unregister a previously registered kretprobe.
+#[cfg(feature = "ebpf")]
+pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
+    with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }
 
 fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
@@ -389,11 +494,6 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, tf);
-        #[cfg(feature = "ebpf")]
-        crate::perf_event::perf_event_trigger_by_type(
-            crate::perf_event::PERF_TYPE_KPROBE,
-            &pt_regs as *const _ as u64,
-        );
         return true;
     }
     false
@@ -443,7 +543,7 @@ pub fn run_selftest() -> bool {
 
     with_manager(|manager| {
         let mut probe_list = kprobe::ProbePointList::new();
-        let builder = kprobe::KretprobeBuilder::<spin::Mutex<()>>::new(4)
+        let builder = kprobe::KretprobeBuilder::<KernelRawMutex>::new(4)
             .with_symbol_addr(target_addr)
             .with_ret_handler(selftest_ret_handler)
             .with_enable(true);
@@ -473,11 +573,6 @@ pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, tf);
-        #[cfg(feature = "ebpf")]
-        crate::perf_event::perf_event_trigger_by_type(
-            crate::perf_event::PERF_TYPE_KPROBE,
-            &pt_regs as *const _ as u64,
-        );
         return true;
     }
     false
