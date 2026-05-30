@@ -19,5 +19,6 @@ fail_regex = [
     "(?i)segmentation fault",
     "(?i)kernel panic",
     "(?i)panicked at",
+    "(?i)illegal instruction",
 ]
 timeout = 60
