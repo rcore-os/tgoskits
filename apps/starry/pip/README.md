@@ -1,4 +1,4 @@
-# pip 测试
+# pip 测试.
 
 在 StarryOS (Alpine rootfs) 上验证 Python pip 的常用操作。
 
