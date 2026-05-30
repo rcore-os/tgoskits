@@ -144,10 +144,10 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             }
                             ExceptionKind::Breakpoint => Signo::SIGTRAP,
                             ExceptionKind::IllegalInstruction => Signo::SIGILL,
-                            _ => Signo::SIGTRAP,
+                            _ => Signo::SIGSEGV,
                         };
                         raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
-                            .expect("Failed to send SIGTRAP");
+                            .expect("Failed to send signal");
                     }
                     r => {
                         warn!("Unexpected return reason: {r:?}");
