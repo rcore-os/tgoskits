@@ -554,15 +554,38 @@ static int test_fpregs(void)
     return 0;
 }
 
-static volatile int attach_child_reached = 0;
+static void wait_for_release_then_exit(int fd, int exit_code)
+{
+    char c;
+    while (read(fd, &c, 1) < 0 && errno == EINTR) {
+    }
+    close(fd);
+    _exit(exit_code);
+}
+
+static int release_child(int fd)
+{
+    char c = 'R';
+    if (write(fd, &c, 1) != 1) {
+        return fail("write release pipe");
+    }
+    close(fd);
+    return 0;
+}
 
 static int test_attach(void)
 {
     printf("test 4: PTRACE_ATTACH\n");
 
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        return fail("pipe");
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("release pipe");
     }
 
     pid_t pid = fork();
@@ -571,23 +594,23 @@ static int test_attach(void)
     }
 
     if (pid == 0) {
-        close(pipefd[0]);
-        attach_child_reached = 1;
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
         char c = 'A';
-        write(pipefd[1], &c, 1);
-        close(pipefd[1]);
-
-        for (volatile int i = 0; i < 10000000; i++) {
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(100);
         }
-        _exit(42);
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 42);
     }
 
-    close(pipefd[1]);
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
     char c;
-    if (read(pipefd[0], &c, 1) != 1) {
+    if (read(ready_pipe[0], &c, 1) != 1) {
         return fail("read pipe from child");
     }
-    close(pipefd[0]);
+    close(ready_pipe[0]);
 
     if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) != 0) {
         return fail("ptrace attach");
@@ -612,6 +635,9 @@ static int test_attach(void)
 
     if (ptrace(PTRACE_DETACH, pid, NULL, NULL) != 0) {
         return fail("detach");
+    }
+    if (release_child(release_pipe[1]) != 0) {
+        return 1;
     }
 
     if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)
@@ -778,9 +804,15 @@ static int test_waitid_attach(void)
 {
     printf("test 7: waitid(WSTOPPED) after ATTACH\n");
 
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        return fail("pipe");
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("release pipe");
     }
 
     pid_t pid = fork();
@@ -789,21 +821,23 @@ static int test_waitid_attach(void)
     }
 
     if (pid == 0) {
-        close(pipefd[0]);
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
         char c = 'x';
-        write(pipefd[1], &c, 1);
-        close(pipefd[1]);
-        for (volatile int i = 0; i < 10000000; i++) {
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(100);
         }
-        _exit(0);
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 0);
     }
 
-    close(pipefd[1]);
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
     char c;
-    if (read(pipefd[0], &c, 1) != 1) {
+    if (read(ready_pipe[0], &c, 1) != 1) {
         return fail("read pipe");
     }
-    close(pipefd[0]);
+    close(ready_pipe[0]);
 
     if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) != 0) {
         return fail("attach");
@@ -818,8 +852,15 @@ static int test_waitid_attach(void)
     if (ptrace(PTRACE_DETACH, pid, NULL, NULL) != 0) {
         return fail("detach");
     }
+    if (release_child(release_pipe[1]) != 0) {
+        return 1;
+    }
     int wstatus = 0;
-    waitpid(pid, &wstatus, 0);
+    if (waitpid(pid, &wstatus, 0) != pid || !WIFEXITED(wstatus)
+        || WEXITSTATUS(wstatus) != 0) {
+        printf("FAIL: after waitid detach, status=%#x\n", wstatus);
+        return 1;
+    }
     return 0;
 }
 
