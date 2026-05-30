@@ -465,7 +465,12 @@ impl Drop for PageCache {
     }
 }
 
-type EvictListenerFn = Box<dyn Fn(u32, &PageCache) + Send + Sync>;
+/// Eviction listener callback.  Returns `true` if the listener
+/// successfully invalidated all mappings for the evicted page.
+/// When `false` is returned, the caller must **not** drop the page
+/// (doing so would free the physical frame while PTEs still reference
+/// it); instead the page is returned to the cache for a later retry.
+type EvictListenerFn = Box<dyn Fn(u32, &PageCache) -> bool + Send + Sync>;
 
 struct EvictListener {
     listener: EvictListenerFn,
@@ -529,10 +534,21 @@ impl CachedFileShared {
         let mut evicted = 0;
         for &pn in to_evict[..cnt].iter() {
             if let Some(page) = cache.pop(&pn) {
+                let mut all_ok = true;
                 for listener in self.evict_listeners.lock().iter() {
-                    (listener.listener)(pn, &page);
+                    if !(listener.listener)(pn, &page) {
+                        all_ok = false;
+                    }
                 }
-                evicted += 1;
+                if all_ok {
+                    // All listeners confirmed unmap — safe to drop (free physical frame).
+                    evicted += 1;
+                } else {
+                    // At least one listener could not unmap (e.g., AddrSpace lock
+                    // contention).  Put the page back to avoid freeing a physical
+                    // frame that still has live PTEs pointing to it.
+                    cache.put(pn, page);
+                }
             }
         }
         evicted
@@ -681,7 +697,7 @@ impl CachedFile {
     /// [`remove_evict_listener`](Self::remove_evict_listener).
     pub fn add_evict_listener<F>(&self, listener: F) -> usize
     where
-        F: Fn(u32, &PageCache) + Send + Sync + 'static,
+        F: Fn(u32, &PageCache) -> bool + Send + Sync + 'static,
     {
         let pointer = Box::new(EvictListener {
             listener: Box::new(listener),
@@ -704,7 +720,12 @@ impl CachedFile {
 
     fn evict_cache(&self, file: &FileNode, pn: u32, page: &mut PageCache) -> VfsResult<()> {
         for listener in self.shared.evict_listeners.lock().iter() {
-            (listener.listener)(pn, page);
+            // In the LRU-eviction path (triggered by page_or_insert), the
+            // populate process holds AddrSpace and handles the unmap via
+            // PopulateCallback.  The listener's return value is irrelevant
+            // here — if try_lock fails, the caller is the populate process
+            // itself and it will unmap the old page after inserting the new one.
+            let _ = (listener.listener)(pn, page);
         }
         if page.dirty {
             let page_start = pn as u64 * PAGE_SIZE as u64;
