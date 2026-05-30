@@ -1,14 +1,15 @@
 args = [
     "-nographic",
     "-m", "512M",
-    "-cpu", "max",
+    "-cpu", "cortex-a53",
     "-device", "virtio-blk-pci,drive=disk0",
-    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-dynamic-musl-test.img",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-musl-dynamic-smoke.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
+    "-append", "root=/dev/sda",
 ]
 uefi = false
-to_bin = false
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/dynamic-test.sh"
 success_regex = ["(?m)^DYNAMIC_MUSL_TEST_DONE\\s+RC=0\\s*$"]

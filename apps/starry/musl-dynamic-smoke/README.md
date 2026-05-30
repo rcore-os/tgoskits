@@ -1,13 +1,18 @@
-# dynamic-musl-test
+# musl-dynamic-smoke
 
-验证 StarryOS 加载动态链接 musl ELF 的能力。
+> Alpine/musl 用户态动态链接兼容性 smoke workflow
+
+This case is an operator-facing StarryOS app workflow, not a unit test.
+It verifies that StarryOS can boot a QEMU guest, prepare a rootfs overlay,
+install the musl dynamic loader and shared libraries, and execute a dynamically
+linked Linux user program through PT_INTERP.
 
 ## 测试命令
 
 ```bash
-cargo xtask starry app run -t dynamic-musl-test --arch aarch64
-cargo xtask starry app run -t dynamic-musl-test --arch riscv64
-cargo xtask starry app run -t dynamic-musl-test --arch x86_64
+cargo xtask starry app run -t musl-dynamic-smoke --arch aarch64
+cargo xtask starry app run -t musl-dynamic-smoke --arch riscv64
+cargo xtask starry app run -t musl-dynamic-smoke --arch x86_64
 ```
 
 ## Result
