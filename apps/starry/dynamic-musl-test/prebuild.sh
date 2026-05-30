@@ -23,6 +23,10 @@ case "$STARRY_ARCH" in
         MUSL_TARGET="riscv64-linux-musl"
         MUSL_ARCH="riscv64"
         ;;
+    x86_64)
+        MUSL_TARGET="x86_64-linux-musl"
+        MUSL_ARCH="x86_64"
+        ;;
     *)
         echo "ERROR: unsupported arch: $STARRY_ARCH" >&2
         exit 1
