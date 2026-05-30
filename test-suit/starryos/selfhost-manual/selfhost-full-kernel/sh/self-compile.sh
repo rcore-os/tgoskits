@@ -30,7 +30,7 @@ fi
 echo "LINKER_FIXED"
 
 echo "CARGO_BUILD_START"
-cargo build -p starryos --target riscv64gc-unknown-none-elf --features qemu,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket --offline 2>&1
+cargo build -p starryos --target riscv64gc-unknown-none-elf --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket --offline 2>&1
 echo "CARGO_BUILD_PASSED"
 
 BINARY=/tmp/build/target/riscv64gc-unknown-none-elf/debug/starryos
