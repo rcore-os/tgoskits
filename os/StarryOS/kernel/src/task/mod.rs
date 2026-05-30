@@ -750,8 +750,7 @@ impl ProcessData {
         crate::mm::attach_process_slot(&aspace_arc);
         crate::cgroup::register_process(this.cgroup_id())
             .expect("initial process cgroup must exist");
-        this.cgroup_membership_active
-            .store(true, Ordering::Release);
+        this.cgroup_membership_active.store(true, Ordering::Release);
         this
     }
 
