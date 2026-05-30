@@ -147,7 +147,10 @@ pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
 /// `NoSuchProcess` immediately, regardless of whether any other strong
 /// [`Arc<ProcessData>`] references (e.g. task objects) are still alive.
 pub fn remove_process(pid: Pid) {
-    PROCESS_TABLE.write().remove(&pid);
+    let proc_data = PROCESS_TABLE.write().remove(&pid);
+    if let Some(proc_data) = proc_data {
+        proc_data.release_cgroup_membership_if_needed();
+    }
 }
 
 /// Records a PID as zombie (exited but not yet reaped).

@@ -504,6 +504,8 @@ pub struct ProcessData {
     pub proc: Arc<Process>,
     /// Current cgroup v2 membership in the global hierarchy.
     cgroup_id: AtomicU64,
+    /// Whether this process still contributes to its cgroup's live count.
+    cgroup_membership_active: AtomicBool,
     /// The executable path
     pub exe_path: RwLock<String>,
     /// The command line arguments
@@ -677,6 +679,7 @@ impl ProcessData {
         let this = Arc::new(Self {
             proc,
             cgroup_id: AtomicU64::new(initial_cgroup_id),
+            cgroup_membership_active: AtomicBool::new(false),
             exe_path: RwLock::new(image.exe_path),
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
@@ -747,6 +750,8 @@ impl ProcessData {
         crate::mm::attach_process_slot(&aspace_arc);
         crate::cgroup::register_process(this.cgroup_id())
             .expect("initial process cgroup must exist");
+        this.cgroup_membership_active
+            .store(true, Ordering::Release);
         this
     }
 
@@ -758,6 +763,13 @@ impl ProcessData {
     /// Update cgroup membership. This is serialized by the cgroup core lock.
     pub(crate) fn set_cgroup_id(&self, id: crate::cgroup::CgroupId) {
         self.cgroup_id.store(id, Ordering::Release);
+    }
+
+    /// Release this process's cgroup live-count membership once.
+    pub fn release_cgroup_membership_if_needed(&self) {
+        if self.cgroup_membership_active.swap(false, Ordering::AcqRel) {
+            crate::cgroup::unregister_process(self.cgroup_id());
+        }
     }
 
     /// Whether this process shares its VM address space (`CLONE_VM`).
@@ -1385,7 +1397,7 @@ impl ProcessData {
 
 impl Drop for ProcessData {
     fn drop(&mut self) {
-        crate::cgroup::unregister_process(self.cgroup_id());
+        self.release_cgroup_membership_if_needed();
         self.release_aspace_slot_if_needed();
     }
 }
