@@ -25,9 +25,9 @@ pub(crate) struct ThreadGroup {
 pub struct Process {
     pid: Pid,
     is_zombie: AtomicBool,
+    is_child_subreaper: AtomicBool,
     pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
-    // TODO: child subreaper9
     children: SpinNoIrq<StrongMap<Pid, Arc<Process>>>,
     parent: SpinNoIrq<Weak<Process>>,
 
@@ -47,6 +47,20 @@ impl Process {
     /// calling [`init_proc`] or testing if [`Process::parent`] is `None`.
     pub fn is_init(self: &Arc<Self>) -> bool {
         Arc::ptr_eq(self, INIT_PROC.get().unwrap())
+    }
+
+    /// Returns `true` if this process acts as a child subreaper.
+    ///
+    /// Linux keeps this flag per process: it is preserved across `execve`,
+    /// applies to all threads in the thread group, and is not inherited by
+    /// newly forked child processes.
+    pub fn is_child_subreaper(&self) -> bool {
+        self.is_child_subreaper.load(Ordering::Acquire)
+    }
+
+    /// Enables or disables child subreaper behavior for this process.
+    pub fn set_child_subreaper(&self, enabled: bool) {
+        self.is_child_subreaper.store(enabled, Ordering::Release);
     }
 }
 
@@ -202,6 +216,23 @@ impl Process {
 
 /// Status & exit
 impl Process {
+    fn orphan_reaper(self: &Arc<Self>) -> Arc<Process> {
+        let init_proc = INIT_PROC.get().unwrap();
+        let mut cursor = self.parent();
+
+        while let Some(proc) = cursor {
+            if Arc::ptr_eq(&proc, init_proc) {
+                break;
+            }
+            if proc.is_child_subreaper() && !proc.is_zombie() {
+                return proc;
+            }
+            cursor = proc.parent();
+        }
+
+        init_proc.clone()
+    }
+
     /// Returns `true` if the [`Process`] is a zombie process.
     pub fn is_zombie(&self) -> bool {
         self.is_zombie.load(Ordering::Acquire)
@@ -212,16 +243,14 @@ impl Process {
     /// Child processes are inherited by the init process or by the nearest
     /// subreaper process.
     ///
-    /// This method panics if the [`Process`] is the init process.
+    /// This method does nothing if the [`Process`] is the init process.
     pub fn exit(self: &Arc<Self>) {
-        // TODO: child subreaper
-        let reaper_proc = INIT_PROC.get().unwrap();
-
-        if Arc::ptr_eq(self, reaper_proc) {
+        if self.is_init() {
             return;
         }
 
-        let reaper_parent = Arc::downgrade(reaper_proc);
+        let reaper_proc = self.orphan_reaper();
+        let reaper_parent = Arc::downgrade(&reaper_proc);
         let children = {
             let mut children = self.children.lock();
             core::mem::take(&mut *children)
@@ -284,6 +313,7 @@ impl Process {
         let process = Arc::new(Process {
             pid,
             is_zombie: AtomicBool::new(false),
+            is_child_subreaper: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
             children: SpinNoIrq::new(StrongMap::new()),
             parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
