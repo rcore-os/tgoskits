@@ -10,6 +10,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int __pass = 0;
@@ -163,10 +164,58 @@ static void expect_file_equals(const char *path, const char *expected, const cha
         return;
     }
 
-    CHECK(strcmp(buf, expected) == 0, msg);
-    if (strcmp(buf, expected) != 0) {
+    size_t end = (size_t)nread < sizeof(buf) ? (size_t)nread : sizeof(buf) - 1;
+    buf[end] = '\0';
+    int matches = strcmp(buf, expected) == 0;
+    CHECK(matches, msg);
+    if (!matches) {
         printf("  OBSERVE | expected='%s' got='%s'\n", expected, buf);
     }
+}
+
+static ssize_t write_all_fd(int fd, const void *buf, size_t len)
+{
+    const char *cursor = buf;
+    size_t written = 0;
+
+    while (written < len) {
+        ssize_t ret = write(fd, cursor + written, len - written);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (ret == 0) {
+            errno = EIO;
+            return -1;
+        }
+        written += (size_t)ret;
+    }
+
+    return (ssize_t)written;
+}
+
+static ssize_t read_exact_fd(int fd, void *buf, size_t len)
+{
+    char *cursor = buf;
+    size_t nread = 0;
+
+    while (nread < len) {
+        ssize_t ret = read(fd, cursor + nread, len - nread);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (ret == 0) {
+            break;
+        }
+        nread += (size_t)ret;
+    }
+
+    return (ssize_t)nread;
 }
 
 static int buffer_contains_pid(const char *buf, pid_t pid)
@@ -219,7 +268,7 @@ static void expect_write_ok(const char *path, const char *data, const char *msg)
 
     size_t len = strlen(data);
     errno = 0;
-    ssize_t written = write(fd, data, len);
+    ssize_t written = write_all_fd(fd, data, len);
     int saved_errno = errno;
     close(fd);
     errno = saved_errno;
@@ -401,6 +450,84 @@ int main(void)
                              "child cgroup.procs contains migrated process");
     expect_file_not_contains_pid(CGROUP2_PATH "/cgroup.procs", self_pid,
                                  "root cgroup.procs no longer contains migrated process");
+    int ready_pipe[2];
+    int release_pipe[2];
+    errno = 0;
+    int ready_ok = pipe(ready_pipe);
+    int ready_errno = errno;
+    errno = ready_errno;
+    CHECK(ready_ok == 0, "create fork inheritance ready pipe");
+    errno = 0;
+    int release_ok = ready_ok == 0 ? pipe(release_pipe) : -1;
+    int release_errno = errno;
+    errno = release_errno;
+    CHECK(release_ok == 0, "create fork inheritance release pipe");
+    if (ready_ok == 0 && release_ok == 0) {
+        errno = 0;
+        pid_t child_pid = fork();
+        int fork_errno = errno;
+        errno = fork_errno;
+        CHECK(child_pid >= 0, "fork after cgroup migration succeeds");
+        if (child_pid == 0) {
+            close(ready_pipe[0]);
+            close(release_pipe[1]);
+
+            char child_buf[128];
+            ssize_t child_nread =
+                read_text_file("/proc/self/cgroup", child_buf, sizeof(child_buf));
+            size_t end = child_nread >= 0 && (size_t)child_nread < sizeof(child_buf)
+                             ? (size_t)child_nread
+                             : sizeof(child_buf) - 1;
+            child_buf[end] = '\0';
+            char inherited = child_nread >= 0 && strcmp(child_buf, "0::/migrate\n") == 0
+                                 ? '1'
+                                 : '0';
+            (void)write_all_fd(ready_pipe[1], &inherited, 1);
+
+            char release_token;
+            ssize_t release_nread = read_exact_fd(release_pipe[0], &release_token, 1);
+            _exit(inherited == '1' && release_nread == 1 ? 0 : 1);
+        }
+
+        close(ready_pipe[1]);
+        close(release_pipe[0]);
+        if (child_pid > 0) {
+            char inherited = '0';
+            errno = 0;
+            ssize_t inherited_nread = read_exact_fd(ready_pipe[0], &inherited, 1);
+            int inherited_errno = errno;
+            errno = inherited_errno;
+            CHECK(inherited_nread == 1 && inherited == '1',
+                  "fork child inherits migrated cgroup in procfs");
+            expect_file_contains_pid(CGROUP2_PATH "/migrate/cgroup.procs", child_pid,
+                                     "child cgroup.procs contains inherited child process");
+            expect_file_not_contains_pid(CGROUP2_PATH "/cgroup.procs", child_pid,
+                                         "root cgroup.procs excludes inherited child process");
+
+            char release_token = 'x';
+            errno = 0;
+            ssize_t release_written = write_all_fd(release_pipe[1], &release_token, 1);
+            int release_write_errno = errno;
+            errno = release_write_errno;
+            CHECK(release_written == 1, "release fork inheritance child");
+
+            int child_status = 0;
+            errno = 0;
+            pid_t waited = waitpid(child_pid, &child_status, 0);
+            int wait_errno = errno;
+            errno = wait_errno;
+            CHECK(waited == child_pid && WIFEXITED(child_status) &&
+                      WEXITSTATUS(child_status) == 0,
+                  "fork inheritance child exits cleanly");
+        }
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+    } else {
+        if (ready_ok == 0) {
+            close(ready_pipe[0]);
+            close(ready_pipe[1]);
+        }
+    }
     expect_rmdir_errno(CGROUP2_PATH "/migrate", EBUSY,
                        "rmdir populated cgroup fails with EBUSY");
     expect_path_exists(CGROUP2_PATH "/migrate",

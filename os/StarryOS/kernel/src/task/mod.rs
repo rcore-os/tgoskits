@@ -672,10 +672,11 @@ impl ProcessData {
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
         vm_aspace_shared: bool,
+        initial_cgroup_id: crate::cgroup::CgroupId,
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             proc,
-            cgroup_id: AtomicU64::new(crate::cgroup::root_id()),
+            cgroup_id: AtomicU64::new(initial_cgroup_id),
             exe_path: RwLock::new(image.exe_path),
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
@@ -744,7 +745,8 @@ impl ProcessData {
         // expression would nest a sleepable lock inside atomic context.
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
-        crate::cgroup::register_process(crate::cgroup::root_id());
+        crate::cgroup::register_process(this.cgroup_id())
+            .expect("initial process cgroup must exist");
         this
     }
 

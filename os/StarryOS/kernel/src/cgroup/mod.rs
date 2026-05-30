@@ -151,17 +151,24 @@ pub fn remove_child(parent: CgroupId, name: &str) -> AxResult<()> {
     Ok(())
 }
 
-pub fn register_process(id: CgroupId) {
+pub fn register_process(id: CgroupId) -> AxResult<()> {
     let mut tree = CGROUP_TREE.lock();
-    if let Some(node) = tree.nodes.get_mut(&id) {
-        node.live_processes = node.live_processes.saturating_add(1);
-    }
+    let node = tree.nodes.get_mut(&id).ok_or(AxError::NotFound)?;
+    node.live_processes = node
+        .live_processes
+        .checked_add(1)
+        .ok_or_else(|| AxError::from(LinuxError::EINVAL))?;
+    Ok(())
 }
 
 pub fn unregister_process(id: CgroupId) {
     let mut tree = CGROUP_TREE.lock();
     if let Some(node) = tree.nodes.get_mut(&id) {
-        node.live_processes = node.live_processes.saturating_sub(1);
+        if let Some(live_processes) = node.live_processes.checked_sub(1) {
+            node.live_processes = live_processes;
+        } else {
+            debug_assert!(false, "cgroup live_processes underflow during unregister");
+        }
     }
 }
 
@@ -192,13 +199,14 @@ pub fn attach_process(target: CgroupId, pid: Pid) -> AxResult<()> {
         .expect("target was checked above")
         .live_processes
         .checked_add(1)
-        .ok_or(AxError::NoMemory)?;
+        .ok_or_else(|| AxError::from(LinuxError::EINVAL))?;
     let old_live_processes = tree
         .nodes
         .get(&old)
         .expect("old cgroup was checked above")
         .live_processes
-        .saturating_sub(1);
+        .checked_sub(1)
+        .ok_or_else(|| AxError::from(LinuxError::EINVAL))?;
     tree.nodes
         .get_mut(&old)
         .expect("old cgroup was checked above")

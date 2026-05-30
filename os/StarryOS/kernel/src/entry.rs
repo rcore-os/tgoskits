@@ -66,6 +66,7 @@ pub fn init(args: &[String], envs: &[String]) {
         Arc::default(),
         None,
         false,
+        crate::cgroup::root_id(),
     );
 
     {

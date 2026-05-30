@@ -233,6 +233,7 @@ impl CloneArgs {
                 signal_actions,
                 exit_signal,
                 flags.contains(CloneFlags::VM),
+                old_proc_data.cgroup_id(),
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
