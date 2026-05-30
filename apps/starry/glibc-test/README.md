@@ -15,22 +15,26 @@ cargo xtask starry app run -t glibc-test --arch aarch64
 ```
 glibc dynamic test OK
 GLIBC_TEST_DONE RC=0
+/proc/self/exe -> /usr/bin/proc-self-exe-test
+PROC_SELF_EXE_TEST_DONE RC=0
 ```
 
 ## 结论
 
 StarryOS can load a glibc dynamic ELF through PT_INTERP on aarch64.
+`/proc/self/exe` is available and working.
 No missing syscall or loader blocker observed.
 
 - INTERP: `/lib/ld-linux-aarch64.so.1`
 - NEEDED: `libc.so.6`
+- /proc/self/exe: available
 
 ## 文件说明
 
 - `glibc-test.c` - 最小 glibc 动态链接测试程序
 - `proc-self-exe-test.c` - /proc/self/exe 验证程序
 - `prebuild.sh` - 编译 + 安装到 overlay（aarch64-linux-gnu-gcc）
-- `glibc-test.sh` - QEMU 内运行的测试脚本
+- `glibc-test.sh` - QEMU 内运行的测试脚本（glibc-test + proc-self-exe-test）
 - `qemu-aarch64.toml` - QEMU 运行配置
 - `build-aarch64-unknown-none-softfloat.toml` - 内核构建配置
 

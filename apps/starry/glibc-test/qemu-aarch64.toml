@@ -12,9 +12,10 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/glibc-test.sh"
-success_regex = ["(?m)^GLIBC_TEST_DONE\\s+RC=0\\s*$"]
+success_regex = ["(?m)^GLIBC_TEST_DONE\\s+RC=0\\s*$", "(?m)^PROC_SELF_EXE_TEST_DONE\\s+RC=0\\s*$"]
 fail_regex = [
     "(?m)^GLIBC_TEST_DONE\\s+RC=[^0]",
+    "(?m)^PROC_SELF_EXE_TEST_DONE\\s+RC=[^0]",
     "(?i)not found",
     "(?i)no such file",
     "(?i)segmentation fault",

@@ -9,17 +9,27 @@
 ```
 glibc dynamic test OK
 GLIBC_TEST_DONE RC=0
+/proc/self/exe -> /usr/bin/proc-self-exe-test
+PROC_SELF_EXE_TEST_DONE RC=0
 ```
 
 ## Blocker 列表
 
-无 blocker。glibc 基础动态链接在 aarch64 上正常工作。
+无 blocker。glibc 基础动态链接和 /proc/self/exe 在 aarch64 上正常工作。
+
+## 已验证
+
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| glibc dynamic test | PASS | 最小 printf 程序正常运行 |
+| /proc/self/exe | PASS | readlink 正常返回可执行文件路径 |
+| ld-linux-aarch64.so.1 | PASS | glibc dynamic linker 正常加载 |
+| libc.so.6 | PASS | glibc C library 正常链接 |
 
 ## 待验证
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| /proc/self/exe | 待验证 | proc-self-exe-test 已安装但未自动运行，需手动验证 |
 | riscv64 glibc | 未测试 | 需要 riscv64 glibc 交叉编译工具链 |
 | x86_64 glibc | 未测试 | 需要 x86_64 glibc 交叉编译工具链 |
 
@@ -32,4 +42,4 @@ GLIBC_TEST_DONE RC=0
 | x86_64 | PASS | 未测试 |
 | interpreter | `/lib/ld-musl-*.so.1` | `/lib/ld-linux-aarch64.so.1` |
 | libc | `libc.musl-*.so.1` | `libc.so.6` |
-| procfs 依赖 | 无 | 强依赖 /proc/self/exe（待验证） |
+| procfs 依赖 | 无 | /proc/self/exe PASS |
