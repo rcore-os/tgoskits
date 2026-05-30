@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-m", "512M",
+    "-cpu", "cortex-a53",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-debian-glibc-test.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+    "-append", "root=/dev/sda",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/glibc-test.sh"
+success_regex = ["ALL TESTS COMPLETED"]
+fail_regex = [
+    "(?m)RC=[^0]",
+    "(?i)not found",
+    "(?i)no such file",
+    "(?i)segmentation fault",
+    "(?i)kernel panic",
+    "(?i)panicked at",
+    "(?i)unimplemented syscall",
+    "(?i)enosys",
+    "(?i)unsupported elf",
+]
+timeout = 120

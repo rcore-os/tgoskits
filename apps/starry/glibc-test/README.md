@@ -12,11 +12,12 @@ cargo xtask starry app run -t glibc-test --arch x86_64
 
 ## Result
 
-| 架构 | glibc-test | proc-self-exe | pthread | regex |
-|------|------------|---------------|---------|-------|
-| aarch64 | **PASS** | **PASS** | **PASS** | **PASS** |
-| riscv64 | **PASS** | **PASS** | **PASS** | **PASS** |
-| x86_64 | **PASS** | **PASS** | **PASS** | **PASS** |
+| 架构 | rootfs | glibc-test | proc-self-exe | pthread | regex |
+|------|--------|------------|---------------|---------|-------|
+| aarch64 | Alpine | **PASS** | **PASS** | **PASS** | **PASS** |
+| aarch64 | Debian | **PASS** | **PASS** | **PASS** | **PASS** |
+| riscv64 | Alpine | **PASS** | **PASS** | **PASS** | **PASS** |
+| x86_64 | Alpine | **PASS** | **PASS** | **PASS** | **PASS** |
 
 ## 结论
 
