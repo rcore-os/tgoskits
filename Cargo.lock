@@ -4978,6 +4978,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "k230-kpu"
+version = "0.1.0"
+
+[[package]]
 name = "kapi"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
