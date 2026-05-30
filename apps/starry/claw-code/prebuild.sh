@@ -24,9 +24,9 @@ else
     echo "Building claw for $TARGET (this may take a while)..."
     (
         cd "$CLAW_SRC/rust"
-        cargo build --workspace --target "$TARGET" --target-dir "$CACHE_DIR/target"
+        cargo build --workspace --release --target "$TARGET" --target-dir "$CACHE_DIR/target"
     )
-    cp "$CACHE_DIR/target/$TARGET/debug/claw" "$CLAW_BIN"
+    cp "$CACHE_DIR/target/$TARGET/release/claw" "$CLAW_BIN"
     chmod +x "$CLAW_BIN"
     echo "claw binary built: $CLAW_BIN"
 fi
