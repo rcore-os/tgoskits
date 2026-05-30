@@ -25,8 +25,11 @@ fn main() {
     }
 
     let stdout = String::from_utf8(output.stdout).expect("invalid utf8 from build-claw.sh");
-    let claw_bin = stdout.trim();
-    assert!(!claw_bin.is_empty(), "build-claw.sh produced no output");
+    // Last non-empty line is the binary path; earlier lines are progress messages.
+    let claw_bin = stdout.lines().filter(|l| !l.trim().is_empty()).last()
+        .expect("build-claw.sh produced no output")
+        .trim();
+    assert!(!claw_bin.is_empty(), "build-claw.sh produced empty path");
 
     fs::copy(claw_bin, &claw_out).unwrap_or_else(|e| {
         panic!("failed to copy claw binary from {claw_bin}: {e}")
