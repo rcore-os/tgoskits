@@ -14,7 +14,7 @@ set -e
 
 echo "STAGE_APK_BEGIN"
 apk update
-apk add --no-cache sqlite
+apk add sqlite
 echo "STAGE_APK_OK"
 
 echo "STAGE_S0_BEGIN"

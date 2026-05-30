@@ -36,22 +36,23 @@ impl DnsSocket {
     pub fn query(&self, name: &str, query_type: DnsQueryType) -> AxResult<Vec<IpAddr>> {
         // let local_addr = self.local_addr.unwrap_or_else(f);
         let handle = self.handle.ok_or_else(|| ax_err_type!(InvalidInput))?;
-        let iface = &ETH0.iface;
-        let query_handle = SOCKET_SET
-            .with_socket_mut::<dns::Socket, _, _>(handle, |socket| {
-                socket.start_query(iface.lock().context(), name, query_type)
+        let query_handle = {
+            let mut iface = ETH0.iface.lock();
+            SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(handle, |socket| {
+                socket.start_query(iface.context(), name, query_type)
             })
-            .map_err(|e| match e {
-                StartQueryError::NoFreeSlot => {
-                    ax_err_type!(ResourceBusy, "socket query() failed: no free slot")
-                }
-                StartQueryError::InvalidName => {
-                    ax_err_type!(InvalidInput, "socket query() failed: invalid name")
-                }
-                StartQueryError::NameTooLong => {
-                    ax_err_type!(InvalidInput, "socket query() failed: too long name")
-                }
-            })?;
+        }
+        .map_err(|e| match e {
+            StartQueryError::NoFreeSlot => {
+                ax_err_type!(ResourceBusy, "socket query() failed: no free slot")
+            }
+            StartQueryError::InvalidName => {
+                ax_err_type!(InvalidInput, "socket query() failed: invalid name")
+            }
+            StartQueryError::NameTooLong => {
+                ax_err_type!(InvalidInput, "socket query() failed: too long name")
+            }
+        })?;
         loop {
             SOCKET_SET.poll_interfaces();
             match SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(handle, |socket| {

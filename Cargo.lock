@@ -1177,6 +1177,8 @@ name = "ax-lockdep"
 version = "0.1.1"
 dependencies = [
  "ax-crate-interface",
+ "ax-kernel-guard",
+ "axpanic",
  "sbi-rt",
 ]
 

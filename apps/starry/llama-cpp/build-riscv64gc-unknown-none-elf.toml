@@ -1,8 +1,7 @@
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
-  "ax-hal/aarch64-qemu-virt",
+  "ax-hal/riscv64-qemu-virt",
   "qemu",
-  "ax-driver/pci",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
@@ -11,4 +10,4 @@ features = [
 ]
 log = "Warn"
 plat_dyn = false
-target = "aarch64-unknown-none-softfloat"
+target = "riscv64gc-unknown-none-elf"

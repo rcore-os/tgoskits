@@ -117,6 +117,14 @@ impl<'a> SocketSetWrapper<'a> {
         f(socket)
     }
 
+    pub fn with_socket_set_mut<R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut SocketSet<'a>) -> R,
+    {
+        let mut set = self.0.lock();
+        f(&mut set)
+    }
+
     pub fn poll_interfaces(&self) {
         ETH0.poll(&self.0);
     }
