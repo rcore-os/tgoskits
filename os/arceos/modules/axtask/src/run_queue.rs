@@ -657,18 +657,13 @@ impl AxRunQueue {
             let target = (current_cpu + i) % ax_config::plat::MAX_CPU_NUM;
             let task = {
                 let mut sched = get_run_queue(target).scheduler.lock();
-                sched.pick_next_task()
+                sched.pick_next_task_matching(|t| t.cpumask().get(current_cpu))
             };
             if let Some(task) = task {
-                if task.cpumask().get(current_cpu) {
-                    task.set_cpu_id(current_cpu as _);
-                    #[cfg(feature = "ipi")]
-                    kick_remote_cpu(target);
-                    return Some(task);
-                }
-                // Affinity mismatch: put the task back on the remote queue.
-                let mut sched = get_run_queue(target).scheduler.lock();
-                sched.put_prev_task(task, false);
+                task.set_cpu_id(current_cpu as _);
+                #[cfg(feature = "ipi")]
+                kick_remote_cpu(target);
+                return Some(task);
             }
         }
         None

@@ -102,6 +102,30 @@ impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {
         self.ready_queue.pop_front()
     }
 
+    fn pick_next_task_matching(
+        &mut self,
+        predicate: impl Fn(&Self::SchedItem) -> bool,
+    ) -> Option<Self::SchedItem> {
+        let mut skipped = alloc::vec::Vec::new();
+        loop {
+            match self.ready_queue.pop_front() {
+                Some(task) if predicate(&task) => {
+                    for t in skipped {
+                        self.ready_queue.push_back(t);
+                    }
+                    return Some(task);
+                }
+                Some(task) => skipped.push(task),
+                None => {
+                    for t in skipped {
+                        self.ready_queue.push_back(t);
+                    }
+                    return None;
+                }
+            }
+        }
+    }
+
     fn put_prev_task(&mut self, prev: Self::SchedItem, preempt: bool) {
         if prev.time_slice() > 0 && preempt {
             self.ready_queue.push_front(prev)
