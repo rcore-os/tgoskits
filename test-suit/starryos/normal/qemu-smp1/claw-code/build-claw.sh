@@ -30,9 +30,7 @@ fi
 echo "Building claw (this may take a while)..."
 (
     cd "$CLAW_SRC/rust"
-    # Use separate CARGO_HOME to avoid lock conflict when called from build.rs.
-    CARGO_HOME="$CACHE_DIR/cargo-home" \
-        cargo build --workspace --target "$TARGET" --target-dir "$CACHE_DIR/target"
+    cargo build --workspace --target "$TARGET" --target-dir "$CACHE_DIR/target"
 )
 
 cp "$CACHE_DIR/target/$TARGET/debug/claw" "$CLAW_BIN"
