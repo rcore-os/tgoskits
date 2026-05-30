@@ -9,18 +9,36 @@ if [[ -z "$overlay_dir" ]]; then
     exit 1
 fi
 
-command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 || { echo "ERROR: aarch64-linux-gnu-gcc not found" >&2; exit 1; }
+case "$STARRY_ARCH" in
+    aarch64)
+        GCC_PREFIX="aarch64-linux-gnu"
+        ;;
+    riscv64)
+        GCC_PREFIX="riscv64-linux-gnu"
+        ;;
+    x86_64)
+        GCC_PREFIX="x86_64-linux-gnu"
+        ;;
+    *)
+        echo "ERROR: unsupported arch: $STARRY_ARCH" >&2
+        exit 1
+        ;;
+esac
+
+command -v "${GCC_PREFIX}-gcc" >/dev/null 2>&1 || { echo "ERROR: ${GCC_PREFIX}-gcc not found" >&2; exit 1; }
 command -v readelf >/dev/null 2>&1 || { echo "ERROR: readelf not found" >&2; exit 1; }
 
-aarch64-linux-gnu-gcc -o "$app_dir/glibc-test" "$app_dir/glibc-test.c"
-aarch64-linux-gnu-gcc -o "$app_dir/proc-self-exe-test" "$app_dir/proc-self-exe-test.c"
+"${GCC_PREFIX}-gcc" -o "$app_dir/glibc-test" "$app_dir/glibc-test.c"
+"${GCC_PREFIX}-gcc" -o "$app_dir/proc-self-exe-test" "$app_dir/proc-self-exe-test.c"
+"${GCC_PREFIX}-gcc" -o "$app_dir/pthread-test" "$app_dir/pthread-test.c" -lpthread
+"${GCC_PREFIX}-gcc" -o "$app_dir/regex-test" "$app_dir/regex-test.c"
 
 INTERP=$(readelf -l "$app_dir/glibc-test" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
 echo "INTERP path: $INTERP"
 [[ -n "$INTERP" ]] || { echo "ERROR: no PT_INTERP found" >&2; exit 1; }
 
-SYSROOT=$(aarch64-linux-gnu-gcc -print-sysroot)
-LIBC=$(aarch64-linux-gnu-gcc -print-file-name=libc.so.6)
+SYSROOT=$("${GCC_PREFIX}-gcc" -print-sysroot)
+LIBC=$("${GCC_PREFIX}-gcc" -print-file-name=libc.so.6)
 LD_LINUX="$SYSROOT$INTERP"
 
 if [[ ! -f "$LD_LINUX" ]]; then
@@ -32,6 +50,8 @@ fi
 
 install -Dm0755 "$app_dir/glibc-test" "$overlay_dir/usr/bin/glibc-test"
 install -Dm0755 "$app_dir/proc-self-exe-test" "$overlay_dir/usr/bin/proc-self-exe-test"
+install -Dm0755 "$app_dir/pthread-test" "$overlay_dir/usr/bin/pthread-test"
+install -Dm0755 "$app_dir/regex-test" "$overlay_dir/usr/bin/regex-test"
 install -Dm0755 "$app_dir/glibc-test.sh" "$overlay_dir/usr/bin/glibc-test.sh"
 install -Dm0755 "$LD_LINUX" "$overlay_dir/$INTERP"
 install -Dm0755 "$LIBC" "$overlay_dir/lib/libc.so.6"

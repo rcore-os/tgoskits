@@ -4,42 +4,47 @@
 
 ## 当前状态
 
-**aarch64 glibc 动态链接：PASS**
+**三架构 glibc 动态链接：全部 PASS**
 
-```
-glibc dynamic test OK
-GLIBC_TEST_DONE RC=0
-/proc/self/exe -> /usr/bin/proc-self-exe-test
-PROC_SELF_EXE_TEST_DONE RC=0
-```
+| 架构 | glibc-test | proc-self-exe | pthread | regex |
+|------|------------|---------------|---------|-------|
+| aarch64 | PASS | PASS | PASS | PASS |
+| riscv64 | PASS | PASS | PASS | PASS |
+| x86_64 | PASS | PASS | PASS | PASS |
 
 ## Blocker 列表
 
-无 blocker。glibc 基础动态链接和 /proc/self/exe 在 aarch64 上正常工作。
+无 blocker。glibc 动态链接、/proc/self/exe、pthread、regex 在三架构上均正常工作。
 
 ## 已验证
 
-| 项目 | 状态 | 说明 |
-|------|------|------|
-| glibc dynamic test | PASS | 最小 printf 程序正常运行 |
-| /proc/self/exe | PASS | readlink 正常返回可执行文件路径 |
-| ld-linux-aarch64.so.1 | PASS | glibc dynamic linker 正常加载 |
-| libc.so.6 | PASS | glibc C library 正常链接 |
+| 项目 | aarch64 | riscv64 | x86_64 |
+|------|---------|---------|--------|
+| glibc dynamic test | PASS | PASS | PASS |
+| /proc/self/exe | PASS | PASS | PASS |
+| pthread | PASS | PASS | PASS |
+| regex | PASS | PASS | PASS |
+| ld-linux | PASS | PASS | PASS |
+| libc.so.6 | PASS | PASS | PASS |
 
 ## 待验证
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| riscv64 glibc | 未测试 | 需要 riscv64 glibc 交叉编译工具链 |
-| x86_64 glibc | 未测试 | 需要 x86_64 glibc 交叉编译工具链 |
+| dlopen/dlsym | 未测试 | 需要动态库文件 |
+| C++ exception | 未测试 | 需要 C++ 编译器 |
+| locale | 未测试 | 需要 locale 数据 |
+| Debian rootfs | 未完成 | debootstrap 超时，需网络优化 |
 
 ## 与 dynamic musl 的对比
 
 | 项目 | dynamic musl | debian glibc |
 |------|-------------|--------------|
 | aarch64 | PASS | PASS |
-| riscv64 | PASS | 未测试 |
-| x86_64 | PASS | 未测试 |
-| interpreter | `/lib/ld-musl-*.so.1` | `/lib/ld-linux-aarch64.so.1` |
+| riscv64 | PASS | PASS |
+| x86_64 | PASS | PASS |
+| interpreter | `/lib/ld-musl-*.so.1` | `/lib/ld-linux-*.so.*` |
 | libc | `libc.musl-*.so.1` | `libc.so.6` |
 | procfs 依赖 | 无 | /proc/self/exe PASS |
+| pthread | N/A | PASS |
+| regex | N/A | PASS |
