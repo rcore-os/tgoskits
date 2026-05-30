@@ -3,7 +3,7 @@
 # Called by build.rs files; idempotent — builds only once.
 set -euo pipefail
 
-CLAW_REPO="https://github.com/ultraworkers/claw-code"
+CLAW_REPO="https://github.com/MuZhao2333/claw-code"
 CACHE_DIR="${CLAW_CACHE_DIR:-${HOME}/.cache/claw-code-build}"
 CLAW_SRC="$CACHE_DIR/repo"
 # Statically-linked musl binary so it runs inside Alpine-based StarryOS rootfs.

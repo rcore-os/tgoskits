@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CLAW_REPO="https://github.com/ultraworkers/claw-code"
+CLAW_REPO="https://github.com/MuZhao2333/claw-code"
 CACHE_DIR="${CLAW_CACHE_DIR:-${HOME}/.cache/claw-code-build}"
 CLAW_SRC="$CACHE_DIR/repo"
 TARGET="x86_64-unknown-linux-musl"
