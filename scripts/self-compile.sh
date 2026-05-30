@@ -60,6 +60,7 @@ case "$ARCH" in
         QEMU_CPU="rv64"
         QEMU_EXTRA=""  # extra flags appended after -cpu
         QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     x86_64)
         TARGET="x86_64-unknown-none"
@@ -74,6 +75,7 @@ case "$ARCH" in
             info "KVM not available — using TCG emulation (will be slow)"
         fi
         QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     aarch64)
         TARGET="aarch64-unknown-none-softfloat"
@@ -82,6 +84,7 @@ case "$ARCH" in
         QEMU_CPU="cortex-a72"
         QEMU_EXTRA=""
         QEMU_BLK_DEV="virtio-blk-device,drive=disk0"
+        QEMU_NET_DEV="virtio-net-device,netdev=net0"
         ;;
     *)
         error "Unsupported arch: $ARCH (valid: riscv64, x86_64, aarch64)"
@@ -178,7 +181,7 @@ echo "BUILD_START"
 		# Direct output to serial console (TTY = line-buffered cargo)
 		cargo build --ignore-rust-version -p starryos \
 		            --target ${TARGET} \
-		            --features qemu,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
+		            --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
 		            --offline
 		BUILD_RC=\$?
 		kill \$HEARTBEAT_PID 2>/dev/null || true
@@ -272,7 +275,7 @@ spawn $QEMU_BIN \
     -kernel $SEED_KERNEL \
     -device $QEMU_BLK_DEV \
     -drive id=disk0,if=none,format=raw,file=$ROOTFS_IMG,file.locking=off \
-    -device virtio-net-pci,netdev=net0 \
+    -device $QEMU_NET_DEV \
     -netdev user,id=net0
 
 # Wait for the StarryOS shell prompt
