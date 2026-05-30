@@ -31,7 +31,7 @@ sh apps/starry/pip/test_pip.sh
 
 ## 工作原理
 
-1. `prebuild.sh` 被 xtask 框架调用，使用宿主机 `apk --root` 在 staging rootfs 中安装 `python3 py3-pip`
+1. `prebuild.sh` 被 xtask 框架调用，通过 `qemu-user-static` 在 staging rootfs 中执行 Alpine 原生 `apk` 安装 `python3 py3-pip`（使用 `--no-scripts` 跳过 busybox trigger）
 2. 通过 `readelf` 解析运行时依赖并复制到 overlay
 3. `test_pip.sh` 被复制到 overlay 的 `/usr/bin/`
 4. overlay 被注入到 rootfs 镜像中

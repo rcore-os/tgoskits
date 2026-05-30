@@ -118,7 +118,7 @@ next "pip-download"
 CACHE_DIR="$(pip cache dir 2>&1)" || fail "pip cache dir"
 echo "cache dir: $CACHE_DIR"
 pip cache info 2>&1 || fail "pip cache info"
-pip install --no-cache-dir --force-reinstall --cache-dir=/tmp/pip-cache-dir pyfiglet 2>&1 || fail "pip install with custom cache dir"
+pip install --force-reinstall --cache-dir=/tmp/pip-cache-dir pyfiglet 2>&1 || fail "pip install with custom cache dir"
 test -d /tmp/pip-cache-dir || fail "custom cache dir not created"
 pip cache purge 2>&1 || true
 next "pip-cache"
