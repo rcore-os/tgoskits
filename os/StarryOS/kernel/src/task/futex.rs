@@ -409,7 +409,17 @@ impl FutexKey {
     }
 
     /// Shortcut to create a `FutexKey` for the current task's address space.
+    ///
+    /// Private futex keys do not need the VMA walk — they resolve to the
+    /// process‑local futex table regardless of the backing VMA.  Skipping
+    /// the aspace lock for `Private` avoids contention with the mmap/munmap
+    /// paths that also hold the aspace lock across long page-table operations,
+    /// which could otherwise deadlock with concurrent CLONE_THREAD futex
+    /// wait/wake pairs.
     pub fn new_current(address: usize, mode: FutexKeyMode) -> Self {
+        if matches!(mode, FutexKeyMode::Private) {
+            return Self::Private { address };
+        }
         let curr = current();
         let aspace_arc = curr.as_thread().proc_data.aspace();
         let aspace = aspace_arc.lock();
