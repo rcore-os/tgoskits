@@ -51,6 +51,7 @@ fp-simd = [
     "ax-plat-x86-qemu-q35?/fp-simd",
     "axplat-dyn?/fp-simd",
 ]
+xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
 rtc = [
     "ax-plat-x86-pc?/rtc",
     "ax-plat-aarch64-qemu-virt?/rtc",
