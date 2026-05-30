@@ -19,6 +19,7 @@ use log::warn;
 use crate::{
     DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
     NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, TypeMap, VfsError, VfsResult,
+    XattrSetFlags,
     path::{DOT, DOTDOT, PathBuf},
 };
 
@@ -474,6 +475,28 @@ impl Location {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry.update_metadata(update)
+    }
+
+    pub fn list_xattrs(&self) -> VfsResult<Vec<String>> {
+        self.entry.list_xattrs()
+    }
+
+    pub fn get_xattr(&self, name: &str) -> VfsResult<Vec<u8>> {
+        self.entry.get_xattr(name)
+    }
+
+    pub fn set_xattr(&self, name: &str, value: &[u8], flags: XattrSetFlags) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.set_xattr(name, value, flags)
+    }
+
+    pub fn remove_xattr(&self, name: &str) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.remove_xattr(name)
     }
 
     /// Returns the entry name.

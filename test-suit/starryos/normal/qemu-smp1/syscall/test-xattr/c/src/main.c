@@ -1,269 +1,229 @@
-// xattr 系统调用测试 — StarryOS
-//
-// 背景: pip uninstall 跨文件系统移动文件 (ext4 → tmpfs) 时,
-// shutil.copy2() → copystat() → _copyxattr() 会调用
-// listxattr / getxattr / setxattr, 因此内核必须处理这些调用,
-// 即使 rsext4 不支持扩展属性。
-//
-// 测试策略:
-//   1. listxattr → 返回 0 (空列表)
-//   2. getxattr → 返回 -1, errno=ENODATA
-//   3. setxattr → EOPNOTSUPP (StarryOS) 或 0 (Linux ext4)
-//   4. removexattr → EOPNOTSUPP (StarryOS) 或 0 (Linux ext4)
-//   5. fd 变体: flistxattr / fgetxattr / fsetxattr / fremovexattr
-//   6. 跨文件系统复制模拟 (pip uninstall 场景)
-//   7. 一致性: list→get/set 模式 (防止只更新部分 stub)
-
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
-#define TEST_FILE "/root/test-xattr-file.txt"
+#define TMP_FILE "/tmp/test-xattr-file.txt"
+#define TMP_LINK "/tmp/test-xattr-link.txt"
+#define TMP_DST "/tmp/test-xattr-dst.txt"
+#define ROOT_FILE "/root/test-xattr-file.txt"
 
-// 探测文件系统是否支持扩展属性。
-// Linux ext4: setxattr 返回 0; StarryOS rsext4: 返回 EOPNOTSUPP。
-// TODO: xattr stub — rsext4 没有扩展属性, 未完全实现。
-static int probe_xattr_support(const char *path) {
-    int rc = setxattr(path, "user.probe", "x", 1, 0);
-    if (rc == 0) {
-        removexattr(path, "user.probe");
-        return 1;  // 支持 xattr
+static int create_file(const char *path, const char *data) {
+    unlink(path);
+    int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    CHECK(fd >= 0, "create test file");
+    if (fd < 0) {
+        return -1;
     }
-    return 0;  // 不支持 xattr (EOPNOTSUPP)
+    ssize_t len = (ssize_t)strlen(data);
+    CHECK_RET(write(fd, data, (size_t)len), len, "write test file");
+    close(fd);
+    return 0;
+}
+
+static int list_has_name(const char *list, ssize_t len, const char *needle) {
+    ssize_t off = 0;
+    while (off < len) {
+        const char *name = list + off;
+        size_t n = strlen(name);
+        if (n == 0) {
+            return 0;
+        }
+        if (strcmp(name, needle) == 0) {
+            return 1;
+        }
+        off += (ssize_t)n + 1;
+    }
+    return 0;
+}
+
+static void check_value(const char *path, const char *name, const char *expected) {
+    char buf[64];
+    ssize_t len = (ssize_t)strlen(expected);
+    memset(buf, 0, sizeof(buf));
+    CHECK_RET(getxattr(path, name, NULL, 0), len, "getxattr size query");
+    CHECK_RET(getxattr(path, name, buf, sizeof(buf)), len, "getxattr value");
+    CHECK(memcmp(buf, expected, (size_t)len) == 0, "getxattr value bytes");
+}
+
+static void check_fd_value(int fd, const char *name, const char *expected) {
+    char buf[64];
+    ssize_t len = (ssize_t)strlen(expected);
+    memset(buf, 0, sizeof(buf));
+    CHECK_RET(fgetxattr(fd, name, NULL, 0), len, "fgetxattr size query");
+    CHECK_RET(fgetxattr(fd, name, buf, sizeof(buf)), len, "fgetxattr value");
+    CHECK(memcmp(buf, expected, (size_t)len) == 0, "fgetxattr value bytes");
+}
+
+static void test_tmpfs_xattrs(void) {
+    CHECK(create_file(TMP_FILE, "tmpfs xattr\n") == 0, "prepare tmpfs file");
+
+    CHECK_RET(listxattr(TMP_FILE, NULL, 0), 0, "empty tmpfs xattr list");
+    CHECK_ERR(getxattr(TMP_FILE, "user.alpha", NULL, 0), ENODATA,
+              "missing tmpfs xattr returns ENODATA");
+
+    CHECK_RET(setxattr(TMP_FILE, "user.alpha", "first", 5, XATTR_CREATE), 0,
+              "setxattr creates user.alpha");
+    check_value(TMP_FILE, "user.alpha", "first");
+
+    CHECK_ERR(setxattr(TMP_FILE, "user.alpha", "again", 5, XATTR_CREATE), EEXIST,
+              "XATTR_CREATE rejects existing attr");
+    CHECK_ERR(setxattr(TMP_FILE, "user.missing", "x", 1, XATTR_REPLACE), ENODATA,
+              "XATTR_REPLACE rejects missing attr");
+
+    CHECK_RET(setxattr(TMP_FILE, "user.alpha", "second", 6, XATTR_REPLACE), 0,
+              "XATTR_REPLACE updates existing attr");
+    check_value(TMP_FILE, "user.alpha", "second");
+
+    int fd = open(TMP_FILE, O_RDWR);
+    CHECK(fd >= 0, "open tmpfs file for fd xattr");
+    if (fd >= 0) {
+        CHECK_RET(fsetxattr(fd, "user.beta", "fd", 2, XATTR_CREATE), 0,
+                  "fsetxattr creates user.beta");
+        check_fd_value(fd, "user.beta", "fd");
+
+        char names[128];
+        ssize_t expected = (ssize_t)(strlen("user.alpha") + 1 + strlen("user.beta") + 1);
+        memset(names, 0, sizeof(names));
+        CHECK_RET(flistxattr(fd, names, sizeof(names)), expected,
+                  "flistxattr returns both names");
+        CHECK(list_has_name(names, expected, "user.alpha"), "flistxattr contains user.alpha");
+        CHECK(list_has_name(names, expected, "user.beta"), "flistxattr contains user.beta");
+        close(fd);
+    }
+
+    char names[128];
+    ssize_t expected = (ssize_t)(strlen("user.alpha") + 1 + strlen("user.beta") + 1);
+    memset(names, 0, sizeof(names));
+    CHECK_RET(listxattr(TMP_FILE, NULL, 0), expected, "listxattr size query");
+    CHECK_RET(listxattr(TMP_FILE, names, sizeof(names)), expected, "listxattr names");
+    CHECK(list_has_name(names, expected, "user.alpha"), "listxattr contains user.alpha");
+    CHECK(list_has_name(names, expected, "user.beta"), "listxattr contains user.beta");
+
+    char small[1];
+    CHECK_ERR(listxattr(TMP_FILE, small, sizeof(small)), ERANGE,
+              "listxattr rejects too-small buffer");
+    CHECK_ERR(getxattr(TMP_FILE, "user.alpha", small, sizeof(small)), ERANGE,
+              "getxattr rejects too-small buffer");
+
+    CHECK_RET(lsetxattr(TMP_FILE, "user.gamma", "link", 4, XATTR_CREATE), 0,
+              "lsetxattr works on regular file");
+    CHECK_RET(lgetxattr(TMP_FILE, "user.gamma", NULL, 0), 4,
+              "lgetxattr reads regular file attr");
+    CHECK_RET(lremovexattr(TMP_FILE, "user.gamma"), 0,
+              "lremovexattr removes regular file attr");
+
+    unlink(TMP_LINK);
+    CHECK_RET(symlink(TMP_FILE, TMP_LINK), 0, "create symlink for l* xattr");
+    CHECK_RET(lsetxattr(TMP_LINK, "user.symlink", "ln", 2, XATTR_CREATE), 0,
+              "lsetxattr stores attr on symlink itself");
+    CHECK_RET(lgetxattr(TMP_LINK, "user.symlink", NULL, 0), 2,
+              "lgetxattr sees symlink attr");
+    CHECK_ERR(getxattr(TMP_LINK, "user.symlink", NULL, 0), ENODATA,
+              "getxattr follows symlink to target");
+    CHECK_RET(lremovexattr(TMP_LINK, "user.symlink"), 0,
+              "lremovexattr removes symlink attr");
+    unlink(TMP_LINK);
+
+    CHECK_ERR(setxattr(TMP_FILE, "user.badflags", "x", 1,
+                       XATTR_CREATE | XATTR_REPLACE),
+              EINVAL, "setxattr rejects CREATE|REPLACE");
+    CHECK_ERR(setxattr(TMP_FILE, "security.bad", "x", 1, 0), EOPNOTSUPP,
+              "setxattr rejects unsupported namespace");
+    CHECK_ERR(setxattr(TMP_FILE, "", "x", 1, 0), ERANGE,
+              "setxattr rejects empty name");
+
+#ifdef O_PATH
+    int path_fd = open(TMP_FILE, O_PATH);
+    CHECK(path_fd >= 0, "open tmpfs file with O_PATH");
+    if (path_fd >= 0) {
+        CHECK_ERR(flistxattr(path_fd, NULL, 0), EBADF, "flistxattr rejects O_PATH fd");
+        CHECK_ERR(fgetxattr(path_fd, "user.alpha", NULL, 0), EBADF,
+                  "fgetxattr rejects O_PATH fd");
+        CHECK_ERR(fsetxattr(path_fd, "user.path", "x", 1, 0), EBADF,
+                  "fsetxattr rejects O_PATH fd");
+        CHECK_ERR(fremovexattr(path_fd, "user.alpha"), EBADF,
+                  "fremovexattr rejects O_PATH fd");
+        close(path_fd);
+    }
+#endif
+
+    CHECK_RET(removexattr(TMP_FILE, "user.alpha"), 0, "removexattr removes user.alpha");
+    CHECK_ERR(getxattr(TMP_FILE, "user.alpha", NULL, 0), ENODATA,
+              "removed xattr is gone");
+    CHECK_ERR(removexattr(TMP_FILE, "user.alpha"), ENODATA,
+              "removing missing tmpfs xattr returns ENODATA");
+
+    fd = open(TMP_FILE, O_RDWR);
+    CHECK(fd >= 0, "open tmpfs file for fremovexattr");
+    if (fd >= 0) {
+        CHECK_RET(fremovexattr(fd, "user.beta"), 0, "fremovexattr removes user.beta");
+        close(fd);
+    }
+    CHECK_RET(listxattr(TMP_FILE, NULL, 0), 0, "tmpfs xattr list is empty after removal");
+}
+
+static void test_copyxattr_pattern(void) {
+    CHECK(create_file(TMP_FILE, "copy source\n") == 0, "prepare copy source");
+    CHECK(create_file(TMP_DST, "copy destination\n") == 0, "prepare copy destination");
+
+    CHECK_RET(setxattr(TMP_FILE, "user.copy", "payload", 7, XATTR_CREATE), 0,
+              "source xattr created");
+
+    char names[128];
+    char value[128];
+    ssize_t names_len = listxattr(TMP_FILE, names, sizeof(names));
+    CHECK(names_len > 0, "copy source has xattr names");
+
+    ssize_t off = 0;
+    int copied = 1;
+    while (off < names_len) {
+        const char *name = names + off;
+        size_t name_len = strlen(name);
+        if (name_len == 0) {
+            copied = 0;
+            break;
+        }
+        ssize_t value_len = getxattr(TMP_FILE, name, value, sizeof(value));
+        if (value_len < 0 || setxattr(TMP_DST, name, value, (size_t)value_len, 0) != 0) {
+            copied = 0;
+            break;
+        }
+        off += (ssize_t)name_len + 1;
+    }
+
+    CHECK(copied, "copyxattr-style loop copies tmpfs attrs");
+    check_value(TMP_DST, "user.copy", "payload");
+}
+
+static void test_unsupported_rootfs_xattrs(void) {
+    CHECK(create_file(ROOT_FILE, "rootfs xattr\n") == 0, "prepare rootfs file");
+
+    CHECK_RET(listxattr(ROOT_FILE, NULL, 0), 0,
+              "unsupported rootfs keeps listxattr empty");
+    CHECK_ERR(getxattr(ROOT_FILE, "user.root", NULL, 0), ENODATA,
+              "unsupported rootfs getxattr returns ENODATA");
+    CHECK_ERR(setxattr(ROOT_FILE, "user.root", "x", 1, 0), EOPNOTSUPP,
+              "unsupported rootfs setxattr returns EOPNOTSUPP");
+    CHECK_ERR(removexattr(ROOT_FILE, "user.root"), EOPNOTSUPP,
+              "unsupported rootfs removexattr returns EOPNOTSUPP");
 }
 
 int main(void) {
     TEST_START("xattr syscalls");
 
-    // 在 ext4 (/root) 上创建测试文件
-    int fd = open(TEST_FILE, O_CREAT | O_WRONLY, 0644);
-    CHECK(fd >= 0, "创建测试文件");
-    if (fd < 0) {
-        TEST_DONE();
-    }
-    write(fd, "xattr test\n", 11);
-    close(fd);
+    test_tmpfs_xattrs();
+    test_copyxattr_pattern();
+    test_unsupported_rootfs_xattrs();
 
-    int xattr_supported = probe_xattr_support(TEST_FILE);
-
-    // ============================================================
-    // 1. listxattr — 路径方式
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 始终返回 0。
-    CHECK_RET(listxattr(TEST_FILE, NULL, 0), 0,
-              "listxattr(NULL, 0) 返回 0");
-
-    {
-        char buf[256];
-        memset(buf, 0x42, sizeof(buf));
-        // TODO: xattr stub — rsext4 没有扩展属性, 返回 0。
-        ssize_t sz = listxattr(TEST_FILE, buf, sizeof(buf));
-        CHECK_RET(sz, 0, "listxattr(buf, 256) 返回 0");
-        // 验证缓冲区未被修改 (没有写入任何属性名)
-        CHECK(buf[0] == 0x42, "listxattr 未修改缓冲区 (无属性)");
-    }
-
-    // ============================================================
-    // 2. listxattr — fd 方式 (flistxattr)
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 始终返回 0。
-    fd = open(TEST_FILE, O_RDONLY);
-    CHECK(fd >= 0, "打开文件用于 flistxattr");
-    if (fd >= 0) {
-        CHECK_RET(flistxattr(fd, NULL, 0), 0,
-                  "flistxattr(NULL, 0) 返回 0");
-        close(fd);
-    }
-
-    // ============================================================
-    // 3. getxattr — 路径方式
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 返回 ENODATA。
-    {
-        char buf[256];
-        ssize_t sz = getxattr(TEST_FILE, "user.test", buf, sizeof(buf));
-        CHECK_RET(sz, -1, "getxattr 返回 -1");
-        CHECK_ERR(getxattr(TEST_FILE, "user.test", buf, sizeof(buf)),
-                  ENODATA, "getxattr errno=ENODATA");
-    }
-
-    // ============================================================
-    // 4. getxattr — fd 方式 (fgetxattr)
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 返回 ENODATA。
-    fd = open(TEST_FILE, O_RDONLY);
-    CHECK(fd >= 0, "打开文件用于 fgetxattr");
-    if (fd >= 0) {
-        char buf[256];
-        CHECK_ERR(fgetxattr(fd, "user.test", buf, sizeof(buf)),
-                  ENODATA, "fgetxattr errno=ENODATA");
-        close(fd);
-    }
-
-    // ============================================================
-    // 5. setxattr — 路径方式
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 返回 EOPNOTSUPP。
-    if (xattr_supported) {
-        CHECK_RET(setxattr(TEST_FILE, "user.test", "value", 5, 0), 0,
-                  "setxattr 返回 0 (支持 xattr)");
-    } else {
-        CHECK_ERR(setxattr(TEST_FILE, "user.test", "value", 5, 0),
-                  EOPNOTSUPP, "setxattr errno=EOPNOTSUPP");
-    }
-
-    // ============================================================
-    // 6. setxattr — fd 方式 (fsetxattr)
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 返回 EOPNOTSUPP。
-    fd = open(TEST_FILE, O_RDONLY);
-    CHECK(fd >= 0, "打开文件用于 fsetxattr");
-    if (fd >= 0) {
-        if (xattr_supported) {
-            CHECK_RET(fsetxattr(fd, "user.test", "value", 5, 0), 0,
-                      "fsetxattr 返回 0 (支持 xattr)");
-        } else {
-            CHECK_ERR(fsetxattr(fd, "user.test", "value", 5, 0),
-                      EOPNOTSUPP, "fsetxattr errno=EOPNOTSUPP");
-        }
-        close(fd);
-    }
-
-    // ============================================================
-    // 7. removexattr — 路径方式
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 返回 EOPNOTSUPP。
-    if (xattr_supported) {
-        CHECK_RET(removexattr(TEST_FILE, "user.test"), 0,
-                  "removexattr 返回 0 (支持 xattr)");
-    } else {
-        CHECK_ERR(removexattr(TEST_FILE, "user.test"),
-                  EOPNOTSUPP, "removexattr errno=EOPNOTSUPP");
-    }
-
-    // ============================================================
-    // 8. removexattr — fd 方式 (fremovexattr)
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性, 返回 EOPNOTSUPP。
-    fd = open(TEST_FILE, O_RDONLY);
-    CHECK(fd >= 0, "打开文件用于 fremovexattr");
-    if (fd >= 0) {
-        if (xattr_supported) {
-            CHECK_RET(fremovexattr(fd, "user.test"), 0,
-                      "fremovexattr 返回 0 (支持 xattr)");
-        } else {
-            CHECK_ERR(fremovexattr(fd, "user.test"),
-                      EOPNOTSUPP, "fremovexattr errno=EOPNOTSUPP");
-        }
-        close(fd);
-    }
-
-    // ============================================================
-    // 9. 跨文件系统复制模拟 (pip uninstall 场景)
-    //
-    // shutil._copyxattr() 的模式:
-    //   names = listxattr(src)  → 返回 0 (空)
-    //   for name in names:      → 循环体不执行
-    //       getxattr(src, name)
-    //       setxattr(dst, name, value)
-    //
-    // 安全不变量: listxattr 返回 0 → 循环体不执行 →
-    //            setxattr 不被调用 → EOPNOTSUPP 不会被触发。
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性。
-    {
-        const char *dst = "/tmp/test-xattr-dst.txt";
-        int dfd = open(dst, O_CREAT | O_WRONLY, 0644);
-        if (dfd < 0) {
-            // /tmp 未挂载或其他错误
-            CHECK(0, "在 /tmp 上创建目标文件 (tmpfs 未挂载则跳过)");
-        } else {
-            close(dfd);
-
-            // 步骤 1: listxattr(src) → 必须返回 0
-            char names[256];
-            ssize_t nsz = listxattr(TEST_FILE, names, sizeof(names));
-            CHECK_RET(nsz, 0, "跨 fs: listxattr(src) 返回 0");
-
-            // 步骤 2: xattr 复制循环 (nsz == 0, 循环体跳过)
-            int copy_ok = 1;
-            ssize_t off = 0;
-            while (off < nsz) {
-                const char *name = names + off;
-                ssize_t nlen = strlen(name);
-                if (nlen == 0) break;
-
-                char val[4096];
-                ssize_t vsz = getxattr(TEST_FILE, name, val, sizeof(val));
-                if (vsz < 0) {
-                    copy_ok = 0;
-                    break;
-                }
-                if (setxattr(dst, name, val, vsz, 0) < 0) {
-                    copy_ok = 0;
-                    break;
-                }
-                off += nlen + 1;
-            }
-            CHECK(copy_ok, "跨 fs: xattr 复制循环成功 (循环体跳过)");
-
-            // 步骤 3: 验证目标无属性
-            ssize_t dsz = listxattr(dst, NULL, 0);
-            CHECK_RET(dsz, 0, "跨 fs: dst listxattr == 0");
-
-            unlink(dst);
-        }
-    }
-
-    // ============================================================
-    // 10. 一致性测试: list → get/set 模式
-    //
-    // 确保 xattr stub 保持一致。如果有人将 listxattr 改为返回实际
-    // 属性名, 则必须同时更新:
-    //   - getxattr 返回实际值 (不是 ENODATA)
-    //   - setxattr 实际写入 (不是 EOPNOTSUPP)
-    //   - removexattr 实际删除 (不是 EOPNOTSUPP)
-    //
-    // 当前 stub: listxattr 返回 0, 步骤 b/c 被跳过。
-    // 若 listxattr 被更新但 getxattr/setxattr 未更新, 测试仍会通过
-    // (步骤 b/c 执行但优雅失败)。CI 审查时应检查全部 12 个 stub。
-    // ============================================================
-    // TODO: xattr stub — rsext4 没有扩展属性。
-    {
-        char names[256];
-        ssize_t nsz = listxattr(TEST_FILE, names, sizeof(names));
-        CHECK_RET(nsz, 0, "一致性: listxattr 返回 0");
-
-        // 若 listxattr 未来返回 > 0, 以下必须同时工作:
-        if (nsz > 0) {
-            // 遍历 null 结尾的属性名列表
-            ssize_t off = 0;
-            while (off < nsz) {
-                const char *name = names + off;
-                ssize_t nlen = strlen(name);
-                if (nlen == 0) break;
-
-                // getxattr 必须返回值, 而非 ENODATA
-                char val[4096];
-                ssize_t vsz = getxattr(TEST_FILE, name, val, sizeof(val));
-                CHECK(vsz >= 0,
-                      "一致性: getxattr 必须在 listxattr 返回属性名时成功");
-
-                // setxattr 必须成功, 而非 EOPNOTSUPP
-                int rc = setxattr(TEST_FILE, name, val, vsz, 0);
-                CHECK(rc == 0,
-                      "一致性: setxattr 必须在 listxattr 返回属性名时成功");
-
-                off += nlen + 1;
-            }
-        }
-    }
-
-    unlink(TEST_FILE);
+    unlink(TMP_FILE);
+    unlink(TMP_LINK);
+    unlink(TMP_DST);
+    unlink(ROOT_FILE);
 
     TEST_DONE();
 }
