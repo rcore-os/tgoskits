@@ -289,7 +289,7 @@ spawn $QEMU_BIN \
     -cpu $QEMU_CPU \
     $QEMU_EXTRA \
     -smp $SMP \
-    -m 8G \
+    -m 16G \
     -kernel $SEED_KERNEL \
     -device $QEMU_BLK_DEV \
     -drive id=disk0,if=none,format=raw,file=$ROOTFS_IMG,file.locking=off \
