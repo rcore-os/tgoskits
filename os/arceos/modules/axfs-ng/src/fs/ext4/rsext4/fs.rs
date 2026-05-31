@@ -1,7 +1,8 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
-use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
+use ax_hal;
+use ax_sync::{Mutex, MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
@@ -63,18 +64,28 @@ impl Ext4Filesystem {
 
     /// Locks the shared rsext4 state.
     ///
-    /// rsext4 operations may allocate, flush caches, commit journal state, and
-    /// call into the block device while this guard is held. The current rootfs
-    /// setup can also run in early atomic contexts where a blocking mutex trips
-    /// `might_sleep()`, so use `SpinNoIrq` instead of the older
-    /// `SpinNoPreempt` to close same-CPU IRQ reentry without changing the
-    /// boot-time calling contract.
+    /// In task context (IRQs enabled) this uses the blocking
+    /// `ax_sync::Mutex::lock`, sleeping on contention and freeing the
+    /// CPU for other tasks.  During boot / shutdown IRQs may still be
+    /// disabled — fall back to spinning with `try_lock` so that
+    /// `might_sleep()` does not panic.
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
-        self.inner.lock()
+        if ax_hal::asm::irqs_enabled() {
+            // Task context — sleep on contention.
+            self.inner.lock()
+        } else {
+            // Atomic context (boot / shutdown) — spin.
+            loop {
+                if let Some(guard) = self.inner.try_lock() {
+                    return guard;
+                }
+                core::hint::spin_loop();
+            }
+        }
     }
 
     pub(crate) fn sync_to_disk(&self) -> VfsResult<()> {
-        let mut state = self.inner.lock();
+        let mut state = self.lock();
         let (fs, dev) = state.split();
         fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
         fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;

@@ -149,27 +149,15 @@ export CARGO_HOME=/root/.cargo
 
 cd /opt/starryos
 
-# rsext4 has a stale-cache bug that makes directory-entry
-# writes invisible to subsequent lookups (ENOENT).  Move the
-# cargo registry to tmpfs (workspace stays on ext4 to save RAM).
-echo "[self-compile] Moving registry to tmpfs..."
-# --- workspace false/ for local crates (tiny, ~50 MB) ---
+# Pre-extracted registry sources from nspawn are readable by
+# rsext4 — cargo only needs READ access during compilation.
+# Local workspace crate dep-graph writes go to a tiny tmpfs
+# as defense-in-depth against any remaining cache edge cases.
+echo "[self-compile] Using pre-extracted registry sources"
 mkdir -p /opt/starryos/false
 if ! mountpoint -q /opt/starryos/false 2>/dev/null; then
     mount -t tmpfs -o size=100M none /opt/starryos/false
 fi
-
-
-	REGISTRY_SRC=/root/.cargo/registry/src
-if ! mountpoint -q "\$REGISTRY_SRC" 2>/dev/null; then
-    mkdir -p /tmp/.registry-src
-    cp -a "\$REGISTRY_SRC"/. /tmp/.registry-src/
-    mount -t tmpfs -o size=1500M none "\$REGISTRY_SRC"
-    cp -a /tmp/.registry-src/. "\$REGISTRY_SRC"/
-    rm -rf /tmp/.registry-src
-fi
-
-echo "[self-compile] Using tmpfs-backed registry"
 
 echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
@@ -292,7 +280,7 @@ spawn $QEMU_BIN \
     -m 16G \
     -kernel $SEED_KERNEL \
     -device $QEMU_BLK_DEV \
-    -drive id=disk0,if=none,format=raw,file=$ROOTFS_IMG,file.locking=off \
+    -drive id=disk0,if=none,format=raw,cache=writeback,file=$ROOTFS_IMG,file.locking=off \
     -device $QEMU_NET_DEV \
     -netdev user,id=net0
 
