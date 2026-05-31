@@ -154,6 +154,12 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Writes `count` blocks directly from `buffer` (bypasses the cache).
+    ///
+    /// After writing, any cache entries for the written block range are
+    /// invalidated so that a subsequent `read_block` does not return stale
+    /// (pre-write) data.  Without this, directory-entry modifications made
+    /// via `write_blocks` (DataBlockCache → `write_block_static`) can be
+    /// invisible to path lookups that go through `read_block`.
     pub fn write_blocks(
         &mut self,
         buffer: &[u8],
@@ -171,7 +177,26 @@ impl<B: BlockDevice> BlockDev<B> {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
 
-        self.dev.write(buffer, block_id, count)
+        self.dev.write(buffer, block_id, count)?;
+
+        // Invalidate cache entries that overlap with the written block range.
+        // Otherwise a subsequent `read_block` hit would return the old data.
+        for entry in self.entries.iter_mut() {
+            if let Some(id) = entry.block_id {
+                for off in 0..count {
+                    if let Ok(written) = block_id.checked_add(off) {
+                        if id == written {
+                            entry.block_id = None;
+                            entry.dirty = false;
+                            entry.referenced = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns the active buffer (read-only view of the last accessed block).

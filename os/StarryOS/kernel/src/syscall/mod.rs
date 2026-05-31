@@ -804,10 +804,14 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // dummy fds
         Sysno::userfaultfd
-        | Sysno::fsopen
-        | Sysno::fspick
-        | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
+
+        // New mount API — return ENOSYS so mount(8) falls back to
+        // the traditional mount(2) syscall (which is implemented).
+        Sysno::fsopen | Sysno::fspick | Sysno::open_tree => {
+            warn!("new mount API not supported (sysno={sysno}), returning ENOSYS for fallback");
+            Err(AxError::Unsupported)
+        }
 
         // io_uring: fake enough support so tokio 1.x creates its I/O
         // driver without panicking, then falls back to blocking I/O.
