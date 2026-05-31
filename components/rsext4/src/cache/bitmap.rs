@@ -13,6 +13,10 @@ use crate::{
     error::*,
 };
 
+/// Snapshot type for lock-free LRU eviction.
+/// `(lru_key, optional dirty data: (block_num, data))`
+type BitmapLruSnapshot = Option<(CacheKey, Option<(AbsoluteBN, Vec<u8>)>)>;
+
 /// Type of bitmap stored in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BitmapType {
@@ -118,16 +122,34 @@ impl BitmapCache {
         let mut inner = self.inner.lock();
 
         if !inner.cache.contains_key(&key) {
-            if inner.cache.len() >= inner.max_entries {
-                inner.evict_lru(block_dev)?;
+            // Phase 1: snapshot LRU eviction info while holding the lock.
+            let evict_info = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru()
+            } else {
+                None
+            };
+
+            drop(inner);
+
+            // Phase 2: do I/O without holding the spinlock.
+            if let Some((_lru_key, Some((lru_bn, ref lru_data)))) = evict_info {
+                Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
             }
 
             let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
             block_dev.read_blocks(&mut buf, block_num, 1)?;
-            let data = buf;
 
-            let bitmap = CachedBitmap::new(data, block_num);
-            inner.cache.insert(key, bitmap);
+            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            inner = self.inner.lock();
+
+            if let Some((lru_key, _)) = evict_info {
+                inner.cache.remove(&lru_key);
+            }
+
+            inner
+                .cache
+                .entry(key)
+                .or_insert_with(|| CachedBitmap::new(buf, block_num));
         }
 
         let new_counter = inner.access_counter + 1;
@@ -149,21 +171,36 @@ impl BitmapCache {
         let mut inner = self.inner.lock();
 
         if !inner.cache.contains_key(&key) {
-            if inner.cache.len() >= inner.max_entries {
-                inner.evict_lru(block_dev)?;
+            // Phase 1: snapshot LRU eviction info while holding the lock.
+            let evict_info = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru()
+            } else {
+                None
+            };
+
+            drop(inner);
+
+            // Phase 2: do I/O without holding the spinlock.
+            if let Some((_lru_key, Some((lru_bn, ref lru_data)))) = evict_info {
+                Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
             }
 
-            // Drop lock during I/O for concurrency.
-            drop(inner);
             let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
             block_dev.read_blocks(&mut buf, block_num, 1)?;
+
+            // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
+
+            if let Some((lru_key, _)) = evict_info {
+                inner.cache.remove(&lru_key);
+            }
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
-            inner.cache.entry(key).or_insert_with(|| {
-                CachedBitmap::new(buf, block_num)
-            });
+            inner
+                .cache
+                .entry(key)
+                .or_insert_with(|| CachedBitmap::new(buf, block_num));
         }
 
         let new_counter = inner.access_counter + 1;
@@ -305,18 +342,27 @@ pub struct CacheStats {
 // ── Inner methods (caller holds `self.inner.lock()`) ─────────────────────────
 
 impl BitmapCacheInner {
-    /// Evicts the least recently used bitmap, flushing it first if needed.
-    fn evict_lru<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    /// Snapshots the LRU bitmap for lock-free eviction.
+    ///
+    /// Returns `Some(lru_key, Some(data))` when dirty, `Some(lru_key, None)` when
+    /// clean, `None` when the cache is empty.  The caller must do the I/O
+    /// *without* holding the spinlock, then re-lock and remove `lru_key`.
+    fn snapshot_lru(&self) -> BitmapLruSnapshot {
         let lru_key = self
             .cache
             .iter()
             .min_by_key(|(_, bitmap)| bitmap.last_access)
-            .map(|(key, _)| *key);
+            .map(|(key, _)| *key)?;
 
-        if let Some(key) = lru_key {
-            self.do_evict(block_dev, &key)?;
-        }
-        Ok(())
+        let dirty_info = self.cache.get(&lru_key).and_then(|bitmap| {
+            if bitmap.dirty {
+                Some((bitmap.block_num, bitmap.data.clone()))
+            } else {
+                None
+            }
+        });
+
+        Some((lru_key, dirty_info))
     }
 
     fn do_evict<B: BlockDevice>(

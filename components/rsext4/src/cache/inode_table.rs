@@ -13,6 +13,10 @@ use crate::{
     error::*,
 };
 
+/// Snapshot type for lock-free LRU eviction.
+/// `(lru_key, optional dirty data: (block_num, offset, data))`
+type InodeLruSnapshot = Option<(InodeNumber, Option<(AbsoluteBN, usize, Vec<u8>)>)>;
+
 /// Cache key for one global inode number.
 pub type InodeCacheKey = InodeNumber;
 
@@ -173,13 +177,36 @@ impl InodeCache {
 
         // Load the inode from disk on the first cache miss.
         if !inner.cache.contains_key(&inode_num) {
-            if inner.cache.len() >= inner.max_entries {
-                inner.evict_lru(block_dev)?;
+            // Phase 1: snapshot LRU eviction info while holding the lock.
+            let evict_info = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru()
+            } else {
+                None
+            };
+
+            drop(inner);
+
+            // Phase 2: do I/O without holding the spinlock so other cores can
+            // make progress on cache hits.
+            if let Some((_lru_key, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
+                Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
             }
 
             let inode = self.load_inode(block_dev, block_num, offset)?;
-            let cached = CachedInode::new(inode, inode_num, block_num, offset);
-            inner.cache.insert(inode_num, cached);
+
+            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            inner = self.inner.lock();
+
+            if let Some((lru_key, _)) = evict_info {
+                inner.cache.remove(&lru_key);
+            }
+
+            // Use or_insert_with to avoid TOCTOU: another thread may have
+            // inserted the same key while we had no lock.
+            inner
+                .cache
+                .entry(inode_num)
+                .or_insert_with(|| CachedInode::new(inode, inode_num, block_num, offset));
         }
 
         // Refresh the LRU timestamp on every access.
@@ -208,20 +235,35 @@ impl InodeCache {
 
         // Load the inode from disk on the first mutable cache miss.
         if !inner.cache.contains_key(&inode_num) {
-            if inner.cache.len() >= inner.max_entries {
-                inner.evict_lru(block_dev)?;
+            // Phase 1: snapshot LRU eviction info while holding the lock.
+            let evict_info = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru()
+            } else {
+                None
+            };
+
+            drop(inner);
+
+            // Phase 2: do I/O without holding the spinlock.
+            if let Some((_lru_key, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
+                Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
             }
 
-            // Drop the lock during I/O to allow concurrent cache accesses
-            drop(inner);
             let inode = self.load_inode(block_dev, block_num, offset)?;
+
+            // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
+
+            if let Some((lru_key, _)) = evict_info {
+                inner.cache.remove(&lru_key);
+            }
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
-            inner.cache.entry(inode_num).or_insert_with(|| {
-                CachedInode::new(inode, inode_num, block_num, offset)
-            });
+            inner
+                .cache
+                .entry(inode_num)
+                .or_insert_with(|| CachedInode::new(inode, inode_num, block_num, offset));
         }
 
         // Refresh the LRU timestamp before returning the mutable handle.
@@ -368,7 +410,7 @@ impl InodeCache {
         let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
         buf[offset..offset + data.len()].copy_from_slice(data);
-        block_dev.write_blocks(&buf, block_num, 1, false)?;
+        block_dev.write_blocks(&buf, block_num, 1, true)?; // is_metadata: inode table blocks are filesystem metadata
         Ok(())
     }
 }
@@ -384,32 +426,30 @@ pub struct InodeCacheStats {
 // ── Inner methods (caller holds `self.inner.lock()`) ─────────────────────────
 
 impl InodeCacheInner {
-    /// Evicts the least recently used inode, flushing it first if needed.
-    fn evict_lru<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    /// Snapshots the LRU entry for lock-free eviction.
+    ///
+    /// Returns `(lru_key, dirty_write_info)` where `dirty_write_info` is
+    /// `Some((block_num, offset, data))` when the entry is dirty and must be
+    /// flushed to disk before eviction.  The caller must do the I/O
+    /// *without* holding the spinlock, then re-lock and remove `lru_key`.
+    fn snapshot_lru(&self) -> InodeLruSnapshot {
         let lru_key = self
             .cache
             .iter()
             .min_by_key(|(_, cached)| cached.last_access)
-            .map(|(key, _)| *key);
+            .map(|(key, _)| *key)?;
 
-        if let Some(key) = lru_key {
-            // Drop the lock during synchronous I/O to avoid holding
-            // the spinlock across a potentially slow block-device call.
-            if let Some(cached) = self.cache.get(&key)
-                && cached.dirty
-            {
-                let block_num = cached.block_num;
-                let offset = cached.offset_in_block;
+        let dirty_info = self.cache.get(&lru_key).and_then(|cached| {
+            if cached.dirty {
                 let mut buf = alloc::vec![0u8; self.inode_size];
                 cached.inode.to_disk_bytes(&mut buf);
-                // We cannot drop the lock here because we need &mut self.
-                // Instead, do the write inline (the evict_lru path is rare).
-                InodeCache::write_inode_bytes_static(block_dev, block_num, offset, &buf)?;
+                Some((cached.block_num, cached.offset_in_block, buf))
+            } else {
+                None
             }
-            self.cache.remove(&key);
-        }
+        });
 
-        Ok(())
+        Some((lru_key, dirty_info))
     }
 
     fn do_evict<B: BlockDevice>(
@@ -488,7 +528,7 @@ impl InodeCacheInner {
                 idx += 1;
             }
 
-            block_dev.write_blocks(&buf, block_num, 1, false)?;
+            block_dev.write_blocks(&buf, block_num, 1, true)?; // is_metadata: inode table blocks are filesystem metadata
         }
 
         // All flushed entries are now clean.

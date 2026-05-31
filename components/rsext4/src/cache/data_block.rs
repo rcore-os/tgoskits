@@ -95,13 +95,33 @@ impl DataBlockCache {
         let mut inner = self.inner.lock();
 
         if !inner.cache.contains_key(&block_num) {
-            if inner.cache.len() >= inner.max_entries {
-                inner.evict_lru(block_dev)?;
+            // Phase 1: snapshot LRU eviction info while holding the lock.
+            let evict_info = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru()
+            } else {
+                None
+            };
+
+            drop(inner);
+
+            // Phase 2: do I/O without holding the spinlock.
+            if let Some((_lru_key, Some(ref lru_data))) = evict_info {
+                Self::write_block_static(block_dev, _lru_key, lru_data)?;
             }
 
             let data = self.load_block(block_dev, block_num)?;
-            let cached = CachedBlock::new(data, block_num);
-            inner.cache.insert(block_num, cached);
+
+            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            inner = self.inner.lock();
+
+            if let Some((lru_key, _)) = evict_info {
+                inner.cache.remove(&lru_key);
+            }
+
+            inner
+                .cache
+                .entry(block_num)
+                .or_insert_with(|| CachedBlock::new(data, block_num));
         }
 
         // Refresh the LRU timestamp.
@@ -127,20 +147,35 @@ impl DataBlockCache {
         let mut inner = self.inner.lock();
 
         if !inner.cache.contains_key(&block_num) {
-            if inner.cache.len() >= inner.max_entries {
-                inner.evict_lru(block_dev)?;
+            // Phase 1: snapshot LRU eviction info while holding the lock.
+            let evict_info = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru()
+            } else {
+                None
+            };
+
+            drop(inner);
+
+            // Phase 2: do I/O without holding the spinlock.
+            if let Some((_lru_key, Some(ref lru_data))) = evict_info {
+                Self::write_block_static(block_dev, _lru_key, lru_data)?;
             }
 
-            // Drop lock during I/O for concurrency.
-            drop(inner);
             let data = self.load_block(block_dev, block_num)?;
+
+            // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
+
+            if let Some((lru_key, _)) = evict_info {
+                inner.cache.remove(&lru_key);
+            }
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
-            inner.cache.entry(block_num).or_insert_with(|| {
-                CachedBlock::new(data, block_num)
-            });
+            inner
+                .cache
+                .entry(block_num)
+                .or_insert_with(|| CachedBlock::new(data, block_num));
         }
 
         let new_counter = inner.access_counter + 1;
@@ -175,12 +210,35 @@ impl DataBlockCache {
     ) -> Ext4Result<CachedBlock> {
         let mut inner = self.inner.lock();
 
-        if inner.cache.contains_key(&block_num) {
-            inner.do_evict(block_dev, block_num)?;
+        // Phase 1: snapshot eviction info while holding the lock.
+        // Two evictions may be needed: (a) the same block number from a
+        // previous incarnation, and (b) an LRU slot to stay within max_entries.
+        let evict_existing = inner.snapshot_block_for_evict(block_num);
+        let evict_lru_info = if inner.cache.len() >= inner.max_entries && evict_existing.is_none() {
+            // Only evict LRU if we did not already free a slot above.
+            inner.snapshot_lru()
+        } else {
+            None
+        };
+
+        drop(inner);
+
+        // Phase 2: do I/O without holding the spinlock.
+        if let Some(ref data) = evict_existing {
+            Self::write_block_static(block_dev, block_num, data)?;
+        }
+        if let Some((lru_key, Some(ref lru_data))) = evict_lru_info {
+            Self::write_block_static(block_dev, lru_key, lru_data)?;
         }
 
-        if inner.cache.len() >= inner.max_entries {
-            inner.evict_lru(block_dev)?;
+        // Phase 3: reacquire the lock and apply evictions + insertion.
+        inner = self.inner.lock();
+
+        if evict_existing.is_some() {
+            inner.cache.remove(&block_num);
+        }
+        if let Some((lru_key, _)) = evict_lru_info {
+            inner.cache.remove(&lru_key);
         }
 
         let data = alloc::vec![0u8; inner.block_size];
@@ -328,18 +386,41 @@ pub struct DataBlockCacheStats {
 // ── Inner methods (caller holds `self.inner.lock()`) ─────────────────────────
 
 impl DataBlockCacheInner {
-    /// Evicts the least recently used block, flushing it first if needed.
-    fn evict_lru<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+    /// Snapshots the LRU data block for lock-free eviction.
+    ///
+    /// Returns `Some(lru_key, Some(data))` when dirty, `Some(lru_key, None)` when
+    /// clean, `None` when the cache is empty.  The caller must do the I/O
+    /// *without* holding the spinlock, then re-lock and remove `lru_key`.
+    fn snapshot_lru(&self) -> Option<(AbsoluteBN, Option<Vec<u8>>)> {
         let lru_key = self
             .cache
             .iter()
             .min_by_key(|(_, cached)| cached.last_access)
-            .map(|(key, _)| *key);
+            .map(|(key, _)| *key)?;
 
-        if let Some(key) = lru_key {
-            self.do_evict(block_dev, key)?;
-        }
-        Ok(())
+        let dirty_data = self.cache.get(&lru_key).and_then(|cached| {
+            if cached.dirty {
+                Some(cached.data.clone())
+            } else {
+                None
+            }
+        });
+
+        Some((lru_key, dirty_data))
+    }
+
+    /// Snapshots a single block for lock-free eviction.
+    ///
+    /// Returns `Some(data)` when the block exists and is dirty, `None` when
+    /// the block does not exist or is clean.
+    fn snapshot_block_for_evict(&self, block_num: AbsoluteBN) -> Option<Vec<u8>> {
+        self.cache.get(&block_num).and_then(|cached| {
+            if cached.dirty {
+                Some(cached.data.clone())
+            } else {
+                None
+            }
+        })
     }
 
     fn do_evict<B: BlockDevice>(
