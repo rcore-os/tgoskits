@@ -94,7 +94,7 @@ indoc = "2"
 inherit-methods-macro = "0.1.0"
 ax-kernel-guard = { workspace = true }
 kernel-elf-parser = "0.3.4"
-ax-kspin = { workspace = true }
+ax-kspin = { workspace = true, features = ["lock_api"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",

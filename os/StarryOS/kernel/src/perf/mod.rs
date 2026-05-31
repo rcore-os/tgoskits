@@ -26,7 +26,7 @@ use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
-    linux_bpf::perf_event_attr,
+    linux_bpf::{PERF_FLAG_FD_CLOEXEC, perf_event_attr},
     perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
 };
 
@@ -172,7 +172,10 @@ pub fn perf_event_open(
         }
     };
     let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event));
-    let fd = add_file_like(event_arc.clone(), false)?;
+    // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC when
+    // the caller sets this flag, otherwise the fd survives execve.
+    let cloexec = flags & PERF_FLAG_FD_CLOEXEC != 0;
+    let fd = add_file_like(event_arc.clone(), cloexec)?;
 
     PERF_FILE
         .get()

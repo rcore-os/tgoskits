@@ -21,7 +21,6 @@ use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_lazyinit::LazyInit;
 use kbpf_basic::{
-    BpfError,
     helper::RawBPFHelperFn,
     linux_bpf::{bpf_attr, bpf_cmd},
     map::{
@@ -58,51 +57,6 @@ pub fn init_ebpf() {
     BPF_HELPER_FUN_SET.init_once(set);
 }
 
-/// Convert a kbpf-basic [`BpfError`] (which is `axerrno::LinuxError` from
-/// the standalone `axerrno` crate published on crates.io) into tgoskits'
-/// in-tree [`AxError`]. They are conceptually the same error set, but they
-/// are distinct rust types: kbpf-basic links the crates.io `axerrno` while
-/// the kernel proper uses the vendored `ax-errno` (renamed package).
-fn bpf_to_ax_err(e: BpfError) -> AxError {
-    use kbpf_basic::BpfError as B;
-    match e {
-        B::EPERM => AxError::PermissionDenied,
-        B::ENOENT => AxError::NotFound,
-        B::EINTR => AxError::Interrupted,
-        B::EIO => AxError::Io,
-        B::ENOMEM => AxError::NoMemory,
-        B::EACCES => AxError::PermissionDenied,
-        B::EFAULT => AxError::BadAddress,
-        B::EBUSY => AxError::ResourceBusy,
-        B::EEXIST => AxError::AlreadyExists,
-        B::ENODEV => AxError::NoSuchDevice,
-        B::EINVAL => AxError::InvalidInput,
-        B::ENOSPC => AxError::StorageFull,
-        B::ESPIPE => AxError::InvalidInput,
-        B::EPIPE => AxError::BrokenPipe,
-        B::ERANGE => AxError::InvalidInput,
-        B::ENAMETOOLONG => AxError::InvalidInput,
-        B::ENOSYS => AxError::Unsupported,
-        B::ENOTDIR => AxError::NotADirectory,
-        B::EISDIR => AxError::IsADirectory,
-        B::EAGAIN => AxError::WouldBlock,
-        B::EBADF => AxError::BadFileDescriptor,
-        B::EOPNOTSUPP => AxError::Unsupported,
-        B::EADDRINUSE => AxError::AddrInUse,
-        // axerrno's AxError has no dedicated `AddrNotAvailable`; fold into
-        // InvalidInput so the bpf(2) caller sees -EINVAL rather than a
-        // panicky default. EADDRNOTAVAIL paths are rare in the BPF helper
-        // surface (mostly socket-level), so this is acceptable until we
-        // grow a more specific kernel error type.
-        B::EADDRNOTAVAIL => AxError::InvalidInput,
-        B::ECONNREFUSED => AxError::ConnectionRefused,
-        B::ECONNRESET => AxError::ConnectionReset,
-        B::ETIMEDOUT => AxError::TimedOut,
-        B::ENOTCONN => AxError::NotConnected,
-        _ => AxError::InvalidInput,
-    }
-}
-
 fn read_bpf_attr(uattr: usize, size: u32) -> AxResult<bpf_attr> {
     // Match Linux's bpf(2) ABI: `vec!` zero-initialises the buffer first,
     // so reading only the first `min(size, sizeof(bpf_attr))` bytes from
@@ -121,59 +75,60 @@ fn read_bpf_attr(uattr: usize, size: u32) -> AxResult<bpf_attr> {
 }
 
 fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
-    let meta = BpfMapMeta::try_from(attr).map_err(bpf_to_ax_err)?;
-    let map = create_map(meta).map_err(bpf_to_ax_err)?;
-    let fd = add_file_like(Arc::new(map), false)?;
+    let meta = BpfMapMeta::try_from(attr)?;
+    let map = create_map(meta)?;
+    // Linux always creates bpf object fds with `O_CLOEXEC`
+    // (`anon_inode_getfd(..., O_CLOEXEC)` in `kernel/bpf/syscall.c`).
+    let fd = add_file_like(Arc::new(map), true)?;
     Ok(fd as isize)
 }
 
 fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
-    let mut meta =
-        BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).map_err(bpf_to_ax_err)?;
-    let prog = load_prog(&mut meta).map_err(bpf_to_ax_err)?;
-    let fd = add_file_like(Arc::new(prog), false)?;
+    let mut meta = BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr)?;
+    let prog = load_prog(&mut meta)?;
+    // bpf prog fds are close-on-exec in Linux as well; see `handle_map_create`.
+    let fd = add_file_like(Arc::new(prog), true)?;
     Ok(fd as isize)
 }
 
 fn handle_map_update(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_update_elem::<EbpfKernelAuxiliary>(arg).map_err(bpf_to_ax_err)?;
+    bpf_map_update_elem::<EbpfKernelAuxiliary>(arg)?;
     Ok(0)
 }
 
 fn handle_map_lookup(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_lookup_elem::<EbpfKernelAuxiliary>(arg).map_err(bpf_to_ax_err)?;
+    bpf_lookup_elem::<EbpfKernelAuxiliary>(arg)?;
     Ok(0)
 }
 
 fn handle_map_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_delete_elem::<EbpfKernelAuxiliary>(arg).map_err(bpf_to_ax_err)?;
+    bpf_map_delete_elem::<EbpfKernelAuxiliary>(arg)?;
     Ok(0)
 }
 
 fn handle_map_get_next_key(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapGetNextKeyArg::from(attr);
-    bpf_map_get_next_key::<EbpfKernelAuxiliary>(arg).map_err(bpf_to_ax_err)?;
+    bpf_map_get_next_key::<EbpfKernelAuxiliary>(arg)?;
     Ok(0)
 }
 
 fn handle_map_freeze(attr: &bpf_attr) -> AxResult<isize> {
     let map_fd = unsafe { attr.__bindgen_anon_2.map_fd };
-    bpf_map_freeze::<EbpfKernelAuxiliary>(map_fd).map_err(bpf_to_ax_err)?;
+    bpf_map_freeze::<EbpfKernelAuxiliary>(map_fd)?;
     Ok(0)
 }
 
 fn handle_map_lookup_and_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary>(arg).map_err(bpf_to_ax_err)?;
+    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary>(arg)?;
     Ok(0)
 }
 
 fn handle_raw_tracepoint_open(attr: &bpf_attr) -> AxResult<isize> {
-    let arg = BpfRawTracePointArg::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr)
-        .map_err(bpf_to_ax_err)?;
+    let arg = BpfRawTracePointArg::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr)?;
     bpf_raw_tracepoint_open(arg)
 }
 
@@ -181,9 +136,12 @@ fn handle_raw_tracepoint_open(attr: &bpf_attr) -> AxResult<isize> {
 /// canonical [`bpf_cmd`] enum from `kbpf-basic` (no locally-redefined
 /// command constants).
 pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
+    // Linux's bpf(2) returns -EINVAL for an unknown/unsupported command, not
+    // -ENOSYS; mirror that so user-space feature probing sees the expected
+    // errno (`AxError::Unsupported` would map to -ENOSYS).
     let cmd = bpf_cmd::try_from(cmd as u32).map_err(|_| {
         warn!("bpf: unrecognized command {cmd}");
-        AxError::Unsupported
+        AxError::InvalidInput
     })?;
     let attr = read_bpf_attr(uattr, size)?;
     match cmd {
@@ -198,7 +156,7 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
         bpf_cmd::BPF_MAP_LOOKUP_AND_DELETE_ELEM => handle_map_lookup_and_delete(&attr),
         other => {
             warn!("bpf: unsupported command {other:?}");
-            Err(AxError::Unsupported)
+            Err(AxError::InvalidInput)
         }
     }
 }

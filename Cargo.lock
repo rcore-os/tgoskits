@@ -1144,11 +1144,12 @@ dependencies = [
 
 [[package]]
 name = "ax-kspin"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "ax-kernel-guard",
  "ax-lockdep",
  "cfg-if",
+ "lock_api",
 ]
 
 [[package]]

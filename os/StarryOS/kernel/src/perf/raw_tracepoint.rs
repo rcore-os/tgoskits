@@ -118,6 +118,7 @@ pub fn bpf_raw_tracepoint_open(arg: BpfRawTracePointArg) -> AxResult<isize> {
     let ext_tp = find_ext_tracepoint_by_name(&arg.name).ok_or(AxError::InvalidInput)?;
     let prog = get_file_like(arg.prog_fd as _)?;
     let event = RawTracepointPerfEvent::new(ext_tp, prog)?;
-    let fd = add_file_like(Arc::new(event), false)?;
+    // bpf object fds (incl. the raw-tracepoint link) are close-on-exec in Linux.
+    let fd = add_file_like(Arc::new(event), true)?;
     Ok(fd as isize)
 }

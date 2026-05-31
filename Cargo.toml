@@ -198,7 +198,7 @@ ax-io = { version = "0.5.7", path = "components/axio" }
 ax-ipi = { version = "0.5.14", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.1", path = "components/lockdep" }
-ax-kspin = { version = "0.3.8", path = "components/kspin" }
+ax-kspin = { version = "0.3.9", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.7", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.15", path = "os/arceos/ulib/axlibc" }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }

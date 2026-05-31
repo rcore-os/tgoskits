@@ -18,8 +18,8 @@
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
 
+use ax_kspin::RawSpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
@@ -28,45 +28,21 @@ use kprobe::{
     unregister_kprobe as kprobe_crate_unregister_kprobe,
     unregister_kretprobe as kprobe_crate_unregister_kretprobe,
 };
-use lock_api::RawMutex;
 
 use crate::task::AsThread;
 
-/// A `lock_api::RawMutex` backed by a single atomic flag, used as the `L`
-/// type parameter for the `kprobe` crate's `ProbeManager` / `Kprobe` /
-/// `Kretprobe`. The perf subsystem refers to the concrete probe types
-/// parameterized on this mutex (see [`KernelKprobe`] / [`KernelKretprobe`]).
-pub struct KernelRawMutex {
-    locked: AtomicBool,
-}
-
-unsafe impl RawMutex for KernelRawMutex {
-    const INIT: Self = KernelRawMutex {
-        locked: AtomicBool::new(false),
-    };
-
-    type GuardMarker = lock_api::GuardNoSend;
-
-    fn lock(&self) {
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn try_lock(&self) -> bool {
-        self.locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-    }
-
-    unsafe fn unlock(&self) {
-        self.locked.store(false, Ordering::Release);
-    }
-}
+/// Raw mutex used as the `L` type parameter for the `kprobe` crate's
+/// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
+/// concrete probe types parameterized on it — see [`KernelKprobe`] /
+/// [`KernelKretprobe`]).
+///
+/// Backed by [`ax_kspin::RawSpinNoIrq`], which disables kernel preemption and
+/// local IRQs across the critical section (`NoPreemptIrqSave` semantics, the
+/// same as the rest of the kernel's spin locks). This matters because the lock
+/// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
+/// preemption and IRQs enabled could be re-entered on the same CPU and would
+/// then deadlock spinning on a lock it already holds.
+pub type KernelRawMutex = RawSpinNoIrq;
 
 #[derive(Debug)]
 pub struct KernelKprobeOps;
