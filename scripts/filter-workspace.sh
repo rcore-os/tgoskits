@@ -2,6 +2,9 @@
 # Filter workspace Cargo.toml to exclude crates incompatible with the target arch.
 # Only removes workspace MEMBERS (lines starting with whitespace + "components/).
 # Keeps ALL [workspace.dependencies] entries untouched.
+#
+# Requires GNU sed for [[:space:]] POSIX character class support.
+# On the StarryOS guest (Debian rootfs), GNU sed is available as /usr/bin/sed.
 
 set -euo pipefail
 ARCH="${1:-riscv64}"
@@ -52,5 +55,11 @@ case "$ARCH" in
         sed -i '/^[[:space:]]*"drivers\/usb\/usb-device\/uvc"/d' "$CARGO"
         ;;
 esac
+
+# Remove glob-pattern test crate members (not resolved by cargo build -p starryos,
+# but their presence in workspace members causes cargo to validate them).
+# These test crates may pull arch-specific dev-dependencies unavailable offline.
+sed -i '/^[[:space:]]*"components\/crate_interface\/test_crates\/\*",$/d' "$CARGO"
+sed -i '/^[[:space:]]*"drivers\/usb\/test_crates\/\*",$/d' "$CARGO"
 
 echo "filter-workspace: removed arch-incompatible members for $ARCH"

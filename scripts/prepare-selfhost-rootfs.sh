@@ -380,8 +380,8 @@ nspawn_run "$OUTPUT_IMG" "
     export PATH=/root/.cargo/bin:\$PATH && \
     cd $DEST_PATH && \
     cp Cargo.toml Cargo.toml.orig && \
-    sed -i '/^\s*\"components\//{/'"$EXCLUDE_ARCH"'/d}' Cargo.toml && \
-    sed -i '/^\s*\"drivers\/usb\/usb-device\/uvc\"/d' Cargo.toml && \
+    sed -i '/^[[:space:]]*\"components\//{/'"$EXCLUDE_ARCH"'/d}' Cargo.toml && \
+    sed -i '/^[[:space:]]*\"drivers\/usb\/usb-device\/uvc\"/d' Cargo.toml && \
     rm -f Cargo.lock && \
     cp /root/.cargo/config.toml /root/.cargo/config.toml.bak && \
     printf '[net]\noffline = false\n' > /root/.cargo/config.toml && \
