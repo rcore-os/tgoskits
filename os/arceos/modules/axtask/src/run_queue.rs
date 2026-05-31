@@ -1,7 +1,10 @@
 use alloc::{collections::VecDeque, sync::Arc};
-use core::mem::MaybeUninit;
 #[cfg(feature = "smp")]
 use core::ptr::NonNull;
+use core::{
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
@@ -55,6 +58,13 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::M
     [ARRAY_REPEAT_VALUE; ax_config::plat::MAX_CPU_NUM];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
+
+/// Marks whether each per-CPU run queue has been initialized.
+/// Used by `try_steal` to avoid accessing uninitialized run queues on
+/// remote CPUs that have not yet called `init` or `init_secondary`.
+#[cfg(feature = "smp")]
+static RUN_QUEUE_INITIALIZED: [AtomicBool; ax_config::plat::MAX_CPU_NUM] =
+    [const { AtomicBool::new(false) }; ax_config::plat::MAX_CPU_NUM];
 
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
@@ -655,6 +665,9 @@ impl AxRunQueue {
         let current_cpu = self.cpu_id;
         for i in 1..ax_config::plat::MAX_CPU_NUM {
             let target = (current_cpu + i) % ax_config::plat::MAX_CPU_NUM;
+            if !RUN_QUEUE_INITIALIZED[target].load(Ordering::Acquire) {
+                continue;
+            }
             let task = {
                 let mut sched = get_run_queue(target).scheduler.lock();
                 sched.pick_next_task_matching(|t| t.cpumask().get(current_cpu))
@@ -871,6 +884,8 @@ pub(crate) fn init() {
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
+    #[cfg(feature = "smp")]
+    RUN_QUEUE_INITIALIZED[cpu_id].store(true, Ordering::Release);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -894,4 +909,6 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
+    #[cfg(feature = "smp")]
+    RUN_QUEUE_INITIALIZED[cpu_id].store(true, Ordering::Release);
 }
