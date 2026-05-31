@@ -11,6 +11,9 @@ repository = "https://github.com/rcore-os/tgoskits"
 default = []
 ept-level-4 = []
 fs = []
+svm = ["axvm/svm"]
+sstc = ["riscv_vcpu/sstc"]
+vmx = ["axvm/vmx"]
 
 [dependencies]
 spin = { workspace = true }

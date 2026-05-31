@@ -36,9 +36,9 @@ path = "xtask/src/main.rs"
 default = []
 ept-level-4 = ["axvisor_core/ept-level-4"]
 fs = ["ax-std/fs", "axvisor_core/fs"]
-vmx = ["axvm/vmx"]
-svm = ["axvm/svm"]
-sstc = ["riscv_vcpu/sstc"]
+vmx = ["axvisor_core/vmx"]
+svm = ["axvisor_core/svm"]
+sstc = ["axvisor_core/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 rockchip-soc = ["ax-driver/rockchip-soc"]
 rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
@@ -53,44 +53,22 @@ rockchip-pm = ["ax-driver/rockchip-pm"]
 serial = []
 
 [dependencies]
-spin = { workspace = true }
-
 [target.'cfg(not(any(windows, unix)))'.dependencies]
-bitflags = "2.2"
-cfg-if = "1.0"
-ax-cpumask = { workspace = true }
-ax-kernel-guard = { workspace = true }
 ax-kspin = { workspace = true }
-ax-lazyinit = { workspace = true }
 log = "0.4"
-ax-timer-list = { workspace = true }
-hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
 ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = { workspace = true }
-axhvc = { workspace = true }
-# ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
-axvcpu = { workspace = true }
-axvm = { workspace = true }
-axdevice = { workspace = true }
-axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }
 axvisor_core = { workspace = true }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
-axklib = { workspace = true }
-# ax-cpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
-byte-unit = {version = "5", default-features = false, features = ["byte"]}
-ax-crate-interface = { workspace = true }
 extern-trait = "0.4"
-fdt-parser = "0.4"
 ax-memory-addr = { workspace = true }
-ax-page-table-entry = { workspace = true, features = ["arm-el2"] }
 ax-page-table-multiarch = { workspace = true }
-ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
 ax-driver.workspace = true
@@ -102,9 +80,6 @@ ax-config = { workspace = true, features = ["plat-dyn"] }
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv_vcpu = { workspace = true }
-riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow.workspace = true
