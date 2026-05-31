@@ -804,11 +804,26 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // dummy fds
         Sysno::userfaultfd
-        | Sysno::io_uring_setup
         | Sysno::fsopen
         | Sysno::fspick
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
+
+        // io_uring: fake enough support so tokio 1.x creates its I/O
+        // driver without panicking, then falls back to blocking I/O.
+        // io_uring_setup returns a dummy fd (tokio thinks io_uring is
+        // available), io_uring_enter/register return 0 (no events /
+        // success).  Without this, tokio calls io_uring_enter on the
+        // dummy fd, gets ENOSYS, and panics — corrupting cargo state.
+        Sysno::io_uring_setup => {
+            warn!("io_uring_setup: returning dummy fd for compatibility");
+            sys_dummy_fd(sysno)
+        }
+        Sysno::io_uring_enter | Sysno::io_uring_register => {
+            // Return 0 = "0 completions" / "successful registration"
+            // so tokio's io_uring driver keeps polling without errors.
+            Ok(0)
+        }
 
         #[cfg(feature = "ebpf")]
         Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
