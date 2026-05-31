@@ -127,6 +127,9 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                         // On x86_64, PTRACE_SINGLESTEP sets TF in RFLAGS;
                         // the resulting #DB exception arrives here.
+                        // ExceptionKind::Debug and uctx.rflags only exist on
+                        // x86_64, so this whole block is arch-gated.
+                        #[cfg(target_arch = "x86_64")]
                         if matches!(kind, ExceptionKind::Debug)
                             && (thr.proc_data.is_ptrace_traceme()
                                 || thr.proc_data.is_ptrace_attached())
