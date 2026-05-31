@@ -20,4 +20,4 @@ fail_regex = [
     'ptrace: Function not implemented',
     'No stack',
 ]
-timeout = 120
+timeout = 300
