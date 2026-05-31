@@ -19,7 +19,6 @@ use alloc::{
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use core::ptr::NonNull;
 
-use super::vm_fdt::{FdtWriter, FdtWriterNode};
 use ax_errno::{AxError, AxResult, ax_err_type};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
@@ -30,6 +29,7 @@ use axvm::VMMemoryRegion;
 use axvm::config::AxVMCrateConfig;
 use fdt_parser::{Fdt, Node};
 
+use super::vm_fdt::{FdtWriter, FdtWriterNode};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
@@ -305,7 +305,8 @@ fn add_memory_node(
 
     if new_memory.len() != crate_config.kernel.memory_regions.len() {
         warn!(
-            "VM memory region count {} does not match config region count {}; filtering /memory by zipped order",
+            "VM memory region count {} does not match config region count {}; filtering /memory \
+             by zipped order",
             new_memory.len(),
             crate_config.kernel.memory_regions.len()
         );
@@ -562,10 +563,11 @@ pub fn update_fdt(
 
 #[cfg(test)]
 mod tests {
-    use super::{cpu_node_id, initrd_range_from_image_config, need_cpu_node, sanitize_bootargs};
     use axaddrspace::GuestPhysAddr;
     use axvm::config::RamdiskInfo;
     use fdt_parser::Fdt;
+
+    use super::{cpu_node_id, initrd_range_from_image_config, need_cpu_node, sanitize_bootargs};
 
     fn test_fdt(dts: &str) -> Fdt<'static> {
         let mut writer = super::FdtWriter::new().unwrap();
@@ -633,8 +635,7 @@ mod tests {
 
         assert_eq!(
             sanitize_bootargs(bootargs),
-            "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 rootwait rootfstype=ext4 \
-             fsck.repair=yes"
+            "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 rootwait rootfstype=ext4 fsck.repair=yes"
         );
     }
 

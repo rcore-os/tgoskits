@@ -138,7 +138,8 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     } else {
         warn!(
-            "x86 IOAPIC IRQ forwarding hook is already registered; VM-exit forwarding fallback remains active"
+            "x86 IOAPIC IRQ forwarding hook is already registered; VM-exit forwarding fallback \
+             remains active"
         );
     }
 
@@ -180,8 +181,8 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
     let host_gsi = vector - IOAPIC_VECTOR_BASE;
     let Some(guest_irq) = vm.get_devices().x86_ioapic_assert_gsi(host_gsi) else {
         trace!(
-            "x86 passthrough IRQ vector {vector:#x} has no injectable guest vIOAPIC route for host GSI \
-             {host_gsi}"
+            "x86 passthrough IRQ vector {vector:#x} has no injectable guest vIOAPIC route for \
+             host GSI {host_gsi}"
         );
         return;
     };

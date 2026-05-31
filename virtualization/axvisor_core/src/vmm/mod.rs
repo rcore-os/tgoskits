@@ -33,7 +33,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_lazyinit::LazyInit;
-
 pub use timer::init_percpu as init_timer_percpu;
 
 /// The instantiated VM type.

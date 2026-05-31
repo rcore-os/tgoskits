@@ -43,7 +43,18 @@
 //! }
 //! ```
 
-use super::{memory::PhysAddr, vmm::InterruptVector};
+use super::{
+    memory::{PhysAddr, VirtAddr},
+    vmm::InterruptVector,
+};
+
+/// Cache maintenance operations required by the hypervisor core.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheOp {
+    Clean,
+    Invalidate,
+    CleanAndInvalidate,
+}
 
 /// The API trait for architecture-specific functionalities.
 ///
@@ -52,6 +63,12 @@ use super::{memory::PhysAddr, vmm::InterruptVector};
 /// host system or HAL layer.
 #[crate::api_def]
 pub trait ArchIf {
+    /// Inject a virtual interrupt into the current vCPU context.
+    fn inject_virtual_interrupt(vector: InterruptVector);
+
+    /// Perform a data-cache maintenance operation on the specified address range.
+    fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize);
+
     /// Inject a virtual interrupt to the current virtual CPU using hardware
     /// virtualization support.
     ///

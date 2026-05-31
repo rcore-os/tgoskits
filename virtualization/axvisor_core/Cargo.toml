@@ -1,0 +1,44 @@
+[package]
+name = "axvisor_core"
+authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
+edition.workspace = true
+version = "0.5.11"
+description = "Host-runtime-neutral AxVisor core logic"
+license = "Apache-2.0"
+repository = "https://github.com/rcore-os/tgoskits"
+
+[features]
+default = []
+fs = []
+
+[dependencies]
+spin = { workspace = true }
+log = "0.4"
+hashbrown = "0.14"
+byte-unit = { version = "5", default-features = false, features = ["byte"] }
+ax-cpumask = { workspace = true }
+ax-kernel-guard = { workspace = true }
+ax-kspin = { workspace = true }
+ax-lazyinit = { workspace = true }
+ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
+ax-timer-list = { workspace = true }
+ax-errno = { workspace = true }
+ax-memory-addr = { workspace = true }
+ax-page-table-multiarch = { workspace = true }
+axaddrspace = { workspace = true }
+axhvc = { workspace = true }
+axvcpu = { workspace = true }
+axvm = { workspace = true }
+axvisor_api = { workspace = true }
+fdt-parser = "0.4"
+
+[build-dependencies]
+prettyplease = "0.2"
+quote = "1.0"
+syn = "2.0"
+proc-macro2 = "1.0"
+toml = "0.9"
+anyhow = "1.0"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv_vcpu = { workspace = true }

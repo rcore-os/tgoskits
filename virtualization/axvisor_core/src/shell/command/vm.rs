@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::btree_map::BTreeMap,
-    println,
+use alloc::{
+    collections::BTreeMap,
     string::{String, ToString},
     vec::Vec,
 };
@@ -811,7 +810,7 @@ fn vm_list(cmd: &ParsedCommand) {
             let vcpu_id_list = vcpu_ids.join(",");
 
             // Get VCpu state summary
-            let mut state_counts = std::collections::BTreeMap::new();
+            let mut state_counts = BTreeMap::new();
             for vcpu in vm.vcpu_list() {
                 let state = match vcpu.state() {
                     axvcpu::VCpuState::Free => "Free",
@@ -914,7 +913,7 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         // VCPU Summary
         println!();
         println!("VCPU Summary:");
-        let mut state_counts = std::collections::BTreeMap::new();
+        let mut state_counts = BTreeMap::new();
         for vcpu in vm.vcpu_list() {
             let state = match vcpu.state() {
                 axvcpu::VCpuState::Free => "Free",
@@ -1008,7 +1007,8 @@ fn show_vm_full_details(vm_id: usize) {
             }
             VMStatus::Stopped => {
                 println!(
-                    "    ℹ VM is stopped, all VCpu tasks have exited. Use 'vm delete {}' to clean up.",
+                    "    ℹ VM is stopped, all VCpu tasks have exited. Use 'vm delete {}' to clean \
+                     up.",
                     vm_id
                 );
             }
@@ -1026,7 +1026,7 @@ fn show_vm_full_details(vm_id: usize) {
         println!("VCPU Details:");
 
         // Count VCpu states for summary
-        let mut state_counts = std::collections::BTreeMap::new();
+        let mut state_counts = BTreeMap::new();
         for vcpu in vm.vcpu_list() {
             let state = match vcpu.state() {
                 axvcpu::VCpuState::Free => "Free",

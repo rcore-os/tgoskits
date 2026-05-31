@@ -14,6 +14,7 @@
 
 use axvisor_api::vmm::{current_vcpu_id, current_vm_id, inject_interrupt as inject_vcpu_interrupt};
 
+mod api;
 pub fn hardware_check() {}
 
 pub mod cache;

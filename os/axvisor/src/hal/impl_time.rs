@@ -1,6 +1,6 @@
 use axvisor_api::time::{CancelToken, Nanos, Ticks, TimeIf, TimeValue};
 
-use crate::vmm;
+use axvisor_core::vmm;
 
 struct TimeImpl;
 

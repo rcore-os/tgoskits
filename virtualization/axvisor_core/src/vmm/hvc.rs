@@ -16,8 +16,10 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::{GuestPhysAddr, MappingFlags};
 use axhvc::{HyperCallCode, HyperCallResult};
 
-use crate::vmm::VMRef;
-use crate::vmm::ivc::{self, IVCChannel};
+use crate::vmm::{
+    VMRef,
+    ivc::{self, IVCChannel},
+};
 
 pub struct HyperCall {
     vm: VMRef,

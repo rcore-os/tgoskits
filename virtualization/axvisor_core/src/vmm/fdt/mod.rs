@@ -23,19 +23,18 @@ mod parser;
 mod print;
 mod vm_fdt;
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
+
 use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
 use axvm::config::{AxVMConfig, AxVMCrateConfig};
-use fdt_parser::Fdt;
-
-pub use parser::*;
 // pub use print::print_fdt;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
 pub use device::build_all_node_paths;
+use fdt_parser::Fdt;
+pub use parser::*;
 
 use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
@@ -87,7 +86,8 @@ pub fn handle_fdt_operations(
         #[cfg(target_arch = "loongarch64")]
         {
             warn!(
-                "VM[{}] host FDT is unavailable on loongarch64 boot path; skipping host-FDT-dependent guest DTB handling",
+                "VM[{}] host FDT is unavailable on loongarch64 boot path; skipping \
+                 host-FDT-dependent guest DTB handling",
                 vm_config.id()
             );
         }

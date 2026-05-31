@@ -2,7 +2,7 @@
 
 use ax_memory_addr::VirtAddr;
 
-use crate::hal::CacheOp;
+use axvisor_api::arch::CacheOp;
 
 const CACHE_LINE_SIZE: usize = 64;
 const DCACHE_INV: u8 = 0x18;

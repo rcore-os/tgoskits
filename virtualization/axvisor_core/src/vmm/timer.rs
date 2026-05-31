@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::Ordering;
-
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};

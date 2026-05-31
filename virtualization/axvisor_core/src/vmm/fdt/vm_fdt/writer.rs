@@ -1,11 +1,11 @@
-use alloc::collections::BTreeMap;
-use alloc::ffi::CString;
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::cmp::{Ord, Ordering};
-use core::convert::TryInto;
-use core::fmt;
-use core::mem::size_of_val;
+use alloc::{collections::BTreeMap, ffi::CString, string::String, vec::Vec};
+use core::{
+    cmp::{Ord, Ordering},
+    convert::TryInto,
+    fmt,
+    mem::size_of_val,
+};
+
 use hashbrown::HashSet;
 
 use super::{

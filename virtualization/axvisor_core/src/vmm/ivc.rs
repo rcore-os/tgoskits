@@ -13,14 +13,12 @@
 // limitations under the License.
 
 //! Inter-VM communication (IVC) module.
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
-
-use std::sync::Mutex;
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use ax_errno::AxResult;
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
+use spin::Mutex;
 
 pub(crate) struct IvcPagingHandler;
 
@@ -79,7 +77,8 @@ pub fn unpublish_channel(publisher_vm_id: usize, key: usize) -> AxResult<(GuestP
             ax_errno::ax_err_type!(
                 NotFound,
                 format!(
-                    "IVC channel for publisher VM {} with key {} has no base GPA, it may have been marked as unpublished",
+                    "IVC channel for publisher VM {} with key {} has no base GPA, it may have \
+                     been marked as unpublished",
                     publisher_vm_id, key
                 )
             )
@@ -279,8 +278,8 @@ impl<H: PagingHandler> IVCChannel<H> {
         // TODO: support larger shared region sizes with alloc_frames API.
         if shared_region_size > 4096 {
             warn!(
-                "IVC channel requested size {shared_region_size:#x} > 4096; \
-                 truncating to 4096 (TODO: support larger sizes)"
+                "IVC channel requested size {shared_region_size:#x} > 4096; truncating to 4096 \
+                 (TODO: support larger sizes)"
             );
         }
         let shared_region_size = shared_region_size.min(4096);

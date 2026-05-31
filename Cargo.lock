@@ -1941,6 +1941,7 @@ dependencies = [
  "axplat-dyn",
  "axvcpu",
  "axvisor_api",
+ "axvisor_core",
  "axvm",
  "bitflags 2.11.1",
  "byte-unit",
@@ -1983,6 +1984,38 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "axvisor_core"
+version = "0.5.11"
+dependencies = [
+ "anyhow",
+ "ax-cpumask",
+ "ax-errno",
+ "ax-kernel-guard",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-memory-addr",
+ "ax-page-table-multiarch",
+ "ax-percpu",
+ "ax-timer-list",
+ "axaddrspace",
+ "axhvc",
+ "axvcpu",
+ "axvisor_api",
+ "axvm",
+ "byte-unit",
+ "fdt-parser",
+ "hashbrown 0.14.5",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "riscv_vcpu",
+ "spin 0.12.0",
+ "syn 2.0.117",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

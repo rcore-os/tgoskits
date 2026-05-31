@@ -35,7 +35,7 @@ path = "xtask/src/main.rs"
 [features]
 default = []
 ept-level-4 = []
-fs = ["ax-std/fs"]
+fs = ["ax-std/fs", "axvisor_core/fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
@@ -78,6 +78,7 @@ axvm = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }
+axvisor_core = { workspace = true }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
 axklib = { workspace = true }

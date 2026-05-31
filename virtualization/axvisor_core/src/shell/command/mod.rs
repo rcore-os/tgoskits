@@ -16,19 +16,16 @@ mod base;
 mod history;
 mod vm;
 
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::{String, ToString},
+    vec::Vec,
+};
+
 pub use base::*;
 pub use history::*;
-pub use vm::*;
-
-use std::string::String;
-use std::vec::Vec;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    string::ToString,
-};
-use std::{print, println};
-
 use spin::LazyLock;
+pub use vm::*;
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);

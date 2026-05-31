@@ -16,6 +16,7 @@ use ax_hal::{self, percpu::this_cpu_id};
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use axvisor_api::host;
+use axvisor_core::vmm;
 use axvm::AxVMPerCpu;
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
@@ -25,19 +26,7 @@ use axvm::AxVMPerCpu;
 pub mod arch;
 pub mod task;
 
-use crate::{hal::arch::hardware_check, vmm};
-
-#[allow(unused)]
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub enum CacheOp {
-    /// Write back to memory
-    Clean,
-    /// Invalidate cache
-    Invalidate,
-    /// Clean and invalidate
-    CleanAndInvalidate,
-}
+use crate::hal::arch::hardware_check;
 
 pub struct AxMmHalImpl;
 

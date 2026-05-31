@@ -12,18 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::VirtAddr;
+#![no_std]
 
-use axvisor_api::arch::CacheOp;
+#[macro_use]
+extern crate alloc;
 
-fn map_cache_op(op: CacheOp) -> aarch64_cpu_ext::cache::CacheOp {
-    match op {
-        CacheOp::Clean => aarch64_cpu_ext::cache::CacheOp::Clean,
-        CacheOp::Invalidate => aarch64_cpu_ext::cache::CacheOp::Invalidate,
-        CacheOp::CleanAndInvalidate => aarch64_cpu_ext::cache::CacheOp::CleanAndInvalidate,
-    }
+#[macro_use]
+extern crate log;
+
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write as _;
+        let mut stdout = axvisor_api::fs::stdout();
+        let _ = write!(&mut stdout, $($arg)*);
+    }};
 }
 
-pub fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize) {
-    aarch64_cpu_ext::cache::dcache_range(map_cache_op(op), addr.as_usize(), size);
+macro_rules! println {
+    () => {
+        print!("\n")
+    };
+    ($fmt:expr $(, $($arg:tt)+)?) => {
+        print!(concat!($fmt, "\n") $(, $($arg)+)?)
+    };
 }
+
+pub mod shell;
+pub mod vmm;

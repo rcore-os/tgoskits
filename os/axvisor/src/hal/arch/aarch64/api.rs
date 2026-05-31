@@ -13,12 +13,24 @@
 // limitations under the License.
 
 use ax_hal::mem::virt_to_phys;
-use axvisor_api::{arch::ArchIf, irq};
+use axvisor_api::{
+    arch::{ArchIf, CacheOp},
+    irq,
+    memory::VirtAddr,
+};
 
 struct ArchImpl;
 
 #[axvisor_api::api_impl]
 impl ArchIf for ArchImpl {
+    fn inject_virtual_interrupt(irq: axvisor_api::vmm::InterruptVector) {
+        crate::hal::arch::inject_interrupt(irq as usize);
+    }
+
+    fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize) {
+        crate::hal::arch::cache::dcache_range(op, addr, size);
+    }
+
     fn hardware_inject_virtual_interrupt(irq: axvisor_api::vmm::InterruptVector) {
         crate::hal::arch::inject_interrupt(irq as _);
     }

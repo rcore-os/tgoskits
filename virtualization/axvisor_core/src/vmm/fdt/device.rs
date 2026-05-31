@@ -19,6 +19,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+
 use axvm::config::AxVMConfig;
 use fdt_parser::{Fdt, Node};
 
@@ -363,13 +364,15 @@ fn parse_phandle_property_with_cells(
             if i + cells_count < u32_values.len() {
                 let specifiers: Vec<u32> = u32_values[i + 1..=i + cells_count].to_vec();
                 debug!(
-                    "Parsed phandle reference: phandle={potential_phandle:#x}, specifiers={specifiers:?}"
+                    "Parsed phandle reference: phandle={potential_phandle:#x}, \
+                     specifiers={specifiers:?}"
                 );
                 results.push((potential_phandle, specifiers));
                 i += cells_count + 1; // Skip phandle and all specifiers
             } else {
                 warn!(
-                    "Property:{} not enough data for phandle {:#x}, expected {} cells but only {} values remaining",
+                    "Property:{} not enough data for phandle {:#x}, expected {} cells but only {} \
+                     values remaining",
                     prop_name,
                     potential_phandle,
                     cells_count,
@@ -431,7 +434,8 @@ fn parse_phandle_property(
                 String::new()
             };
             debug!(
-                "Found {prop_name} dependency: phandle={phandle:#x}, device={device_path}{spec_info}"
+                "Found {prop_name} dependency: phandle={phandle:#x}, \
+                 device={device_path}{spec_info}"
             );
             dependencies.push(device_path.clone());
         }

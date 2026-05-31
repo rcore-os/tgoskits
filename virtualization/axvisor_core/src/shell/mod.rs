@@ -14,8 +14,7 @@
 
 mod command;
 
-use std::println;
-use std::string::ToString;
+use alloc::string::ToString;
 
 use crate::shell::command::{
     CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, prompt_string,
@@ -73,7 +72,7 @@ pub fn console_init() {
                     CR | LF => {
                         println!();
                         if line_len > 0 {
-                            let cmd_str = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
+                            let cmd_str = core::str::from_utf8(&buf[..line_len]).unwrap_or("");
 
                             // Add to history
                             history.add_command(cmd_str.to_string());
@@ -104,7 +103,7 @@ pub fn console_init() {
                             }
 
                             let current_content =
-                                std::str::from_utf8(&buf[..line_len]).unwrap_or("");
+                                core::str::from_utf8(&buf[..line_len]).unwrap_or("");
                             let prompt = prompt_string();
                             clear_line_and_redraw(&mut stdout, &prompt, current_content, cursor);
                         }
@@ -127,7 +126,7 @@ pub fn console_init() {
                             line_len += 1;
 
                             let current_content =
-                                std::str::from_utf8(&buf[..line_len]).unwrap_or("");
+                                core::str::from_utf8(&buf[..line_len]).unwrap_or("");
                             let prompt = prompt_string();
                             clear_line_and_redraw(&mut stdout, &prompt, current_content, cursor);
                         }

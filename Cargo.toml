@@ -247,6 +247,7 @@ axvcpu = { version = "0.5.9", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.8", path = "os/axvisor" }
 axvisor_api = { version = "0.5.11", path = "virtualization/axvisor_api" }
 axvisor_api_proc = { version = "0.5.7", path = "virtualization/axvisor_api_proc" }
+axvisor_core = { version = "0.5.11", path = "virtualization/axvisor_core" }
 axvm = { version = "0.5.9", path = "virtualization/axvm", default-features = false }
 axvmconfig = { version = "0.5.2", path = "virtualization/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.5", path = "memory/bitmap-allocator" }

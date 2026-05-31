@@ -1,6 +1,7 @@
 use axvisor_api::vmm::{InterruptVector, VCpuId, VCpuSet, VMId, VmmIf};
+use axvisor_core::vmm;
 
-use crate::{hal::task, vmm};
+use crate::hal::task;
 
 struct VmmImpl;
 

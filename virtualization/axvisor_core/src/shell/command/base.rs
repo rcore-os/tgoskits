@@ -12,22 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+};
+
 #[cfg(feature = "fs")]
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(feature = "fs")]
 use axvisor_api::fs::{self as host_fs, File, FileType};
-use std::collections::BTreeMap;
-use std::println;
-use std::string::{String, ToString};
 
 use crate::shell::command::{CommandNode, FlagDef, ParsedCommand};
 
 #[cfg(feature = "fs")]
 macro_rules! print_err {
-    ($cmd: literal, $msg: expr) => {
+    ($cmd:literal, $msg:expr) => {
         println!("{}: {}", $cmd, $msg);
     };
-    ($cmd: literal, $arg: expr, $err: expr) => {
+    ($cmd:literal, $arg:expr, $err:expr) => {
         println!("{}: {}: {}", $cmd, $arg, $err);
     };
 }
@@ -66,7 +68,7 @@ fn do_ls(cmd: &ParsedCommand) {
     }
 
     fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> AxResult<()> {
-        use std::vec::Vec;
+        use alloc::vec::Vec;
 
         let is_dir = host_fs::metadata(name)?.is_dir();
         if !is_dir {
@@ -172,8 +174,6 @@ fn do_echo(cmd: &ParsedCommand) {
             print_err!("echo", fname, e);
         }
     } else if no_newline {
-        use std::print;
-
         print!("{}", args_str);
     } else {
         println!("{}", args_str);

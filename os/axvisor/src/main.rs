@@ -28,15 +28,13 @@
 #[macro_use]
 extern crate log;
 
-#[macro_use]
 extern crate alloc;
 
 extern crate ax_std as std;
 
 mod hal;
-mod shell;
-mod vmm;
 
+use axvisor_core::{shell, vmm};
 use std::println;
 
 /// Startup banners printed before the hypervisor begins initialization.

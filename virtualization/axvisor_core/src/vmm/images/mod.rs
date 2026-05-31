@@ -14,16 +14,19 @@
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
-
-use axvm::VMMemoryRegion;
-use axvm::config::AxVMCrateConfig;
+use axvisor_api::arch::CacheOp;
 #[cfg(target_arch = "x86_64")]
-use axvm::config::{VMBootProtocol, VmMemMappingType};
+use axvm::config::VMBootProtocol;
+use axvm::{
+    VMMemoryRegion,
+    config::{AxVMCrateConfig, VmMemMappingType},
+};
 use byte_unit::Byte;
 
-use crate::hal::CacheOp;
-use crate::vmm::VMRef;
-use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
+use crate::vmm::{
+    VMRef,
+    config::{get_vm_dtb_arc, vmcfg},
+};
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
@@ -287,7 +290,8 @@ impl ImageLoader {
             {
                 return Err(ax_errno::ax_err_type!(
                     Unsupported,
-                    "UEFI firmware path requires the fs feature when no firmware image buffer is available"
+                    "UEFI firmware path requires the fs feature when no firmware image buffer is \
+                     available"
                 ));
             }
         }
@@ -400,7 +404,8 @@ impl ImageLoader {
         });
 
         info!(
-            "Adjusted x86 Linux identity DMA layout for VM[{}]: memory_base={:#x}, kernel_load_gpa={:#x}, ramdisk_load_gpa={:?}",
+            "Adjusted x86 Linux identity DMA layout for VM[{}]: memory_base={:#x}, \
+             kernel_load_gpa={:#x}, ramdisk_load_gpa={:?}",
             self.vm.id(),
             memory_base,
             self.kernel_load_gpa.as_usize(),
@@ -417,7 +422,9 @@ impl ImageLoader {
         kernel: &[u8],
     ) -> AxResult {
         info!(
-            "x86 Linux layout for VM[{}]: header={:#x?}, payload_offset={:#x}, boot_params=[{:#x}..{:#x}), boot_stub=[{:#x}..{:#x}), kernel=[{:#x}..{:#x}), initrd={:?}",
+            "x86 Linux layout for VM[{}]: header={:#x?}, payload_offset={:#x}, \
+             boot_params=[{:#x}..{:#x}), boot_stub=[{:#x}..{:#x}), kernel=[{:#x}..{:#x}), \
+             initrd={:?}",
             self.config.base.id,
             header,
             header.payload_offset(),
@@ -465,7 +472,8 @@ impl ImageLoader {
             config.cpu_config.ap_entry = entry;
         });
         info!(
-            "x86 Linux direct boot entry for VM[{}]: stub={:#x}, boot_params={:#x}, kernel_entry={:#x}, initrd={:?}",
+            "x86 Linux direct boot entry for VM[{}]: stub={:#x}, boot_params={:#x}, \
+             kernel_entry={:#x}, initrd={:?}",
             self.config.base.id,
             layout.boot_stub.start,
             layout.boot_params.start,
@@ -580,7 +588,7 @@ pub fn load_vm_image_from_memory(
             );
         }
 
-        crate::hal::arch::cache::dcache_range(
+        axvisor_api::arch::dcache_range(
             CacheOp::Clean,
             (region.as_ptr() as usize).into(),
             bytes_to_write,
@@ -608,11 +616,12 @@ pub fn load_vm_image_from_memory(
 
 #[cfg(feature = "fs")]
 pub mod fs {
-    use super::*;
-    use ax_errno::{AxResult, ax_err, ax_err_type};
-    use std::vec::Vec;
+    use alloc::vec::Vec;
 
+    use ax_errno::{AxResult, ax_err, ax_err_type};
     use axvisor_api::fs::{self as host_fs, File};
+
+    use super::*;
 
     pub fn kernel_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
         let file_name = &config.kernel.kernel_path;
@@ -788,7 +797,7 @@ pub mod fs {
                 )
             })?;
 
-            crate::hal::arch::cache::dcache_range(
+            axvisor_api::arch::dcache_range(
                 CacheOp::Clean,
                 (buffer.as_ptr() as usize).into(),
                 buffer.len(),
@@ -887,7 +896,8 @@ fn builtin_x86_bios_load_gpa(configured_gpa: Option<GuestPhysAddr>) -> AxResult<
         Some(gpa) if gpa != default_gpa => Err(ax_errno::ax_err_type!(
             InvalidInput,
             format!(
-                "built-in x86 BIOS must be loaded at GPA {:#x}, but bios_load_addr is {:#x}; set bios_path to use a relocatable external BIOS image",
+                "built-in x86 BIOS must be loaded at GPA {:#x}, but bios_load_addr is {:#x}; set \
+                 bios_path to use a relocatable external BIOS image",
                 default_gpa.as_usize(),
                 gpa.as_usize()
             )
@@ -904,7 +914,8 @@ fn validate_x86_bios_patch_region(bios_image: &[u8]) -> AxResult {
         return Err(ax_errno::ax_err_type!(
             InvalidInput,
             format!(
-                "x86 BIOS image is too small for multiboot info patch: size {}, need at least {} bytes for EBX immediate at offset {:#x}",
+                "x86 BIOS image is too small for multiboot info patch: size {}, need at least {} \
+                 bytes for EBX immediate at offset {:#x}",
                 bios_image.len(),
                 patch_end,
                 x86_boot::AXVM_BIOS_EBX_IMM_OFFSET
@@ -916,7 +927,8 @@ fn validate_x86_bios_patch_region(bios_image: &[u8]) -> AxResult {
         return Err(ax_errno::ax_err_type!(
             InvalidInput,
             format!(
-                "x86 BIOS image does not match axvm-bios layout: expected mov ebx, imm32 opcode at offset {:#x}",
+                "x86 BIOS image does not match axvm-bios layout: expected mov ebx, imm32 opcode \
+                 at offset {:#x}",
                 x86_boot::AXVM_BIOS_EBX_IMM_OFFSET - 1
             )
         ));

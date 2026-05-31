@@ -15,6 +15,7 @@
 //! FDT parsing and processing functionality.
 
 use alloc::{string::ToString, vec::Vec};
+
 use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::MappingFlags;
 use axvm::config::{
@@ -207,7 +208,8 @@ fn should_skip_passthrough_node(
             .find(|region| overlaps_memory_region(gpa, size, region))
         {
             debug!(
-                "Skipping passthrough node {} [{:#x}~{:#x}] because memory-like compatible overlaps reserved region [{:#x}~{:#x}]",
+                "Skipping passthrough node {} [{:#x}~{:#x}] because memory-like compatible \
+                 overlaps reserved region [{:#x}~{:#x}]",
                 node_path,
                 gpa,
                 gpa + size,
@@ -264,7 +266,8 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
 
                 if remaining_segments.is_empty() {
                     debug!(
-                        "Skipping reserved-memory {} [{:#x}~{:#x}] because it is fully covered by existing memory_regions",
+                        "Skipping reserved-memory {} [{:#x}~{:#x}] because it is fully covered by \
+                         existing memory_regions",
                         node_path,
                         gpa,
                         gpa + size
@@ -418,7 +421,8 @@ pub fn set_phys_cpu_sets(
             new_phys_cpu_sets.push(cpu_mask);
             guest_phys_cpu_ids.push(*guest_cpu_id);
             debug!(
-                "vCPU {} with phys_cpu_id 0x{:x} mapped to CPU index {} (mask: 0x{:x}), guest CPU ID 0x{:x}",
+                "vCPU {} with phys_cpu_id 0x{:x} mapped to CPU index {} (mask: 0x{:x}), guest CPU \
+                 ID 0x{:x}",
                 vm_cfg.id(),
                 phys_cpu_id,
                 cpu_index,
@@ -473,7 +477,8 @@ fn add_device_address_config(
         base_address < emu_end && emu_start < addr_end
     }) {
         debug!(
-            "Skipping passthrough mapping for node {} [{:#x}~{:#x}] because it overlaps emulated device {} [{:#x}~{:#x}]",
+            "Skipping passthrough mapping for node {} [{:#x}~{:#x}] because it overlaps emulated \
+             device {} [{:#x}~{:#x}]",
             node_name,
             base_address,
             addr_end,

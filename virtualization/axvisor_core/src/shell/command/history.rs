@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{string::String, vec::Vec};
-
+use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 
 pub struct CommandHistory {

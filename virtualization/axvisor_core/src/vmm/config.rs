@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::sync::Arc;
+use core::alloc::Layout;
+
 use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 use axvm::{
@@ -20,9 +23,6 @@ use axvm::{
         AxVMConfig, AxVMCrateConfig, VMBootProtocol, VmMemMappingType, adjusted_kernel_load_gpa,
     },
 };
-use core::alloc::Layout;
-
-use crate::vmm::{VM, images::ImageLoader, vm_list::push_vm};
 
 #[cfg(any(
     target_arch = "aarch64",
@@ -30,13 +30,11 @@ use crate::vmm::{VM, images::ImageLoader, vm_list::push_vm};
     target_arch = "riscv64"
 ))]
 use crate::vmm::fdt::*;
-
-use alloc::sync::Arc;
+use crate::vmm::{VM, images::ImageLoader, vm_list::push_vm};
 
 #[allow(dead_code)]
 pub mod vmcfg {
-    use alloc::string::String;
-    use alloc::vec::Vec;
+    use alloc::{string::String, vec::Vec};
 
     /// Default static VM configs. Used when no VM config is provided.
     pub fn default_static_vm_configs() -> Vec<&'static str> {

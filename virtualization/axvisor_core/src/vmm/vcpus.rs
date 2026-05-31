@@ -13,16 +13,15 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use ax_cpumask::CpuMask;
-use ax_kspin::SpinNoIrq as Mutex;
-use axvisor_api::task::{TaskHandle, WaitQueue};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use ax_cpumask::CpuMask;
 use ax_errno::{AxResult, ax_err_type};
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
+use axvisor_api::task::{TaskHandle, WaitQueue};
 
-use crate::hal::arch::inject_interrupt;
 use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
@@ -131,7 +130,6 @@ impl VMVCpus {
 /// # Arguments
 ///
 /// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
-///
 fn wait(vm_id: usize) {
     if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
         vm_vcpus.wait();
@@ -147,7 +145,6 @@ fn wait(vm_id: usize) {
 ///
 /// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
 /// * `condition` - A closure that returns a boolean value indicating whether the condition is met.
-///
 fn wait_for<F>(vm_id: usize, condition: F)
 where
     F: Fn() -> bool + Send + 'static,
@@ -165,7 +162,6 @@ where
 /// # Arguments
 ///
 /// * `vm_id` - The ID of the VM whose VCpus are to be notified.
-///
 pub(crate) fn notify_primary_vcpu(vm_id: usize) {
     // Generally, the primary VCpu is the first and **only** VCpu in the list.
     if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
@@ -181,7 +177,6 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
 /// # Arguments
 ///
 /// * `vm_id` - The ID of the VM whose VCpus should be notified.
-///
 pub(crate) fn notify_all_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
         vm_vcpus.notify_all();
@@ -254,7 +249,6 @@ fn mark_vcpu_exiting(vm_id: usize) -> bool {
 /// * `vcpu_id` - The ID of the VCpu to be booted.
 /// * `entry_point` - The entry point of the VCpu.
 /// * `arg` - The argument to be passed to the VCpu.
-///
 fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) -> AxResult {
     let vcpu = vm
         .vcpu_list()
@@ -420,7 +414,8 @@ fn vcpu_run() {
                     hardware_entry_failure_reason,
                 } => {
                     warn!(
-                        "VM[{vm_id}] VCpu[{vcpu_id}] run failed with exit code {hardware_entry_failure_reason}"
+                        "VM[{vm_id}] VCpu[{vcpu_id}] run failed with exit code \
+                         {hardware_entry_failure_reason}"
                     );
                 }
                 AxVCpuExitReason::ExternalInterrupt { vector } => {
@@ -477,7 +472,8 @@ fn vcpu_run() {
                     arg,
                 } => {
                     info!(
-                        "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{target_cpu}] entry_point={entry_point:x} arg={arg:#x}"
+                        "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{target_cpu}] \
+                         entry_point={entry_point:x} arg={arg:#x}"
                     );
 
                     // Get the mapping relationship between all vCPUs and physical CPUs from the configuration
@@ -523,7 +519,8 @@ fn vcpu_run() {
                     vector,
                 } => {
                     debug!(
-                        "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
+                        "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, \
+                         target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
                     );
                     if send_to_all {
                         warn!("Send IPI to all CPUs is not implemented yet");
@@ -531,12 +528,13 @@ fn vcpu_run() {
                     }
 
                     if target_cpu == vcpu_id as u64 || send_to_self {
-                        inject_interrupt(vector as _);
+                        axvisor_api::arch::inject_virtual_interrupt(vector as _);
                     } else if let Err(err) =
                         vm.inject_interrupt_to_vcpu(CpuMask::one_shot(target_cpu as _), vector as _)
                     {
                         warn!(
-                            "Failed to inject interrupt {vector} to VM[{vm_id}] CPU {target_cpu}: {err:?}"
+                            "Failed to inject interrupt {vector} to VM[{vm_id}] CPU {target_cpu}: \
+                             {err:?}"
                         );
                     }
                 }
