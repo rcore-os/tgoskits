@@ -149,15 +149,26 @@ export CARGO_HOME=/root/.cargo
 
 cd /opt/starryos
 
-# Pre-extracted registry sources from nspawn are readable by
+# # Pre-extracted registry sources from nspawn are readable by
 # rsext4 — cargo only needs READ access during compilation.
-# Local workspace crate dep-graph writes go to a tiny tmpfs
-# as defense-in-depth against any remaining cache edge cases.
-echo "[self-compile] Using pre-extracted registry sources"
+# Registry crate dep-graph writes go to tmpfs to work around an
+# ext4 cache coherence bug (directory modifications via write_blocks
+# may not be visible to subsequent lookups via read_blocks).
+echo "[self-compile] Moving registry src to tmpfs..."
+REGISTRY_SRC=/root/.cargo/registry/src
+if ! mountpoint -q "\$REGISTRY_SRC" 2>/dev/null; then
+    mkdir -p /tmp/.registry-src
+    cp -a "\$REGISTRY_SRC"/. /tmp/.registry-src/
+    mount -t tmpfs -o size=1500M none "\$REGISTRY_SRC"
+    cp -a /tmp/.registry-src/. "\$REGISTRY_SRC"/
+    rm -rf /tmp/.registry-src
+fi
+# Local workspace crate dep-graph writes go to a tiny tmpfs too.
 mkdir -p /opt/starryos/false
 if ! mountpoint -q /opt/starryos/false 2>/dev/null; then
     mount -t tmpfs -o size=100M none /opt/starryos/false
 fi
+echo "[self-compile] tmpfs setup complete"
 
 echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
