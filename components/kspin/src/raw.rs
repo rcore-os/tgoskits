@@ -91,8 +91,10 @@ unsafe impl<G: BaseGuard + Send + Sync + 'static> lock_api::RawMutex for BaseRaw
                 .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
-                // Wait until the lock looks unlocked before retrying.
-                while self.locked.load(Ordering::Relaxed) {
+                // Wait until the lock looks unlocked before retrying. Use
+                // `Acquire` (matching `BaseSpinLock::is_locked`) so this read
+                // does not mix Relaxed with the stronger orderings on `locked`.
+                while self.locked.load(Ordering::Acquire) {
                     core::hint::spin_loop();
                 }
             }
