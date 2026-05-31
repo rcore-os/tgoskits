@@ -364,6 +364,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3().into(),
         ),
+        Sysno::epoll_wait => sys_epoll_wait(
+            uctx.arg0() as _,
+            uctx.arg1().into(),
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
         Sysno::epoll_pwait => sys_epoll_pwait(
             uctx.arg0() as _,
             uctx.arg1().into(),

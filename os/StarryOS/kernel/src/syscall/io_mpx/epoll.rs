@@ -187,6 +187,27 @@ fn do_epoll_wait(
     Ok(count)
 }
 
+pub fn sys_epoll_wait(
+    epfd: i32,
+    events: UserPtr<epoll_event>,
+    maxevents: i32,
+    timeout: i32,
+) -> AxResult<isize> {
+    let timeout = match timeout {
+        -1 => None,
+        t if t >= 0 => Some(Duration::from_millis(t as u64)),
+        _ => return Err(AxError::InvalidInput),
+    };
+    do_epoll_wait(
+        epfd,
+        events,
+        maxevents,
+        timeout,
+        UserConstPtr::<SignalSet>::default(),
+        0,
+    )
+}
+
 pub fn sys_epoll_pwait(
     epfd: i32,
     events: UserPtr<epoll_event>,
