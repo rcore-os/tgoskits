@@ -501,54 +501,68 @@ impl CachedFileShared {
 
     /// Scan the LRU and evict up to `max` clean pages.
     ///
-    /// Collects non-dirty pages from the LRU cache (least-recently-used
-    /// first), pops them, notifies all registered evict listeners, and
-    /// drops the pages (freeing their backing physical memory).
-    /// Returns the number of pages evicted.
+    /// Two-phase eviction:
+    /// 1. Under `page_cache` lock: identify clean pages, pop them from the
+    ///    cache, and move them into a local buffer.
+    /// 2. Outside `page_cache` lock: invoke evict listeners.  If all
+    ///    listeners confirm the PTE unmap, the page is dropped (freeing its
+    ///    physical frame).  If any listener cannot unmap (e.g., AddrSpace
+    ///    lock contention), the page is re-inserted into the cache to
+    ///    prevent use-after-free.
     ///
-    /// # Lock ordering: `page_cache` -> `evict_listeners`
+    /// Returns the number of pages successfully evicted.
     ///
-    /// This function holds the `page_cache` lock while acquiring
-    /// `evict_listeners`.  Listeners must never acquire `page_cache`
-    /// (or any lock taken before `evict_listeners`), or a deadlock will
-    /// occur.  The current callers (address-space backend page-table
-    /// invalidation) do not touch the file's page cache, so this
-    /// ordering is safe in practice.
+    /// # Lock ordering
     ///
-    /// TODO: restructure to drop `page_cache` lock before acquiring
-    /// `evict_listeners` by collecting evicted pages into a stack buffer.
-    /// This would eliminate the latent deadlock risk for future listeners.
+    /// `page_cache` is released before acquiring `evict_listeners`,
+    /// eliminating the latent deadlock risk that exists when listeners
+    /// are called under the cache lock.
     fn try_evict_clean_pages(&self, max: usize) -> usize {
-        let Some(mut cache) = self.page_cache.try_lock() else {
-            return 0;
-        };
-        let mut to_evict = [0u32; 256];
         let limit = max.min(256);
-        let mut cnt = 0;
-        for (&pn, page) in cache.iter().rev() {
-            if !page.dirty && cnt < limit {
-                to_evict[cnt] = pn;
-                cnt += 1;
+
+        // Phase 1: Pop clean pages from LRU under page_cache lock.
+        // Two-pass: first collect page numbers (borrows cache immutably),
+        // then pop by number (borrows cache mutably).
+        let mut pending: Vec<(u32, PageCache)> = Vec::new();
+        {
+            let Some(mut cache) = self.page_cache.try_lock() else {
+                return 0;
+            };
+            let mut to_pop = [0u32; 256];
+            let mut cnt = 0;
+            for (&pn, page) in cache.iter().rev() {
+                if !page.dirty && cnt < limit {
+                    to_pop[cnt] = pn;
+                    cnt += 1;
+                }
             }
-        }
+            for &pn in to_pop[..cnt].iter() {
+                if let Some(page) = cache.pop(&pn) {
+                    pending.push((pn, page));
+                }
+            }
+        } // page_cache lock released
+
+        // Phase 2: Invoke listeners outside page_cache lock.
         let mut evicted = 0;
-        for &pn in to_evict[..cnt].iter() {
-            if let Some(page) = cache.pop(&pn) {
-                let mut all_ok = true;
-                for listener in self.evict_listeners.lock().iter() {
-                    if !(listener.listener)(pn, &page) {
-                        all_ok = false;
-                    }
+        for (pn, page) in pending.into_iter() {
+            let mut all_ok = true;
+            for listener in self.evict_listeners.lock().iter() {
+                if !(listener.listener)(pn, &page) {
+                    all_ok = false;
+                    break;
                 }
-                if all_ok {
-                    // All listeners confirmed unmap — safe to drop (free physical frame).
-                    evicted += 1;
-                } else {
-                    // At least one listener could not unmap (e.g., AddrSpace lock
-                    // contention).  Put the page back to avoid freeing a physical
-                    // frame that still has live PTEs pointing to it.
-                    cache.put(pn, page);
-                }
+            }
+            if all_ok {
+                // All listeners confirmed unmap — drop page (frees physical frame).
+                drop(page);
+                evicted += 1;
+            } else {
+                // Listener could not unmap (e.g., AddrSpace lock contention).
+                // Re-insert page into cache to avoid freeing a physical frame
+                // that still has live PTEs pointing to it.
+                let mut cache = self.page_cache.lock();
+                cache.put(pn, page);
             }
         }
         evicted
