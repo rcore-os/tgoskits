@@ -8,8 +8,8 @@
 
 | 架构 | 种子内核 | QEMU 启动 | rootfs | 自编译 | 耗时 | 备注 |
 |------|---------|----------|--------|--------|------|------|
-| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1, 12GB RAM |
-| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | 6m53s | KVM + SMP=1, 12GB RAM, 301 crates |
+| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1 |
+| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | 6m53s | KVM + SMP=1, 301 crates |
 
 ### 测试链路
 
@@ -18,11 +18,11 @@ Host (Linux)
   └─ scripts/self-compile.sh --arch <arch>
       ├─ cargo xtask starry build        (种子内核)
       ├─ loopback mount → inject files   (脚本/配置注入)
-      └─ expect + QEMU (-m 12G)
+      └─ expect + QEMU (-m 8G)
           └─ StarryOS 内核
               └─ Debian rootfs (ext4)
                   └─ /usr/bin/self-compile-inner.sh
-                      ├─ mount tmpfs (12G)
+                      ├─ mount tmpfs (8G)
                       ├─ filter-workspace.sh (架构过滤)
                       └─ cargo build -p starryos --offline
 ```
@@ -34,23 +34,22 @@ Host (Linux)
 | #797 | 信号传递修复：`interrupt_waker.wake()` 唤醒被 `future_blocked_resched` 移出运行队列的任务 | 无此修复，cargo 子进程（build script）挂起，父进程 waitpid 永远阻塞 |
 | #1007 | 页回收：内存压力下驱逐干净文件支持页面，`try_page_reclaim()` 最多重试 4 次 | 无此修复，编译 `syn` 时 OOM panic（大量源码/产物占满文件缓存） |
 | #971 | rsext4 clock LRU 缓存（4 入口/16 KiB），减少 virtio 块设备 round-trip | 加速离线 registry 读取，将依赖解析从分钟级降到秒级 |
-| #1076 | `scripts/self-compile.sh` 升级：tmpfs、rootfs 清理、jemalloc 过滤、QEMU 12G | host 端自助编译流程依赖此 PR 获得 12G 内存和 tmpfs 支持 |
 
 ## 共通阻塞点（riscv64 + x86_64）
 
 ### 1. 内存检测仅识别 512MB
 
-**现象**: QEMU `-m 12G` 但内核只识别 ~510MB。
+**现象**: QEMU `-m 8G` 但内核只识别 ~510MB。
 
 **根因**: `axplat-riscv64-qemu-virt` 的 `axconfig.toml` 硬编码 `phys-memory-size = 0x2000_0000`。
 
-**修复**: 改为 `phys-memory-size = "0x2_0000_0000"` (8GB)。x86_64 使用 `axplat-dyn` + `somehal::mem::memory_map()` 动态检测，无此问题。**注**: 实际测试中 8GB 存在 OOM 风险，建议使用 `0x3_0000_0000` (12GB)。
+**修复**: 改为 `phys-memory-size = "0x2_0000_0000"` (8GB)。x86_64 使用 `axplat-dyn` + `somehal::mem::memory_map()` 动态检测，无此问题。
 
 **注**: PR #987 重构了 ax-alloc，移除了旧 bitmap 页分配器（及 `page-alloc-*` 特性），改用 TLSF/buddy-slab。TLSF 无硬编码容量限制，不再需要 `page-alloc-64g` passthrough。
 
 ### 2. TMPFS 挂载失败
 
-**现象**: `mount -t tmpfs -o size=12G tmpfs /tmp` 失败。
+**现象**: `mount -t tmpfs -o size=8G tmpfs /tmp` 失败。
 
 **根因**: mount(8) 优先使用新版 mount API（`fsopen`/`fsconfig`/`fsmount`）。StarryOS 将 `fsopen` 实现为 `sys_dummy_fd`（返回伪 fd），mount(8) 误以为挂载成功但后续操作失败，不会回退到传统 `mount(2)`。
 
@@ -64,9 +63,9 @@ Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 
 **现象**: 所有 crate 编译通过，但最终链接失败: `undefined symbol: _ex_table_end`。
 
-**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
+**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`ext_linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
 
-**修复** (`os/StarryOS/starryos/linker.ld`):
+**修复** (`os/StarryOS/starryos/ext_linker.ld`):
 ```ld
 PROVIDE(_ex_table_start = 0);
 PROVIDE(_ex_table_end = 0);
@@ -190,37 +189,28 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
 
 ## 测试配置
 
-测试用例位于 `apps/starry/selfhost/`，通过 Starry app 系统运行。
+测试用例位于 `test-suit/starryos/selfhost-manual/`，**不在** `normal/` 目录下，不参与标准 CI。
 
 ```
-apps/starry/selfhost/
-├── build-riscv64gc-unknown-none-elf.toml      # 构建配置
-├── selfhost-full-kernel/                      # 完整编译测试（timeout=7200s）
+test-suit/starryos/selfhost-manual/
+├── build-riscv64gc-unknown-none-elf.toml    # 构建配置
+├── selfhost-full-kernel/                     # 完整编译测试（timeout=7200s）
 │   ├── qemu-riscv64.toml
-│   └── sh/self-compile.sh                     # Guest 内执行的编译脚本
-└── test-selfhost-check/                       # 快速工具检查（timeout=120s）
+│   └── sh/self-compile.sh                   # Guest 内执行的编译脚本
+└── test-selfhost-check/                      # 快速工具检查（timeout=120s）
     └── qemu-riscv64.toml
 ```
 
 **CI 不运行的原因**: Debian rootfs 镜像（~8-12GB）未上传到 tgosimages release，CI 容器无法下载。
 
-**手动运行（app 方式，使用 apps/starry/selfhost/ 中的 12G 配置）**:
+**手动运行**:
 ```bash
-# 完整自编译
-cargo xtask starry app qemu --arch riscv64 -t selfhost/selfhost-full-kernel
-
-# 快速工具检查
-cargo xtask starry app qemu --arch riscv64 -t selfhost/test-selfhost-check
-```
-
-**手动运行（host 脚本方式，需先合入 PR #1076 以升级到 12G）**:
-```bash
-./scripts/self-compile.sh --arch riscv64
+cargo xtask starry test qemu --arch riscv64 --test-suite test-suit/starryos/selfhost-manual -c selfhost-full-kernel
 ```
 
 ## 已知限制
 
-1. **`phys-memory-size` 硬编码**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。自编译需要 `-m 12G` + `axconfig_overrides = ["plat.phys-memory-size=0x3_0000_0000"]`。8GB 在实测中出现 OOM，不建议使用。
+1. **`phys-memory-size` 硬编码 8GB**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。标准 CI 测试使用默认内存配置，自编译需要 `-m 8G`。
 2. **自编译测试不在标准 CI 中运行**: 需要 8-12GB rootfs 镜像，仅支持本地手动测试。
 3. **SMP > 1 未验证**: ext4 `SpinNoPreempt` 死锁 workaround 为 SMP=1。x86_64 通过 KVM 加速弥补单核性能。
 4. **aarch64 引导已验证**: rootfs 准备 + 种子内核引导 + shell 可用均通过，完整编译因 TCG 模拟性能限制（预计 4-8h）未运行。需 `plat_dyn=true` + PIE 目标（`--config test-suit/starryos/normal/qemu-smp1/build-aarch64-unknown-none-softfloat.toml`）。
@@ -228,7 +218,7 @@ cargo xtask starry app qemu --arch riscv64 -t selfhost/test-selfhost-check
 
 ## 环境要求
 
-- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG), `-m 12G`
+- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG), `-m 8G`
 - **内核**: StarryOS (dev 分支)
 - **根文件系统**: Debian (per-arch), ext4, rustc nightly-2026-04-27
 - **Host 依赖**: `qemu-system-*`, `expect`, `sudo`（免密）, `systemd-nspawn`
