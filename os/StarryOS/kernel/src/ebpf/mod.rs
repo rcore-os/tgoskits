@@ -23,7 +23,7 @@ use ax_lazyinit::LazyInit;
 use kbpf_basic::{
     BpfError,
     helper::RawBPFHelperFn,
-    linux_bpf::bpf_attr,
+    linux_bpf::{bpf_attr, bpf_cmd},
     map::{
         BpfMapGetNextKeyArg, BpfMapMeta, BpfMapUpdateArg, bpf_lookup_elem, bpf_map_delete_elem,
         bpf_map_freeze, bpf_map_get_next_key, bpf_map_lookup_and_delete_elem, bpf_map_update_elem,
@@ -56,46 +56,6 @@ pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyIni
 pub fn init_ebpf() {
     let set = kbpf_basic::helper::init_helper_functions::<EbpfKernelAuxiliary>();
     BPF_HELPER_FUN_SET.init_once(set);
-}
-
-#[allow(dead_code)]
-mod cmd {
-    pub const BPF_MAP_CREATE: u64 = 0;
-    pub const BPF_MAP_LOOKUP_ELEM: u64 = 1;
-    pub const BPF_MAP_UPDATE_ELEM: u64 = 2;
-    pub const BPF_MAP_DELETE_ELEM: u64 = 3;
-    pub const BPF_MAP_GET_NEXT_KEY: u64 = 4;
-    pub const BPF_PROG_LOAD: u64 = 5;
-    pub const BPF_OBJ_PIN: u64 = 6;
-    pub const BPF_OBJ_GET: u64 = 7;
-    pub const BPF_PROG_ATTACH: u64 = 8;
-    pub const BPF_PROG_DETACH: u64 = 9;
-    pub const BPF_PROG_TEST_RUN: u64 = 10;
-    pub const BPF_PROG_GET_NEXT_ID: u64 = 11;
-    pub const BPF_MAP_GET_NEXT_ID: u64 = 12;
-    pub const BPF_PROG_GET_FD_BY_ID: u64 = 13;
-    pub const BPF_MAP_GET_FD_BY_ID: u64 = 14;
-    pub const BPF_OBJ_GET_INFO_BY_FD: u64 = 15;
-    pub const BPF_PROG_QUERY: u64 = 16;
-    pub const BPF_RAW_TRACEPOINT_OPEN: u64 = 17;
-    pub const BPF_BTF_LOAD: u64 = 18;
-    pub const BPF_BTF_GET_FD_BY_ID: u64 = 19;
-    pub const BPF_TASK_FD_QUERY: u64 = 20;
-    pub const BPF_MAP_LOOKUP_AND_DELETE_ELEM: u64 = 21;
-    pub const BPF_MAP_FREEZE: u64 = 22;
-    pub const BPF_BTF_GET_NEXT_ID: u64 = 23;
-    pub const BPF_MAP_LOOKUP_BATCH: u64 = 24;
-    pub const BPF_MAP_LOOKUP_AND_DELETE_BATCH: u64 = 25;
-    pub const BPF_MAP_UPDATE_BATCH: u64 = 26;
-    pub const BPF_MAP_DELETE_BATCH: u64 = 27;
-    pub const BPF_LINK_CREATE: u64 = 28;
-    pub const BPF_LINK_UPDATE: u64 = 29;
-    pub const BPF_LINK_GET_FD_BY_ID: u64 = 30;
-    pub const BPF_LINK_GET_NEXT_ID: u64 = 31;
-    pub const BPF_ENABLE_STATS: u64 = 32;
-    pub const BPF_ITER_CREATE: u64 = 33;
-    pub const BPF_LINK_DETACH: u64 = 34;
-    pub const BPF_PROG_BIND_MAP: u64 = 35;
 }
 
 /// Convert a kbpf-basic [`BpfError`] (which is `axerrno::LinuxError` from
@@ -217,39 +177,28 @@ fn handle_raw_tracepoint_open(attr: &bpf_attr) -> AxResult<isize> {
     bpf_raw_tracepoint_open(arg)
 }
 
-/// `bpf(2)` syscall entry-point.
+/// `bpf(2)` syscall entry-point. The numeric command is decoded into the
+/// canonical [`bpf_cmd`] enum from `kbpf-basic` (no locally-redefined
+/// command constants).
 pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
+    let cmd = bpf_cmd::try_from(cmd as u32).map_err(|_| {
+        warn!("bpf: unrecognized command {cmd}");
+        AxError::Unsupported
+    })?;
     let attr = read_bpf_attr(uattr, size)?;
     match cmd {
-        cmd::BPF_MAP_CREATE => handle_map_create(&attr),
-        cmd::BPF_PROG_LOAD => handle_prog_load(&attr),
-        cmd::BPF_RAW_TRACEPOINT_OPEN => handle_raw_tracepoint_open(&attr),
-        cmd::BPF_MAP_UPDATE_ELEM => handle_map_update(&attr),
-        cmd::BPF_MAP_LOOKUP_ELEM => handle_map_lookup(&attr),
-        cmd::BPF_MAP_DELETE_ELEM => handle_map_delete(&attr),
-        cmd::BPF_MAP_GET_NEXT_KEY => handle_map_get_next_key(&attr),
-        cmd::BPF_MAP_FREEZE => handle_map_freeze(&attr),
-        cmd::BPF_MAP_LOOKUP_AND_DELETE_ELEM => handle_map_lookup_and_delete(&attr),
-        _ => {
-            warn!("bpf: unsupported command {cmd}");
+        bpf_cmd::BPF_MAP_CREATE => handle_map_create(&attr),
+        bpf_cmd::BPF_PROG_LOAD => handle_prog_load(&attr),
+        bpf_cmd::BPF_RAW_TRACEPOINT_OPEN => handle_raw_tracepoint_open(&attr),
+        bpf_cmd::BPF_MAP_UPDATE_ELEM => handle_map_update(&attr),
+        bpf_cmd::BPF_MAP_LOOKUP_ELEM => handle_map_lookup(&attr),
+        bpf_cmd::BPF_MAP_DELETE_ELEM => handle_map_delete(&attr),
+        bpf_cmd::BPF_MAP_GET_NEXT_KEY => handle_map_get_next_key(&attr),
+        bpf_cmd::BPF_MAP_FREEZE => handle_map_freeze(&attr),
+        bpf_cmd::BPF_MAP_LOOKUP_AND_DELETE_ELEM => handle_map_lookup_and_delete(&attr),
+        other => {
+            warn!("bpf: unsupported command {other:?}");
             Err(AxError::Unsupported)
         }
     }
-}
-
-/// `perf_event_open(2)` entry. Trampolines into `crate::perf` which holds
-/// the dispatcher across kprobe / tracepoint / software / uprobe types.
-pub fn sys_perf_event_open(
-    attr_uptr: usize,
-    pid: i32,
-    cpu: i32,
-    group_fd: i32,
-    flags: u64,
-) -> AxResult<isize> {
-    let mut buf = vec![0u8; core::mem::size_of::<kbpf_basic::linux_bpf::perf_event_attr>()];
-    VmBytes::new(attr_uptr as *mut u8, buf.len()).read(&mut buf)?;
-    // SAFETY: perf_event_attr is a `repr(C)` POD; the user buffer is copied
-    // bytewise above and we treat the result as the structure.
-    let attr = unsafe { &*(buf.as_ptr() as *const kbpf_basic::linux_bpf::perf_event_attr) };
-    crate::perf::perf_event_open(attr, pid, cpu, group_fd, flags as u32)
 }

@@ -17,11 +17,9 @@ use core::{
     fmt::{Debug, Formatter},
 };
 
-use ax_alloc::{UsageKind, global_allocator};
 use ax_io::{Read, Write};
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
-    mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize},
     percpu::this_cpu_id,
     time::monotonic_time_nanos,
@@ -131,28 +129,6 @@ impl<T: Send + Sync + Clone> PerCpuVariants<T> for PerCpuVariantsImpl<T> {
 #[derive(Debug)]
 pub struct EbpfKernelAuxiliary;
 
-fn frame_alloc(zeroed: bool, size: PageSize) -> Result<PhysAddr, BpfError> {
-    let page_size = size as usize;
-    let num_pages = page_size / PAGE_SIZE_4K;
-    let vaddr = VirtAddr::from(
-        global_allocator()
-            .alloc_pages(num_pages, page_size, UsageKind::VirtMem)
-            .map_err(|_| BpfError::ENOMEM)?,
-    );
-    if zeroed {
-        // SAFETY: just-allocated, page-aligned region of `page_size` bytes.
-        unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, page_size) };
-    }
-    Ok(virt_to_phys(vaddr))
-}
-
-fn frame_dealloc(paddr: PhysAddr, size: PageSize) {
-    let page_size: usize = size.into();
-    let num_pages = page_size / PAGE_SIZE_4K;
-    let vaddr = phys_to_virt(paddr);
-    global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
-}
-
 impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     fn get_unified_map_from_ptr<F, R>(ptr: *const u8, func: F) -> kbpf_basic::BpfResult<R>
     where
@@ -248,11 +224,16 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn alloc_page() -> kbpf_basic::BpfResult<usize> {
-        frame_alloc(true, PageSize::Size4K).map(|p| p.as_usize())
+        // Reuse the address-space backend's frame allocator
+        // (`mm::aspace::backend::alloc_frame`) so eBPF page allocation goes
+        // through the same path as the rest of the kernel.
+        crate::mm::alloc_frame(true, PageSize::Size4K)
+            .map(|p| p.as_usize())
+            .map_err(|_| BpfError::ENOMEM)
     }
 
     fn free_page(phys_addr: usize) {
-        frame_dealloc(PhysAddr::from_usize(phys_addr), PageSize::Size4K);
+        crate::mm::dealloc_frame(PhysAddr::from_usize(phys_addr), PageSize::Size4K);
     }
 
     fn vmap(phys_addrs: &[usize]) -> kbpf_basic::BpfResult<usize> {

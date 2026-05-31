@@ -22,12 +22,10 @@ pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
 
-    #[cfg(feature = "ebpf")]
     {
-        // Symbol data feeding is a follow-up; `kallsyms_lookup_name` (used by
-        // perf kprobe-by-name) returns `None` until populated. `/proc/kallsyms`
-        // is served independently via the `ksym` crate in `pseudofs::proc`.
-        crate::kallsyms::kallsyms_init("");
+        // perf kprobe-by-name resolves through the real in-kernel `.kallsyms`
+        // blob (`pseudofs::proc::KALLSYMS`, built from the `ksym` crate), the
+        // same table `/proc/kallsyms` exposes — no separate symbol table.
         crate::ebpf::init_ebpf();
         crate::perf::perf_event_init();
     }

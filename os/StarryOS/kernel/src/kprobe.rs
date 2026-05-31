@@ -17,15 +17,12 @@
 //! - [`handle_breakpoint`]: Entry point for breakpoint exceptions (INT3/EBREAK/BRK)
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
-#[cfg(feature = "ebpf")]
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use kprobe::KprobeAuxiliaryOps;
-#[cfg(feature = "ebpf")]
 use kprobe::{
-    KretprobeBuilder, ProbeBuilder, ProbePointList,
+    KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
     register_kprobe as kprobe_crate_register_kprobe,
     register_kretprobe as kprobe_crate_register_kretprobe,
     unregister_kprobe as kprobe_crate_unregister_kprobe,
@@ -185,23 +182,18 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
 }
 
 type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
-#[cfg(feature = "ebpf")]
 type KprobePointList = ProbePointList<KernelKprobeOps>;
 
 /// Concrete `kprobe::Kprobe` parameterized on the kernel's `RawMutex` and
 /// auxiliary ops, named to match what the perf module expects.
-#[cfg(feature = "ebpf")]
 pub type KernelKprobe = kprobe::Kprobe<KernelRawMutex, KernelKprobeOps>;
 /// Concrete `kprobe::Kretprobe`.
-#[cfg(feature = "ebpf")]
 pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
 /// The `KprobeAuxiliaryOps` impl, aliased under the name the perf module uses.
-#[cfg(feature = "ebpf")]
 pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
     ax_sync::spin::SpinNoIrq::new(None);
-#[cfg(feature = "ebpf")]
 static KPROBE_POINT_LIST: ax_sync::spin::SpinNoIrq<Option<KprobePointList>> =
     ax_sync::spin::SpinNoIrq::new(None);
 
@@ -216,7 +208,6 @@ where
     f(guard.as_mut().expect("kprobe: manager not initialized"))
 }
 
-#[cfg(feature = "ebpf")]
 fn with_manager_and_list<F, R>(f: F) -> R
 where
     F: FnOnce(&mut KprobeManager, &mut KprobePointList) -> R,
@@ -233,25 +224,21 @@ where
 }
 
 /// Register a kprobe into the global manager, returning the live handle.
-#[cfg(feature = "ebpf")]
 pub fn register_kprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelKprobe> {
     with_manager_and_list(|mgr, list| kprobe_crate_register_kprobe(mgr, list, builder))
 }
 
 /// Unregister a previously registered kprobe.
-#[cfg(feature = "ebpf")]
 pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kprobe(mgr, list, kprobe));
 }
 
 /// Register a kretprobe and return its live handle.
-#[cfg(feature = "ebpf")]
 pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
     with_manager_and_list(|mgr, list| kprobe_crate_register_kretprobe(mgr, list, builder))
 }
 
 /// Unregister a previously registered kretprobe.
-#[cfg(feature = "ebpf")]
 pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }

@@ -76,14 +76,14 @@ impl PerfEventOps for TracepointPerfEvent {
     fn set_bpf_prog(&mut self, bpf_prog: Arc<dyn FileLike>) -> AxResult<()> {
         // `OwnedEbpfVm` bundles the rbpf interpreter with the `Arc<BpfProg>`
         // that backs its instruction slice (drop order is field-order, so
-        // the borrower dies before the buffer). Wrap it in a Mutex because
-        // the `TraceEventFunc` closure only receives `&dyn Any`, but
-        // `execute_program` takes `&mut self`.
+        // the borrower dies before the buffer). `execute_program` runs off
+        // `&self`, so the VM is driven directly from the `&dyn Any` the
+        // `TraceEventFunc` closure receives — no lock required.
         struct Ctx {
-            vm: spin::Mutex<OwnedEbpfVm>,
+            vm: OwnedEbpfVm,
         }
         let ctx = Box::new(Ctx {
-            vm: spin::Mutex::new(OwnedEbpfVm::new(bpf_prog)?),
+            vm: OwnedEbpfVm::new(bpf_prog)?,
         });
 
         let func: TpCallback = Box::new(|entry: &[u8], data: &(dyn Any + Send + Sync)| {
@@ -95,8 +95,7 @@ impl PerfEventOps for TracepointPerfEvent {
             // tracepoint contract.
             let entry =
                 unsafe { core::slice::from_raw_parts_mut(entry.as_ptr() as *mut u8, entry.len()) };
-            let mut vm = ctx.vm.lock();
-            if let Err(e) = vm.execute_program(entry) {
+            if let Err(e) = ctx.vm.execute_program(entry) {
                 error!("tracepoint BPF program failed: {e:?}");
             }
         });
@@ -109,16 +108,21 @@ impl PerfEventOps for TracepointPerfEvent {
     }
 
     fn enable(&mut self) -> AxResult<()> {
-        // ExtTracePoint enables the underlying static key when its
-        // callback list becomes non-empty (see ktracepoint 0.6 source).
-        // Explicit enable here is therefore a no-op; we keep the trait
-        // contract by returning Ok.
+        // ktracepoint dispatch only invokes a cooked `TraceEventFunc` when
+        // its per-callback `perf_enabled` flag is set (see ktracepoint 0.6
+        // `basic_macro.rs`), and `TraceEventFunc::new` starts disabled. So a
+        // perf event that is registered but not enabled would silently never
+        // fire — we must flip the flag on every callback we registered.
+        for cb in &self.registered {
+            cb.set_perf_enable(true);
+        }
         Ok(())
     }
 
     fn disable(&mut self) -> AxResult<()> {
-        // Symmetric no-op; explicit disable is achieved by dropping the
-        // perf event (which unregisters every callback).
+        for cb in &self.registered {
+            cb.set_perf_enable(false);
+        }
         Ok(())
     }
 

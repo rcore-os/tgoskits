@@ -75,14 +75,14 @@ impl RawTracepointPerfEvent {
     /// Register a BPF program as a raw-tracepoint callback on `ext_tp`.
     pub fn new(ext_tp: KernelExtTracePoint, bpf_prog: Arc<dyn FileLike>) -> AxResult<Self> {
         // `OwnedEbpfVm` keeps the program's instruction buffer alive for as
-        // long as the interpreter borrows into it. A `spin::Mutex` provides
-        // the `&mut self` access `EbpfVmRaw::execute_program` requires from
-        // inside the immutable raw-tracepoint callback closure.
+        // long as the interpreter borrows into it, and `execute_program`
+        // runs off `&self`, so the VM is invoked directly from the immutable
+        // raw-tracepoint callback closure — no lock required.
         struct Ctx {
-            vm: spin::Mutex<OwnedEbpfVm>,
+            vm: OwnedEbpfVm,
         }
         let ctx = Box::new(Ctx {
-            vm: spin::Mutex::new(OwnedEbpfVm::new(bpf_prog)?),
+            vm: OwnedEbpfVm::new(bpf_prog)?,
         });
 
         let func: RawTpCallback = Box::new(|args: &[u64], data: &(dyn Any + Send + Sync)| {
@@ -99,8 +99,7 @@ impl RawTracepointPerfEvent {
                     core::mem::size_of_val(args),
                 )
             };
-            let mut vm = ctx.vm.lock();
-            if let Err(e) = vm.execute_program(arg_bytes) {
+            if let Err(e) = ctx.vm.execute_program(arg_bytes) {
                 error!("raw_tracepoint BPF program failed: {e:?}");
             }
         });

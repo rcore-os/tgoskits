@@ -8,7 +8,7 @@ mod dir;
 mod dyn_debug;
 mod file;
 mod fs;
-mod proc;
+pub(crate) mod proc;
 mod sysfs;
 mod tmp;
 #[cfg(feature = "plat-dyn")]

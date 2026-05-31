@@ -28,7 +28,6 @@ pub type KernelExtTracePoint = Arc<Mutex<ExtTracePoint<KernelTraceAux>>>;
 ///
 /// Returns `None` if the id is unknown or the registry has not been
 /// initialized yet.
-#[cfg(feature = "ebpf")]
 pub fn lookup_ext_tracepoint(id: u32) -> Option<KernelExtTracePoint> {
     TRACE_STATE.ext_tracepoints.get()?.get(&id).cloned()
 }
@@ -38,7 +37,6 @@ pub fn lookup_ext_tracepoint(id: u32) -> Option<KernelExtTracePoint> {
 ///
 /// Returns `None` if no tracepoint matches or the registry has not been
 /// initialized yet.
-#[cfg(feature = "ebpf")]
 pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
     for ext_tp in TRACE_STATE.ext_tracepoints.get()?.values() {
         if ext_tp.lock().trace_point().name() == name {

@@ -15,10 +15,11 @@ pub mod raw_tracepoint;
 pub mod tracepoint;
 pub mod uprobe;
 
-use alloc::{borrow::Cow, boxed::Box, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
 use core::{any::Any, ffi::c_void, fmt::Debug};
 
 use ax_errno::{AxError, AxResult};
+use ax_io::Read;
 use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
 use axpoll::Pollable;
@@ -32,6 +33,7 @@ use kbpf_basic::{
 use crate::{
     ebpf::transform::EbpfKernelAuxiliary,
     file::{FileLike, Kstat, add_file_like, get_file_like},
+    mm::VmBytes,
 };
 
 /// Behaviour every perf event implements. Each variant in the dispatcher
@@ -125,6 +127,24 @@ impl FileLike for PerfEvent {
         }
         Ok(0)
     }
+}
+
+/// `perf_event_open(2)` syscall entry. Copies the user `perf_event_attr` in
+/// and trampolines into [`perf_event_open`], which holds the dispatcher
+/// across kprobe / tracepoint / software / uprobe types.
+pub fn sys_perf_event_open(
+    attr_uptr: usize,
+    pid: i32,
+    cpu: i32,
+    group_fd: i32,
+    flags: u64,
+) -> AxResult<isize> {
+    let mut buf = vec![0u8; core::mem::size_of::<perf_event_attr>()];
+    VmBytes::new(attr_uptr as *mut u8, buf.len()).read(&mut buf)?;
+    // SAFETY: perf_event_attr is a `repr(C)` POD; the user buffer is copied
+    // bytewise above and we treat the result as the structure.
+    let attr = unsafe { &*(buf.as_ptr() as *const perf_event_attr) };
+    perf_event_open(attr, pid, cpu, group_fd, flags as u32)
 }
 
 /// Dispatcher entry point for `perf_event_open(2)`. Reads the user-supplied

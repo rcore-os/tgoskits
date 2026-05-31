@@ -167,19 +167,29 @@ impl OwnedEbpfVm {
                 let _ = vm.register_helper(*key, *value);
             }
         }
+        // TODO: not all of the address space is accessible to a BPF program;
+        // allowing the full `0..u64::MAX` range disables rbpf's bounds check
+        // and lets a buggy/hostile program read arbitrary kernel memory via
+        // direct loads. Narrow this to the legitimately-reachable context /
+        // map / stack ranges once kbpf-basic exposes the per-program bounds.
         vm.register_allowed_memory(0..u64::MAX);
 
         Ok(Self { vm, _prog: prog })
     }
 
     /// Execute the wrapped BPF program with the supplied context bytes.
-    pub fn execute_program(&mut self, ctx: &mut [u8]) -> Result<u64, rbpf::lib::Error> {
+    ///
+    /// Takes `&self`: `rbpf::EbpfVmRaw::execute_program` is itself `&self`
+    /// (the interpreter keeps its scratch state on the local stack), so no
+    /// exterior mutability — and therefore no lock — is required around an
+    /// `OwnedEbpfVm`.
+    pub fn execute_program(&self, ctx: &mut [u8]) -> Result<u64, rbpf::lib::Error> {
         self.vm.execute_program(ctx)
     }
 
     /// Execute the wrapped BPF program with a `PtRegs` as the single-pointer
     /// context argument the kprobe/kretprobe ABI expects.
-    pub fn execute_with_ptregs(&mut self, pt_regs: &mut PtRegs) -> Result<u64, rbpf::lib::Error> {
+    pub fn execute_with_ptregs(&self, pt_regs: &mut PtRegs) -> Result<u64, rbpf::lib::Error> {
         // SAFETY: kbpf-basic's kprobe-context contract passes a raw
         // pointer to `PtRegs` as the program context; we hand the same
         // bytes here.
@@ -199,10 +209,12 @@ impl Debug for OwnedEbpfVm {
     }
 }
 
-// SAFETY: the bundled `EbpfVmRaw<'static>` is a non-Send/non-Sync interpreter
-// over an immutable instruction slice; the `Arc<BpfProg>` is `Send + Sync`.
-// We promise the caller will only access `OwnedEbpfVm` through a mutex (see
-// `perf::kprobe::KprobePerfCallBack`), so cross-thread transfer is fine and
-// no concurrent `&mut`-access can occur.
+// SAFETY: the bundled `EbpfVmRaw<'static>` is an interpreter over an immutable
+// instruction slice; the `Arc<BpfProg>` backing that slice is `Send + Sync`.
+// `execute_program` runs entirely off `&self` and a private stack, so it is
+// re-entrant and may be driven concurrently from probe-fire paths on several
+// CPUs without data races. The raw-pointer fields rbpf carries internally are
+// never mutated after construction, so promoting the bundle to `Send + Sync`
+// is sound.
 unsafe impl Send for OwnedEbpfVm {}
 unsafe impl Sync for OwnedEbpfVm {}

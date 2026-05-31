@@ -2,8 +2,8 @@
 //! callback ids it has attached to the probe, so `Drop` can detach.
 //!
 //! Ported from `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/perf/kprobe.rs`).
-//! Kallsyms lookup uses tgoskits' `crate::kallsyms::lookup_name` (PR #805
-//! API) instead of the source `pseudofs::KALLSYMS`.
+//! Symbol resolution goes through the real in-kernel `.kallsyms` blob
+//! (`crate::pseudofs::proc::KALLSYMS`), the same table `/proc/kallsyms` reads.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
@@ -130,33 +130,32 @@ impl PerfEventOps for ProbePerfEvent {
 /// invokes `call(&mut pt_regs)` which we hand to the embedded rbpf VM as
 /// its single-pointer context argument.
 pub struct KprobePerfCallBack {
-    /// Interior mutability: the kprobe crate gives us `&self` in `call()`,
-    /// but `rbpf::EbpfVmRaw::execute_program` needs `&mut self`. The
-    /// `kprobe` crate guarantees a callback for a given probe runs serially
-    /// from the probe-fire path, so a `spin::Mutex` is appropriate and
-    /// never actually contends in practice.
-    vm: spin::Mutex<OwnedEbpfVm>,
+    /// `execute_with_ptregs` runs off `&self`, so the VM can be invoked
+    /// directly from the immutable `call(&self, ..)` path — no interior
+    /// mutability / lock required.
+    vm: OwnedEbpfVm,
 }
 
 impl KprobePerfCallBack {
     fn new(vm: OwnedEbpfVm) -> Self {
-        Self {
-            vm: spin::Mutex::new(vm),
-        }
+        Self { vm }
     }
 }
 
 impl CallBackFunc for KprobePerfCallBack {
     fn call(&self, pt_regs: &mut PtRegs) {
-        let mut vm = self.vm.lock();
-        if let Err(e) = vm.execute_with_ptregs(pt_regs) {
+        if let Err(e) = self.vm.execute_with_ptregs(pt_regs) {
             error!("kprobe BPF program failed: {e:?}");
         }
     }
 }
 
 fn lookup_symbol_addr(symbol: &str) -> AxResult<usize> {
-    crate::kallsyms::kallsyms_lookup_name(symbol)
+    // Resolve against the real in-kernel `.kallsyms` blob (the same table
+    // `/proc/kallsyms` is built from) rather than a separate stub.
+    crate::pseudofs::proc::KALLSYMS
+        .get()
+        .and_then(|t| t.lookup_name(symbol))
         .map(|addr| addr as usize)
         .ok_or(AxError::NotFound)
 }
