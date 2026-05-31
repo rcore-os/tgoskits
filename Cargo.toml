@@ -361,9 +361,8 @@ bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
 
-# Temporary: `kbpf-basic 0.5` transitively pins `printf-compat = "^0.3"`, but
-# `printf-compat 0.3.1` fails to build on the current nightly (`VaList::arg`
-# was renamed to `next_arg`). This fork is `printf-compat 0.3.1` with that
-# upstream fix backported. Drop once kbpf-basic moves to `printf-compat 0.4`.
+# `kbpf-basic` depends on `ax-errno` from crates.io; redirect it to our own
+# workspace copy so the kernel and kbpf-basic share a single `ax-errno`
+# (otherwise `BpfError`/`AxError` would be two distinct types).
 [patch.crates-io]
-printf-compat = { git = "https://github.com/LorenzLorentz/printf-compat.git", branch = "nightly-fix-0.3" }
+ax-errno = { path = "components/axerrno" }

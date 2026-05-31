@@ -4996,15 +4996,15 @@ checksum = "753ac4e7753fa007b8f7828d0e01e9ececa48b689460e6380fb36bbf74654a8d"
 
 [[package]]
 name = "kbpf-basic"
-version = "0.5.5"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1acf87cd66e7107697846ab7758fc50681173540017963b7138fa7c6a779d0c9"
+checksum = "43c066bb7997a6daf34a35ad2790570f32f33677dec17538781bbaff4be2248e"
 dependencies = [
- "axerrno",
+ "ax-errno",
  "bitflags 2.11.1",
  "int-enum",
  "log",
- "lru 0.16.4",
+ "lru 0.18.0",
  "printf-compat",
 ]
 
@@ -6188,8 +6188,9 @@ dependencies = [
 
 [[package]]
 name = "printf-compat"
-version = "0.3.1"
-source = "git+https://github.com/LorenzLorentz/printf-compat.git?branch=nightly-fix-0.3#c8cdff509b29231e9159f6b485ecc8d3f543df04"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "613142bc127747febf3eae56e000f1be431756a6eaa8d3f060f9144d938e798c"
 dependencies = [
  "bitflags 2.11.1",
  "itertools 0.14.0",
