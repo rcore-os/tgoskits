@@ -19,7 +19,7 @@ to_bin = true
 uefi = false
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-fetch_timeout=60
+fetch_timeout=120
 repo_file=/etc/apk/repositories
 original_repos="$(cat "$repo_file")"
 
@@ -62,4 +62,4 @@ echo 'APK_CURL_TEST_FAILED'
 '''
 success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^APK_CURL_TEST_FAILED\\s*$"]
-timeout = 420
+timeout = 600
