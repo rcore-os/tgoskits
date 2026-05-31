@@ -5338,6 +5338,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lwprintf-rs"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaa1793daa377959c5d73ee413228fe8f8ebfbac58f02b14d662da7d115a0222"
+dependencies = [
+ "bindgen 0.72.1",
+ "cc",
+]
+
+[[package]]
 name = "lzma-rs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8050,11 +8060,13 @@ dependencies = [
  "kbpf-basic",
  "kernel-elf-parser",
  "kmod-loader",
+ "kmod-tools",
  "kprobe",
  "ksym",
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",
+ "lwprintf-rs",
  "num_enum",
  "ouroboros",
  "rand 0.10.1",
