@@ -53,6 +53,10 @@ use alloc::boxed::Box;
 /// Implementations should be provided by the host system or HAL layer.
 #[crate::api_def]
 pub trait HostIf {
+    /// Perform host-specific one-time preparation before virtualization is
+    /// enabled on all CPUs.
+    fn prepare_virtualization();
+
     /// Get the total number of CPUs (logical processors) in the host system.
     ///
     /// This function returns the number of CPUs available to the hypervisor,

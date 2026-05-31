@@ -12,8 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod api;
-pub mod cache;
-pub use axvisor_core::arch::x86_64::inject_interrupt;
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
 
-pub fn prepare_virtualization() {}
+#[cfg(target_arch = "loongarch64")]
+pub mod loongarch64;
+
+#[cfg(target_arch = "riscv64")]
+pub mod riscv64;
+
+#[cfg(target_arch = "x86_64")]
+pub mod x86_64;
+
+pub fn hardware_check() {
+    #[cfg(target_arch = "aarch64")]
+    aarch64::hardware_check();
+
+    #[cfg(target_arch = "loongarch64")]
+    loongarch64::hardware_check();
+
+    #[cfg(target_arch = "riscv64")]
+    riscv64::hardware_check();
+
+    #[cfg(target_arch = "x86_64")]
+    x86_64::hardware_check();
+}

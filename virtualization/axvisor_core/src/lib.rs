@@ -20,22 +20,32 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[doc(hidden)]
+pub fn _print(args: core::fmt::Arguments<'_>) {
+    use core::fmt::Write as _;
+
+    let mut console = axvisor_api::console::ConsoleWriter::new();
+    let _ = console.write_fmt(args);
+}
+
+#[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {{
-        use core::fmt::Write as _;
-        let mut stdout = axvisor_api::fs::stdout();
-        let _ = write!(&mut stdout, $($arg)*);
+        $crate::_print(format_args!($($arg)*));
     }};
 }
 
+#[macro_export]
 macro_rules! println {
     () => {
-        print!("\n")
+        $crate::print!("\n")
     };
-    ($fmt:expr $(, $($arg:tt)+)?) => {
-        print!(concat!($fmt, "\n") $(, $($arg)+)?)
-    };
+    ($($arg:tt)*) => {{
+        $crate::print!("{}\n", format_args!($($arg)*));
+    }};
 }
 
+pub mod arch;
+pub mod boot;
 pub mod shell;
 pub mod vmm;

@@ -34,7 +34,7 @@ path = "xtask/src/main.rs"
 
 [features]
 default = []
-ept-level-4 = []
+ept-level-4 = ["axvisor_core/ept-level-4"]
 fs = ["ax-std/fs", "axvisor_core/fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]

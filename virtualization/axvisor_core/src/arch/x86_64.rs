@@ -12,8 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod api;
-pub mod cache;
-pub use axvisor_core::arch::x86_64::inject_interrupt;
+use axvisor_api::vmm::{current_vcpu_id, current_vm_id, inject_interrupt as inject_vcpu_interrupt};
 
-pub fn prepare_virtualization() {}
+pub fn hardware_check() {}
+
+pub fn inject_interrupt(vector: u8) {
+    let vm_id = current_vm_id();
+    let vcpu_id = current_vcpu_id();
+
+    debug!(
+        "Injecting x86_64 virtual interrupt: vm_id={vm_id}, vcpu_id={vcpu_id}, vector={vector:#x}"
+    );
+    inject_vcpu_interrupt(vm_id, vcpu_id, vector);
+}

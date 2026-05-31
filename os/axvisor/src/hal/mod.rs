@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_hal::{self, percpu::this_cpu_id};
+use ax_hal;
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
-use axvisor_api::host;
-use axvisor_core::vmm;
-use axvm::AxVMPerCpu;
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch64/mod.rs")]
@@ -25,8 +22,6 @@ use axvm::AxVMPerCpu;
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv64/mod.rs")]
 pub mod arch;
 pub mod task;
-
-use crate::hal::arch::hardware_check;
 
 pub struct AxMmHalImpl;
 
@@ -58,58 +53,6 @@ impl AxMmHal for AxMmHalImpl {
 //         ax_hal::trap::irq_handler(0);
 //     }
 // }
-
-#[ax_percpu::def_percpu]
-static mut AXVM_PER_CPU: AxVMPerCpu = AxVMPerCpu::new_uninit();
-
-/// Init hardware virtualization support in each core.
-pub(crate) fn enable_virtualization() {
-    use core::sync::atomic::AtomicUsize;
-    use core::sync::atomic::Ordering;
-
-    static CORES: AtomicUsize = AtomicUsize::new(0);
-
-    info!("Enabling hardware virtualization support on all cores...");
-
-    hardware_check();
-
-    let cpu_count = host::get_host_cpu_num();
-
-    for cpu_id in 0..cpu_count {
-        host::spawn_cpu_init_task(
-            cpu_id,
-            alloc::boxed::Box::new(move || {
-                info!("Core {cpu_id} is initializing hardware virtualization support...");
-                info!("Enabling hardware virtualization support on core {cpu_id}");
-
-                vmm::init_timer_percpu();
-
-                // SAFETY: We are initializing the per-CPU state for the first time
-                #[allow(static_mut_refs)]
-                let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-                percpu
-                    .init(this_cpu_id())
-                    .expect("Failed to initialize per-CPU state");
-                percpu
-                    .hardware_enable()
-                    .expect("Failed to enable virtualization");
-
-                info!("Hardware virtualization support enabled on core {cpu_id}");
-
-                let _ = CORES.fetch_add(1, Ordering::Release);
-            }),
-        );
-    }
-
-    info!("Waiting for all cores to enable hardware virtualization...");
-
-    // Wait for all cores to enable virtualization.
-    while CORES.load(Ordering::Acquire) != cpu_count {
-        host::yield_now();
-    }
-
-    info!("All cores have enabled hardware virtualization support.");
-}
 
 mod impl_console;
 mod impl_fs;

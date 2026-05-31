@@ -9,6 +9,7 @@ repository = "https://github.com/rcore-os/tgoskits"
 
 [features]
 default = []
+ept-level-4 = []
 fs = []
 
 [dependencies]
@@ -41,4 +42,8 @@ toml = "0.9"
 anyhow = "1.0"
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv_vplic = { workspace = true }
 riscv_vcpu = { workspace = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu-ext = "0.1"
