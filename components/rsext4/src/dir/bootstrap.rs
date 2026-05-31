@@ -27,7 +27,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
 
     {
         // Format the initial root directory block before the inode is finalized.
-        let cached = fs.datablock_cache.create_new(block_dev, data_block)?;
+        let mut cached = fs.datablock_cache.create_new(block_dev, data_block)?;
         let data = &mut cached.data;
 
         let dot_name = b".";
@@ -139,7 +139,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     {
         // Format the first block of the new directory, including the checksum tail.
-        let cached = fs.datablock_cache.create_new(block_dev, data_block)?;
+        let mut cached = fs.datablock_cache.create_new(block_dev, data_block)?;
         let data = &mut cached.data;
 
         let dot_name = b".";

@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
-use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
+use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
@@ -63,13 +63,16 @@ impl Ext4Filesystem {
 
     /// Locks the shared rsext4 state.
     ///
-    /// rsext4 operations may allocate, flush caches, commit journal state, and
-    /// call into the block device while this guard is held. The current rootfs
-    /// setup can also run in early atomic contexts where a blocking mutex trips
-    /// `might_sleep()`, so use `SpinNoIrq` instead of the older
-    /// `SpinNoPreempt` to close same-CPU IRQ reentry without changing the
-    /// boot-time calling contract.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
+    /// Uses a blocking `ax_sync::Mutex` instead of `SpinNoIrq`: on SMP, a
+    /// blocking mutex puts waiting tasks to sleep, eliminating the busy-wait
+    /// CPU waste that makes SMP > 1 no faster than SMP = 1 during I/O-heavy
+    /// workloads like `cargo build`.
+    ///
+    /// The rsext4 caches (inode, data-block, bitmap) have their own internal
+    /// `spin::Mutex` for fine-grained concurrent access.  This global lock
+    /// protects metadata mutations (allocators, superblock, group descriptors,
+    /// journal commits).
+    pub(crate) fn lock(&self) -> ax_sync::MutexGuard<'_, Ext4State> {
         self.inner.lock()
     }
 

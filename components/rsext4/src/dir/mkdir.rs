@@ -102,7 +102,7 @@ fn mkdir_internal<B: BlockDevice>(
 
     {
         // Initialize `.` and `..`, leaving room for the checksum tail when enabled.
-        let cached = fs.datablock_cache.create_new(device, data_block)?;
+        let mut cached = fs.datablock_cache.create_new(device, data_block)?;
         let data = &mut cached.data;
 
         let dot_name = b".";
