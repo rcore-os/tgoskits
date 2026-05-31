@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.5)
+project(test-ptrace-x86-breakpoint C)
+set(CMAKE_C_STANDARD 11)
+add_executable(test-ptrace-x86-breakpoint src/main.c)
+install(TARGETS test-ptrace-x86-breakpoint RUNTIME DESTINATION usr/bin)
