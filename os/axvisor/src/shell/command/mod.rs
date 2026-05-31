@@ -30,11 +30,6 @@ use std::{print, println};
 
 use spin::LazyLock;
 
-#[cfg(feature = "fs")]
-use crate::hal::env as host_env;
-use crate::hal::fs::io::prelude::*;
-use crate::hal::{fs, process as host_process};
-
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
 
@@ -476,13 +471,13 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 
 pub fn print_prompt() {
     print!("{}", prompt_string());
-    fs::stdout().flush().ok();
+    axvisor_api::fs::stdout().flush().ok();
 }
 
 pub fn prompt_string() -> String {
     #[cfg(feature = "fs")]
     {
-        match host_env::current_dir() {
+        match axvisor_api::fs::current_dir() {
             Ok(dir) => format!("axvisor:{dir}$ "),
             Err(_) => "axvisor:$ ".to_string(),
         }
@@ -538,11 +533,11 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         "exit" | "quit" => {
             println!("Goodbye!");
-            host_process::exit(0);
+            axvisor_api::process::exit(0);
         }
         "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
-            fs::stdout().flush().ok();
+            axvisor_api::fs::stdout().flush().ok();
             true
         }
         _ if input.starts_with("help ") => {

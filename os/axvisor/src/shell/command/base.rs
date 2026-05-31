@@ -13,12 +13,9 @@
 // limitations under the License.
 
 #[cfg(feature = "fs")]
-use crate::hal::env as host_env;
+use ax_errno::{AxResult, ax_err_type};
 #[cfg(feature = "fs")]
-use crate::hal::fs::io::{self, Read, Write};
-#[cfg(feature = "fs")]
-use crate::hal::fs::{self as host_fs, File, FileType};
-use crate::hal::process as host_process;
+use axvisor_api::fs::{self as host_fs, File, FileType};
 use std::collections::BTreeMap;
 use std::println;
 use std::string::{String, ToString};
@@ -53,13 +50,13 @@ fn do_ls(cmd: &ParsedCommand) {
     let show_long = cmd.flags.contains("long");
     let show_all = cmd.flags.contains("all");
 
-    fn show_entry_info(path: &str, entry: &str, show_long: bool) -> io::Result<()> {
+    fn show_entry_info(path: &str, entry: &str, show_long: bool) -> AxResult<()> {
         if show_long {
             let metadata = host_fs::metadata(path)?;
             let size = metadata.len();
             let file_type = metadata.file_type();
             let file_type_char = file_type_to_char(file_type);
-            let rwx = file_perm_to_rwx(metadata.permissions().mode());
+            let rwx = file_perm_to_rwx(metadata.permissions_mode());
             let rwx = unsafe { core::str::from_utf8_unchecked(&rwx) };
             println!("{}{} {:>8} {}", file_type_char, rwx, size, entry);
         } else {
@@ -68,7 +65,7 @@ fn do_ls(cmd: &ParsedCommand) {
         Ok(())
     }
 
-    fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> io::Result<()> {
+    fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> AxResult<()> {
         use std::vec::Vec;
 
         let is_dir = host_fs::metadata(name)?.is_dir();
@@ -82,7 +79,7 @@ fn do_ls(cmd: &ParsedCommand) {
 
         let mut entries = host_fs::read_dir(name)?
             .filter_map(|e| e.ok())
-            .map(|e| e.file_name())
+            .map(|e| e.file_name().to_string())
             .filter(|name| show_all || !name.starts_with('.'))
             .collect::<Vec<_>>();
         entries.sort();
@@ -121,13 +118,14 @@ fn do_cat(cmd: &ParsedCommand) {
         return;
     }
 
-    fn cat_one(fname: &str) -> io::Result<()> {
+    fn cat_one(fname: &str) -> AxResult<()> {
         let mut buf = [0; 1024];
         let mut file = File::open(fname)?;
+        let mut stdout = host_fs::stdout();
         loop {
             let n = file.read(&mut buf)?;
             if n > 0 {
-                io::stdout().write_all(&buf[..n])?;
+                stdout.write_all(&buf[..n])?;
             } else {
                 return Ok(());
             }
@@ -148,7 +146,7 @@ fn do_echo(cmd: &ParsedCommand) {
 
     let args_str = args.join(" ");
 
-    fn echo_file(fname: &str, text_list: &[&str]) -> io::Result<()> {
+    fn echo_file(fname: &str, text_list: &[&str]) -> AxResult<()> {
         let mut file = File::create(fname)?;
         for text in text_list {
             file.write_all(text.as_bytes())?;
@@ -192,7 +190,7 @@ fn do_mkdir(cmd: &ParsedCommand) {
         return;
     }
 
-    fn mkdir_one(path: &str, create_parents: bool) -> io::Result<()> {
+    fn mkdir_one(path: &str, create_parents: bool) -> AxResult<()> {
         if create_parents {
             host_fs::create_dir_all(path)
         } else {
@@ -219,7 +217,7 @@ fn do_rm(cmd: &ParsedCommand) {
         return;
     }
 
-    fn rm_one(path: &str, rm_dir: bool, recursive: bool, force: bool) -> io::Result<()> {
+    fn rm_one(path: &str, rm_dir: bool, recursive: bool, force: bool) -> AxResult<()> {
         let metadata = host_fs::metadata(path);
 
         if force && metadata.is_err() {
@@ -234,7 +232,7 @@ fn do_rm(cmd: &ParsedCommand) {
             } else if rm_dir {
                 host_fs::remove_dir(path)
             } else {
-                Err(io::Error::Unsupported)
+                Err(ax_err_type!(Unsupported, "path is a directory"))
             }
         } else {
             host_fs::remove_file(path)
@@ -252,7 +250,7 @@ fn do_rm(cmd: &ParsedCommand) {
 
 // Implementation of recursively deleting directories (manual recursion)
 #[cfg(feature = "fs")]
-fn remove_dir_recursive(path: &str, _force: bool) -> io::Result<()> {
+fn remove_dir_recursive(path: &str, _force: bool) -> AxResult<()> {
     // Read directory contents
     let entries = host_fs::read_dir(path)?;
 
@@ -288,7 +286,7 @@ fn do_cd(cmd: &ParsedCommand) {
         return;
     };
 
-    if let Err(e) = host_env::set_current_dir(target) {
+    if let Err(e) = host_fs::set_current_dir(target) {
         print_err!("cd", target, e);
     }
 }
@@ -297,7 +295,7 @@ fn do_cd(cmd: &ParsedCommand) {
 fn do_pwd(cmd: &ParsedCommand) {
     let _logical = cmd.flags.contains("logical");
 
-    match host_env::current_dir() {
+    match host_fs::current_dir() {
         Ok(pwd) => println!("{}", pwd),
         Err(e) => {
             print_err!("pwd", e);
@@ -350,7 +348,7 @@ fn do_exit(cmd: &ParsedCommand) {
     };
 
     println!("Bye~");
-    host_process::exit(exit_code);
+    axvisor_api::process::exit(exit_code);
 }
 
 fn do_log(cmd: &ParsedCommand) {
@@ -455,7 +453,7 @@ fn path_basename(path: &str) -> &str {
 
 // Helper function to move file or directory (handles cross-filesystem moves)
 #[cfg(feature = "fs")]
-fn move_file_or_dir(source: &str, dest: &str) -> io::Result<()> {
+fn move_file_or_dir(source: &str, dest: &str) -> AxResult<()> {
     // Try simple rename first (works within same filesystem)
     match host_fs::rename(source, dest) {
         Ok(()) => Ok(()),
@@ -519,7 +517,7 @@ fn do_cp(cmd: &ParsedCommand) {
         if recursive {
             copy_dir_recursive(source, dest)
         } else {
-            Err(io::Error::Unsupported)
+            Err(ax_err_type!(Unsupported, "source is a directory"))
         }
     } else {
         copy_file(source, dest)
@@ -532,7 +530,7 @@ fn do_cp(cmd: &ParsedCommand) {
 
 // Manually implement file copy
 #[cfg(feature = "fs")]
-fn copy_file(src: &str, dst: &str) -> io::Result<()> {
+fn copy_file(src: &str, dst: &str) -> AxResult<()> {
     let mut src_file = File::open(src)?;
     let mut dst_file = File::create(dst)?;
 
@@ -549,7 +547,7 @@ fn copy_file(src: &str, dst: &str) -> io::Result<()> {
 
 // Recursively copy directory
 #[cfg(feature = "fs")]
-fn copy_dir_recursive(src: &str, dst: &str) -> io::Result<()> {
+fn copy_dir_recursive(src: &str, dst: &str) -> AxResult<()> {
     // Create target directory
     host_fs::create_dir(dst)?;
 
@@ -558,7 +556,7 @@ fn copy_dir_recursive(src: &str, dst: &str) -> io::Result<()> {
 
     for entry_result in entries {
         let entry = entry_result?;
-        let file_name = entry.file_name();
+        let file_name = entry.file_name().to_string();
         let src_path = format!("{src}/{file_name}");
         let dst_path = format!("{dst}/{file_name}");
 
@@ -574,15 +572,7 @@ fn copy_dir_recursive(src: &str, dst: &str) -> io::Result<()> {
 
 #[cfg(feature = "fs")]
 fn file_type_to_char(ty: FileType) -> char {
-    if ty.is_char_device() {
-        'c'
-    } else if ty.is_block_device() {
-        'b'
-    } else if ty.is_socket() {
-        's'
-    } else if ty.is_fifo() {
-        'p'
-    } else if ty.is_symlink() {
+    if ty.is_symlink() {
         'l'
     } else if ty.is_dir() {
         'd'

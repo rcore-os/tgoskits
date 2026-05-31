@@ -136,15 +136,13 @@ pub fn get_developer_provided_dtb(
         }
         #[cfg(feature = "fs")]
         Some("fs") => {
-            use crate::hal::fs::{BufReader, Read};
             if let Some(dtb_path) = &crate_config.kernel.dtb_path {
-                let (dtb_file, dtb_size) = crate::vmm::images::fs::open_image_file(dtb_path)?;
+                let (mut dtb_file, dtb_size) = crate::vmm::images::fs::open_image_file(dtb_path)?;
                 info!("DTB file in fs, size: 0x{:x}", dtb_size);
 
-                let mut file = BufReader::new(dtb_file);
                 let mut dtb_buffer = vec![0; dtb_size];
 
-                file.read_exact(&mut dtb_buffer).map_err(|err| {
+                dtb_file.read_exact(&mut dtb_buffer).map_err(|err| {
                     ax_err_type!(
                         Io,
                         format!("Failed in reading from file {}, err {:?}", dtb_path, err)

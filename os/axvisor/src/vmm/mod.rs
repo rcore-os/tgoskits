@@ -32,8 +32,8 @@ pub mod fdt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
+use ax_lazyinit::LazyInit;
 
-use crate::hal::task::VmmWaitQueue;
 pub use timer::init_percpu as init_timer_percpu;
 
 /// The instantiated VM type.
@@ -43,7 +43,7 @@ pub type VMRef = axvm::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
 pub type VCpuRef = axvm::AxVCpuRef;
 
-static VMM: VmmWaitQueue = VmmWaitQueue::new();
+static VMM: LazyInit<axvisor_api::task::WaitQueue> = LazyInit::new();
 
 /// The number of running VMs. This is used to determine when to exit the VMM.
 static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -53,6 +53,7 @@ static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// This function creates the VM structures and sets up the primary VCpu for each VM.
 pub fn init() {
     info!("Initializing VMM...");
+    VMM.init_once(axvisor_api::task::WaitQueue::new());
     // Initialize guest VM according to config file.
     config::init_guest_vms();
 
@@ -137,8 +138,8 @@ pub fn with_vm_and_vcpu_on_pcpu(
     // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
     let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
-    let current_vm = crate::hal::task::current_vm_id();
-    let current_vcpu = crate::hal::task::current_vcpu_id();
+    let current_vm = axvisor_api::vmm::current_vm_id();
+    let current_vcpu = axvisor_api::vmm::current_vcpu_id();
 
     // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {

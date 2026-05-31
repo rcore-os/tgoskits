@@ -46,8 +46,7 @@ pub mod vmcfg {
     /// Read VM configs from filesystem
     #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs() -> Vec<String> {
-        use crate::hal::fs as host_fs;
-        use crate::hal::fs::{BufReader, Read};
+        use axvisor_api::fs as host_fs;
 
         let config_dir = "/guest/vm_default";
 
@@ -74,25 +73,17 @@ pub mod vmcfg {
                     continue;
                 }
             };
-            let path = entry.path();
-            // Check if the file has a .toml extension
-            let path_str = path.as_str();
+            let path_str = entry.path();
             debug!("Considering file: {}", path_str);
             if path_str.ends_with(".toml") {
-                let toml_file = match host_fs::File::open(path_str) {
-                    Ok(file) => file,
+                let content = match host_fs::read_to_string(path_str) {
+                    Ok(content) => content,
                     Err(e) => {
-                        error!("Failed to open config file {}: {:?}", path_str, e);
+                        error!("Failed to read config file {}: {:?}", path_str, e);
                         continue;
                     }
                 };
-                let file_size = match toml_file.metadata() {
-                    Ok(metadata) => metadata.len() as usize,
-                    Err(e) => {
-                        error!("Failed to get config file {} metadata: {:?}", path_str, e);
-                        continue;
-                    }
-                };
+                let file_size = content.as_bytes().len();
 
                 info!("File {} size: {}", path_str, file_size);
 
@@ -101,42 +92,24 @@ pub mod vmcfg {
                     continue;
                 }
 
-                let mut file = BufReader::new(toml_file);
-                let mut buffer = vec![0u8; file_size];
-                match file.read_exact(&mut buffer) {
-                    Ok(()) => {
-                        debug!(
-                            "Successfully read config file {} as bytes, size: {}",
-                            path_str,
-                            buffer.len()
-                        );
-                        // Convert to string
-                        let content = match String::from_utf8(buffer) {
-                            Ok(content) => content,
-                            Err(e) => {
-                                error!("Config file {} is not valid UTF-8: {:?}", path_str, e);
-                                continue;
-                            }
-                        };
+                debug!(
+                    "Successfully read config file {} as UTF-8, size: {}",
+                    path_str, file_size
+                );
 
-                        match axvm::config::AxVMCrateConfig::from_toml(&content) {
-                            Ok(_) => {
-                                configs.push(content);
-                                info!(
-                                    "TOML config: {} is valid, start the virtual machine directly now. ",
-                                    path_str
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "File {} does not contain a valid VM config: {:?}",
-                                    path_str, e
-                                );
-                            }
-                        }
+                match axvm::config::AxVMCrateConfig::from_toml(&content) {
+                    Ok(_) => {
+                        configs.push(content);
+                        info!(
+                            "TOML config: {} is valid, start the virtual machine directly now. ",
+                            path_str
+                        );
                     }
                     Err(e) => {
-                        error!("Failed to read file {}: {:?}", path_str, e);
+                        warn!(
+                            "File {} does not contain a valid VM config: {:?}",
+                            path_str, e
+                        );
                     }
                 }
             }

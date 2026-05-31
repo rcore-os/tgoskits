@@ -25,10 +25,13 @@ runtime internals.
 The current API surface is organized by capability:
 
 - `host`: CPU enumeration and host task/thread helpers
+- `task`: host task handles, wait queues, and vCPU task spawning
 - `memory`: frame allocation and address translation
 - `time`: monotonic time, timer registration, and one-shot timer programming
 - `irq`: host IRQ dispatch and hook/handler registration
 - `platform`: boot firmware discovery and host resource handoff
+- `fs`: file, directory, cwd, and stdio helpers
+- `process`: process termination helpers
 - `vmm`: VM/vCPU context and interrupt injection helpers
 - `arch`: architecture-specific virtualization hooks
 - `console`: host console I/O

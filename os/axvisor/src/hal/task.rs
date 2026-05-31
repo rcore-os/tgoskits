@@ -1,154 +1,138 @@
-use alloc::{
-    format,
-    string::String,
-    sync::{Arc, Weak},
-};
+use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
+use ax_kspin::SpinNoIrq;
+use axvisor_api::task::TaskHandle;
 use std::os::arceos::{
-    api::task::{self, AxCpuMask, AxWaitQueueHandle},
-    modules::ax_task::{self as host_task, AxTaskExt, AxTaskRef, TaskExt, TaskInner, WaitQueue},
+    api::task::{
+        AxCpuMask, AxWaitQueueHandle, ax_wait_queue_wait, ax_wait_queue_wait_until,
+        ax_wait_queue_wake,
+    },
+    modules::ax_task::{self as host_task, AxTaskExt, AxTaskRef, TaskExt, TaskInner},
 };
 
-use crate::vmm::{VCpuRef, VM, VMRef};
-
-/// Task extended data for the hypervisor.
-pub(crate) struct VCpuTask {
-    /// The VM (Weak reference to avoid keeping VM alive).
-    pub vm: Weak<VM>,
-    /// The virtual CPU.
-    pub vcpu: VCpuRef,
+/// Task-local vCPU execution context attached to each spawned vCPU host task.
+pub(crate) struct VCpuTaskContext {
+    vm_id: usize,
+    vcpu_id: usize,
 }
 
-impl VCpuTask {
-    /// Create a new [`VCpuTask`].
-    pub fn new(vm: &VMRef, vcpu: VCpuRef) -> Self {
-        Self {
-            vm: Arc::downgrade(vm),
-            vcpu,
-        }
-    }
-
-    /// Get a strong reference to the VM.
-    pub fn vm(&self) -> VMRef {
-        self.vm.upgrade().expect("VM has been dropped")
+impl VCpuTaskContext {
+    pub const fn new(vm_id: usize, vcpu_id: usize) -> Self {
+        Self { vm_id, vcpu_id }
     }
 }
 
 #[extern_trait::extern_trait]
-impl TaskExt for VCpuTask {}
+impl TaskExt for VCpuTaskContext {}
 
-pub(crate) trait AsVCpuTask {
-    fn try_as_vcpu_task(&self) -> Option<&VCpuTask>;
-
-    #[track_caller]
-    fn as_vcpu_task(&self) -> &VCpuTask;
+trait AsVCpuTaskContext {
+    fn as_vcpu_task_context(&self) -> &VCpuTaskContext;
 }
 
-impl AsVCpuTask for TaskInner {
-    fn try_as_vcpu_task(&self) -> Option<&VCpuTask> {
-        self.task_ext().map(|ext| ext.downcast_ref::<VCpuTask>())
-    }
-
-    fn as_vcpu_task(&self) -> &VCpuTask {
-        self.try_as_vcpu_task().expect("Not a VCpuTask")
+impl AsVCpuTaskContext for TaskInner {
+    fn as_vcpu_task_context(&self) -> &VCpuTaskContext {
+        self.task_ext()
+            .expect("Not a vCPU task")
+            .downcast_ref::<VCpuTaskContext>()
     }
 }
 
-pub(crate) struct VmmWaitQueue(AxWaitQueueHandle);
+static WAIT_QUEUE_IDS: AtomicUsize = AtomicUsize::new(1);
+static WAIT_QUEUES: SpinNoIrq<BTreeMap<usize, Arc<AxWaitQueueHandle>>> =
+    SpinNoIrq::new(BTreeMap::new());
+static TASKS: SpinNoIrq<BTreeMap<usize, AxTaskRef>> = SpinNoIrq::new(BTreeMap::new());
 
-impl VmmWaitQueue {
-    pub const fn new() -> Self {
-        Self(AxWaitQueueHandle::new())
-    }
-
-    pub fn wait_until<F>(&self, condition: F)
-    where
-        F: Fn() -> bool,
-    {
-        task::ax_wait_queue_wait_until(&self.0, condition, None);
-    }
-
-    pub fn wake(&self, count: u32) {
-        task::ax_wait_queue_wake(&self.0, count);
-    }
+fn get_wait_queue(queue: usize) -> Arc<AxWaitQueueHandle> {
+    WAIT_QUEUES
+        .lock()
+        .get(&queue)
+        .cloned()
+        .expect("wait queue not found")
 }
 
-pub(crate) struct VmWaitQueue(WaitQueue);
-
-impl VmWaitQueue {
-    pub fn new() -> Self {
-        Self(WaitQueue::new())
-    }
-
-    pub fn wait(&self) {
-        self.0.wait();
-    }
-
-    pub fn wait_until<F>(&self, condition: F)
-    where
-        F: Fn() -> bool,
-    {
-        self.0.wait_until(condition);
-    }
-
-    pub fn notify_one(&self) {
-        self.0.notify_one(false);
-    }
-
-    pub fn notify_all(&self) {
-        self.0.notify_all(false);
-    }
+fn get_task(task: TaskHandle) -> AxTaskRef {
+    TASKS
+        .lock()
+        .get(&task.as_raw())
+        .cloned()
+        .expect("task handle not found")
 }
 
-#[derive(Clone)]
-pub(crate) struct TaskRef(AxTaskRef);
-
-impl TaskRef {
-    pub fn id_name(&self) -> String {
-        format!("{}", self.0.id_name())
-    }
-
-    pub fn cpu_id(&self) -> usize {
-        self.0.cpu_id() as usize
-    }
-
-    pub fn join(&self) -> i32 {
-        self.0.join()
-    }
+pub(crate) fn create_wait_queue() -> usize {
+    let id = WAIT_QUEUE_IDS.fetch_add(1, Ordering::Relaxed);
+    WAIT_QUEUES
+        .lock()
+        .insert(id, Arc::new(AxWaitQueueHandle::new()));
+    id
 }
 
-pub(crate) fn spawn_vcpu_task(
-    vm: &VMRef,
-    vcpu: VCpuRef,
+pub(crate) fn destroy_wait_queue(queue: usize) {
+    WAIT_QUEUES.lock().remove(&queue);
+}
+
+pub(crate) fn wait_queue_wait(queue: usize) {
+    let queue = get_wait_queue(queue);
+    ax_wait_queue_wait(queue.as_ref(), None);
+}
+
+pub(crate) fn wait_queue_wait_until(
+    queue: usize,
+    condition: Box<dyn Fn() -> bool + Send + 'static>,
+) {
+    let queue = get_wait_queue(queue);
+    ax_wait_queue_wait_until(queue.as_ref(), condition, None);
+}
+
+pub(crate) fn wait_queue_wake(queue: usize, count: u32) {
+    let queue = get_wait_queue(queue);
+    ax_wait_queue_wake(queue.as_ref(), count);
+}
+
+pub(crate) fn spawn_vcpu_task_raw(
+    vm_id: usize,
+    vcpu_id: usize,
+    phys_cpu_set: Option<usize>,
     stack_size: usize,
-    entry: fn(),
-) -> TaskRef {
+    entry: Box<dyn FnOnce() + Send + 'static>,
+) -> TaskHandle {
     let mut vcpu_task = TaskInner::new(
-        entry,
-        format!("VM[{}]-VCpu[{}]", vm.id(), vcpu.id()),
+        move || entry(),
+        format!("VM[{vm_id}]-VCpu[{vcpu_id}]"),
         stack_size,
     );
 
-    if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
+    if let Some(phys_cpu_set) = phys_cpu_set {
         vcpu_task.set_cpumask(AxCpuMask::from_raw_bits(phys_cpu_set));
     }
 
-    let inner = VCpuTask::new(vm, vcpu);
-    *vcpu_task.task_ext_mut() = Some(AxTaskExt::from_impl(inner));
+    *vcpu_task.task_ext_mut() = Some(AxTaskExt::from_impl(VCpuTaskContext::new(vm_id, vcpu_id)));
 
-    TaskRef(host_task::spawn_task(vcpu_task))
+    let task = host_task::spawn_task(vcpu_task);
+    let handle = TaskHandle::from_raw(task.id().as_u64() as usize);
+    TASKS.lock().insert(handle.as_raw(), task);
+    handle
 }
 
-pub(crate) fn current_vm_vcpu() -> (VMRef, VCpuRef) {
-    let current = host_task::current();
-    let current = current.as_vcpu_task();
-    (current.vm(), current.vcpu.clone())
+pub(crate) fn task_id_name(task: TaskHandle) -> String {
+    get_task(task).id_name()
+}
+
+pub(crate) fn task_cpu_id(task: TaskHandle) -> usize {
+    get_task(task).cpu_id() as usize
+}
+
+pub(crate) fn task_join(task: TaskHandle) -> i32 {
+    let task_ref = get_task(task);
+    let exit_code = task_ref.join();
+    TASKS.lock().remove(&task.as_raw());
+    exit_code
 }
 
 pub(crate) fn current_vm_id() -> usize {
-    host_task::current().as_vcpu_task().vm().id()
+    host_task::current().as_vcpu_task_context().vm_id
 }
 
 pub(crate) fn current_vcpu_id() -> usize {
-    host_task::current().as_vcpu_task().vcpu.id()
+    host_task::current().as_vcpu_task_context().vcpu_id
 }

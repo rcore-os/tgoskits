@@ -14,7 +14,7 @@
 
 use std::{string::String, vec::Vec};
 
-use crate::hal::fs::io::prelude::*;
+use core::fmt::Write;
 
 pub struct CommandHistory {
     history: Vec<String>,
@@ -68,7 +68,7 @@ impl CommandHistory {
 
 #[allow(unused_must_use)]
 pub fn clear_line_and_redraw(
-    stdout: &mut dyn Write,
+    stdout: &mut axvisor_api::fs::File,
     prompt: &str,
     content: &str,
     cursor_pos: usize,

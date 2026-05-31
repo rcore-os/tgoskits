@@ -15,6 +15,7 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
+use axvisor_api::task::{TaskHandle, WaitQueue};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
@@ -22,7 +23,6 @@ use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
 
 use crate::hal::arch::inject_interrupt;
-use crate::hal::task::{self, TaskRef, VmWaitQueue};
 use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
@@ -40,9 +40,9 @@ pub struct VMVCpus {
     // The ID of the VM to which these VCpus belong.
     _vm_id: usize,
     // A wait queue to manage task scheduling for the VCpus.
-    wait_queue: VmWaitQueue,
+    wait_queue: WaitQueue,
     // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
-    vcpu_task_list: Mutex<BTreeMap<usize, TaskRef>>,
+    vcpu_task_list: Mutex<BTreeMap<usize, TaskHandle>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -64,7 +64,7 @@ impl VMVCpus {
     fn new(vm: VMRef) -> Self {
         Self {
             _vm_id: vm.id(),
-            wait_queue: VmWaitQueue::new(),
+            wait_queue: WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
@@ -75,7 +75,7 @@ impl VMVCpus {
     /// # Arguments
     ///
     /// * `vcpu_task` - A reference to the task associated with a VCpu that is to be added.
-    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: TaskRef) {
+    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: TaskHandle) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
     }
 
@@ -88,20 +88,20 @@ impl VMVCpus {
     /// until the provided condition is met.
     fn wait_until<F>(&self, condition: F)
     where
-        F: Fn() -> bool,
+        F: Fn() -> bool + Send + 'static,
     {
         self.wait_queue.wait_until(condition)
     }
 
     #[allow(dead_code)]
     fn notify_one(&self) {
-        self.wait_queue.notify_one();
+        self.wait_queue.wake_one();
     }
 
     /// Notify all waiting vCPU threads to wake up.
     /// This is useful when shutting down a VM to ensure all vCPUs can check the shutdown flag.
     fn notify_all(&self) {
-        self.wait_queue.notify_all();
+        self.wait_queue.wake_all();
     }
 
     /// Increments the count of running or halting VCpus by one.
@@ -150,7 +150,7 @@ fn wait(vm_id: usize) {
 ///
 fn wait_for<F>(vm_id: usize, condition: F)
 where
-    F: Fn() -> bool,
+    F: Fn() -> bool + Send + 'static,
 {
     if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
         vm_vcpus.wait_until(condition);
@@ -328,7 +328,7 @@ pub fn setup_vm_primary_vcpu(vm: VMRef) {
 //     with_vcpu_task(vm_id, vcpu_id, |task| task.clone())
 // }
 /// Executes the provided closure with the task associated with the specified vCPU of the specified VM.
-pub fn with_vcpu_task<T, F: FnOnce(&TaskRef) -> T>(
+pub fn with_vcpu_task<T, F: FnOnce(&TaskHandle) -> T>(
     vm_id: usize,
     vcpu_id: usize,
     f: F,
@@ -357,9 +357,15 @@ pub fn with_vcpu_task<T, F: FnOnce(&TaskRef) -> T>(
 /// * The task associated with the VCpu is created with a kernel stack size of 256 KiB.
 /// * The task is created in blocked state and added to the wait queue directly,
 ///   instead of being added to the ready queue. It will be woken up by notify_primary_vcpu().
-fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskRef {
+fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskHandle {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
-    let task = task::spawn_vcpu_task(vm, vcpu, KERNEL_STACK_SIZE, vcpu_run);
+    let task = axvisor_api::task::spawn_vcpu_task(
+        vm.id(),
+        vcpu.id(),
+        vcpu.phys_cpu_set(),
+        KERNEL_STACK_SIZE,
+        vcpu_run,
+    );
     info!("VCpu task {} created", task.id_name());
     task
 }
@@ -370,12 +376,14 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskRef {
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let (vm, vcpu) = task::current_vm_vcpu();
-    let vm_id = vm.id();
-    let vcpu_id = vcpu.id();
+    let vm_id = axvisor_api::vmm::current_vm_id();
+    let vcpu_id = axvisor_api::vmm::current_vcpu_id();
+    let (vm, vcpu) = super::with_vm_and_vcpu(vm_id, vcpu_id, |vm, vcpu| (vm, vcpu))
+        .expect("current vCPU task is not bound to a live VM/vCPU");
 
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
-    wait_for(vm_id, || vm.running());
+    let vm_for_wait = vm.clone();
+    wait_for(vm_id, move || vm_for_wait.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
@@ -552,7 +560,8 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
-            wait_for(vm_id, || !vm.suspending());
+            let vm_for_wait = vm.clone();
+            wait_for(vm_id, move || !vm_for_wait.suspending());
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }

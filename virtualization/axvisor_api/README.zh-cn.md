@@ -11,10 +11,13 @@
 目前 `axvisor_api` 已经覆盖并统一了 AxVisor 中最常见的一组宿主运行时能力：
 
 - `host`：CPU 枚举与宿主任务/线程辅助能力
+- `task`：宿主任务句柄、等待队列与 vCPU 任务创建能力
 - `memory`：页帧分配与地址转换
 - `time`：单调时间、定时器注册与 one-shot timer 编程
 - `irq`：宿主中断分发与 hook/handler 注册
 - `platform`：启动固件发现与宿主资源交接
+- `fs`：文件、目录、当前目录与标准输入输出能力
+- `process`：进程退出能力
 - `vmm`：VM/vCPU 上下文与中断注入辅助能力
 - `arch`：体系结构相关的虚拟化钩子
 - `console`：宿主控制台 I/O

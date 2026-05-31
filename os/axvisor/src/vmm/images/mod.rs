@@ -612,7 +612,7 @@ pub mod fs {
     use ax_errno::{AxResult, ax_err, ax_err_type};
     use std::vec::Vec;
 
-    use crate::hal::fs::{self as host_fs, BufReader, File, Read};
+    use axvisor_api::fs::{self as host_fs, File};
 
     pub fn kernel_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
         let file_name = &config.kernel.kernel_path;
@@ -778,7 +778,7 @@ pub mod fs {
         let (image_file, image_size) = open_image_file(image_path)?;
 
         let image_load_regions = vm.get_image_load_region(image_load_gpa, image_size)?;
-        let mut file = BufReader::new(image_file);
+        let mut file = image_file;
 
         for buffer in image_load_regions {
             file.read_exact(buffer).map_err(|err| {
@@ -802,14 +802,13 @@ pub mod fs {
     fn read_image_file(image_path: &str) -> AxResult<Vec<u8>> {
         let (image_file, image_size) = open_image_file(image_path)?;
         let mut image = vec![0; image_size];
-        BufReader::new(image_file)
-            .read_exact(&mut image)
-            .map_err(|err| {
-                ax_err_type!(
-                    Io,
-                    format!("Failed in reading from file {}, err {:?}", image_path, err)
-                )
-            })?;
+        let mut file = image_file;
+        file.read_exact(&mut image).map_err(|err| {
+            ax_err_type!(
+                Io,
+                format!("Failed in reading from file {}, err {:?}", image_path, err)
+            )
+        })?;
         Ok(image)
     }
 
@@ -834,7 +833,7 @@ pub mod fs {
                     )
                 )
             })?
-            .size() as usize;
+            .len() as usize;
         Ok((file, file_size))
     }
 }

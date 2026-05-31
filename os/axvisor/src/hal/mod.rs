@@ -23,10 +23,6 @@ use axvm::AxVMPerCpu;
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv64/mod.rs")]
 pub mod arch;
-#[cfg(feature = "fs")]
-pub mod env;
-pub mod fs;
-pub mod process;
 pub mod task;
 
 use crate::{hal::arch::hardware_check, vmm};
@@ -127,9 +123,12 @@ pub(crate) fn enable_virtualization() {
 }
 
 mod impl_console;
+mod impl_fs;
 mod impl_host;
 mod impl_irq;
 mod impl_memory;
 mod impl_platform;
+mod impl_process;
+mod impl_task;
 mod impl_time;
 mod impl_vmm;

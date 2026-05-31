@@ -19,8 +19,6 @@ use std::{
     vec::Vec,
 };
 
-#[cfg(feature = "fs")]
-use crate::hal::fs::read_to_string;
 use axvm::VMStatus;
 
 use crate::{
@@ -139,7 +137,7 @@ fn vm_create(cmd: &ParsedCommand) {
         println!("Creating VM from config: {}", config_path);
 
         use crate::vmm::config::init_guest_vm;
-        match read_to_string(config_path) {
+        match axvisor_api::fs::read_to_string(config_path) {
             Ok(raw_cfg) => match init_guest_vm(&raw_cfg) {
                 Ok(vm_id) => {
                     println!(
