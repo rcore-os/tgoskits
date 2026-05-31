@@ -27,49 +27,50 @@ pub fn create_root_directory_entry<B: BlockDevice>(
 
     // Format the initial root directory block through modify_new so
     // mutations are persisted in the cache entry rather than on a clone.
-    fs.datablock_cache.modify_new(block_dev, data_block, |data| {
-        let dot_name = b".";
-        let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
-        let dot = Ext4DirEntry2::new(
-            root_inode_num.raw(),
-            dot_rec_len,
-            Ext4DirEntry2::EXT4_FT_DIR,
-            dot_name,
-        );
-
-        let dotdot_name = b"..";
-        let dotdot_rec_len = if has_checksum {
-            (BLOCK_SIZE as u16)
-                .saturating_sub(dot_rec_len)
-                .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
-        } else {
-            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
-        };
-        let dotdot = Ext4DirEntry2::new(
-            root_inode_num.raw(),
-            dotdot_rec_len,
-            Ext4DirEntry2::EXT4_FT_DIR,
-            dotdot_name,
-        );
-
-        dot.to_disk_bytes(&mut data[0..8]);
-        let name_len = dot.name_len as usize;
-        data[8..8 + name_len].copy_from_slice(&dot.name[..name_len]);
-
-        let offset = dot_rec_len as usize;
-        dotdot.to_disk_bytes(&mut data[offset..offset + 8]);
-        let name_len = dotdot.name_len as usize;
-        data[offset + 8..offset + 8 + name_len].copy_from_slice(&dotdot.name[..name_len]);
-
-        if has_checksum {
-            let tail = Ext4DirEntryTail::new();
-            let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
-            tail.to_disk_bytes(
-                &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+    fs.datablock_cache
+        .modify_new(block_dev, data_block, |data| {
+            let dot_name = b".";
+            let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
+            let dot = Ext4DirEntry2::new(
+                root_inode_num.raw(),
+                dot_rec_len,
+                Ext4DirEntry2::EXT4_FT_DIR,
+                dot_name,
             );
-            update_ext4_dirblock_csum32(&fs.superblock, root_inode_num.raw(), root_gen, data);
-        }
-    })?;
+
+            let dotdot_name = b"..";
+            let dotdot_rec_len = if has_checksum {
+                (BLOCK_SIZE as u16)
+                    .saturating_sub(dot_rec_len)
+                    .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
+            } else {
+                (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
+            };
+            let dotdot = Ext4DirEntry2::new(
+                root_inode_num.raw(),
+                dotdot_rec_len,
+                Ext4DirEntry2::EXT4_FT_DIR,
+                dotdot_name,
+            );
+
+            dot.to_disk_bytes(&mut data[0..8]);
+            let name_len = dot.name_len as usize;
+            data[8..8 + name_len].copy_from_slice(&dot.name[..name_len]);
+
+            let offset = dot_rec_len as usize;
+            dotdot.to_disk_bytes(&mut data[offset..offset + 8]);
+            let name_len = dotdot.name_len as usize;
+            data[offset + 8..offset + 8 + name_len].copy_from_slice(&dotdot.name[..name_len]);
+
+            if has_checksum {
+                let tail = Ext4DirEntryTail::new();
+                let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+                tail.to_disk_bytes(
+                    &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+                );
+                update_ext4_dirblock_csum32(&fs.superblock, root_inode_num.raw(), root_gen, data);
+            }
+        })?;
 
     // Persist a clean directory inode that points at the newly initialized block.
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;

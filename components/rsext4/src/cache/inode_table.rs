@@ -332,16 +332,16 @@ impl InodeCache {
             let block_num = cached.block_num;
             let offset = cached.offset_in_block;
             let mut buf = alloc::vec![0u8; inode_size];
-                cached.inode.to_disk_bytes(&mut buf);
-                drop(inner);
+            cached.inode.to_disk_bytes(&mut buf);
+            drop(inner);
 
-                Self::write_inode_bytes_static(block_dev, block_num, offset, &buf)?;
+            Self::write_inode_bytes_static(block_dev, block_num, offset, &buf)?;
 
-                inner = self.inner.lock();
-                if let Some(cached) = inner.cache.get_mut(&inode_num) {
-                    cached.dirty = false;
-                }
+            inner = self.inner.lock();
+            if let Some(cached) = inner.cache.get_mut(&inode_num) {
+                cached.dirty = false;
             }
+        }
         Ok(())
     }
 

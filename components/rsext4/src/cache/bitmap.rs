@@ -249,10 +249,7 @@ impl BitmapCache {
         self.get_or_load_mut(block_dev, key, block_num)?;
 
         let mut inner = self.inner.lock();
-        let bitmap = inner
-            .cache
-            .get_mut(&key)
-            .ok_or(Ext4Error::corrupted())?;
+        let bitmap = inner.cache.get_mut(&key).ok_or(Ext4Error::corrupted())?;
         debug!(
             "BitmapCache::modify: key=({}:{:?}) block_num={} before_dirty={}",
             key.group_id, key.bitmap_type, block_num, bitmap.dirty

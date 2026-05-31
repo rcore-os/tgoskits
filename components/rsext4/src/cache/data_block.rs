@@ -437,7 +437,12 @@ impl DataBlockCacheInner {
         if let Some(cached) = self.cache.remove(&block_num)
             && cached.dirty
         {
-            DataBlockCache::write_block_static(block_dev, cached.block_num, &cached.data, self.block_size)?;
+            DataBlockCache::write_block_static(
+                block_dev,
+                cached.block_num,
+                &cached.data,
+                self.block_size,
+            )?;
         }
         Ok(())
     }
