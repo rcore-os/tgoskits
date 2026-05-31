@@ -1,6 +1,7 @@
 //! Data block cache helpers.
 
 use alloc::{collections::BTreeMap, vec::Vec};
+
 use spin::Mutex as SpinMutex;
 
 use crate::{blockdev::*, bmalloc::AbsoluteBN, config::*, error::*};
@@ -135,8 +136,11 @@ impl DataBlockCache {
             let data = self.load_block(block_dev, block_num)?;
             inner = self.inner.lock();
 
-            let cached = CachedBlock::new(data, block_num);
-            inner.cache.insert(block_num, cached);
+            // Re-check after reacquiring: another thread may have inserted the
+            // same key while we held no lock.
+            inner.cache.entry(block_num).or_insert_with(|| {
+                CachedBlock::new(data, block_num)
+            });
         }
 
         let new_counter = inner.access_counter + 1;
@@ -188,7 +192,11 @@ impl DataBlockCache {
         cached.last_access = new_counter;
 
         inner.cache.insert(block_num, cached);
-        inner.cache.get(&block_num).cloned().ok_or(Ext4Error::corrupted())
+        inner
+            .cache
+            .get(&block_num)
+            .cloned()
+            .ok_or(Ext4Error::corrupted())
     }
 
     /// Marks a cached data block dirty.

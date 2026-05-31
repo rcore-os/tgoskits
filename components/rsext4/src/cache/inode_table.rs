@@ -1,6 +1,7 @@
 //! Inode table cache helpers.
 
 use alloc::{collections::BTreeMap, vec::Vec};
+
 use spin::Mutex as SpinMutex;
 
 use crate::{
@@ -76,7 +77,8 @@ struct InodeCacheInner {
     max_entries: usize,
     /// Access counter used by the LRU policy.
     access_counter: u64,
-    /// On-disk inode size in bytes.
+    /// On-disk inode size in bytes (immutable after construction;
+    /// mirrored in `InodeCache` for lock-free access).
     inode_size: usize,
 }
 
@@ -85,8 +87,14 @@ struct InodeCacheInner {
 /// All methods take `&self`; the internal `SpinMutex` provides interior
 /// mutability.  Callers must ensure the block device (`Jbd2Dev`) is
 /// externally synchronized (e.g. via the VFS-layer inode lock).
+///
+/// `inode_size` is stored outside the spinlock because it is immutable after
+/// construction and is needed by lock-free paths (`calc_inode_location`) and
+/// by `load_inode` which is called from code paths that already hold the lock.
 pub struct InodeCache {
     inner: SpinMutex<InodeCacheInner>,
+    /// On-disk inode size in bytes (immutable after construction).
+    inode_size: usize,
 }
 
 impl InodeCache {
@@ -99,6 +107,7 @@ impl InodeCache {
                 access_counter: 0,
                 inode_size,
             }),
+            inode_size,
         }
     }
 
@@ -117,9 +126,8 @@ impl InodeCache {
         inode_table_start: AbsoluteBN,
         block_size: usize,
     ) -> Ext4Result<(AbsoluteBN, usize, BGIndex)> {
-        let inner = self.inner.lock();
         let (group_idx, idx_in_group) = inode_num.to_group(inodes_per_group)?;
-        let byte_offset = idx_in_group.as_usize()? * inner.inode_size;
+        let byte_offset = idx_in_group.as_usize()? * self.inode_size;
 
         let block_offset = byte_offset / block_size;
         let offset_in_block = byte_offset % block_size;
@@ -130,13 +138,16 @@ impl InodeCache {
     }
 
     /// Loads one inode from disk using a caller-provided buffer.
+    ///
+    /// Lock-free: uses `self.inode_size` (immutable after construction)
+    /// so it is safe to call from code paths that already hold the lock.
     fn load_inode<B: BlockDevice>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         offset: usize,
     ) -> Ext4Result<Ext4Inode> {
-        let inode_size = self.inner.lock().inode_size;
+        let inode_size = self.inode_size;
         // Use a local buffer to avoid the BlockDev single-block buffer,
         // which is shared mutable state that would serialize concurrent reads.
         let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
@@ -206,8 +217,11 @@ impl InodeCache {
             let inode = self.load_inode(block_dev, block_num, offset)?;
             inner = self.inner.lock();
 
-            let cached = CachedInode::new(inode, inode_num, block_num, offset);
-            inner.cache.insert(inode_num, cached);
+            // Re-check after reacquiring: another thread may have inserted the
+            // same key while we held no lock.
+            inner.cache.entry(inode_num).or_insert_with(|| {
+                CachedInode::new(inode, inode_num, block_num, offset)
+            });
         }
 
         // Refresh the LRU timestamp before returning the mutable handle.

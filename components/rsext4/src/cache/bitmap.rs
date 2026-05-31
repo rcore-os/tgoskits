@@ -1,6 +1,7 @@
 //! Bitmap cache helpers.
 
 use alloc::{collections::BTreeMap, vec::Vec};
+
 use log::debug;
 use spin::Mutex as SpinMutex;
 
@@ -158,8 +159,11 @@ impl BitmapCache {
             block_dev.read_blocks(&mut buf, block_num, 1)?;
             inner = self.inner.lock();
 
-            let bitmap = CachedBitmap::new(buf, block_num);
-            inner.cache.insert(key, bitmap);
+            // Re-check after reacquiring: another thread may have inserted the
+            // same key while we held no lock.
+            inner.cache.entry(key).or_insert_with(|| {
+                CachedBitmap::new(buf, block_num)
+            });
         }
 
         let new_counter = inner.access_counter + 1;
