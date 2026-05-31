@@ -160,12 +160,12 @@ if ! mountpoint -q /opt/starryos/false 2>/dev/null; then
 fi
 
 
-REGISTRY_SRC=/root/.cargo/registry/src
-if ! mountpoint -q "$REGISTRY_SRC" 2>/dev/null; then
+	\$REGISTRY_SRC=/root/.cargo/registry/src
+if ! mountpoint -q "\$REGISTRY_SRC" 2>/dev/null; then
     mkdir -p /tmp/.registry-src
-    cp -a "$REGISTRY_SRC"/. /tmp/.registry-src/
-    mount -t tmpfs -o size=1500M none "$REGISTRY_SRC"
-    cp -a /tmp/.registry-src/. "$REGISTRY_SRC"/
+    cp -a "\$REGISTRY_SRC"/. /tmp/.registry-src/
+    mount -t tmpfs -o size=1500M none "\$REGISTRY_SRC"
+    cp -a /tmp/.registry-src/. "\$REGISTRY_SRC"/
     rm -rf /tmp/.registry-src
 fi
 
