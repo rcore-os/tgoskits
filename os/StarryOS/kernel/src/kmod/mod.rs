@@ -9,7 +9,7 @@
 //! MVP completion criteria (`init_module`/`delete_module`/`finit_module`
 //! loading an empty module).
 //!
-//! Package-name imports adapted to tgoskits (`axhal` → `ax_hal`,
+//! Package-name imports adapted to tgoskits (`axhal` → `ax_runtime::hal`,
 //! `axalloc` → `ax_alloc`, `axmm` → `ax_mm`, `kspin` → `ax_kspin`) per
 //! `crate-fork-audit.md §6`. KALLSYMS lookup goes through the in-kernel
 //! `.kallsyms` blob (`crate::pseudofs::proc::KALLSYMS`), the same table
@@ -26,13 +26,13 @@ use alloc::{
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
-use ax_hal::{
-    asm::flush_tlb,
+use ax_kspin::SpinNoPreempt;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
+use ax_runtime::hal::{
+    cpu::asm::flush_tlb,
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize},
 };
-use ax_kspin::SpinNoPreempt;
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use kmod_loader::{KernelModuleHelper, ModuleLoader, ModuleOwner, SectionMemOps};
 
 /// Marker type that satisfies `kmod_loader::KernelModuleHelper`. Stateless —
