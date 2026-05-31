@@ -16,6 +16,14 @@ The `kpu-smoke` case validates the first KPU userspace interface:
 - KPU ioctl submit and wait paths observe QEMU done status and IRQ progress;
 - small runtime direct-I/O commands produce checkable output bytes.
 
+The `kpu-nncase-runtime` case validates the native runtime path:
+
+- a riscv64 NNCase demo binary runs inside the StarryOS guest;
+- the demo loads the real `yolov8n_320.kmodel`;
+- official K230 NNCase runtime generates KPU commands in the guest;
+- a compat shim maps K230 SDK MMZ/L2/runtime windows to `/dev/kpu`;
+- the guest waits for KPU done/IRQ and prints output tensor hashes/stats.
+
 Local validation requires a QEMU build with the K230 machine and KPU model. This
 machine is not in upstream QEMU 10.1, 10.2, or 11.0, so a normal
 `qemu-system-riscv64` from the host package manager fails with:
@@ -84,4 +92,26 @@ KPU_SMOKE: runtime_image file_runtime_arg_table_direct_io
 KPU_SMOKE_PASS
 ```
 
-NNCase runtime and real `.kmodel` demos are intentionally left to a later PR.
+The NNCase runtime case also needs local K230 SDK assets or prebuilt demo
+binaries under the case-local ignored `c/assets/bin/` directory. Build those
+binaries with:
+
+```sh
+bash test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nncase-runtime-binaries.sh
+```
+
+Then run:
+
+```sh
+cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+```
+
+Expected runtime output includes:
+
+```text
+NNCASE_MINIMAL: load_model ok
+K230_SDK_COMPAT: gnne_enable run=54
+NNCASE_MINIMAL_PASS
+YOLOV8N_DEMO_PASS
+K230_NNCASE_RUNTIME_PASS
+```
