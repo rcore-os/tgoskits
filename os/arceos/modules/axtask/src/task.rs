@@ -82,12 +82,6 @@ pub struct TaskInner {
     /// CPU affinity mask.
     cpumask: SpinNoIrq<AxCpuMask>,
 
-    /// Scheduling policy of the task.
-    sched_policy: AtomicI32,
-
-    /// Scheduling priority of the task.
-    sched_priority: AtomicI32,
-
     /// Mark whether the task is in the wait queue.
     in_wait_queue: AtomicBool,
 
@@ -273,23 +267,19 @@ impl TaskInner {
 
     #[inline]
     pub fn sched_policy(&self) -> i32 {
-        self.sched_policy.load(Ordering::Acquire)
+        0
     }
 
     #[inline]
-    pub fn set_sched_policy(&self, policy: i32) {
-        self.sched_policy.store(policy, Ordering::Release)
-    }
+    pub fn set_sched_policy(&self, _policy: i32) {}
 
     #[inline]
     pub fn sched_priority(&self) -> i32 {
-        self.sched_priority.load(Ordering::Acquire)
+        0
     }
 
     #[inline]
-    pub fn set_sched_priority(&self, prio: i32) {
-        self.sched_priority.store(prio, Ordering::Release)
-    }
+    pub fn set_sched_priority(&self, _prio: i32) {}
 
     /// Polls whether the task has been interrupted.
     #[inline]
@@ -351,8 +341,6 @@ impl TaskInner {
             state: AtomicU8::new(TaskState::Ready as u8),
             // By default, the task is allowed to run on all CPUs.
             cpumask: SpinNoIrq::new(crate::api::cpu_mask_full()),
-            sched_policy: AtomicI32::new(0),
-            sched_priority: AtomicI32::new(0),
             in_wait_queue: AtomicBool::new(false),
             #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),
