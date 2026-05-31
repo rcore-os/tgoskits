@@ -318,15 +318,20 @@ impl InodeCache {
 
         let mut inner = self.inner.lock();
         let inode_size = inner.inode_size;
-        if let Some(cached) = inner.cache.get_mut(&inode_num) {
-            f(&mut cached.inode);
-            cached.mark_dirty();
+        // get_or_load_mut succeeded above, so the entry must exist unless
+        // concurrently evicted — treat that as filesystem corruption.
+        let cached = inner
+            .cache
+            .get_mut(&inode_num)
+            .ok_or(Ext4Error::corrupted())?;
+        f(&mut cached.inode);
+        cached.mark_dirty();
 
-            if !USE_MULTILEVEL_CACHE {
-                // Drop lock during synchronous I/O
-                let block_num = cached.block_num;
-                let offset = cached.offset_in_block;
-                let mut buf = alloc::vec![0u8; inode_size];
+        if !USE_MULTILEVEL_CACHE {
+            // Drop lock during synchronous I/O
+            let block_num = cached.block_num;
+            let offset = cached.offset_in_block;
+            let mut buf = alloc::vec![0u8; inode_size];
                 cached.inode.to_disk_bytes(&mut buf);
                 drop(inner);
 
@@ -337,7 +342,6 @@ impl InodeCache {
                     cached.dirty = false;
                 }
             }
-        }
         Ok(())
     }
 

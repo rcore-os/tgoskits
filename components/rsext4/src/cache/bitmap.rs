@@ -249,31 +249,33 @@ impl BitmapCache {
         self.get_or_load_mut(block_dev, key, block_num)?;
 
         let mut inner = self.inner.lock();
-        if let Some(bitmap) = inner.cache.get_mut(&key) {
-            debug!(
-                "BitmapCache::modify: key=({}:{:?}) block_num={} before_dirty={}",
-                key.group_id, key.bitmap_type, block_num, bitmap.dirty
-            );
+        let bitmap = inner
+            .cache
+            .get_mut(&key)
+            .ok_or(Ext4Error::corrupted())?;
+        debug!(
+            "BitmapCache::modify: key=({}:{:?}) block_num={} before_dirty={}",
+            key.group_id, key.bitmap_type, block_num, bitmap.dirty
+        );
 
-            f(&mut bitmap.data);
-            bitmap.mark_dirty();
+        f(&mut bitmap.data);
+        bitmap.mark_dirty();
 
-            if !USE_MULTILEVEL_CACHE {
-                let data = bitmap.data.clone();
-                let blk = bitmap.block_num;
-                drop(inner);
-                Self::write_bitmap_static(block_dev, blk, &data)?;
-                inner = self.inner.lock();
-                if let Some(bitmap) = inner.cache.get_mut(&key) {
-                    bitmap.dirty = false;
-                }
+        if !USE_MULTILEVEL_CACHE {
+            let data = bitmap.data.clone();
+            let blk = bitmap.block_num;
+            drop(inner);
+            Self::write_bitmap_static(block_dev, blk, &data)?;
+            inner = self.inner.lock();
+            if let Some(bitmap) = inner.cache.get_mut(&key) {
+                bitmap.dirty = false;
             }
-
-            debug!(
-                "BitmapCache::modify: key=({}:{:?}) block_num={} marked_dirty=true",
-                key.group_id, key.bitmap_type, block_num
-            );
         }
+
+        debug!(
+            "BitmapCache::modify: key=({}:{:?}) block_num={} marked_dirty=true",
+            key.group_id, key.bitmap_type, block_num
+        );
         Ok(())
     }
 

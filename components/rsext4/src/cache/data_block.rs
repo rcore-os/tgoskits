@@ -55,6 +55,8 @@ struct DataBlockCacheInner {
 /// Callers must ensure the block device (`Jbd2Dev`) is externally synchronized.
 pub struct DataBlockCache {
     inner: SpinMutex<DataBlockCacheInner>,
+    /// Filesystem block size in bytes (immutable after construction).
+    block_size: usize,
 }
 
 impl DataBlockCache {
@@ -67,6 +69,7 @@ impl DataBlockCache {
                 access_counter: 0,
                 block_size,
             }),
+            block_size,
         }
     }
 
@@ -81,7 +84,7 @@ impl DataBlockCache {
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
     ) -> Ext4Result<Vec<u8>> {
-        let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+        let mut buf = alloc::vec![0u8; self.block_size];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
         Ok(buf)
     }
@@ -106,7 +109,7 @@ impl DataBlockCache {
 
             // Phase 2: do I/O without holding the spinlock.
             if let Some((_lru_key, Some(ref lru_data))) = evict_info {
-                Self::write_block_static(block_dev, _lru_key, lru_data)?;
+                Self::write_block_static(block_dev, _lru_key, lru_data, self.block_size)?;
             }
 
             let data = self.load_block(block_dev, block_num)?;
@@ -158,7 +161,7 @@ impl DataBlockCache {
 
             // Phase 2: do I/O without holding the spinlock.
             if let Some((_lru_key, Some(ref lru_data))) = evict_info {
-                Self::write_block_static(block_dev, _lru_key, lru_data)?;
+                Self::write_block_static(block_dev, _lru_key, lru_data, self.block_size)?;
             }
 
             let data = self.load_block(block_dev, block_num)?;
@@ -225,10 +228,10 @@ impl DataBlockCache {
 
         // Phase 2: do I/O without holding the spinlock.
         if let Some(ref data) = evict_existing {
-            Self::write_block_static(block_dev, block_num, data)?;
+            Self::write_block_static(block_dev, block_num, data, self.block_size)?;
         }
         if let Some((lru_key, Some(ref lru_data))) = evict_lru_info {
-            Self::write_block_static(block_dev, lru_key, lru_data)?;
+            Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
         }
 
         // Phase 3: reacquire the lock and apply evictions + insertion.
@@ -279,20 +282,22 @@ impl DataBlockCache {
         self.get_or_load_mut(block_dev, block_num)?;
 
         let mut inner = self.inner.lock();
-        if let Some(cached) = inner.cache.get_mut(&block_num) {
-            f(&mut cached.data);
-            cached.mark_dirty();
+        let cached = inner
+            .cache
+            .get_mut(&block_num)
+            .ok_or(Ext4Error::corrupted())?;
+        f(&mut cached.data);
+        cached.mark_dirty();
 
-            if !USE_MULTILEVEL_CACHE {
-                let data = cached.data.clone();
-                let blk = cached.block_num;
-                drop(inner);
-                Self::write_block_static(block_dev, blk, &data)?;
+        if !USE_MULTILEVEL_CACHE {
+            let data = cached.data.clone();
+            let blk = cached.block_num;
+            drop(inner);
+            Self::write_block_static(block_dev, blk, &data, self.block_size)?;
 
-                inner = self.inner.lock();
-                if let Some(cached) = inner.cache.get_mut(&block_num) {
-                    cached.dirty = false;
-                }
+            inner = self.inner.lock();
+            if let Some(cached) = inner.cache.get_mut(&block_num) {
+                cached.dirty = false;
             }
         }
         Ok(())
@@ -360,13 +365,14 @@ impl DataBlockCache {
         }
     }
 
-    /// Writes one block to disk (static, lock-free helper with local buffer).
+    /// Writes one block to disk (static helper, takes runtime block_size).
     fn write_block_static<B: BlockDevice>(
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         data: &[u8],
+        block_size: usize,
     ) -> Ext4Result<()> {
-        let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
+        let mut buf = alloc::vec![0u8; block_size];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
         buf[..data.len()].copy_from_slice(data);
         block_dev.write_blocks(&buf, block_num, 1, false)?;
@@ -431,7 +437,7 @@ impl DataBlockCacheInner {
         if let Some(cached) = self.cache.remove(&block_num)
             && cached.dirty
         {
-            DataBlockCache::write_block_static(block_dev, cached.block_num, &cached.data)?;
+            DataBlockCache::write_block_static(block_dev, cached.block_num, &cached.data, self.block_size)?;
         }
         Ok(())
     }
@@ -445,7 +451,7 @@ impl DataBlockCacheInner {
             && cached.dirty
         {
             let data = cached.data.clone();
-            DataBlockCache::write_block_static(block_dev, block_num, &data)?;
+            DataBlockCache::write_block_static(block_dev, block_num, &data, self.block_size)?;
 
             if let Some(cached) = self.cache.get_mut(&block_num) {
                 cached.dirty = false;
