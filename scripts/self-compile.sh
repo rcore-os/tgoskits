@@ -169,7 +169,7 @@ if ! mountpoint -q "\$REGISTRY_SRC" 2>/dev/null; then
     rm -rf /tmp/.registry-src
 fi
 
-echo "[self-compile] Using tmpfs-backed registry""
+echo "[self-compile] Using tmpfs-backed registry"
 
 echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
