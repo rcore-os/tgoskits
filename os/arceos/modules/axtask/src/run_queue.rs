@@ -1,10 +1,9 @@
 use alloc::{collections::VecDeque, sync::Arc};
+use core::mem::MaybeUninit;
 #[cfg(feature = "smp")]
 use core::ptr::NonNull;
-use core::{
-    mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering},
-};
+#[cfg(feature = "smp")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
