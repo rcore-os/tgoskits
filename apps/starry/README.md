@@ -106,6 +106,18 @@ cargo xtask starry qemu \
 
 See `jcode/README.md` for interactive usage and troubleshooting.
 
+## Nginx
+
+The `nginx` case is a QEMU app integration workflow. It installs Alpine nginx
+packages in a staging root during prebuild, injects runtime artifacts to the
+app overlay, then runs nginx smoke tests inside StarryOS.
+
+```bash
+cargo xtask starry app run -t nginx --arch x86_64
+```
+
+`apps/starry/nginx` maintains four directories: `smoke`, `phase`, `stress`, and
+`debug`. Currently only smoke is connected as nginx test entry in tgoskits workflows.
 
 ## Orange Pi 5 Plus UVC
 
