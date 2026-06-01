@@ -8,6 +8,14 @@ pub fn register_current_cpu_id(cpu_idx: usize, reader: fn() -> usize) {
     plic::register_current_cpu_id(cpu_idx, reader);
 }
 
+pub(crate) fn claim_external_irq() -> Option<someboot::irq::IrqId> {
+    plic::claim_external_irq()
+}
+
+pub(crate) fn complete_external_irq(irq: someboot::irq::IrqId) {
+    plic::complete_external_irq(irq);
+}
+
 impl PlatOp for Plat {
     fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
         plic::irq_set_enable(irq, enable);

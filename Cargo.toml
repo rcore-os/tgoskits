@@ -30,6 +30,7 @@ members = [
     "components/crate_interface",
     "components/handler_table",
     "components/int_ratio",
+    "components/irq-framework",
     "components/kasm-aarch64",
     "components/kernel_guard",
     "components/kernutil",
@@ -188,6 +189,7 @@ ax-fs-ramfs = { version = "0.3.12", path = "components/axfs_crates/axfs_ramfs" }
 ax-fs-vfs = { version = "0.3.11", path = "components/axfs_crates/axfs_vfs" }
 ax-hal = { version = "0.5.15", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
+irq-framework = { version = "0.1.0", path = "components/irq-framework" }
 ax-helloworld = { version = "0.3.1", path = "os/arceos/examples/helloworld" }
 ax-helloworld-myplat = { version = "0.3.1", path = "os/arceos/examples/helloworld-myplat" }
 ax-httpclient = { version = "0.3.1", path = "os/arceos/examples/httpclient" }

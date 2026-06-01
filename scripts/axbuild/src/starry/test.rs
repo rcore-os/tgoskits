@@ -1865,54 +1865,61 @@ mod tests {
     fn apk_curl_qemu_case_tries_cernet_before_upstream() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let case_dir = workspace_root.join("test-suit/starryos/normal/qemu-smp1/apk-curl");
+        let script_path = case_dir.join("sh/apk-curl-tests.sh");
+        let script = fs::read_to_string(&script_path).unwrap();
 
         for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
             let config_path = case_dir.join(format!("qemu-{arch}.toml"));
             let content = fs::read_to_string(&config_path).unwrap();
             let config: toml::Value = toml::from_str(&content).unwrap();
-            let script = config
+            let shell_init_cmd = config
                 .get("shell_init_cmd")
                 .and_then(toml::Value::as_str)
                 .unwrap();
 
             assert!(
-                script.contains("apk --timeout \"$fetch_timeout\" add curl"),
-                "{} must install curl dynamically to exercise the apk add path",
-                config_path.display()
-            );
-            assert!(
-                script.contains("mirrors.cernet.edu.cn")
-                    && script.contains("dl-cdn.alpinelinux.org"),
-                "{} must provide Cernet first and upstream as a fallback",
-                config_path.display()
-            );
-            let cernet_index = script.find("mirrors.cernet.edu.cn").unwrap();
-            let upstream_index = script.find("dl-cdn.alpinelinux.org").unwrap();
-            assert!(
-                cernet_index < upstream_index,
-                "{} must try Cernet before upstream",
-                config_path.display()
-            );
-            assert!(
-                !script.contains("mirrors.aliyun.com")
-                    && !script.contains("mirrors.tuna.tsinghua.edu.cn")
-                    && !script.contains("mirrors.ustc.edu.cn"),
-                "{} must avoid mirrors that repeatedly timeout in QEMU",
-                config_path.display()
-            );
-            assert!(
-                !script.contains("__original__"),
-                "{} must use explicit mirror attempts so the selected repository is diagnosable",
-                config_path.display()
-            );
-            assert!(
-                script.contains("APK_CURL_REPO_$label")
-                    && script.contains("APK_CURL_TEST_PASSED")
-                    && script.contains("APK_CURL_TEST_FAILED"),
-                "{} must keep clear pass/fail diagnostics",
+                shell_init_cmd == "/usr/bin/apk-curl-tests.sh",
+                "{} must run the injected apk-curl script instead of pasting a long shell body",
                 config_path.display()
             );
         }
+
+        assert!(
+            script.contains("apk --timeout \"$fetch_timeout\" add curl"),
+            "{} must install curl dynamically to exercise the apk add path",
+            script_path.display()
+        );
+        assert!(
+            script.contains("mirrors.cernet.edu.cn") && script.contains("dl-cdn.alpinelinux.org"),
+            "{} must provide Cernet first and upstream as a fallback",
+            script_path.display()
+        );
+        let cernet_index = script.find("mirrors.cernet.edu.cn").unwrap();
+        let upstream_index = script.find("dl-cdn.alpinelinux.org").unwrap();
+        assert!(
+            cernet_index < upstream_index,
+            "{} must try Cernet before upstream",
+            script_path.display()
+        );
+        assert!(
+            !script.contains("mirrors.aliyun.com")
+                && !script.contains("mirrors.tuna.tsinghua.edu.cn")
+                && !script.contains("mirrors.ustc.edu.cn"),
+            "{} must avoid mirrors that repeatedly timeout in QEMU",
+            script_path.display()
+        );
+        assert!(
+            !script.contains("__original__"),
+            "{} must use explicit mirror attempts so the selected repository is diagnosable",
+            script_path.display()
+        );
+        assert!(
+            script.contains("APK_CURL_REPO_$label")
+                && script.contains("APK_CURL_TEST_PASSED")
+                && script.contains("APK_CURL_TEST_FAILED"),
+            "{} must keep clear pass/fail diagnostics",
+            script_path.display()
+        );
     }
 
     #[test]

@@ -132,15 +132,3 @@ pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
 pub(crate) fn monotonic_time_nanos() -> u64 {
     host::arceos::monotonic_time_nanos()
 }
-
-/// Register a host IRQ handler for x86 passthrough IRQ forwarding.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_host_irq(vector: usize, handler: fn(usize)) -> bool {
-    host::arceos::register_irq(vector, handler)
-}
-
-/// Register a host IRQ hook for x86 passthrough IRQ forwarding.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_host_irq_hook(handler: fn(usize)) -> bool {
-    host::arceos::register_irq_hook(handler)
-}

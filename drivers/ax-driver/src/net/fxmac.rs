@@ -264,10 +264,19 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
     }
 
     fn dma_request_irq(irq: usize, handler: fn(usize)) {
-        if axklib::irq::register(irq, handler) {
-            axklib::irq::set_enable(irq, true);
-        } else {
-            log::warn!("failed to register FXmac irq {irq}");
+        unsafe fn raw_irq_handler(
+            ctx: axklib::irq::IrqContext,
+            data: NonNull<()>,
+        ) -> axklib::irq::IrqReturn {
+            let handler = unsafe { *data.cast::<fn(usize)>().as_ref() };
+            handler(ctx.irq.0);
+            axklib::irq::IrqReturn::Handled
+        }
+
+        let data = Box::leak(Box::new(handler));
+        let data = NonNull::from(data).cast();
+        if let Err(err) = axklib::irq::request_shared(irq, raw_irq_handler, data) {
+            log::warn!("failed to request FXmac irq {irq}: {err:?}");
         }
     }
 }

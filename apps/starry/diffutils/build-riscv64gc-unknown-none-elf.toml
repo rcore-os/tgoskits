@@ -1,0 +1,7 @@
+env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
+features = [
+  "qemu", # auxilary features
+]
+log = "Warn"
+plat_dyn = false
+target = "riscv64gc-unknown-none-elf"

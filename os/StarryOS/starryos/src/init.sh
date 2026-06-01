@@ -23,10 +23,11 @@ echo
 mkdir /run 2>/dev/null
 mkdir /run/udev 2>/dev/null
 mkdir /run/udev/data 2>/dev/null
-: > /run/udev/data/c226:0     # /dev/dri/card0
-: > /run/udev/data/c29:0      # /dev/fb0 (if present)
+# Use touch instead of : > redirect — POSIX shell exits on redirect failure
+touch /run/udev/data/c226:0 2>/dev/null || true    # /dev/dri/card0
+touch /run/udev/data/c29:0 2>/dev/null || true     # /dev/fb0 (if present)
 for i in 0 1 2 3 4 5 6 7; do
-    : > "/run/udev/data/c13:$((64 + i))" 2>/dev/null
+    touch "/run/udev/data/c13:$((64 + i))" 2>/dev/null || true
 done
 
 # Visual-CI hook: when run_scenario.sh injects /test_runner.sh into the

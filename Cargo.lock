@@ -1027,6 +1027,7 @@ dependencies = [
  "ax-config",
  "ax-cpu",
  "ax-kernel-guard",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-page-table-multiarch",
  "ax-percpu",
@@ -1319,14 +1320,16 @@ name = "ax-plat"
 version = "0.5.8"
 dependencies = [
  "ax-crate-interface",
- "ax-handler-table",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat-macros",
  "bitflags 2.11.1",
  "const-str",
+ "irq-framework",
  "rdrive",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -1860,6 +1863,7 @@ dependencies = [
  "ax-errno",
  "ax-memory-addr",
  "dma-api",
+ "irq-framework",
  "mmio-api",
  "trait-ffi",
 ]
@@ -4734,6 +4738,10 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+
+[[package]]
+name = "irq-framework"
+version = "0.1.0"
 
 [[package]]
 name = "is-terminal"

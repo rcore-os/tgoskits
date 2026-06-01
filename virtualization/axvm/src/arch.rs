@@ -161,21 +161,21 @@ mod riscv64 {
     pub(crate) fn register_platform_irq_injector() {}
 
     #[cfg(feature = "plat-dyn")]
-    fn inject_virtual_irq(irq_id: usize) {
+    fn inject_virtual_irq(irq_id: usize) -> bool {
         debug!("injecting RISC-V virtual IRQ id: {irq_id}");
 
         let Some(vm_id) = crate::current_vm_id() else {
             warn!("cannot inject RISC-V virtual IRQ without current VM context");
-            return;
+            return false;
         };
 
-        let injected = crate::manager::with_vm(vm_id, |vm| {
+        let Some(injected) = crate::manager::with_vm(vm_id, |vm| {
             let Some(vplic) = vm
                 .get_devices()
                 .find_mmio_dev(GuestPhysAddr::from_usize(GUEST_PLIC_PADDR))
             else {
                 warn!("VM[{vm_id}] has no virtual PLIC device");
-                return;
+                return false;
             };
 
             let reg_offset = riscv_vplic::PLIC_PENDING_OFFSET + (irq_id / 32) * 4;
@@ -184,13 +184,15 @@ mod riscv64 {
 
             if let Err(err) = vplic.handle_write(addr, AccessWidth::Dword, val as _) {
                 warn!("failed to inject RISC-V virtual IRQ {irq_id}: {err:?}");
+                return false;
             }
-        })
-        .is_some();
-
-        if !injected {
+            true
+        }) else {
             warn!("cannot inject RISC-V virtual IRQ {irq_id}: VM[{vm_id}] not found");
-        }
+            return false;
+        };
+
+        injected
     }
 }
 

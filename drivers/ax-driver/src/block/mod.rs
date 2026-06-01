@@ -1,6 +1,7 @@
 mod binding;
 #[cfg(any(
     feature = "virtio-blk",
+    feature = "k230-sdhci",
     feature = "phytium-mci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci"
@@ -13,6 +14,8 @@ pub mod ahci;
 pub mod bcm2835;
 #[cfg(feature = "cvsd")]
 pub mod cvsd;
+#[cfg(feature = "k230-sdhci")]
+pub mod k230_sdhci;
 #[cfg(feature = "nvme")]
 pub mod nvme;
 #[cfg(feature = "phytium-mci")]
@@ -37,6 +40,7 @@ use rdif_block::{
 };
 #[cfg(any(
     feature = "virtio-blk",
+    feature = "k230-sdhci",
     feature = "phytium-mci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci"

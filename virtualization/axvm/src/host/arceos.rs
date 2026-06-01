@@ -116,16 +116,6 @@ pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::trap::irq_handler(vector);
 }
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_irq(vector: usize, handler: fn(usize)) -> bool {
-    modules::ax_hal::irq::register(vector, handler)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_irq_hook(handler: fn(usize)) -> bool {
-    modules::ax_hal::irq::register_irq_hook(handler)
-}
-
 impl HostCpu for ArceOsHost {
     type CpuMask = api::task::AxCpuMask;
 

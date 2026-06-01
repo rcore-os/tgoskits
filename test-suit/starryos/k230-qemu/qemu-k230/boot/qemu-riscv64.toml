@@ -1,0 +1,25 @@
+args = [
+  "-L",
+  "${workspace}/../../qemu-k230-docker-build/pc-bios",
+  "-machine",
+  "k230",
+  "-smp",
+  "1",
+  "-m",
+  "2G",
+  "-nographic",
+  "-dtb",
+  "${workspace}/os/StarryOS/configs/board/k230-canmv.dtb",
+  "-drive",
+  "if=sd,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "pwd && ls /usr/bin >/dev/null && echo K230_BOOT_PASS"
+success_regex = ["(?m)^K230_BOOT_PASS$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)illegal instruction",
+]
+timeout = 120
