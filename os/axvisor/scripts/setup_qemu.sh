@@ -23,6 +23,26 @@ TGOSIMAGES_RELEASE="${AXVISOR_TGOSIMAGES_RELEASE:-v0.0.5}"
 TGOSIMAGES_QEMU_X86_64_ARCHIVE="qemu-x86_64.tar.xz"
 TGOSIMAGES_QEMU_X86_64_URL="${AXVISOR_TGOSIMAGES_QEMU_X86_64_URL:-https://github.com/rcore-os/tgosimages/releases/download/${TGOSIMAGES_RELEASE}/${TGOSIMAGES_QEMU_X86_64_ARCHIVE}}"
 TGOSIMAGES_QEMU_X86_64_SHA256="${AXVISOR_TGOSIMAGES_QEMU_X86_64_SHA256:-64434d91166bf70ebfab42481d935c68640301fd031d0836d2bdec3f82bb2e20}"
+CARGO_AXVISOR_CMD=()
+
+resolve_cargo_axvisor_cmd() {
+  if cargo axvisor --help >/dev/null 2>&1; then
+    CARGO_AXVISOR_CMD=(cargo axvisor)
+    return
+  fi
+
+  if (cd "${REPO_ROOT}" && cargo xtask axvisor --help >/dev/null 2>&1); then
+    CARGO_AXVISOR_CMD=(cargo xtask axvisor)
+    return
+  fi
+
+  echo "ERROR: neither \`cargo axvisor\` nor \`cargo xtask axvisor\` is available." >&2
+  exit 1
+}
+
+run_cargo_axvisor() {
+  (cd "${REPO_ROOT}" && "${CARGO_AXVISOR_CMD[@]}" "$@")
+}
 
 bootstrap_image_registry() {
   local storage_dir="${IMAGE_STORAGE_ROOT}"
@@ -228,28 +248,29 @@ done
 
 [[ -n "${GUEST}" ]] || usage
 
-# Guest configuration:
-# image_name|vmconfig_template|generated_vmconfig_name|build_config|qemu_config|kernel_file|success_msg
+resolve_cargo_axvisor_cmd
+
+# Guest configuration: image_name|vmconfig|build_config|qemu_config|kernel_file|success_msg
 case "$GUEST" in
-  arceos)         CFG="qemu_aarch64_arceos|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
-  arceos-riscv64) CFG="qemu_riscv64_arceos|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
-  linux)          CFG="qemu_aarch64_linux|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
-  nimbos)         CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
-  nimbos-uefi)    CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
-  linux-x86_64-uefi) CFG="qemu_x86_64_linux|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
+  arceos)         CFG="qemu_aarch64_arceos|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
+  arceos-riscv64) CFG="qemu_riscv64_arceos|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
+  linux)          CFG="qemu_aarch64_linux|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
+  nimbos)         CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
+  nimbos-uefi)    CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
+  linux-x86_64-uefi) CFG="qemu_x86_64_linux|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
   *)       echo "Unknown guest: $GUEST" >&2; usage ;;
 esac
 
-IFS='|' read -r IMAGE_NAME VMCONFIG VMCONFIG_OUTPUT_NAME BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS_MSG <<< "$CFG"
+IFS='|' read -r IMAGE_NAME VMCONFIG BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS_MSG <<< "$CFG"
 # NOTE:
-#  - `cargo axvisor image pull` extracts images to
+#  - `cargo axvisor image pull` or `cargo xtask axvisor image pull` extracts images to
 #    `/tmp/.axvisor-images/<IMAGE_NAME>` by default.
 #  - NimbOS x86_64 is normalized into the same directory layout even when it is
 #    sourced from the rcore-os/tgosimages qemu-x86_64 release archive.
 IMAGE_DIR="${IMAGE_STORAGE_ROOT}/${IMAGE_NAME}"
 VMCONFIG_TEMPLATE_PATH="${REPO_ROOT}/configs/vms/${VMCONFIG}"
 VMCONFIG_TMP_DIR="${REPO_ROOT}/tmp/vmconfigs"
-GENERATED_VMCONFIG_PATH="${VMCONFIG_TMP_DIR}/${VMCONFIG_OUTPUT_NAME%.toml}.generated.toml"
+GENERATED_VMCONFIG_PATH="${VMCONFIG_TMP_DIR}/${VMCONFIG%.toml}.generated.toml"
 ROOTFS_TARGET="${REPO_ROOT}/tmp/rootfs.img"
 KERNEL_IMAGE="${IMAGE_DIR}/${KERNEL_FILE}"
 ROOTFS_IMAGE="${IMAGE_DIR}/rootfs.img"
@@ -260,19 +281,19 @@ echo "[setup_qemu] Guest: ${GUEST} | Repo: ${REPO_ROOT}"
 echo "[setup_qemu] Step 1: ensure guest image is downloaded..."
 if [[ "$GUEST" == "nimbos" || "$GUEST" == "nimbos-uefi" ]]; then
   if ! prepare_nimbos_from_tgosimages; then
-    echo "  -> Warning: failed to prepare NimbOS from tgosimages; falling back to cargo axvisor image." >&2
+    echo "  -> Warning: failed to prepare NimbOS from tgosimages; falling back to AxVisor image pull." >&2
     rm -rf "${IMAGE_DIR}"
     mkdir -p "${IMAGE_DIR}"
-    (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}")
+    run_cargo_axvisor image pull "${IMAGE_NAME}"
   fi
 elif [ ! -d "${IMAGE_DIR}" ]; then
-  echo "  -> Image directory ${IMAGE_DIR} not found, downloading via cargo axvisor image..."
+  echo "  -> Image directory ${IMAGE_DIR} not found, downloading via AxVisor image pull..."
   echo "  -> Download attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-  if ! (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}"); then
+  if ! run_cargo_axvisor image pull "${IMAGE_NAME}"; then
     echo "  -> Attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS} failed. Trying to bootstrap registry..."
     bootstrap_image_registry
     echo "  -> Download attempt 2/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-    (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}")
+    run_cargo_axvisor image pull "${IMAGE_NAME}"
   fi
 else
   echo "  -> Found existing image directory: ${IMAGE_DIR}"
@@ -293,7 +314,7 @@ if [[ "$GUEST" == "nimbos" ]]; then
   BIOS_IMAGE="${IMAGE_DIR}/axvm-bios.bin"
   if [ ! -f "${BIOS_IMAGE}" ]; then
     echo "ERROR: axvm-bios.bin not found at ${BIOS_IMAGE}" >&2
-    echo "  -> Please re-download the NimbOS image via 'cargo axvisor image pull qemu_x86_64_nimbos'." >&2
+    echo "  -> Please re-download the NimbOS image via 'cargo xtask axvisor image pull qemu_x86_64_nimbos'." >&2
     exit 1
   fi
 fi
