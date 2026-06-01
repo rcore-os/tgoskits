@@ -309,7 +309,7 @@ impl<B: MappingBackend> MemorySet<B> {
 
     /// Remove all memory areas and the underlying mappings.
     pub fn clear(&mut self, page_table: &mut B::PageTable) -> MappingResult {
-        for (_, area) in self.areas.iter() {
+        for area in self.areas.values() {
             area.unmap_area(page_table)?;
         }
         self.areas.clear();

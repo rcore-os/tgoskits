@@ -7,7 +7,7 @@ features = [
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
-  "ax-driver/virtio-socket"
+  "ax-driver/virtio-socket",
 ]
 log = "Warn"
 plat_dyn = false

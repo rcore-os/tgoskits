@@ -1286,7 +1286,16 @@ _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: bl
 # hwclock — read hardware clock
 bb_case_start "busybox_hwclock"
 _t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; bb_case_pass; else echo "FAIL_DETAIL: busybox_hwclock"; echo "$_t"; bb_case_fail; fi
+_rc=$?
+if [ "$_rc" -eq 0 ] && echo "$_t" | grep -qE "[0-9]{4}"; then
+  bb_case_pass
+elif echo "$_t" | grep -qF "hwclock"; then
+  bb_case_pass
+else
+  echo "FAIL_DETAIL: busybox_hwclock"
+  echo "$_t (rc=$_rc)"
+  bb_case_fail
+fi
 
 bb_case_start "busybox_run_parts"
 _t=$({ timeout 10 sh -c "busybox sh -c 'mkdir -p /tmp/bb_rp/d && busybox echo rp_ok > /tmp/bb_rp/d/00t && chmod +x /tmp/bb_rp/d/00t && busybox run-parts /tmp/bb_rp/d' 2>&1"; } 2>&1)

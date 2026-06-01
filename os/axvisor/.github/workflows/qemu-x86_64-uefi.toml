@@ -1,0 +1,21 @@
+args = [
+  "-m",
+  "128M",
+  "-smp",
+  "1",
+  "-machine",
+  "q35",
+  "-device",
+  "virtio-blk-pci,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspaceFolder}/tmp/rootfs.img",
+  "-nographic",
+  "-accel",
+  "kvm",
+  "-cpu",
+  "host",
+]
+fail_regex = ["System will reboot, press any key to continue ..."]
+success_regex = ["usertests passed!"]
+to_bin = false
+uefi = false

@@ -434,6 +434,7 @@ fn vcpu_run() {
                     }
                 }
                 AxVCpuExitReason::PreemptionTimer => {
+                    crate::timer::check_events();
                     #[cfg(target_arch = "x86_64")]
                     super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
                     #[cfg(target_arch = "x86_64")]

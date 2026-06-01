@@ -2195,12 +2195,15 @@ int main(void)
 
     /* Cleanup: umount then detach */
     {
+        printf("TRACE detach-busy: before umount\n");
         run("umount /tmp/ul-mnt 2>&1");
+        printf("TRACE detach-busy: after umount, before losetup -d\n");
         if (loopdev[0]) {
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
             run(cmd);
         }
+        printf("TRACE detach-busy: cleanup done\n");
     }
 
     /* ================================================================
@@ -2426,6 +2429,19 @@ int main(void)
     printf("[time %.2fs] util-linux-test done\n", elapsed());
 
     if (fail > 0) return 1;
+    /* Dump trace log if exists */
+    {
+        int tfd = open("/tmp/ul-trace.log", O_RDONLY);
+        if (tfd >= 0) {
+            char buf[512];
+            int n;
+            printf("--- detach-busy trace ---\n");
+            while ((n = read(tfd, buf, sizeof(buf))) > 0)
+                write(STDOUT_FILENO, buf, n);
+            printf("--- end trace ---\n");
+            close(tfd);
+        }
+    }
     printf("PASS | util-linux-test completed\n");
     printf("UTIL LINUX TEST PASSED\n");
     return 0;

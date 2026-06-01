@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: "1"
+      timeout_minutes:
+        description: Maximum minutes to allow the command job to run.
+        required: false
+        type: number
+        default: 360
 jobs:
   run_host:
     if: >-
@@ -56,6 +61,7 @@ jobs:
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -85,6 +91,7 @@ jobs:
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
       credentials:

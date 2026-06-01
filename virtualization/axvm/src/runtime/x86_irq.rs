@@ -12,7 +12,6 @@ const IOAPIC_VECTOR_END: usize = IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT;
 
 const PIT_TIMER_GSI: usize = 0;
 const COM1_GSI: usize = 4;
-
 static IOAPIC_IRQ_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
 static IOAPIC_IRQ_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
 static IOAPIC_IRQ_FORWARD_VM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);

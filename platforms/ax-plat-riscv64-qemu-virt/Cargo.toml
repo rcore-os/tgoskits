@@ -21,10 +21,10 @@ smp = ["ax-plat/smp"]
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
-riscv = "0.16"
+riscv.workspace = true
 riscv_goldfish = { version = "0.1", optional = true }
 ax-riscv-plic = { workspace = true, optional = true }
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
+sbi-rt = { workspace = true, features = ["legacy"] }
 some-serial.workspace = true
 
 ax-config-macros = { workspace = true }

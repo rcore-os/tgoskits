@@ -428,6 +428,14 @@ impl BuildInfo {
         ];
 
         if !extra_rustflags.is_empty() {
+            // Cargo resolves `target.<name>.rustflags` for a JSON target spec by the
+            // spec file *stem* (e.g. `x86_64-unknown-none`), not the path passed to
+            // `--target`. Using the full path as the key makes cargo silently drop the
+            // entry, so flags like `-Cforce-frame-pointers=yes` never reach rustc.
+            let target_key = Path::new(target)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(target);
             args.push("--config".to_string());
             let rustflags_toml = toml::Value::Array(
                 extra_rustflags
@@ -437,7 +445,7 @@ impl BuildInfo {
                     .collect(),
             )
             .to_string();
-            args.push(format!("target.'{target}'.rustflags={rustflags_toml}"));
+            args.push(format!("target.{target_key}.rustflags={rustflags_toml}"));
         }
         args
     }
@@ -1563,20 +1571,25 @@ mod tests {
     }
 
     #[test]
-    fn build_cargo_args_quotes_json_target_rustflags_key() {
+    fn build_cargo_args_uses_target_stem_as_rustflags_key() {
         let args = BuildInfo::build_cargo_args(
             "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-            &["-Cdebuginfo=2".to_string()],
+            &["-Cforce-frame-pointers=yes".to_string()],
         );
 
+        // Cargo matches the JSON target by file stem, so the config key must be the
+        // stem (`aarch64-unknown-none-softfloat`) and not the full spec path.
         assert!(args.windows(2).any(|pair| {
             pair[0] == "--config"
-                && pair[1].starts_with(
-                    "target.'scripts/targets/no-pie/aarch64-unknown-none-softfloat.json'.\
-                     rustflags=",
-                )
-                && pair[1].contains("\"-Cdebuginfo=2\"")
+                && pair[1].starts_with("target.aarch64-unknown-none-softfloat.rustflags=")
+                && pair[1].contains("\"-Cforce-frame-pointers=yes\"")
         }));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("scripts/targets/no-pie")),
+            "config key must not use the spec path"
+        );
     }
 
     #[test]

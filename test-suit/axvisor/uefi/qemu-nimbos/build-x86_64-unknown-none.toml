@@ -1,0 +1,11 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+    "ax-driver/virtio-blk",
+    "ax-driver/plat-static",
+    "ept-level-4",
+    "fs",
+    "vmx",
+]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = ["os/axvisor/tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml"]

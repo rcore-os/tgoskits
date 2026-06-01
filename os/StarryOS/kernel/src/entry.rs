@@ -22,6 +22,14 @@ pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
 
+    {
+        // perf kprobe-by-name resolves through the real in-kernel `.kallsyms`
+        // blob (`pseudofs::proc::KALLSYMS`, built from the `ksym` crate), the
+        // same table `/proc/kallsyms` exposes — no separate symbol table.
+        crate::ebpf::init_ebpf();
+        crate::perf::perf_event_init();
+    }
+
     // FIXME: loongarch64 selftest hangs on QEMU; the kprobe crate's loongarch64
     // breakpoint handling needs upstream fixes before selftest can be enabled.
     #[cfg(not(target_arch = "loongarch64"))]

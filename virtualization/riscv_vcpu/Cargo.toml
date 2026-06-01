@@ -28,11 +28,11 @@ cfg-if = "1.0"
 bitflags = "2.2"
 bit_field = "0.10"
 ax-crate-interface = { workspace = true }
-riscv = { version = "0.14.0", features = ["s-mode"] }
+riscv = { workspace = true, features = ["s-mode"] }
 riscv-h = { workspace = true }
 riscv-decode = "0.2.3"
 rustsbi = { version = "0.4.0", features = ["forward"] }
-sbi-rt = { version = "0.0.4", features = ["integer-impls"] }
+sbi-rt = { workspace = true, features = ["integer-impls"] }
 sbi-spec = { version = "0.0.9", features = ["legacy"] }
 tock-registers = "0.10"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }

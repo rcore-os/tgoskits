@@ -20,7 +20,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ax_errno::{AxResult, ax_err_type};
 use axvm::{
     AxVM, AxVMRef, GuestPhysAddr, VMMemoryRegion,
-    config::{AxVCpuConfig, AxVMConfig, AxVMConfigParams, PhysCpuList, RamdiskInfo, VMImageConfig},
+    config::{
+        AxVCpuConfig, AxVMConfig, AxVMConfigParams, PhysCpuList, RamdiskInfo, VMBootProtocol,
+        VMImageConfig, adjusted_kernel_load_gpa,
+    },
 };
 use axvmconfig::{AxVMCrateConfig, VMType, VmMemConfig, VmMemMappingType};
 
@@ -31,8 +34,6 @@ use axvmconfig::{AxVMCrateConfig, VMType, VmMemConfig, VmMemMappingType};
 ))]
 use crate::fdt::*;
 use crate::images::ImageLoader;
-
-const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
 
 /// Default BIOS load GPA for x86_64 built-in BIOS.
 #[cfg(target_arch = "x86_64")]
@@ -177,7 +178,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one memory region"))?;
 
     if !skip_guest_address_adjustment {
-        config_guest_address(&vm, &main_mem);
+        config_guest_address(
+            &vm,
+            &main_mem,
+            vm_create_config.kernel.effective_boot_protocol(),
+        );
     }
 
     // Load corresponding images for VM.
@@ -216,6 +221,7 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         },
         image_config: VMImageConfig {
             kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
+            loaded_from_filesystem: cfg.kernel.image_location.as_deref() == Some("fs"),
             bios_load_gpa: configured_bios_load_gpa(cfg),
             dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
             ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
@@ -241,26 +247,13 @@ fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if cfg.kernel.bios_path.is_none() {
+    if cfg.kernel.boot_firmware_path().is_none()
+        && cfg.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
+    {
         return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
     }
 
     None
-}
-
-fn adjusted_kernel_load_gpa(
-    main_memory: &VMMemoryRegion,
-    bios_load_gpa: Option<GuestPhysAddr>,
-) -> Option<GuestPhysAddr> {
-    if !main_memory.is_identical() {
-        return None;
-    }
-
-    let mut kernel_addr = main_memory.gpa;
-    if bios_load_gpa.is_some() {
-        kernel_addr += BIOS_RESERVED_SIZE;
-    }
-    Some(kernel_addr)
 }
 
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
@@ -275,11 +268,13 @@ pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
 }
 
-fn config_guest_address(vm: &AxVMRef, main_memory: &VMMemoryRegion) {
+fn config_guest_address(vm: &AxVMRef, main_memory: &VMMemoryRegion, boot_protocol: VMBootProtocol) {
     vm.with_config(|config| {
-        if let Some(kernel_addr) =
-            adjusted_kernel_load_gpa(main_memory, config.image_config.bios_load_gpa)
-        {
+        if let Some(kernel_addr) = adjusted_kernel_load_gpa(
+            main_memory,
+            boot_protocol,
+            config.image_config.bios_load_gpa,
+        ) {
             debug!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
                 config.image_config.kernel_load_gpa, kernel_addr
