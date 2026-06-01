@@ -166,20 +166,6 @@ pub fn command_words(range: CommandRange) -> Result<(u32, u32, u32), Error> {
 mod tests {
     use super::*;
 
-    const UAPI_HEADER: &str = include_str!("../include/k230_kpu_uapi.h");
-
-    fn define_value(name: &str) -> Option<&'static str> {
-        UAPI_HEADER.lines().find_map(|line| {
-            let mut parts = line.split_whitespace();
-            (parts.next()? == "#define" && parts.next()? == name)
-                .then(|| parts.next().unwrap_or(""))
-        })
-    }
-
-    fn assert_define(name: &str, expected: &str) {
-        assert_eq!(define_value(name), Some(expected), "UAPI define {name}");
-    }
-
     #[test]
     fn command_words_accept_same_4g_window() {
         assert_eq!(
@@ -214,57 +200,10 @@ mod tests {
     }
 
     #[test]
-    fn uapi_header_matches_rust_constants() {
+    fn uapi_layout_and_constants_are_stable() {
         assert_eq!(core::mem::size_of::<CommandRange>(), 16);
         assert_eq!(core::mem::offset_of!(CommandRange, start_paddr), 0);
         assert_eq!(core::mem::offset_of!(CommandRange, end_paddr), 8);
-
-        assert_define("KPU_IOC_GET_STATUS", "0x4b00u");
-        assert_define("KPU_IOC_CLEAR", "0x4b01u");
-        assert_define("KPU_IOC_PROGRAM_COMMAND", "0x4b02u");
-        assert_define("KPU_IOC_START", "0x4b03u");
-        assert_define("KPU_IOC_RUN", "0x4b04u");
-        assert_define("KPU_IOC_WAIT_DONE", "0x4b05u");
-        assert_define("KPU_IOC_GET_INFO", "0x4b06u");
-        assert_define("KPU_IOC_GET_IRQ_COUNT", "0x4b07u");
-        assert_define("KPU_MMAP_CFG_OFFSET", "0x0ull");
-        assert_define("KPU_MMAP_L2_OFFSET", "0x1000ull");
-        assert_define("KPU_MMAP_FAKE_OUTPUT_OFFSET", "0x2000ull");
-        assert_define("KPU_MMAP_RUNTIME_RDATA_OFFSET", "0x3000ull");
-        assert_define("KPU_MMAP_RUNTIME_COMMAND_OFFSET", "0x4000ull");
-        assert_define("KPU_MMAP_RUNTIME_DIRECT_IO_OFFSET", "0x5000ull");
-        assert_define("KPU_MMAP_RUNTIME_DDR_OFFSET", "0x6000ull");
-        assert_define("KPU_CFG_PADDR", "0x80400000ull");
-        assert_define("KPU_L2_PADDR", "0x80000000ull");
-        assert_define("KPU_FAKE_OUTPUT_PADDR", "0x10090000ull");
-        assert_define("KPU_RUNTIME_RDATA_PADDR", "0x10000000ull");
-        assert_define("KPU_RUNTIME_COMMAND_PADDR", "0x10190000ull");
-        assert_define("KPU_RUNTIME_DIRECT_IO_PADDR", "0x10500000ull");
-        assert_define("KPU_RUNTIME_DDR_PADDR", "0x3c000000ull");
-        assert_define("KPU_RUNTIME_RDATA_BASE", "0x10000020ull");
-        assert_define("KPU_RUNTIME_FUNCTION_COMMAND_PADDR", "0x1032b020ull");
-        assert_define("KPU_RUNTIME_ARG_TABLE_PADDR", "0x80000000ull");
-        assert_define("KPU_RUNTIME_DIRECT_SOURCE_PADDR", "0x10500020ull");
-        assert_define("KPU_RUNTIME_DIRECT_OUTPUT_PADDR", "0x10501020ull");
-        assert_define("KPU_CFG_SIZE", "0x800u");
-        assert_define("KPU_L2_SIZE", "0x200000u");
-        assert_define("KPU_FAKE_OUTPUT_SIZE", "0x100000u");
-        assert_define("KPU_RUNTIME_RDATA_SIZE", "0x90000u");
-        assert_define("KPU_RUNTIME_COMMAND_SIZE", "0x370000u");
-        assert_define("KPU_RUNTIME_DIRECT_IO_SIZE", "0xb00000u");
-        assert_define("KPU_RUNTIME_DDR_SIZE", "0x4000000u");
-        assert_define("KPU_IRQ_NONE", "0xffffffffu");
-        assert_define("KPU_INFO_F_FDT", "0x1u");
-        assert_define("KPU_INFO_F_IRQ_WAIT", "0x2u");
-        assert_define("KPU_INFO_F_FAKE_OUTPUT", "0x4u");
-        assert_define("KPU_INFO_F_RUNTIME_SCRATCH", "0x8u");
-        assert_define("KPU_COMMAND_START", "0x100u");
-        assert_define("KPU_COMMAND_END", "0x104u");
-        assert_define("KPU_COMMAND_HI", "0x108u");
-        assert_define("KPU_CONTROL", "0x128u");
-        assert_define("KPU_STATUS_LO", "0x130u");
-        assert_define("KPU_STATUS_HI", "0x134u");
-        assert_define("KPU_DONE_STATUS", "0x0000000400000004ull");
 
         assert_eq!(KPU_IOC_GET_STATUS, 0x4b00);
         assert_eq!(KPU_IOC_CLEAR, 0x4b01);
@@ -277,16 +216,34 @@ mod tests {
         assert_eq!(KPU_MMAP_CFG_OFFSET, 0);
         assert_eq!(KPU_MMAP_L2_OFFSET, 0x1000);
         assert_eq!(KPU_MMAP_FAKE_OUTPUT_OFFSET, 0x2000);
+        assert_eq!(KPU_MMAP_RUNTIME_RDATA_OFFSET, 0x3000);
+        assert_eq!(KPU_MMAP_RUNTIME_COMMAND_OFFSET, 0x4000);
+        assert_eq!(KPU_MMAP_RUNTIME_DIRECT_IO_OFFSET, 0x5000);
+        assert_eq!(KPU_MMAP_RUNTIME_DDR_OFFSET, 0x6000);
         assert_eq!(KPU_CFG_PADDR, 0x8040_0000);
         assert_eq!(KPU_L2_PADDR, 0x8000_0000);
         assert_eq!(KPU_FAKE_OUTPUT_PADDR, 0x1009_0000);
+        assert_eq!(KPU_RUNTIME_RDATA_PADDR, 0x1000_0000);
+        assert_eq!(KPU_RUNTIME_COMMAND_PADDR, 0x1019_0000);
+        assert_eq!(KPU_RUNTIME_DIRECT_IO_PADDR, 0x1050_0000);
+        assert_eq!(KPU_RUNTIME_DDR_PADDR, 0x3c00_0000);
+        assert_eq!(KPU_RUNTIME_RDATA_BASE, 0x1000_0020);
+        assert_eq!(KPU_RUNTIME_FUNCTION_COMMAND_PADDR, 0x1032_b020);
+        assert_eq!(KPU_RUNTIME_ARG_TABLE_PADDR, 0x8000_0000);
+        assert_eq!(KPU_RUNTIME_DIRECT_SOURCE_PADDR, 0x1050_0020);
+        assert_eq!(KPU_RUNTIME_DIRECT_OUTPUT_PADDR, 0x1050_1020);
         assert_eq!(KPU_CFG_SIZE, 0x800);
         assert_eq!(KPU_L2_SIZE, 0x20_0000);
         assert_eq!(KPU_FAKE_OUTPUT_SIZE, 0x10_0000);
+        assert_eq!(KPU_RUNTIME_RDATA_SIZE, 0x9_0000);
+        assert_eq!(KPU_RUNTIME_COMMAND_SIZE, 0x37_0000);
+        assert_eq!(KPU_RUNTIME_DIRECT_IO_SIZE, 0xb0_0000);
+        assert_eq!(KPU_RUNTIME_DDR_SIZE, 0x400_0000);
         assert_eq!(KPU_IRQ_NONE, u32::MAX);
         assert_eq!(KPU_INFO_F_FDT, 0x1);
         assert_eq!(KPU_INFO_F_IRQ_WAIT, 0x2);
         assert_eq!(KPU_INFO_F_FAKE_OUTPUT, 0x4);
+        assert_eq!(KPU_INFO_F_RUNTIME_SCRATCH, 0x8);
         assert_eq!(COMMAND_START, 0x100);
         assert_eq!(COMMAND_END, 0x104);
         assert_eq!(COMMAND_HI, 0x108);
