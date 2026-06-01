@@ -7,6 +7,7 @@ pub mod ion;
 pub mod memfd;
 mod net;
 pub mod netlink;
+mod nsfd;
 mod packet;
 mod pidfd;
 mod pipe;
@@ -33,6 +34,7 @@ use spin::RwLock;
 pub use self::{
     fs::{Directory, File, resolve_at, with_fs},
     net::Socket,
+    nsfd::NsFd,
     packet::{PacketSocket, SockAddrLl},
     pidfd::PidFd,
     pipe::Pipe,

@@ -76,6 +76,7 @@ rdrive = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
+axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true }
 axpoll = { workspace = true }

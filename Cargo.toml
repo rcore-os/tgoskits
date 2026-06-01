@@ -81,6 +81,7 @@ members = [
     "drivers/usb/usb-if",
     "drivers/usb/utils/*",
 
+    "os/StarryOS/axnsproxy",
     "os/StarryOS/kernel",
     "os/StarryOS/starryos",
     "os/arceos/api/*",
@@ -307,6 +308,7 @@ phytium-mci-host = { version = "0.1.1", path = "drivers/blk/phytium-mci-host", d
 sdhci-host = { version = "0.1.1", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.1.1", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
+axnsproxy = { version = "0.1.0", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.5.12", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.7", path = "components/starry-process" }
 starry-signal = { version = "0.7.0", path = "components/starry-signal" }
