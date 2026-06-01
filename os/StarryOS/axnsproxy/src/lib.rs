@@ -131,13 +131,15 @@ impl NsProxy {
         self.mnt_ns = ns;
     }
 
-    /// Replace the PID namespace with an existing one (used by `setns(2)`).
+    /// Stage a PID namespace for the next child (used by `setns(2)`).
     ///
-    /// Note: `setns(CLONE_NEWPID)` does not change the calling process's
-    /// PID; it only affects the PID namespace for child processes created
-    /// afterwards.  The caller must be single-threaded.
+    /// Linux `setns(CLONE_NEWPID)` never moves the calling process into the
+    /// target PID namespace.  Instead the next `fork` / `clone` (without
+    /// `CLONE_NEWPID`) child enters it and becomes PID 1 there.  This mirrors
+    /// `unshare(CLONE_NEWPID)` — both paths write to `child_pid_ns`, which is
+    /// consumed in the clone path.  The caller must be single-threaded.
     pub fn set_ns_pid(&mut self, ns: Arc<SpinNoIrq<PidNamespace>>) {
-        self.pid_ns = ns;
+        self.child_pid_ns = Some(ns);
     }
 
     /// Replace the network namespace with an existing one (used by `setns(2)`).

@@ -97,7 +97,9 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
 
-    // PID namespace: caller must be single-threaded.
+    // PID namespace: calling process stays in its current PID ns;
+    // the target ns is staged to child_pid_ns and consumed by the
+    // next fork/clone. Must be single-threaded (Linux check).
     if fd_type == CLONE_NEWPID {
         let thread_count = proc_data.proc.threads().len();
         if thread_count > 1 {
