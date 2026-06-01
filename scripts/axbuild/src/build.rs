@@ -695,6 +695,10 @@ fn normalize_legacy_feature_alias(feature: &str) -> String {
 
 fn normalize_std_feature(feature: &str) -> String {
     let normalized = normalize_legacy_feature_alias(feature);
+    if let Some(platform) = ax_platform_feature_name(&normalized, cached_workspace_metadata().ok())
+    {
+        return format!("ax-hal/{platform}");
+    }
     match normalized.as_str() {
         "ax-std" | "ax-feat" => normalized,
         feature if feature.starts_with("ax-std/") || feature.starts_with("ax-feat/") => feature
@@ -1505,7 +1509,7 @@ mod tests {
         let mut info = BuildInfo {
             std_build: true,
             features: vec![
-                "ax-hal/loongarch64-qemu-virt".to_string(),
+                "ax-std/loongarch64-qemu-virt".to_string(),
                 "dns".to_string(),
             ],
             ..BuildInfo::default()
@@ -1635,6 +1639,7 @@ mod tests {
         assert!(info.features.contains(&"ax-std".to_string()));
         assert!(info.features.contains(&"arceos-rust/lockdep".to_string()));
         assert!(info.features.contains(&"arceos-rust/smp".to_string()));
+        assert!(!info.features.contains(&"ax-hal/smp".to_string()));
         assert!(!info.features.contains(&"ax-std/lockdep".to_string()));
         assert!(!info.features.contains(&"lockdep".to_string()));
     }
