@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::PhysAddr;
+use ax_memory_addr::{MemoryAddr, PhysAddr};
 use ax_page_table_multiarch::{MappingFlags, PagingHandler};
 
 use super::Backend;
@@ -20,8 +20,8 @@ use crate::{GuestPhysAddr, npt::NestedPageTable as PageTable};
 
 impl<H: PagingHandler> Backend<H> {
     /// Creates a new linear mapping backend.
-    pub const fn new_linear(pa_va_offset: usize) -> Self {
-        Self::Linear { pa_va_offset }
+    pub const fn new_linear(phys_start: PhysAddr) -> Self {
+        Self::Linear { phys_start }
     }
 
     pub(crate) fn map_linear(
@@ -30,21 +30,20 @@ impl<H: PagingHandler> Backend<H> {
         size: usize,
         flags: MappingFlags,
         pt: &mut PageTable<H>,
-        pa_va_offset: usize,
+        phys_start: PhysAddr,
     ) -> bool {
-        let pa_start = PhysAddr::from(start.as_usize() - pa_va_offset);
         debug!(
             "map_linear: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
             start,
             start + size,
-            pa_start,
-            pa_start + size,
+            phys_start,
+            phys_start + size,
             flags
         );
         let allow_huge = true;
         pt.map_region(
             start,
-            |va| PhysAddr::from(va.as_usize() - pa_va_offset),
+            |va| phys_start.add(va.sub_addr(start)),
             size,
             flags,
             allow_huge,
@@ -57,7 +56,7 @@ impl<H: PagingHandler> Backend<H> {
         start: GuestPhysAddr,
         size: usize,
         pt: &mut PageTable<H>,
-        _pa_va_offset: usize,
+        _phys_start: PhysAddr,
     ) -> bool {
         debug!("unmap_linear: [{:#x}, {:#x})", start, start + size);
         pt.unmap_region(start, size).is_ok()

@@ -626,6 +626,12 @@ impl VmxVcpu {
 
         use super::vmcs::controls::*;
         let raw_cpuid = CpuId::new();
+        let primary_allowed1 = (Msr::IA32_VMX_TRUE_PROCBASED_CTLS.read() >> 32) as u32;
+        let secondary_allowed1 = (Msr::IA32_VMX_PROCBASED_CTLS2.read() >> 32) as u32;
+        let apicv_supported = (primary_allowed1 & PrimaryControls::USE_TPR_SHADOW.bits()) != 0
+            && (secondary_allowed1 & SecondaryControls::VIRTUALIZE_APIC.bits()) != 0;
+        let vid_supported = apicv_supported
+            && (secondary_allowed1 & SecondaryControls::VIRTUAL_INTERRUPT_DELIVERY.bits()) != 0;
 
         vmcs::set_control(
             VmcsControl32::PINBASED_EXEC_CONTROLS,
@@ -641,15 +647,17 @@ impl VmxVcpu {
         // Intercept all I/O instructions, use MSR bitmaps, activate secondary controls,
         // disable CR3 load/store interception.
         use PrimaryControls as CpuCtrl;
+        let mut primary_set =
+            (CpuCtrl::USE_IO_BITMAPS | CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS)
+                .bits();
+        if apicv_supported {
+            primary_set |= CpuCtrl::USE_TPR_SHADOW.bits();
+        }
         vmcs::set_control(
             VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PROCBASED_CTLS,
             Msr::IA32_VMX_PROCBASED_CTLS.read() as u32,
-            (CpuCtrl::USE_IO_BITMAPS
-                | CpuCtrl::USE_MSR_BITMAPS
-                | CpuCtrl::USE_TPR_SHADOW
-                | CpuCtrl::SECONDARY_CONTROLS)
-                .bits(),
+            primary_set,
             (CpuCtrl::CR3_LOAD_EXITING
                 | CpuCtrl::CR3_STORE_EXITING
                 | CpuCtrl::CR8_LOAD_EXITING
@@ -659,22 +667,28 @@ impl VmxVcpu {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val = CpuCtrl2::VIRTUALIZE_APIC
-            | CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY
-            | CpuCtrl2::ENABLE_EPT
-            | CpuCtrl2::UNRESTRICTED_GUEST;
+        let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
+        if apicv_supported {
+            val |= CpuCtrl2::VIRTUALIZE_APIC;
+        }
+        if vid_supported {
+            val |= CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY;
+        }
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
             && features.has_rdtscp()
+            && (secondary_allowed1 & CpuCtrl2::ENABLE_RDTSCP.bits()) != 0
         {
             val |= CpuCtrl2::ENABLE_RDTSCP;
         }
         if let Some(features) = raw_cpuid.get_extended_feature_info()
             && features.has_invpcid()
+            && (secondary_allowed1 & CpuCtrl2::ENABLE_INVPCID.bits()) != 0
         {
             val |= CpuCtrl2::ENABLE_INVPCID;
         }
         if let Some(features) = raw_cpuid.get_extended_state_info()
             && features.has_xsaves_xrstors()
+            && (secondary_allowed1 & CpuCtrl2::ENABLE_XSAVES_XRSTORS.bits()) != 0
         {
             val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
         }
@@ -741,13 +755,18 @@ impl VmxVcpu {
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
 
-        VmcsControl64::VIRT_APIC_ADDR.write(self.vlapic.virtual_apic_page_addr().as_usize() as _)?;
-        VmcsControl64::APIC_ACCESS_ADDR
-            .write(EmulatedLocalApic::virtual_apic_access_addr().as_usize() as _)?;
-        VmcsControl64::EOI_EXIT0.write(u64::MAX)?;
-        VmcsControl64::EOI_EXIT1.write(u64::MAX)?;
-        VmcsControl64::EOI_EXIT2.write(u64::MAX)?;
-        VmcsControl64::EOI_EXIT3.write(u64::MAX)?;
+        if apicv_supported {
+            VmcsControl64::VIRT_APIC_ADDR
+                .write(self.vlapic.virtual_apic_page_addr().as_usize() as _)?;
+            VmcsControl64::APIC_ACCESS_ADDR
+                .write(EmulatedLocalApic::virtual_apic_access_addr().as_usize() as _)?;
+        }
+        if vid_supported {
+            VmcsControl64::EOI_EXIT0.write(u64::MAX)?;
+            VmcsControl64::EOI_EXIT1.write(u64::MAX)?;
+            VmcsControl64::EOI_EXIT2.write(u64::MAX)?;
+            VmcsControl64::EOI_EXIT3.write(u64::MAX)?;
+        }
         Ok(())
     }
 
@@ -1127,16 +1146,18 @@ impl VmxVcpu {
     }
 
     fn decode_ept_mmio_access(
-        &self,
+        &mut self,
         exit_info: &VmxExitInfo,
         addr: GuestPhysAddr,
         write: bool,
     ) -> Option<AxVCpuExitReason> {
-        // Keep EPT-violation MMIO decoding scoped to the PC IOAPIC window used
-        // by the current x86 Linux direct-boot path. The VMX exit qualification
-        // alone does not tell us whether an unmapped GPA is an emulated device
-        // or a genuine missing memory mapping.
-        if !(X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr.as_usize()) {
+        let is_ioapic =
+            (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr.as_usize());
+        let is_lapic = (X86_APIC_ACCESS_GPA..X86_APIC_ACCESS_GPA + ax_memory_addr::PAGE_SIZE_4K)
+            .contains(&addr.as_usize());
+
+        // Only decode MMIO for device windows that Axvisor explicitly emulates.
+        if !is_ioapic && !is_lapic {
             return None;
         }
 
@@ -1154,6 +1175,53 @@ impl VmxVcpu {
         if modrm >> 6 == 0b11 {
             debug!("EPT MMIO access did not use a memory operand");
             return None;
+        }
+
+        if is_lapic {
+            return match (write, opcode) {
+                (true, 0x89) => {
+                    let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+                    <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+                        &self.vlapic,
+                        addr,
+                        AccessWidth::Dword,
+                        self.guest_regs.get_reg_of_index(reg) as u32 as usize,
+                    )
+                    .ok()?;
+                    Some(AxVCpuExitReason::Nothing)
+                }
+                (true, 0xc7) if (modrm >> 3) & 0x7 == 0 => {
+                    let imm_addr = self.skip_modrm_memory_operand(rip, modrm, rex).ok()?;
+                    let mut data = 0u32;
+                    for i in 0..size_of::<u32>() {
+                        data |= (self.read_guest_u8(imm_addr + i).ok()? as u32) << (i * 8);
+                    }
+                    <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+                        &self.vlapic,
+                        addr,
+                        AccessWidth::Dword,
+                        data as usize,
+                    )
+                    .ok()?;
+                    Some(AxVCpuExitReason::Nothing)
+                }
+                (false, 0x8b) => {
+                    let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+                    let value =
+                        <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_read(
+                            &self.vlapic,
+                            addr,
+                            AccessWidth::Dword,
+                        )
+                        .ok()? as u64;
+                    self.guest_regs.set_reg_of_index(reg, value);
+                    Some(AxVCpuExitReason::Nothing)
+                }
+                _ => {
+                    debug!("unsupported LAPIC EPT MMIO opcode {opcode:#x}, write={write}");
+                    None
+                }
+            };
         }
 
         match (write, opcode) {

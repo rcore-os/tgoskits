@@ -98,6 +98,26 @@ fn test_map_linear() {
 
 #[test]
 #[axin(decorator(mock_hal_test))]
+fn test_map_linear_with_higher_host_paddr() {
+    let (mut addr_space, _base, _size) = setup_test_addr_space();
+    let vaddr = GuestPhysAddr::from_usize(0x10000);
+    let paddr = PhysAddr::from_usize(0x18000);
+    let map_linear_size = 0x2000;
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    addr_space
+        .map_linear(vaddr, paddr, map_linear_size, flags)
+        .unwrap();
+
+    assert_eq!(addr_space.translate(vaddr).unwrap(), paddr);
+    assert_eq!(
+        addr_space.translate(vaddr + 0x1000).unwrap(),
+        paddr + 0x1000
+    );
+}
+
+#[test]
+#[axin(decorator(mock_hal_test))]
 fn test_map_alloc_populate() {
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x10000);

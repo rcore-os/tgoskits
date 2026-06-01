@@ -14,6 +14,7 @@
 
 //! Memory mapping backends.
 
+use ax_memory_addr::{MemoryAddr, PhysAddr};
 use ax_memory_set::MappingBackend;
 use ax_page_table_multiarch::{MappingFlags, PagingHandler};
 
@@ -33,12 +34,13 @@ mod linear;
 pub enum Backend<H: PagingHandler> {
     /// Linear mapping backend.
     ///
-    /// The offset between the virtual address and the physical address is
-    /// constant, which is specified by `pa_va_offset`. For example, the virtual
-    /// address `vaddr` is mapped to the physical address `vaddr - pa_va_offset`.
+    /// The target physical frames are contiguous and begin at `phys_start`.
+    /// The current guest-physical start address is tracked by the surrounding
+    /// `MemoryArea`, so split/shrink operations only need to update the host
+    /// physical start accordingly.
     Linear {
-        /// `vaddr - paddr`.
-        pa_va_offset: usize,
+        /// Host physical address that backs the current area's start.
+        phys_start: PhysAddr,
     },
     /// Allocation mapping backend.
     ///
@@ -57,7 +59,7 @@ pub enum Backend<H: PagingHandler> {
 impl<H: PagingHandler> Clone for Backend<H> {
     fn clone(&self) -> Self {
         match *self {
-            Self::Linear { pa_va_offset } => Self::Linear { pa_va_offset },
+            Self::Linear { phys_start } => Self::Linear { phys_start },
             Self::Alloc { populate, .. } => Self::Alloc {
                 populate,
                 _phantom: core::marker::PhantomData,
@@ -79,14 +81,14 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
         pt: &mut PageTable<H>,
     ) -> bool {
         match *self {
-            Self::Linear { pa_va_offset } => self.map_linear(start, size, flags, pt, pa_va_offset),
+            Self::Linear { phys_start } => self.map_linear(start, size, flags, pt, phys_start),
             Self::Alloc { populate, .. } => self.map_alloc(start, size, flags, pt, populate),
         }
     }
 
     fn unmap(&self, start: GuestPhysAddr, size: usize, pt: &mut PageTable<H>) -> bool {
         match *self {
-            Self::Linear { pa_va_offset } => self.unmap_linear(start, size, pt, pa_va_offset),
+            Self::Linear { phys_start } => self.unmap_linear(start, size, pt, phys_start),
             Self::Alloc { populate, .. } => self.unmap_alloc(start, size, pt, populate),
         }
     }
@@ -101,18 +103,25 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
         page_table.protect_region(start, size, new_flags)
     }
 
-    fn split(&mut self, _align_diff: usize) -> Option<Self> {
-        // backend can be trivially split since it does not have any state.
-        Some(self.clone())
+    fn split(&mut self, align_diff: usize) -> Option<Self> {
+        match self {
+            Self::Linear { phys_start } => Some(Self::Linear {
+                phys_start: phys_start.wrapping_add(align_diff),
+            }),
+            Self::Alloc { .. } => {
+                // Alloc backend has no per-range state.
+                Some(self.clone())
+            }
+        }
     }
 
-    fn shrink_left(&mut self, _shrink_size: usize) {
-        // backend can be trivially shrunk since it does not have any state.
+    fn shrink_left(&mut self, shrink_size: usize) {
+        if let Self::Linear { phys_start } = self {
+            *phys_start = phys_start.wrapping_add(shrink_size);
+        }
     }
 
-    fn shrink_right(&mut self, _shrink_size: usize) {
-        // backend can be trivially shrunk since it does not have any state.
-    }
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl<H: PagingHandler> Backend<H> {

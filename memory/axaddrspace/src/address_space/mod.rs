@@ -96,8 +96,7 @@ impl<H: PagingHandler> AddrSpace<H> {
             return ax_err!(InvalidInput, "address not aligned");
         }
 
-        let offset = start_vaddr.as_usize() - start_paddr.as_usize();
-        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
+        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(start_paddr));
         self.areas
             .map(area, &mut self.pt, false)
             .map_err(mapping_err_to_ax_err)?;
