@@ -347,7 +347,7 @@ fn initrd_range_from_image_config(
     Some((start, start + size))
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 fn sanitize_bootargs(bootargs: &str) -> String {
     const RAMDISK_BOOTARGS: [&str; 3] = ["root=/dev/ram0", "rdinit=/init", "rootwait"];
     const FSCK_REPAIR_BOOTARG: &str = "fsck.repair=yes";
@@ -391,6 +391,16 @@ fn sanitize_bootargs(bootargs: &str) -> String {
     }
 
     sanitized.join(" ")
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+fn effective_bootargs(crate_config: &AxVMCrateConfig, fallback: &str) -> String {
+    let bootargs = crate_config
+        .kernel
+        .cmdline
+        .as_deref()
+        .unwrap_or(fallback);
+    sanitize_bootargs(bootargs)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -719,6 +729,14 @@ pub(crate) fn patch_guest_fdt_for_runtime(
         previous_node_level = node.level;
 
         for prop in node.propertys() {
+            if node.name() == "chosen" && prop.name == "bootargs" {
+                let bootargs = effective_bootargs(crate_config, prop.str());
+                new_fdt
+                    .property_string(prop.name, &bootargs)
+                    .map_err(fdt_write_err)?;
+                continue;
+            }
+
             new_fdt
                 .property(prop.name, prop.raw_value())
                 .map_err(fdt_write_err)?;
@@ -744,6 +762,14 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     {
         let chosen = new_fdt.begin_node("chosen").map_err(fdt_write_err)?;
         for prop in chosen_node.propertys() {
+            if prop.name == "bootargs" {
+                let bootargs = effective_bootargs(crate_config, prop.str());
+                new_fdt
+                    .property_string(prop.name, &bootargs)
+                    .map_err(fdt_write_err)?;
+                continue;
+            }
+
             new_fdt
                 .property(prop.name, prop.raw_value())
                 .map_err(fdt_write_err)?;

@@ -462,14 +462,19 @@ impl RISCVVCpu {
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
                         legacy::LEGACY_CONSOLE_PUTCHAR => {
-                            sbi_call_legacy_1(legacy::LEGACY_CONSOLE_PUTCHAR, param[0]);
+                            print_byte((param[0] & 0xff) as u8);
+                            self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
                         legacy::LEGACY_CONSOLE_GETCHAR => {
-                            let c = sbi_call_legacy_0(legacy::LEGACY_CONSOLE_GETCHAR);
+                            let mut buf = [0u8; 1];
+                            let c = if axvisor_api::console::read_bytes(&mut buf) == 1 {
+                                buf[0] as usize
+                            } else {
+                                usize::MAX
+                            };
                             self.set_gpr_from_gpr_index(GprIndex::A0, c);
                         }
                         legacy::LEGACY_SHUTDOWN => {
-                            // sbi_call_legacy_0(LEGACY_SHUTDOWN)
                             return Ok(AxVCpuExitReason::SystemDown);
                         }
                         _ => {
@@ -1020,30 +1025,4 @@ impl RISCVVCpu {
             }
         })
     }
-}
-
-#[inline(always)]
-fn sbi_call_legacy_0(eid: usize) -> usize {
-    let error;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") eid,
-            lateout("a0") error,
-        );
-    }
-    error
-}
-
-#[inline(always)]
-fn sbi_call_legacy_1(eid: usize, arg0: usize) -> usize {
-    let error;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") eid,
-            inlateout("a0") arg0 => error,
-        );
-    }
-    error
 }

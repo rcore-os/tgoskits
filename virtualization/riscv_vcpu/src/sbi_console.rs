@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::VirtAddr;
-use sbi_spec::binary::{Physical, SbiRet};
+use sbi_spec::binary::SbiRet;
 
 pub const EID_DBCN: usize = 0x4442434e;
 pub const FID_CONSOLE_WRITE: usize = 0;
@@ -29,22 +28,14 @@ pub const RET_ERR_NOT_SUPPORTED: usize = -2isize as _;
 
 /// Writes bytes to the console using SBI byte-wise API.
 pub fn console_write(buf: &[u8]) -> SbiRet {
-    let ptr = buf.as_ptr();
-    sbi_rt::console_write(Physical::new(
-        buf.len(),
-        axvisor_api::memory::virt_to_phys(VirtAddr::from_ptr_of(ptr)).as_usize(),
-        0,
-    ))
+    axvisor_api::console::write_bytes(buf);
+    SbiRet::success(buf.len())
 }
 
 /// Reads bytes from the console into a buffer using SBI byte-wise API.
 pub fn console_read(buf: &mut [u8]) -> SbiRet {
-    let ptr = buf.as_mut_ptr();
-    sbi_rt::console_read(Physical::new(
-        buf.len(),
-        axvisor_api::memory::virt_to_phys(VirtAddr::from_ptr_of(ptr)).as_usize(),
-        0,
-    ))
+    let count = axvisor_api::console::read_bytes(buf);
+    SbiRet::success(count)
 }
 
 /// Writes a full string to console using SBI byte-wise API (no log prefix).
@@ -59,13 +50,13 @@ pub fn print_str(s: &str) {
 #[allow(dead_code)]
 pub fn println_str(s: &str) {
     print_str(s);
-    sbi_rt::console_write_byte(b'\n');
+    axvisor_api::console::write_bytes(b"\n");
 }
 
 /// Writes a byte to the console.
 #[inline(always)]
 pub fn print_byte(byte: u8) {
-    sbi_rt::console_write_byte(byte);
+    axvisor_api::console::write_bytes(&[byte]);
 }
 
 /// Joins two `usize` values into a `u64` value representing a guest physical address (GPA).

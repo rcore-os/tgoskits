@@ -8,9 +8,10 @@ set -euo pipefail
 #   ./scripts/setup_qemu.sh --guest linux
 #   ./scripts/setup_qemu.sh nimbos
 #   ./scripts/setup_qemu.sh nimbos-uefi
+#   ./scripts/setup_qemu.sh linux-riscv64
 #   ./scripts/setup_qemu.sh linux-x86_64-uefi
 #
-# Supported guests: arceos, arceos-riscv64, linux, nimbos, nimbos-uefi, linux-x86_64-uefi
+# Supported guests: arceos, arceos-riscv64, linux, linux-riscv64, nimbos, nimbos-uefi, linux-x86_64-uefi
 # LoongArch64 AxVisor shell smoke uses quick-start.sh instead of this script.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -179,11 +180,12 @@ prepare_nimbos_from_tgosimages() {
 }
 
 usage() {
-  echo "Usage: $0 [--guest] <arceos|arceos-riscv64|linux|nimbos|nimbos-uefi|linux-x86_64-uefi>"
+  echo "Usage: $0 [--guest] <arceos|arceos-riscv64|linux|linux-riscv64|nimbos|nimbos-uefi|linux-x86_64-uefi>"
   echo ""
   echo "  arceos          - aarch64 ArceOS guest"
   echo "  arceos-riscv64  - riscv64 ArceOS guest"
   echo "  linux           - aarch64 Linux guest"
+  echo "  linux-riscv64   - riscv64 Linux guest"
   echo "  nimbos          - x86_64 NimbOS guest (requires VT-x/KVM)"
   echo "  nimbos-uefi     - x86_64 NimbOS guest through external UEFI firmware"
   echo "  linux-x86_64-uefi - x86_64 Linux guest through external UEFI firmware"
@@ -195,6 +197,7 @@ usage() {
   echo "  $0 arceos"
   echo "  $0 --guest arceos-riscv64"
   echo "  $0 --guest linux"
+  echo "  $0 --guest linux-riscv64"
   exit 1
 }
 
@@ -228,7 +231,7 @@ while [[ $# -gt 0 ]]; do
       shift
       break
       ;;
-    arceos|arceos-riscv64|linux|nimbos|nimbos-uefi|linux-x86_64-uefi)
+    arceos|arceos-riscv64|linux|linux-riscv64|nimbos|nimbos-uefi|linux-x86_64-uefi)
       GUEST="$1"
       shift
       break
@@ -255,6 +258,7 @@ case "$GUEST" in
   arceos)         CFG="qemu_aarch64_arceos|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
   arceos-riscv64) CFG="qemu_riscv64_arceos|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
   linux)          CFG="qemu_aarch64_linux|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
+  linux-riscv64)  CFG="qemu_riscv64_linux|linux-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|guest test pass!" ;;
   nimbos)         CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
   nimbos-uefi)    CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
   linux-x86_64-uefi) CFG="qemu_x86_64_linux|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
@@ -386,6 +390,15 @@ if [[ "$GUEST" == "linux-x86_64-uefi" ]]; then
   fi
   sed -i 's|^# *ramdisk_path *=.*|ramdisk_path = "'"${ABS_RAMDISK_PATH}"'"|; s|^ramdisk_path *=.*|ramdisk_path = "'"${ABS_RAMDISK_PATH}"'"|' "${GENERATED_VMCONFIG_PATH}"
   echo "  -> Updated ramdisk_path to ${ABS_RAMDISK_PATH}"
+fi
+
+if [[ "$GUEST" == "linux-riscv64" ]]; then
+  if grep -q '^cmdline *=.*' "${GENERATED_VMCONFIG_PATH}"; then
+    sed -i 's|^cmdline *=.*|cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vdc rw"|' "${GENERATED_VMCONFIG_PATH}"
+  else
+    sed -i '/^dtb_load_addr *=.*/a cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vdc rw"' "${GENERATED_VMCONFIG_PATH}"
+  fi
+  echo "  -> Updated cmdline to use guest rootfs on /dev/vdc"
 fi
 
 echo "[setup_qemu] Step 3: prepare rootfs..."
