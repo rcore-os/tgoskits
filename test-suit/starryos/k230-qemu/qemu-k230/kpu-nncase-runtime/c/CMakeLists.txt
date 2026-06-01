@@ -87,7 +87,6 @@ if(K230_BUILD_FROM_SOURCE)
     )
     set(K230_COMMON_INCLUDES
         "-I${CMAKE_CURRENT_SOURCE_DIR}/src"
-        "-I${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../drivers/npu/k230-kpu/include"
         "-I${K230_NNCASE_ROOT}"
         "-I${K230_NNCASE_ROOT}/nncase/include"
         "-I${K230_NNCASE_ROOT}/rvvlib/include"

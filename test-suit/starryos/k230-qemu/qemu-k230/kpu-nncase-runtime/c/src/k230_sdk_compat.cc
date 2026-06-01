@@ -10,8 +10,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "k230_kpu_uapi.h"
-
 extern "C" int __real_open(const char *pathname, int flags, ...);
 extern "C" int __real_openat(int dirfd, const char *pathname, int flags, ...);
 extern "C" int __real_close(int fd);

@@ -1,4 +1,3 @@
-#include "k230_kpu_uapi.h"
 #include "k230_sdk_compat.h"
 
 #include <algorithm>
