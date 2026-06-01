@@ -1,6 +1,7 @@
 use core::{
     any::Any,
     mem::{MaybeUninit, size_of},
+    ptr::NonNull,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -174,59 +175,82 @@ impl DeviceOps for KpuDevice {
             return DeviceMmap::None;
         };
         match offset {
-            KPU_MMAP_CFG_OFFSET if self.resource.cfg_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
+            KPU_MMAP_CFG_OFFSET if self.resource.cfg_size != 0 => DeviceMmap::Physical(
+                PhysAddrRange::from_start_size(
                     PhysAddr::from(self.resource.cfg_paddr),
                     length.min(self.resource.cfg_size),
-                ))
-            }
+                ),
+                None,
+            ),
             offset if offset == self.resource.cfg_paddr as u64 && self.resource.cfg_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.cfg_paddr),
-                    length.min(self.resource.cfg_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.cfg_paddr),
+                        length.min(self.resource.cfg_size),
+                    ),
+                    None,
+                )
             }
-            KPU_MMAP_L2_OFFSET if self.resource.l2_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
+            KPU_MMAP_L2_OFFSET if self.resource.l2_size != 0 => DeviceMmap::Physical(
+                PhysAddrRange::from_start_size(
                     PhysAddr::from(self.resource.l2_paddr),
                     length.min(self.resource.l2_size),
-                ))
-            }
+                ),
+                None,
+            ),
             offset if offset == self.resource.l2_paddr as u64 && self.resource.l2_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.l2_paddr),
-                    length.min(self.resource.l2_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.l2_paddr),
+                        length.min(self.resource.l2_size),
+                    ),
+                    None,
+                )
             }
             KPU_MMAP_FAKE_OUTPUT_OFFSET if self.resource.fake_output_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.fake_output_paddr),
-                    length.min(self.resource.fake_output_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.fake_output_paddr),
+                        length.min(self.resource.fake_output_size),
+                    ),
+                    None,
+                )
             }
             KPU_MMAP_RUNTIME_RDATA_OFFSET if self.resource.runtime_rdata_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.runtime_rdata_paddr),
-                    length.min(self.resource.runtime_rdata_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.runtime_rdata_paddr),
+                        length.min(self.resource.runtime_rdata_size),
+                    ),
+                    None,
+                )
             }
             KPU_MMAP_RUNTIME_COMMAND_OFFSET if self.resource.runtime_command_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.runtime_command_paddr),
-                    length.min(self.resource.runtime_command_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.runtime_command_paddr),
+                        length.min(self.resource.runtime_command_size),
+                    ),
+                    None,
+                )
             }
             KPU_MMAP_RUNTIME_DIRECT_IO_OFFSET if self.resource.runtime_direct_io_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.runtime_direct_io_paddr),
-                    length.min(self.resource.runtime_direct_io_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.runtime_direct_io_paddr),
+                        length.min(self.resource.runtime_direct_io_size),
+                    ),
+                    None,
+                )
             }
             KPU_MMAP_RUNTIME_DDR_OFFSET if self.resource.runtime_ddr_size != 0 => {
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    PhysAddr::from(self.resource.runtime_ddr_paddr),
-                    length.min(self.resource.runtime_ddr_size),
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(
+                        PhysAddr::from(self.resource.runtime_ddr_paddr),
+                        length.min(self.resource.runtime_ddr_size),
+                    ),
+                    None,
+                )
             }
             _ => DeviceMmap::None,
         }
@@ -426,7 +450,8 @@ impl KpuResource {
 }
 
 fn register_kpu_irq(irq: usize) -> bool {
-    if !ax_runtime::hal::irq::register(irq, kpu_irq_handler) {
+    if ax_runtime::hal::irq::request_shared_irq(irq, kpu_irq_handler, NonNull::dangling()).is_err()
+    {
         warn!("k230-kpu devfs: failed to register IRQ handler for irq {irq}");
         return false;
     }
@@ -434,9 +459,13 @@ fn register_kpu_irq(irq: usize) -> bool {
     true
 }
 
-fn kpu_irq_handler(_irq: usize) {
+unsafe fn kpu_irq_handler(
+    _ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
     KPU_DONE_WQ.notify_all(false);
+    ax_runtime::hal::irq::IrqReturn::Handled
 }
 
 #[cfg(feature = "plat-dyn")]
