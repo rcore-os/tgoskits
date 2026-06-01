@@ -77,53 +77,50 @@ impl AxArchPerCpu for VmxPerCpuState {
         if !locked {
             FeatureControl::write(
                 ctrl | FeatureControlFlags::LOCKED | FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX,
-            )
+            );
         } else if !vmxon_outside {
             return ax_err!(Unsupported, "VMX disabled by BIOS");
         }
 
-        // Check control registers are in a VMX-friendly state. (SDM Vol. 3C, Appendix A.7, A.8)
-        macro_rules! cr_is_valid {
-            ($value:expr, $crx:ident) => {{
-                use Msr::*;
-                let value = $value;
-                paste::paste! {
-                    let fixed0 = [<IA32_VMX_ $crx _FIXED0>].read();
-                    let fixed1 = [<IA32_VMX_ $crx _FIXED1>].read();
-                }
-                (!fixed0 | value != 0) && (fixed1 | !value != 0)
-            }};
-        }
-        if !cr_is_valid!(Cr0::read().bits(), CR0) {
+        let cr0 = Cr0::read_raw();
+        let cr0_fixed0 = Msr::IA32_VMX_CR0_FIXED0.read();
+        let cr0_fixed1 = Msr::IA32_VMX_CR0_FIXED1.read();
+        let cr0_vmx = vmx_fixed_control_value(cr0, cr0_fixed0, cr0_fixed1);
+        let cr4 = Cr4::read_raw();
+        let cr4_fixed0 = Msr::IA32_VMX_CR4_FIXED0.read();
+        let cr4_fixed1 = Msr::IA32_VMX_CR4_FIXED1.read();
+        let cr4_vmx = vmx_fixed_control_value(cr4, cr4_fixed0, cr4_fixed1);
+
+        if !is_vmx_fixed_control_value_valid(cr0_vmx, cr0_fixed0, cr0_fixed1) {
             return ax_err!(BadState, "host CR0 is not valid in VMX operation");
         }
-        if !cr_is_valid!(Cr4::read().bits(), CR4) {
+        if !is_vmx_fixed_control_value_valid(cr4_vmx, cr4_fixed0, cr4_fixed1) {
             return ax_err!(BadState, "host CR4 is not valid in VMX operation");
         }
 
         // Get VMCS revision identifier in IA32_VMX_BASIC MSR.
         let vmx_basic = VmxBasic::read();
-        if vmx_basic.region_size as usize != PAGE_SIZE {
-            return ax_err!(Unsupported);
+        if vmx_basic.region_size == 0 || vmx_basic.region_size as usize > PAGE_SIZE {
+            return ax_err!(Unsupported, "VMX region size is invalid");
         }
         if vmx_basic.mem_type != VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK {
-            return ax_err!(Unsupported);
+            return ax_err!(Unsupported, "VMX memory type is not write-back");
         }
         if vmx_basic.is_32bit_address {
-            return ax_err!(Unsupported);
+            return ax_err!(Unsupported, "VMX only supports 32-bit physical addresses");
         }
         if !vmx_basic.io_exit_info {
-            return ax_err!(Unsupported);
+            return ax_err!(Unsupported, "VMX IO exit information is unavailable");
         }
         if !vmx_basic.vmx_flex_controls {
-            return ax_err!(Unsupported);
+            return ax_err!(Unsupported, "VMX flexible controls are unavailable");
         }
         self.vmcs_revision_id = vmx_basic.revision_id;
         self.vmx_region = VmxRegion::new(self.vmcs_revision_id, false)?;
 
         unsafe {
-            // Enable VMX using the VMXE bit.
-            Cr4::write(Cr4::read() | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS);
+            Cr0::write_raw(cr0_vmx);
+            Cr4::write_raw(cr4_vmx);
             // Execute VMXON.
             vmx::vmxon(self.vmx_region.phys_addr().as_usize() as _).map_err(|err| {
                 ax_err_type!(
@@ -158,6 +155,14 @@ impl AxArchPerCpu for VmxPerCpuState {
         self.vmx_region = unsafe { VmxRegion::uninit() };
         Ok(())
     }
+}
+
+fn vmx_fixed_control_value(value: u64, fixed0: u64, fixed1: u64) -> u64 {
+    (value | fixed0) & fixed1
+}
+
+fn is_vmx_fixed_control_value_valid(value: u64, fixed0: u64, fixed1: u64) -> bool {
+    (value & fixed0) == fixed0 && (value & !fixed1) == 0
 }
 
 #[cfg(test)]

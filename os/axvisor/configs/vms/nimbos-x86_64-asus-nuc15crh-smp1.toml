@@ -1,0 +1,31 @@
+# ASUS NUC15CRH x86_64 HTTP Boot NimbOS guest.
+# The guest images are embedded into AxVisor at build time because the real
+# board does not provide the QEMU guest filesystem used by qemu-* configs.
+
+[base]
+id = 1
+name = "nimbos-asus-nuc15crh"
+vm_type = 1
+cpu_num = 1
+phys_cpu_sets = [1]
+
+[kernel]
+entry_point = 0x8000
+image_location = "memory"
+kernel_path = "../../../../tmp/nimbos/nimbos-qemu"
+kernel_load_addr = 0x20_0000
+enable_bios = true
+bios_path = "../../../../tmp/nimbos/axvm-bios.bin"
+bios_load_addr = 0x8000
+
+memory_regions = [
+  [0x0000_0000, 0x100_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+emu_devices = []
+passthrough_devices = [
+  ["IO APIC", 0xfec0_0000, 0xfec0_0000, 0x1000, 0x1],
+  ["HPET", 0xfed0_0000, 0xfed0_0000, 0x1000, 0x1],
+]

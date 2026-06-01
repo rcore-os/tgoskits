@@ -613,6 +613,49 @@ uboot_config = "configs/snapshot-uboot.toml"
 }
 
 #[test]
+fn prepare_axvisor_request_cli_config_drops_stale_vmconfigs() {
+    let root = tempdir().unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
+        r#"
+config = "os/axvisor/configs/board/qemu-x86_64.toml"
+arch = "x86_64"
+target = "x86_64-unknown-none"
+vmconfigs = ["os/axvisor/configs/vms/arceos-x86_64-qemu-smp1.toml"]
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: Some(PathBuf::from(
+                "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml",
+            )),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            vmconfigs: vec![],
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert!(request.vmconfigs.is_empty());
+    assert!(snapshot.vmconfigs.is_empty());
+    assert_eq!(
+        request.build_info_path,
+        PathBuf::from("os/axvisor/configs/board/asus-nuc15crh-x86_64.toml")
+    );
+}
+
+#[test]
 fn prepare_axvisor_request_uses_snapshot_when_cli_omits_values() {
     let root = tempdir().unwrap();
     write_snapshot_text(

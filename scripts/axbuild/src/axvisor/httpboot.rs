@@ -361,8 +361,6 @@ async fn run_httpboot_post_publish(
     session: &SessionCreatedResponse,
     publish_config: &PublishConfig,
 ) -> anyhow::Result<()> {
-    println!("Waiting for board on power or reset...");
-
     if publish_config.power_cycle {
         client
             .power_off_board(&session.session_id)
@@ -375,6 +373,7 @@ async fn run_httpboot_post_publish(
     }
 
     if !publish_config.open_console {
+        println!("Waiting for board on power or reset...");
         return Ok(());
     }
 
@@ -389,6 +388,8 @@ async fn run_httpboot_post_publish(
         })?;
 
     if serial_status.available {
+        print_serial_console_status(&serial_status);
+        println!("Waiting for board on power or reset...");
         let ws_path = serial_status
             .ws_url
             .as_deref()
@@ -397,22 +398,28 @@ async fn run_httpboot_post_publish(
         if serial_status.connected {
             println!("serial_console: server reports an existing connection; trying anyway");
         }
-        if let Some(port) = serial_status.port.as_deref() {
-            if let Some(baud_rate) = serial_status.baud_rate {
-                println!("serial_console: {port} @ {baud_rate}");
-            } else {
-                println!("serial_console: {port}");
-            }
-        }
         let ws_url = client.resolve_ws_url(ws_path)?;
         terminal::run_serial_terminal(ws_url).await
     } else {
+        println!("Waiting for board on power or reset...");
         println!("Board has no serial configuration; keeping session alive until Ctrl+C.");
         println!("HTTP Boot artifacts are ready. Reset or power on the board now.");
         tokio::signal::ctrl_c()
             .await
             .context("failed to wait for Ctrl+C")?;
         Ok(())
+    }
+}
+
+fn print_serial_console_status(serial_status: &SerialStatusResponse) {
+    if let Some(port) = serial_status.port.as_deref() {
+        if let Some(baud_rate) = serial_status.baud_rate {
+            println!("serial_console: {port} @ {baud_rate}");
+        } else {
+            println!("serial_console: {port}");
+        }
+    } else {
+        println!("serial_console: available");
     }
 }
 

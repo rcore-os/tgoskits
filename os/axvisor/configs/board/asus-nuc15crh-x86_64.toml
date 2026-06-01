@@ -8,4 +8,4 @@ features = [
 ]
 log = "Info"
 target = "x86_64-unknown-none"
-vm_configs = []
+vm_configs = ["os/axvisor/configs/vms/nimbos-x86_64-asus-nuc15crh-smp1.toml"]
