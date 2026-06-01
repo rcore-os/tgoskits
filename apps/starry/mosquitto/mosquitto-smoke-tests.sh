@@ -4,7 +4,7 @@ set -eu
 mosquitto_pid=""
 test_done=0
 
-# Pre-cleanup: kill any leftover mosquitto server processes and stale temp files
+# Pre-cleanup: kill any leftover mosquitto server processes and stale temp files!
 # Use pidof for exact name match; pkill would also match this script's name "mosquitto-*"
 for pid in $(pidof mosquitto 2>/dev/null); do
     kill -9 "$pid" 2>/dev/null || true
