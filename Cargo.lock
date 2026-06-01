@@ -5051,11 +5051,11 @@ dependencies = [
 
 [[package]]
 name = "kmod-loader"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550f9b0e0c6e219e177bc0c6e6a10630deec3befdc3c9951b2ce7fb0b3f3070c"
+checksum = "a5d13c9132595e1b16ba64390fc23a19ab0f9b940a144445bdd270854e61f544"
 dependencies = [
- "axerrno",
+ "ax-errno",
  "bitfield-struct 0.13.0",
  "bitflags 2.11.1",
  "cfg-if",

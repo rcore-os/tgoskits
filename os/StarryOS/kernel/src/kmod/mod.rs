@@ -47,10 +47,6 @@ fn section_perms_to_mapping_flags(perms: kmod_loader::SectionPerm) -> MappingFla
     if perms.contains(kmod_loader::SectionPerm::WRITE) {
         flags |= MappingFlags::WRITE;
     }
-    // Source keeps WRITE always-on regardless of `perms`; preserved here
-    // because module relocation patches sections that the linker marked
-    // read-only, and re-protect happens lazily after init.
-    flags |= MappingFlags::WRITE;
     if perms.contains(kmod_loader::SectionPerm::EXECUTE) {
         flags |= MappingFlags::EXECUTE;
     }
@@ -160,14 +156,12 @@ static MODULES: SpinNoPreempt<BTreeMap<String, Module>> = SpinNoPreempt::new(BTr
 /// parameter string, perform relocations, run the module's `init`
 /// function, and register the module in the global table.
 pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
-    let loader = ModuleLoader::<KmodHelper>::new(elf).map_err(|_| AxError::InvalidInput)?;
+    let loader = ModuleLoader::<KmodHelper>::new(elf)?;
     let params = match params {
         Some(p) => CString::new(p).map_err(|_| AxError::InvalidInput)?,
         None => CString::new("").unwrap(),
     };
-    let mut owner = loader
-        .load_module(params)
-        .map_err(|_| AxError::InvalidInput)?;
+    let mut owner = loader.load_module(params)?;
 
     // `name` is available as soon as `load_module()` returns, before init runs.
     let name = owner.name().to_string();
@@ -182,7 +176,7 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
         return Err(AxError::AlreadyExists);
     }
 
-    let ret = owner.call_init().map_err(|_| AxError::InvalidInput)?;
+    let ret = owner.call_init()?;
     if ret != 0 {
         warn!("module `{name}` init returned {ret}");
         return Err(AxError::InvalidInput);
