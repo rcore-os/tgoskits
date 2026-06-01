@@ -211,8 +211,17 @@ fn build_one_module(
 
     // Step 3: partial-link into a .ko via the kmod linker script.
     let ko_path = out_dir.join(format!("{module_name}.ko"));
-    let linker = std::env::var("KMOD_LINKER").unwrap_or_else(|_| pick_linker(target_triple).into());
+    // `(program, leading_args)`: the default ships `-flavor gnu` so `rust-lld`
+    // runs as the GNU ELF driver; a `KMOD_LINKER` override is used verbatim.
+    let (linker, lead_args): (String, &[&str]) = match std::env::var("KMOD_LINKER") {
+        Ok(l) => (l, &[]),
+        Err(_) => {
+            let (prog, args) = pick_linker(target_triple);
+            (prog.into(), args)
+        }
+    };
     let status = Command::new(&linker)
+        .args(lead_args)
         .args(["-r", "-T"])
         .arg(linker_script)
         .arg("-o")
@@ -236,9 +245,16 @@ fn build_one_module(
     Ok(())
 }
 
-/// Heuristic: prefer `rust-lld` (ships with the toolchain), then `ld.lld`,
-/// then GNU `ld`. Callers may override via the `KMOD_LINKER` environment
-/// variable.
-fn pick_linker(_target_triple: &str) -> &'static str {
-    "rust-lld"
+/// Linker (and any leading args) for the partial-link (`-r`) step.
+///
+/// The toolchain ships `rust-lld`, but invoked under that name it is a
+/// *generic* lld driver and refuses a direct `-r -T ...` invocation — it exits
+/// asking to be called as `ld.lld`/`ld64.lld`/`lld-link`/`wasm-ld`. Rather than
+/// depend on a separately-installed `ld.lld` symlink (absent in the build
+/// container / CI), we drive the bundled `rust-lld` as the GNU ELF driver via
+/// `-flavor gnu`, which handles all four (ELF) targets from one host binary.
+/// Callers may override the whole program via the `KMOD_LINKER` environment
+/// variable (e.g. to a GNU `ld`), in which case no flavor args are injected.
+fn pick_linker(_target_triple: &str) -> (&'static str, &'static [&'static str]) {
+    ("rust-lld", &["-flavor", "gnu"])
 }
