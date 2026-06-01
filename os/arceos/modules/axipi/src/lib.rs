@@ -6,7 +6,7 @@
 extern crate log;
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use ax_hal::{
     irq::{IPI_IRQ, IpiTarget},
@@ -87,6 +87,51 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
             .push(this_cpu_id(), callback.into());
         ax_hal::irq::send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id: dest_cpu });
     }
+}
+
+/// Executes a raw thunk synchronously on the specified CPU via IPI.
+///
+/// # Safety
+///
+/// `arg` must remain valid until this function returns, and `f` must be safe
+/// to execute in the target CPU's IPI handler context.
+pub unsafe fn run_on_cpu_sync_raw(
+    dest_cpu: usize,
+    f: unsafe fn(*mut ()),
+    arg: *mut (),
+) -> Result<(), ax_hal::irq::IrqError> {
+    if dest_cpu >= ax_hal::cpu_num() {
+        return Err(ax_hal::irq::IrqError::InvalidCpu);
+    }
+    if !wait_until_cpu_ready(dest_cpu) {
+        return Err(ax_hal::irq::IrqError::CpuOffline);
+    }
+    if dest_cpu == this_cpu_id() {
+        unsafe { f(arg) };
+        return Ok(());
+    }
+
+    struct SyncCall {
+        done: AtomicBool,
+        f: unsafe fn(*mut ()),
+        arg: *mut (),
+    }
+
+    let call = SyncCall {
+        done: AtomicBool::new(false),
+        f,
+        arg,
+    };
+    let call_ptr = &call as *const SyncCall as usize;
+    run_on_cpu(dest_cpu, move || {
+        let call = unsafe { &*(call_ptr as *const SyncCall) };
+        unsafe { (call.f)(call.arg) };
+        call.done.store(true, Ordering::Release);
+    });
+    while !call.done.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    Ok(())
 }
 
 /// Executes a callback on all other CPUs via IPI.

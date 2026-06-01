@@ -24,6 +24,7 @@ mod memtrack;
 mod rknpu_card;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod rknpu_drm;
+mod rtc;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod tpu;
 pub mod tty;
@@ -290,6 +291,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(10, 1024),
             Arc::new(CpuDmaLatency),
+        ),
+    );
+    root.add(
+        "rtc0",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            rtc::RTC0_DEVICE_ID,
+            Arc::new(rtc::Rtc),
         ),
     );
 

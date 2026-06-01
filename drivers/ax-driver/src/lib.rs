@@ -53,6 +53,7 @@ pub mod error;
     all(feature = "rockchip-dwmmc", plat_dyn),
     all(feature = "rockchip-sdhci", plat_dyn),
     all(feature = "phytium-mci", plat_dyn),
+    all(feature = "k230-sdhci", plat_dyn),
     all(feature = "rk3588-pcie", plat_dyn),
     all(feature = "rknpu", plat_dyn),
     all(feature = "xhci-mmio", target_os = "none", plat_dyn),

@@ -5,11 +5,15 @@
 extern crate std;
 
 mod base;
+#[cfg(feature = "lock_api")]
+mod raw;
 use ax_kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
 #[cfg(feature = "lockdep")]
 pub mod lockdep;
 
 pub use self::base::{BaseSpinLock, BaseSpinLockGuard};
+#[cfg(feature = "lock_api")]
+pub use self::raw::{BaseRawSpinLock, RawSpinNoIrq};
 
 /// Enables or disables the phase-3 lock flow tracing path.
 pub fn set_lockdep_trace_enabled(enabled: bool) {

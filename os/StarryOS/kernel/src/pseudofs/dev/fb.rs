@@ -225,10 +225,12 @@ impl DeviceOps for FrameBuffer {
     }
 
     fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
-        DeviceMmap::Physical(PhysAddrRange::from_start_size(
-            virt_to_phys(self.base),
-            self.size,
-        ))
+        // Framebuffer scanout is owned by axdisplay for the program's
+        // lifetime; no retainer needed.
+        DeviceMmap::Physical(
+            PhysAddrRange::from_start_size(virt_to_phys(self.base), self.size),
+            None,
+        )
     }
 
     fn flags(&self) -> NodeFlags {

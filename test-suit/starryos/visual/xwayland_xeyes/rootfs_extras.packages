@@ -1,0 +1,15 @@
+xwayland
+weston-xwayland
+xeyes
+xterm
+xauth
+libxfont2
+libtirpc-nokrb
+libxcvt
+util-linux
+libuuid
+libepoxy
+mesa-gbm
+libmd
+libxshmfence
+xkeyboard-config

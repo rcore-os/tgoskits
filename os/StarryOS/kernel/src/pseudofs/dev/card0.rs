@@ -9,12 +9,15 @@
 //!   crtc=0x10, encoder=0x20, connector=0x30, plane=0x40
 //!
 //! Simplifications vs. a real DRM driver:
-//!   - Each dumb buffer gets its own physically-backed memory via
-//!     `alloc_dumb_pages`. `MAP_DUMB` returns a per-buffer offset;
-//!     `mmap` dispatches to the correct physical region. `present_fb`
-//!     copies pixels from the dumb buffer into the axdisplay scanout
-//!     framebuffer, then flushes. PRIME export and virtio-gpu zero-copy
-//!     land in a follow-on PR.
+//!   - Each `CREATE_DUMB` allocates its own page-aligned `GlobalPage`
+//!     sized for the requested geometry; `MAP_DUMB` returns a unique
+//!     monotonic offset key; `Card0::mmap(offset, length)` resolves that key
+//!     back to the buffer's per-allocation physical range. On
+//!     `SETCRTC` / `PAGE_FLIP` / non-`TEST_ONLY` atomic commit,
+//!     `present_fb` memcpies the committed buffer into the axdisplay
+//!     scanout framebuffer and kicks `framebuffer_flush`. PRIME export
+//!     and virtio-gpu zero-copy resource plumbing land in follow-on
+//!     PRs.
 //!   - Property validation is permissive: value ranges aren't rigorously
 //!     enforced (tests drive sensible values). Atomic rejects only
 //!     unknown `(obj, prop)` pairs and obviously-bad object/blob refs.
@@ -33,12 +36,13 @@ use alloc::{
 };
 use core::{
     any::Any,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     task::Context,
 };
 
-use ax_memory_addr::{PhysAddr, PhysAddrRange, VirtAddr};
-use ax_runtime::hal::{mem::virt_to_phys, paging::PageSize, time::monotonic_time};
+use ax_alloc::GlobalPage;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
+use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -90,6 +94,17 @@ const PLANE_ID: u32 = 0x40;
 const FIRST_DUMB_HANDLE: u32 = 1;
 /// First framebuffer id we hand out from `ADDFB2`.
 const FIRST_FB_ID: u32 = 1;
+
+/// Per-buffer size cap. We don't pre-reserve a heap — each
+/// `CREATE_DUMB` sizes its own allocation — but we still cap individual
+/// requests so a bogus width/height/bpp can't OOM the kernel. 8 MiB
+/// covers 1920x1080 XRGB with headroom.
+const DUMB_BUFFER_MAX_SIZE: usize = 8 * 1024 * 1024;
+/// Each buffer's `MAP_DUMB` offset is a monotonic stride in this unit —
+/// a synthetic, unique key into the per-card offset->buffer lookup. Must
+/// be at least `DUMB_BUFFER_MAX_SIZE` so adjacent buffers don't overlap
+/// when userspace mmap's `(fd, length=size_of_buffer, offset=this_key)`.
+const DUMB_BUFFER_OFFSET_STRIDE: u64 = DUMB_BUFFER_MAX_SIZE as u64;
 
 // ---- property IDs ----
 // Layout: 0x1xx = plane, 0x2xx = CRTC, 0x3xx = connector.
@@ -143,18 +158,59 @@ const FIRST_BLOB_ID: u32 = 0x1000;
 /// Upper bound on `CREATEPROPBLOB` payload size.
 const MAX_BLOB_BYTES: usize = 64 * 1024;
 
-/// Metadata recorded per `CREATE_DUMB` call. In this PR every dumb
-/// buffer is logically a window onto the shared axdisplay scanout
-/// framebuffer; the fields here exist so user-visible `MAP_DUMB`
-/// replies and `present_fb` lookups can return coherent values.
+/// Metadata recorded per `CREATE_DUMB` call. Each buffer owns its own
+/// page-aligned [`GlobalPage`] — no shared 128 MiB pool — so we don't
+/// need a large contiguous physical region up front. The `offset` is
+/// what `MAP_DUMB` returns and what `mmap` looks up: a synthetic,
+/// monotonically-advancing key (not a real byte offset into anything)
+/// that the mmap hook uses to locate this buffer's pages.
+///
+/// `pages` is `Arc<GlobalPage>`: `DESTROY_DUMB` drops Card0's strong
+/// ref, but the `LinearBackend` cloned into each live VMA via
+/// `DeviceMmap::Physical` keeps its own strong ref. The underlying
+/// pages aren't released until every user mapping is unmapped, which
+/// is exactly Linux's GEM refcount contract.
 struct DumbBuffer {
     width: u32,
     height: u32,
     bpp: u32,
     pitch: u32,
     size: u64,
-    paddr: Option<PhysAddr>,
+    /// Unique mmap-offset key for this buffer.
     offset: u64,
+    /// Backing pages. Refcounted so user mappings keep them alive
+    /// across `DESTROY_DUMB`.
+    pages: Arc<GlobalPage>,
+}
+
+/// Per-framebuffer state retained until `RMFB`. Holds the dumb
+/// buffer's backing directly so a `DESTROY_DUMB` on the source
+/// handle does not invalidate the fb — Linux's GEM contract says a
+/// framebuffer keeps the buffer alive for as long as the fb_id is
+/// live.
+struct Framebuffer {
+    /// Total backing size in bytes.
+    size: u64,
+    /// Backing pages. Shared with the (now possibly removed) dumb
+    /// buffer; refcount keeps them alive until both this fb and any
+    /// user mappings have been dropped.
+    pages: Arc<GlobalPage>,
+}
+
+/// Last legacy `SETCRTC` binding so `GETCRTC` can report what the
+/// CRTC is currently scanning out. Linux DRM keeps this state on the
+/// CRTC object itself; we keep it next to the atomic state but on a
+/// separate lock because legacy SETCRTC needs to validate against
+/// `fbs` and we don't want to nest locks when the validation may need
+/// to take `fbs` while another path holds `state`.
+#[derive(Debug, Default, Clone)]
+struct LegacyCrtcState {
+    fb_id: u32,
+    connectors: Vec<u32>,
+    mode: DrmModeModeInfo,
+    mode_valid: u32,
+    x: u32,
+    y: u32,
 }
 
 /// Current values of all atomic-tunable properties on our single-CRTC /
@@ -188,27 +244,45 @@ pub struct Card0 {
     sequence: AtomicU32,
     /// Current values of all atomic-tunable properties.
     state: Mutex<ModesetState>,
-    /// `CREATE_DUMB`-allocated buffer metadata keyed by handle.
+    /// Legacy `SETCRTC` binding readable via `GETCRTC`. Atomic commits
+    /// don't update this — userspace that mixes legacy and atomic gets
+    /// the well-defined "legacy state reflects the last SETCRTC"
+    /// behavior libdrm expects.
+    legacy_crtc: Mutex<LegacyCrtcState>,
+    /// `CREATE_DUMB`-allocated buffers keyed by handle. Dropping an
+    /// entry releases Card0's strong ref on the backing pages; user
+    /// mappings hold their own refs via `LinearBackend::retain`.
     dumbs: Mutex<BTreeMap<u32, DumbBuffer>>,
     /// Next dumb handle to hand out.
     next_dumb_handle: AtomicU32,
-    /// Next mmap offset to assign to a dumb buffer.
-    next_dumb_offset: core::sync::atomic::AtomicU64,
+    /// Monotonic counter for the mmap-offset key each `MAP_DUMB`
+    /// returns. Advanced by [`DUMB_BUFFER_OFFSET_STRIDE`] per allocation
+    /// so no two buffers share an offset, even across destroy+recreate.
+    next_offset: AtomicU64,
     /// `ADDFB2`-registered framebuffer ids, mapped to the dumb handle
     /// they were built over. Cleared on `RMFB`.
-    fbs: Mutex<BTreeMap<u32, u32>>,
+    fbs: Mutex<BTreeMap<u32, Framebuffer>>,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
     /// User-created `CREATEPROPBLOB` blobs keyed by their blob_id.
     /// Distinct from `system_blobs` so DESTROY_BLOB cannot remove
-    /// kernel-owned blobs (e.g. `IN_FORMATS`).
-    blobs: Mutex<BTreeMap<u32, Vec<u8>>>,
+    /// kernel-owned blobs (e.g. `IN_FORMATS`). Stored behind `Arc`
+    /// so committed modeset state (see [`Self::mode_id_blob_ref`]) can
+    /// hold its own backing reference past a user `DESTROYPROPBLOB`.
+    blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    /// Strong reference to the blob backing the currently-committed
+    /// `MODE_ID` property. Linux DRM pins the mode blob from the CRTC
+    /// state, so a user `DESTROYPROPBLOB` on the publish handle only
+    /// drops the user's reference — `GETPROPBLOB` on the same id keeps
+    /// working until a later atomic commit replaces or clears
+    /// `MODE_ID`. Cleared/replaced atomically with `state.crtc_mode_id`.
+    mode_id_blob_ref: Mutex<Option<Arc<Vec<u8>>>>,
     /// Next blob id to hand out.
     next_blob_id: AtomicU32,
     /// Kernel-owned immutable blobs (e.g. plane `IN_FORMATS`) keyed by
     /// blob_id. Read-only after publish; never freed; DESTROY_BLOB
     /// refuses to remove ids in this table.
-    system_blobs: Mutex<BTreeMap<u32, Vec<u8>>>,
+    system_blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Cached blob_id for the `IN_FORMATS` property. Allocated once
     /// under `system_blobs_init` so concurrent first-callers cannot
     /// each leak their own copy into `system_blobs`.
@@ -225,16 +299,17 @@ impl Card0 {
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
             state: Mutex::new(ModesetState::default()),
+            legacy_crtc: Mutex::new(LegacyCrtcState::default()),
             dumbs: Mutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
-            next_dumb_offset: core::sync::atomic::AtomicU64::new(if ax_display::has_display() {
-                ax_display::framebuffer_info().fb_size as u64
-            } else {
-                0
-            }),
+            // Start at STRIDE rather than 0 so a zero `offset` argument
+            // on `mmap` is unambiguous (it means "hasn't called
+            // MAP_DUMB yet").
+            next_offset: AtomicU64::new(DUMB_BUFFER_OFFSET_STRIDE),
             fbs: Mutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
             blobs: Mutex::new(BTreeMap::new()),
+            mode_id_blob_ref: Mutex::new(None),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
             system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
@@ -259,7 +334,7 @@ impl Card0 {
         }
         let bytes = build_in_formats_blob();
         let id = self.next_blob_id.fetch_add(1, Ordering::Relaxed);
-        self.system_blobs.lock().insert(id, bytes);
+        self.system_blobs.lock().insert(id, Arc::new(bytes));
         self.in_formats_blob.store(id, Ordering::Release);
         id
     }
@@ -394,7 +469,7 @@ impl DeviceOps for Card0 {
             DRM_IOCTL_MODE_GETCRTC => self.handle_get_crtc(arg),
             DRM_IOCTL_MODE_SETCRTC => self.handle_set_crtc(arg),
             DRM_IOCTL_MODE_GETENCODER => handle_get_encoder(arg),
-            DRM_IOCTL_MODE_GETCONNECTOR => self.handle_get_connector(arg),
+            DRM_IOCTL_MODE_GETCONNECTOR => handle_get_connector(arg),
             DRM_IOCTL_MODE_ADDFB2 => self.handle_addfb2(arg),
             DRM_IOCTL_MODE_RMFB => self.handle_rmfb(arg),
             DRM_IOCTL_MODE_CREATE_DUMB => self.handle_create_dumb(arg),
@@ -402,7 +477,7 @@ impl DeviceOps for Card0 {
             DRM_IOCTL_MODE_DESTROY_DUMB => self.handle_destroy_dumb(arg),
 
             DRM_IOCTL_MODE_GETPLANERESOURCES => handle_get_plane_resources(arg),
-            DRM_IOCTL_MODE_GETPLANE => self.handle_get_plane(arg),
+            DRM_IOCTL_MODE_GETPLANE => handle_get_plane(arg),
             DRM_IOCTL_MODE_OBJ_GETPROPERTIES => self.handle_obj_get_properties(arg),
             DRM_IOCTL_MODE_GETPROPERTY => handle_get_property(arg),
             DRM_IOCTL_MODE_PAGE_FLIP => self.handle_page_flip(arg),
@@ -424,28 +499,22 @@ impl DeviceOps for Card0 {
     }
 
     fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
-        if !ax_display::has_display() {
-            return DeviceMmap::None;
-        }
-        let info = ax_display::framebuffer_info();
-        if offset == 0 {
-            return DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                virt_to_phys(VirtAddr::from(info.fb_base_vaddr)),
-                info.fb_size,
-            ));
-        }
+        // `offset` is the key `MAP_DUMB` handed back for a specific
+        // `CREATE_DUMB`. Look up the matching buffer, return its
+        // per-buffer physical range, and hand a strong ref on the
+        // backing pages back through the retainer slot. The resulting
+        // VMA keeps those pages alive across DESTROY_DUMB, matching
+        // Linux GEM refcount semantics.
         let dumbs = self.dumbs.lock();
-        for buf in dumbs.values() {
-            if offset == buf.offset
-                && let Some(paddr) = buf.paddr
-            {
-                return DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    paddr,
-                    (length.min(buf.size)) as usize,
-                ));
-            }
-        }
-        DeviceMmap::None
+        let Some(b) = dumbs.values().find(|b| b.offset == offset) else {
+            return DeviceMmap::None;
+        };
+        let range = PhysAddrRange::from_start_size(
+            virt_to_phys(b.pages.start_vaddr()),
+            length.min(b.pages.size() as u64) as usize,
+        );
+        let retain: Arc<dyn Any + Send + Sync> = b.pages.clone();
+        DeviceMmap::Physical(range, Some(retain))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -476,48 +545,36 @@ impl Pollable for Card0 {
 }
 
 impl Card0 {
-    fn alloc_dumb_pages(&self, size: usize) -> PhysAddr {
-        use ax_alloc::{UsageKind, global_allocator};
-        let num_pages = size / (PageSize::Size4K as usize);
-        let vaddr = VirtAddr::from(
-            global_allocator()
-                .alloc_pages(num_pages, PageSize::Size4K as usize, UsageKind::VirtMem)
-                .expect("dumb buffer alloc failed"),
-        );
-        unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, size) };
-        virt_to_phys(vaddr)
-    }
-
-    fn dealloc_dumb_pages(&self, paddr: PhysAddr, size: usize) {
-        use ax_alloc::{UsageKind, global_allocator};
-        use ax_runtime::hal::mem::phys_to_virt;
-        let vaddr = phys_to_virt(paddr);
-        let num_pages = size / (PageSize::Size4K as usize);
-        global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
-    }
-
+    /// Look up the dumb buffer behind a given `fb_id` and copy its
+    /// contents into the axdisplay scanout, then trigger
+    /// `framebuffer_flush`. Used by `SETCRTC`, `PAGE_FLIP`, and atomic
+    /// commits — every path that userspace uses to "show this buffer
+    /// now" routes through here. A follow-on PR will swap the memcpy
+    /// for virtio-gpu zero-copy via `set_scanout` / `transfer_to_host`.
     fn present_fb(&self, fb_id: u32) {
-        if !ax_display::has_display() {
-            return;
-        }
-        let fbs = self.fbs.lock();
-        let Some(&dumb_handle) = fbs.get(&fb_id) else {
-            return;
+        // Snapshot the backing pages out of the fb registry, then drop
+        // the lock so `framebuffer_flush` doesn't run with the
+        // map locked. Pages survive a concurrent DESTROY_DUMB because
+        // the fb owns its own Arc<GlobalPage> clone.
+        let (pages, size) = match self.fbs.lock().get(&fb_id) {
+            Some(fb) => (fb.pages.clone(), fb.size),
+            None => return,
         };
-        let dumbs = self.dumbs.lock();
-        let Some(buf) = dumbs.get(&dumb_handle) else {
+        if !ax_display::has_display() {
             return;
         };
         let info = ax_display::framebuffer_info();
-        let src_size = buf.size.min(info.fb_size as u64) as usize;
-        if let Some(src_paddr) = buf.paddr {
-            use ax_runtime::hal::mem::phys_to_virt;
-            let src = phys_to_virt(src_paddr);
-            let dst = VirtAddr::from(info.fb_base_vaddr);
-            let copy_bytes = src_size.min(info.fb_size);
-            unsafe {
-                core::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), copy_bytes);
-            }
+        let copy = (size as usize).min(info.fb_size);
+        // SAFETY: `pages` owns the source pages; `info.fb_base_vaddr`
+        // is the axdisplay-owned scanout region; the two regions don't
+        // overlap because the per-buffer pages were allocated separately
+        // from the axdisplay framebuffer.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                pages.start_vaddr().as_usize() as *const u8,
+                info.fb_base_vaddr as *mut u8,
+                copy,
+            );
         }
         let _ = ax_display::framebuffer_flush();
     }
@@ -545,19 +602,28 @@ impl Card0 {
         let size = (pitch as u64)
             .checked_mul(c.height as u64)
             .ok_or(VfsError::InvalidInput)?;
-        if size > 256 * 1024 * 1024 {
-            return Err(VfsError::InvalidInput);
+        if size as usize > DUMB_BUFFER_MAX_SIZE {
+            return Err(VfsError::NoMemory);
         }
         c.pitch = pitch;
         c.size = size;
-        let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
-
-        let alloc_size =
-            ((size as usize) + PageSize::Size4K as usize - 1) & !((PageSize::Size4K as usize) - 1);
-        let paddr = self.alloc_dumb_pages(alloc_size);
+        // Each buffer gets its own page-aligned `GlobalPage`. No shared
+        // pool, so we don't fail on early-boot fragmentation on arches
+        // whose allocator can't satisfy one large contiguous request
+        // after driver probe.
+        let size_aligned = (size as usize).next_multiple_of(PAGE_SIZE_4K);
+        let pages = size_aligned / PAGE_SIZE_4K;
+        let mut backing =
+            GlobalPage::alloc_contiguous(pages, PAGE_SIZE_4K).map_err(|_| VfsError::NoMemory)?;
+        // Linux DRM dumb buffers must be returned zeroed: the page
+        // allocator may hand back pages that previously held kernel
+        // data, and we mmap them straight into user space.
+        backing.zero();
+        let pages_arc = Arc::new(backing);
         let offset = self
-            .next_dumb_offset
-            .fetch_add(alloc_size as u64, Ordering::Relaxed);
+            .next_offset
+            .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
+        let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
 
         self.dumbs.lock().insert(
             handle,
@@ -567,8 +633,8 @@ impl Card0 {
                 bpp: c.bpp,
                 pitch: c.pitch,
                 size: c.size,
-                paddr: Some(paddr),
                 offset,
+                pages: pages_arc,
             },
         );
         c.handle = handle;
@@ -579,22 +645,25 @@ impl Card0 {
     fn handle_destroy_dumb(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeDestroyDumb;
         let d: DrmModeDestroyDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        if let Some(buf) = self.dumbs.lock().remove(&d.handle)
-            && let Some(paddr) = buf.paddr
-        {
-            let alloc_size = ((buf.size as usize) + PageSize::Size4K as usize - 1)
-                & !((PageSize::Size4K as usize) - 1);
-            self.dealloc_dumb_pages(paddr, alloc_size);
-        }
+        // Silently accept unknown handles — userspace sometimes
+        // destroys the same handle twice on cleanup. The `Arc` on
+        // `pages` means the backing memory only goes away after both
+        // this remove drops Card0's ref AND every live mapping
+        // releases its retainer.
+        self.dumbs.lock().remove(&d.handle);
         Ok(0)
     }
 
     fn handle_map_dumb(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeMapDumb;
         let mut m: DrmModeMapDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        let dumbs = self.dumbs.lock();
-        let buf = dumbs.get(&m.handle).ok_or(VfsError::InvalidInput)?;
-        m.offset = buf.offset;
+        let offset = self
+            .dumbs
+            .lock()
+            .get(&m.handle)
+            .map(|b| b.offset)
+            .ok_or(VfsError::InvalidInput)?;
+        m.offset = offset;
         ptr.vm_write(m).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
@@ -710,96 +779,94 @@ fn handle_get_resources(arg: usize) -> VfsResult<usize> {
 }
 
 impl Card0 {
-    /// `GETCRTC` — return the CRTC's current modeset, reflecting the last
-    /// `SETCRTC` or atomic commit. `fb_id` mirrors the plane's bound fb so
-    /// `drmModeGetCrtc()` retrieves a coherent post-commit view. With one
-    /// connector wired to one CRTC, `count_connectors` is 1 whenever the
-    /// CRTC is active, and `set_connectors_ptr` (if non-NULL) is filled
-    /// with the bound connector id truncated to the user-provided count.
     fn handle_get_crtc(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
         let mut c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         if c.crtc_id != CRTC_ID {
             return Err(VfsError::InvalidInput);
         }
-        let state = *self.state.lock();
-        c.x = 0;
-        c.y = 0;
-        c.fb_id = state.plane_fb_id;
+        let legacy = self.legacy_crtc.lock().clone();
         c.gamma_size = 0;
-        c.mode_valid = if state.crtc_active != 0 { 1 } else { 0 };
-        c.mode = current_mode();
-        let bound: &[u32] = if state.conn_crtc_id == CRTC_ID {
-            &[CONNECTOR_ID]
+        if legacy.fb_id != 0 {
+            // Report the bound state from the last successful SETCRTC.
+            c.x = legacy.x;
+            c.y = legacy.y;
+            c.fb_id = legacy.fb_id;
+            c.mode_valid = legacy.mode_valid;
+            c.mode = if legacy.mode_valid != 0 {
+                legacy.mode
+            } else {
+                DrmModeModeInfo::default()
+            };
+            c.count_connectors =
+                report_user_array(c.set_connectors_ptr, c.count_connectors, &legacy.connectors)?;
         } else {
-            &[]
-        };
-        c.count_connectors = report_user_array(c.set_connectors_ptr, c.count_connectors, bound)?;
+            // Unbound CRTC: no fb, no connectors, advertise the current
+            // synthetic mode so probes still see a coherent mode.
+            c.x = 0;
+            c.y = 0;
+            c.fb_id = 0;
+            c.mode_valid = 1;
+            c.mode = current_mode();
+            let empty: &[u32] = &[];
+            c.count_connectors =
+                report_user_array(c.set_connectors_ptr, c.count_connectors, empty)?;
+        }
         ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
-    /// `SETCRTC` — legacy modeset entry point. Mirror the post-commit
-    /// state into `ModesetState` so `GETCRTC`, `OBJ_GETPROPERTIES`, and
-    /// connector queries all see the same configuration. A zero `fb_id`
-    /// is a disable request. Non-zero `fb_id` must reference a
-    /// framebuffer created via `ADDFB2`. The supplied connector list
-    /// (`set_connectors_ptr` / `count_connectors`) is validated against
-    /// the fixed connector id; any unknown id is rejected with `EINVAL`
-    /// to match the Linux DRM contract.
     fn handle_set_crtc(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
         let c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         if c.crtc_id != CRTC_ID {
             return Err(VfsError::InvalidInput);
         }
-        if c.fb_id != 0 && !self.fbs.lock().contains_key(&c.fb_id) {
+
+        // fb_id == 0 with no connectors is the libdrm "disable CRTC"
+        // idiom. Anything else must pass full validation.
+        if c.fb_id == 0 && c.count_connectors == 0 {
+            *self.legacy_crtc.lock() = LegacyCrtcState::default();
+            return Ok(0);
+        }
+
+        // Validate the fb exists. Snapshot under the lock so a racing
+        // RMFB can't pull the rug between validation and present.
+        if c.fb_id == 0 || !self.fbs.lock().contains_key(&c.fb_id) {
             return Err(VfsError::InvalidInput);
         }
-        // Validate the connector list. A disable (`fb_id == 0`) is allowed
-        // to pass an empty list; an enable must reference exactly the one
-        // connector we expose. Linux's DRM core rejects unknown ids with
-        // EINVAL — accepting them silently would let userspace corrupt
-        // the modeset surface seen by GETCRTC / GETCONNECTOR.
-        if c.count_connectors > 0 {
-            if c.set_connectors_ptr == 0 {
+
+        // A non-disable SETCRTC must list at least one connector and
+        // every listed id must exist.
+        if c.count_connectors == 0 || c.set_connectors_ptr == 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        // Bound the user count so a bogus value can't try to allocate
+        // unbounded kernel memory.
+        if c.count_connectors > 16 {
+            return Err(VfsError::InvalidInput);
+        }
+        let connectors: Vec<u32> = vm_load(
+            c.set_connectors_ptr as *const u32,
+            c.count_connectors as usize,
+        )
+        .map_err(|_| VfsError::BadAddress)?;
+        for &id in &connectors {
+            if id != CONNECTOR_ID {
                 return Err(VfsError::InvalidInput);
             }
-            // Cap the array read to keep a wild count from blowing up
-            // the kernel allocator. One connector is all this driver
-            // ever exposes; anything beyond that is by definition bogus.
-            if c.count_connectors > 16 {
-                return Err(VfsError::InvalidInput);
-            }
-            let ids: Vec<u32> = vm_load(
-                c.set_connectors_ptr as *const u32,
-                c.count_connectors as usize,
-            )
-            .map_err(|_| VfsError::BadAddress)?;
-            for id in &ids {
-                if *id != CONNECTOR_ID {
-                    return Err(VfsError::InvalidInput);
-                }
-            }
         }
-        let connector_bound = c.fb_id != 0 && c.count_connectors > 0;
-        {
-            let mut state = self.state.lock();
-            if c.fb_id == 0 {
-                state.crtc_active = 0;
-                state.conn_crtc_id = 0;
-                state.plane_fb_id = 0;
-                state.plane_crtc_id = 0;
-            } else {
-                state.crtc_active = 1;
-                state.conn_crtc_id = if connector_bound { CRTC_ID } else { 0 };
-                state.plane_fb_id = c.fb_id;
-                state.plane_crtc_id = CRTC_ID;
-            }
-        }
-        if c.fb_id != 0 {
-            self.present_fb(c.fb_id);
-        }
+
+        // Validation passed — commit state, then push pixels.
+        *self.legacy_crtc.lock() = LegacyCrtcState {
+            fb_id: c.fb_id,
+            connectors,
+            mode: c.mode,
+            mode_valid: c.mode_valid,
+            x: c.x,
+            y: c.y,
+        };
+        self.present_fb(c.fb_id);
         Ok(0)
     }
 }
@@ -818,44 +885,33 @@ fn handle_get_encoder(arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
-impl Card0 {
-    /// `GETCONNECTOR` — describe the connector. Returns encoder, mode, and
-    /// the `CRTC_ID` property (same set as `OBJ_GETPROPERTIES` for this
-    /// connector) so libdrm's `drmModeGetConnector()` sees a property
-    /// surface consistent with the atomic property enumeration.
-    fn handle_get_connector(&self, arg: usize) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmModeGetConnector;
-        let mut c: DrmModeGetConnector = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        if c.connector_id != CONNECTOR_ID {
-            return Err(VfsError::InvalidInput);
-        }
-        c.encoder_id = ENCODER_ID;
-        c.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
-        c.connector_type_id = 1;
-        c.connection = DRM_MODE_CONNECTED;
-        let (w, h) = display_resolution();
-        c.mm_width = w;
-        c.mm_height = h;
-        c.subpixel = 0;
-
-        c.count_encoders = report_user_array(c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
-
-        if c.modes_ptr != 0 && c.count_modes > 0 {
-            let p = c.modes_ptr as *mut DrmModeModeInfo;
-            p.vm_write(current_mode())
-                .map_err(|_| VfsError::BadAddress)?;
-        }
-        c.count_modes = 1;
-
-        let state = *self.state.lock();
-        let prop_vals = conn_prop_values(&state);
-        report_user_array(c.props_ptr, c.count_props, CONN_PROPS)?;
-        report_user_array(c.prop_values_ptr, c.count_props, &prop_vals)?;
-        c.count_props = CONN_PROPS.len() as u32;
-
-        ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
-        Ok(0)
+fn handle_get_connector(arg: usize) -> VfsResult<usize> {
+    let ptr = arg as *mut DrmModeGetConnector;
+    let mut c: DrmModeGetConnector = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    if c.connector_id != CONNECTOR_ID {
+        return Err(VfsError::InvalidInput);
     }
+    c.encoder_id = ENCODER_ID;
+    c.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
+    c.connector_type_id = 1;
+    c.connection = DRM_MODE_CONNECTED;
+    let (w, h) = display_resolution();
+    c.mm_width = w;
+    c.mm_height = h;
+    c.subpixel = 0;
+
+    c.count_encoders = report_user_array(c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
+
+    if c.modes_ptr != 0 && c.count_modes > 0 {
+        let p = c.modes_ptr as *mut DrmModeModeInfo;
+        p.vm_write(current_mode())
+            .map_err(|_| VfsError::BadAddress)?;
+    }
+    c.count_modes = 1;
+    c.count_props = 0;
+
+    ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+    Ok(0)
 }
 
 impl Card0 {
@@ -863,9 +919,16 @@ impl Card0 {
         let ptr = arg as *mut DrmModeFbCmd2;
         let mut f: DrmModeFbCmd2 = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         let handle = f.handles[0];
-        if !self.dumbs.lock().contains_key(&handle) {
-            return Err(VfsError::InvalidInput);
-        }
+        // Resolve and clone-retain the dumb's backing under the dumbs
+        // lock so a concurrent DESTROY_DUMB can't race the fb's
+        // initial Arc bump.
+        let (pages, size) = {
+            let dumbs = self.dumbs.lock();
+            let Some(b) = dumbs.get(&handle) else {
+                return Err(VfsError::InvalidInput);
+            };
+            (b.pages.clone(), b.size)
+        };
         if f.flags & DRM_MODE_FB_MODIFIERS != 0 {
             for i in 0..4 {
                 if f.handles[i] == 0 {
@@ -878,7 +941,7 @@ impl Card0 {
             }
         }
         let fb_id = self.next_fb_id.fetch_add(1, Ordering::Relaxed);
-        self.fbs.lock().insert(fb_id, handle);
+        self.fbs.lock().insert(fb_id, Framebuffer { size, pages });
         f.fb_id = fb_id;
         ptr.vm_write(f).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
@@ -888,6 +951,14 @@ impl Card0 {
         let ptr = arg as *const u32;
         let fb_id: u32 = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         self.fbs.lock().remove(&fb_id);
+        // If the removed fb was the one bound by legacy SETCRTC, clear
+        // the binding so GETCRTC stops reporting a stale fb_id.
+        {
+            let mut legacy = self.legacy_crtc.lock();
+            if legacy.fb_id == fb_id {
+                *legacy = LegacyCrtcState::default();
+            }
+        }
         Ok(0)
     }
 }
@@ -903,28 +974,20 @@ fn handle_get_plane_resources(arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
-impl Card0 {
-    /// `GETPLANE` — report the current bind state of the (single) plane.
-    /// `crtc_id` and `fb_id` reflect the post-commit `ModesetState`
-    /// produced by the last `SETCRTC` / atomic commit / `PAGE_FLIP`,
-    /// matching what `OBJ_GETPROPERTIES` exposes. A plane that is not
-    /// bound to any CRTC reports both fields as 0.
-    fn handle_get_plane(&self, arg: usize) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmModeGetPlane;
-        let mut p: DrmModeGetPlane = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        if p.plane_id != PLANE_ID {
-            return Err(VfsError::InvalidInput);
-        }
-        let state = *self.state.lock();
-        p.crtc_id = state.plane_crtc_id;
-        p.fb_id = state.plane_fb_id;
-        p.possible_crtcs = 1;
-        p.gamma_size = 0;
-        p.count_format_types =
-            report_user_array(p.format_type_ptr, p.count_format_types, SUPPORTED_FORMATS)?;
-        ptr.vm_write(p).map_err(|_| VfsError::BadAddress)?;
-        Ok(0)
+fn handle_get_plane(arg: usize) -> VfsResult<usize> {
+    let ptr = arg as *mut DrmModeGetPlane;
+    let mut p: DrmModeGetPlane = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    if p.plane_id != PLANE_ID {
+        return Err(VfsError::InvalidInput);
     }
+    p.crtc_id = CRTC_ID;
+    p.fb_id = 0;
+    p.possible_crtcs = 1;
+    p.gamma_size = 0;
+    p.count_format_types =
+        report_user_array(p.format_type_ptr, p.count_format_types, SUPPORTED_FORMATS)?;
+    ptr.vm_write(p).map_err(|_| VfsError::BadAddress)?;
+    Ok(0)
 }
 
 impl Card0 {
@@ -1163,11 +1226,6 @@ impl Card0 {
         if f.crtc_id != CRTC_ID || !self.fbs.lock().contains_key(&f.fb_id) {
             return Err(VfsError::InvalidInput);
         }
-        // Mirror the new fb into modeset state so a subsequent
-        // GETCRTC / OBJ_GETPROPERTIES sees the post-flip fb_id rather
-        // than the value left over from the previous SETCRTC or
-        // atomic commit.
-        self.state.lock().plane_fb_id = f.fb_id;
         self.present_fb(f.fb_id);
         if f.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
             self.queue_flip_event(f.user_data);
@@ -1273,6 +1331,12 @@ impl Card0 {
 
         let mut state = self.state.lock();
         let mut proposed = *state;
+        // Outer Option: "the commit assigned MODE_ID at least once".
+        // Inner Option: the resolved Arc (None means clearing MODE_ID to 0).
+        // Only published into `mode_id_blob_ref` after the whole batch
+        // validates so a TEST_ONLY commit or a later property error
+        // leaves the committed mode blob ref untouched.
+        let mut new_mode_blob: Option<Option<Arc<Vec<u8>>>> = None;
         let mut idx = 0;
         for (obj_i, &obj_id) in objs.iter().enumerate() {
             let obj_type = object_type_of(obj_id).ok_or(VfsError::NotFound)?;
@@ -1280,7 +1344,14 @@ impl Card0 {
                 let prop_id = props[idx];
                 let value = values[idx];
                 idx += 1;
-                if !self.apply_prop(obj_type, obj_id, prop_id, value, &mut proposed)? {
+                if !self.apply_prop(
+                    obj_type,
+                    obj_id,
+                    prop_id,
+                    value,
+                    &mut proposed,
+                    &mut new_mode_blob,
+                )? {
                     return Err(VfsError::InvalidInput);
                 }
             }
@@ -1293,6 +1364,9 @@ impl Card0 {
         let current_fb = proposed.plane_fb_id;
         *state = proposed;
         drop(state);
+        if let Some(new_ref) = new_mode_blob {
+            *self.mode_id_blob_ref.lock() = new_ref;
+        }
         if current_fb != 0 {
             self.present_fb(current_fb);
         }
@@ -1312,6 +1386,7 @@ impl Card0 {
         prop_id: u32,
         value: u64,
         s: &mut ModesetState,
+        new_mode_blob: &mut Option<Option<Arc<Vec<u8>>>>,
     ) -> VfsResult<bool> {
         match (obj_type, prop_id) {
             (DRM_MODE_OBJECT_PLANE, PROP_PLANE_TYPE) => {
@@ -1354,10 +1429,27 @@ impl Card0 {
             }
             (DRM_MODE_OBJECT_CRTC, PROP_CRTC_MODE_ID) => {
                 let blob = value as u32;
-                if blob != 0 && !self.blobs.lock().contains_key(&blob) {
-                    return Err(VfsError::InvalidInput);
-                }
+                let arc = if blob == 0 {
+                    None
+                } else {
+                    // Resolve the Arc backing in priority order:
+                    //   1. user-publish table — the normal case.
+                    //   2. the existing `mode_id_blob_ref` if the
+                    //      requested id matches the currently-committed
+                    //      MODE_ID — keeps a re-commit of the same id
+                    //      working even after the user destroyed their
+                    //      publish handle.
+                    let arc = self.blobs.lock().get(&blob).cloned().or_else(|| {
+                        if s.crtc_mode_id == blob {
+                            self.mode_id_blob_ref.lock().clone()
+                        } else {
+                            None
+                        }
+                    });
+                    Some(arc.ok_or(VfsError::InvalidInput)?)
+                };
                 s.crtc_mode_id = blob;
+                *new_mode_blob = Some(arc);
             }
             (DRM_MODE_OBJECT_CONNECTOR, PROP_CONN_CRTC_ID) => {
                 let c = value as u32;
@@ -1380,7 +1472,7 @@ impl Card0 {
         let bytes: Vec<u8> =
             vm_load(c.data as *const u8, c.length as usize).map_err(|_| VfsError::BadAddress)?;
         let id = self.next_blob_id.fetch_add(1, Ordering::Relaxed);
-        self.blobs.lock().insert(id, bytes);
+        self.blobs.lock().insert(id, Arc::new(bytes));
         c.blob_id = id;
         ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
@@ -1395,6 +1487,11 @@ impl Card0 {
         if self.system_blobs.lock().contains_key(&d.blob_id) {
             return Err(VfsError::PermissionDenied);
         }
+        // Drop the user-publish reference. If `mode_id_blob_ref` still
+        // holds the same Arc (i.e. an atomic commit pinned this blob as
+        // the CRTC's `MODE_ID`), the blob data stays alive and
+        // `GETPROPBLOB` keeps succeeding via the committed-state lookup
+        // below until a later atomic commit replaces `MODE_ID`.
         self.blobs
             .lock()
             .remove(&d.blob_id)
@@ -1405,18 +1502,25 @@ impl Card0 {
     fn handle_get_blob(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeGetBlob;
         let mut g: DrmModeGetBlob = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        // Clone the blob bytes out of the lock — `vm_write_slice` can
+        // Clone the Arc backing out of the lock — `vm_write_slice` can
         // page-fault and sleep, and we don't want to hold the blob
-        // map locked across that. Search user blobs first, then
-        // system blobs.
-        let bytes = {
-            if let Some(b) = self.blobs.lock().get(&g.blob_id) {
-                b.clone()
-            } else if let Some(b) = self.system_blobs.lock().get(&g.blob_id) {
-                b.clone()
-            } else {
-                return Err(VfsError::NotFound);
-            }
+        // map locked across that. Lookup order:
+        //   1. user-publish table (`blobs`)
+        //   2. committed `MODE_ID` ref, only when the requested id
+        //      matches `state.crtc_mode_id` — this is the lifeline that
+        //      keeps a user-destroyed-but-still-committed mode blob
+        //      visible.
+        //   3. system blobs (kernel-owned, e.g. `IN_FORMATS`).
+        let bytes = if let Some(b) = self.blobs.lock().get(&g.blob_id).cloned() {
+            b
+        } else if g.blob_id == self.state.lock().crtc_mode_id
+            && let Some(b) = self.mode_id_blob_ref.lock().clone()
+        {
+            b
+        } else if let Some(b) = self.system_blobs.lock().get(&g.blob_id).cloned() {
+            b
+        } else {
+            return Err(VfsError::NotFound);
         };
         if g.data != 0 && g.length > 0 {
             let n = (g.length as usize).min(bytes.len());
@@ -1452,5 +1556,6 @@ fn checked_i32(value: u64) -> VfsResult<i32> {
 // recorded but not directly read. The whole struct is meaningful.
 #[allow(dead_code)]
 const _DUMB_BUFFER_FIELDS_USED: fn(&DumbBuffer) = |b| {
-    let _ = (b.width, b.height, b.bpp, b.pitch, b.size);
+    let _ = (b.width, b.height, b.bpp, b.pitch);
+    let _ = (b.size, b.offset, &b.pages);
 };

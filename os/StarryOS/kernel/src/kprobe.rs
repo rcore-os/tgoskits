@@ -17,10 +17,32 @@
 //! - [`handle_breakpoint`]: Entry point for breakpoint exceptions (INT3/EBREAK/BRK)
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
+use alloc::sync::Arc;
+
+use ax_kspin::RawSpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use kprobe::KprobeAuxiliaryOps;
+use kprobe::{
+    KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
+    register_kprobe as kprobe_crate_register_kprobe,
+    register_kretprobe as kprobe_crate_register_kretprobe,
+    unregister_kprobe as kprobe_crate_unregister_kprobe,
+    unregister_kretprobe as kprobe_crate_unregister_kretprobe,
+};
 
 use crate::task::AsThread;
+
+/// Raw mutex used as the `L` type parameter for the `kprobe` crate's
+/// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
+/// concrete probe types parameterized on it — see [`KernelKprobe`] /
+/// [`KernelKretprobe`]).
+///
+/// Backed by [`ax_kspin::RawSpinNoIrq`], which disables kernel preemption and
+/// local IRQs across the critical section (`NoPreemptIrqSave` semantics, the
+/// same as the rest of the kernel's spin locks). This matters because the lock
+/// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
+/// preemption and IRQs enabled could be re-entered on the same CPU and would
+/// then deadlock spinning on a lock it already holds.
+pub type KernelRawMutex = RawSpinNoIrq;
 
 #[derive(Debug)]
 pub struct KernelKprobeOps;
@@ -135,9 +157,20 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 }
 
-type KprobeManager = kprobe::ProbeManager<spin::Mutex<()>, KernelKprobeOps>;
+type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
+type KprobePointList = ProbePointList<KernelKprobeOps>;
+
+/// Concrete `kprobe::Kprobe` parameterized on the kernel's `RawMutex` and
+/// auxiliary ops, named to match what the perf module expects.
+pub type KernelKprobe = kprobe::Kprobe<KernelRawMutex, KernelKprobeOps>;
+/// Concrete `kprobe::Kretprobe`.
+pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
+/// The `KprobeAuxiliaryOps` impl, aliased under the name the perf module uses.
+pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
+    ax_sync::spin::SpinNoIrq::new(None);
+static KPROBE_POINT_LIST: ax_sync::spin::SpinNoIrq<Option<KprobePointList>> =
     ax_sync::spin::SpinNoIrq::new(None);
 
 fn with_manager<F, R>(f: F) -> R
@@ -149,6 +182,41 @@ where
         *guard = Some(KprobeManager::default());
     }
     f(guard.as_mut().expect("kprobe: manager not initialized"))
+}
+
+fn with_manager_and_list<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut KprobeManager, &mut KprobePointList) -> R,
+{
+    let mut mgr = KPROBE_MANAGER.lock();
+    if mgr.is_none() {
+        *mgr = Some(KprobeManager::default());
+    }
+    let mut list = KPROBE_POINT_LIST.lock();
+    if list.is_none() {
+        *list = Some(KprobePointList::new());
+    }
+    f(mgr.as_mut().unwrap(), list.as_mut().unwrap())
+}
+
+/// Register a kprobe into the global manager, returning the live handle.
+pub fn register_kprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelKprobe> {
+    with_manager_and_list(|mgr, list| kprobe_crate_register_kprobe(mgr, list, builder))
+}
+
+/// Unregister a previously registered kprobe.
+pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
+    with_manager_and_list(|mgr, list| kprobe_crate_unregister_kprobe(mgr, list, kprobe));
+}
+
+/// Register a kretprobe and return its live handle.
+pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
+    with_manager_and_list(|mgr, list| kprobe_crate_register_kretprobe(mgr, list, builder))
+}
+
+/// Unregister a previously registered kretprobe.
+pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
+    with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }
 
 fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
@@ -389,11 +457,6 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, tf);
-        #[cfg(feature = "ebpf")]
-        crate::perf_event::perf_event_trigger_by_type(
-            crate::perf_event::PERF_TYPE_KPROBE,
-            &pt_regs as *const _ as u64,
-        );
         return true;
     }
     false
@@ -447,7 +510,7 @@ pub fn run_selftest() -> bool {
 
     with_manager(|manager| {
         let mut probe_list = kprobe::ProbePointList::new();
-        let builder = kprobe::KretprobeBuilder::<spin::Mutex<()>>::new(4)
+        let builder = kprobe::KretprobeBuilder::<KernelRawMutex>::new(4)
             .with_symbol_addr(target_addr)
             .with_ret_handler(selftest_ret_handler)
             .with_enable(true);
@@ -477,11 +540,6 @@ pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, tf);
-        #[cfg(feature = "ebpf")]
-        crate::perf_event::perf_event_trigger_by_type(
-            crate::perf_event::PERF_TYPE_KPROBE,
-            &pt_regs as *const _ as u64,
-        );
         return true;
     }
     false
