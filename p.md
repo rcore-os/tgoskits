@@ -268,6 +268,7 @@ virtualization/axvm/src/
 │   ├── mod.rs                     # 私有 host boundary
 │   ├── traits.rs                  # HostMemory / HostTime / HostCpu / HostPlatform / ...
 │   ├── arceos.rs                  # 唯一允许访问 ax_std::os::arceos 的位置
+│   ├── gic.rs                     # AArch64 host GIC driver access
 │   └── paging.rs                  # 基于 HostMemory 的 guest page table handler
 └── runtime/
     ├── mod.rs                     # VM runtime loop 和 start/stop/resume/remove 原语
@@ -347,6 +348,11 @@ host/arceos.rs
     允许使用 ax_std::os::arceos::{api, modules}
     re-export 必要的 ArceOS task / wait queue / CPU mask 类型给 axvm 内部
 
+host/gic.rs
+    AArch64 下集中访问 host GIC driver
+    读取 GICD/GICR base、GICD IIDR/TYPER
+    处理 host IRQ ack 和虚拟中断注入
+
 host/paging.rs
     基于 HostMemory 实现 guest page table handler
 ```
@@ -385,8 +391,11 @@ HostPlatform
     virtualization/axvm/src/runtime/*
     virtualization/axvm/src/timer.rs
     virtualization/axvm/src/percpu.rs
+    virtualization/axvm/src/arch.rs
         -> 直接使用 ax_std::os::arceos / ax_hal / ax_task / ax_alloc
 ```
+
+`arch.rs` 只负责实现各组件的 `*HostIf` glue。需要访问 ArceOS 或板级 driver 时，应继续下沉到 `host/arceos.rs`、`host/gic.rs` 或后续更窄的 host adapter 模块。
 
 ### 2.5 `axvm::runtime`
 
@@ -732,7 +741,15 @@ cargo xtask clippy --package arm_vgic
 cargo xtask clippy --package x86_vlapic
 cargo xtask clippy --package riscv_vplic
 cargo xtask clippy --package axdevice
-cargo xtask clippy --package axvisor
+cargo xtask clippy --package axbuild
+```
+
+`axvisor` 需要通过 Axvisor xtask build config 验证，普通 `cargo xtask clippy --package axvisor` 会因缺少目标/构建配置而跳过。
+
+AArch64 board build 路径建议至少验证：
+
+```bash
+cargo xtask axvisor build --config test-suit/axvisor/normal/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml
 ```
 
 QEMU 验证：
@@ -787,9 +804,9 @@ shutdown_host_filesystems()
 
 后续如果需要进一步收紧，可以把 FDT host 信息读取和 filesystem release 包装为更明确的 Axvisor-facing service API。
 
-### 3.4 AArch64 callback 的板级验证
+### 3.4 AArch64 GIC host adapter 的板级验证
 
-AArch64 的 vCPU / VGIC host callback 已移入 `axvm/src/arch.rs`，包括：
+AArch64 的 vCPU / VGIC host callback 由 `axvm/src/arch.rs` 接入，并把真正的 host GIC driver 访问集中到 `axvm/src/host/gic.rs`，包括：
 
 ```text
 virtual interrupt injection

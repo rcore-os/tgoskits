@@ -83,15 +83,10 @@ ax-memory-addr = { workspace = true }
 ax-page-table-entry = { workspace = true, features = ["arm-el2"] }
 ax-page-table-multiarch = { workspace = true }
 ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
-rdif-intc.workspace = true
-rdrive.workspace = true
 ax-driver.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-config = { workspace = true, features = ["plat-dyn"] }
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-arm-gic-driver = { workspace = true, features = ["rdif"] }
-
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
