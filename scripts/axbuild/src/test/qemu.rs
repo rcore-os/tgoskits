@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::{
     context::validate_supported_target,
-    test::case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+    test::case::{HostHttpServerConfig, TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
 };
 
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
@@ -110,6 +110,10 @@ struct IndexedQemuCase {
 struct QemuCaseExtraConfig {
     #[serde(default)]
     test_commands: Vec<String>,
+    #[serde(default)]
+    host_symbolize_success_regex: Vec<String>,
+    #[serde(default)]
+    host_http_server: Option<HostHttpServerConfig>,
 }
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
@@ -146,14 +150,10 @@ fn legacy_build_config_candidates(dir: &Path, target: &str) -> Vec<PathBuf> {
     let Some(arch) = arch_from_target_name(target) else {
         return Vec::new();
     };
-    [
-        dir.join(format!(".build-{target}.toml")),
-        dir.join(format!("build-{arch}.toml")),
-        dir.join(format!(".build-{arch}.toml")),
-    ]
-    .into_iter()
-    .filter(|path| path.is_file())
-    .collect()
+    [dir.join(format!("build-{arch}.toml"))]
+        .into_iter()
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 fn arch_from_target_name(target: &str) -> Option<&str> {
@@ -379,6 +379,45 @@ pub(crate) fn discover_qemu_cases(
     suite_name: &str,
     group_label: &str,
 ) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
+    discover_qemu_cases_impl(
+        test_suite_dir,
+        arch,
+        target,
+        selected_case,
+        suite_name,
+        group_label,
+        false,
+    )
+}
+
+pub(crate) fn discover_qemu_cases_allow_empty(
+    test_suite_dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    suite_name: &str,
+    group_label: &str,
+) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
+    discover_qemu_cases_impl(
+        test_suite_dir,
+        arch,
+        target,
+        selected_case,
+        suite_name,
+        group_label,
+        true,
+    )
+}
+
+fn discover_qemu_cases_impl(
+    test_suite_dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    suite_name: &str,
+    group_label: &str,
+    allow_empty: bool,
+) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
     if let Some(case_name) = selected_case {
         validate_selected_case_name(case_name, suite_name, group_label)?;
     }
@@ -426,6 +465,10 @@ pub(crate) fn discover_qemu_cases(
                  matching `{config_name}`",
                 test_suite_dir.display()
             );
+        }
+
+        if allow_empty {
+            return Ok(cases);
         }
 
         bail!(
@@ -713,7 +756,9 @@ pub(crate) fn load_test_qemu_case_fields(
     suite_name: &str,
     discover_subcases: bool,
 ) -> anyhow::Result<TestQemuCase> {
-    let test_commands = load_qemu_case_test_commands(&qemu_config_path, suite_name)?;
+    let config = load_qemu_case_extra_config(&qemu_config_path)?;
+    let test_commands =
+        normalize_qemu_test_commands(&qemu_config_path, config.test_commands, suite_name)?;
     let subcases = if discover_subcases && !test_commands.is_empty() {
         let arch = qemu_config_path
             .file_stem()
@@ -729,19 +774,27 @@ pub(crate) fn load_test_qemu_case_fields(
         case_dir,
         qemu_config_path,
         test_commands,
+        host_symbolize_success_regex: config.host_symbolize_success_regex,
+        host_http_server: config.host_http_server,
         subcases,
     })
 }
 
-fn load_qemu_case_test_commands(
+fn load_qemu_case_extra_config(qemu_config_path: &Path) -> anyhow::Result<QemuCaseExtraConfig> {
+    let content = fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))
+}
+
+pub(crate) fn load_qemu_case_host_http_server(
     qemu_config_path: &Path,
-    suite_name: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Option<HostHttpServerConfig>> {
     let content = fs::read_to_string(qemu_config_path)
         .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
     let config: QemuCaseExtraConfig = toml::from_str(&content)
         .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
-    normalize_qemu_test_commands(qemu_config_path, config.test_commands, suite_name)
+    Ok(config.host_http_server)
 }
 
 fn discover_qemu_subcases(
@@ -1323,6 +1376,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_build_config_ignores_hidden_build_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(".build-x86_64-unknown-none.toml"),
+            "features = []\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".build-x86_64.toml"), "features = []\n").unwrap();
+
+        assert_eq!(
+            resolve_build_config_path(root.path(), "x86_64-unknown-none").unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn selected_qemu_case_rejects_path_traversal() {
         let root = tempfile::tempdir().unwrap();
         let build_dir = root.path().join("suite/wrapper");
@@ -1426,6 +1495,60 @@ mod tests {
         fs::write(target_dir.join("qemu-riscv64.toml"), "").unwrap();
 
         let err = discover_qemu_cases(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke"),
+            "test",
+            "qemu",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("exists under matching build group"));
+        assert!(err.contains("qemu-x86_64.toml"));
+    }
+
+    #[test]
+    fn discover_qemu_cases_allow_empty_returns_empty_without_selected_case() {
+        let root = tempfile::tempdir().unwrap();
+        let case_dir = root.path().join("suite/wrapper/smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/wrapper/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(case_dir.join("qemu-riscv64.toml"), "").unwrap();
+
+        let cases = discover_qemu_cases_allow_empty(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert!(cases.is_empty());
+    }
+
+    #[test]
+    fn discover_qemu_cases_allow_empty_keeps_selected_case_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let case_dir = root.path().join("suite/wrapper/smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/wrapper/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(case_dir.join("qemu-riscv64.toml"), "").unwrap();
+
+        let err = discover_qemu_cases_allow_empty(
             root.path().join("suite").as_path(),
             "x86_64",
             "x86_64-unknown-none",

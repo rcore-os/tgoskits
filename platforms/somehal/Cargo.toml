@@ -38,5 +38,5 @@ arm-gic-driver = {workspace = true, features = ["rdif"]}
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-riscv-plic = { workspace = true }
-riscv = "0.15"
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
+riscv.workspace = true
+sbi-rt = { workspace = true, features = ["legacy"] }

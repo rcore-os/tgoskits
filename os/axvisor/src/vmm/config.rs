@@ -16,7 +16,9 @@ use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 use axvm::{
     VMMemoryRegion,
-    config::{AxVMConfig, AxVMCrateConfig, VmMemMappingType, adjusted_kernel_load_gpa},
+    config::{
+        AxVMConfig, AxVMCrateConfig, VMBootProtocol, VmMemMappingType, adjusted_kernel_load_gpa,
+    },
 };
 use core::alloc::Layout;
 
@@ -247,7 +249,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one memory region"))?;
 
     if !skip_guest_address_adjustment {
-        config_guest_address(&vm, &main_mem);
+        config_guest_address(
+            &vm,
+            &main_mem,
+            vm_create_config.kernel.effective_boot_protocol(),
+        );
     }
 
     // Load corresponding images for VM.
@@ -265,11 +271,13 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     Ok(vm_id)
 }
 
-fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
+fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion, boot_protocol: VMBootProtocol) {
     vm.with_config(|config| {
-        if let Some(kernel_addr) =
-            adjusted_kernel_load_gpa(main_memory, config.image_config.bios_load_gpa)
-        {
+        if let Some(kernel_addr) = adjusted_kernel_load_gpa(
+            main_memory,
+            boot_protocol,
+            config.image_config.bios_load_gpa,
+        ) {
             debug!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
                 config.image_config.kernel_load_gpa, kernel_addr

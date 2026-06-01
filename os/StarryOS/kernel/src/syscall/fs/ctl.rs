@@ -10,7 +10,7 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
@@ -775,130 +775,6 @@ pub fn sys_renameat2(
 
     old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
-}
-
-// xattr syscall stubs.
-//
-// rsext4 does not support extended attributes, so these are minimal stubs
-// that satisfy the POSIX contract without touching the filesystem.
-//
-// This is required for pip uninstall: when /tmp is a separate tmpfs,
-// os.rename() returns EXDEV (cross-device), forcing shutil.copy2() to
-// fall back to a copy path that calls listxattr/getxattr/setxattr via
-// copystat() → _copyxattr(). Since listxattr returns 0 (empty), the
-// copy loop body never executes, so setxattr/removexattr are never called.
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// listxattr(path, list, size) — returns 0 (no extended attributes).
-pub fn sys_listxattr(path: *const c_char, _list: *mut u8, _size: usize) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Ok(0)
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// llistxattr(path, list, size) — same as listxattr but does not follow symlinks.
-pub fn sys_llistxattr(path: *const c_char, _list: *mut u8, _size: usize) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Ok(0)
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// flistxattr(fd, list, size) — fd-based variant, returns 0.
-pub fn sys_flistxattr(_fd: i32, _list: *mut u8, _size: usize) -> AxResult<isize> {
-    Ok(0)
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// getxattr(path, name, value, size) — returns ENODATA (no such attribute).
-pub fn sys_getxattr(
-    path: *const c_char,
-    _name: *const c_char,
-    _value: *mut u8,
-    _size: usize,
-) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Err(AxError::from(LinuxError::ENODATA))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// lgetxattr — same as getxattr but does not follow symlinks.
-pub fn sys_lgetxattr(
-    path: *const c_char,
-    _name: *const c_char,
-    _value: *mut u8,
-    _size: usize,
-) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Err(AxError::from(LinuxError::ENODATA))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// fgetxattr — fd-based variant, returns ENODATA.
-pub fn sys_fgetxattr(
-    _fd: i32,
-    _name: *const c_char,
-    _value: *mut u8,
-    _size: usize,
-) -> AxResult<isize> {
-    Err(AxError::from(LinuxError::ENODATA))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// setxattr — returns EOPNOTSUPP (filesystem does not support xattr).
-pub fn sys_setxattr(
-    path: *const c_char,
-    _name: *const c_char,
-    _value: *const u8,
-    _size: usize,
-    _flags: i32,
-) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// lsetxattr — same as setxattr but does not follow symlinks.
-pub fn sys_lsetxattr(
-    path: *const c_char,
-    _name: *const c_char,
-    _value: *const u8,
-    _size: usize,
-    _flags: i32,
-) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// fsetxattr — fd-based variant, returns EOPNOTSUPP.
-pub fn sys_fsetxattr(
-    _fd: i32,
-    _name: *const c_char,
-    _value: *const u8,
-    _size: usize,
-    _flags: i32,
-) -> AxResult<isize> {
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// removexattr — returns EOPNOTSUPP (filesystem does not support xattr).
-pub fn sys_removexattr(path: *const c_char, _name: *const c_char) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// lremovexattr — same as removexattr but does not follow symlinks.
-pub fn sys_lremovexattr(path: *const c_char, _name: *const c_char) -> AxResult<isize> {
-    let _path = vm_load_string(path)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
-}
-
-// TODO: xattr stub — not fully implemented, rsext4 has no extended attributes.
-/// fremovexattr — fd-based variant, returns EOPNOTSUPP.
-pub fn sys_fremovexattr(_fd: i32, _name: *const c_char) -> AxResult<isize> {
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
 }
 
 pub fn sys_sync() -> AxResult<isize> {

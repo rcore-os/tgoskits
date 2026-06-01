@@ -1,3 +1,4 @@
+mod aio;
 mod ctl;
 mod event;
 mod fd_ops;
@@ -11,8 +12,10 @@ mod pipe;
 mod signalfd;
 mod stat;
 mod timerfd;
+mod xattr;
 
 pub use self::{
+    aio::*,
     ctl::*,
     event::*,
     fd_ops::*,
@@ -26,4 +29,5 @@ pub use self::{
     signalfd::*,
     stat::*,
     timerfd::*,
+    xattr::*,
 };

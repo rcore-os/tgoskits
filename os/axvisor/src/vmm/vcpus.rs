@@ -467,15 +467,15 @@ fn vcpu_run() {
                     }
                 }
                 AxVCpuExitReason::PreemptionTimer => {
+                    super::timer::check_events();
                     #[cfg(target_arch = "x86_64")]
                     super::devices::x86::inject_due_pit_irq0(&vm, &vcpu);
                     #[cfg(target_arch = "x86_64")]
                     super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
                 }
-                AxVCpuExitReason::InterruptEnd { vector } =>
-                {
+                AxVCpuExitReason::InterruptEnd { vector: _vector } => {
                     #[cfg(target_arch = "x86_64")]
-                    if let Some(vector) = vector {
+                    if let Some(vector) = _vector {
                         super::devices::x86::inject_pending_ioapic_irq_after_eoi(
                             &vm, &vcpu, vector,
                         );

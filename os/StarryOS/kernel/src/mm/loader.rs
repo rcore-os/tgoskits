@@ -73,7 +73,7 @@ fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
         mapping_flags |= MappingFlags::READ;
     }
     if flags.is_write() {
-        mapping_flags |= MappingFlags::WRITE;
+        mapping_flags |= MappingFlags::WRITE | MappingFlags::READ;
     }
     if flags.is_execute() {
         mapping_flags |= MappingFlags::EXECUTE;

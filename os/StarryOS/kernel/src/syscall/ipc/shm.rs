@@ -108,11 +108,27 @@ impl ShmInner {
         key: i32,
         shmid: i32,
         size: usize,
-        mapping_flags: MappingFlags,
+        shmflg: usize,
         pid: Pid,
         uid: u32,
         gid: u32,
     ) -> Self {
+        let ipc_mode = (shmflg & 0o777) as u16;
+
+        let mut mapping_flags = MappingFlags::from_name("USER").unwrap();
+        if shmflg & 0o400 != 0 {
+            mapping_flags.insert(MappingFlags::READ);
+        }
+        if shmflg & 0o200 != 0 {
+            // RISC-V reserves W=1,R=0 for leaf PTEs; WRITE implies READ here so
+            // the riscv64 PTE layer can auto-correct. This is a page-table-level
+            // workaround and must NOT leak into the user-visible IPC mode.
+            mapping_flags.insert(MappingFlags::WRITE | MappingFlags::READ);
+        }
+        if shmflg & 0o100 != 0 {
+            mapping_flags.insert(MappingFlags::EXECUTE);
+        }
+
         ShmInner {
             shmid,
             page_num: ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K,
@@ -123,7 +139,7 @@ impl ShmInner {
             shmid_ds: ShmidDs::new(
                 key,
                 size,
-                mapping_flags.bits() as __kernel_mode_t,
+                ipc_mode as __kernel_mode_t,
                 pid as __kernel_pid_t,
                 uid,
                 gid,
@@ -428,17 +444,6 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
 }
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
-    let mut mapping_flags = MappingFlags::from_name("USER").unwrap();
-    if shmflg & 0o400 != 0 {
-        mapping_flags.insert(MappingFlags::READ);
-    }
-    if shmflg & 0o200 != 0 {
-        mapping_flags.insert(MappingFlags::WRITE);
-    }
-    if shmflg & 0o100 != 0 {
-        mapping_flags.insert(MappingFlags::EXECUTE);
-    }
-
     let curr = current();
     let thread = curr.as_thread();
     let cur_pid = thread.proc_data.proc.pid();
@@ -476,13 +481,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     // Create a new shm_inner
     let shmid = next_ipc_id();
     let shm_inner = Arc::new(Mutex::new(ShmInner::new(
-        key,
-        shmid,
-        size,
-        mapping_flags,
-        cur_pid,
-        cred.euid,
-        cred.egid,
+        key, shmid, size, shmflg, cur_pid, cred.euid, cred.egid,
     )));
     shm_manager.insert_key_shmid(key, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);

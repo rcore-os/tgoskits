@@ -50,21 +50,24 @@ impl FileBackendInner {
         let aspace = Arc::downgrade(aspace);
         let handle = self.cache.add_evict_listener({
             let this = Arc::downgrade(self);
-            move |pn, _page| {
+            move |pn, _page| -> bool {
                 let Some(this) = this.upgrade() else {
-                    return;
+                    // Backend dropped — no mappings remain, safe to free.
+                    return true;
                 };
                 let Some(aspace) = aspace.upgrade() else {
                     // The address space has been dropped, nothing to do.
-                    return;
+                    return true;
                 };
                 let Some(mut aspace) = aspace.try_lock() else {
-                    // This can happen during the populate process, when new pages
-                    // are being populated and old pages are being evicted. In this
-                    // case, we delegate the unmapping to the populate process.
-                    return;
+                    // Cannot acquire AddrSpace lock (contention with populate
+                    // or another thread).  Return false so the reclaim path
+                    // puts the page back into the cache instead of freeing it
+                    // — dropping the page here would leave a dangling PTE.
+                    return false;
                 };
                 this.on_evict(pn, &mut aspace);
+                true
             }
         });
         self.handle.store(handle, Ordering::Release);

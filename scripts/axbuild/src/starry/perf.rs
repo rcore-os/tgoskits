@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     fs::File,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -7,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use object::{Object, ObjectSection};
 use serde::{Deserialize, Serialize};
 
 use super::{ArgsBuild, ArgsPerf, PerfFormat, Starry, build, rootfs};
@@ -58,7 +61,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         config: None,
         arch: Some(arch.clone()),
         target: None,
-        smp: None,
+        smp: args.smp,
         debug: true,
     };
     let request = starry.prepare_request(
@@ -77,7 +80,10 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     rootfs::ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
     let cargo = build::load_cargo_config(&request)?;
     let qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
-    write_qemu_config(&outputs, &tools, &args, qemu.args)?;
+
+    let elf = kernel_elf_path(starry.app.workspace_root(), &target);
+    let text_range = detect_kernel_text_range(&elf)?;
+    write_qemu_config(&outputs, &tools, &args, qemu.args, text_range)?;
 
     let kernel_bin = kernel_bin_path(starry.app.workspace_root(), &target);
     let qemu_status = run_qemu_direct(&outputs, &args, &arch, &kernel_bin)?;
@@ -88,13 +94,21 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         eprintln!("qperf: QEMU ended with {qemu_status} after producing samples");
     }
 
-    let elf = kernel_elf_path(starry.app.workspace_root(), &target);
-    run_analyzer(&tools.analyzer, &elf, &outputs.raw, &outputs.folded)?;
+    let generate_svg = matches!(args.format, PerfFormat::Svg | PerfFormat::All);
+    run_analyzer(
+        &tools.analyzer,
+        &elf,
+        &outputs.raw,
+        &outputs.folded,
+        &outputs.flamegraph,
+        generate_svg,
+        args.top,
+    )?;
 
-    let flamegraph_generated = if matches!(args.format, PerfFormat::Svg | PerfFormat::All) {
+    let flamegraph_generated = if generate_svg && !file_nonempty(&outputs.flamegraph) {
         try_generate_flamegraph(&outputs.folded, &outputs.flamegraph)?
     } else {
-        false
+        generate_svg && file_nonempty(&outputs.flamegraph)
     };
 
     write_summary(
@@ -155,7 +169,8 @@ fn build_qperf_tools(root: &Path) -> anyhow::Result<QperfTools> {
         .current_dir(root)
         .args(["build", "--manifest-path"])
         .arg(&manifest)
-        .arg("--release")
+        .args(["--release", "--target-dir"])
+        .arg(root.join("tools/qperf/target"))
         .exec()
         .context("failed to build qperf plugin")?;
 
@@ -163,7 +178,8 @@ fn build_qperf_tools(root: &Path) -> anyhow::Result<QperfTools> {
         .current_dir(root)
         .args(["build", "--manifest-path"])
         .arg(&manifest)
-        .args(["--release", "-p", "qperf-analyzer"])
+        .args(["--release", "-p", "qperf-analyzer", "--target-dir"])
+        .arg(root.join("tools/qperf/target"))
         .exec()
         .context("failed to build qperf-analyzer")?;
 
@@ -182,16 +198,25 @@ fn write_qemu_config(
     tools: &QperfTools,
     args: &ArgsPerf,
     qemu_args: Vec<String>,
+    text_range: Option<(u64, u64)>,
 ) -> anyhow::Result<()> {
     let mut perf_qemu_args = vec!["-plugin".to_string()];
-    perf_qemu_args.push(format!(
-        "{},freq={},max_depth={},queue_size={},out={}",
+    let mut plugin_params = format!(
+        "{},freq={},max_depth={},queue_size={},mode={},out={}",
         tools.plugin.display(),
         args.freq,
         args.max_depth,
         QPERF_QUEUE_SIZE,
+        args.mode,
         outputs.raw.display()
-    ));
+    );
+    if let Some((start, end)) = text_range {
+        let _ = write!(
+            &mut plugin_params,
+            ",filter_start=0x{start:x},filter_end=0x{end:x}"
+        );
+    }
+    perf_qemu_args.push(plugin_params);
     perf_qemu_args.extend(qemu_args);
 
     let config = PerfQemuConfig {
@@ -249,16 +274,31 @@ fn qemu_args_from_config(path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(config.args)
 }
 
-fn run_analyzer(analyzer: &Path, elf: &Path, raw: &Path, folded: &Path) -> anyhow::Result<()> {
+fn run_analyzer(
+    analyzer: &Path,
+    elf: &Path,
+    raw: &Path,
+    folded: &Path,
+    flamegraph: &Path,
+    generate_svg: bool,
+    top_n: usize,
+) -> anyhow::Result<()> {
     ensure_file(elf, "StarryOS kernel ELF")?;
     ensure_file(raw, "qperf raw samples")?;
-    Command::new(analyzer)
+    let mut command = Command::new(analyzer);
+    command
+        .arg("resolve")
         .arg("-e")
         .arg(elf)
         .arg(raw)
-        .arg(folded)
-        .exec()
-        .context("failed to run qperf-analyzer")?;
+        .arg(folded);
+    if top_n > 0 {
+        command.arg("--top").arg(top_n.to_string());
+    }
+    if generate_svg {
+        command.arg("--flamegraph").arg(flamegraph);
+    }
+    command.exec().context("failed to run qperf-analyzer")?;
     ensure_file(folded, "folded stack output")?;
     Ok(())
 }
@@ -381,6 +421,37 @@ fn kernel_bin_path(root: &Path, target: &str) -> PathBuf {
         .join(target)
         .join("debug")
         .join("starryos.bin")
+}
+
+fn detect_kernel_text_range(elf: &Path) -> anyhow::Result<Option<(u64, u64)>> {
+    if !elf.exists() {
+        eprintln!(
+            "qperf: kernel ELF not found at {}, skipping .text range filter",
+            elf.display()
+        );
+        return Ok(None);
+    }
+
+    let data =
+        fs::read(elf).with_context(|| format!("failed to read kernel ELF {}", elf.display()))?;
+    let obj = object::read::File::parse(&*data)
+        .map_err(|err| anyhow::anyhow!("failed to parse kernel ELF: {err}"))?;
+    for section in obj.sections() {
+        if section.name().unwrap_or("") == ".text" {
+            let start = section.address();
+            let size = section.size();
+            if start > 0 && size > 0 {
+                eprintln!(
+                    "qperf: detected kernel .text range: 0x{start:x}..0x{:x} ({size} bytes)",
+                    start + size
+                );
+                return Ok(Some((start, start + size)));
+            }
+        }
+    }
+
+    eprintln!("qperf: could not find .text section in kernel ELF, address filter disabled");
+    Ok(None)
 }
 
 fn ensure_file(path: &Path, label: &str) -> anyhow::Result<()> {

@@ -7,6 +7,7 @@ use core::{
 };
 
 use ax_alloc::tracking::{allocations_in, current_generation, disable_tracking, enable_tracking};
+use ax_kspin::SpinNoIrq;
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 
@@ -17,76 +18,20 @@ use crate::{
 };
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SAMPLE_ALLOCATION: SpinNoIrq<Option<Vec<u8>>> = SpinNoIrq::new(None);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum MemoryCategory {
-    Known(&'static str),
-    Unknown(Backtrace),
-}
+struct AllocationBacktrace(Backtrace);
 
-impl MemoryCategory {
+impl AllocationBacktrace {
     fn new(backtrace: &Backtrace) -> Self {
-        match Self::category(backtrace) {
-            Some(category) => Self::Known(category),
-            None => Self::Unknown(backtrace.clone()),
-        }
-    }
-
-    fn category(backtrace: &Backtrace) -> Option<&'static str> {
-        for (_, frame) in backtrace.frames()? {
-            let Some(func) = frame.function else {
-                continue;
-            };
-            if func.language != Some(gimli::DW_LANG_Rust) {
-                continue;
-            }
-            let Ok(name) = func.demangle() else {
-                continue;
-            };
-            match name.as_ref() {
-                "starry_core::mm::ElfLoader::load" => {
-                    return Some("elf cache");
-                }
-                "starry_core::task::ProcessData::new" => {
-                    return Some("process data");
-                }
-                "starry_process::process::Process::new" => {
-                    return Some("process");
-                }
-                "starry_process::process_group::ProcessGroup::new" => {
-                    return Some("process group");
-                }
-                "ax_fs::fs::ext4::inode::Inode::new" => {
-                    return Some("ext4 inode");
-                }
-                "ax_fs::highlevel::file::CachedFile::get_or_create"
-                | "ax_fs::highlevel::file::CachedFile::page_or_insert" => {
-                    return Some("cached file");
-                }
-                "ax_task::timers::set_alarm_wakeup" => {
-                    return Some("timer");
-                }
-                "axfs_ng_vfs::node::dir::DirNode::lookup_locked"
-                | "axfs_ng_vfs::node::dir::DirNode::create_locked" => {
-                    return Some("dentry");
-                }
-                "ext4_user_malloc" => {
-                    return Some("lwext4");
-                }
-                _ => continue,
-            }
-        }
-
-        None
+        Self(backtrace.clone().kind("alloc"))
     }
 }
 
-impl fmt::Display for MemoryCategory {
+impl fmt::Display for AllocationBacktrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MemoryCategory::Known(name) => write!(f, "[{name}]"),
-            MemoryCategory::Unknown(backtrace) => write!(f, "{backtrace}"),
-        }
+        write!(f, "{}", self.0)
     }
 }
 
@@ -104,9 +49,9 @@ fn run_memory_analysis() {
     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
     let to = current_generation();
 
-    let mut allocations: BTreeMap<MemoryCategory, Vec<Layout>> = BTreeMap::new();
+    let mut allocations: BTreeMap<AllocationBacktrace, Vec<Layout>> = BTreeMap::new();
     allocations_in(from..to, |info| {
-        let category = MemoryCategory::new(&info.backtrace);
+        let category = AllocationBacktrace::new(&info.backtrace);
         allocations.entry(category).or_default().push(info.layout);
     });
     let mut allocations = allocations
@@ -132,6 +77,52 @@ fn run_memory_analysis() {
     }
 }
 
+#[inline(never)]
+fn record_sample_allocation() {
+    let mut sample = Vec::with_capacity(4096);
+    sample.resize(4096, 0xa5);
+    *SAMPLE_ALLOCATION.lock() = Some(sample);
+    ax_println!("Memory allocation sample recorded");
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+fn starry_memtrack_sample_hard_leaf() -> Vec<u8> {
+    let mut sample = Vec::with_capacity(8192);
+    sample.resize(8192, 0x5a);
+    core::hint::black_box(sample.as_ptr());
+    sample
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+fn starry_memtrack_sample_hard_mid() -> Vec<u8> {
+    let sample = starry_memtrack_sample_hard_leaf();
+    core::hint::black_box(sample.len());
+    sample
+}
+
+#[inline(never)]
+fn record_hard_sample_allocation() {
+    let sample = starry_memtrack_sample_hard_mid();
+    *SAMPLE_ALLOCATION.lock() = Some(sample);
+    ax_println!("Hard memory allocation sample recorded");
+}
+
+fn clear_sample_allocation() {
+    SAMPLE_ALLOCATION.lock().take();
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+extern "C" fn starry_memtrack_symbolize_probe() {}
+
+fn emit_symbolize_probe() {
+    let probe_ip = starry_memtrack_symbolize_probe as *const () as usize;
+    let backtrace = Backtrace::capture_trap(0, probe_ip, 0).kind("alloc");
+    ax_println!("{backtrace}");
+}
+
 pub(crate) struct MemTrack;
 
 impl DeviceOps for MemTrack {
@@ -143,13 +134,24 @@ impl DeviceOps for MemTrack {
         if offset == 0 && !buf.is_empty() {
             match buf {
                 b"start\n" => {
+                    clear_sample_allocation();
                     let generation = current_generation();
                     STAMPED_GENERATION.store(generation, Ordering::SeqCst);
                     ax_println!("Memory allocation generation stamped: {}", generation);
                     enable_tracking();
                 }
+                b"sample\n" => {
+                    record_sample_allocation();
+                }
+                b"sample_hard\n" => {
+                    record_hard_sample_allocation();
+                }
+                b"symbolize\n" => {
+                    emit_symbolize_probe();
+                }
                 b"end\n" => {
                     run_memory_analysis();
+                    clear_sample_allocation();
                     disable_tracking();
                 }
                 _ => {}
@@ -164,5 +166,21 @@ impl DeviceOps for MemTrack {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_backtrace_formats_raw_alloc_block() {
+        let category = AllocationBacktrace::new(&Backtrace::capture_trap(0, 0x1000, 0));
+        let output = alloc::format!("{category}");
+
+        assert!(output.contains("BACKTRACE_BEGIN kind=alloc"));
+        assert!(output.contains("BT 0 ip=0x1001 fp=0x0"));
+        assert!(output.ends_with("BACKTRACE_END\n"));
+        assert!(!output.contains("Backtrace:"));
     }
 }

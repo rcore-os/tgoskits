@@ -689,6 +689,7 @@ impl Axvisor {
             &mut self.app,
             cargo,
             qemu,
+            None,
             &case.case.case.qemu_config_path,
             prepared_assets,
             prepare_started.elapsed(),
@@ -1135,6 +1136,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["load"]
         );
+    }
+
+    #[test]
+    fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "normal",
+            "default",
+            "baseline",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+        write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "uefi",
+            "qemu-nimbos",
+            "smoke",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+
+        let normal_cases =
+            discover_qemu_cases(root.path(), "normal", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(normal_cases.len(), 1);
+        assert_eq!(normal_cases[0].case.name, "baseline");
+
+        let uefi_cases =
+            discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(uefi_cases.len(), 1);
+        assert_eq!(uefi_cases[0].case.name, "smoke");
+        assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
     }
 
     #[test]

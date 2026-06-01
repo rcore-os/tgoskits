@@ -18,13 +18,13 @@ pub use relocate::apply as relocate;
 
 use crate::{
     ArchTrait, DCacheOp,
+    consts::KERNEL_LOAD_ADDRESS,
     mem::{PageTableInfo, mmu},
     power::CpuOnError,
 };
 #[cfg(any(uspace, hv))]
 use crate::{mem::__kimage_va_to_pa, smp::percpu_va_range};
 
-const KERNEL_LOAD_ADDRESS: usize = 0x8020_0000;
 const SATP_MODE_SV39: usize = 8usize << 60;
 const SSTATUS_SIE: usize = 1 << 1;
 const SIE_STIE: usize = 1 << 5;

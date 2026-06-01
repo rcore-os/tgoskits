@@ -20,7 +20,7 @@ use alloc::{string::String, vec::Vec};
 use axaddrspace::GuestPhysAddr;
 pub use axvmconfig::{
     AxVMCrateConfig, EmulatedDeviceConfig, PassThroughAddressConfig, PassThroughDeviceConfig,
-    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
 use crate::VMMemoryRegion;
@@ -141,7 +141,9 @@ fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if cfg.kernel.bios_path.is_none() {
+    if cfg.kernel.boot_firmware_path().is_none()
+        && cfg.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
+    {
         return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
     }
 
@@ -150,6 +152,7 @@ fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
 
 pub fn adjusted_kernel_load_gpa(
     main_memory: &VMMemoryRegion,
+    boot_protocol: VMBootProtocol,
     bios_load_gpa: Option<GuestPhysAddr>,
 ) -> Option<GuestPhysAddr> {
     if !main_memory.is_identical() {
@@ -157,7 +160,7 @@ pub fn adjusted_kernel_load_gpa(
     }
 
     let mut kernel_addr = main_memory.gpa;
-    if bios_load_gpa.is_some() {
+    if boot_protocol == VMBootProtocol::Multiboot && bios_load_gpa.is_some() {
         kernel_addr += BIOS_RESERVED_SIZE;
     }
     Some(kernel_addr)
@@ -418,5 +421,50 @@ mod tests {
                 .map(|addr| addr.as_usize()),
             Some(0x8000)
         );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn uefi_boot_does_not_use_builtin_x86_bios_addr() {
+        let mut cfg = config_with_entry(0xffff_fff0);
+        cfg.kernel.enable_bios = true;
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+
+        let vm_config = AxVMConfig::from(cfg);
+
+        assert!(vm_config.image_config.bios_load_gpa.is_none());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn uefi_boot_uses_explicit_firmware_path_and_load_addr() {
+        let mut cfg = config_with_entry(0xffff_fff0);
+        cfg.kernel.enable_bios = true;
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+        cfg.kernel.uefi_firmware_path = Some(String::from("OVMF_CODE.fd"));
+        cfg.kernel.bios_load_addr = Some(0xffc0_0000);
+
+        let vm_config = AxVMConfig::from(cfg);
+
+        assert_eq!(
+            vm_config
+                .image_config
+                .bios_load_gpa
+                .map(|addr| addr.as_usize()),
+            Some(0xffc0_0000)
+        );
+    }
+
+    #[test]
+    fn uefi_boot_requires_a_firmware_path_or_legacy_fallback() {
+        let mut cfg = config_with_entry(0xffff_fff0);
+        cfg.kernel.enable_bios = true;
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+        cfg.kernel.bios_load_addr = Some(0xffc0_0000);
+
+        assert!(cfg.kernel.validate_boot_config().is_err());
+
+        cfg.kernel.uefi_firmware_path = Some(String::from("OVMF_CODE.fd"));
+        assert!(cfg.kernel.validate_boot_config().is_ok());
     }
 }

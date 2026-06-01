@@ -8,10 +8,12 @@ description = "Lock dependency tracing helpers for ArceOS components"
 license.workspace = true
 
 [features]
-task-context = []
+task-context = ["dep:axpanic"]
 
 [dependencies]
 ax-crate-interface = { workspace = true }
+ax-kernel-guard = { workspace = true }
+axpanic = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
+sbi-rt = { workspace = true, features = ["legacy"] }

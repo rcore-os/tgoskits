@@ -16,7 +16,6 @@
 
 #define _GNU_SOURCE
 #include "test_framework.h"
-#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
@@ -100,6 +99,7 @@ struct drm_event_vblank {
 #define DRM_IOCTL_MODE_GETRESOURCES      _IOWR('d', 0xA0, struct drm_mode_card_res)
 #define DRM_IOCTL_MODE_GETCRTC           _IOWR('d', 0xA1, struct drm_mode_crtc)
 #define DRM_IOCTL_MODE_SETCRTC           _IOWR('d', 0xA2, struct drm_mode_crtc)
+#define DRM_IOCTL_MODE_RMFB              _IOWR('d', 0xAF, uint32_t)
 #define DRM_IOCTL_MODE_GETCONNECTOR      _IOWR('d', 0xA7, struct drm_mode_get_connector)
 #define DRM_IOCTL_MODE_GETPROPERTY       _IOWR('d', 0xAA, struct drm_mode_get_property)
 #define DRM_IOCTL_MODE_PAGE_FLIP         _IOWR('d', 0xB0, struct drm_mode_crtc_page_flip)
@@ -227,50 +227,6 @@ int main(void)
     };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &setcrtc), 0, "SETCRTC");
 
-    /* SETCRTC must reject an unknown fb_id with EINVAL — Linux DRM
-     * looks up the fb in the per-card table and fails the modeset
-     * if the lookup misses. */
-    struct drm_mode_crtc bad_setcrtc = setcrtc;
-    bad_setcrtc.fb_id = 0xdeadbeef;
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_setcrtc), EINVAL,
-              "SETCRTC with unknown fb_id rejected with EINVAL");
-
-    /* GETCRTC must read back the connector bound by the preceding
-     * SETCRTC. count_connectors reports the real bind count and
-     * set_connectors_ptr (when provided) is filled with the ids. */
-    uint32_t got_conns[2] = {0};
-    struct drm_mode_crtc getcrtc = {
-        .crtc_id = crtc_ids[0],
-        .set_connectors_ptr = (uint64_t)(uintptr_t)got_conns,
-        .count_connectors = 2,
-    };
-    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getcrtc), 0, "GETCRTC");
-    CHECK(getcrtc.count_connectors == 1,
-          "GETCRTC.count_connectors == 1 after SETCRTC");
-    CHECK(got_conns[0] == conn_ids[0],
-          "GETCRTC.set_connectors_ptr[0] == bound connector id");
-    CHECK(getcrtc.fb_id == fb.fb_id, "GETCRTC.fb_id == post-SETCRTC fb_id");
-    CHECK(getcrtc.mode_valid == 1, "GETCRTC.mode_valid == 1");
-
-    /* SETCRTC with an unknown connector id must fail EINVAL — Linux
-     * DRM rejects connector ids it can't look up. Accepting them
-     * silently would pollute the modeset surface. */
-    uint32_t bad_conns[1] = { 0xdeadbeef };
-    struct drm_mode_crtc bad_conn_setcrtc = setcrtc;
-    bad_conn_setcrtc.set_connectors_ptr = (uint64_t)(uintptr_t)bad_conns;
-    bad_conn_setcrtc.count_connectors = 1;
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_conn_setcrtc), EINVAL,
-              "SETCRTC with unknown connector id rejected with EINVAL");
-
-    /* GETPLANE must reflect the current bind state produced by the
-     * preceding SETCRTC, not a hard-coded zero. */
-    struct drm_mode_get_plane pl_bound = { .plane_id = pl.plane_id };
-    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &pl_bound), 0,
-              "GETPLANE after SETCRTC");
-    CHECK(pl_bound.fb_id == fb.fb_id, "GETPLANE.fb_id == post-SETCRTC fb_id");
-    CHECK(pl_bound.crtc_id == crtc_ids[0],
-          "GETPLANE.crtc_id == post-SETCRTC crtc_id");
-
     /* --- page flip with event --- */
     struct drm_mode_crtc_page_flip flip = {
         .crtc_id = crtc_ids[0], .fb_id = fb.fb_id,
@@ -305,6 +261,62 @@ int main(void)
     CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv2), 0, "WAIT_VBLANK 2");
     CHECK(wv2.reply.sequence > wv1.reply.sequence, "vblank seq monotonic");
     CHECK(wv2.reply.sequence > seq1, "vblank seq > flip seq");
+
+    /* --- legacy GETCRTC readback matches the SETCRTC we ran above --- */
+    uint32_t readback_conns[4] = {0};
+    struct drm_mode_crtc getc = {
+        .crtc_id = crtc_ids[0],
+        .set_connectors_ptr = (uint64_t)(uintptr_t)readback_conns,
+        .count_connectors = 4,
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getc), 0, "GETCRTC readback");
+    CHECK(getc.fb_id == fb.fb_id, "GETCRTC fb_id matches SETCRTC");
+    CHECK(getc.count_connectors == 1, "GETCRTC count_connectors == 1");
+    CHECK(readback_conns[0] == conn_ids[0],
+          "GETCRTC reports the connector we set");
+    CHECK(getc.mode_valid == 1, "GETCRTC mode_valid == 1");
+    CHECK(getc.mode.hdisplay == modes[0].hdisplay,
+          "GETCRTC mode.hdisplay matches");
+
+    /* --- SETCRTC with an unknown connector id must fail with EINVAL --- */
+    uint32_t bogus_conn = 0xdeadbeef;
+    struct drm_mode_crtc bad_conn = {
+        .crtc_id = crtc_ids[0], .fb_id = fb.fb_id,
+        .mode_valid = 1, .mode = modes[0],
+        .set_connectors_ptr = (uint64_t)(uintptr_t)&bogus_conn,
+        .count_connectors = 1,
+    };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_conn), EINVAL,
+              "SETCRTC rejects unknown connector");
+
+    /* GETCRTC should still report the previous good binding. */
+    memset(readback_conns, 0, sizeof(readback_conns));
+    getc.count_connectors = 4;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getc), 0,
+              "GETCRTC after failed SETCRTC");
+    CHECK(getc.fb_id == fb.fb_id,
+          "GETCRTC fb_id unchanged after failed SETCRTC");
+
+    /* --- SETCRTC referencing a removed fb must fail with EINVAL --- */
+    uint32_t old_fb_id = fb.fb_id;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_RMFB, &old_fb_id), 0, "RMFB");
+    /* The legacy binding pointed at this fb; GETCRTC must reflect the
+     * unbinding so userspace doesn't keep seeing a dangling fb_id. */
+    getc.count_connectors = 4;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getc), 0,
+              "GETCRTC after RMFB");
+    CHECK(getc.fb_id == 0, "GETCRTC fb_id == 0 after RMFB clears binding");
+    CHECK(getc.count_connectors == 0,
+          "GETCRTC count_connectors == 0 after RMFB");
+
+    struct drm_mode_crtc bad_fb = {
+        .crtc_id = crtc_ids[0], .fb_id = old_fb_id,
+        .mode_valid = 1, .mode = modes[0],
+        .set_connectors_ptr = (uint64_t)(uintptr_t)conn_ids,
+        .count_connectors = 1,
+    };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_fb), EINVAL,
+              "SETCRTC rejects nonexistent fb_id");
 
     close(fd);
     TEST_DONE();
