@@ -240,6 +240,7 @@ axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.0", path = "components/axklib" }
 axplat-dyn = { version = "0.7.0", path = "platforms/axplat-dyn", default-features = false }
 ax-plat-riscv64-visionfive2 = { version = "0.1.5", path = "platforms/ax-plat-riscv64-visionfive2" }
+ax-plat-x86-asus-nuc15crh = { version = "0.4.9", path = "platforms/ax-plat-x86-asus-nuc15crh", default-features = false }
 ax-plat-x86-qemu-q35 = { version = "0.4.9", path = "platforms/ax-plat-x86-qemu-q35", default-features = false }
 axpoll = { version = "0.3.10", path = "components/axpoll" }
 axvcpu = { version = "0.6.0", path = "virtualization/axvcpu" }

@@ -31,6 +31,11 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "ax_plat_x86_qemu_q35",
     },
     PlatformFeature {
+        feature: "x86-asus-nuc15crh",
+        target_arch: Some("x86_64"),
+        crate_name: "ax_plat_x86_asus_nuc15crh",
+    },
+    PlatformFeature {
         feature: "riscv64-sg2002",
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",
@@ -76,7 +81,7 @@ fn main() {
     let platform_linker_is_external = selected_platform.is_some_and(|platform| {
         matches!(
             platform.feature,
-            "plat-dyn" | "x86-qemu-q35" | "loongarch64-qemu-virt"
+            "plat-dyn" | "x86-asus-nuc15crh" | "x86-qemu-q35" | "loongarch64-qemu-virt"
         )
     });
 
