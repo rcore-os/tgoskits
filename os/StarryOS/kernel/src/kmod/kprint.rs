@@ -9,7 +9,7 @@
 //! `kmod-tools` arranges.
 
 use core::{
-    ffi::{c_char, c_int},
+    ffi::{VaList, c_char, c_int},
     ptr::null_mut,
 };
 
@@ -60,10 +60,11 @@ unsafe extern "C" fn write_char(c: u8) {
     ax_print!("{}", c as char);
 }
 
-/// Linux `printk(fmt, ...)`. Strips a leading `KERN_*` level prefix and
-/// re-routes to `ax_print!`-backed `lwprintf`.
-#[capi_fn]
-unsafe extern "C" fn _printk(fmt: *const c_char, args: ...) -> i32 {
+/// Shared body for the `printk`-family entry points. Takes an already
+/// `va_start`-ed `VaList` so that both `_printk` and `__warn_printk` can
+/// forward their *own* variadic arguments here. Strips a leading `KERN_*`
+/// level prefix and re-routes to `ax_print!`-backed `lwprintf`.
+unsafe fn vprintk(fmt: *const c_char, args: VaList) -> i32 {
     // SAFETY: `fmt` is C-ABI; we treat it as a NUL-terminated string.
     let c_str_fmt = unsafe { core::ffi::CStr::from_ptr(fmt) };
     let fmt_bytes = c_str_fmt.to_bytes();
@@ -95,15 +96,23 @@ unsafe extern "C" fn _printk(fmt: *const c_char, args: ...) -> i32 {
     }
     // SAFETY: `trimmed` points into the same NUL-terminated string
     // (offset by the level prefix length, which is shorter than the
-    // total). varargs forwarded as-is from the caller.
+    // total). The caller's `VaList` is forwarded as-is.
     unsafe { lwprintf_rs::lwprintf_vprintf_ex(null_mut(), trimmed.as_ptr() as _, args) }
+}
+
+/// Linux `printk(fmt, ...)`.
+#[capi_fn]
+unsafe extern "C" fn _printk(fmt: *const c_char, args: ...) -> i32 {
+    // SAFETY: forward this call's own variadic list to the shared body.
+    unsafe { vprintk(fmt, args) }
 }
 
 /// `__warn_printk` alias used by `WARN_ON_ONCE` and friends.
 #[capi_fn]
 unsafe extern "C" fn __warn_printk(fmt: *const c_char, args: ...) -> i32 {
-    // SAFETY: same contract as `_printk`.
-    unsafe { _printk(fmt, args) }
+    // SAFETY: forward this call's own variadic list — *not* `_printk`'s — to
+    // the shared body, so the arguments are not mis-shifted by one slot.
+    unsafe { vprintk(fmt, args) }
 }
 
 /// `snprintf(buf, size, fmt, ...)`.
