@@ -85,7 +85,8 @@ pub(crate) fn check_events() {
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
         let now = arceos_host().monotonic_time();
-        if let Some((deadline, event)) = timer_list.lock().expire_one(now) {
+        let expired = timer_list.lock().expire_one(now);
+        if let Some((deadline, event)) = expired {
             trace!("handle VM timer event scheduled at {deadline:#?}");
             event.callback(now);
         } else {
