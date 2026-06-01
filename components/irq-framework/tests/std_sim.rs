@@ -230,6 +230,73 @@ fn dynamic_shared_actions_all_dispatch() {
 }
 
 #[test]
+fn shared_dispatch_does_not_short_circuit_on_handled() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let handled_counter = AtomicUsize::new(0);
+    let wake_counter = AtomicUsize::new(0);
+
+    registry
+        .request(
+            IrqNumber(22),
+            IrqRequest::new(count_handler, NonNull::from(&handled_counter).cast())
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    registry
+        .request(
+            IrqNumber(22),
+            IrqRequest::new(wake_handler, NonNull::from(&wake_counter).cast())
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(IrqNumber(22), CpuId(0));
+    assert!(outcome.handled);
+    assert!(outcome.wake);
+    assert_eq!(outcome.called, 2);
+    assert_eq!(handled_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(wake_counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn disabled_or_freed_shared_action_is_skipped_but_peers_run() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let disabled_or_freed = AtomicUsize::new(0);
+    let peer = AtomicUsize::new(0);
+
+    let disabled_or_freed_handle = registry
+        .request(
+            IrqNumber(23),
+            IrqRequest::new(count_handler, NonNull::from(&disabled_or_freed).cast())
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    registry
+        .request(
+            IrqNumber(23),
+            IrqRequest::new(count_handler, NonNull::from(&peer).cast())
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    registry.disable(disabled_or_freed_handle).unwrap();
+    let outcome = registry.dispatch(IrqNumber(23), CpuId(0));
+    assert!(outcome.handled);
+    assert!(!outcome.wake);
+    assert_eq!(outcome.called, 1);
+    assert_eq!(disabled_or_freed.load(Ordering::SeqCst), 0);
+    assert_eq!(peer.load(Ordering::SeqCst), 1);
+
+    registry.free(disabled_or_freed_handle).unwrap();
+    let outcome = registry.dispatch(IrqNumber(23), CpuId(0));
+    assert!(outcome.handled);
+    assert!(!outcome.wake);
+    assert_eq!(outcome.called, 1);
+    assert_eq!(disabled_or_freed.load(Ordering::SeqCst), 0);
+    assert_eq!(peer.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn exclusive_and_shared_conflict() {
     let registry = Registry::new(MockOps::with_cpus(1));
     let counter = AtomicUsize::new(0);
