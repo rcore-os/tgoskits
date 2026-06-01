@@ -197,7 +197,7 @@ pub fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr
     modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
 pub fn shutdown_host_filesystems() -> AxResult {
     modules::ax_fs::shutdown_filesystems()
 }

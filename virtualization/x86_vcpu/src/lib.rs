@@ -66,6 +66,12 @@ cfg_if::cfg_if! {
             SvmArchPerCpuState, SvmArchPerCpuState as X86ArchPerCpuState, SvmArchVCpu,
             SvmArchVCpu as X86ArchVCpu,
         };
+    } else {
+        // Fallback stub types for builds without any hypervisor backend
+        // (e.g. host-fs-only). Stubs implement the required traits so that
+        // downstream crates can still compile; they are never instantiated.
+        mod no_backend;
+        pub use no_backend::{X86ArchPerCpuState, X86ArchVCpu};
     }
 }
 
