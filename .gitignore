@@ -53,9 +53,12 @@ __pycache__/
 .starry*
 .axvisor*
 .board*
+
+# Tooling artifacts
 .codex
 .agents
 .image.toml
+third_party/
 os/StarryOS-REF
 .Ds_Store
 starry-*.log

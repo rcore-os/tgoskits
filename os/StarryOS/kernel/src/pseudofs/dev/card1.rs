@@ -191,7 +191,7 @@ impl DeviceOps for Card1 {
             warn!("card1: mmap could not resolve handle {handle}");
             return DeviceMmap::None;
         };
-        DeviceMmap::Physical(exported.range)
+        DeviceMmap::Physical(exported.range, None)
     }
 }
 
@@ -211,7 +211,7 @@ impl FileLike for ExportedGemBuffer {
     }
 
     fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.range))
+        Ok(DeviceMmap::Physical(self.range, None))
     }
 }
 
@@ -547,7 +547,7 @@ mod tests {
         let exported = ExportedGemBuffer::new(range);
 
         assert!(
-            matches!(exported.device_mmap(0).unwrap(), DeviceMmap::Physical(actual) if actual == range)
+            matches!(exported.device_mmap(0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
         );
     }
 }

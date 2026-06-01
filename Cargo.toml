@@ -200,7 +200,7 @@ ax-io = { version = "0.5.7", path = "components/axio" }
 ax-ipi = { version = "0.5.14", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.1", path = "components/lockdep" }
-ax-kspin = { version = "0.3.8", path = "components/kspin" }
+ax-kspin = { version = "0.3.9", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.7", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.15", path = "os/arceos/ulib/axlibc" }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }
@@ -362,3 +362,9 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
+
+# `kbpf-basic` depends on `ax-errno` from crates.io; redirect it to our own
+# workspace copy so the kernel and kbpf-basic share a single `ax-errno`
+# (otherwise `BpfError`/`AxError` would be two distinct types).
+[patch.crates-io]
+ax-errno = { path = "components/axerrno" }

@@ -27,7 +27,7 @@ use std::os::arceos::{
 };
 use std::thread;
 
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 64 * 1024;
 const WRITE_STRIDE: usize = 64;
 const SEARCH_BYTES: usize = STACK_SIZE + 2 * 4096;
 

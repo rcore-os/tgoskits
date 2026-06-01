@@ -71,7 +71,7 @@ fn generate_config(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
         .arg(&template)
         .arg(platform_config_path)
         .arg("-w")
-        .arg(format!(r#"arch="{}""#, &arch))
+        .arg(format!(r#"arch="{}""#, arch))
         .arg("-w")
         .arg(format!(r#"platform="{}""#, get_platform()))
         .arg("-o")
