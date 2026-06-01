@@ -1,7 +1,7 @@
 ---
 slug: may-2026-retrospective
 title: 2026 年 5 月开发月报
-date: 2026-05-12T23:00:00+08:00
+date: 2026-06-01T23:00:00+08:00
 authors: [tgoskits-team]
 tags: [monthly-report, arceos, starryos, axvisor, axbuild, testing]
 ---
