@@ -22,7 +22,8 @@
   "pre-link-args": {
     "gnu-lld": [
       "-pie",
-      "-znostart-stop-gc"
+      "-znostart-stop-gc",
+      "-Tlinker.x"
     ]
   },
   "relocation-model": "pic",

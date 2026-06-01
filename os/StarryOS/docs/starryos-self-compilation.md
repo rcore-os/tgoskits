@@ -93,7 +93,7 @@ Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 rust-lld: error: undefined symbol: _ex_table_end
 ```
 
-**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`（host 编译通过 `--config rustflags` 传递）。`linker.x` 期望先通过 `runtime.x` 定义 runtime 公共段（含 `_ex_table_end`），但缺少最终 linker 脚本时符号不存在。
+**根因**: 自编译环境中 `.cargo/config.toml` 未传递最终 `-Tlinker.x`。`linker.x` 期望先通过 `runtime.x` 定义 runtime 公共段（含 `_ex_table_end`），但缺少最终 linker 脚本时符号不存在。
 
 **修复** (`os/StarryOS/starryos/linker.ld`):
 ```ld

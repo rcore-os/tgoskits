@@ -81,7 +81,7 @@ pub(crate) fn build_c_app(
         .join(ARCEOS_LINKER_SCRIPT);
     ensure!(
         linker_script.is_file(),
-        "expected runtime linker script at {} after ax-libc cargo build",
+        "expected final linker script at {} after ax-libc cargo build",
         linker_script.display()
     );
 

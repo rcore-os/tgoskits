@@ -25,6 +25,7 @@ irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
 
 # Custom or default platforms
+ext-ld = ["ax-runtime/ext-ld"]
 myplat = ["ax-hal/myplat"]
 defplat = ["ax-hal/defplat"]
 plat-dyn = [

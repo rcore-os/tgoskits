@@ -7,7 +7,7 @@ use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
 
 use crate::{
-    build::{self, ARCEOS_LINKER_SCRIPT, BuildInfo},
+    build::{self, BuildInfo},
     context::ResolvedBuildRequest,
 };
 
@@ -104,12 +104,11 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
         Some(metadata),
     )?;
 
-    build_info.into_prepared_base_cargo_config_with_metadata_and_linker(
+    build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
         request.plat_dyn,
         metadata,
-        Some(ARCEOS_LINKER_SCRIPT),
     )
 }
 
@@ -188,7 +187,7 @@ mod tests {
 
         let args = ArceosBuildInfo::build_cargo_args(
             "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-            &build::final_linker_rustflags(ARCEOS_LINKER_SCRIPT, true),
+            &[],
         );
         assert!(
             args.windows(2)
@@ -198,10 +197,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
         );
-        assert!(
-            args.iter()
-                .any(|arg| arg.contains("-Clink-arg=-Truntime.x"))
-        );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
     }
 
     #[test]
@@ -218,7 +214,7 @@ mod tests {
 
         let args = ArceosBuildInfo::build_cargo_args(
             "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-            &build::final_linker_rustflags(ARCEOS_LINKER_SCRIPT, false),
+            &[],
         );
         assert!(
             args.windows(2)
@@ -228,10 +224,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
         );
-        assert!(
-            args.iter()
-                .any(|arg| arg.contains("-Clink-arg=-Truntime.x"))
-        );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
     }
 
     #[test]

@@ -293,7 +293,6 @@ fn main() -> anyhow::Result<()> {
     let linker = out_dir.join("linker.x");
     fs::write(&linker, include_str!("linker.ld"))?;
     println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-arg-bin=axvisor=-T{}", linker.display());
     fs::write(
         out_dir.join("../../..").join("linker.x"),
         include_str!("linker.ld"),
