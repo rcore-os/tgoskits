@@ -334,6 +334,52 @@ qemu_config = "configs/qemu.toml"
 }
 
 #[test]
+fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
+    let root = tempdir().unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+package = "from-snapshot"
+arch = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+plat_dyn = true
+smp = 4
+
+[qemu]
+qemu_config = "configs/snapshot-qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            config: Some(PathBuf::from("/tmp/build-riscv64.toml")),
+            package: Some("arceos-display".into()),
+            arch: None,
+            target: Some("riscv64gc-unknown-none-elf".into()),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.package, "arceos-display");
+    assert_eq!(request.plat_dyn, None);
+    assert_eq!(request.smp, None);
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(snapshot.plat_dyn, None);
+    assert_eq!(snapshot.smp, None);
+    assert_eq!(snapshot.qemu.qemu_config, None);
+}
+
+#[test]
 fn prepare_request_requires_package() {
     let root = tempdir().unwrap();
     let app = test_app_context(root.path());

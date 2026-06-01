@@ -11,8 +11,11 @@ use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_targ
 
 pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
     let mut build_info = StarryBuildInfo::default_for_target(target);
-    build_info.plat_dyn = false;
-    build_info.features = vec!["qemu".to_string()];
+    if build_info.plat_dyn {
+        build_info.features = Vec::new();
+    } else {
+        build_info.features = vec!["qemu".to_string()];
+    }
     build_info
 }
 
@@ -56,7 +59,19 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
         crate::build::ensure_build_info(&request.build_info_path, || {
             default_starry_build_info_for_target(&request.target)
         })?;
-        crate::build::load_build_info(&request.build_info_path)?
+        let content = std::fs::read_to_string(&request.build_info_path)?;
+        let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse build info {}",
+                request.build_info_path.display()
+            )
+        })?;
+        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
+            &mut build_info,
+            &request.target,
+            &content,
+        );
+        build_info
     };
 
     crate::build::apply_makefile_features(&mut build_info, &request.package, &makefile_features);
@@ -78,7 +93,19 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         crate::build::ensure_build_info(&request.build_info_path, || {
             default_starry_build_info_for_target(&request.target)
         })?;
-        crate::build::load_build_info(&request.build_info_path)?
+        let content = std::fs::read_to_string(&request.build_info_path)?;
+        let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse build info {}",
+                request.build_info_path.display()
+            )
+        })?;
+        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
+            &mut build_info,
+            &request.target,
+            &content,
+        );
+        build_info
     };
     crate::build::apply_makefile_features_with_metadata(
         &mut build_info,
@@ -148,7 +175,7 @@ fn patch_starry_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    if uses_default_qemu_platform {
+    if uses_default_qemu_platform && let Some(platform) = platform {
         cargo
             .env
             .entry("AX_PLATFORM".to_string())
@@ -278,9 +305,7 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
 
 fn default_starry_qemu_platform_feature(feature: &str) -> Option<&str> {
     match feature.strip_prefix("ax-hal/")? {
-        "x86-pc" | "aarch64-qemu-virt" | "riscv64-qemu-virt" | "loongarch64-qemu-virt" => {
-            Some(feature)
-        }
+        "x86-pc" | "riscv64-qemu-virt" | "loongarch64-qemu-virt" => Some(feature),
         _ => None,
     }
 }
@@ -439,6 +464,22 @@ mod tests {
         let persisted: StarryBuildInfo =
             toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(persisted, build_info);
+    }
+
+    #[test]
+    fn default_aarch64_starry_build_info_uses_dynamic_platform() {
+        let build_info = default_starry_build_info_for_target("aarch64-unknown-none-softfloat");
+
+        assert!(build_info.plat_dyn);
+        assert!(!build_info.features.contains(&"qemu".to_string()));
+    }
+
+    #[test]
+    fn default_x86_starry_build_info_keeps_static_qemu_feature() {
+        let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
+
+        assert!(!build_info.plat_dyn);
+        assert_eq!(build_info.features, vec!["qemu".to_string()]);
     }
 
     #[test]
@@ -641,6 +682,22 @@ HELLO = "world"
 
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
+    }
+
+    #[test]
+    fn aarch64_qemu_virt_is_not_a_default_static_starry_platform() {
+        assert_eq!(
+            default_starry_qemu_platform_feature("ax-hal/aarch64-qemu-virt"),
+            None
+        );
+    }
+
+    #[test]
+    fn aarch64_has_no_static_starry_default_platform() {
+        assert_eq!(
+            crate::context::starry_default_platform_for_arch_checked("aarch64").unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ log = "Warn"
 features = [
   "ax-hal/loongarch64-qemu-virt",
   "qemu",
+  "ax-driver/plat-static",
   "ax-driver/nvme",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",

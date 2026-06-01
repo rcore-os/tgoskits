@@ -37,7 +37,6 @@ pub(crate) fn build_c_app(
 ) -> anyhow::Result<ArceosCBuildOutput> {
     let mut cargo = build::load_cargo_config(request)?;
     cargo.package = AX_LIBC_PACKAGE.to_string();
-    cargo.target = request.target.clone();
     cargo.to_bin = false;
     cargo.features = map_c_app_features(&input.features, &cargo.features);
 
@@ -75,14 +74,15 @@ pub(crate) fn build_c_app(
         rust_lib.display()
     );
 
-    let linker_script = find_final_linker_script(&input.target_dir, &request.target, mode)?;
-    let linker_search_dirs = find_linker_search_dirs(
+    let platform = platform_name(&cargo.env);
+    let link_scripts = find_link_scripts(
         &input.target_dir,
         &request.target,
         mode,
-        platform_name(&cargo.env).as_str(),
+        &platform,
         &cargo.features,
-    )?;
+    )
+    .context("failed to locate ArceOS C app linker scripts")?;
 
     let cflags = cflags(
         workspace_root,
@@ -99,23 +99,53 @@ pub(crate) fn build_c_app(
     let libc = axlibc_obj_dir.join("libc.a");
     archive_static_lib(arch, &libc, &lib_objects)?;
 
-    let elf_path = input.out_dir.join(format!(
-        "{}_{}.unstripped",
-        input.app_name,
-        platform_name(&cargo.env)
-    ));
-    link_c_app(LinkCAppInput {
+    let elf_path = input
+        .out_dir
+        .join(format!("{}_{}.unstripped", input.app_name, platform));
+    link_c_app(
         arch,
-        linker_script: &linker_script,
-        linker_search_dirs: &linker_search_dirs,
-        elf_path: &elf_path,
-        rust_lib: &rust_lib,
-        libc: &libc,
-        app_objects: &app_objects,
-        libgcc: libgcc(arch, &input.features)?,
-    })?;
+        &link_scripts,
+        &elf_path,
+        &rust_lib,
+        &libc,
+        &app_objects,
+        libgcc(arch, &input.features)?,
+    )?;
 
     Ok(ArceosCBuildOutput { elf_path })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinkScripts {
+    script: PathBuf,
+    search_dirs: Vec<PathBuf>,
+    pie: bool,
+}
+
+fn find_link_scripts(
+    target_dir: &Path,
+    target: &str,
+    mode: &str,
+    platform: &str,
+    features: &[String],
+) -> anyhow::Result<LinkScripts> {
+    if has_feature(features, "plat-dyn") {
+        let script = find_final_linker_script(target_dir, target, mode)?;
+        let search_dirs = find_dynamic_linker_search_dirs(target_dir, target, mode)?;
+        return Ok(LinkScripts {
+            script,
+            search_dirs,
+            pie: true,
+        });
+    }
+
+    let script = find_final_linker_script(target_dir, target, mode)?;
+    let search_dirs = find_linker_search_dirs(target_dir, target, mode, platform, features)?;
+    Ok(LinkScripts {
+        script,
+        search_dirs,
+        pie: false,
+    })
 }
 
 fn build_axlibc_staticlib(
@@ -217,6 +247,34 @@ fn find_linker_search_dirs(
     )?;
     dirs.insert(platform_out);
 
+    Ok(dirs.into_iter().collect())
+}
+
+fn find_dynamic_linker_search_dirs(
+    target_dir: &Path,
+    target: &str,
+    mode: &str,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let build_dir = target_dir.join(target).join(mode).join("build");
+    let mut dirs = BTreeSet::new();
+    dirs.insert(latest_out_dir_with_script(
+        &build_dir,
+        "ax-runtime-",
+        ARCEOS_LINKER_SCRIPT,
+    )?);
+    dirs.insert(latest_out_dir_with_script(
+        &build_dir,
+        "axplat-dyn-",
+        "axplat.x",
+    )?);
+    dirs.insert(latest_out_dir_with_script(
+        &build_dir, "somehal-", "link.x",
+    )?);
+    dirs.insert(latest_out_dir_with_script(
+        &build_dir,
+        "someboot-",
+        "someboot.x",
+    )?);
     Ok(dirs.into_iter().collect())
 }
 
@@ -326,7 +384,7 @@ fn cflags(
 }
 
 fn c_config_features(features: &[String]) -> BTreeSet<String> {
-    features
+    let mut config_features: BTreeSet<_> = features
         .iter()
         .filter_map(|feature| {
             if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
@@ -345,7 +403,11 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
             ) && !feature.contains('/')
         })
         .map(str::to_string)
-        .collect()
+        .collect();
+    if has_feature(features, "plat-dyn") {
+        config_features.insert("smp".to_string());
+    }
+    config_features
 }
 
 fn has_feature(features: &[String], name: &str) -> bool {
@@ -389,17 +451,21 @@ fn pthread_mutex_layout(features: &[String]) -> (usize, &'static str) {
     }
 
     if has_feature(features, "lockdep") {
-        if has_feature(features, "smp") {
+        if has_effective_smp(features) {
             return (10, "{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}");
         }
         return (9, "{-1, 0, 0, 0, 0, 0, 0, 0, 0}");
     }
 
-    if has_feature(features, "smp") {
+    if has_effective_smp(features) {
         (6, "{0, 0, 8, 0, 0, 0}")
     } else {
         (5, "{0, 8, 0, 0, 0}")
     }
+}
+
+fn has_effective_smp(features: &[String]) -> bool {
+    has_feature(features, "smp") || has_feature(features, "plat-dyn")
 }
 
 fn compile_dir_c_sources(
@@ -494,14 +560,13 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
         match normalized {
             "ax-std" | "ax-feat" | "ax-libc" => {}
             "defplat" | "myplat" | "plat-dyn" => {
-                features.insert(format!("ax-feat/{normalized}"));
-                features.insert(format!("ax-libc/{normalized}"));
+                features.insert(normalized.to_string());
             }
             "smp" => {
-                features.insert("ax-libc/smp".to_string());
+                features.insert("smp".to_string());
             }
             feature if LIB_FEATURES.contains(&feature) => {
-                features.insert(format!("ax-libc/{feature}"));
+                features.insert(feature.to_string());
             }
             feature => {
                 features.insert(format!("ax-feat/{feature}"));
@@ -518,19 +583,22 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
             features.insert(feature.clone());
             continue;
         }
-        if LIB_FEATURES.contains(&normalized) {
-            features.insert(format!("ax-libc/{normalized}"));
+        if LIB_FEATURES.contains(&normalized)
+            || matches!(normalized, "defplat" | "myplat" | "plat-dyn" | "smp")
+        {
+            features.insert(normalized.to_string());
         } else {
             features.insert(format!("ax-feat/{normalized}"));
         }
     }
-    if features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "ax-libc/fs" | "ax-libc/net" | "ax-libc/pipe" | "ax-libc/select" | "ax-libc/epoll"
-        )
-    }) {
-        features.insert("ax-libc/fd".to_string());
+    if features
+        .iter()
+        .any(|feature| matches!(feature.as_str(), "fs" | "net" | "pipe" | "select" | "epoll"))
+    {
+        features.insert("fd".to_string());
+    }
+    if features.contains("plat-dyn") {
+        features.insert("smp".to_string());
     }
     features.into_iter().collect()
 }
@@ -547,45 +615,46 @@ fn ar_for_arch(arch: &str) -> String {
     format!("{arch}-linux-musl-ar")
 }
 
-struct LinkCAppInput<'a> {
-    arch: &'a str,
-    linker_script: &'a Path,
-    linker_search_dirs: &'a [PathBuf],
-    elf_path: &'a Path,
-    rust_lib: &'a Path,
-    libc: &'a Path,
-    app_objects: &'a [PathBuf],
+fn link_c_app(
+    arch: &str,
+    link_scripts: &LinkScripts,
+    elf_path: &Path,
+    rust_lib: &Path,
+    libc: &Path,
+    app_objects: &[PathBuf],
     libgcc: Option<PathBuf>,
-}
-
-fn link_c_app(input: LinkCAppInput<'_>) -> anyhow::Result<()> {
+) -> anyhow::Result<()> {
     let mut command = Command::new("rust-lld");
     command
         .arg("-flavor")
         .arg("gnu")
         .arg("-m")
-        .arg(lld_machine(input.arch)?)
+        .arg(lld_machine(arch)?)
         .arg("-nostdlib")
         .arg("-static")
-        .arg("-no-pie")
         .arg("--gc-sections")
-        .arg("-znostart-stop-gc")
-        .arg(format!("-T{}", input.linker_script.display()));
-    for dir in input.linker_search_dirs {
+        .arg("-znostart-stop-gc");
+    for dir in &link_scripts.search_dirs {
         command.arg(format!("-L{}", dir.display()));
     }
-    if let Some(libgcc) = input.libgcc {
+    command.arg(format!("-T{}", link_scripts.script.display()));
+    if link_scripts.pie {
+        command.arg("-pie");
+    } else {
+        command.arg("-no-pie");
+    }
+    if let Some(libgcc) = libgcc {
         command.arg(libgcc);
     }
     command
-        .args(input.app_objects)
-        .arg(input.libc)
-        .arg(input.rust_lib)
+        .args(app_objects)
+        .arg(libc)
+        .arg(rust_lib)
         .arg("-o")
-        .arg(input.elf_path);
+        .arg(elf_path);
     command
         .exec()
-        .with_context(|| format!("failed to link {}", input.elf_path.display()))
+        .with_context(|| format!("failed to link {}", elf_path.display()))
 }
 
 #[cfg(test)]
@@ -614,26 +683,46 @@ mod tests {
     }
 
     #[test]
+    fn c_config_features_treats_dynamic_platform_as_smp() {
+        let features = c_config_features(&strings(&["plat-dyn", "multitask"]));
+
+        assert!(features.contains("smp"));
+        assert!(features.contains("multitask"));
+    }
+
+    #[test]
     fn map_c_app_features_preserves_driver_features() {
         let features = map_c_app_features(
             &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
             &strings(&["ax-hal/riscv64-qemu-virt"]),
         );
 
-        assert!(features.contains(&"ax-libc/net".to_string()));
-        assert!(features.contains(&"ax-libc/fd".to_string()));
+        assert!(features.contains(&"net".to_string()));
+        assert!(features.contains(&"fd".to_string()));
         assert!(features.contains(&"ax-driver/plat-static".to_string()));
         assert!(features.contains(&"ax-driver/virtio-net".to_string()));
         assert!(features.contains(&"ax-hal/riscv64-qemu-virt".to_string()));
     }
 
     #[test]
+    fn map_c_app_features_maps_dynamic_platform_for_axlibc() {
+        let features = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"]));
+
+        assert!(features.contains(&"plat-dyn".to_string()));
+        assert!(features.contains(&"alloc".to_string()));
+        assert!(features.contains(&"smp".to_string()));
+    }
+
+    #[test]
+    fn map_c_app_features_forwards_multitask_to_runtime_features() {
+        let features = map_c_app_features(&strings(&["multitask"]), &[]);
+
+        assert!(features.contains(&"multitask".to_string()));
+    }
+
+    #[test]
     fn pthread_mutex_header_matches_lockdep_smp_layout() {
-        let header = pthread_mutex_header_contents(&strings(&[
-            "ax-libc/multitask",
-            "ax-libc/lockdep",
-            "ax-libc/smp",
-        ]));
+        let header = pthread_mutex_header_contents(&strings(&["multitask", "lockdep", "smp"]));
 
         assert!(header.contains("long __l[10];"));
         assert!(header.contains("{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}"));
@@ -641,7 +730,15 @@ mod tests {
 
     #[test]
     fn pthread_mutex_header_matches_plain_smp_layout() {
-        let header = pthread_mutex_header_contents(&strings(&["ax-libc/multitask", "ax-libc/smp"]));
+        let header = pthread_mutex_header_contents(&strings(&["multitask", "smp"]));
+
+        assert!(header.contains("long __l[6];"));
+        assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
+    }
+
+    #[test]
+    fn pthread_mutex_header_matches_dynamic_platform_smp_layout() {
+        let header = pthread_mutex_header_contents(&strings(&["multitask", "plat-dyn"]));
 
         assert!(header.contains("long __l[6];"));
         assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
@@ -704,7 +801,7 @@ mod tests {
     fn linker_search_dirs_use_axhal_for_generic_static_platforms() {
         let root = tempfile::tempdir().unwrap();
         let target_dir = root.path().join("target");
-        let target = "aarch64-unknown-none-softfloat";
+        let target = "riscv64gc-unknown-none-elf";
         let mode = "release";
         let build_dir = target_dir.join(target).join(mode).join("build");
         let axhal_out = build_dir.join("ax-hal-abc/out");
@@ -718,12 +815,49 @@ mod tests {
             &target_dir,
             target,
             mode,
-            "aarch64-qemu-virt",
-            &strings(&["ax-hal/aarch64-qemu-virt"]),
+            "riscv64-qemu-virt",
+            &strings(&["ax-hal/riscv64-qemu-virt"]),
         )
         .unwrap();
 
         assert_eq!(dirs, vec![axhal_out, runtime_out]);
+    }
+
+    #[test]
+    fn dynamic_link_scripts_use_runtime_script_as_entrypoint() {
+        let root = tempfile::tempdir().unwrap();
+        let target_dir = root.path().join("target");
+        let target = "aarch64-unknown-none-softfloat";
+        let mode = "release";
+        let build_dir = target_dir.join(target).join(mode).join("build");
+        let runtime_out = build_dir.join("ax-runtime-abc/out");
+        let axplat_out = build_dir.join("axplat-dyn-def/out");
+        let somehal_out = build_dir.join("somehal-ghi/out");
+        let someboot_out = build_dir.join("someboot-jkl/out");
+        fs::create_dir_all(&runtime_out).unwrap();
+        fs::create_dir_all(&axplat_out).unwrap();
+        fs::create_dir_all(&somehal_out).unwrap();
+        fs::create_dir_all(&someboot_out).unwrap();
+        fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
+        fs::write(axplat_out.join("axplat.x"), "").unwrap();
+        fs::write(somehal_out.join("link.x"), "").unwrap();
+        fs::write(someboot_out.join("someboot.x"), "").unwrap();
+
+        let link_scripts = find_link_scripts(
+            &target_dir,
+            target,
+            mode,
+            "aarch64-generic",
+            &strings(&["plat-dyn"]),
+        )
+        .unwrap();
+
+        assert_eq!(link_scripts.script, runtime_out.join(ARCEOS_LINKER_SCRIPT));
+        assert!(link_scripts.pie);
+        assert!(link_scripts.search_dirs.contains(&runtime_out));
+        assert!(link_scripts.search_dirs.contains(&axplat_out));
+        assert!(link_scripts.search_dirs.contains(&somehal_out));
+        assert!(link_scripts.search_dirs.contains(&someboot_out));
     }
 }
 

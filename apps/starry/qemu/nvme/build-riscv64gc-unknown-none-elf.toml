@@ -2,6 +2,7 @@ env = {}
 features = [
   "ax-hal/riscv64-qemu-virt",
   "qemu",
+  "ax-driver/plat-static",
   "ax-driver/nvme",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
