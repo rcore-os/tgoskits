@@ -18,5 +18,5 @@ to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/nginx-smoke-tests.sh"
 success_regex = ["(?m)^NGINX_APP_SMOKE_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NGINX_APP_SMOKE_FAILED"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^NGINX_APP_SMOKE_FAILED"]
 timeout = 3600

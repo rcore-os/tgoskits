@@ -16,5 +16,5 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/nginx-sendfile-on-debug.sh"
 success_regex = ["(?m)^NGINX_PHASE42_DEBUG_DONE\\s*$"]
-fail_regex = ['(?i)\\bpanic(?:ked)?\\b', "(?m)^NGINX_PHASE42_DEBUG_FAILED"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^NGINX_PHASE42_DEBUG_FAILED"]
 timeout = 3600

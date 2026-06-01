@@ -23,8 +23,8 @@ init_timeout_cmd() {
 run_with_timeout() { sec=$1; shift; $TIMEOUT_CMD "$sec" "$@"; }
 
 init_nc_cmd() {
-    if command -v nc >/dev/null 2>&1; then NC_CMD='nc -w 2'; return; fi
     if command -v nc.openbsd >/dev/null 2>&1; then NC_CMD='nc.openbsd -w 2'; return; fi
+    if command -v nc >/dev/null 2>&1; then NC_CMD='nc -w 2'; return; fi
     if busybox nc 2>&1 | grep -qi 'usage'; then NC_CMD='busybox nc -w 2'; return; fi
     fail "nc command not available"
 }

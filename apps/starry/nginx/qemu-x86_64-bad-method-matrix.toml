@@ -16,5 +16,5 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/nginx-bad-method-matrix.sh"
 success_regex = ["(?m)^NGINX_BAD_METHOD_MATRIX_DONE\\s*$"]
-fail_regex = ["panicked at", "(?m)^NGINX_BAD_METHOD_MATRIX_FAILED"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^NGINX_BAD_METHOD_MATRIX_FAILED"]
 timeout = 3600

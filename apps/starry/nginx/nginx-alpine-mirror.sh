@@ -25,9 +25,10 @@ run_apk_add() {
     if timeout "$NGINX_APK_MIRROR_TIMEOUT_SEC" apk --no-progress --update-cache --repositories-file "$NGINX_APK_REPO_FILE" add $packages >"$NGINX_APK_ATTEMPT_LOG" 2>&1; then
         echo "NGINX_APK_MIRROR_OK: $mirror"
         return 0
+    else
+        rc=$?
     fi
 
-    rc=$?
     if [ "$rc" -eq 124 ]; then
         echo "NGINX_APK_MIRROR_FAIL: $mirror (timeout ${NGINX_APK_MIRROR_TIMEOUT_SEC}s)"
     else

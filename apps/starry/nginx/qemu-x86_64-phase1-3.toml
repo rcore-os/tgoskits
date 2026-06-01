@@ -16,5 +16,5 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/nginx-phase1-tests.sh"
 success_regex = ["(?m)^NGINX_PHASE1_TEST_PASSED\\s*$"]
-fail_regex = ["panicked at", "(?m)^NGINX_PHASE1_TEST_FAILED"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^NGINX_PHASE1_TEST_FAILED"]
 timeout = 3600
