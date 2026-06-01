@@ -14,7 +14,7 @@ mod x86_64 {
     use x86_vlapic::host::X86VlapicHostIf;
 
     use crate::{
-        host::{HostConsole, HostMemory, HostTime, arceos::arceos_host},
+        host::{HostConsole, HostMemory, HostTime, default_host},
         manager,
         vcpu::AxArchVCpuImpl,
     };
@@ -24,27 +24,27 @@ mod x86_64 {
     #[impl_interface]
     impl X86VcpuHostIf for X86VcpuHostIfImpl {
         fn alloc_frame() -> Option<PhysAddr> {
-            arceos_host().alloc_frame()
+            default_host().alloc_frame()
         }
 
         fn dealloc_frame(paddr: PhysAddr) {
-            arceos_host().dealloc_frame(paddr);
+            default_host().dealloc_frame(paddr);
         }
 
         fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<PhysAddr> {
-            arceos_host().alloc_contiguous_frames(frame_count, frame_align)
+            default_host().alloc_contiguous_frames(frame_count, frame_align)
         }
 
         fn dealloc_contiguous_frames(start_paddr: PhysAddr, frame_count: usize) {
-            arceos_host().dealloc_contiguous_frames(start_paddr, frame_count);
+            default_host().dealloc_contiguous_frames(start_paddr, frame_count);
         }
 
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-            arceos_host().phys_to_virt(paddr)
+            default_host().phys_to_virt(paddr)
         }
 
         fn nanos_to_ticks(nanos: u64) -> u64 {
-            arceos_host().nanos_to_ticks(nanos)
+            default_host().nanos_to_ticks(nanos)
         }
     }
 
@@ -53,46 +53,46 @@ mod x86_64 {
     #[impl_interface]
     impl X86VlapicHostIf for X86VlapicHostIfImpl {
         fn alloc_frame() -> Option<PhysAddr> {
-            arceos_host().alloc_frame()
+            default_host().alloc_frame()
         }
 
         fn dealloc_frame(paddr: PhysAddr) {
-            arceos_host().dealloc_frame(paddr);
+            default_host().dealloc_frame(paddr);
         }
 
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-            arceos_host().phys_to_virt(paddr)
+            default_host().phys_to_virt(paddr)
         }
 
         fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-            arceos_host().virt_to_phys(vaddr)
+            default_host().virt_to_phys(vaddr)
         }
 
         fn current_time() -> Duration {
-            arceos_host().monotonic_time()
+            default_host().monotonic_time()
         }
 
         fn current_time_nanos() -> u64 {
-            arceos_host().monotonic_time().as_nanos() as u64
+            default_host().monotonic_time().as_nanos() as u64
         }
 
         fn register_timer(
             deadline: Duration,
             callback: Box<dyn FnOnce(Duration) + Send + 'static>,
         ) -> usize {
-            arceos_host().register_timer(deadline.as_nanos() as u64, callback)
+            default_host().register_timer(deadline.as_nanos() as u64, callback)
         }
 
         fn cancel_timer(token: usize) {
-            arceos_host().cancel_timer(token);
+            default_host().cancel_timer(token);
         }
 
         fn write_bytes(bytes: &[u8]) {
-            arceos_host().write_bytes(bytes);
+            default_host().write_bytes(bytes);
         }
 
         fn read_bytes(bytes: &mut [u8]) -> usize {
-            arceos_host().read_bytes(bytes)
+            default_host().read_bytes(bytes)
         }
 
         fn current_vm_id() -> VMId {
@@ -129,7 +129,7 @@ mod riscv64 {
     use riscv_vcpu::host::RiscvVcpuHostIf;
     use riscv_vplic::host::RiscvVplicHostIf;
 
-    use crate::host::{HostMemory, arceos::arceos_host};
+    use crate::host::{HostMemory, default_host};
 
     #[cfg(feature = "plat-dyn")]
     const GUEST_PLIC_PADDR: usize = 0x0c00_0000;
@@ -139,7 +139,7 @@ mod riscv64 {
     #[impl_interface]
     impl RiscvVcpuHostIf for RiscvVcpuHostIfImpl {
         fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-            arceos_host().virt_to_phys(vaddr)
+            default_host().virt_to_phys(vaddr)
         }
     }
 
@@ -148,7 +148,7 @@ mod riscv64 {
     #[impl_interface]
     impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-            arceos_host().phys_to_virt(paddr)
+            default_host().phys_to_virt(paddr)
         }
     }
 
@@ -208,14 +208,14 @@ mod loongarch64 {
     use ax_memory_addr::{PhysAddr, VirtAddr};
     use loongarch_vcpu::host::LoongArchVcpuHostIf;
 
-    use crate::host::{HostMemory, arceos::arceos_host};
+    use crate::host::{HostMemory, default_host};
 
     struct LoongArchVcpuHostIfImpl;
 
     #[impl_interface]
     impl LoongArchVcpuHostIf for LoongArchVcpuHostIfImpl {
         fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-            arceos_host().virt_to_phys(vaddr)
+            default_host().virt_to_phys(vaddr)
         }
     }
 }
@@ -230,7 +230,7 @@ mod aarch64 {
     use ax_crate_interface::impl_interface;
     use ax_memory_addr::{PhysAddr, VirtAddr};
 
-    use crate::host::{HostCpu, HostMemory, HostTime, arceos::arceos_host, gic};
+    use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
 
     struct ArmVcpuHostIfImpl;
 
@@ -245,7 +245,7 @@ mod aarch64 {
         }
 
         fn handle_irq() {
-            let _ = crate::host::arceos::handle_host_irq(0);
+            gic::handle_current_irq();
         }
     }
 
@@ -254,19 +254,19 @@ mod aarch64 {
     #[impl_interface]
     impl ArmVgicHostIf for ArmVgicHostIfImpl {
         fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<PhysAddr> {
-            arceos_host().alloc_contiguous_frames(frame_count, frame_align)
+            default_host().alloc_contiguous_frames(frame_count, frame_align)
         }
 
         fn dealloc_contiguous_frames(start_paddr: PhysAddr, frame_count: usize) {
-            arceos_host().dealloc_contiguous_frames(start_paddr, frame_count);
+            default_host().dealloc_contiguous_frames(start_paddr, frame_count);
         }
 
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-            arceos_host().phys_to_virt(paddr)
+            default_host().phys_to_virt(paddr)
         }
 
         fn host_cpu_num() -> usize {
-            arceos_host().cpu_count()
+            default_host().cpu_count()
         }
 
         fn current_vcpu_id() -> usize {
@@ -274,14 +274,14 @@ mod aarch64 {
         }
 
         fn current_time_nanos() -> u64 {
-            arceos_host().monotonic_time().as_nanos() as u64
+            default_host().monotonic_time().as_nanos() as u64
         }
 
         fn register_timer(
             deadline: Duration,
             callback: Box<dyn FnOnce(Duration) + Send + 'static>,
         ) {
-            let _ = arceos_host().register_timer(deadline.as_nanos() as u64, callback);
+            let _ = default_host().register_timer(deadline.as_nanos() as u64, callback);
         }
 
         fn read_vgicd_iidr() -> u32 {

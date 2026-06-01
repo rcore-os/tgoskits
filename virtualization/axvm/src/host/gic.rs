@@ -6,7 +6,7 @@ use arm_gic_driver::v3::{
 };
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
-use super::{HostMemory, arceos::arceos_host};
+use super::{HostMemory, arceos, default_host};
 
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
@@ -118,10 +118,10 @@ pub(crate) fn read_gicd_typer() -> u32 {
 pub(crate) fn host_gicd_base() -> PhysAddr {
     with_gic(|gic| {
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
-            return arceos_host().virt_to_phys(VirtAddr::from(usize::from(gic.gicd_addr())));
+            return default_host().virt_to_phys(VirtAddr::from(usize::from(gic.gicd_addr())));
         }
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
-            return arceos_host().virt_to_phys(VirtAddr::from(usize::from(gic.gicd_addr())));
+            return default_host().virt_to_phys(VirtAddr::from(usize::from(gic.gicd_addr())));
         }
         panic!("no GIC driver found");
     })
@@ -130,10 +130,17 @@ pub(crate) fn host_gicd_base() -> PhysAddr {
 pub(crate) fn host_gicr_base() -> PhysAddr {
     with_gic(|gic| {
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
-            return arceos_host().virt_to_phys(VirtAddr::from(usize::from(gic.gicr_addr())));
+            return default_host().virt_to_phys(VirtAddr::from(usize::from(gic.gicr_addr())));
         }
         panic!("no GICv3 driver found");
     })
+}
+
+pub(crate) fn handle_current_irq() {
+    // AArch64 ArceOS platform IRQ handlers acknowledge the current IRQ
+    // internally. The raw vector argument is ignored by current GIC-backed
+    // platforms, so keep the ack/EOI ownership inside the platform handler.
+    let _ = arceos::handle_host_irq(0);
 }
 
 pub(crate) fn fetch_irq() -> usize {

@@ -10,7 +10,7 @@ use axvcpu::get_current_vcpu;
 use axvm_types::VMId;
 
 use crate::{
-    host::{HostPlatform, arceos::ArceOsHost},
+    host::{HostPlatform, default_host},
     vcpu::AxArchVCpuImpl,
     vm::AxVMRef,
 };
@@ -109,7 +109,7 @@ pub fn inject_current_vcpu_interrupt(vector: usize) -> AxResult {
 impl AxvmRuntime {
     /// Create a new AxVM runtime backed by the default ArceOS host adapter.
     pub fn new() -> AxResult<Self> {
-        let host = ArceOsHost::new();
+        let host = default_host();
         if !host.has_hardware_support() {
             return ax_err!(Unsupported, "hardware virtualization is not supported");
         }

@@ -12,7 +12,7 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
-use crate::host::{HostTime, arceos::arceos_host};
+use crate::host::{HostTime, default_host};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
 
@@ -84,7 +84,7 @@ pub(crate) fn check_events() {
     // initialized during AxVM host initialization.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
-        let now = arceos_host().monotonic_time();
+        let now = default_host().monotonic_time();
         let expired = timer_list.lock().expire_one(now);
         if let Some((deadline, event)) = expired {
             trace!("handle VM timer event scheduled at {deadline:#?}");
@@ -98,7 +98,7 @@ pub(crate) fn check_events() {
 
 fn rearm_host_timer(next_deadline: Option<TimeValue>) {
     if let Some(deadline) = next_deadline {
-        arceos_host().set_oneshot_timer(deadline.as_nanos() as u64);
+        default_host().set_oneshot_timer(deadline.as_nanos() as u64);
     }
 }
 

@@ -24,12 +24,6 @@ use crate::host::{HostCpu, HostMemory, HostPlatform, HostTime};
 /// Private default host adapter used by [`crate::AxvmRuntime`].
 pub(crate) struct ArceOsHost;
 
-impl ArceOsHost {
-    pub(crate) const fn new() -> Self {
-        Self
-    }
-}
-
 static ARCEOS_HOST: ArceOsHost = ArceOsHost;
 
 pub(crate) fn arceos_host() -> &'static ArceOsHost {

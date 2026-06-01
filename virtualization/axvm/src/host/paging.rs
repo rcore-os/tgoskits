@@ -15,7 +15,7 @@
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_page_table_multiarch::PagingHandler;
 
-use crate::host::{HostMemory, arceos::arceos_host};
+use crate::host::{HostMemory, default_host};
 
 /// Paging handler backed by the AxVM private ArceOS host adapter.
 pub struct HostPagingHandler;
@@ -30,26 +30,26 @@ impl PagingHandler for HostPagingHandler {
             panic!("align must be a power of 2")
         }
 
-        arceos_host().alloc_contiguous_frames(num, align)
+        default_host().alloc_contiguous_frames(num, align)
     }
 
     fn dealloc_frames(paddr: PhysAddr, num: usize) {
-        arceos_host().dealloc_contiguous_frames(paddr, num);
+        default_host().dealloc_contiguous_frames(paddr, num);
     }
 
     fn alloc_frame() -> Option<PhysAddr> {
-        arceos_host().alloc_frame()
+        default_host().alloc_frame()
     }
 
     fn dealloc_frame(paddr: PhysAddr) {
-        arceos_host().dealloc_frame(paddr)
+        default_host().dealloc_frame(paddr)
     }
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        arceos_host().phys_to_virt(paddr)
+        default_host().phys_to_virt(paddr)
     }
 }
 
 pub(crate) fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-    arceos_host().virt_to_phys(vaddr)
+    default_host().virt_to_phys(vaddr)
 }

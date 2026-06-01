@@ -4,7 +4,7 @@ use ax_errno::AxResult;
 
 use crate::{
     AxVMPerCpu,
-    host::{HostCpu, arceos::arceos_host},
+    host::{HostCpu, default_host},
 };
 
 #[ax_percpu::def_percpu]
@@ -15,7 +15,7 @@ pub(crate) fn init_current_cpu() -> AxResult {
     // vCPU task uses this CPU-local virtualization state.
     #[allow(static_mut_refs)]
     let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.init(arceos_host().this_cpu_id())
+    percpu.init(default_host().this_cpu_id())
 }
 
 pub(crate) fn enable_current_cpu() -> AxResult {
