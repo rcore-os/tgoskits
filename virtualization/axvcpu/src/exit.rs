@@ -28,6 +28,13 @@ pub struct NestedPageFaultInfo {
     pub fault_guest_paddr: GuestPhysAddr,
 }
 
+/// Read-modify-write operation applied to an MMIO location.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MmioRmwOp {
+    /// Bitwise OR the current MMIO value with the operand.
+    Or,
+}
+
 /// Reasons for VM-Exits returned by [AxArchVCpu::run].
 ///
 /// When a guest virtual CPU executes, various conditions can cause control to be
@@ -87,6 +94,18 @@ pub enum AxVCpuExitReason {
         /// Width/size of the memory access (8, 16, 32, or 64 bits)
         width: AccessWidth,
         /// Data being written to the memory location
+        data: u64,
+    },
+
+    /// The guest performed a read-modify-write operation on an MMIO location.
+    MmioReadModifyWrite {
+        /// Guest physical address being updated
+        addr: GuestPhysAddr,
+        /// Width/size of the memory access
+        width: AccessWidth,
+        /// Operation to apply to the current MMIO value
+        op: MmioRmwOp,
+        /// Operand used by the read-modify-write operation
         data: u64,
     },
 

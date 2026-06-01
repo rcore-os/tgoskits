@@ -24,7 +24,7 @@ use ax_memory_addr::AddrRange;
 use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
 use axvcpu::{
     AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
-    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
+    MmioRmwOp, NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
 };
 use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
@@ -1181,6 +1181,15 @@ impl VmxVcpu {
                     reg,
                     reg_width: AccessWidth::Dword,
                     signed_ext: false,
+                })
+            }
+            (true, 0x09) => {
+                let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+                Some(AxVCpuExitReason::MmioReadModifyWrite {
+                    addr,
+                    width: AccessWidth::Dword,
+                    op: MmioRmwOp::Or,
+                    data: self.guest_regs.get_reg_of_index(reg) as u32 as u64,
                 })
             }
             _ => {

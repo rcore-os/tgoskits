@@ -22,7 +22,7 @@ use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::AccessWidth;
-use axvcpu::{AxVCpu, AxVCpuExitReason};
+use axvcpu::{AxVCpu, AxVCpuExitReason, MmioRmwOp};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
 use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
@@ -598,6 +598,19 @@ impl AxVM {
                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
                         self.get_devices()
                             .handle_mmio_write(addr, width, data as usize)?;
+                    }
+                    AxVCpuExitReason::MmioReadModifyWrite {
+                        addr,
+                        width,
+                        op,
+                        data,
+                    } => {
+                        let current = self.get_devices().handle_mmio_read(addr, width)?;
+                        let value = match op {
+                            MmioRmwOp::Or => current | data as usize,
+                        };
+                        self.get_devices()
+                            .handle_mmio_write(addr, width, value & width_mask(width))?;
                     }
                     AxVCpuExitReason::IoRead { port, width } => {
                         let val = self.get_devices().handle_port_read(port, width)?;

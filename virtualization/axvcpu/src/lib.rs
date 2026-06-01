@@ -44,7 +44,7 @@ pub use arch_vcpu::{AxArchVCpu, InterruptTriggerMode}; // Architecture-specific 
 pub use ax_page_table_entry::MappingFlags;
 pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
 pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
-pub use exit::{AxVCpuExitReason, NestedPageFaultInfo};
+pub use exit::{AxVCpuExitReason, MmioRmwOp, NestedPageFaultInfo};
 pub use percpu::{AxArchPerCpu, AxPerCpu}; // Per-CPU state management types
 pub use vcpu::{
     AxVCpu, AxVCpuInnerMut, VCpuState, clear_current_vcpu, get_current_vcpu, get_current_vcpu_mut,

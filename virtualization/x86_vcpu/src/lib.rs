@@ -23,6 +23,9 @@ extern crate log;
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+use axaddrspace::{GuestPhysAddr, HostVirtAddr};
+
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("features `vmx` and `svm` are mutually exclusive");
 
@@ -31,9 +34,22 @@ mod test_utils;
 
 /// x86 vCPU setup configuration.
 #[derive(Clone, Copy, Debug, Default)]
+pub struct X86GuestMemoryRegion {
+    /// Guest physical start address.
+    pub gpa: GuestPhysAddr,
+    /// Host virtual start address backing the guest memory.
+    pub hva: HostVirtAddr,
+    /// Region size in bytes.
+    pub size: usize,
+}
+
+/// x86 vCPU setup configuration.
+#[derive(Clone, Debug, Default)]
 pub struct X86VCpuSetupConfig {
     /// Intercept COM1 PIO ports and route them to an emulated serial device.
     pub emulate_com1: bool,
+    /// Guest RAM regions used by the VMX instruction decoder to read guest bytes.
+    pub guest_memory_regions: Vec<X86GuestMemoryRegion>,
 }
 
 pub mod host;
