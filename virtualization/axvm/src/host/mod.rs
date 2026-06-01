@@ -4,6 +4,7 @@ pub(crate) mod arceos;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod gic;
 pub(crate) mod paging;
+pub(crate) mod task;
 pub(crate) mod traits;
 
 pub(crate) fn default_host() -> &'static arceos::ArceOsHost {

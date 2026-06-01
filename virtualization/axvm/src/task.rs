@@ -6,7 +6,7 @@ use alloc::sync::{Arc, Weak};
 
 use crate::{
     AxVCpuRef,
-    host::arceos::{ArceOsTaskExt, ArceOsTaskInner},
+    host::task::{TaskExt, TaskInner},
     vm::AxVMRef,
 };
 
@@ -38,7 +38,7 @@ impl VCpuTask {
 }
 
 #[extern_trait::extern_trait]
-impl ArceOsTaskExt for VCpuTask {}
+impl TaskExt for VCpuTask {}
 
 /// Access a vCPU task extension from an ArceOS task.
 pub trait AsVCpuTask {
@@ -46,7 +46,7 @@ pub trait AsVCpuTask {
     fn as_vcpu_task(&self) -> &VCpuTask;
 }
 
-impl AsVCpuTask for ArceOsTaskInner {
+impl AsVCpuTask for TaskInner {
     fn as_vcpu_task(&self) -> &VCpuTask {
         self.task_ext()
             .expect("Not a VCpuTask")

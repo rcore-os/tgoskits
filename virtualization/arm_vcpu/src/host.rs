@@ -6,7 +6,11 @@ pub trait ArmVcpuHostIf {
     /// Inject a virtual interrupt through host GIC state.
     fn hardware_inject_virtual_interrupt(vector: u8);
 
-    /// Fetch a pending host IRQ vector.
+    /// Handle or report a pending host IRQ.
+    ///
+    /// Some hosts acknowledge and dispatch the IRQ in this callback and return
+    /// a placeholder vector to notify the vCPU loop that an external interrupt
+    /// happened.
     fn fetch_irq() -> usize;
 
     /// Dispatch a host IRQ taken while running at the current exception level.

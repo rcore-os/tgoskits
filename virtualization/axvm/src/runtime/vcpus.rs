@@ -418,6 +418,7 @@ fn vcpu_run() {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
 
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
+                    #[cfg(not(target_arch = "aarch64"))]
                     crate::dispatch_host_irq(vector as usize);
                     crate::check_timer_events();
                     #[cfg(target_arch = "x86_64")]

@@ -136,21 +136,13 @@ pub(crate) fn host_gicr_base() -> PhysAddr {
     })
 }
 
-pub(crate) fn handle_current_irq() {
+pub(crate) fn handle_current_irq() -> Option<usize> {
     // AArch64 ArceOS platform IRQ handlers acknowledge the current IRQ
     // internally. The raw vector argument is ignored by current GIC-backed
     // platforms, so keep the ack/EOI ownership inside the platform handler.
-    let _ = arceos::handle_host_irq(0);
+    arceos::handle_host_irq(0).then_some(0)
 }
 
 pub(crate) fn fetch_irq() -> usize {
-    with_gic(|gic| {
-        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
-            return u32::from(gic.cpu_interface().ack()) as usize;
-        }
-        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
-            return gic.cpu_interface().ack1().to_u32() as usize;
-        }
-        panic!("no GIC driver found");
-    })
+    handle_current_irq().unwrap_or(0)
 }

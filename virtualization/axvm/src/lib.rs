@@ -40,13 +40,11 @@ pub use ax_cpumask::CpuMask;
 pub use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 pub use axhvc::{HyperCallCode, HyperCallResult};
 pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
-pub(crate) use host::arceos::{
-    ArceOsAxTaskExt as AxTaskExt, ArceOsAxTaskRef as AxTaskRef, ArceOsCurrentTask as CurrentTask,
-    ArceOsTaskInner as TaskInner, ArceOsWaitQueue as WaitQueue,
-    ArceOsWaitQueueHandle as HostWaitQueueHandle,
-};
 /// Paging handler backed by AxVM's private host adapter.
 pub use host::paging::HostPagingHandler;
+pub(crate) use host::task::{
+    AxTaskExt, AxTaskRef, CurrentTask, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle,
+};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm, setup_primary_vcpu,
@@ -70,23 +68,24 @@ pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
 }
 
 /// Dispatch a host IRQ vector through the ArceOS IRQ handler.
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     host::arceos::dispatch_host_irq(vector);
 }
 
 /// Build an ArceOS host CPU mask from raw bits.
-pub(crate) fn host_cpu_mask_from_raw_bits(bits: usize) -> host::arceos::ArceOsCpuMask {
-    host::arceos::cpu_mask_from_raw_bits(bits)
+pub(crate) fn host_cpu_mask_from_raw_bits(bits: usize) -> host::task::CpuMask {
+    host::task::cpu_mask_from_raw_bits(bits)
 }
 
 /// Return the current host task.
 pub(crate) fn current_host_task() -> CurrentTask {
-    host::arceos::current_task()
+    host::task::current_task()
 }
 
 /// Spawn a prepared host task.
 pub(crate) fn spawn_host_task(task: TaskInner) -> AxTaskRef {
-    host::arceos::spawn_task(task)
+    host::task::spawn_task(task)
 }
 
 /// Wait on a host wait queue until `condition` becomes true.
@@ -94,12 +93,12 @@ pub(crate) fn host_wait_queue_wait_until(
     queue: &HostWaitQueueHandle,
     condition: impl Fn() -> bool,
 ) {
-    host::arceos::wait_queue_wait_until(queue, condition);
+    host::task::wait_queue_wait_until(queue, condition);
 }
 
 /// Wake tasks waiting on a host wait queue.
 pub(crate) fn host_wait_queue_wake(queue: &HostWaitQueueHandle, count: u32) {
-    host::arceos::wait_queue_wake(queue, count);
+    host::task::wait_queue_wake(queue, count);
 }
 
 /// Return the host FDT boot argument physical address.

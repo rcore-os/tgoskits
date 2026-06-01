@@ -111,6 +111,7 @@ pub(crate) fn handle_host_irq(vector: usize) -> bool {
     modules::ax_hal::irq::handle_irq(vector)
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::trap::irq_handler(vector);
 }

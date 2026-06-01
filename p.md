@@ -85,7 +85,7 @@ os/axvisor
 最终希望达到：
 
 - 删除 `axvisor_api` / `axvisor_api_proc`。
-- `virtualization/*` 组件保持 `no_std`、OS 无关，只依赖 `core`、`alloc`、基础类型和组件本地 host interface。
+- 除 `axvm` 这个 ArceOS-backed runtime 适配层外，底层 `virtualization/*` capability 组件保持 `no_std`、OS 无关，只依赖 `core`、`alloc`、基础类型和组件本地 host interface。
 - `axvm` 不暴露可由外部构造的 ArceOS host adapter，不让外部直接构造 `ArceOsHost` 或访问 `host::arceos`。
 - `axvm` 可以保留少量受控 helper，服务 FDT boot 信息、host filesystem release、guest paging handler 等 Axvisor 顶层业务需要。
 - `os/axvisor` 不直接调用 `ax_std::os::arceos::{api, modules}`、`ax_hal`、`ax_task`、`ax_alloc`。
@@ -119,7 +119,7 @@ axvm
 axvm/src/host/arceos.rs
     -> ax_std::os::arceos::{api, modules}
 
-virtualization capability components
+virtualization capability components, excluding axvm
     -> 不依赖 os/axvisor
     -> 不依赖 ArceOS
     -> 不依赖 ax_std
@@ -330,7 +330,7 @@ pub fn shutdown_host_filesystems() -> AxResult;
 
 ```text
 axvm 不再对外提供 ArceOsHost
-axvm 不暴露 host::arceos
+axvm public API 不暴露 host::arceos
 axvm 不提供 os::arceos feature 或 public adapter
 axvm 不使用 runtime/devices 这种泛化目录承载 x86 IRQ glue
 ```
@@ -350,7 +350,10 @@ host/mod.rs
 host/arceos.rs
     实现默认 ArceOS host adapter
     允许使用 ax_std::os::arceos::{api, modules}
-    re-export 必要的 ArceOS task / wait queue / CPU mask 类型给 axvm 内部
+
+host/task.rs
+    包装必要的 ArceOS task / wait queue / CPU mask 类型
+    避免 task.rs / runtime/* 直接依赖 host::arceos
 
 host/gic.rs
     AArch64 下集中访问 host GIC driver
@@ -380,7 +383,7 @@ HostPlatform
     硬件虚拟化检测、当前 CPU / 全 CPU 虚拟化启用
 ```
 
-不再保留没有实际抽象收益的 `HostTask` 聚合 trait。vCPU task 当前仍是 ArceOS-backed runtime 细节，由 `host/arceos.rs` 通过 crate-private wrapper 提供给 `axvm::runtime::vcpus`。
+不再保留没有实际抽象收益的 `HostTask` 聚合 trait。vCPU task 当前仍是 ArceOS-backed runtime 细节，由 `host/task.rs` 通过 crate-private wrapper 提供给 `axvm::task` 和 `axvm::runtime::vcpus`。
 
 边界规则：
 
@@ -554,7 +557,7 @@ riscv_vplic::host::RiscvVplicHostIf
 arm_vgic::host::ArmVgicHostIf
 ```
 
-`x86_vlapic` 的 APIC timer 需要特别处理旧 timer callback 误触发问题。当前计划采用 generation 和共享原子状态：
+`x86_vlapic` 的 APIC timer 已采用 generation 和共享原子状态处理旧 timer callback 误触发问题：
 
 ```text
 ApicTimer
@@ -600,9 +603,23 @@ x86-qemu-q35 = ["ax-std/x86-qemu-q35"]
 aarch64-qemu-virt = ["ax-std/aarch64-qemu-virt"]
 riscv64-qemu-virt = ["ax-std/riscv64-qemu-virt"]
 loongarch64-qemu-virt = ["ax-std/loongarch64-qemu-virt"]
+
+rockchip-soc = ["ax-driver/rockchip-soc"]
+rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
+rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
+phytium-mci = ["ax-driver/phytium-mci"]
+sdmmc = [
+    "ax-driver/rockchip-sdhci",
+    "ax-driver/rockchip-soc",
+    "ax-driver/phytium-mci",
+]
+rockchip-pm = ["ax-driver/rockchip-pm"]
+serial = []
 ```
 
 也就是说，`vmx`、`svm`、`sstc`、`ept-level-4` 等虚拟化能力转发到 `axvm`；静态平台 feature 当前由 Axvisor 顶层转发到 `ax-std/<platform>`，而不是转发到 `axvm/<platform>`。
+
+板级 driver feature 由 Axvisor 顶层转发到 `ax-driver`。例如 OrangePi 5 Plus board build 当前使用 `dyn-plat,fs,rockchip-soc,sdmmc`，其中 `rockchip-soc` / `sdmmc` 不属于 `axvm` 的 runtime feature。
 
 `axvm` feature 当前保留自身的平台 feature，并继续传递到 `ax-std` 和虚拟化组件。但 Axvisor 顶层静态平台 feature 目前没有转发到这些 `axvm/<platform>` feature，因此这些 `axvm` 平台 feature 更像保留给独立构建或后续统一策略的入口，不能视为 Axvisor 主路径必经链路。
 
@@ -767,6 +784,12 @@ cargo xtask clippy --package axbuild
 cargo xtask axvisor build --config test-suit/axvisor/normal/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml
 ```
 
+真实 board test 路径在硬件可用时继续验证：
+
+```bash
+cargo xtask axvisor test board --board orangepi-5-plus-linux
+```
+
 发布或合并前建议补充 QEMU 验证：
 
 ```bash
@@ -834,7 +857,17 @@ VGICD IIDR / TYPER 读取
 
 这些能力已经不应再停留在 `todo!()`。当前 EL IRQ 处理由 `host/gic.rs` 委托给 ArceOS 平台 IRQ handler；现有 AArch64 GIC-backed 平台会在平台 handler 内部 ack/dispatch/EOI，因此 `axvm` 不应先手动 ack 再调用该 handler。后续重点是继续用 QEMU 和真实板级 Linux guest 验证 GICv2/GICv3 行为，尤其是 passthrough interrupt、virtual timer interrupt 和 GICR per-CPU base 计算。
 
-### 3.5 axvm 平台 feature 是否长期保留
+当前 VM-exit 外部中断路径同样不能先由 `axvm` 手动 GIC ack 再交给 ArceOS 平台 handler。AArch64 下 `ArmVcpuHostIf::fetch_irq()` 应保持“处理当前 IRQ”的语义，`axvm::runtime::vcpus` 不再对 AArch64 的 `ExternalInterrupt` 进行第二次 `dispatch_host_irq()`。后续若需要把真实 IRQ vector 返回给 runtime，应同时提供“已 ack IRQ 的 dispatch + EOI”接口，不能复用会再次 ack 的平台 handler。
+
+需要继续注意的是，AArch64 host callback 中的 `todo!()` 已经移除，但 `arm_vgic` 的部分 MMIO/sysreg 行为仍未完整实现，例如 VGICR/GICD 未覆盖寄存器和 virtual timer read 路径。真实 Linux guest 仍可能因为访问这些寄存器而触发 panic 或语义不一致。
+
+### 3.5 axvisor_api 源码删除后的文档残留
+
+主线源码和 Cargo 依赖中已经不再使用 `axvisor_api` / `axvisor_api_proc`，对应源码目录也已经不存在。但 `docs/docs/components/*` 等生成或组件说明文档仍可能保留旧的 `axvisor_api` 依赖图和 crate 页面。
+
+后续应重新生成或清理这些组件文档，否则仓库级文档会继续显示已经删除的 API 层。
+
+### 3.6 axvm 平台 feature 是否长期保留
 
 `axvm` 当前仍声明：
 
@@ -856,7 +889,7 @@ loongarch64-qemu-virt = ["vmx", "ax-std/loongarch64-qemu-virt"]
     并明确 axvm/<platform> 是 axvm 独立使用入口
 ```
 
-### 3.6 Rust native std 支持
+### 3.7 Rust native std 支持
 
 本方案不直接实现 `target_os = "arceos"` native std。
 
