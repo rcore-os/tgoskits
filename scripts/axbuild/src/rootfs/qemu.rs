@@ -107,6 +107,38 @@ fn drive_file_value(drive_arg: &str) -> Option<&str> {
         .find_map(|part| part.strip_prefix("file="))
 }
 
+fn drive_id_value(drive_arg: &str) -> Option<&str> {
+    drive_arg
+        .split(',')
+        .find_map(|part| part.strip_prefix("id="))
+}
+
+fn drive_ref_value(device_arg: &str) -> Option<&str> {
+    device_arg
+        .split(',')
+        .find_map(|part| part.strip_prefix("drive="))
+}
+
+fn replace_drive_file_arg(drive_arg: &str, rootfs_path: &Path) -> String {
+    let mut replaced = false;
+    let mut parts = drive_arg
+        .split(',')
+        .map(|part| {
+            if part.starts_with("file=") {
+                replaced = true;
+                format!("file={}", rootfs_path.display())
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !replaced {
+        parts.push(format!("file={}", rootfs_path.display()));
+    }
+    parts.join(",")
+}
+
 /// Replaces an existing `disk0` drive argument or inserts one next to the
 /// matching block-device declaration.
 fn replace_drive_arg(args: &mut Vec<String>, rootfs_path: &Path) {
@@ -146,6 +178,8 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
     let mut has_drive = false;
     let mut has_net_device = false;
     let mut has_netdev = false;
+    let mut device_drive_ids = Vec::new();
+    let mut custom_rootfs_drives = Vec::new();
 
     let mut index = 0;
     while index < args.len() {
@@ -157,6 +191,9 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
                 } else if wiring.net_device_matches(value) {
                     has_net_device = true;
                 }
+                if let Some(drive_id) = drive_ref_value(value) {
+                    device_drive_ids.push(drive_id.to_string());
+                }
                 index += 2;
             }
             "-drive" if index + 1 < args.len() => {
@@ -164,6 +201,10 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
                 if value.starts_with(&drive_prefix) {
                     *value = disk_value.clone();
                     has_drive = true;
+                } else if let (Some(drive_id), Some(_)) =
+                    (drive_id_value(value), drive_file_value(value))
+                {
+                    custom_rootfs_drives.push((index + 1, drive_id.to_string()));
                 }
                 index += 2;
             }
@@ -178,6 +219,16 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
         }
     }
 
+    if !has_drive
+        && let Some((value_index, _)) = custom_rootfs_drives
+            .iter()
+            .find(|(_, drive_id)| device_drive_ids.iter().any(|id| id == drive_id))
+    {
+        args[*value_index] = replace_drive_file_arg(&args[*value_index], disk_img);
+        has_blk_device = true;
+        has_drive = true;
+    }
+
     if !has_blk_device {
         args.push("-device".to_string());
         args.push(wiring.default_block_device.to_string());
@@ -185,6 +236,16 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
     if !has_drive {
         args.push("-drive".to_string());
         args.push(disk_value);
+    }
+    let has_custom_rootfs_device = has_blk_device
+        && device_drive_ids.iter().any(|id| {
+            id != wiring.disk_id
+                && custom_rootfs_drives
+                    .iter()
+                    .any(|(_, drive_id)| drive_id == id)
+        });
+    if has_custom_rootfs_device && !has_net_device && !has_netdev {
+        return;
     }
     if !has_net_device {
         args.push("-device".to_string());
@@ -326,6 +387,66 @@ mod tests {
                 "virtio-net-pci,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0,hostfwd=tcp::18790-:18790".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_accepts_custom_rootfs_drive_device() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=nvm,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+                "-device".to_string(),
+                "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                "id=nvm,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
+                "-device".to_string(),
+                "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_does_not_add_network_for_custom_rootfs_without_network() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=nvm,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+                "-device".to_string(),
+                "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                "id=nvm,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
+                "-device".to_string(),
+                "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
             ]
         );
     }

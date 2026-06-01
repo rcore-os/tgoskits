@@ -14,12 +14,11 @@ repository.workspace = true
 license.workspace = true
 
 [features]
-default = ["dynamic_debug", "ebpf"]
+default = ["dynamic_debug"]
 dev-log = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
-ebpf = []
-memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
+memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
 plat-dyn = [
     "ax-feat/plat-dyn",
@@ -38,16 +37,12 @@ sg2002 = [
     "dep:tock-registers",
 ]
 stack-guard-page = ["ax-feat/stack-guard-page"]
-buddy-slab = ["ax-feat/buddy-slab"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [
     "fp-simd",
     "irq",
     "uspace",
-
-    "page-alloc-4g",
-    "alloc-slab",
 
     "multitask",
     "task-ext",
@@ -59,10 +54,11 @@ ax-feat = { workspace = true, features = [
     "net-ng",
 ] }
 
-ax-alloc = { workspace = true, features = ["default"] }
+ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-display.workspace = true
 ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
@@ -93,13 +89,12 @@ enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 extern-trait = "0.4"
 flatten_objects = "0.2.4"
-gimli = { version = "0.33", default-features = false, optional = true }
 hashbrown = "0.16"
 indoc = "2"
 inherit-methods-macro = "0.1.0"
 ax-kernel-guard = { workspace = true }
 kernel-elf-parser = "0.3.4"
-ax-kspin = { workspace = true }
+ax-kspin = { workspace = true, features = ["lock_api"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
@@ -142,12 +137,14 @@ sg200x-bsp = { workspace = true, optional = true }
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
 ksym = "0.6"
+kbpf-basic = "0.5.7"
+rbpf = { version = "0.4", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.16"
+riscv.workspace = true
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
 ax-page-table-multiarch = { workspace = true, features = ["copy-from"] }

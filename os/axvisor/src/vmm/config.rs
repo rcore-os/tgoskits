@@ -16,7 +16,9 @@ use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 use axvm::{
     VMMemoryRegion,
-    config::{AxVMConfig, AxVMCrateConfig, VmMemMappingType, adjusted_kernel_load_gpa},
+    config::{
+        AxVMConfig, AxVMCrateConfig, VMBootProtocol, VmMemMappingType, adjusted_kernel_load_gpa,
+    },
 };
 use core::alloc::Layout;
 
@@ -225,6 +227,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     ))]
     handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
 
+    #[cfg(target_arch = "x86_64")]
+    let skip_guest_address_adjustment = x86_linux_direct_boot_config(&vm_create_config);
+    #[cfg(not(target_arch = "x86_64"))]
+    let skip_guest_address_adjustment = false;
+
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
 
@@ -241,7 +248,13 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         .cloned()
         .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one memory region"))?;
 
-    config_guest_address(&vm, &main_mem);
+    if !skip_guest_address_adjustment {
+        config_guest_address(
+            &vm,
+            &main_mem,
+            vm_create_config.kernel.effective_boot_protocol(),
+        );
+    }
 
     // Load corresponding images for VM.
     info!("VM[{}] created success, loading images...", vm.id());
@@ -258,11 +271,13 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     Ok(vm_id)
 }
 
-fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
+fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion, boot_protocol: VMBootProtocol) {
     vm.with_config(|config| {
-        if let Some(kernel_addr) =
-            adjusted_kernel_load_gpa(main_memory, config.image_config.bios_load_gpa)
-        {
+        if let Some(kernel_addr) = adjusted_kernel_load_gpa(
+            main_memory,
+            boot_protocol,
+            config.image_config.bios_load_gpa,
+        ) {
             debug!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
                 config.image_config.kernel_load_gpa, kernel_addr
@@ -270,6 +285,11 @@ fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
             config.relocate_kernel_image(kernel_addr);
         }
     });
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
+    crate::vmm::images::is_x86_linux_image_config(config)
 }
 
 fn vm_alloc_memory_regions(vm_create_config: &AxVMCrateConfig, vm: &VM) -> AxResult {

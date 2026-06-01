@@ -13,7 +13,7 @@ use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty::N_TTY},
-    task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
     tracepoint::tracepoint_init,
 };
 
@@ -21,6 +21,14 @@ use crate::{
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
+
+    {
+        // perf kprobe-by-name resolves through the real in-kernel `.kallsyms`
+        // blob (`pseudofs::proc::KALLSYMS`, built from the `ksym` crate), the
+        // same table `/proc/kallsyms` exposes — no separate symbol table.
+        crate::ebpf::init_ebpf();
+        crate::perf::perf_event_init();
+    }
 
     // FIXME: loongarch64 selftest hangs on QEMU; the kprobe crate's loongarch64
     // breakpoint handling needs upstream fixes before selftest can be enabled.
@@ -46,7 +54,7 @@ pub fn init(args: &[String], envs: &[String]) {
         })
         .expect("Failed to create user address space");
 
-    let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, None, args, envs)
+    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, None, args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
@@ -61,8 +69,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        path.to_string(),
-        Arc::new(args.to_vec()),
+        ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,

@@ -18,14 +18,12 @@ pub fn register(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
 struct Bcm2835Sdhci(EmmcCtl);
 
 impl Bcm2835Sdhci {
-    fn try_new() -> Result<Self, rd_block::BlkError> {
+    fn try_new() -> Result<Self, rdif_block::BlkError> {
         let mut ctrl = EmmcCtl::new();
         if ctrl.init() == 0 {
             Ok(Self(ctrl))
         } else {
-            Err(rd_block::BlkError::Other(
-                "BCM2835 SDHCI init failed".into(),
-            ))
+            Err(rdif_block::BlkError::Other("BCM2835 SDHCI init failed"))
         }
     }
 }
@@ -43,28 +41,28 @@ impl SyncBlockOps for Bcm2835Sdhci {
         self.0.get_block_size()
     }
 
-    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rd_block::BlkError> {
+    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rdif_block::BlkError> {
         let block_count = buf.len() / BLOCK_SIZE;
         if block_count == 0 || !buf.len().is_multiple_of(BLOCK_SIZE) {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
         let (prefix, aligned, suffix) = unsafe { buf.align_to_mut::<u32>() };
         if !prefix.is_empty() || !suffix.is_empty() {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
         self.0
             .read_block(block_id as u32, block_count, aligned)
             .map_err(map_sdhci_err)
     }
 
-    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rd_block::BlkError> {
+    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rdif_block::BlkError> {
         let block_count = buf.len() / BLOCK_SIZE;
         if block_count == 0 || !buf.len().is_multiple_of(BLOCK_SIZE) {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
         let (prefix, aligned, suffix) = unsafe { buf.align_to::<u32>() };
         if !prefix.is_empty() || !suffix.is_empty() {
-            return Err(rd_block::BlkError::NotSupported);
+            return Err(rdif_block::BlkError::NotSupported);
         }
         self.0
             .write_block(block_id as u32, block_count, aligned)
@@ -72,11 +70,11 @@ impl SyncBlockOps for Bcm2835Sdhci {
     }
 }
 
-fn map_sdhci_err(err: SDHCIError) -> rd_block::BlkError {
+fn map_sdhci_err(err: SDHCIError) -> rdif_block::BlkError {
     match err {
-        SDHCIError::Again => rd_block::BlkError::Retry,
-        SDHCIError::NoMemory => rd_block::BlkError::NoMemory,
-        SDHCIError::Unsupported => rd_block::BlkError::NotSupported,
-        _ => rd_block::BlkError::Other("BCM2835 SDHCI I/O error".into()),
+        SDHCIError::Again => rdif_block::BlkError::Retry,
+        SDHCIError::NoMemory => rdif_block::BlkError::NoMemory,
+        SDHCIError::Unsupported => rdif_block::BlkError::NotSupported,
+        _ => rdif_block::BlkError::Other("BCM2835 SDHCI I/O error"),
     }
 }

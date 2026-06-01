@@ -10,7 +10,7 @@
 # command runs every case, individual PASS/FAIL lines land in the
 # final output, and the exit code is 0 iff every case passed.
 #
-# In CI (reusable-container-command.yml), this is what the matrix
+# In CI (reusable-command.yml), this is what the matrix
 # invokes per arch. On a dev machine, it's the quick "run everything
 # visually" checker — same as `cargo xtask test` is for host tests.
 set -euo pipefail
@@ -35,7 +35,7 @@ SCENARIO_ROOT="$REPO_ROOT/test-suit/starryos/visual"
 # a run is fresh from CI we may need to build them first. For now the
 # expectation is that the host `test_qemu_matrix` step has already
 # prepared these artifacts upstream of this job, same as how
-# `cargo xtask` tests assume `cargo starry build` has run.
+# `cargo xtask` tests assume `cargo xtask starry build` has run.
 case "$ARCH" in
     riscv64)
         KERNEL="$REPO_ROOT/target/riscv64gc-unknown-none-elf/release/starryos.bin"
@@ -60,11 +60,11 @@ case "$ARCH" in
 esac
 
 if [[ ! -f "$KERNEL" ]]; then
-    echo "kernel not built for $ARCH — run 'cargo starry build --arch $ARCH' first" >&2
+    echo "kernel not built for $ARCH — run 'cargo xtask starry build --arch $ARCH' first" >&2
     exit 1
 fi
 if [[ ! -f "$ROOTFS" ]]; then
-    echo "rootfs missing for $ARCH — run 'cargo starry rootfs --arch $ARCH' first" >&2
+    echo "rootfs missing for $ARCH — run 'cargo xtask starry rootfs --arch $ARCH' first" >&2
     exit 1
 fi
 

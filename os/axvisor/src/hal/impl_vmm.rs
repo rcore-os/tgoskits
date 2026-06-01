@@ -20,8 +20,16 @@ impl VmmIf for VmmImpl {
         vmm::with_vm(vm_id, |vm| vm.vcpu_num())
     }
 
-    fn active_vcpus(_vm_id: VMId) -> Option<usize> {
-        todo!("active_vcpus")
+    fn active_vcpus(vm_id: VMId) -> Option<usize> {
+        vmm::with_vm(vm_id, |vm| {
+            let vcpu_num = vm.vcpu_num();
+            if vcpu_num >= usize::BITS as usize {
+                usize::MAX
+            } else {
+                // The VmmIf contract returns an active-vCPU bitmask, not a count.
+                (1usize << vcpu_num) - 1
+            }
+        })
     }
 
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector) {
@@ -30,8 +38,10 @@ impl VmmIf for VmmImpl {
         });
     }
 
-    fn inject_interrupt_to_cpus(_vm_id: VMId, _vcpu_set: VCpuSet, _vector: InterruptVector) {
-        todo!("inject_interrupt_to_cpus")
+    fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {
+        for vcpu_id in &vcpu_set {
+            Self::inject_interrupt(vm_id, vcpu_id, vector);
+        }
     }
 
     fn notify_vcpu_timer_expired(_vm_id: VMId, _vcpu_id: VCpuId) {

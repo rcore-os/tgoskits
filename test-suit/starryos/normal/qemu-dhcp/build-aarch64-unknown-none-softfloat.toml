@@ -1,0 +1,16 @@
+env = {}
+features = [
+  "ax-feat/display",
+  "ax-feat/rtc",
+  "ax-driver/rtc",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+]
+log = "Warn"
+plat_dyn = true
+target = "aarch64-unknown-none-softfloat"

@@ -7,16 +7,16 @@ use rdrive::{Device, DriverGeneric, probe::pci::EndpointRc};
 
 pub struct PlatformNetDevice {
     name: &'static str,
-    net: Option<rd_net::Net>,
     irq_num: Option<usize>,
+    net: Option<rd_net::Net>,
 }
 
 impl PlatformNetDevice {
     fn new(name: &'static str, net: rd_net::Net, irq_num: Option<usize>) -> Self {
         Self {
             name,
-            net: Some(net),
             irq_num,
+            net: Some(net),
         }
     }
 
@@ -67,31 +67,7 @@ pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
         }
     }
 
-    if let Some(irq) =
-        crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
-    {
-        return Some(irq);
-    }
-
-    let line = endpoint.interrupt_line();
-    if line == 0 || line == u8::MAX {
-        return None;
-    }
-    Some(pci_legacy_line_to_irq(line))
-}
-
-const fn pci_legacy_line_to_irq(line: u8) -> usize {
-    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
-        if cfg!(target_arch = "x86_64") {
-            0x20
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    PCI_IRQ_BASE + line as usize
+    crate::pci::endpoint_legacy_irq(endpoint)
 }
 
 pub trait PlatformDeviceNet {

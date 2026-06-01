@@ -23,6 +23,14 @@ use crate::{
     mm::aspace::{AddrSpace, Backend},
 };
 
+#[cfg(target_arch = "riscv64")]
+const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
+    | (1 << (b'M' - b'A'))
+    | (1 << (b'A' - b'A'))
+    | (1 << (b'F' - b'A'))
+    | (1 << (b'D' - b'A'))
+    | (1 << (b'C' - b'A'));
+
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
     AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
@@ -65,7 +73,7 @@ fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
         mapping_flags |= MappingFlags::READ;
     }
     if flags.is_write() {
-        mapping_flags |= MappingFlags::WRITE;
+        mapping_flags |= MappingFlags::WRITE | MappingFlags::READ;
     }
     if flags.is_execute() {
         mapping_flags |= MappingFlags::EXECUTE;
@@ -186,10 +194,9 @@ impl ElfCacheEntry {
 ///   import unless `HWCAP_LOONGARCH_LSX` (bit 4) is set. LASX (256-bit, bit 5)
 ///   is intentionally *not* set because the kernel does not enable `EUEN.ASXE`;
 ///   claiming it could trap when userspace executes 256-bit ops.
-/// - **x86_64 / aarch64 / riscv64**: 0. glibc/musl on these arches do not gate
-///   numpy on `AT_HWCAP` (x86 uses CPUID; aarch64 ASIMD/NEON is mandatory), and
-///   numpy already imports successfully there today with `AT_HWCAP` absent.
-///   Reporting 0 preserves the current (passing) behavior.
+/// - **riscv64**: report the baseline ISA bits expected by Linux-compatible
+///   user space (`IMAFDC`).
+/// - **x86_64 / aarch64**: 0. x86 uses CPUID; aarch64 ASIMD/NEON is mandatory.
 const fn hwcap_value() -> usize {
     #[cfg(target_arch = "loongarch64")]
     {
@@ -205,7 +212,11 @@ const fn hwcap_value() -> usize {
             | HWCAP_LOONGARCH_FPU
             | HWCAP_LOONGARCH_LSX
     }
-    #[cfg(not(target_arch = "loongarch64"))]
+    #[cfg(target_arch = "riscv64")]
+    {
+        RISCV_COMPAT_HWCAP_IMAFDC
+    }
+    #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
     {
         0
     }
@@ -331,7 +342,7 @@ pub fn load_user_app(
     path: Option<&str>,
     args: &[String],
     envs: &[String],
-) -> AxResult<(VirtAddr, VirtAddr)> {
+) -> AxResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     let path = path
         .or_else(|| args.first().map(String::as_str))
         .ok_or(AxError::InvalidInput)?;
@@ -400,5 +411,5 @@ pub fn load_user_app(
         Backend::new_alloc(heap_start, PageSize::Size4K, "[heap]"),
     )?;
 
-    Ok((entry, user_sp))
+    Ok((entry, user_sp, auxv))
 }

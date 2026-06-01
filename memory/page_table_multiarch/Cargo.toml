@@ -26,7 +26,7 @@ ax-page-table-entry.workspace = true
 x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc, docsrs))'.dependencies]
-riscv = { version = "0.16", default-features = false }
+riscv.workspace = true
 
 [package.metadata.docs.rs]
 rustc-args = ["--cfg", "docsrs"]

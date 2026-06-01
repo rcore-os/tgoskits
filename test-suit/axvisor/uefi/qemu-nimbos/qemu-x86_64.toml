@@ -1,0 +1,30 @@
+args = [
+  "-m",
+  "128M",
+  "-smp",
+  "1",
+  "-machine",
+  "q35",
+  "-device",
+  "virtio-blk-pci,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-nographic",
+  "-accel",
+  "kvm",
+  "-cpu",
+  "host",
+]
+fail_regex = [
+  "System will reboot, press any key to continue ...",
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)permission denied",
+]
+# Keep this CI case as a bounded UEFI smoke test. Full x86_64 VMX UEFI
+# guest execution is still incomplete and does not reliably reach NimbOS
+# usertests yet.
+success_regex = ["VM\\[1\\] boot success"]
+timeout = 180
+to_bin = false
+uefi = false

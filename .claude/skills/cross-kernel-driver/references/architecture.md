@@ -46,14 +46,15 @@ Runtime/platform integration belongs elsewhere:
 - `platform/axplat-dyn/src/drivers/soc/<vendor>/...` for SoC platform glue.
 - `components/axdriver_crates/axdriver_<type>` for common ArceOS-facing driver traits/adapters.
 
-For block devices in `axplat-dyn`, the existing integration path is:
+For block devices in `axplat-dyn`, the integration path is:
 
 - probe/FDT/MMIO setup in `platform/axplat-dyn/src/drivers/blk/<driver>.rs`
-- wrap the portable driver in an `rd_block::Interface`
-- expose a queue as `rd_block::IQueue`
-- register through `PlatformDeviceBlock::register_block`, which creates `rd_block::Block::new(dev, &DmaImpl)` and registers it with `rdrive`
+- expose the portable driver as `rdif_block::Interface`
+- expose queues as `rdif_block::IQueue` with `submit_request()` / `poll_request()`
+- register boxed `rdif_block::Interface` devices through the ArceOS driver glue and `rdrive`
+- keep ArceOS sync block reads/writes, DMA bounce buffers, and IRQ registration policy above the portable interface
 
-Keep `rd-block`/`rdrive` coupling in this adapter layer or behind an explicit adapter feature. Portable driver core should not need to know how `rdrive` probes or registers devices.
+Keep `rdrive` coupling in this adapter layer or behind an explicit adapter feature. Portable driver core should not need to know how `rdrive` probes or registers devices.
 
 ## Dependency Boundaries
 
@@ -172,11 +173,11 @@ Runtime wrappers can then choose:
 
 Avoid a single global `Driver::poll` if the hardware naturally exposes multiple queues or engines. Avoid a "big object + big lock + callbacks" shape unless the device is truly that simple.
 
-For a block queue adapter, align portable queue state with `rd_block::IQueue`:
+For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 
-- `buff_config()` should expose block-size, alignment, and DMA mask constraints.
-- `submit_request()` should allocate/map DMA buffers, program descriptors, and return a request id.
-- `poll_request()` should check completion and translate device status into `rd_block::BlkError` in the adapter.
+- `buffer_config()` should expose block-size, alignment, and DMA mask constraints.
+- `submit_request()` should program descriptors and return a request id without installing OS wakeups.
+- `poll_request()` should check completion and return `RequestStatus::Pending` or `RequestStatus::Complete`.
 - Keep descriptor ownership and DMA map/unmap pairing explicit for each request id.
 
 ## Concurrency Rules

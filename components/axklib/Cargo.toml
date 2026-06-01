@@ -12,8 +12,14 @@ documentation = "https://arceos-hypervisor.github.io/axklib"
 license = "Apache-2.0"
 
 [dependencies]
+ax-alloc = { workspace = true }
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 dma-api = { workspace = true }
 mmio-api = { workspace = true }
 trait-ffi = "0.2"
+
+[features]
+default = []
+tlsf = ["ax-alloc/tlsf"]
+buddy-slab = ["ax-alloc/buddy-slab"]

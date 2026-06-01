@@ -26,13 +26,15 @@ use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
 use spin::Once;
+#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
 #[cfg(target_arch = "aarch64")]
 use crate::vcpu::get_sysreg_device;
 use crate::{
-    config::{AxVMConfig, PhysCpuList},
+    config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     hal::PagingHandlerImpl,
     has_hardware_support,
     vcpu::AxArchVCpuImpl,
@@ -204,6 +206,20 @@ impl AxVM {
         self.id
     }
 
+    /// Returns the configured VM interrupt mode.
+    pub fn interrupt_mode(&self) -> VMInterruptMode {
+        self.inner_mut.lock().config.interrupt_mode()
+    }
+
+    /// Returns whether this VM loads its images from the host filesystem and maps passthrough
+    /// devices or address ranges that can require exclusive ownership after VM start.
+    pub fn has_host_fs_passthrough_conflict(&self) -> bool {
+        let inner_mut = self.inner_mut.lock();
+        inner_mut.config.images_loaded_from_filesystem()
+            && (!inner_mut.config.pass_through_devices().is_empty()
+                || !inner_mut.config.pass_through_addresses().is_empty())
+    }
+
     /// Sets up the VM before booting.
     pub fn init(&self) -> AxResult {
         let mut inner_mut = self.inner_mut.lock();
@@ -311,6 +327,14 @@ impl AxVM {
             )?;
         }
 
+        #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+        inner_mut.address_space.map_linear(
+            GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
+            x86_apic_access_page_addr(),
+            ax_memory_addr::PAGE_SIZE_4K,
+            MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
+        )?;
+
         #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
             emu_configs: inner_mut.config.emu_devices().to_vec(),
@@ -384,9 +408,21 @@ impl AxVM {
                     passthrough_timer: passthrough,
                 }
             };
-            #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
+            #[cfg(not(any(
+                target_arch = "aarch64",
+                target_arch = "loongarch64",
+                target_arch = "x86_64"
+            )))]
             #[allow(clippy::let_unit_value)]
             let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
+            #[cfg(target_arch = "x86_64")]
+            let setup_config = crate::vcpu::AxVCpuSetupConfig {
+                emulate_com1: inner_mut
+                    .config
+                    .emu_devices()
+                    .iter()
+                    .any(|dev| dev.emu_type == axvmconfig::EmulatedDeviceType::Console),
+            };
 
             let entry = if vcpu.id() == 0 {
                 inner_mut.config.bsp_entry()

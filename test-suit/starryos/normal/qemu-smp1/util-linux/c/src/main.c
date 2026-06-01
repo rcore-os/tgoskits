@@ -25,6 +25,7 @@
 #include <sys/syscall.h>
 #include <fcntl.h>
 #include <sys/mount.h>
+#include <time.h>
 
 static int pass = 0, fail = 0;
 
@@ -113,6 +114,15 @@ static void cleanup_umount_all(const char *path)
     }
 }
 
+static struct timespec t0;
+
+static double elapsed(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - t0.tv_sec) + (now.tv_nsec - t0.tv_nsec) / 1e9;
+}
+
 static void check(int ok, const char *name)
 {
     if (ok) { printf("  PASS | %s\n", name); pass++; }
@@ -133,11 +143,13 @@ int main(void)
     int rc;
 
     printf("=== util-linux 2.38+ test ===\n");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     /* ================================================================
      *  Tier 1: Tool availability
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 1: tool availability\n", elapsed());
     /* 1. mount present */
     {
         rc = run("which mount >/dev/null 2>&1");
@@ -166,6 +178,7 @@ int main(void)
      *  Tier 2: losetup full chain
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 2: losetup chain\n", elapsed());
     /* 5. Create 4MB test image */
     {
         rc = run("dd if=/dev/zero of=/tmp/ul-test.img bs=1M count=4 2>/dev/null");
@@ -201,6 +214,7 @@ int main(void)
      *  Tier 3: fdisk -l (acceptance criterion)
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 3: fdisk\n", elapsed());
     /* 9-10. fdisk -l output: capture and verify disk header + size */
     {
         char cmd[256];
@@ -250,6 +264,7 @@ int main(void)
      *  Tier 4: mount -t ext4 full chain (acceptance criterion)
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 4: ext4 mount\n", elapsed());
     /* 11. Pre-built ext4 image exists */
     {
         struct stat st;
@@ -517,6 +532,7 @@ int main(void)
      *  adapter is still active.
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 4e: double mount EBUSY\n", elapsed());
     /* Attach ext4 image (fresh) */
     if (loopdev[0]) {
         char cmd[256];
@@ -747,6 +763,7 @@ int main(void)
      *  the loop device from ever detaching (mounted flag stays true).
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 4g: umount busy cwd\n", elapsed());
     /* Attach ext4 image */
     if (loopdev[0]) {
         char cmd[256];
@@ -887,6 +904,7 @@ int main(void)
      *  the cwd/root busy check (Tier 4g) by covering the open-fd path.
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 4i: umount busy fd\n", elapsed());
     /* Attach ext4 image */
     if (loopdev[0]) {
         char cmd[256];
@@ -1005,6 +1023,7 @@ int main(void)
      *  would falsely return EBUSY because the target's mountpoint
      *  (rootfs) matches every task's cwd/root.
      * ================================================================ */
+    printf("[time %.2fs] Tier 4k: mount propagation\n", elapsed());
     {
         errno = 0;
         rc = umount("/tmp/ul-mnt");
@@ -1906,6 +1925,7 @@ int main(void)
      *  Verify that the kernel does not silently ignore invalid flags.
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 4k1: umount2 flags\n", elapsed());
     /* Attach ext4 image */
     if (loopdev[0]) {
         char cmd[256];
@@ -2131,6 +2151,7 @@ int main(void)
      *  which would allow detach while the block device is still in use.
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 4l: LOOP_CLR_FD EBUSY\n", elapsed());
     /* Attach ext4 image */
     if (loopdev[0]) {
         char cmd[256];
@@ -2174,18 +2195,22 @@ int main(void)
 
     /* Cleanup: umount then detach */
     {
+        printf("TRACE detach-busy: before umount\n");
         run("umount /tmp/ul-mnt 2>&1");
+        printf("TRACE detach-busy: after umount, before losetup -d\n");
         if (loopdev[0]) {
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
             run(cmd);
         }
+        printf("TRACE detach-busy: cleanup done\n");
     }
 
     /* ================================================================
      *  Tier 5: pivot_root command availability & semantics
      * ================================================================ */
 
+    printf("[time %.2fs] Tier 5: pivot_root\n", elapsed());
     /* 32. pivot_root command exists */
     {
         int exists = (run("which pivot_root >/dev/null 2>&1") == 0);
@@ -2362,6 +2387,7 @@ int main(void)
      *  updates only tasks whose root_dir exactly matches old_root
      *  (mountpoint + dentry), using Location::ptr_eq.
      * ================================================================ */
+    printf("[time %.2fs] Tier 5a: pivot_root 2\n", elapsed());
     {
         int setup_ok = (mkdir("/pivot2-nr", 0755) == 0);
         setup_ok = setup_ok && (mount("tmpfs", "/pivot2-nr", "tmpfs", 0, NULL) == 0);
@@ -2400,8 +2426,23 @@ int main(void)
     unlink("/oldroot/tmp/ul-test.img");
 
     printf("=== total: %d passed, %d failed ===\n", pass, fail);
+    printf("[time %.2fs] util-linux-test done\n", elapsed());
 
     if (fail > 0) return 1;
+    /* Dump trace log if exists */
+    {
+        int tfd = open("/tmp/ul-trace.log", O_RDONLY);
+        if (tfd >= 0) {
+            char buf[512];
+            int n;
+            printf("--- detach-busy trace ---\n");
+            while ((n = read(tfd, buf, sizeof(buf))) > 0)
+                write(STDOUT_FILENO, buf, n);
+            printf("--- end trace ---\n");
+            close(tfd);
+        }
+    }
+    printf("PASS | util-linux-test completed\n");
     printf("UTIL LINUX TEST PASSED\n");
     return 0;
 }

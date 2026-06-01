@@ -198,7 +198,7 @@ ax-io = { version = "0.5.7", path = "components/axio" }
 ax-ipi = { version = "0.5.14", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.1", path = "components/lockdep" }
-ax-kspin = { version = "0.3.8", path = "components/kspin" }
+ax-kspin = { version = "0.3.9", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.7", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.15", path = "os/arceos/ulib/axlibc" }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }
@@ -271,8 +271,6 @@ riscv_vplic = { version = "0.4.12", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.4.2", path = "drivers/blk/nvme-driver" }
 pcie = { version = "0.6.1", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.1", path = "drivers/blk/ramdisk" }
-rd-block = { version = "0.1.2", path = "drivers/blk/rd-block" }
-rd-block-volume = { version = "0.1.0", path = "drivers/blk/rd-block-volume" }
 rd-net = { version = "0.1.1", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.1", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.7.1", path = "drivers/interface/rdif-block" }
@@ -350,7 +348,9 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.12"
 ostool = { version = "0.21" }
-uefi = "0.36"
+riscv = { version = "0.16.1", default-features = false }
+sbi-rt = { version = "0.0.4", default-features = false }
+uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
@@ -360,3 +360,9 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
+
+# `kbpf-basic` depends on `ax-errno` from crates.io; redirect it to our own
+# workspace copy so the kernel and kbpf-basic share a single `ax-errno`
+# (otherwise `BpfError`/`AxError` would be two distinct types).
+[patch.crates-io]
+ax-errno = { path = "components/axerrno" }

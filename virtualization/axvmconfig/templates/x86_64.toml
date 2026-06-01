@@ -5,6 +5,7 @@ cpu_num = 1
 phys_cpu_sets = [1]
 entry_point = 0x8000
 enable_bios = true
+boot_protocol = "multiboot"
 bios_path = "rvm-bios.bin"
 bios_load_addr = 0x8000
 kernel_path = "arceos-x86_64.bin"

@@ -114,8 +114,7 @@ impl TimeIf for TimeIfImpl {
         unsafe {
             if now_ns < deadline_ns {
                 let apic_ticks = NANOS_TO_LAPIC_TICKS_RATIO.mul_trunc(deadline_ns - now_ns);
-                assert!(apic_ticks <= u32::MAX as u64);
-                lapic.set_timer_initial(apic_ticks.max(1) as u32);
+                lapic.set_timer_initial(apic_ticks.clamp(1, u32::MAX as u64) as u32);
             } else {
                 lapic.set_timer_initial(1);
             }

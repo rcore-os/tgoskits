@@ -1,11 +1,18 @@
+#[cfg(target_arch = "riscv64")]
+use core::mem::{MaybeUninit, align_of, size_of};
 use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{TaskInner, current, future::block_on};
-use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED};
+use ax_task::{
+    TaskInner, current,
+    future::{block_on, interruptible},
+};
+use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED};
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
+#[cfg(target_arch = "riscv64")]
+use starry_vm::vm_read_slice;
 
 use super::{
     AsThread, ProcessData, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group,
@@ -22,6 +29,69 @@ pub struct SyscallRestartInfo {
     pub saved_sysno: usize,
 }
 
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
+struct UserStackFrame {
+    fp: usize,
+    ra: usize,
+}
+
+#[cfg(target_arch = "riscv64")]
+fn read_user_stack_frame(fp: usize) -> Option<UserStackFrame> {
+    let frame_addr = fp.checked_sub(size_of::<UserStackFrame>())?;
+    if frame_addr == 0 || !frame_addr.is_multiple_of(align_of::<usize>()) {
+        return None;
+    }
+
+    let mut words = [MaybeUninit::<usize>::uninit(); 2];
+    vm_read_slice(frame_addr as *const usize, &mut words).ok()?;
+
+    Some(UserStackFrame {
+        fp: unsafe { words[0].assume_init() },
+        ra: unsafe { words[1].assume_init() },
+    })
+}
+
+#[cfg(target_arch = "riscv64")]
+fn dump_user_backtrace(uctx: &UserContext) {
+    const MAX_USER_FRAMES: usize = 32;
+
+    let mut fp = uctx.regs.s0;
+    let sp = uctx.regs.sp;
+    warn!(
+        "user backtrace:\n  #00 pc={:#018x} ra={:#018x} sp={:#018x} fp={:#018x}",
+        uctx.sepc, uctx.regs.ra, sp, fp
+    );
+
+    for depth in 1..MAX_USER_FRAMES {
+        let Some(frame) = read_user_stack_frame(fp) else {
+            warn!("  <unwind stopped: unreadable frame at fp={:#018x}>", fp);
+            break;
+        };
+
+        if frame.fp == 0 || frame.ra == 0 {
+            break;
+        }
+        if frame.fp <= fp {
+            warn!(
+                "  <unwind stopped: non-growing fp {:#018x} after {:#018x}>",
+                frame.fp, fp
+            );
+            break;
+        }
+
+        let frame_sp = frame.fp - size_of::<UserStackFrame>();
+        warn!(
+            "  #{:02} pc={:#018x} sp={:#018x} fp={:#018x}",
+            depth, frame.ra, frame_sp, frame.fp
+        );
+        fp = frame.fp;
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn dump_user_backtrace(_uctx: &UserContext) {}
+
 /// Dump user-mode register state once the signal disposition really terminates.
 fn dump_user_crash_context(uctx: &UserContext) {
     #[cfg(target_arch = "riscv64")]
@@ -29,9 +99,40 @@ fn dump_user_crash_context(uctx: &UserContext) {
         let r = &uctx.regs;
         warn!(
             "user register dump:\n  pc(sepc)={:#018x} ra={:#018x} sp={:#018x}\n  gp={:#018x}  \
-             tp={:#018x}  s0={:#018x}\n  a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}\n  \
-             a4={:#018x} a5={:#018x} a6={:#018x} a7={:#018x}",
-            uctx.sepc, r.ra, r.sp, r.gp, r.tp, r.s0, r.a0, r.a1, r.a2, r.a3, r.a4, r.a5, r.a6, r.a7,
+             tp={:#018x}  s0/fp={:#018x} s1={:#018x}\n  a0={:#018x} a1={:#018x} a2={:#018x} \
+             a3={:#018x}\n  a4={:#018x} a5={:#018x} a6={:#018x} a7={:#018x}\n  s2={:#018x} \
+             s3={:#018x} s4={:#018x} s5={:#018x}\n  s6={:#018x} s7={:#018x} s8={:#018x} \
+             s9={:#018x}\n  s10={:#018x} s11={:#018x} t3={:#018x} t4={:#018x}\n  t5={:#018x} \
+             t6={:#018x}",
+            uctx.sepc,
+            r.ra,
+            r.sp,
+            r.gp,
+            r.tp,
+            r.s0,
+            r.s1,
+            r.a0,
+            r.a1,
+            r.a2,
+            r.a3,
+            r.a4,
+            r.a5,
+            r.a6,
+            r.a7,
+            r.s2,
+            r.s3,
+            r.s4,
+            r.s5,
+            r.s6,
+            r.s7,
+            r.s8,
+            r.s9,
+            r.s10,
+            r.s11,
+            r.t3,
+            r.t4,
+            r.t5,
+            r.t6,
         );
     }
     #[cfg(target_arch = "aarch64")]
@@ -68,6 +169,91 @@ fn dump_user_crash_context(uctx: &UserContext) {
     {
         warn!("user register dump: not implemented for this arch");
     }
+
+    dump_user_backtrace(uctx);
+}
+
+/// Block the current thread in a ptrace stop.
+///
+/// Returns `Some(resume_signo)` if the thread was traced and is now being
+/// resumed by the tracer. `None` means the thread was not traced (no
+/// `PTRACE_TRACEME`). The optional `resume_signo` is the signal the tracer
+/// chose to inject on resume (via `PTRACE_CONT(sig)`); `None` within the
+/// outer `Some` means suppress the original signal.
+pub fn ptrace_stop_current(
+    thr: &Thread,
+    signo: Signo,
+    uctx: &mut UserContext,
+) -> Option<Option<Signo>> {
+    ptrace_stop_current_impl(thr, signo, uctx, false)
+}
+
+pub fn ptrace_syscall_stop_current(
+    thr: &Thread,
+    signo: Signo,
+    uctx: &mut UserContext,
+) -> Option<Option<Signo>> {
+    ptrace_stop_current_impl(thr, signo, uctx, true)
+}
+
+fn ptrace_stop_current_impl(
+    thr: &Thread,
+    signo: Signo,
+    uctx: &mut UserContext,
+    is_syscall_stop: bool,
+) -> Option<Option<Signo>> {
+    if !thr.proc_data.is_ptrace_traceme() && !thr.proc_data.is_ptrace_attached() {
+        return None;
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        thr.proc_data.save_current_fp_for_ptrace();
+    }
+    if is_syscall_stop {
+        thr.proc_data.set_ptrace_syscall_stop(signo, uctx);
+    } else {
+        thr.proc_data.set_ptrace_stop(signo, uctx);
+    }
+
+    let waiter_pid = thr
+        .proc_data
+        .ptrace_tracer_pid()
+        .or_else(|| thr.proc_data.proc.parent().map(|parent| parent.pid()));
+    if let Some(waiter_pid) = waiter_pid
+        && let Ok(parent_data) = get_process_data(waiter_pid)
+    {
+        let sigchld = SignalInfo::new_sigchld(
+            thr.proc_data.proc.pid(),
+            thr.cred().uid,
+            CLD_TRAPPED as i32,
+            signo as i32,
+        );
+        let _ = send_signal_to_process(waiter_pid, Some(sigchld));
+        parent_data.child_exit_event.wake();
+    }
+
+    current().clear_interrupt();
+    let wait_result = block_on(interruptible(poll_fn(|cx| {
+        if thr.proc_data.ptrace_stop_signo().is_none() {
+            Poll::Ready(())
+        } else {
+            thr.proc_data.register_ptrace_stop_waker(cx.waker());
+            if thr.proc_data.ptrace_stop_signo().is_none() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    })));
+
+    if wait_result.is_err() {
+        thr.proc_data.clear_ptrace_stop();
+    } else if let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context() {
+        *uctx = resume_uctx;
+        thr.proc_data.restore_current_fp_for_ptrace(uctx);
+    }
+    Some(thr.proc_data.take_ptrace_resume_signo())
 }
 
 pub fn check_signals(
@@ -120,6 +306,21 @@ pub fn check_signals(
     };
 
     let signo = sig.signo();
+
+    if signo != Signo::SIGKILL
+        && !thr.proc_data.take_ptrace_resume_signal_bypass(signo)
+        && let Some(resume_signo) = ptrace_stop_current(thr, signo, uctx)
+    {
+        match resume_signo {
+            None => return true,
+            Some(new_signo) if new_signo != signo => {
+                thr.proc_data.set_ptrace_resume_signal_bypass(new_signo);
+                let _ = thr.signal.send_signal(SignalInfo::new_kernel(new_signo));
+                return true;
+            }
+            Some(_) => {}
+        }
+    }
 
     // Only dump register state when the terminating signal is the same
     // synchronous fault signo that raise_signal_fatal force-delivered to
@@ -316,6 +517,9 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
     if let Some(sig) = sig {
         let signo = sig.signo();
         info!("Send signal {signo:?} to process {pid}");
+        if signo == Signo::SIGKILL && proc_data.ptrace_stop_signo().is_some() {
+            proc_data.clear_ptrace_stop();
+        }
         if let Some(tid) = proc_data.signal.send_signal(sig) {
             // A thread was found that doesn't have the signal blocked — wake it.
             if let Ok(task) = get_task(tid) {

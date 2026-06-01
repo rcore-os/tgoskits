@@ -47,6 +47,8 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
+#[cfg(any(feature = "fs", feature = "fs-ng", test))]
+mod block;
 mod devices;
 mod registers;
 
@@ -156,8 +158,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(feature = "buddy-slab")]
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
+    // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
@@ -271,12 +273,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     cfg_if::cfg_if! {
         if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {
-            ax_fs_ng::init_filesystems(
-                devices::take_dyn_fs_ng_block_devices(),
-                ax_hal::dtb::get_chosen_bootargs(),
-            );
+            block::init_dyn_fs_ng(ax_hal::dtb::get_chosen_bootargs());
         } else if #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))] {
-            ax_fs_ng::init_filesystems(devices::take_static_fs_ng_block_devices(), None);
+            block::init_static_fs_ng();
         } else if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
             ax_fs::init_filesystems(
                 devices::take_dyn_fs_block_devices(),

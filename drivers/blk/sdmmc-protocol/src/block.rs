@@ -1,6 +1,6 @@
 //! Block request state shared by SD/MMC host controller backends.
 //!
-//! The protocol crate intentionally does not know about `rd-block` or any
+//! The protocol crate intentionally does not know about a block runtime or any
 //! executor. These types describe the portable queue contract that host
 //! drivers expose upward: submit one block transfer, advance it by polling or
 //! IRQ wakeups, and keep the concrete FIFO/DMA engine visible.

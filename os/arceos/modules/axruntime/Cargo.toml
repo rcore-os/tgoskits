@@ -10,10 +10,9 @@ version = "0.5.16"
 [features]
 default = []
 
-buddy-slab = ["ax-alloc/buddy-slab"]
 dma = ["paging"]
 ipi = ["dep:ax-ipi"]
-irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
+irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu", "ax-driver/irq"]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
@@ -25,7 +24,6 @@ plat-dyn = [
   "ax-driver/plat-dyn",
   "ax-hal/plat-dyn",
   "paging",
-  "buddy-slab",
   "irq",
   "rtc",
   "smp",
@@ -37,7 +35,6 @@ display = ["dep:ax-display", "ax-driver/display"]
 fs = [
   "dep:ax-errno",
   "dep:ax-fs",
-  "dep:rd-block",
   "dep:spin",
   "dep:axklib",
   "ax-driver/block",
@@ -45,18 +42,19 @@ fs = [
 fs-ng = [
   "dep:ax-errno",
   "dep:ax-fs-ng",
-  "dep:rd-block",
   "dep:spin",
   "dep:axklib",
   "ax-driver/block",
 ]
+fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4"]
+fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
 net = ["dep:ax-net", "ax-driver/net"]
 net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
 vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
 
 [dependencies]
-ax-alloc = {workspace = true, features = ["default"]}
+ax-alloc = {workspace = true}
 ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
@@ -83,7 +81,6 @@ axpanic = {workspace = true}
 cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
 indoc = "2"
-rd-block = {workspace = true, optional = true}
-rd-net = {workspace = true, optional = true}
+rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
