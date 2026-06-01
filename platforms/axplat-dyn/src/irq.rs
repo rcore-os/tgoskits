@@ -1,3 +1,4 @@
+#[cfg(target_arch = "riscv64")]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use ax_plat::irq::{HandlerTable, IrqHandler, IrqIf};

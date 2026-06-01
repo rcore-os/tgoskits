@@ -204,6 +204,15 @@ fn merge_board_test_uboot_config(
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
     }
+    if test_uboot.kernel_load_addr.is_some() {
+        uboot.kernel_load_addr = test_uboot.kernel_load_addr;
+    }
+    if test_uboot.fit_load_addr.is_some() {
+        uboot.fit_load_addr = test_uboot.fit_load_addr;
+    }
+    if test_uboot.bootm_addr.is_some() {
+        uboot.bootm_addr = test_uboot.bootm_addr;
+    }
     uboot.success_regex = test_uboot.success_regex;
     uboot.fail_regex = test_uboot.fail_regex;
     uboot.uboot_cmd = test_uboot.uboot_cmd;
@@ -1383,6 +1392,9 @@ mod tests {
                 "run ab_select_cmd".to_string(),
                 "run avb_boot".to_string(),
             ]),
+            kernel_load_addr: Some("0x200000".to_string()),
+            fit_load_addr: Some("0x2000000".to_string()),
+            bootm_addr: Some("0x2000000".to_string()),
             shell_prefix: Some("ubuntu login:".to_string()),
             ..Default::default()
         };
@@ -1400,6 +1412,9 @@ mod tests {
         );
         assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
         assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
+        assert_eq!(merged.kernel_load_addr.as_deref(), Some("0x200000"));
+        assert_eq!(merged.fit_load_addr.as_deref(), Some("0x2000000"));
+        assert_eq!(merged.bootm_addr.as_deref(), Some("0x2000000"));
         assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));

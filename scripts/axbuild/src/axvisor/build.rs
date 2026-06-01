@@ -850,7 +850,7 @@ plat_dyn = false
             &config_path,
             format!(
                 r#"
-env = {}
+env = {{}}
 features = ["{legacy_platform_feature}", "ept-level-4"]
 log = "Info"
 plat_dyn = false

@@ -18,9 +18,11 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use byte_unit::Byte;
 
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
+use axvmconfig::AxVMCrateConfig;
+#[cfg(target_arch = "x86_64")]
+use axvmconfig::VMBootProtocol;
 #[cfg(target_arch = "x86_64")]
 use axvmconfig::VmMemMappingType;
-use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 
 use crate::config::{get_vm_dtb_arc, vmcfg};
 
