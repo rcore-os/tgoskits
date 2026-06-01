@@ -71,10 +71,11 @@ fn somehal_handle_irq(irq: somehal::irq::IrqId) {
 fn handle_riscv_external_irq() -> Option<usize> {
     let irq = somehal::irq::claim_external_irq()?;
     let irq_num = irq.raw();
-    if inject_virtual_irq(irq.raw()) {
+    if inject_virtual_irq(irq_num) {
+        somehal::irq::complete_external_irq(irq);
         return Some(irq_num);
     }
-    if !dispatch_irq(irq.raw()).handled {
+    if !dispatch_irq(irq_num).handled {
         warn!("Unhandled IRQ {irq:?}");
     }
     somehal::irq::complete_external_irq(irq);
