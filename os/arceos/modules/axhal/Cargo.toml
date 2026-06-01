@@ -115,7 +115,7 @@ default = []
 ipi = ["irq"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true, features = ["default"] }
+ax-alloc = { workspace = true, optional = true }
 ax-config.workspace = true
 ax-cpu.workspace = true
 ax-plat.workspace = true

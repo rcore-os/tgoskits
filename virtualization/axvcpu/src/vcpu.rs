@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cell::{RefCell, UnsafeCell};
+use core::cell::UnsafeCell;
 
 use ax_errno::{AxResult, ax_err};
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvisor_api::vmm::{VCpuId, VMId};
 
-use super::{AxArchVCpu, AxVCpuExitReason};
+use super::{AxArchVCpu, AxVCpuExitReason, InterruptTriggerMode};
 
 /// Immutable configuration data for a virtual CPU.
 ///
@@ -62,8 +63,9 @@ pub enum VCpuState {
 
 /// Mutable runtime state of a virtual CPU.
 ///
-/// This structure contains data that changes during VCpu execution,
-/// protected by RefCell for interior mutability.
+/// This structure contains data that changes during VCpu execution. The state is guarded by a
+/// short critical-section mutex because a vCPU can be observed by management or interrupt paths
+/// while the owning vCPU task is between VM exits.
 pub struct AxVCpuInnerMut {
     /// Current execution state of the VCpu
     state: VCpuState,
@@ -81,8 +83,8 @@ pub struct AxVCpuInnerMut {
 pub struct AxVCpu<A: AxArchVCpu> {
     /// Immutable VCpu configuration (VM ID, CPU affinity, etc.)
     inner_const: AxVCpuInnerConst,
-    /// Mutable VCpu state protected by RefCell for safe interior mutability
-    inner_mut: RefCell<AxVCpuInnerMut>,
+    /// Mutable VCpu state protected by a short critical-section mutex.
+    inner_mut: Mutex<AxVCpuInnerMut>,
     /// Architecture-specific VCpu implementation
     ///
     /// Uses UnsafeCell instead of RefCell because RefCell guards cannot be
@@ -121,7 +123,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
                 favor_phys_cpu,
                 phys_cpu_set,
             },
-            inner_mut: RefCell::new(AxVCpuInnerMut {
+            inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VCpuState::Created,
             }),
             arch_vcpu: UnsafeCell::new(A::new(vm_id, vcpu_id, arch_config)?),
@@ -184,7 +186,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
 
     /// Gets the current execution state of the VCpu.
     pub fn state(&self) -> VCpuState {
-        self.inner_mut.borrow().state
+        self.inner_mut.lock().state
     }
 
     /// Set the state of the VCpu.
@@ -192,7 +194,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     /// This method is unsafe because it may break the state transition model.
     /// Use it with caution.
     pub unsafe fn set_state(&self, state: VCpuState) {
-        self.inner_mut.borrow_mut().state = state;
+        self.inner_mut.lock().state = state;
     }
 
     /// Execute a block with the state of the VCpu transitioned from `from` to `to`. If the current state is not `from`, return an error.
@@ -204,22 +206,25 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     where
         F: FnOnce() -> AxResult<T>,
     {
-        let mut inner_mut = self.inner_mut.borrow_mut();
-        if inner_mut.state != from {
-            inner_mut.state = VCpuState::Invalid;
-            ax_err!(
-                BadState,
-                format!("VCpu state is not {:?}, but {:?}", from, inner_mut.state)
-            )
-        } else {
-            let result = f();
-            inner_mut.state = if result.is_err() {
-                VCpuState::Invalid
-            } else {
-                to
-            };
-            result
+        {
+            let mut inner_mut = self.inner_mut.lock();
+            if inner_mut.state != from {
+                let current_state = inner_mut.state;
+                inner_mut.state = VCpuState::Invalid;
+                return ax_err!(
+                    BadState,
+                    format!("VCpu state is not {from:?}, but {current_state:?}")
+                );
+            }
         }
+
+        let result = f();
+        self.inner_mut.lock().state = if result.is_err() {
+            VCpuState::Invalid
+        } else {
+            to
+        };
+        result
     }
 
     /// Execute a block with the current VCpu set to `&self`.
@@ -299,6 +304,21 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     /// Inject an interrupt to the VCpu.
     pub fn inject_interrupt(&self, vector: usize) -> AxResult {
         self.get_arch_vcpu().inject_interrupt(vector)
+    }
+
+    /// Inject an interrupt with trigger mode metadata.
+    pub fn inject_interrupt_with_trigger(
+        &self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> AxResult {
+        self.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector, trigger)
+    }
+
+    /// Process a guest EOI and return the vector for an external EOI broadcast.
+    pub fn handle_eoi(&self) -> Option<u8> {
+        self.get_arch_vcpu().handle_eoi()
     }
 
     /// Sets the return value of the VCpu.

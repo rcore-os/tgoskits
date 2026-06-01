@@ -21,12 +21,13 @@ ax-cpu = { workspace = true }
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 ax-plat = { workspace = true }
+axklib = { workspace = true, features = ["tlsf"] }
 rdrive.workspace = true
 ax-riscv-plic = { workspace = true, optional = true }
 log = "0.4"
-riscv = "0.14"
+riscv.workspace = true
 riscv_goldfish = { version = "0.1", optional = true }
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
+sbi-rt = { workspace = true, features = ["legacy"] }
 uart_16550 = "0.4.0"
 
 [package.metadata.axplat]

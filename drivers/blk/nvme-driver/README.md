@@ -1,26 +1,42 @@
-# NVME Driver
+# NVMe Driver
 
-nvme driver 1.4
+Portable NVMe 1.4 block driver for the `rdif-block` capability boundary.
 
-## example run
+## RDIF Submit/Poll Model
 
-install qemu.
+The RDIF data path is queue-local and non-blocking:
+
+- `submit_request()` validates the LBA request, allocates a queue-local CID, builds PRP entries, writes one SQE, rings the submission doorbell, and returns `RequestId`.
+- `poll_request()` drains CQEs without spinning, updates the matching CID slot, rings the completion doorbell, and reports `Pending` or `Complete`.
+- `RequestId` is the NVMe CID for the same IO queue. It must not be used on another queue.
+- Queue-full or CID exhaustion is reported as `BlkError::Retry`; incomplete commands are reported as `RequestStatus::Pending`.
+
+Controller/admin initialization still uses the driver's internal admin queue flow. The public block data path does not call synchronous read/write helpers and does not spin for IO completion inside `submit_request()`.
+
+## Queues, PRP, And CID
+
+Each RDIF queue owns one hardware IO queue pair: SQ, CQ, CID slots, PRP list pages, and doorbell access. Request address fields are device-native `lba` and `block_count`; Linux-style 512-byte sector translation belongs to OS glue above `rdif-block`.
+
+Read and write requests use NVMe PRP:
+
+- `prp1` points at the first DMA page fragment.
+- `prp2` is either the second page or a PRP-list page.
+- The current implementation supports one PRP-list page per request.
+
+Flush maps to NVMe NVM Flush. Discard and write-zeroes are reported as unsupported until the command set implementation grows those operations.
+
+## IRQ Sources
+
+`rdif-block` supports multiple IRQ sources via `Interface::irq_sources()` and `take_irq_handler(source_id)`. The NVMe driver exposes legacy source `0`; its event mask covers all created IO queues. This keeps today's INTx/legacy flow working while leaving room for future MSI-X source-per-vector wiring.
+
+The IRQ handler only returns queue events. It does not complete requests, wake tasks, or take OS locks. Runtime/OS glue polls the indicated queues after receiving an event.
+
+## QEMU Smoke Test
+
+The StarryOS NVMe rootfs test boots with an NVMe disk and installs curl inside the guest:
 
 ```shell
-cargo install ostool
-./img.sh
-
-# run test with qemu
-cargo test --test tests --  --show-output
+cargo xtask starry test qemu --arch x86_64 -c nvme-rootfs-apk-curl
 ```
 
-## hardware test
-
-1. 主机连接开发板串口
-2. 开发板插入网线，并且主机与开发板应处于同一网段
-3. 准备开发板设备树文件 `*.dtb`
-
-```shell
-cargo install ostool
-cargo test --test tests --  --show-output --uboot
-```
+The same case is defined for `aarch64`, `riscv64`, and `loongarch64`.

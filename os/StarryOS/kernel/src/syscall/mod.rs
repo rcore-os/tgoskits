@@ -31,7 +31,6 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
-
     // Snapshot sepc before dispatching: if a signal handler is installed
     // during the syscall, the handler redirects uctx.ip() elsewhere.
     // We must not overwrite retval when that happens, because on
@@ -272,6 +271,41 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4() as _,
             uctx.arg5() as _,
         ),
+        Sysno::process_vm_readv => sys_process_vm_readv(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
+        Sysno::process_vm_writev => sys_process_vm_writev(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
+        Sysno::io_setup => sys_io_setup(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::io_destroy => sys_io_destroy(uctx.arg0() as _),
+        Sysno::io_submit => sys_io_submit(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::io_getevents => sys_io_getevents(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::io_pgetevents => sys_io_pgetevents(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5(),
+        ),
+        Sysno::io_cancel => sys_io_cancel(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -517,6 +551,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),
+        Sysno::personality => sys_personality(uctx.arg0()),
         Sysno::setreuid => sys_setreuid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setregid => sys_setregid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setresuid => sys_setresuid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -556,6 +591,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        Sysno::ptrace => sys_ptrace(uctx.arg0() as _, uctx.arg1(), uctx.arg2(), uctx.arg3()),
         Sysno::getsid => sys_getsid(uctx.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(uctx.arg0() as _),
@@ -774,18 +810,14 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
-        #[cfg(feature = "ebpf")]
         Sysno::bpf => crate::ebpf::sys_bpf(uctx.arg0() as _, uctx.arg1(), uctx.arg2() as _),
-        #[cfg(feature = "ebpf")]
-        Sysno::perf_event_open => crate::ebpf::sys_perf_event_open(
+        Sysno::perf_event_open => crate::perf::sys_perf_event_open(
             uctx.arg0(),
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
             uctx.arg4() as _,
         ),
-        #[cfg(not(feature = "ebpf"))]
-        Sysno::bpf | Sysno::perf_event_open => sys_dummy_fd(sysno),
         Sysno::init_module => {
             crate::kmod_loader::sys_init_module(uctx.arg0(), uctx.arg1(), uctx.arg2())
         }

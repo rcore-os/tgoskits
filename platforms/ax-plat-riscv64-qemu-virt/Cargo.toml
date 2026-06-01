@@ -13,7 +13,7 @@ license = "Apache-2.0"
 fp-simd = ["ax-cpu/fp-simd"]
 hypervisor = ["irq", "smp"]
 irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
-paging = ["dep:axklib"]
+paging = []
 rtc = ["dep:riscv_goldfish"]
 smp = ["ax-plat/smp"]
 
@@ -21,17 +21,17 @@ smp = ["ax-plat/smp"]
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
-riscv = "0.16"
+riscv.workspace = true
 riscv_goldfish = { version = "0.1", optional = true }
 ax-riscv-plic = { workspace = true, optional = true }
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
+sbi-rt = { workspace = true, features = ["legacy"] }
 some-serial.workspace = true
 
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-driver = { workspace = true, features = ["plat-static", "virtio"] }
 ax-plat = { workspace = true }
-axklib = { workspace = true, optional = true }
+axklib = { workspace = true, features = ["tlsf"] }
 mmio-api.workspace = true
 
 [package.metadata.axplat]

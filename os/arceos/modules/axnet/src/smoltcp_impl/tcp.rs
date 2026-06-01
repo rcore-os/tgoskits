@@ -147,11 +147,11 @@ impl TcpSocket {
 
             // TODO: check remote addr unreachable
             let bound_endpoint = self.bound_endpoint()?;
-            let iface = &ETH0.iface;
+            let mut iface = ETH0.iface.lock();
             let (local_endpoint, remote_endpoint) = SOCKET_SET
                 .with_socket_mut::<tcp::Socket, _, _>(handle, |socket| {
                     socket
-                        .connect(iface.lock().context(), remote_addr, bound_endpoint)
+                        .connect(iface.context(), remote_addr, bound_endpoint)
                         .or_else(|e| match e {
                             ConnectError::InvalidState => {
                                 ax_err!(BadState, "socket connect() failed")

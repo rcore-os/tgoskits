@@ -72,7 +72,7 @@ graph LR
 - `ax-cpu`
 - `ax-dma`
 - `rdrive`
-- `rd-block`
+- `rdif-block`
 - `rdif-display`
 - `rdif-input`
 - 另外还有 `48` 个同类项未在此展开

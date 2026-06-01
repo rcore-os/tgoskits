@@ -44,7 +44,7 @@ register_structs! {
         (0x20 => pub ID: ReadWrite<u32>),
         (0x24 => _reserved1),
         /// Local APIC Version register (VVER): the 32-bit field located at offset 030H on the virtual-APIC page.
-        (0x30 => pub VERSION: ReadOnly<u32>),
+        (0x30 => pub VERSION: ReadWrite<u32>),
         (0x34 => _reserved2),
         /// Virtual task-priority register (VTPR): the 32-bit field located at offset 080H on the virtual-APIC page.
         (0x80 => pub TPR: ReadWrite<u32>),
@@ -77,7 +77,7 @@ register_structs! {
         /// Virtual trigger-mode register (VTMR):
         /// the 256-bit value comprising eight non-contiguous 32-bit fields at offsets
         /// 180H, 190H, 1A0H, 1B0H, 1C0H, 1D0H, 1E0H, and 1F0H on the virtual-APIC page.
-        (0x180 => pub TMR: [ReadOnly<u128>; 8]),
+        (0x180 => pub TMR: [ReadWrite<u128>; 8]),
         /// Virtual interrupt-request register (VIRR):
         /// the 256-bit value comprising eight non-contiguous 32-bit fields at offsets
         /// 200H, 210H, 220H, 230H, 240H, 250H, 260H, and 270H on the virtual-APIC page.

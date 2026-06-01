@@ -23,6 +23,29 @@ use crate::{
 
 pub type KernelExtTracePoint = Arc<Mutex<ExtTracePoint<KernelTraceAux>>>;
 
+/// Look up a registered tracepoint by its numeric id (as found in
+/// `/sys/kernel/debug/tracing/events/<subsystem>/<event>/id`).
+///
+/// Returns `None` if the id is unknown or the registry has not been
+/// initialized yet.
+pub fn lookup_ext_tracepoint(id: u32) -> Option<KernelExtTracePoint> {
+    TRACE_STATE.ext_tracepoints.get()?.get(&id).cloned()
+}
+
+/// Find a registered tracepoint by name. Returns the first `ExtTracePoint`
+/// whose underlying `TracePoint`'s name matches `name`.
+///
+/// Returns `None` if no tracepoint matches or the registry has not been
+/// initialized yet.
+pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
+    for ext_tp in TRACE_STATE.ext_tracepoints.get()?.values() {
+        if ext_tp.lock().trace_point().name() == name {
+            return Some(ext_tp.clone());
+        }
+    }
+    None
+}
+
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
     raw_pipe: Mutex<TracePipeRaw>,

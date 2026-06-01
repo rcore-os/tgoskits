@@ -14,7 +14,7 @@ use starry_vm::VmMutPtr;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
-    task::{AsThread, ProcessData, Thread, add_task_to_table, new_user_task},
+    task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
 };
 
 bitflags! {
@@ -224,8 +224,11 @@ impl CloneArgs {
 
             let proc_data = ProcessData::new(
                 proc,
-                old_proc_data.exe_path.read().clone(),
-                old_proc_data.cmdline.read().clone(),
+                ProcessImage::new(
+                    old_proc_data.exe_path.read().clone(),
+                    old_proc_data.cmdline.read().clone(),
+                    old_proc_data.auxv.read().clone(),
+                ),
                 aspace,
                 signal_actions,
                 exit_signal,
@@ -234,6 +237,7 @@ impl CloneArgs {
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
+            proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
             // fork/clone copies mm->dumpable from parent; without this, a
             // child of `prctl(PR_SET_DUMPABLE, 0) -> fork()` would reset to
@@ -241,6 +245,7 @@ impl CloneArgs {
             // supposed to enforce. Verified via Linux host: parent sets 0,
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
+            proc_data.set_thp_disable(old_proc_data.thp_disable());
 
             {
                 let mut scope = proc_data.scope.write();
@@ -300,12 +305,50 @@ impl CloneArgs {
             new_proc_data.set_vfork_done(poll);
         }
 
+        let parent_pid = curr.as_thread().proc_data.proc.pid();
+        let parent_tid = curr.id().as_u64() as Pid;
+        let ptrace_event = if flags.contains(CloneFlags::THREAD) {
+            super::ptrace::PTRACE_EVENT_CLONE
+        } else if flags.contains(CloneFlags::VFORK) {
+            super::ptrace::PTRACE_EVENT_VFORK
+        } else {
+            super::ptrace::PTRACE_EVENT_FORK
+        };
+        let trace_clone = super::ptrace::ptrace_notify_clone(parent_pid, tid as Pid, ptrace_event);
+        if trace_clone
+            && !flags.contains(CloneFlags::THREAD)
+            && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid()
+        {
+            new_proc_data.set_ptrace_tracer_pid(tracer_pid);
+            new_proc_data.set_ptrace_attached();
+            new_proc_data.set_ptrace_stop(starry_signal::Signo::SIGSTOP, &new_uctx);
+        }
+
         let task = spawn_task(new_task);
         add_task_to_table(&task);
+
+        if trace_clone {
+            let _ = crate::task::send_signal_to_thread(
+                None,
+                parent_tid,
+                Some(starry_signal::SignalInfo::new_kernel(
+                    starry_signal::Signo::SIGTRAP,
+                )),
+            );
+        }
 
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();
+            if super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid) {
+                let _ = crate::task::send_signal_to_thread(
+                    None,
+                    parent_tid,
+                    Some(starry_signal::SignalInfo::new_kernel(
+                        starry_signal::Signo::SIGTRAP,
+                    )),
+                );
+            }
         }
 
         Ok(tid as _)

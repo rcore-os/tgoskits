@@ -16,7 +16,9 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
-use axvm::config::AxVMCrateConfig;
+#[cfg(target_arch = "x86_64")]
+use axvm::config::VMBootProtocol;
+use axvm::config::{AxVMCrateConfig, VmMemMappingType};
 use byte_unit::Byte;
 
 use crate::hal::CacheOp;
@@ -25,7 +27,34 @@ use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
-mod x86_boot;
+mod x86;
+#[cfg(target_arch = "x86_64")]
+use x86::boot_params as x86_boot_params;
+#[cfg(target_arch = "x86_64")]
+use x86::linux as x86_linux;
+#[cfg(target_arch = "x86_64")]
+use x86::linux_boot as x86_linux_boot;
+#[cfg(target_arch = "x86_64")]
+use x86::mptable as x86_mptable;
+#[cfg(target_arch = "x86_64")]
+use x86::multiboot as x86_boot;
+
+#[cfg(target_arch = "x86_64")]
+pub fn is_x86_linux_image_config(config: &AxVMCrateConfig) -> bool {
+    if config.kernel.enable_bios {
+        return false;
+    }
+
+    match config.kernel.image_location.as_deref() {
+        Some("memory") => with_memory_image(config, detect_x86_linux_image).is_some(),
+        #[cfg(feature = "fs")]
+        Some("fs") => fs::kernel_read(config, x86_linux::HEADER_READ_SIZE)
+            .ok()
+            .and_then(|data| detect_x86_linux_image(&data))
+            .is_some(),
+        _ => false,
+    }
+}
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
@@ -70,6 +99,7 @@ pub struct ImageLoader {
     kernel_load_gpa: GuestPhysAddr,
     bios_load_gpa: Option<GuestPhysAddr>,
     dtb_load_gpa: Option<GuestPhysAddr>,
+    ramdisk_load_gpa: Option<GuestPhysAddr>,
 }
 
 impl ImageLoader {
@@ -81,10 +111,12 @@ impl ImageLoader {
             kernel_load_gpa: GuestPhysAddr::default(),
             bios_load_gpa: None,
             dtb_load_gpa: None,
+            ramdisk_load_gpa: None,
         }
     }
 
     pub fn load(&mut self) -> AxResult {
+        self.config.kernel.validate_boot_config()?;
         info!(
             "Loading VM[{}] images into memory region: gpa={:#x}, hva={:#x}, size={:#}",
             self.vm.id(),
@@ -97,6 +129,7 @@ impl ImageLoader {
             self.kernel_load_gpa = config.image_config.kernel_load_gpa;
             self.dtb_load_gpa = config.image_config.dtb_load_gpa;
             self.bios_load_gpa = config.image_config.bios_load_gpa;
+            self.ramdisk_load_gpa = config.image_config.ramdisk.as_ref().map(|r| r.load_gpa);
         });
 
         match self.config.kernel.image_location.as_deref() {
@@ -112,10 +145,19 @@ impl ImageLoader {
 
     /// Load VM images from memory
     /// into the guest VM's memory space based on the VM configuration.
-    fn load_vm_images_from_memory(&self) -> AxResult {
+    fn load_vm_images_from_memory(&mut self) -> AxResult {
         info!("Loading VM[{}] images from memory", self.config.base.id);
 
         let vm_imags = memory_images_for_vm(&self.config)?;
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(header) = detect_x86_linux_image(vm_imags.kernel) {
+            return self.load_x86_linux_images_from_memory(
+                header,
+                vm_imags.kernel,
+                vm_imags.ramdisk,
+            );
+        }
 
         load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
 
@@ -170,6 +212,41 @@ impl ImageLoader {
         Ok(())
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn load_x86_linux_images_from_memory(
+        &mut self,
+        header: x86_linux::X86LinuxHeader,
+        kernel: &[u8],
+        ramdisk: Option<&[u8]>,
+    ) -> AxResult {
+        self.adjust_x86_linux_dma_identity_layout()?;
+        let payload = x86_linux_payload(&header, kernel)?;
+        let initrd = if let Some(ramdisk) = ramdisk {
+            Some(x86_linux::X86LinuxRange::new(
+                self.ramdisk_load_gpa()?.as_usize(),
+                ramdisk.len(),
+            ))
+        } else {
+            None
+        };
+        let layout = x86_linux::X86LinuxLoadLayout::new(
+            &header,
+            self.kernel_load_gpa.as_usize(),
+            payload.len(),
+            initrd,
+        )
+        .map_err(x86_linux_layout_error)?;
+
+        self.load_x86_linux_layout(header, layout, kernel)?;
+        load_vm_image_from_memory(payload, self.kernel_load_gpa, self.vm.clone())?;
+
+        if let Some(buffer) = ramdisk {
+            self.load_ramdisk_from_memory(buffer)?;
+        }
+
+        Ok(())
+    }
+
     fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
         if !self.config.kernel.enable_bios {
             return Ok(());
@@ -178,11 +255,41 @@ impl ImageLoader {
         if let Some(buffer) = bios {
             let load_gpa = self
                 .bios_load_gpa
-                .ok_or_else(|| ax_err_type!(NotFound, "BIOS load address is missing"))?;
+                .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
             load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())?;
             #[cfg(target_arch = "x86_64")]
-            self.load_x86_multiboot_info(buffer, load_gpa)?;
+            if should_patch_x86_multiboot_info(&self.config) {
+                self.load_x86_multiboot_info(buffer, load_gpa)?;
+            }
             return Ok(());
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+            let firmware_path = self.config.kernel.boot_firmware_path().ok_or_else(|| {
+                ax_errno::ax_err_type!(NotFound, "UEFI firmware image path is missed")
+            })?;
+            let load_gpa = self.bios_load_gpa.ok_or_else(|| {
+                ax_errno::ax_err_type!(NotFound, "UEFI firmware load addr is missed")
+            })?;
+
+            #[cfg(feature = "fs")]
+            {
+                info!(
+                    "Loading UEFI firmware image {} at GPA {:#x}",
+                    firmware_path,
+                    load_gpa.as_usize()
+                );
+                return fs::load_vm_image(firmware_path, load_gpa, self.vm.clone());
+            }
+
+            #[cfg(not(feature = "fs"))]
+            {
+                return Err(ax_errno::ax_err_type!(
+                    Unsupported,
+                    "UEFI firmware path requires the fs feature when no firmware image buffer is available"
+                ));
+            }
         }
 
         #[cfg(target_arch = "x86_64")]
@@ -206,7 +313,9 @@ impl ImageLoader {
 
     #[cfg(target_arch = "x86_64")]
     fn should_load_default_x86_boot_image(&self) -> bool {
-        self.config.kernel.enable_bios && self.config.kernel.bios_path.is_none()
+        self.config.kernel.enable_bios
+            && self.config.kernel.boot_firmware_path().is_none()
+            && self.config.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -246,10 +355,7 @@ impl ImageLoader {
     }
 
     fn load_ramdisk_from_memory(&self, ramdisk: &[u8]) -> AxResult {
-        let load_gpa = self
-            .vm
-            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
-            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load address is missing"))?;
+        let load_gpa = self.ramdisk_load_gpa()?;
         let size = ramdisk.len();
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
@@ -262,6 +368,160 @@ impl ImageLoader {
             load_gpa.as_usize()
         );
         load_vm_image_from_memory(ramdisk, load_gpa, self.vm.clone())
+    }
+
+    fn ramdisk_load_gpa(&self) -> AxResult<GuestPhysAddr> {
+        self.ramdisk_load_gpa
+            .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn adjust_x86_linux_dma_identity_layout(&mut self) -> AxResult {
+        if !self.main_memory.is_identical() {
+            return Ok(());
+        }
+
+        let memory_base = self.main_memory.gpa.as_usize();
+        let configured_kernel = self.config.kernel.kernel_load_addr;
+        let configured_ramdisk = self.config.kernel.ramdisk_load_addr;
+
+        self.kernel_load_gpa = GuestPhysAddr::from(memory_base + configured_kernel);
+        if let Some(ramdisk_load_addr) = configured_ramdisk {
+            self.ramdisk_load_gpa = Some(GuestPhysAddr::from(memory_base + ramdisk_load_addr));
+        }
+
+        self.vm.with_config(|config| {
+            config.image_config.kernel_load_gpa = self.kernel_load_gpa;
+            if let Some(load_gpa) = self.ramdisk_load_gpa
+                && let Some(ref mut ramdisk) = config.image_config.ramdisk
+            {
+                ramdisk.load_gpa = load_gpa;
+            }
+        });
+
+        info!(
+            "Adjusted x86 Linux identity DMA layout for VM[{}]: memory_base={:#x}, kernel_load_gpa={:#x}, ramdisk_load_gpa={:?}",
+            self.vm.id(),
+            memory_base,
+            self.kernel_load_gpa.as_usize(),
+            self.ramdisk_load_gpa
+        );
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn load_x86_linux_layout(
+        &self,
+        header: x86_linux::X86LinuxHeader,
+        layout: x86_linux::X86LinuxLoadLayout,
+        kernel: &[u8],
+    ) -> AxResult {
+        info!(
+            "x86 Linux layout for VM[{}]: header={:#x?}, payload_offset={:#x}, boot_params=[{:#x}..{:#x}), boot_stub=[{:#x}..{:#x}), kernel=[{:#x}..{:#x}), initrd={:?}",
+            self.config.base.id,
+            header,
+            header.payload_offset(),
+            layout.boot_params.start,
+            layout.boot_params.end().unwrap(),
+            layout.boot_stub.start,
+            layout.boot_stub.end().unwrap(),
+            layout.kernel.start,
+            layout.kernel.end().unwrap(),
+            layout.initrd
+        );
+
+        let boot_params = self.build_x86_boot_params(header, layout, kernel)?;
+        let boot_stub = self.build_x86_linux_boot_stub(&layout)?;
+        let mp_table = x86_mptable::build();
+        load_vm_image_from_memory(
+            &boot_params,
+            layout.boot_params.start.into(),
+            self.vm.clone(),
+        )?;
+        load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), self.vm.clone())?;
+        load_vm_image_from_memory(&mp_table, x86_mptable::MP_TABLE_GPA.into(), self.vm.clone())?;
+        self.install_x86_linux_boot_entry(&layout);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_x86_linux_boot_stub(
+        &self,
+        layout: &x86_linux::X86LinuxLoadLayout,
+    ) -> AxResult<[u8; x86_linux::BOOT_STUB_SIZE]> {
+        x86_linux_boot::build_boot_image(layout).map_err(|err| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                format!("failed to build x86 Linux boot stub: {err:?}")
+            )
+        })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn install_x86_linux_boot_entry(&self, layout: &x86_linux::X86LinuxLoadLayout) {
+        let entry = GuestPhysAddr::from(x86_linux_boot::DEFAULT_LINUX_BOOT_LOAD_GPA);
+        self.vm.with_config(|config| {
+            config.cpu_config.bsp_entry = entry;
+            config.cpu_config.ap_entry = entry;
+        });
+        info!(
+            "x86 Linux direct boot entry for VM[{}]: stub={:#x}, boot_params={:#x}, kernel_entry={:#x}, initrd={:?}",
+            self.config.base.id,
+            layout.boot_stub.start,
+            layout.boot_params.start,
+            layout.kernel.start,
+            layout.initrd
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_x86_boot_params(
+        &self,
+        header: x86_linux::X86LinuxHeader,
+        layout: x86_linux::X86LinuxLoadLayout,
+        kernel: &[u8],
+    ) -> AxResult<[u8; x86_linux::BOOT_PARAMS_SIZE]> {
+        let mut builder = x86_boot_params::BootParamsBuilder::new(
+            kernel,
+            header,
+            layout,
+            x86_linux::X86LinuxRange::new(self.main_memory.gpa.as_usize(), self.main_memory.size()),
+        );
+        if let Some(command_line) = self.config.kernel.cmdline.as_deref() {
+            builder.set_command_line(command_line).map_err(|err| {
+                ax_errno::ax_err_type!(
+                    InvalidInput,
+                    format!("invalid x86 Linux command line: {err:?}")
+                )
+            })?;
+        }
+
+        for memory in &self.config.kernel.memory_regions {
+            if memory.map_type == VmMemMappingType::MapAlloc {
+                builder.add_ram_range(x86_linux::X86LinuxRange::new(memory.gpa, memory.size));
+            }
+        }
+
+        for device in &self.config.devices.passthrough_devices {
+            builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                device.base_gpa,
+                device.length,
+            ));
+        }
+        for address in &self.config.devices.passthrough_addresses {
+            builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                address.base_gpa,
+                address.length,
+            ));
+        }
+        builder.add_reserved_range(x86_mptable::reserved_range());
+
+        builder.build().map_err(|err| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                format!("failed to build x86 boot_params: {err:?}")
+            )
+        })
     }
 
     #[cfg(feature = "fs")]
@@ -384,31 +644,47 @@ pub mod fs {
 
     /// Loads the VM image files from the filesystem
     /// into the guest VM's memory space based on the VM configuration.
-    pub(crate) fn load_vm_images_from_filesystem(loader: &ImageLoader) -> AxResult {
+    pub(crate) fn load_vm_images_from_filesystem(loader: &mut ImageLoader) -> AxResult {
         info!("Loading VM images from filesystem");
+        #[cfg(target_arch = "x86_64")]
+        {
+            let kernel_probe = kernel_read(&loader.config, x86_linux::HEADER_READ_SIZE);
+            match kernel_probe {
+                Ok(data) => {
+                    if let Some(header) = detect_x86_linux_image(&data) {
+                        let kernel = read_image_file(&loader.config.kernel.kernel_path)?;
+                        return loader.load_x86_linux_images_from_filesystem(header, &kernel);
+                    }
+                }
+                Err(err) => debug!("Unable to probe x86 Linux bzImage header: {err:?}"),
+            }
+        }
         // Load kernel image.
         load_vm_image(
             &loader.config.kernel.kernel_path,
             loader.kernel_load_gpa,
             loader.vm.clone(),
         )?;
-        // Load BIOS image if needed.
+        // Load boot firmware image if needed.
         if loader.config.kernel.enable_bios
-            && let Some(bios_path) = &loader.config.kernel.bios_path
+            && let Some(bios_path) = loader.config.kernel.boot_firmware_path()
         {
             if let Some(bios_load_addr) = loader.bios_load_gpa {
                 #[cfg(target_arch = "x86_64")]
-                let bios_image = read_image_file(bios_path)?;
-                #[cfg(target_arch = "x86_64")]
                 {
-                    validate_x86_bios_patch_region(&bios_image)?;
-                    load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
-                    loader.load_x86_multiboot_info(&bios_image, bios_load_addr)?;
+                    if should_patch_x86_multiboot_info(&loader.config) {
+                        let bios_image = read_image_file(bios_path)?;
+                        validate_x86_bios_patch_region(&bios_image)?;
+                        load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
+                        loader.load_x86_multiboot_info(&bios_image, bios_load_addr)?;
+                    } else {
+                        load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                    }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
             } else {
-                return ax_err!(NotFound, "BIOS load addr is missed");
+                return ax_err!(NotFound, "boot firmware load addr is missed");
             }
         };
         #[cfg(target_arch = "x86_64")]
@@ -455,6 +731,43 @@ pub mod fs {
         }
 
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl ImageLoader {
+        fn load_x86_linux_images_from_filesystem(
+            &mut self,
+            header: x86_linux::X86LinuxHeader,
+            kernel: &[u8],
+        ) -> AxResult {
+            self.adjust_x86_linux_dma_identity_layout()?;
+            let payload = x86_linux_payload(&header, kernel)?;
+            let initrd = if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
+                let (_, ramdisk_size) = open_image_file(ramdisk_path)?;
+                Some(x86_linux::X86LinuxRange::new(
+                    self.ramdisk_load_gpa()?.as_usize(),
+                    ramdisk_size,
+                ))
+            } else {
+                None
+            };
+            let layout = x86_linux::X86LinuxLoadLayout::new(
+                &header,
+                self.kernel_load_gpa.as_usize(),
+                payload.len(),
+                initrd,
+            )
+            .map_err(x86_linux_layout_error)?;
+
+            self.load_x86_linux_layout(header, layout, kernel)?;
+            load_vm_image_from_memory(payload, self.kernel_load_gpa, self.vm.clone())?;
+
+            if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
+                self.load_ramdisk_from_filesystem(ramdisk_path)?;
+            }
+
+            Ok(())
+        }
     }
 
     pub(crate) fn load_vm_image(
@@ -526,6 +839,48 @@ pub mod fs {
             .size() as usize;
         Ok((file, file_size))
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn should_patch_x86_multiboot_info(config: &AxVMCrateConfig) -> bool {
+    config.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
+}
+
+#[cfg(target_arch = "x86_64")]
+fn detect_x86_linux_image(image: &[u8]) -> Option<x86_linux::X86LinuxHeader> {
+    match x86_linux::X86LinuxHeader::parse(image) {
+        Ok(header) => Some(header),
+        Err(err) => {
+            debug!("Not an x86 Linux bzImage: {err:?}");
+            None
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_linux_payload<'a>(
+    header: &x86_linux::X86LinuxHeader,
+    image: &'a [u8],
+) -> AxResult<&'a [u8]> {
+    let payload_offset = header.payload_offset();
+    image.get(payload_offset..).ok_or_else(|| {
+        ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 Linux bzImage payload offset {:#x} exceeds image size {:#x}",
+                payload_offset,
+                image.len()
+            )
+        )
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_linux_layout_error(err: x86_linux::X86LinuxLayoutError) -> ax_errno::AxError {
+    ax_errno::ax_err_type!(
+        InvalidInput,
+        format!("invalid x86 Linux memory layout: {err:?}")
+    )
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -610,5 +965,22 @@ mod tests {
         let invalid_gpa = GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA + 0x1000);
 
         assert!(builtin_x86_bios_load_gpa(Some(invalid_gpa)).is_err());
+    }
+
+    #[test]
+    fn legacy_x86_bios_config_uses_multiboot_patch() {
+        let mut cfg = AxVMCrateConfig::default();
+        cfg.kernel.enable_bios = true;
+
+        assert!(should_patch_x86_multiboot_info(&cfg));
+    }
+
+    #[test]
+    fn x86_uefi_config_skips_multiboot_patch() {
+        let mut cfg = AxVMCrateConfig::default();
+        cfg.kernel.enable_bios = true;
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+
+        assert!(!should_patch_x86_multiboot_info(&cfg));
     }
 }

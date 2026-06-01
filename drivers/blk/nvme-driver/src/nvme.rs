@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
-use dma_api::{DeviceDma, DmaDirection, DmaOp};
+use dma_api::{CoherentArray, DeviceDma, DmaDirection, DmaOp};
 use log::{debug, info};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 
@@ -20,10 +20,11 @@ pub struct Nvme {
     _mmio: Option<Mmio>,
     dma: DeviceDma,
     admin_queue: NvmeQueue,
-    io_queues: Vec<NvmeQueue>,
+    io_queues: Vec<Option<NvmeQueue>>,
     num_ns: usize,
     sqes: u32,
     cqes: u32,
+    page_size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +72,7 @@ impl Nvme {
             num_ns: 0,
             sqes: 6,
             cqes: 4,
+            page_size: config.page_size,
         };
 
         let version = s.version();
@@ -199,7 +201,7 @@ impl Nvme {
                 io_queue.cq.len() as _,
                 io_queue.cq.bus_addr(),
                 true,
-                false,
+                true,
                 0,
             );
             self.admin_queue.command_sync(data)?;
@@ -216,10 +218,31 @@ impl Nvme {
 
             self.admin_queue.command_sync(data)?;
 
-            self.io_queues.push(io_queue);
+            self.io_queues.push(Some(io_queue));
         }
 
         Ok(())
+    }
+
+    pub fn io_queue_count(&self) -> usize {
+        self.io_queues.len()
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.page_size
+    }
+
+    pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
+        self.io_queues.get_mut(index)?.take()
+    }
+
+    pub(crate) fn alloc_prp_list(&self) -> Result<CoherentArray<u64>> {
+        self.dma
+            .coherent_array_zero_with_align(
+                self.page_size / core::mem::size_of::<u64>(),
+                self.page_size,
+            )
+            .map_err(Into::into)
     }
 
     pub fn get_identfy<T: Identify>(&mut self, mut want: T) -> Result<T::Output> {
@@ -271,7 +294,11 @@ impl Nvme {
             blk_num as _,
         );
 
-        self.io_queues[0].command_sync(cmd)?;
+        self.io_queues
+            .get_mut(0)
+            .and_then(Option::as_mut)
+            .ok_or(Error::Unknown("missing IO queue"))?
+            .command_sync(cmd)?;
 
         Ok(())
     }
@@ -302,7 +329,11 @@ impl Nvme {
             blk_num as _,
         );
 
-        self.io_queues[0].command_sync(cmd)?;
+        self.io_queues
+            .get_mut(0)
+            .and_then(Option::as_mut)
+            .ok_or(Error::Unknown("missing IO queue"))?
+            .command_sync(cmd)?;
         dma_buff.sync_for_cpu_all();
 
         for (index, value) in dma_buff.iter().enumerate() {

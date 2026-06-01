@@ -28,7 +28,7 @@ ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["arm-el2"] }
 ax-driver = { workspace = true, features = ["plat-static"] }
 ax-plat.workspace = true
-axklib.workspace = true
+axklib = { workspace = true, features = ["tlsf"] }
 bitflags = "2.6"
 heapless = "0.9"
 ax-int-ratio = { workspace = true }

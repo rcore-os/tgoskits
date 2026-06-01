@@ -65,6 +65,48 @@ cargo xtask starry app run -t redis --arch riscv64
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
 
+## GDB Smoke
+
+The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
+rootfs overlay with GDB, GDBServer, and two tiny target programs.
+
+```bash
+cargo xtask starry app run -t gdb-smoke --arch riscv64
+cargo xtask starry app run -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-gdbserver.toml
+```
+
+## MariaDB
+
+The `mariadb` case is a QEMU app workflow that installs MariaDB in the guest,
+initializes a fresh data directory, runs an InnoDB SQL workload, and checks that
+the data survives a server restart.
+
+```bash
+cargo xtask starry app run -t mariadb --arch aarch64
+cargo xtask starry app run -t mariadb --arch loongarch64
+cargo xtask starry app run -t mariadb --arch x86_64
+cargo xtask starry app run -t mariadb --arch riscv64
+```
+
+## jcode
+
+The `jcode` case is an x86_64 QEMU app workflow that downloads the jcode AI coding
+agent from GitHub releases, patches the glibc-linked binary for musl compatibility
+using `patchelf`, builds a glibc stub shared library, and injects everything into
+the app rootfs overlay.
+
+```bash
+apps/starry/jcode/prepare_jcode_rootfs.sh
+cargo xtask starry qemu \
+  --arch x86_64 \
+  --qemu-config apps/starry/jcode/qemu-x86_64.toml \
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-jcode.img
+```
+
+See `jcode/README.md` for interactive usage and troubleshooting.
+
+
 ## Orange Pi 5 Plus UVC
 
 The `orangepi-5-plus-uvc` case needs `/usr/bin/uvc-fps` to be installed in the

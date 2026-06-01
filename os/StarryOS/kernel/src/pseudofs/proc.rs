@@ -11,6 +11,7 @@ use core::{
     ffi::CStr,
     fmt::Write,
     iter,
+    mem::size_of,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -22,8 +23,10 @@ use ax_runtime::hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
+use zerocopy::IntoBytes;
 
 use crate::{
     file::FD_TABLE,
@@ -657,6 +660,16 @@ fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
     ))
 }
 
+fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
+    let mut entries = task.as_thread().proc_data.auxv.read().clone();
+    entries.push(AuxEntry::new(AuxType::NULL, 0));
+    let mut bytes = Vec::with_capacity(entries.len() * size_of::<AuxEntry>());
+    for entry in entries {
+        bytes.extend_from_slice(entry.as_bytes());
+    }
+    bytes
+}
+
 impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
@@ -667,6 +680,7 @@ impl SimpleDirOps for ThreadDir {
                 "oom_score_adj",
                 "task",
                 "maps",
+                "auxv",
                 "mounts",
                 "cmdline",
                 "comm",
@@ -755,6 +769,7 @@ impl SimpleDirOps for ThreadDir {
                 )
                 .into()
             }
+            "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
