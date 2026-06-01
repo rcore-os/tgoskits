@@ -102,21 +102,8 @@ pub enum IrqScope {
 pub enum ShareMode {
     /// No other action can share the IRQ.
     Exclusive,
-    /// Multiple actions can share the IRQ if their trigger mode is compatible.
+    /// Multiple actions can share the IRQ.
     Shared,
-}
-
-/// IRQ trigger mode.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TriggerMode {
-    /// The framework should not constrain the platform trigger mode.
-    Unspecified,
-    /// Edge triggered IRQ.
-    Edge,
-    /// Active-high level triggered IRQ.
-    LevelHigh,
-    /// Active-low level triggered IRQ.
-    LevelLow,
 }
 
 /// Whether an IRQ action should be enabled after registration.
@@ -256,7 +243,6 @@ pub struct IrqRequest {
     pub(crate) data: NonNull<()>,
     pub(crate) scope: IrqScope,
     pub(crate) share_mode: ShareMode,
-    pub(crate) trigger: TriggerMode,
     pub(crate) auto_enable: AutoEnable,
 }
 
@@ -268,7 +254,6 @@ impl IrqRequest {
             data,
             scope: IrqScope::Global,
             share_mode: ShareMode::Exclusive,
-            trigger: TriggerMode::Unspecified,
             auto_enable: AutoEnable::Yes,
         }
     }
@@ -282,12 +267,6 @@ impl IrqRequest {
     /// Sets the sharing mode.
     pub const fn share_mode(mut self, share_mode: ShareMode) -> Self {
         self.share_mode = share_mode;
-        self
-    }
-
-    /// Sets the trigger mode.
-    pub const fn trigger(mut self, trigger: TriggerMode) -> Self {
-        self.trigger = trigger;
         self
     }
 

@@ -3,15 +3,11 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::{
-    CpuId, CpuMask, IrqError, IrqNumber, IrqRequest, IrqScope, ShareMode, TriggerMode,
-    action::Action,
-};
+use crate::{CpuId, CpuMask, IrqError, IrqNumber, IrqRequest, IrqScope, ShareMode, action::Action};
 
 pub(crate) struct Descriptor {
     pub(crate) irq: IrqNumber,
     share_mode: ShareMode,
-    trigger: TriggerMode,
     pub(crate) in_flight: AtomicUsize,
     line_desired: bool,
     line_applied: bool,
@@ -25,7 +21,6 @@ impl Descriptor {
         Self {
             irq,
             share_mode: request.share_mode,
-            trigger: request.trigger,
             in_flight: AtomicUsize::new(0),
             line_desired: false,
             line_applied: false,
@@ -43,21 +38,11 @@ impl Descriptor {
 
         if !has_active_actions {
             self.share_mode = request.share_mode;
-            self.trigger = request.trigger;
             return Ok(());
         }
 
         if self.share_mode != ShareMode::Shared || request.share_mode != ShareMode::Shared {
             return Err(IrqError::Busy);
-        }
-
-        match (self.trigger, request.trigger) {
-            (TriggerMode::Unspecified, trigger) => self.trigger = trigger,
-            (current, TriggerMode::Unspecified) => {
-                let _ = current;
-            }
-            (current, requested) if current == requested => {}
-            _ => return Err(IrqError::Busy),
         }
 
         Ok(())

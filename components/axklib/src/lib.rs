@@ -47,7 +47,7 @@ pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
     AutoEnable as IrqAutoEnable, CpuId as IrqCpuId, CpuMask as IrqCpuMask, IrqContext, IrqError,
     IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler,
-    ShareMode as IrqShareMode, TriggerMode as IrqTriggerMode,
+    ShareMode as IrqShareMode,
 };
 use trait_ffi::*;
 
@@ -174,7 +174,7 @@ pub mod irq {
     pub use super::{
         IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId, IrqCpuMask as CpuMask,
         IrqError, IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
-        IrqShareMode as ShareMode, IrqStatus, IrqTriggerMode as TriggerMode, RawIrqHandler,
+        IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
         klib::{
             irq_disable as disable, irq_enable as enable, irq_free as free,
             irq_request_percpu as request_percpu, irq_request_shared as request_shared,

@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
     AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOps, IrqOutcome,
-    IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler, Registry, ShareMode, TriggerMode,
+    IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler, Registry, ShareMode,
 };
 use spin::Once;
 

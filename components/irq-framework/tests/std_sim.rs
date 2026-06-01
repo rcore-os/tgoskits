@@ -9,7 +9,7 @@ use std::{
 
 use irq_framework::{
     AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqNumber, IrqOps, IrqRequest, IrqReturn,
-    IrqScope, Registry, ShareMode, TriggerMode,
+    IrqScope, Registry, ShareMode,
 };
 
 #[derive(Clone, Default)]
@@ -247,35 +247,6 @@ fn exclusive_and_shared_conflict() {
             IrqNumber(3),
             IrqRequest::new(count_handler, data)
                 .share_mode(ShareMode::Shared)
-                .auto_enable(AutoEnable::No),
-        )
-        .unwrap_err();
-
-    assert_eq!(err, IrqError::Busy);
-}
-
-#[test]
-fn shared_trigger_mode_must_match() {
-    let registry = Registry::new(MockOps::with_cpus(1));
-    let counter = AtomicUsize::new(0);
-    let data = NonNull::from(&counter).cast();
-
-    registry
-        .request(
-            IrqNumber(5),
-            IrqRequest::new(count_handler, data)
-                .share_mode(ShareMode::Shared)
-                .trigger(TriggerMode::Edge)
-                .auto_enable(AutoEnable::No),
-        )
-        .unwrap();
-
-    let err = registry
-        .request(
-            IrqNumber(5),
-            IrqRequest::new(count_handler, data)
-                .share_mode(ShareMode::Shared)
-                .trigger(TriggerMode::LevelHigh)
                 .auto_enable(AutoEnable::No),
         )
         .unwrap_err();
