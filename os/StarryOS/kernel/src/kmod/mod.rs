@@ -29,7 +29,7 @@ use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoPreempt;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_runtime::hal::{
-    cpu::asm::flush_tlb,
+    cpu::asm::{flush_icache_all, flush_tlb},
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize},
 };
@@ -140,8 +140,14 @@ impl KernelModuleHelper for KmodHelper {
     }
 
     fn flsuh_cache(_addr: usize, _size: usize) {
-        // Conservative: full TLB invalidation. Matches source behaviour.
+        // A freshly-relocated module's instructions were just written through
+        // the *data* side of the cache hierarchy. On architectures with
+        // non-coherent I/D caches (aarch64, riscv64, loongarch64) the CPU may
+        // otherwise fetch stale instructions — or fault — from the new code
+        // pages, so the instruction cache must be invalidated in addition to
+        // the TLB. Mirrors `mm::access::sync_modified_kernel_text`.
         flush_tlb(None);
+        flush_icache_all();
     }
 }
 
@@ -163,7 +169,19 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
         .load_module(params)
         .map_err(|_| AxError::InvalidInput)?;
 
+    // `name` is available as soon as `load_module()` returns, before init runs.
     let name = owner.name().to_string();
+
+    // Reject a duplicate name *before* running the module's init function.
+    // `call_init()` executes the module's real init (registering callbacks,
+    // allocating resources, …) and consumes the init entry, and `ModuleOwner`
+    // has no Drop-based exit; running init first and only then bailing out with
+    // `EEXIST` would leave those side effects in place with no way to roll
+    // them back.
+    if MODULES.lock().contains_key(&name) {
+        return Err(AxError::AlreadyExists);
+    }
+
     let ret = owner.call_init().map_err(|_| AxError::InvalidInput)?;
     if ret != 0 {
         warn!("module `{name}` init returned {ret}");
@@ -172,7 +190,12 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
     info!("module `{name}` loaded");
 
     let mut modules = MODULES.lock();
+    // Re-check under the same lock: a concurrent load of the same name may have
+    // won the race while this module was running its init. Roll back our init
+    // via `call_exit()` rather than leaking it.
     if modules.contains_key(&name) {
+        drop(modules);
+        owner.call_exit();
         return Err(AxError::AlreadyExists);
     }
     modules.insert(name, owner);
