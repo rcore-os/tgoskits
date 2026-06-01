@@ -10,19 +10,20 @@ surface separates three different concepts that should not be mixed:
   and after completion ownership changes.
 - `ContiguousArray<T>` / `ContiguousBox<T>`: owned device-address-contiguous
   DMA memory using normal CPU mapping. Use these for data buffers and buffer
-  pools. Accessors only touch CPU memory; ownership transfer is explicit via
-  `sync_for_device(_all)` and `sync_for_cpu(_all)`.
+  pools. CPU-only accessors are named with a `_cpu` suffix; ownership transfer
+  is explicit via `prepare_for_device(_all)` / `complete_for_cpu(_all)` or the
+  higher-level `*_for_device` / `*_from_device` helpers.
 - `StreamingMap<T>`: RAII mapping of an existing caller-owned buffer. Use this
   for one transfer of a buffer not owned by `dma-api`. Explicit sync methods
   handle cache maintenance and bounce-buffer copy, and `Drop` unmaps.
 
 The `*_for_device` and `*_from_device` helpers are convenience ownership
 transfer APIs. They wrap the same synchronization operations as
-`sync_for_device(_all)` and `sync_for_cpu(_all)`: CPU writes are made visible
-before the device runs, and device writes are made visible before CPU reads.
-They do not detect device completion, place MMIO doorbells, or provide hardware
-ordering barriers. Drivers still decide when a transfer is submitted and when it
-has completed.
+`prepare_for_device(_all)` and `complete_for_cpu(_all)`: CPU writes are made
+visible before the device runs, and device writes are made visible before CPU
+reads. They do not detect device completion, place MMIO doorbells, or provide
+hardware ordering barriers. Drivers still decide when a transfer is submitted
+and when it has completed.
 
 `DmaAddr` is the only portable device-visible address type. Backend-private raw
 handles are split into `DmaAllocHandle` for owned allocations and
@@ -118,7 +119,7 @@ Descriptor/control memory:
 
 ```rust,ignore
 let mut ring = dma.coherent_array_zero_with_align::<Descriptor>(256, 64)?;
-ring.set(0, Descriptor::new(buffer_dma));
+ring.set_cpu(0, Descriptor::new(buffer_dma));
 doorbell_after_release_barrier();
 ```
 

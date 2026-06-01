@@ -27,7 +27,7 @@ fn coherent_array_access_does_not_sync_cache() {
         .unwrap();
 
     tracker.clear();
-    ring.set(
+    ring.set_cpu(
         0,
         Descriptor {
             addr: 0x1000,
@@ -35,21 +35,21 @@ fn coherent_array_access_does_not_sync_cache() {
             flags: 1,
         },
     );
-    assert_eq!(ring.read(0).unwrap().addr, 0x1000);
+    assert_eq!(ring.read_cpu(0).unwrap().addr, 0x1000);
 
     assert_eq!(tracker.count_sync_alloc_for_device(), 0);
     assert_eq!(tracker.count_sync_alloc_for_cpu(), 0);
 }
 
 #[test]
-fn contiguous_array_syncs_only_when_explicitly_requested() {
+fn contiguous_array_cpu_accessors_do_not_sync_cache() {
     let (dev, tracker) = new_tracking_device();
     let mut buff = dev
         .contiguous_array_zero_with_align::<u32>(16, 64, DmaDirection::ToDevice)
         .unwrap();
 
     tracker.clear();
-    buff.set(3, 0xA5A5_A5A5);
+    buff.set_cpu(3, 0xA5A5_A5A5);
     assert_eq!(tracker.count_sync_alloc_for_device(), 0);
     assert_eq!(tracker.count_sync_alloc_for_cpu(), 0);
 
@@ -76,7 +76,7 @@ fn contiguous_box_supports_cpu_sync() {
         .unwrap();
 
     tracker.clear();
-    status.write(Descriptor {
+    status.write_cpu(Descriptor {
         addr: 0,
         len: 0,
         flags: 0,
@@ -98,8 +98,8 @@ fn streaming_map_has_explicit_device_and_cpu_sync() {
         .unwrap();
 
     tracker.clear();
-    map.sync_for_device_all();
-    map.sync_for_cpu_all();
+    map.prepare_for_device_all();
+    map.complete_for_cpu_all();
     drop(map);
 
     assert_eq!(tracker.count_sync_map_for_device(), 1);
@@ -150,7 +150,7 @@ fn streaming_write_for_device_syncs_after_cpu_write() {
     tracker.clear();
     map.write_for_device(4, |data| data.copy_from_slice(&[1, 2, 3, 4]));
 
-    assert_eq!(map.read(0), Some(1));
+    assert_eq!(map.read_cpu(0), Some(1));
     assert_eq!(tracker.count_sync_map_for_device(), 1);
     assert!(tracker.operations().iter().any(|op| matches!(
         op,
@@ -213,7 +213,7 @@ fn streaming_bounce_buffer_copies_back_on_cpu_sync() {
             .as_ptr()
             .write_bytes(0x5a, backing.len());
     }
-    map.sync_for_cpu_all();
+    map.complete_for_cpu_all();
     drop(map);
 
     assert_eq!(backing, [0x5a; 16]);
@@ -241,7 +241,7 @@ fn contiguous_array_high_level_accessors_sync_expected_ranges() {
     let mut rx = dev
         .contiguous_array_zero_with_align::<u8>(16, 64, DmaDirection::FromDevice)
         .unwrap();
-    rx.copy_from_slice(&[5, 6, 7, 8]);
+    rx.copy_from_slice_cpu(&[5, 6, 7, 8]);
     tracker.clear();
     let mut out = [0u8; 4];
     rx.copy_from_device_to_slice(&mut out);
@@ -275,7 +275,7 @@ fn contiguous_box_high_level_accessors_sync_for_device_and_cpu() {
     let mut rx = dev
         .contiguous_box_zero_with_align::<Descriptor>(64, DmaDirection::FromDevice)
         .unwrap();
-    rx.write(Descriptor {
+    rx.write_cpu(Descriptor {
         addr: 0x2000,
         len: 128,
         flags: 2,
@@ -342,13 +342,13 @@ fn pool_reuses_contiguous_buffers_without_implicit_zeroing() {
     {
         let mut buff = pool.alloc().unwrap();
         unsafe {
-            buff.as_mut_slice()[0] = 0x7e;
+            buff.as_mut_slice_cpu()[0] = 0x7e;
         }
     }
 
     tracker.clear();
     let buff = pool.alloc().unwrap();
-    assert_eq!(buff.as_slice()[0], 0x7e);
+    assert_eq!(buff.as_slice_cpu()[0], 0x7e);
     assert_eq!(tracker.count_sync_alloc_for_device(), 0);
     assert_eq!(tracker.count_sync_alloc_for_cpu(), 0);
 }

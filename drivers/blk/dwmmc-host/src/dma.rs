@@ -646,7 +646,7 @@ impl DwMmc {
             return Err(Error::InvalidArgument);
         }
 
-        desc.write_with(block_count as usize, |descs| {
+        desc.write_with_cpu(block_count as usize, |descs| {
             for (index, desc) in descs.iter_mut().enumerate() {
                 let last = index + 1 == block_count as usize;
                 let next = if last {

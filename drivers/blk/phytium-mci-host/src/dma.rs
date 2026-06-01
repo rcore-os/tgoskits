@@ -453,7 +453,7 @@ impl PhytiumMci {
             len,
             IDMAC_MAX_BUF_SIZE,
         )?;
-        descriptors.write_with(desc_values.len(), |dst| dst.copy_from_slice(&desc_values));
+        descriptors.write_with_cpu(desc_values.len(), |dst| dst.copy_from_slice(&desc_values));
         self.start_idmac_transfer(cmd, block_size, block_count, desc_dma)?;
 
         let progress = DmaProgress {

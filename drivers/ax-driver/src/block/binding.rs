@@ -152,7 +152,7 @@ impl Block {
             let block_buf =
                 &mut buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
             let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
-            dma_buffer.sync_for_device(0, block_buf.len());
+            dma_buffer.prepare_for_device(0, block_buf.len());
             let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
             let request_id = queues
                 .queue
@@ -165,8 +165,7 @@ impl Block {
                 })
                 .map_err(map_blk_err_to_ax_err)?;
             queues.poll_until_complete(request_id)?;
-            dma_buffer.sync_for_cpu(0, block_buf.len());
-            dma_buffer.read_with(block_buf.len(), |data| block_buf.copy_from_slice(data));
+            dma_buffer.copy_from_device_to_slice(block_buf);
         }
         Ok(())
     }
@@ -181,8 +180,7 @@ impl Block {
             let block_buf =
                 &buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
             let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
-            dma_buffer.write_with(block_buf.len(), |data| data.copy_from_slice(block_buf));
-            dma_buffer.sync_for_device(0, block_buf.len());
+            dma_buffer.copy_to_device_from_slice(block_buf);
             let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
             let request_id = queues
                 .queue

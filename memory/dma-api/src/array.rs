@@ -43,33 +43,33 @@ impl<T: DmaPod> CoherentArray<T> {
         self.data.handle.size()
     }
 
-    pub fn read(&self, index: usize) -> Option<T> {
+    pub fn read_cpu(&self, index: usize) -> Option<T> {
         read_at(self.as_ptr(), self.len(), index)
     }
 
-    pub fn set(&mut self, index: usize, value: T) {
+    pub fn set_cpu(&mut self, index: usize, value: T) {
         write_at(self.as_ptr(), self.len(), index, value);
     }
 
-    pub fn copy_from_slice(&mut self, src: &[T]) {
+    pub fn copy_from_slice_cpu(&mut self, src: &[T]) {
         copy_from_slice(self.as_ptr(), self.len(), src);
     }
 
-    pub fn iter(&self) -> ArrayIter<'_, T, Self> {
-        ArrayIter {
+    pub fn iter_cpu(&self) -> ArrayCpuIter<'_, T, Self> {
+        ArrayCpuIter {
             array: self,
             index: 0,
             _phantom: PhantomData,
         }
     }
 
-    pub fn write_with<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+    pub fn write_with_cpu<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
-        let data = unsafe { self.as_mut_slice() };
+        let data = unsafe { self.as_mut_slice_cpu() };
         f(&mut data[..len])
     }
 
-    pub fn read_with<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
+    pub fn read_with_cpu<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
         let data = unsafe { core::slice::from_raw_parts(self.as_ptr().as_ptr(), len) };
         f(data)
@@ -79,7 +79,7 @@ impl<T: DmaPod> CoherentArray<T> {
         self.data.handle.as_ptr().cast::<T>()
     }
 
-    pub fn as_slice(&self) -> &[T] {
+    pub fn as_slice_cpu(&self) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.as_ptr().as_ptr(), self.len()) }
     }
 
@@ -87,7 +87,7 @@ impl<T: DmaPod> CoherentArray<T> {
     ///
     /// The caller must ensure the device is not concurrently accessing this
     /// memory in a way that races with CPU writes.
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [T] {
+    pub unsafe fn as_mut_slice_cpu(&mut self) -> &mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.as_ptr().as_ptr(), self.len()) }
     }
 }
@@ -138,20 +138,20 @@ impl<T: DmaPod> ContiguousArray<T> {
         self.data.handle.size()
     }
 
-    pub fn read(&self, index: usize) -> Option<T> {
+    pub fn read_cpu(&self, index: usize) -> Option<T> {
         read_at(self.as_ptr(), self.len(), index)
     }
 
-    pub fn set(&mut self, index: usize, value: T) {
+    pub fn set_cpu(&mut self, index: usize, value: T) {
         write_at(self.as_ptr(), self.len(), index, value);
     }
 
-    pub fn copy_from_slice(&mut self, src: &[T]) {
+    pub fn copy_from_slice_cpu(&mut self, src: &[T]) {
         copy_from_slice(self.as_ptr(), self.len(), src);
     }
 
-    pub fn iter(&self) -> ArrayIter<'_, T, Self> {
-        ArrayIter {
+    pub fn iter_cpu(&self) -> ArrayCpuIter<'_, T, Self> {
+        ArrayCpuIter {
             array: self,
             index: 0,
             _phantom: PhantomData,
@@ -176,36 +176,52 @@ impl<T: DmaPod> ContiguousArray<T> {
         self.data.sync_for_cpu(0, self.bytes_len());
     }
 
+    pub fn prepare_for_device(&self, offset: usize, size: usize) {
+        self.sync_for_device(offset, size);
+    }
+
+    pub fn prepare_for_device_all(&self) {
+        self.sync_for_device_all();
+    }
+
+    pub fn complete_for_cpu(&self, offset: usize, size: usize) {
+        self.sync_for_cpu(offset, size);
+    }
+
+    pub fn complete_for_cpu_all(&self) {
+        self.sync_for_cpu_all();
+    }
+
     pub fn write_for_device<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
-        let ret = self.write_with(len, f);
-        self.sync_for_device(0, len * core::mem::size_of::<T>());
+        let ret = self.write_with_cpu(len, f);
+        self.prepare_for_device(0, len * core::mem::size_of::<T>());
         ret
     }
 
     pub fn read_from_device<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
         let size = len * core::mem::size_of::<T>();
-        self.sync_for_cpu(0, size);
-        self.read_with(len, f)
+        self.complete_for_cpu(0, size);
+        self.read_with_cpu(len, f)
     }
 
     pub fn copy_to_device_from_slice(&mut self, src: &[T]) {
-        self.copy_from_slice(src);
-        self.sync_for_device(0, core::mem::size_of_val(src));
+        self.copy_from_slice_cpu(src);
+        self.prepare_for_device(0, core::mem::size_of_val(src));
     }
 
     pub fn copy_from_device_to_slice(&self, dst: &mut [T]) {
         self.read_from_device(dst.len(), |src| dst.copy_from_slice(src));
     }
 
-    pub fn write_with<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+    pub fn write_with_cpu<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
         {
-            let data = unsafe { self.as_mut_slice() };
+            let data = unsafe { self.as_mut_slice_cpu() };
             f(&mut data[..len])
         }
     }
 
-    pub fn read_with<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
+    pub fn read_with_cpu<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
         let data = unsafe { core::slice::from_raw_parts(self.as_ptr().as_ptr(), len) };
         f(data)
@@ -215,7 +231,7 @@ impl<T: DmaPod> ContiguousArray<T> {
         self.data.handle.as_ptr().cast::<T>()
     }
 
-    pub fn as_slice(&self) -> &[T] {
+    pub fn as_slice_cpu(&self) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.as_ptr().as_ptr(), self.len()) }
     }
 
@@ -223,7 +239,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     ///
     /// The caller must ensure the device is not concurrently accessing this
     /// memory in a way that races with CPU writes.
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [T] {
+    pub unsafe fn as_mut_slice_cpu(&mut self) -> &mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.as_ptr().as_ptr(), self.len()) }
     }
 
@@ -238,13 +254,13 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 }
 
-pub trait DmaArrayRead<T: DmaPod> {
+pub trait DmaArrayCpuRead<T: DmaPod> {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
-    fn read(&self, index: usize) -> Option<T>;
+    fn read_cpu(&self, index: usize) -> Option<T>;
 }
 
-impl<T: DmaPod> DmaArrayRead<T> for CoherentArray<T> {
+impl<T: DmaPod> DmaArrayCpuRead<T> for CoherentArray<T> {
     fn len(&self) -> usize {
         CoherentArray::len(self)
     }
@@ -253,12 +269,12 @@ impl<T: DmaPod> DmaArrayRead<T> for CoherentArray<T> {
         CoherentArray::is_empty(self)
     }
 
-    fn read(&self, index: usize) -> Option<T> {
-        CoherentArray::read(self, index)
+    fn read_cpu(&self, index: usize) -> Option<T> {
+        CoherentArray::read_cpu(self, index)
     }
 }
 
-impl<T: DmaPod> DmaArrayRead<T> for ContiguousArray<T> {
+impl<T: DmaPod> DmaArrayCpuRead<T> for ContiguousArray<T> {
     fn len(&self) -> usize {
         ContiguousArray::len(self)
     }
@@ -267,25 +283,25 @@ impl<T: DmaPod> DmaArrayRead<T> for ContiguousArray<T> {
         ContiguousArray::is_empty(self)
     }
 
-    fn read(&self, index: usize) -> Option<T> {
-        ContiguousArray::read(self, index)
+    fn read_cpu(&self, index: usize) -> Option<T> {
+        ContiguousArray::read_cpu(self, index)
     }
 }
 
-pub struct ArrayIter<'a, T: DmaPod, A: DmaArrayRead<T>> {
+pub struct ArrayCpuIter<'a, T: DmaPod, A: DmaArrayCpuRead<T>> {
     array: &'a A,
     index: usize,
     _phantom: PhantomData<T>,
 }
 
-impl<'a, T: DmaPod, A: DmaArrayRead<T>> Iterator for ArrayIter<'a, T, A> {
+impl<'a, T: DmaPod, A: DmaArrayCpuRead<T>> Iterator for ArrayCpuIter<'a, T, A> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= self.array.len() {
             return None;
         }
-        let value = self.array.read(self.index);
+        let value = self.array.read_cpu(self.index);
         self.index += 1;
         value
     }

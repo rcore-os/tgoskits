@@ -1022,7 +1022,7 @@ fn build_descriptors_into_dma(
     }
     let mut table = [Adma2Desc32::default(); ADMA2_DESC_COUNT];
     let written = build_descriptors(&mut table, base, total_len, phase)?;
-    desc.write_with(ADMA2_DESC_COUNT, |descs| {
+    desc.write_with_cpu(ADMA2_DESC_COUNT, |descs| {
         descs.copy_from_slice(&table);
     });
     Ok(written)
