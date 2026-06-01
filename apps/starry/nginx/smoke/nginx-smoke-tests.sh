@@ -211,8 +211,8 @@ test_get_missing() { code=$(curl -sS -o "$OUT/missing.body" -w '%{http_code}' ht
 test_head_small() { code=$(curl -sS -I -o "$OUT/head.headers" -w '%{http_code}' http://127.0.0.1:8080/small.txt || printf 'curl_failed'); [ "$code" = "200" ] && grep -qi '^Content-Length: 18' "$OUT/head.headers"; }
 
 test_keepalive_two_requests() {
-    if command -v nc >/dev/null 2>&1; then NC=nc; elif busybox nc 2>&1 | grep -qi 'usage'; then NC='busybox nc'; else return 0; fi
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT=timeout; elif busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT='busybox timeout'; else return 0; fi
+    if command -v nc >/dev/null 2>&1; then NC=nc; elif busybox nc 2>&1 | grep -qi 'usage'; then NC='busybox nc'; else log "SKIP: keepalive test skipped, nc not available"; return 0; fi
+    if command -v timeout >/dev/null 2>&1; then TIMEOUT=timeout; elif busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT='busybox timeout'; else log "SKIP: keepalive test skipped, timeout not available"; return 0; fi
     { printf 'GET /small.txt HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n'; printf 'GET /empty.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'; } | $TIMEOUT 20 sh -c "$NC 127.0.0.1 8080" > "$OUT/keepalive.raw"
     [ -s "$OUT/keepalive.raw" ] || return 0
     count=$(tr -d '\r' < "$OUT/keepalive.raw" | grep -c '^HTTP/1.1 200 OK')
@@ -254,7 +254,7 @@ start_nginx_sendfile() {
 
 test_large_sendfile() { curl -fsS -D "$OUT/large.headers" -o "$OUT/large.bin" http://127.0.0.1:8082/large.bin && [ "$(wc -c < "$OUT/large.bin")" -eq 1048576 ] && cmp "$WWW/large.bin" "$OUT/large.bin"; }
 test_range() { curl -fsS -D "$OUT/range.headers" -H 'Range: bytes=0-15' -o "$OUT/range.bin" http://127.0.0.1:8082/large.bin && [ "$(wc -c < "$OUT/range.bin")" -eq 16 ] && grep -qi '^HTTP/1.1 206' "$OUT/range.headers" && grep -qi '^Content-Range: bytes 0-15/1048576' "$OUT/range.headers"; }
-test_post_small() { code=$(curl -sS -D "$OUT/post.headers" -o "$OUT/post.body" -w '%{http_code}' -X POST --data 'abc' http://127.0.0.1:8082/ || printf 'curl_failed'); [ "$code" = "405" ] || [ "$code" = "404" ] || [ "$code" = "200" ]; }
+test_post_small() { code=$(curl -sS -D "$OUT/post.headers" -o "$OUT/post.body" -w '%{http_code}' -X POST --data 'abc' http://127.0.0.1:8082/ || printf 'curl_failed'); [ "$code" = "405" ] || { log "unexpected POST / status: actual=$code"; return 1; }; }
 test_post_too_large() { dd if=/dev/zero of="$OUT/post-large.bin" bs=1024 count=8 && code=$(curl -sS -D "$OUT/post-large.headers" -o "$OUT/post-large.body" -w '%{http_code}' -X POST --data-binary "@$OUT/post-large.bin" http://127.0.0.1:8082/ || printf 'curl_failed') && [ "$code" = "413" ]; }
 test_post_too_large_known_issue() { if test_post_too_large; then return 0; fi; log "KNOWN_ISSUE: too large POST did not return 413"; return 0; }
 test_short_connection_loop() { i=1; while [ "$i" -le 20 ]; do curl -fsS -o /dev/null http://127.0.0.1:8082/small.txt || return 1; i=$((i + 1)); done; }
