@@ -38,7 +38,7 @@
 [target.riscv64gc-unknown-hermit]
 rustflags = [
     "-C", "link-arg=-no-pie",
-    "-C", "link-arg=-Tlinker.x"
+    "-C", "link-arg=-Truntime.x"
 ]
 runner = [
     "qemu-system-riscv64",
@@ -57,7 +57,7 @@ runner = [
 [target.x86_64-unknown-hermit]
 rustflags = [
     "-C", "link-arg=-no-pie",
-    "-C", "link-arg=-Tlinker.x"
+    "-C", "link-arg=-Truntime.x"
 ]
 runner = [
     "qemu-system-x86_64",
@@ -76,7 +76,7 @@ runner = [
 [target.aarch64-unknown-hermit]
 rustflags = [
     "-C", "link-arg=-no-pie",
-    "-C", "link-arg=-Tlinker.x"
+    "-C", "link-arg=-Truntime.x"
 ]
 runner = [
     "qemu-system-aarch64",
@@ -96,7 +96,7 @@ runner = [
 [target.loongarch64-unknown-hermit]
 rustflags = [
     "-C", "link-arg=-no-pie",
-    "-C", "link-arg=-Tlinker.x"
+    "-C", "link-arg=-Truntime.x"
 ]
 runner = [
     "qemu-system-loongarch64",

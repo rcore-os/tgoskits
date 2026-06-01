@@ -20,7 +20,6 @@
   "plt-by-default": false,
   "pre-link-args": {
     "gnu-lld": [
-      "-Tlinker.x",
       "-no-pie",
       "-znostart-stop-gc"
     ]

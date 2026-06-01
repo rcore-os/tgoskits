@@ -3,6 +3,7 @@ OUTPUT_ARCH(%ARCH%)
 BASE_ADDRESS = %KERNEL_BASE%;
 PHYS_BASE = %KERNEL_BASE_PADDR%;
 LOAD_OFFSET = BASE_ADDRESS - PHYS_BASE;
+AX_LINKER_LOAD_OFFSET = LOAD_OFFSET;
 CPU_NUM = %CPU_NUM%;
 
 ENTRY(_start)
@@ -26,12 +27,6 @@ SECTIONS
         *(.sdata2 .sdata2.*)
     }
 
-    .init_array : AT(ADDR(.init_array) - LOAD_OFFSET) ALIGN(0x10) {
-        __init_array_start = .;
-        *(.init_array .init_array.*)
-        __init_array_end = .;
-    }
-
     %DWARF%
 
     . = ALIGN(4K);
@@ -44,16 +39,6 @@ SECTIONS
         *(.data .data.*)
         *(.sdata .sdata.*)
         *(.got .got.*)
-
-        . = ALIGN(0x10);
-        __sdriver_register = .;
-        KEEP(*(.driver.register*))
-        __edriver_register = .;
-
-        . = ALIGN(0x10);
-        _ex_table_start = .;
-        KEEP(*(__ex_table))
-        _ex_table_end = .;
     }
 
     .tdata : AT(ADDR(.tdata) - LOAD_OFFSET) ALIGN(0x10) {
@@ -103,8 +88,3 @@ SECTIONS
         *(.comment) *(.gnu*) *(.note*) *(.eh_frame*)
     }
 }
-
-SECTIONS {
-    scope_local : { KEEP(*(scope_local)) }
-}
-INSERT AFTER .tbss;

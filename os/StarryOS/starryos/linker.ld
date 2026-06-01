@@ -1,3 +1,5 @@
+INCLUDE "runtime.x"
+
 SECTIONS {
     .static_keys : {
         __start___static_keys = .;

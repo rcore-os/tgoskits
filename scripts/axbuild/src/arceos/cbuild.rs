@@ -9,7 +9,9 @@ use anyhow::{Context, bail, ensure};
 use ostool::build::config::{Cargo, LogLevel};
 
 use super::build;
-use crate::{context::ResolvedBuildRequest, support::process::ProcessExt};
+use crate::{
+    build::ARCEOS_LINKER_SCRIPT, context::ResolvedBuildRequest, support::process::ProcessExt,
+};
 
 const AX_LIBC_PACKAGE: &str = "ax-libc";
 
@@ -76,10 +78,10 @@ pub(crate) fn build_c_app(
         .target_dir
         .join(&request.target)
         .join(mode)
-        .join("linker.x");
+        .join(ARCEOS_LINKER_SCRIPT);
     ensure!(
         linker_script.is_file(),
-        "expected linker script at {} after ax-libc cargo build",
+        "expected runtime linker script at {} after ax-libc cargo build",
         linker_script.display()
     );
 

@@ -4,8 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const LINKER_SCRIPT_NAME: &str = "linker.x";
-const LINKER_TEMPLATE_NAME: &str = "linker.lds.S";
+const LINKER_SCRIPT_NAME: &str = "axplat.x";
+const LINKER_TEMPLATE_NAME: &str = "axplat.lds.S";
+const LOONGARCH64_LINKER_TEMPLATE_NAME: &str =
+    "../../../../platforms/ax-plat-loongarch64-qemu-virt/linker.lds.S";
 const SELECTED_PLATFORM_NAME: &str = "selected_platform.rs";
 
 struct PlatformFeature {
@@ -83,6 +85,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo:rustc-check-cfg=cfg(ax_hal_any_platform_feature)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
+    println!("cargo:rerun-if-changed={LOONGARCH64_LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed={}", feature_env("myplat"));
     println!("cargo:rerun-if-env-changed={}", feature_env("defplat"));
@@ -100,7 +103,10 @@ fn main() {
 
     let config = load_linker_config().unwrap();
 
-    if config.platform != "dummy" {
+    let platform_linker_is_external = selected_platform
+        .is_some_and(|platform| matches!(platform.feature, "plat-dyn" | "x86-qemu-q35"));
+
+    if config.platform != "dummy" && !platform_linker_is_external {
         gen_linker_script(&arch, &config).unwrap();
     }
 }
@@ -211,6 +217,7 @@ struct LinkerConfig {
     kernel_base_vaddr: usize,
     max_cpu_num: usize,
     kernel_base_paddr: usize,
+    phys_virt_offset: Option<usize>,
 }
 
 fn load_linker_config() -> Result<LinkerConfig> {
@@ -224,6 +231,7 @@ fn load_linker_config() -> Result<LinkerConfig> {
             kernel_base_vaddr: ax_config::plat::KERNEL_BASE_VADDR,
             max_cpu_num: ax_config::plat::MAX_CPU_NUM,
             kernel_base_paddr: ax_config::plat::KERNEL_BASE_PADDR,
+            phys_virt_offset: None,
         }),
     }
 }
@@ -236,6 +244,7 @@ fn read_linker_config(path: &Path) -> Result<LinkerConfig> {
         kernel_base_vaddr: get_usize(&value, &["plat", "kernel-base-vaddr"])?,
         max_cpu_num: get_usize(&value, &["plat", "max-cpu-num"])?,
         kernel_base_paddr: get_usize(&value, &["plat", "kernel-base-paddr"])?,
+        phys_virt_offset: get_optional_usize(&value, &["plat", "phys-virt-offset"])?,
     })
 }
 
@@ -249,6 +258,18 @@ fn get_string(value: &toml::Value, keys: &[&str]) -> Result<String> {
 
 fn get_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
     let value = get_value(value, keys)?;
+    parse_value_usize(value, keys)
+}
+
+fn get_optional_usize(value: &toml::Value, keys: &[&str]) -> Result<Option<usize>> {
+    match get_value(value, keys) {
+        Ok(value) => parse_value_usize(value, keys).map(Some),
+        Err(err) if err.to_string().starts_with("missing config key ") => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn parse_value_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
     match value {
         toml::Value::Integer(value) => usize::try_from(*value)
             .map_err(|_| invalid_data(format!("{} is out of range", keys.join(".")))),
@@ -292,9 +313,18 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
     } else {
         arch
     };
-    let ld_content = std::fs::read_to_string(LINKER_TEMPLATE_NAME)?
+    let template_name = if config.platform == "loongarch64-qemu-virt" {
+        LOONGARCH64_LINKER_TEMPLATE_NAME
+    } else {
+        LINKER_TEMPLATE_NAME
+    };
+    let mut ld_content = std::fs::read_to_string(template_name)?
         .replace("%ARCH%", output_arch)
         .replace("%KERNEL_BASE%", &format!("{:#x}", config.kernel_base_vaddr))
+        .replace(
+            "%KERNEL_BASE_VADDR%",
+            &format!("{:#x}", config.kernel_base_vaddr),
+        )
         .replace(
             "%KERNEL_BASE_PADDR%",
             &format!("{:#x}", config.kernel_base_paddr),
@@ -317,16 +347,24 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
                 ""
             },
         );
+    if config.platform == "loongarch64-qemu-virt" {
+        let phys_virt_offset = config
+            .phys_virt_offset
+            .ok_or_else(|| invalid_data("missing config key plat.phys-virt-offset"))?;
+        let entry_paddr = config.kernel_base_paddr + 0x40;
+        ld_content = ld_content
+            .replace("%PHYS_VIRT_OFFSET%", &format!("{phys_virt_offset:#x}"))
+            .replace("%ENTRY_PADDR%", &format!("{entry_paddr:#x}"));
+    }
 
     // target/<target_triple>/<mode>/build/ax-hal-xxxx/out
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let linker_path = out_dir.join(LINKER_SCRIPT_NAME);
 
-    // target/<target_triple>/<mode>/build/ax-hal-xxxx/out/linker.x
+    // target/<target_triple>/<mode>/build/ax-hal-xxxx/out/axplat.x
     fs::write(&linker_path, &ld_content)?;
 
     println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-arg=-T{}", linker_path.display());
 
     // Keep a stable copy under target/<target_triple>/<mode>/ for callers
     // that still link outside Cargo build-script search paths.

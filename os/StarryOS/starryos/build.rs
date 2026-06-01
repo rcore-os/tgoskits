@@ -1,9 +1,13 @@
 fn main() {
-    println!("cargo:rerun-if-changed=ext_linker.ld");
+    println!("cargo:rerun-if-changed=linker.ld");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let ext_linker = format!("{out_dir}/ext_linker.ld");
+    let linker = format!("{out_dir}/linker.x");
 
-    std::fs::write(&ext_linker, include_str!("ext_linker.ld")).unwrap();
-    println!("cargo:rustc-link-arg-bin=starryos=-T{ext_linker}");
+    std::fs::write(&linker, include_str!("linker.ld")).unwrap();
+    println!("cargo:rustc-link-search={out_dir}");
+    println!("cargo:rustc-link-arg-bin=starryos=-T{linker}");
+
+    let target_dir = std::path::Path::new(&out_dir).join("../../..");
+    std::fs::write(target_dir.join("linker.x"), include_str!("linker.ld")).unwrap();
 }

@@ -21,7 +21,6 @@
   "panic-strategy": "abort",
   "pre-link-args": {
     "gnu-lld": [
-      "-Tlinker.x",
       "-no-pie",
       "-znostart-stop-gc"
     ]

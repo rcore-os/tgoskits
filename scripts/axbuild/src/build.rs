@@ -62,6 +62,7 @@ const LOONGARCH64_HERMIT_JSON: &str =
 const TARGET_JSON_ROOT: &str = "scripts/targets";
 const NO_PIE_TARGET_DIR: &str = "no-pie";
 const PIE_TARGET_DIR: &str = "pie";
+pub(crate) const ARCEOS_LINKER_SCRIPT: &str = "runtime.x";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -185,11 +186,28 @@ impl BuildInfo {
     }
 
     pub(crate) fn into_prepared_base_cargo_config_with_metadata(
+        self,
+        package: &str,
+        target: &str,
+        plat_dyn_override: Option<bool>,
+        metadata: &Metadata,
+    ) -> anyhow::Result<Cargo> {
+        self.into_prepared_base_cargo_config_with_metadata_and_linker(
+            package,
+            target,
+            plat_dyn_override,
+            metadata,
+            None,
+        )
+    }
+
+    pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_linker(
         mut self,
         package: &str,
         target: &str,
         plat_dyn_override: Option<bool>,
         metadata: &Metadata,
+        final_linker_script: Option<&str>,
     ) -> anyhow::Result<Cargo> {
         if self.std_build {
             self.validated_max_cpu_num()?;
@@ -215,7 +233,12 @@ impl BuildInfo {
         let extra_rustflags = toolchain_rustflags(&self.env);
         let cargo_target = cargo_target_json_path(target, plat_dyn)?;
         let cargo_target = cargo_target.display().to_string();
-        let args = Self::build_cargo_args(&cargo_target, &extra_rustflags);
+        let mut rustflags = Vec::new();
+        if let Some(script) = final_linker_script {
+            rustflags.extend(final_linker_rustflags(script, plat_dyn));
+        }
+        rustflags.extend(extra_rustflags);
+        let args = Self::build_cargo_args(&cargo_target, &rustflags);
         self.env.insert(
             "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
             "true".to_string(),
@@ -450,6 +473,19 @@ impl BuildInfo {
     }
 }
 
+pub(crate) fn final_linker_rustflags(script: &str, pie: bool) -> Vec<String> {
+    let mut flags = Vec::new();
+    if pie {
+        flags.push("-Crelocation-model=pic".to_string());
+        flags.push("-Clink-arg=-pie".to_string());
+    } else {
+        flags.push("-Clink-arg=-no-pie".to_string());
+    }
+    flags.push("-Clink-arg=-znostart-stop-gc".to_string());
+    flags.push(format!("-Clink-arg=-T{script}"));
+    flags
+}
+
 impl Default for BuildInfo {
     fn default() -> Self {
         let mut env = HashMap::new();
@@ -596,7 +632,7 @@ panic = "abort"
 [target.'cfg(target_os = "hermit")']
 rustflags = [
     "-C", "link-arg=-no-pie",
-    "-C", "link-arg=-Tlinker.x",
+    "-C", "link-arg=-Truntime.x",
 ]
 "#,
     )?;
@@ -1577,7 +1613,7 @@ mod tests {
     fn build_cargo_args_uses_json_target_spec_and_build_std() {
         let args = BuildInfo::build_cargo_args(
             "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-            &[],
+            &final_linker_rustflags(ARCEOS_LINKER_SCRIPT, false),
         );
 
         assert!(
@@ -1588,6 +1624,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
         );
+        assert!(args.iter().any(|arg| arg.contains("-Truntime.x")));
         assert!(!args.iter().any(|arg| arg.contains("-Tlinker.x")));
         assert!(!args.iter().any(|arg| arg.contains("-Taxplat.x")));
     }
@@ -1611,6 +1648,45 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("scripts/targets/no-pie")),
             "config key must not use the spec path"
+        );
+    }
+
+    #[test]
+    fn target_specs_do_not_embed_layered_linker_scripts() {
+        let specs = [
+            include_str!("../../targets/no-pie/aarch64-unknown-none-softfloat.json"),
+            include_str!("../../targets/no-pie/loongarch64-unknown-none-softfloat.json"),
+            include_str!("../../targets/no-pie/riscv64gc-unknown-none-elf.json"),
+            include_str!("../../targets/no-pie/x86_64-unknown-none.json"),
+            include_str!("../../targets/pie/aarch64-unknown-none-softfloat.json"),
+            include_str!("../../targets/pie/riscv64gc-unknown-none-elf.json"),
+        ];
+
+        for spec in specs {
+            assert!(!spec.contains("-Tlinker.x"));
+            assert!(!spec.contains("-Taxplat.x"));
+            assert!(!spec.contains("-Truntime.x"));
+        }
+    }
+
+    #[test]
+    fn final_linker_rustflags_select_runtime_script() {
+        assert_eq!(
+            final_linker_rustflags(ARCEOS_LINKER_SCRIPT, false),
+            vec![
+                "-Clink-arg=-no-pie".to_string(),
+                "-Clink-arg=-znostart-stop-gc".to_string(),
+                "-Clink-arg=-Truntime.x".to_string(),
+            ]
+        );
+        assert_eq!(
+            final_linker_rustflags(ARCEOS_LINKER_SCRIPT, true),
+            vec![
+                "-Crelocation-model=pic".to_string(),
+                "-Clink-arg=-pie".to_string(),
+                "-Clink-arg=-znostart-stop-gc".to_string(),
+                "-Clink-arg=-Truntime.x".to_string(),
+            ]
         );
     }
 

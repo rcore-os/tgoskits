@@ -5,6 +5,7 @@
 
 INCLUDE "link.x"
 __SMP = {{SMP}};
+AX_LINKER_LOAD_OFFSET = 0;
 
 SECTIONS {
     debug_abbrev : { . += SIZEOF(.debug_abbrev); }
@@ -19,17 +20,6 @@ SECTIONS {
     debug_str_offsets : { . += SIZEOF(.debug_str_offsets); }
 }
 INSERT AFTER .rodata;
-
-SECTIONS {
-    scope_local : { KEEP(*(scope_local)) }
-
-    ex_table : ALIGN(0x10){
-        _ex_table_start = .;
-        KEEP(*(__ex_table))
-        _ex_table_end = .;
-    }
-}
-INSERT AFTER .data;
 
 PROVIDE(_sbss = __bss_start);
 PROVIDE(_ebss = __bss_stop);
