@@ -7,9 +7,9 @@ use ax_task::{WaitQueue, current, might_sleep};
 /// A [`lock_api::RawMutex`] implementation.
 ///
 /// When the mutex is locked, the current task will block and be put into the
-/// wait queue. When the mutex is unlocked, ownership is released before waking
-/// at most one waiting task; the woken task then acquires the mutex with the
-/// normal compare-exchange path.
+/// wait queue. When the mutex is unlocked, ownership is handed off to at most
+/// one task waiting on the queue; if no tasks are waiting, the mutex simply
+/// becomes unlocked.
 pub struct RawMutex {
     wq: WaitQueue,
     owner_id: AtomicU64,
@@ -129,8 +129,16 @@ unsafe impl lock_api::RawMutex for RawMutex {
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
-        self.owner_id.store(0, Ordering::Release);
-        self.wq.notify_one(true);
+        // Wake one waiting thread.  The callback receives the waiter's ID.
+        // When the wait queue is empty, notify_one_with calls the callback
+        // with id=0, which clears owner_id via the swap below.  This is
+        // what makes is_locked_inner() return false — the unlock handoff
+        // DEPENDS on notify_one_with always invoking the callback, even
+        // for empty queues.  If that contract changes, add an explicit
+        // owner_id.store(0, Ordering::Release) fallback here.
+        self.wq.notify_one_with(true, |id: u64| {
+            self.owner_id.swap(id, Ordering::Release);
+        });
     }
 
     #[inline(always)]
@@ -166,10 +174,7 @@ impl RawMutex {
                         owner_id, current_id,
                         "Thread({current_id}) tried to acquire mutex it already owns.",
                     );
-                    // Wait until the lock is released. The woken waiter
-                    // competes through the normal CAS path, avoiding a state
-                    // where the owner id names a task that has not returned a
-                    // guard yet.
+                    // Wait until someone hands off lock to me or lock is released
                     self.wq
                         .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
                     // This check is necessary: some newcomers may race with a wakened one.
@@ -184,7 +189,7 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     #[cfg(feature = "lockdep")]
-    fn lock_nested(&self, subclass: crate::lockdep::LockSubclass) {
+    fn lock_nested(&self, subclass: LockSubclass) {
         might_sleep();
         let current_id = current().id().as_u64();
 
@@ -197,7 +202,8 @@ impl RawMutex {
     #[track_caller]
     #[cfg(not(feature = "lockdep"))]
     fn try_lock_plain(&self) -> bool {
-        might_sleep();
+        // try_lock is a single atomic CAS — it never blocks or sleeps,
+        // so it is safe to call from atomic context (cf. Linux mutex_trylock).
         let current_id = current().id().as_u64();
         self.try_lock_after_prepare(current_id)
     }
@@ -210,8 +216,9 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     #[cfg(feature = "lockdep")]
-    fn try_lock_nested(&self, subclass: crate::lockdep::LockSubclass) -> bool {
-        might_sleep();
+    fn try_lock_nested(&self, subclass: LockSubclass) -> bool {
+        // try_lock is a single atomic CAS — it never blocks or sleeps,
+        // so it is safe to call from atomic context.
         let current_id = current().id().as_u64();
 
         let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, true, subclass);

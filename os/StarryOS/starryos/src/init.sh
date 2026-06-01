@@ -29,6 +29,21 @@ for i in 0 1 2 3 4 5 6 7; do
     : > "/run/udev/data/c13:$((64 + i))" 2>/dev/null
 done
 
+# Visual-CI hook: when run_scenario.sh injects /test_runner.sh into the
+# rootfs, fire it asynchronously before dropping to the login shell.
+# Absence of /test_runner.sh in normal/interactive boots leaves this a
+# true no-op, so this hook is harmless on user images.
+#
+# setsid detaches from the controlling tty so weston's children don't
+# get SIGHUP when init re-execs the login shell; /dev/console captures
+# the runner's progress prints into the serial log used by the harness
+# to assert that the scenario actually launched.
+if [ -x /test_runner.sh ]; then
+    echo "[init] /test_runner.sh detected, launching visual scenario"
+    setsid /test_runner.sh </dev/null >/dev/console 2>&1 &
+    echo "[init] /test_runner.sh started pid=$!"
+fi
+
 cd "$HOME" || cd /
 cat > /tmp/starry-shrc <<'EOF'
 export PS1='${USER}@${HOSTNAME}:${PWD} # '

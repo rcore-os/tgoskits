@@ -414,6 +414,53 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
+          # Visual regression matrix: re-enable per arch once at least one
+          # scenario has that arch listed in its `arches` file and a verified
+          # golden is committed. Until then run_all.sh exits 1 (no scenarios
+          # ran), so the matrix would be uniformly red. The DRM card0 PR (#506)
+          # is the current prerequisite for weston_shm_baseline / xwayland_xeyes.
+          # - name: Visual starry riscv64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: |
+          #     apt-get update && apt-get install -y --no-install-recommends e2tools
+          #     cargo xtask starry build --arch riscv64
+          #     cargo xtask starry rootfs --arch riscv64
+          #     python3 scripts/visual-test/prepare_rootfs_extras.py --arch riscv64 --scenario xwayland_xeyes
+          #     bash scripts/visual-test/run_all.sh --arch riscv64
+          #   cache_key: test-visual-riscv64
+          #   container_image: base
+          #   apk_region: us
+          #   limit_to_owner: ""
+          #   main_pr_only: false
+          # - name: Visual starry aarch64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: |
+          #     apt-get update && apt-get install -y --no-install-recommends e2tools
+          #     cargo xtask starry build --arch aarch64
+          #     cargo xtask starry rootfs --arch aarch64
+          #     python3 scripts/visual-test/prepare_rootfs_extras.py --arch aarch64 --scenario xwayland_xeyes
+          #     bash scripts/visual-test/run_all.sh --arch aarch64
+          #   cache_key: test-visual-aarch64
+          #   container_image: base
+          #   apk_region: us
+          #   limit_to_owner: ""
+          #   main_pr_only: false
+          # - name: Visual starry x86_64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: |
+          #     apt-get update && apt-get install -y --no-install-recommends e2tools
+          #     cargo xtask starry build --arch x86_64
+          #     cargo xtask starry rootfs --arch x86_64
+          #     python3 scripts/visual-test/prepare_rootfs_extras.py --arch x86_64 --scenario xwayland_xeyes
+          #     bash scripts/visual-test/run_all.sh --arch x86_64
+          #   cache_key: test-visual-x86_64
+          #   container_image: base
+          #   apk_region: us
+          #   limit_to_owner: ""
+          #   main_pr_only: false
           # Stress tests: uncomment to enable (runs only on PRs targeting main).
           # - name: Stress starry aarch64
           #   use_container: true
