@@ -2008,6 +2008,7 @@ name = "axvm"
 version = "0.5.9"
 dependencies = [
  "aarch64-cpu-ext",
+ "arm-gic-driver",
  "arm_vcpu",
  "arm_vgic",
  "ax-cpumask",
@@ -2034,6 +2035,8 @@ dependencies = [
  "extern-trait",
  "log",
  "loongarch_vcpu",
+ "rdif-intc",
+ "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
  "spin 0.12.0",

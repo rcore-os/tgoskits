@@ -64,6 +64,7 @@ use ax_task::{AxTaskRef, TaskInner, WaitQueue};
 vCPU / irqchip / virtual device / address space 等组件
     只实现虚拟化能力和领域抽象
     不访问 OS 能力
+    如需 host 能力，通过组件本地 HostIf 由 axvm 注入
 
 axvm
     表示单 VM 抽象和 VM runtime 原语
@@ -84,8 +85,9 @@ os/axvisor
 最终希望达到：
 
 - 删除 `axvisor_api` / `axvisor_api_proc`。
-- `virtualization/*` 组件保持 `no_std`、OS 无关，只依赖 `core`、`alloc`、基础类型和抽象 trait。
-- `axvm` 不暴露 ArceOS host adapter，不让外部直接构造 `ArceOsHost`。
+- `virtualization/*` 组件保持 `no_std`、OS 无关，只依赖 `core`、`alloc`、基础类型和组件本地 host interface。
+- `axvm` 不暴露可由外部构造的 ArceOS host adapter，不让外部直接构造 `ArceOsHost` 或访问 `host::arceos`。
+- `axvm` 可以保留少量受控 helper，服务 FDT boot 信息、host filesystem release、guest paging handler 等 Axvisor 顶层业务需要。
 - `os/axvisor` 不直接调用 `ax_std::os::arceos::{api, modules}`、`ax_hal`、`ax_task`、`ax_alloc`。
 - 客户机配置文件、镜像读取、FDT 生成、默认 VM 集合管理都归 `os/axvisor`。
 - VM 生命周期原语、vCPU task、VM exit 分发、timer/IRQ glue 归 `axvm`。
@@ -101,6 +103,7 @@ os/axvisor
 os/axvisor
     -> axvm
     -> axvmconfig
+    -> axvm-types
     -> ax_std::{fs, io, println, thread, ...}
 
 axvm
@@ -109,6 +112,7 @@ axvm
     -> axaddrspace
     -> axdevice_base / axdevice
     -> arm_vgic / x86_vlapic / riscv_vplic
+    -> axvm-types
     -> internal Host trait
     -> private ArceOS host adapter
 
@@ -120,6 +124,7 @@ virtualization capability components
     -> 不依赖 ArceOS
     -> 不依赖 ax_std
     -> 不依赖 axvisor_api
+    -> 通过组件本地 *HostIf 请求必要 host 能力
 ```
 
 启动路径：
@@ -136,6 +141,7 @@ os/axvisor/src/main.rs
         -> os/axvisor::fdt 生成客户机 FDT
         -> axvm::register_vm()
         -> AxvmRuntime::init_vms()
+        -> 必要时释放 host filesystem 给 x86 guest passthrough
     -> AxvmManager::start_default_vms()
         -> AxvmRuntime 启动已注册 VM
     -> shell::console_init()
@@ -168,6 +174,14 @@ ax_task
 ax_alloc
 ```
 
+业务层允许通过 `axvm` 或 `AxvmManager` 暴露的受控 helper 完成少量 host 相关业务动作，例如：
+
+```rust
+axvm::shutdown_host_filesystems()
+axvm::host_fdt_bootarg()
+axvm::host_phys_to_virt(...)
+```
+
 ### 2.2 `os/axvisor`：最上层管理程序
 
 `os/axvisor` 是产品层和业务编排层，不是底层 host adapter。它负责把用户配置和运行策略转成 `axvm` 能理解的 VM 对象与运行命令。
@@ -194,6 +208,7 @@ os/axvisor/src/
 响应 shell 的 start / stop / resume / remove / list 命令
 处理普通文件读取、镜像大小查询、配置目录扫描
 处理 x86 guest passthrough 前的 host filesystem release 策略
+通过受控 helper 为 FDT 生成获取 host boot FDT 信息
 ```
 
 `os/axvisor` 允许使用 std-like API：
@@ -202,7 +217,7 @@ os/axvisor/src/
 ax_std::{fs, io, println, thread, time}
 ```
 
-`os/axvisor` 禁止使用底层 host 能力入口：
+`os/axvisor` 禁止直接使用底层 host 能力入口：
 
 ```rust
 ax_api
@@ -247,7 +262,7 @@ virtualization/axvm/src/
 ├── percpu.rs                      # per-cpu virtualization state 初始化
 ├── timer.rs                       # AxVM timer event glue
 ├── cache.rs                       # cache maintenance wrapper
-├── arch.rs                        # 架构相关 runtime glue
+├── arch.rs                        # 架构相关 runtime glue 和组件 HostIf 实现
 ├── config.rs                      # AxVMConfig 到 AxVM 构造所需的基础转换类型
 ├── host/
 │   ├── mod.rs                     # 私有 host boundary
@@ -296,6 +311,18 @@ pub fn register_vm(vm: AxVMRef) -> bool;
 pub fn setup_primary_vcpu(vm: AxVMRef);
 pub fn get_vm_by_id(vm_id: VMId) -> Option<AxVMRef>;
 pub fn get_vm_list() -> Vec<AxVMRef>;
+pub fn check_timer_events();
+pub fn clean_dcache_range(addr: VirtAddr, size: usize);
+```
+
+`axvm` 对外保留的受控 host helper：
+
+```rust
+pub use host::paging::HostPagingHandler;
+
+pub fn host_fdt_bootarg() -> usize;
+pub fn host_phys_to_virt(paddr: PhysAddr) -> VirtAddr;
+pub fn shutdown_host_filesystems() -> AxResult;
 ```
 
 命名约束：
@@ -399,11 +426,14 @@ runtime/x86_irq.rs
 VMId
 VCpuId
 InterruptVector
+MAX_VCPU_NUM
 VCpuSet
 HostPhysAddr
 HostVirtAddr
 GuestPhysAddr
 GuestVirtAddr
+GuestPhysAddrRange
+GuestVirtAddrRange
 AxVmResult / AxVmError alias
 ```
 
@@ -467,14 +497,15 @@ interrupt injection primitive
 architecture-specific exit decode
 ```
 
-这些组件不访问 host memory/time/task/irq。需要外部能力时，定义组件本地 trait 或 callback，由 `axvm` 注入。
+这些组件不访问 host memory/time/task/irq。需要外部能力时，定义组件本地 `HostIf`，由 `axvm/src/arch.rs` 通过 `ax_crate_interface` 注入。
 
-```rust
-pub trait ArchHostOps {
-    fn alloc_frame(&self) -> Option<HostPhysAddr>;
-    fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr;
-    fn handle_host_irq(&self, vector: usize);
-}
+当前接口形态：
+
+```text
+x86_vcpu::host::X86VcpuHostIf
+riscv_vcpu::host::RiscvVcpuHostIf
+loongarch_vcpu::host::LoongArchVcpuHostIf
+arm_vcpu::host::ArmVcpuHostIf
 ```
 
 ### 2.9 irqchip / timer / device 组件
@@ -498,29 +529,31 @@ MMIO/PIO dispatch
 device model composition
 ```
 
-这些组件不访问 host memory/time/vmm/console。需要能力时定义本地 trait，由 `axvm` 在创建设备或 runtime glue 时注入。
+这些组件不访问 host memory/time/vmm/console。需要能力时定义本地 `HostIf`，由 `axvm` 在 arch glue 或 runtime glue 中注入。
 
-```rust
-pub trait InterruptSink {
-    fn inject(&self, vcpu_id: VCpuId, vector: InterruptVector) -> AxResult;
-}
+当前接口形态：
 
-pub trait TimerOps {
-    type CancelToken;
-
-    fn now_nanos(&self) -> u64;
-    fn register_timer(
-        &self,
-        deadline_ns: u64,
-        callback: Box<dyn FnOnce(u64) + Send + 'static>,
-    ) -> Self::CancelToken;
-    fn cancel_timer(&self, token: Self::CancelToken);
-}
+```text
+x86_vlapic::host::X86VlapicHostIf
+riscv_vplic::host::RiscvVplicHostIf
+arm_vgic::host::ArmVgicHostIf
 ```
+
+`x86_vlapic` 的 APIC timer 需要特别处理旧 timer callback 误触发问题。当前计划采用 generation 和共享原子状态：
+
+```text
+ApicTimer
+    -> 每次 start / stop / restart 递增 generation
+    -> callback 触发时校验 generation
+    -> LVT / interval / deadline 放入 shared atomic state
+    -> periodic timer 根据当前时间推进下一次 deadline
+```
+
+这样可以避免 timer 已经被停止或重启后，旧 callback 仍向 guest 注入过期中断。
 
 ### 2.10 `axaddrspace`
 
-`axaddrspace` 继续作为 guest address-space 组件。
+`axaddrspace` 继续作为 guest address-space 组件，并移动到 `virtualization/axaddrspace`。
 
 它不直接访问 OS API。需要 host frame/page table 能力时，由 `axvm` 提供：
 
@@ -535,7 +568,7 @@ HostPagingHandler
 
 不引入 `os-arceos` feature。当前默认产品就是 ArceOS-backed Axvisor，host adapter 是 `axvm` 私有实现。
 
-`os/axvisor` feature 只转发顶层产品能力：
+`os/axvisor` feature 只转发顶层产品能力。当前实际 feature 传递如下：
 
 ```toml
 [features]
@@ -547,11 +580,13 @@ svm = ["axvm/svm"]
 sstc = ["axvm/sstc"]
 dyn-plat = ["axvm/plat-dyn", "ax-std/plat-dyn", "ax-driver/plat-dyn"]
 
-x86-qemu-q35 = ["axvm/x86-qemu-q35"]
-aarch64-qemu-virt = ["axvm/aarch64-qemu-virt"]
-riscv64-qemu-virt = ["axvm/riscv64-qemu-virt"]
-loongarch64-qemu-virt = ["axvm/loongarch64-qemu-virt"]
+x86-qemu-q35 = ["ax-std/x86-qemu-q35"]
+aarch64-qemu-virt = ["ax-std/aarch64-qemu-virt"]
+riscv64-qemu-virt = ["ax-std/riscv64-qemu-virt"]
+loongarch64-qemu-virt = ["ax-std/loongarch64-qemu-virt"]
 ```
+
+也就是说，`vmx`、`svm`、`sstc`、`ept-level-4` 等虚拟化能力转发到 `axvm`；静态平台 feature 当前由 Axvisor 顶层转发到 `ax-std/<platform>`，而不是转发到 `axvm/<platform>`。
 
 `axvm` feature 负责继续传递到 `ax-std` 和虚拟化组件：
 
@@ -585,15 +620,23 @@ ax-std = { workspace = true, features = [
 ] }
 ```
 
-平台 feature 传递链：
+静态平台 feature 传递链：
 
 ```text
 axvisor/<platform>
-    -> axvm/<platform>
-        -> ax-std/<platform>
-            -> ax-feat/<platform>
-                -> ax-hal/<platform>
-                    -> ax-plat-*
+    -> ax-std/<platform>
+        -> ax-feat/<platform>
+            -> ax-hal/<platform>
+                -> ax-plat-*
+```
+
+动态平台 feature 传递链：
+
+```text
+axvisor/dyn-plat
+    -> axvm/plat-dyn
+    -> ax-std/plat-dyn
+    -> ax-driver/plat-dyn
 ```
 
 基础能力传递链：
@@ -650,15 +693,30 @@ x86 backend:
 边界：
 
 ```text
-scripts/axbuild 不硬编码 ax-hal/<platform>
-scripts/axbuild 不硬编码 ax-feat/<platform>
-scripts/axbuild 不直接关心 ax-feat / ax-hal 细节
-scripts/axbuild 只生成 axvisor 顶层 feature
+scripts/axbuild 不把 ax-hal/<platform> 或 ax-feat/<platform> 写入 Axvisor 构建配置
+scripts/axbuild 不直接关心 ax-feat / ax-hal 平台 feature 细节
+scripts/axbuild 只生成 Axvisor 顶层平台 feature
+```
+
+兼容和校验规则：
+
+```text
+允许:
+    x86-qemu-q35
+    aarch64-qemu-virt
+    riscv64-qemu-virt
+    loongarch64-qemu-virt
+    dyn-plat
+    ax-std/<platform>    # 作为旧写法被规范化为 Axvisor 顶层 feature
+
+拒绝:
+    ax-feat/<platform>
+    ax-hal/<platform>
 ```
 
 ### 2.13 验证要求
 
-必须通过：
+修改代码后必须通过：
 
 ```bash
 cargo fmt
@@ -686,7 +744,7 @@ cargo xtask axvisor qemu --arch riscv64
 cargo xtask axvisor qemu --arch loongarch64
 ```
 
-至少 x86_64 和 aarch64 应启动到 Axvisor shell；其余架构如受工具链或 QEMU 环境限制，需要记录具体阻塞原因。
+至少 x86_64 应启动到 Axvisor shell；其余架构如受工具链、QEMU 环境或板级资源限制，需要记录具体阻塞原因。
 
 ## 3. 真实遗留问题
 
@@ -704,7 +762,7 @@ virtualization/axvm-host-api
 
 ### 3.2 ArceOS host adapter 是否要拆 crate
 
-本阶段不拆。`ArceOsHost` 是 `axvm` 私有实现，外部只看到 `AxvmRuntime` 和 VM 类型。
+本阶段不拆。`ArceOsHost` 是 `axvm` 私有实现，外部只看到 `AxvmRuntime`、VM 类型和少量受控 helper。
 
 未来若需要非 ArceOS host，再考虑：
 
@@ -714,7 +772,55 @@ axvm-arceos
 axvm-linux
 ```
 
-### 3.3 Rust native std 支持
+### 3.3 受控 host helper 的边界是否继续收紧
+
+当前 `axvm` 对外保留：
+
+```rust
+HostPagingHandler
+host_fdt_bootarg()
+host_phys_to_virt()
+shutdown_host_filesystems()
+```
+
+这些 helper 是为了支持 FDT 生成、guest paging handler 和 x86 guest passthrough 前释放 host filesystem。它们不等价于公开 host adapter，但仍是需要长期审视的边界。
+
+后续如果需要进一步收紧，可以把 FDT host 信息读取和 filesystem release 包装为更明确的 Axvisor-facing service API。
+
+### 3.4 AArch64 callback 的板级验证
+
+AArch64 的 vCPU / VGIC host callback 已移入 `axvm/src/arch.rs`，包括：
+
+```text
+virtual interrupt injection
+IRQ fetch
+current vCPU id
+host GICD / GICR base discovery
+VGICD IIDR / TYPER 读取
+```
+
+这些能力已经不应再停留在 `todo!()`。后续重点是继续用 QEMU 和真实板级 Linux guest 验证 GICv2/GICv3 行为，尤其是 passthrough interrupt、virtual timer interrupt 和 GICR per-CPU base 计算。
+
+### 3.5 axvm 平台 feature 是否长期保留
+
+`axvm` 当前仍声明：
+
+```toml
+x86-qemu-q35 = ["vmx", "ax-std/x86-qemu-q35"]
+aarch64-qemu-virt = ["vmx", "ax-std/aarch64-qemu-virt"]
+riscv64-qemu-virt = ["vmx", "ax-std/riscv64-qemu-virt"]
+loongarch64-qemu-virt = ["vmx", "ax-std/loongarch64-qemu-virt"]
+```
+
+但 Axvisor 顶层静态平台 feature 当前没有转发到这些 `axvm/<platform>` feature。后续需要确认：
+
+```text
+是否删除 axvm 静态平台 feature
+是否让 axvisor/<platform> 重新转发到 axvm/<platform>
+是否保留它们给非 Axvisor 的 axvm 独立使用场景
+```
+
+### 3.6 Rust native std 支持
 
 本方案不直接实现 `target_os = "arceos"` native std。
 
