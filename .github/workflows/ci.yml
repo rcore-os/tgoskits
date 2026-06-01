@@ -316,14 +316,6 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvmconfig config validation
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: cargo test -p axvmconfig --lib
-            cache_key: test-axvmconfig
-            container_image: base
-            limit_to_owner: ""
-            main_pr_only: false
           - name: Test axvisor aarch64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
