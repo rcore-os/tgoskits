@@ -1647,6 +1647,17 @@ impl AxArchVCpu for VmxVcpu {
                             vector: int_info.vector as _,
                         }
                     }
+                    VmxExitReason::EXCEPTION_NMI => {
+                        let int_info = self.interrupt_exit_info()?;
+                        if int_info.valid {
+                            self.queue_event(int_info.vector, int_info.err_code);
+                            AxVCpuExitReason::Nothing
+                        } else {
+                            warn!("VMX invalid exception/NMI exit: {exit_info:#x?}");
+                            warn!("VCpu {self:#x?}");
+                            AxVCpuExitReason::Halt
+                        }
+                    }
                     VmxExitReason::PREEMPTION_TIMER => {
                         self.handle_vmx_preemption_timer()?;
                         AxVCpuExitReason::PreemptionTimer
