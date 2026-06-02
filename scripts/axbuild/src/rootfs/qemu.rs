@@ -113,6 +113,12 @@ fn drive_id_value(drive_arg: &str) -> Option<&str> {
         .find_map(|part| part.strip_prefix("id="))
 }
 
+fn drive_if_value(drive_arg: &str) -> Option<&str> {
+    drive_arg
+        .split(',')
+        .find_map(|part| part.strip_prefix("if="))
+}
+
 fn drive_ref_value(device_arg: &str) -> Option<&str> {
     device_arg
         .split(',')
@@ -178,6 +184,7 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
     let mut has_drive = false;
     let mut has_net_device = false;
     let mut has_netdev = false;
+    let mut has_direct_sd_rootfs = false;
     let mut device_drive_ids = Vec::new();
     let mut custom_rootfs_drives = Vec::new();
 
@@ -201,6 +208,11 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
                 if value.starts_with(&drive_prefix) {
                     *value = disk_value.clone();
                     has_drive = true;
+                } else if drive_if_value(value) == Some("sd") && drive_file_value(value).is_some() {
+                    *value = replace_drive_file_arg(value, disk_img);
+                    has_blk_device = true;
+                    has_drive = true;
+                    has_direct_sd_rootfs = true;
                 } else if let (Some(drive_id), Some(_)) =
                     (drive_id_value(value), drive_file_value(value))
                 {
@@ -229,6 +241,9 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
         has_drive = true;
     }
 
+    if has_direct_sd_rootfs && !has_net_device && !has_netdev {
+        return;
+    }
     if !has_blk_device {
         args.push("-device".to_string());
         args.push(wiring.default_block_device.to_string());
@@ -447,6 +462,32 @@ mod tests {
                 "id=nvm,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
                 "-device".to_string(),
                 "nvme,serial=starry-nvme-rootfs,drive=nvm".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_patches_sd_drive_without_adding_virtio() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "k230".to_string(),
+                "-drive".to_string(),
+                "if=sd,format=raw,file=/tmp/old-rootfs.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-machine".to_string(),
+                "k230".to_string(),
+                "-drive".to_string(),
+                "if=sd,format=raw,file=/tmp/new-rootfs.img".to_string(),
             ]
         );
     }

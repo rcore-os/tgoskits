@@ -16,7 +16,7 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh
 
 ```bash
 apps/starry/codex-cli/prepare_codex_rootfs.sh \
-  --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img \
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img \
   --auth-json target/auth.json \
   --proxy http://10.0.2.2:7890
 ```
@@ -31,7 +31,7 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh \
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex.img
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 期望输出包含：
@@ -48,7 +48,7 @@ STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-syscall-hunt.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 QEMU 内部会执行的核心动作包括：
@@ -78,7 +78,7 @@ STARRY_TGOSKITS_SYSCALL_HUNT_PASSED
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 进入 `root@starry` 后：

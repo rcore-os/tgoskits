@@ -463,6 +463,7 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
 }
 
 #[allow(dead_code)]
+#[inline(never)]
 fn kprobe_selftest_target() -> i32 {
     42
 }
@@ -480,6 +481,9 @@ fn selftest_ret_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs)
 }
 
 pub fn run_selftest() -> bool {
+    SELFTEST_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
+    SELFTEST_RET_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
+
     let target_addr = kprobe_selftest_target as *const () as usize;
     let mut kprobe_ok = false;
     let mut kretprobe_ok = false;

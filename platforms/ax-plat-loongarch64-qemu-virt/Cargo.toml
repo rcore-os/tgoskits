@@ -39,5 +39,8 @@ config = "axconfig.toml"
 crate = "ax_plat_loongarch64_qemu_virt"
 default-for-arch = true
 
+[build-dependencies]
+toml.workspace = true
+
 [package.metadata.docs.rs]
 targets = ["loongarch64-unknown-none"]

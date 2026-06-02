@@ -6,7 +6,10 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs};
+use crate::{
+    context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs},
+    test::{case as qemu_case, qemu},
+};
 
 pub(crate) mod apk;
 pub mod app;
@@ -318,6 +321,7 @@ impl Starry {
             },
         }
     }
+
     async fn test(&mut self, args: test::ArgsTest) -> anyhow::Result<()> {
         test::test(self, args).await
     }
@@ -325,14 +329,15 @@ impl Starry {
     async fn app_command(&mut self, args: app::ArgsApp) -> anyhow::Result<()> {
         match args.command {
             app::AppCommand::List(args) => app::print_apps(self.app.workspace_root(), args.kind),
-            app::AppCommand::Run(args) => self.app_run(args).await,
+            app::AppCommand::Qemu(args) => self.app_qemu_run(args).await,
             app::AppCommand::Board(args) => self.app_board(args).await,
         }
     }
 
-    async fn app_run(&mut self, args: app::ArgsAppRun) -> anyhow::Result<()> {
-        let apps = app::selected_apps(self.app.workspace_root(), &args)?;
-        for app in apps {
+    async fn app_qemu_run(&mut self, args: app::ArgsAppQemu) -> anyhow::Result<()> {
+        let apps = app::selected_apps(self.app.workspace_root(), &args, app::StarryAppKind::Qemu)?;
+        let app_count = apps.len();
+        for (index, app) in apps.into_iter().enumerate() {
             let missing = app::missing_caps(&app, &args.caps);
             if !missing.is_empty() {
                 if args.test_case.is_some() {
@@ -342,24 +347,15 @@ impl Starry {
                         missing.join(", ")
                     );
                 }
-                println!("SKIP	{}	missing {}", app.name, missing.join(","));
+                println!("SKIP\t{}\tmissing {}", app.name, missing.join(","));
                 continue;
             }
 
-            match app.kind {
-                app::StarryAppKind::Qemu => self.app_qemu(&app, &args).await?,
-                app::StarryAppKind::Board => {
-                    let board_args = app::ArgsAppBoard {
-                        test_case: app.name.clone(),
-                        board_config: None,
-                        board_type: None,
-                        server: None,
-                        port: None,
-                        debug: args.debug,
-                    };
-                    self.app_board(board_args).await?;
-                }
-            }
+            println!(
+                "{}",
+                format_app_run_progress(index + 1, app_count, &app.name, args.arch.as_deref())
+            );
+            self.app_qemu(&app, &args).await?;
         }
         Ok(())
     }
@@ -367,7 +363,7 @@ impl Starry {
     async fn app_qemu(
         &mut self,
         app: &app::StarryAppCase,
-        args: &app::ArgsAppRun,
+        args: &app::ArgsAppQemu,
     ) -> anyhow::Result<()> {
         let case = app::prepare_qemu_app_case(
             self.app.workspace_root(),
@@ -388,7 +384,108 @@ impl Starry {
             None,
             SnapshotPersistence::Store,
         )?;
-        rootfs::qemu_with_explicit_rootfs(self, request, case.rootfs_path).await
+
+        let Some(test_case) = app::app_qemu_test_case(&case, app.case_dir.clone()) else {
+            return rootfs::qemu_with_explicit_rootfs(self, request, case.rootfs_path).await;
+        };
+        if app.prebuild_path.is_some()
+            && test_case.test_commands.is_empty()
+            && test_case.subcases.is_empty()
+        {
+            let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+                self.app.workspace_root(),
+                &request.arch,
+                case.rootfs_path,
+            );
+            rootfs::ensure_qemu_rootfs_ready(
+                &request,
+                self.app.workspace_root(),
+                Some(&rootfs_path),
+            )
+            .await?;
+            self.app.set_debug_mode(request.debug)?;
+            let cargo = build::load_cargo_config(&request)?;
+            let mut qemu = self
+                .app
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
+                .await?;
+            rootfs::patch_rootfs(
+                &mut qemu,
+                &rootfs_path,
+                rootfs::RootfsPatchMode::EnsureDiskBootNet,
+            );
+            if !qemu.args.iter().any(|arg| arg == "-snapshot") {
+                qemu.args.push("-snapshot".to_string());
+            }
+            println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
+            println!(
+                "  qemu config: {} (timeout={})",
+                test_case.qemu_config_path.display(),
+                qemu::qemu_timeout_summary(&qemu)
+            );
+            println!("  rootfs: {}", rootfs_path.display());
+            return self
+                .app
+                .qemu(cargo, request.build_info_path, Some(qemu))
+                .await;
+        }
+        let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+            self.app.workspace_root(),
+            &request.arch,
+            case.rootfs_path,
+        );
+        rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs_path))
+            .await?;
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        let asset_config = test::starry_case_asset_config();
+        let mut qemu = self
+            .app
+            .tool_mut()
+            .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
+            .await?;
+        qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
+        let prepare_started = std::time::Instant::now();
+        let prepared_assets = qemu_case::prepare_case_assets(
+            self.app.workspace_root(),
+            &request.arch,
+            &request.target,
+            &test_case,
+            rootfs_path,
+            asset_config,
+        )
+        .await?;
+        rootfs::patch_rootfs(
+            &mut qemu,
+            &prepared_assets.rootfs_path,
+            rootfs::RootfsPatchMode::EnsureDiskBootNet,
+        );
+        qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        println!(
+            "  prepare assets: {:.2?} (pipeline={}, cache={})",
+            prepare_started.elapsed(),
+            prepared_assets.pipeline.as_str(),
+            if prepared_assets.cache_hit {
+                "hit"
+            } else {
+                "miss"
+            }
+        );
+        println!(
+            "  qemu config: {} (timeout={})",
+            test_case.qemu_config_path.display(),
+            qemu::qemu_timeout_summary(&qemu)
+        );
+        println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+
+        let result = self
+            .app
+            .qemu(cargo, request.build_info_path, Some(qemu))
+            .await;
+        qemu_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
+        qemu_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+        result
     }
 
     async fn app_board(&mut self, args: app::ArgsAppBoard) -> anyhow::Result<()> {
@@ -630,6 +727,18 @@ impl Starry {
 
 pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &str) -> PathBuf {
     workspace_root.join(format!("os/StarryOS/configs/qemu/qemu-{arch}.toml"))
+}
+
+fn format_app_run_progress(
+    index: usize,
+    total: usize,
+    app_name: &str,
+    arch: Option<&str>,
+) -> String {
+    match arch {
+        Some(arch) => format!("RUN\t{index}/{total}\t{app_name}\tarch={arch}"),
+        None => format!("RUN\t{index}/{total}\t{app_name}"),
+    }
 }
 
 #[cfg(test)]
@@ -994,6 +1103,18 @@ mod tests {
     }
 
     #[test]
+    fn formats_starry_app_run_progress() {
+        assert_eq!(
+            format_app_run_progress(3, 12, "qemu/sqlite", Some("x86_64")),
+            "RUN\t3/12\tqemu/sqlite\tarch=x86_64"
+        );
+        assert_eq!(
+            format_app_run_progress(1, 1, "deepseek-tui", None),
+            "RUN\t1/1\tdeepseek-tui"
+        );
+    }
+
+    #[test]
     fn command_parses_app_board() {
         #[derive(Parser)]
         struct Cli {
@@ -1085,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_app_run_all_qemu() {
+    fn command_parses_app_qemu_all() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -1095,10 +1216,8 @@ mod tests {
         let cli = Cli::try_parse_from([
             "starry",
             "app",
-            "run",
-            "--all",
-            "--kind",
             "qemu",
+            "--all",
             "--cap",
             "board:OrangePi-5-Plus",
             "--arch",
@@ -1111,15 +1230,14 @@ mod tests {
 
         match cli.command {
             Command::App(args) => match args.command {
-                app::AppCommand::Run(args) => {
+                app::AppCommand::Qemu(args) => {
                     assert!(args.all);
-                    assert_eq!(args.kind, Some(app::StarryAppKind::Qemu));
                     assert_eq!(args.caps, vec!["board:OrangePi-5-Plus"]);
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
                     assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
                     assert!(args.debug);
                 }
-                _ => panic!("expected app run command"),
+                _ => panic!("expected app qemu command"),
             },
             _ => panic!("expected app command"),
         }

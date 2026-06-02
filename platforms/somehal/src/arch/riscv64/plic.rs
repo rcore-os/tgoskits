@@ -105,6 +105,22 @@ pub fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
     }
 }
 
+pub fn claim_external_irq() -> Option<someboot::irq::IrqId> {
+    let source = claim_external_irq_source()?;
+    Some(someboot::irq::IrqId::new(source.get() as usize))
+}
+
+pub fn complete_external_irq(irq: someboot::irq::IrqId) {
+    let Some(source) = NonZeroU32::new(irq.raw() as u32) else {
+        return;
+    };
+    if let Some(handler) = get_irq_handler() {
+        handler.complete_current(source);
+    } else {
+        warn!("RISC-V PLIC IRQ handler is not registered when completing external IRQ");
+    }
+}
+
 pub fn secondary_init_intc(cpu_idx: usize) {
     enable_local_interrupts();
     if let Some(handler) = get_irq_handler() {
@@ -224,15 +240,19 @@ fn set_external_irq_enable(irq: usize, enable: bool) {
 }
 
 fn handle_external_irq() -> Option<someboot::irq::IrqId> {
+    let source = claim_external_irq_source()?;
+    let irq = someboot::irq::IrqId::new(source.get() as usize);
+    _handle_irq(irq.raw().into());
+    complete_external_irq(irq);
+    Some(irq)
+}
+
+fn claim_external_irq_source() -> Option<NonZeroU32> {
     let Some(handler) = get_irq_handler() else {
         warn!("RISC-V PLIC IRQ handler is not registered for external IRQ");
         return None;
     };
-    let source = handler.claim_current()?;
-    let irq = someboot::irq::IrqId::new(source.get() as usize);
-    _handle_irq(irq.raw().into());
-    handler.complete_current(source);
-    Some(irq)
+    handler.claim_current()
 }
 
 fn with_plic<R>(op: &str, f: impl FnOnce(&mut RiscvPlic) -> R) -> Option<R> {

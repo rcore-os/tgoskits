@@ -217,7 +217,7 @@ impl ITxQueue for E1000TxQueue {
         }
 
         self.desc
-            .set(idx, TxDesc::new(buffer.bus_addr, buffer.len as u16));
+            .set_cpu(idx, TxDesc::new(buffer.bus_addr, buffer.len as u16));
         self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.regs.write(TDT, next as u32);
@@ -227,7 +227,7 @@ impl ITxQueue for E1000TxQueue {
 
     fn reclaim(&mut self) -> Option<u64> {
         let idx = self.next_reclaim;
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         if !desc.is_done() {
             return None;
         }
@@ -275,7 +275,7 @@ impl IRxQueue for E1000RxQueue {
             return Err(NetError::Retry);
         }
 
-        self.desc.set(idx, RxDesc::new(buffer.bus_addr));
+        self.desc.set_cpu(idx, RxDesc::new(buffer.bus_addr));
         self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.regs.write(RDT, next as u32);
@@ -285,7 +285,7 @@ impl IRxQueue for E1000RxQueue {
 
     fn reclaim(&mut self) -> Option<(u64, usize)> {
         let idx = self.next_reclaim;
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         if !desc.is_done() {
             return None;
         }
