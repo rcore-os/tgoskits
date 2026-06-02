@@ -12,7 +12,7 @@ fi
 install -Dm0755 "$app_dir/static-pie-test.sh" "$overlay_dir/usr/bin/static-pie-test.sh"
 
 # Compile and copy static-pie test binary
-TOOLCHAIN="/root/project/toolchains/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
+TOOLCHAIN="$(command -v riscv64-linux-musl-gcc || true)"
 TEST_SRC="/tmp/opencode/static-pie-test.c"
 TEST_BIN="/tmp/opencode/static-pie-test"
 
@@ -25,7 +25,7 @@ int main(void) {
 }
 CEOF
 
-if [[ -f "$TOOLCHAIN" ]]; then
+if [[ -n "$TOOLCHAIN" ]]; then
     "$TOOLCHAIN" -static -o "$TEST_BIN" "$TEST_SRC"
     install -Dm0755 "$TEST_BIN" "$overlay_dir/usr/bin/static-pie-test"
     echo "Static-pie binary compiled and installed to /usr/bin/static-pie-test"

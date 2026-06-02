@@ -7,6 +7,7 @@ use core::{
 
 use dma_api::{CoherentArray, DeviceDma};
 use log::debug;
+use mbarrier::{rmb, wmb};
 use tock_registers::register_bitfields;
 
 use crate::{
@@ -292,6 +293,7 @@ impl NvmeQueue {
 
     fn submit_admin_data(&mut self, data: CommandSet) {
         let tail = self.sq.submit(data);
+        wmb();
         self.reg().write_sq_y_tail_doolbell(self.qid as _, tail);
     }
 
@@ -301,6 +303,7 @@ impl NvmeQueue {
 
     pub(crate) fn poll_completion(&mut self) -> Option<NvmeCompletion> {
         let complete = self.cq.take_complete()?;
+        wmb();
         self.reg()
             .write_cq_y_head_doolbell(self.qid as _, self.cq.head);
         Some(complete)
@@ -313,7 +316,7 @@ impl NvmeQueue {
     pub fn command_sync(&mut self, data: CommandSet) -> Result<()> {
         self.submit_admin_data(data);
         let complete = self.cq.spin_for_complete();
-
+        wmb();
         self.reg()
             .write_cq_y_head_doolbell(self.qid as _, self.cq.head);
 
@@ -378,6 +381,7 @@ impl CompleteQueue {
 
     // check if there is completed command in completion queue
     fn complete(&self) -> Option<NvmeCompletion> {
+        rmb();
         let cqe = self.queue.read_cpu(self.head as _)?;
 
         let complete = cqe.status.phase() != self.phase;
