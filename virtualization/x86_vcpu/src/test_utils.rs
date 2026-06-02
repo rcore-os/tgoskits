@@ -137,21 +137,6 @@ pub mod mock {
             }
         }
 
-        /// Convert a virtual address to a physical address.
-        fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-            let state = GLOBAL_LOCK.lock();
-
-            let pool_start = state.memory_pool.as_ptr() as usize;
-            let pool_end = pool_start + 16 * PAGE_SIZE_4K;
-
-            if vaddr.as_usize() >= pool_start && vaddr.as_usize() < pool_end {
-                let offset = vaddr.as_usize() - pool_start;
-                ax_memory_addr::PhysAddr::from(0x1000 + offset)
-            } else {
-                ax_memory_addr::PhysAddr::from(vaddr.as_usize())
-            }
-        }
-
         fn nanos_to_ticks(nanos: u64) -> u64 {
             nanos
         }

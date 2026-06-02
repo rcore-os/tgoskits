@@ -158,7 +158,7 @@ mod riscv64 {
     }
 
     #[cfg(not(feature = "plat-dyn"))]
-    pub(crate) fn register_platform_irq_injector() {}
+    compile_error!("riscv64 Axvisor requires the plat-dyn feature");
 
     #[cfg(feature = "plat-dyn")]
     fn inject_virtual_irq(irq_id: usize) -> bool {
