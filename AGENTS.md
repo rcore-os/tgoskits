@@ -27,6 +27,7 @@
 - Run `cargo fmt` after code edits.
 - For ArceOS, StarryOS, and Axvisor builds/tests/runs, prefer the `cargo xtask` command family instead of raw `cargo build`, `cargo test`, or `cargo run`.
 - If `cargo xtask` cannot satisfy a special configuration, inspect the `xtask` flow first and only then fall back to native Cargo commands with manually matched arguments.
+- When running tests, prefer the CI-like path first: use the project container through Podman or Docker and run only the relevant CI segment or targeted test scope instead of the full CI pipeline. If dependency downloads or setup hit network issues, use the configured proxy path such as Clash Verge Rev, `proxychains4-ng`, or an equivalent wrapper, and record any fallback away from containerized CI-like validation.
 - For PRs, issues, review replies, discussions, and similar project-facing submissions, keep the language neutral and project-focused.
 - For PR titles, follow `type(scope): content` in Conventional Commits style. Prefer the main affected crate name as `scope` when one crate clearly dominates the change; for cross-cutting or infrastructure work, broader scopes such as `ci`, `repo`, or `docs` are acceptable.
 - PR title examples: `feat(axbuild): add Starry remote board test flow`, `fix(starry-process): correct tty session cleanup`, `chore(ci): split Starry self-hosted board matrix`.
@@ -35,3 +36,7 @@
 - Before submitting a PR, locally validate the CI flow as much as practical, excluding only physical board tests and self-hosted test flows unless the user explicitly asks to run them. Changes unrelated to building or testing, such as documentation-only updates, do not require local CI validation.
 - After adding or changing commits on a PR branch, update the PR description so it stays synchronized with the committed changes.
 - Do not insert agent-related labels, signatures, branding, or other advertisement-style wording such as `codex`, `agent`, `AI`, or similar self-promotional tags unless the user explicitly requests it.
+
+<!-- SPECKIT START -->
+Current SpecKit plan: `specs/002-starryos-nix-smoke/plan.md`
+<!-- SPECKIT END -->

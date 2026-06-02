@@ -1,0 +1,80 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+fail() {
+    echo "NIX_SMOKE_ERROR: $1"
+    echo 'NIX_SMOKE_TEST_FAILED'
+    exit 1
+}
+
+echo 'NIX_SMOKE_PHASE_ROOTFS_BEGIN'
+mkdir -p /nix /etc/nix /tmp/nix-smoke || fail 'failed to create Nix smoke directories'
+
+echo 'NIX_SMOKE_PHASE_INSTALL_BEGIN'
+if command -v nix >/dev/null 2>&1; then
+    echo 'NIX_SMOKE_INFO: nix already available'
+else
+    apk update || fail 'apk update failed before Nix install'
+    apk add nix || fail 'apk add nix failed'
+fi
+echo 'NIX_SMOKE_PHASE_INSTALL_DONE'
+
+echo 'NIX_SMOKE_PHASE_NIX_BEGIN'
+nix --version || fail 'nix --version failed'
+echo 'NIX_SMOKE_PHASE_NIX_DONE'
+
+echo 'NIX_SMOKE_PHASE_BUILD_BEGIN'
+cat > /tmp/nix-smoke/default.nix <<'EOF'
+derivation {
+  name = "nix-smoke";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "echo NIX_LOCAL_BUILD_OK > $out" ];
+}
+EOF
+echo 'NIX_SMOKE_INFO: tiny local sandboxed nix-build timeout is 180s'
+if command -v timeout >/dev/null 2>&1; then
+    timeout 180 nix-build --no-substitute --option sandbox true /tmp/nix-smoke/default.nix >/tmp/nix-smoke/build.log 2>&1
+    build_rc=$?
+else
+    nix-build --no-substitute --option sandbox true /tmp/nix-smoke/default.nix >/tmp/nix-smoke/build.log 2>&1
+    build_rc=$?
+fi
+if [ "$build_rc" -ne 0 ]; then
+    cat /tmp/nix-smoke/build.log
+    echo "NIX_SMOKE_BUILD_EXIT=$build_rc"
+    if [ "$build_rc" -eq 124 ] || [ "$build_rc" -eq 143 ]; then
+        fail 'tiny local sandboxed nix-build timed out after 180s'
+    fi
+    fail 'tiny local sandboxed nix-build failed'
+fi
+cat /tmp/nix-smoke/build.log
+cat ./result || fail 'nix-build result symlink could not be read'
+grep -q 'NIX_LOCAL_BUILD_OK' ./result || fail 'tiny local nix-build output marker missing'
+echo 'NIX_SMOKE_PHASE_BUILD_DONE'
+echo 'NIX_SMOKE_TEST_PASSED'
+exit 0
+'''
+success_regex = ["(?m)^NIX_SMOKE_TEST_PASSED\\s*$"]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    '(?i)\bfatal\b',
+    "(?m)^NIX_SMOKE_TEST_FAILED\\s*$",
+]
+timeout = 300
