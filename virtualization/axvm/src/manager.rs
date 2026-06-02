@@ -80,13 +80,7 @@ pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
 /// Inject a virtual interrupt into a VM's vCPU.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
-    with_vm(vm_id, |vm| {
-        let vcpu = vm
-            .vcpu(vcpu_id)
-            .ok_or_else(|| ax_err_type!(NotFound, "vCPU not found"))?;
-        vcpu.inject_interrupt(vector)
-    })
-    .unwrap_or_else(|| ax_err!(NotFound, "VM not found"))
+    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
 /// Return the current VM ID from the vCPU currently executing on this CPU.

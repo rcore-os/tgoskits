@@ -39,6 +39,7 @@ ax-percpu = { workspace = true, features = ["arm-el2"] }
 ax-std = { workspace = true, features = [
     "paging",
     "irq",
+    "ipi",
     "multitask",
     "task-ext",
     "smp",

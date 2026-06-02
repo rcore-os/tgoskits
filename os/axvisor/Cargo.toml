@@ -16,6 +16,7 @@ include = [
     ".github/*/**",
     "doc/**",
     "src/**",
+    "build.rs",
     "configs/**",
     "scripts/**",
     "xtask/src/**",

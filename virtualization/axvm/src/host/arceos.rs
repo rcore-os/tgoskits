@@ -164,6 +164,16 @@ pub(crate) fn wait_queue_wake(queue: &api::task::AxWaitQueueHandle, count: u32) 
     api::task::ax_wait_queue_wake(queue, count);
 }
 
+pub(crate) fn send_ipi(cpu_id: usize) {
+    if modules::ax_hal::percpu::this_cpu_id() == cpu_id {
+        return;
+    }
+    modules::ax_hal::irq::send_ipi(
+        modules::ax_hal::irq::IPI_IRQ,
+        modules::ax_hal::irq::IpiTarget::Other { cpu_id },
+    );
+}
+
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsIrqContext = modules::ax_hal::irq::IrqContext;
 #[cfg(target_arch = "x86_64")]

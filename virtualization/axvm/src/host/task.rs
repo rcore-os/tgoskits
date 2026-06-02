@@ -31,3 +31,7 @@ pub(crate) fn wait_queue_wait_until(queue: &WaitQueueHandle, condition: impl Fn(
 pub(crate) fn wait_queue_wake(queue: &WaitQueueHandle, count: u32) {
     arceos::wait_queue_wake(queue, count);
 }
+
+pub(crate) fn send_ipi(cpu_id: usize) {
+    arceos::send_ipi(cpu_id);
+}

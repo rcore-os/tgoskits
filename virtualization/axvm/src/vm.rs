@@ -764,7 +764,7 @@ impl AxVM {
     ) -> AxResult {
         for vcpu in self.vcpu_list() {
             if targets.get(vcpu.id()) {
-                vcpu.inject_interrupt(irq)?;
+                crate::runtime::vcpus::queue_interrupt(self.id(), vcpu.id(), irq)?;
             }
         }
         Ok(())

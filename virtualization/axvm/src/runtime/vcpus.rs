@@ -41,6 +41,8 @@ pub struct VMVCpus {
     wait_queue: crate::WaitQueue,
     // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
+    // Pending virtual interrupts that must be injected by the owning vCPU task.
+    pending_interrupts: Mutex<BTreeMap<usize, Vec<usize>>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -64,6 +66,7 @@ impl VMVCpus {
             _vm_id: vm.id(),
             wait_queue: crate::WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
+            pending_interrupts: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
@@ -75,6 +78,27 @@ impl VMVCpus {
     /// * `vcpu_task` - A reference to the task associated with a VCpu that is to be added.
     fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
+        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    }
+
+    fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxResult<usize> {
+        let task = self
+            .vcpu_task_list
+            .lock()
+            .get(&vcpu_id)
+            .cloned()
+            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        let mut pending = self.pending_interrupts.lock();
+        pending.entry(vcpu_id).or_default().push(vector);
+        Ok(task.cpu_id() as usize)
+    }
+
+    fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<usize> {
+        let mut pending = self.pending_interrupts.lock();
+        pending
+            .get_mut(&vcpu_id)
+            .map(core::mem::take)
+            .unwrap_or_default()
     }
 
     /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
@@ -182,6 +206,27 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
         vm_vcpus.notify_all();
     }
+}
+
+pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+    let vm_vcpus = get_vm_vcpus(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] vCPU resources not found")))?;
+    let cpu_id = vm_vcpus.queue_interrupt(vcpu_id, vector)?;
+    vm_vcpus.notify_all();
+    crate::send_host_ipi(cpu_id);
+    Ok(())
+}
+
+fn drain_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) -> AxResult {
+    let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
+        return Ok(());
+    };
+
+    for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+        trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
+        vcpu.inject_interrupt(vector)?;
+    }
+    Ok(())
 }
 
 /// Cleans up VCpu resources for a VM that is being deleted.
@@ -381,6 +426,10 @@ fn vcpu_run() {
     mark_vcpu_running(vm_id);
 
     loop {
+        if let Err(err) = drain_pending_interrupts(vm_id, vcpu_id, &vcpu) {
+            warn!("Failed to inject queued interrupts into VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}");
+        }
+
         #[cfg(target_arch = "x86_64")]
         super::x86_irq::drain_pending_ioapic_irqs(&vm, &vcpu);
 

@@ -101,6 +101,11 @@ pub(crate) fn host_wait_queue_wake(queue: &HostWaitQueueHandle, count: u32) {
     host::task::wait_queue_wake(queue, count);
 }
 
+/// Send a host IPI to the given CPU.
+pub(crate) fn send_host_ipi(cpu_id: usize) {
+    host::task::send_ipi(cpu_id);
+}
+
 /// Return the host FDT boot argument physical address.
 #[cfg(any(
     target_arch = "aarch64",
