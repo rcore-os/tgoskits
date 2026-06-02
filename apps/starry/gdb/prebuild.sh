@@ -5,6 +5,7 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_BASE_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
+qemu_runner=""
 
 READELF="${READELF:-readelf}"
 
@@ -22,26 +23,62 @@ ensure_host_tools() {
 
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
-    command -v docker >/dev/null 2>&1 || missing+=(docker)
     command -v "$READELF" >/dev/null 2>&1 || missing+=("readelf (binutils)")
 
     if [[ ${#missing[@]} -eq 0 ]]; then
         return
     fi
 
-    echo "error: missing required host tools: ${missing[*]}" >&2
-    exit 1
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "error: missing required host packages and apt-get is unavailable: ${missing[*]}" >&2
+        exit 1
+    fi
+
+    echo "installing missing host packages: ${missing[*]}"
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
 }
 
 extract_base_rootfs() {
     debugfs -R "rdump / $staging_root" "$base_rootfs"
 }
 
+find_qemu_runner() {
+    if command -v qemu-x86_64-static >/dev/null 2>&1; then
+        qemu_runner="$(command -v qemu-x86_64-static)"
+    elif command -v qemu-x86_64 >/dev/null 2>&1; then
+        qemu_runner="$(command -v qemu-x86_64)"
+    else
+        echo "error: qemu-x86_64-static or qemu-x86_64 is required" >&2
+        exit 1
+    fi
+}
+
 install_gdb_package() {
-    echo "Installing gdb via Docker (Alpine x86_64)..."
-    docker run --rm --platform linux/amd64 \
-        -v "$staging_root:/staging" \
-        alpine:edge apk --root /staging --no-scripts add gdb
+    local guest_apk="$staging_root/sbin/apk"
+    local apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-apk-cache"
+
+    mkdir -p "$apk_cache"
+
+    if [[ ! -x "$guest_apk" ]]; then
+        echo "error: staging root is missing guest apk: $guest_apk" >&2
+        exit 1
+    fi
+
+    echo "Installing gdb via qemu-user (Alpine x86_64)..."
+    QEMU_LD_PREFIX="$staging_root" \
+    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib:$staging_root/usr/local/lib" \
+    "$qemu_runner" -L "$staging_root" "$guest_apk" \
+        --root "$staging_root" \
+        --repositories-file "$staging_root/etc/apk/repositories" \
+        --keys-dir "$staging_root/etc/apk/keys" \
+        --cache-dir "$apk_cache" \
+        --update-cache \
+        --timeout 60 \
+        --no-interactive \
+        --force-no-chroot \
+        --scripts=no \
+        add gdb
 }
 
 copy_file_to_overlay() {
@@ -115,5 +152,6 @@ require_env STARRY_OVERLAY_DIR "$overlay_dir"
 
 ensure_host_tools
 extract_base_rootfs
+find_qemu_runner
 install_gdb_package
 populate_overlay
