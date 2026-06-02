@@ -556,27 +556,29 @@ fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
 fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for suffix in [
-            "qemu-lvz-ci-install/bin",
-            "QEMU-LVZ/build",
-            "qemu-lvz/build",
-        ] {
-            candidates.push(home.join(suffix));
-        }
-    }
-
-    for ancestor in workspace_root.ancestors() {
-        for suffix in [
-            "qemu-lvz-ci-install/bin",
-            "QEMU-LVZ/build",
-            "qemu-lvz/build",
-        ] {
-            candidates.push(ancestor.join(suffix));
+    if let Some(commit) = pinned_qemu_lvz_commit(workspace_root) {
+        let cache_root = env::var_os("AXVISOR_QEMU_LVZ_CACHE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/axvisor/qemu-lvz"))
+            });
+        if let Some(cache_root) = cache_root {
+            candidates.push(cache_root.join(commit).join("bin"));
         }
     }
 
     candidates
+}
+
+fn pinned_qemu_lvz_commit(workspace_root: &Path) -> Option<String> {
+    let version_file = workspace_root.join("os/axvisor/scripts/qemu-lvz.version");
+    let content = std::fs::read_to_string(version_file).ok()?;
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix("QEMU_LVZ_COMMIT="))
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+        .map(str::to_owned)
 }
 
 fn is_loongarch_qemu_dir(dir: &Path) -> bool {

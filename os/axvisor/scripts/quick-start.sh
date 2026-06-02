@@ -26,6 +26,22 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+qemu_lvz_version_value() {
+    local key="$1"
+    local version_file="scripts/qemu-lvz.version"
+    if [[ -f "$version_file" ]]; then
+        sed -n "s/^${key}=//p" "$version_file" | tail -n 1
+    fi
+}
+
+qemu_lvz_cache_binary() {
+    local commit
+    commit="$(qemu_lvz_version_value QEMU_LVZ_COMMIT)"
+    if [[ -n "$commit" ]]; then
+        printf '%s\n' "${AXVISOR_QEMU_LVZ_CACHE:-$HOME/.cache/axvisor/qemu-lvz}/$commit/bin/qemu-system-loongarch64"
+    fi
+}
+
 # Execute command and display it
 run_cmd() {
     echo -e "${BLUE}$@${NC}"
@@ -336,18 +352,17 @@ setup_qemu_loongarch64() {
     info "Preparing QEMU config file..."
     run_cmd cp configs/qemu/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
 
+    local cached_qemu
+    cached_qemu="$(qemu_lvz_cache_binary)"
+
     if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
         info "Using explicit LoongArch QEMU override: ${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
-    elif [[ -x "$HOME/qemu-lvz-ci-install/bin/qemu-system-loongarch64" ]]; then
-        info "Detected CI-pinned QEMU-LVZ at $HOME/qemu-lvz-ci-install/bin/qemu-system-loongarch64"
-    elif [[ -x "$HOME/QEMU-LVZ/build/qemu-system-loongarch64" ]]; then
-        info "Detected QEMU-LVZ at $HOME/QEMU-LVZ/build/qemu-system-loongarch64"
-    elif [[ -x "$HOME/qemu-lvz/build/qemu-system-loongarch64" ]]; then
-        info "Detected QEMU-LVZ at $HOME/qemu-lvz/build/qemu-system-loongarch64"
+    elif [[ -n "$cached_qemu" && -x "$cached_qemu" ]]; then
+        info "Detected pinned QEMU-LVZ cache at $cached_qemu"
     elif command -v qemu-system-loongarch64 &> /dev/null; then
         warn "Using qemu-system-loongarch64 from PATH. Stock QEMU usually lacks LoongArch virtualization extensions; prefer QEMU-LVZ."
     else
-        warn "No LoongArch QEMU binary detected. Set AXBUILD_QEMU_SYSTEM_LOONGARCH64 or install QEMU-LVZ before running."
+        warn "No LoongArch QEMU binary detected. Run ./scripts/setup_qemu_lvz.sh once, or set AXBUILD_QEMU_SYSTEM_LOONGARCH64."
     fi
 
     info "=== QEMU LoongArch64 Preparation Complete ==="
@@ -361,14 +376,15 @@ run_qemu_loongarch64_axvisor() {
 }
 
 loongarch64_qemu_binary() {
+    local cached_qemu
+    cached_qemu="$(qemu_lvz_cache_binary)"
+
     if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
         printf '%s\n' "${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
-    elif [[ -x "$HOME/qemu-lvz-ci-install/bin/qemu-system-loongarch64" ]]; then
-        printf '%s\n' "$HOME/qemu-lvz-ci-install/bin/qemu-system-loongarch64"
-    elif [[ -x "$HOME/QEMU-LVZ/build/qemu-system-loongarch64" ]]; then
-        printf '%s\n' "$HOME/QEMU-LVZ/build/qemu-system-loongarch64"
-    elif [[ -x "$HOME/qemu-lvz/build/qemu-system-loongarch64" ]]; then
-        printf '%s\n' "$HOME/qemu-lvz/build/qemu-system-loongarch64"
+    elif [[ -n "$cached_qemu" && -x "$cached_qemu" ]]; then
+        printf '%s\n' "$cached_qemu"
+    elif command -v qemu-system-loongarch64 &> /dev/null; then
+        command -v qemu-system-loongarch64
     else
         return 1
     fi
@@ -378,11 +394,15 @@ run_axvisor_qemu_with_loongarch64_qemu() {
     local qemu_bin
     local qemu_dir
     qemu_bin="$(loongarch64_qemu_binary)" || {
-        error "QEMU-LVZ qemu-system-loongarch64 not found. Set AXBUILD_QEMU_SYSTEM_LOONGARCH64 or install QEMU-LVZ."
+        error "LoongArch qemu-system-loongarch64 not found. Run ./scripts/setup_qemu_lvz.sh once, or set AXBUILD_QEMU_SYSTEM_LOONGARCH64."
         exit 1
     }
     qemu_dir="$(dirname "$qemu_bin")"
     info "Using LoongArch QEMU: $qemu_bin"
+    "$qemu_bin" --version | head -n 1
+    if [[ "$qemu_bin" == "$(command -v qemu-system-loongarch64 2>/dev/null || true)" ]]; then
+        warn "PATH qemu-system-loongarch64 may not support LoongArch LVZ. If boot fails, run ./scripts/setup_qemu_lvz.sh."
+    fi
     PATH="$qemu_dir:$PATH" run_axvisor_qemu "$@"
 }
 

@@ -216,48 +216,56 @@ fn find_loongarch_qemu_dir_prefers_explicit_env_override() {
 }
 
 #[test]
-fn find_loongarch_qemu_dir_checks_home_before_workspace_ancestors() {
+fn find_loongarch_qemu_dir_uses_pinned_cache() {
     let _lock = ENV_LOCK.lock().unwrap();
     let home = tempdir().unwrap();
-    let workspace_parent = tempdir().unwrap();
-    let workspace_root = workspace_parent.path().join("workspace/repo");
-    let home_qemu_dir = home.path().join("QEMU-LVZ/build");
-    let ancestor_qemu_dir = workspace_parent.path().join("qemu-lvz/build");
+    let workspace = tempdir().unwrap();
+    let commit = "1234567890abcdef";
+    let qemu_dir = home
+        .path()
+        .join(".cache/axvisor/qemu-lvz")
+        .join(commit)
+        .join("bin");
 
-    fs::create_dir_all(&workspace_root).unwrap();
-    fs::create_dir_all(&home_qemu_dir).unwrap();
-    fs::create_dir_all(&ancestor_qemu_dir).unwrap();
-    fs::write(home_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
-    fs::write(ancestor_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+    fs::create_dir_all(workspace.path().join("os/axvisor/scripts")).unwrap();
+    fs::write(
+        workspace.path().join("os/axvisor/scripts/qemu-lvz.version"),
+        format!("QEMU_LVZ_COMMIT={commit}\n"),
+    )
+    .unwrap();
+    fs::create_dir_all(&qemu_dir).unwrap();
+    fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
 
     let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
     let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
     let _home = TempEnvVar::set("HOME", home.path());
 
-    assert_eq!(
-        find_loongarch_qemu_dir(&workspace_root),
-        Some(home_qemu_dir)
-    );
+    assert_eq!(find_loongarch_qemu_dir(workspace.path()), Some(qemu_dir));
 }
 
 #[test]
-fn find_loongarch_qemu_dir_prefers_ci_pinned_home_install() {
+fn find_loongarch_qemu_dir_honors_custom_pinned_cache_root() {
     let _lock = ENV_LOCK.lock().unwrap();
-    let home = tempdir().unwrap();
-    let root = tempdir().unwrap();
-    let ci_qemu_dir = home.path().join("qemu-lvz-ci-install/bin");
-    let legacy_qemu_dir = home.path().join("QEMU-LVZ/build");
+    let cache = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let commit = "abcdef1234567890";
+    let qemu_dir = cache.path().join(commit).join("bin");
 
-    fs::create_dir_all(&ci_qemu_dir).unwrap();
-    fs::create_dir_all(&legacy_qemu_dir).unwrap();
-    fs::write(ci_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
-    fs::write(legacy_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+    fs::create_dir_all(workspace.path().join("os/axvisor/scripts")).unwrap();
+    fs::write(
+        workspace.path().join("os/axvisor/scripts/qemu-lvz.version"),
+        format!("QEMU_LVZ_COMMIT={commit}\n"),
+    )
+    .unwrap();
+    fs::create_dir_all(&qemu_dir).unwrap();
+    fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
 
     let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
     let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
-    let _home = TempEnvVar::set("HOME", home.path());
+    let _home = TempEnvVar::unset("HOME");
+    let _cache = TempEnvVar::set("AXVISOR_QEMU_LVZ_CACHE", cache.path());
 
-    assert_eq!(find_loongarch_qemu_dir(root.path()), Some(ci_qemu_dir));
+    assert_eq!(find_loongarch_qemu_dir(workspace.path()), Some(qemu_dir));
 }
 
 #[test]
