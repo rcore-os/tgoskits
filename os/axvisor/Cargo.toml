@@ -40,10 +40,10 @@ vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["axvm/sstc"]
 dyn-plat = ["axvm/plat-dyn", "ax-std/plat-dyn", "ax-driver/plat-dyn"]
-x86-qemu-q35 = ["ax-std/x86-qemu-q35"]
-aarch64-qemu-virt = ["ax-std/aarch64-qemu-virt"]
-riscv64-qemu-virt = ["ax-std/riscv64-qemu-virt"]
-loongarch64-qemu-virt = ["ax-std/loongarch64-qemu-virt"]
+x86-qemu-q35 = ["ax-hal/x86-qemu-q35"]
+aarch64-qemu-virt = ["ax-hal/aarch64-qemu-virt"]
+riscv64-qemu-virt = ["ax-hal/riscv64-qemu-virt"]
+loongarch64-qemu-virt = ["ax-hal/loongarch64-qemu-virt"]
 rockchip-soc = ["ax-driver/rockchip-soc"]
 rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
 rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
@@ -69,6 +69,7 @@ hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
 ax-std = { workspace = true, features = ["paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false }

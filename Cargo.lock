@@ -1987,6 +1987,7 @@ dependencies = [
  "anyhow",
  "ax-driver",
  "ax-errno",
+ "ax-hal",
  "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",
