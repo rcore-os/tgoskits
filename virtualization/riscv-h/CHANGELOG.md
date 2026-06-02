@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.7...riscv-h-v0.4.8) - 2026-06-02
+
+### Fixed
+
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.6...riscv-h-v0.4.7) - 2026-05-15
 
 ### Other

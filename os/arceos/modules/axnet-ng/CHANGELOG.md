@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.6.1...ax-net-ng-v0.7.0) - 2026-06-02
+
+### Added
+
+- *(irq)* introduce shared IRQ framework ([#1065](https://github.com/rcore-os/tgoskits/pull/1065))
+- *(axnet-ng)* implement SO_TYPE, SO_PROTOCOL, SO_DOMAIN socket options ([#884](https://github.com/rcore-os/tgoskits/pull/884))
+
+### Fixed
+
+- *(ax-net-ng)* drain entire ARP-pending queue, lift cache TTL and capacity ([#911](https://github.com/rcore-os/tgoskits/pull/911))
+- *(starry-kernel)* support TCP socket FIONREAD ([#869](https://github.com/rcore-os/tgoskits/pull/869))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.6.0...ax-net-ng-v0.6.1) - 2026-05-22
 
 ### Other

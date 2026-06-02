@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.15...ax-mm-v0.5.16) - 2026-06-02
+
+### Other
+
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.14...ax-mm-v0.5.15) - 2026-05-22
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/ax-riscv-plic-v0.4.6...ax-riscv-plic-v0.4.7) - 2026-06-02
+
+### Added
+
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/ax-riscv-plic-v0.4.5...ax-riscv-plic-v0.4.6) - 2026-05-19
 
 ### Other

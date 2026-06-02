@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.7.2...page-table-generic-v0.7.3) - 2026-06-02
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.7.1](https://github.com/drivercraft/sparreal-os/compare/page-table-generic-v0.7.0...page-table-generic-v0.7.1) - 2026-03-04
 
 ### Other

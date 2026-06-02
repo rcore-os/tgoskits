@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.2...arm-scmi-rs-v0.1.3) - 2026-06-02
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.1...arm-scmi-rs-v0.1.2) - 2026-05-18
 
 ### Added

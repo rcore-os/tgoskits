@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.7.0...starry-signal-v0.8.0) - 2026-06-02
+
+### Fixed
+
+- *(loongarch64)* make userspace LSX usable (preserve FP/LSX state + fix uc_mcontext offset + advertise AT_HWCAP) ([#917](https://github.com/rcore-os/tgoskits/pull/917))
+- *(starry-signal)* keep x86-64 uc_mcontext at Linux ABI offset 40 ([#916](https://github.com/rcore-os/tgoskits/pull/916))
+
+### Other
+
+- *(syscall)* add regression tests for StarryOS signal extension syscalls and fixup ([#806](https://github.com/rcore-os/tgoskits/pull/806))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.6.2...starry-signal-v0.7.0) - 2026-05-22
 
 ### Added

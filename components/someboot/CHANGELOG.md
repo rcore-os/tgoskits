@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.15...someboot-v0.1.16) - 2026-06-02
+
+### Added
+
+- *(riscv64)* update kernel entry point handling and remove unused kernel load address ([#1071](https://github.com/rcore-os/tgoskits/pull/1071))
+- *(starryos)* add QEMU K230 boot support ([#1046](https://github.com/rcore-os/tgoskits/pull/1046))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+
+### Fixed
+
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
 ## [0.1.15](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.14...someboot-v0.1.15) - 2026-05-15
 
 ### Fixed

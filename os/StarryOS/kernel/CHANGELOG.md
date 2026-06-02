@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.12...starry-kernel-v0.5.13) - 2026-06-02
+
+### Added
+
+- *(starry-kernel)* implement child subreaper ([#1050](https://github.com/rcore-os/tgoskits/pull/1050))
+- *(starry-kernel)* support waitid P_PGID ([#1032](https://github.com/rcore-os/tgoskits/pull/1032))
+- *(starry-kernel)* implement xattr store ([#1040](https://github.com/rcore-os/tgoskits/pull/1040))
+- *(irq)* introduce shared IRQ framework ([#1065](https://github.com/rcore-os/tgoskits/pull/1065))
+- *(mm)* add page reclaim for file-backed memory pressure (rebased) ([#1007](https://github.com/rcore-os/tgoskits/pull/1007))
+- *(drm)* per-buffer dumb allocation with GEM-refcounted mmap pages ([#514](https://github.com/rcore-os/tgoskits/pull/514))
+- *(starry-kernel)* port eBPF runtime (ebpf/, perf/, kprobe wiring) ([#850](https://github.com/rcore-os/tgoskits/pull/850))
+- *(Starry)* support MariaDB ([#906](https://github.com/rcore-os/tgoskits/pull/906))
+- *(starry-kernel)* support cgroup2 hierarchy mkdir and rmdir ([#1015](https://github.com/rcore-os/tgoskits/pull/1015))
+- *(axtask)* replace PREV_TASK Weak<AxTask> with raw pointer ([#996](https://github.com/rcore-os/tgoskits/pull/996))
+- *(starry-kernel)* add initial cgroup2 support ([#989](https://github.com/rcore-os/tgoskits/pull/989))
+- *(starry-kernel)* add initial GDB ptrace support ([#931](https://github.com/rcore-os/tgoskits/pull/931))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+- *(starry-kernel)* add LKM support via kmod-loader integration ([#849](https://github.com/rcore-os/tgoskits/pull/849))
+- *(starry-kernel)* add eBPF subsystem (maps, VM, helpers, perf events) ([#848](https://github.com/rcore-os/tgoskits/pull/848))
+- *(starry-kernel)* add kprobe support ([#847](https://github.com/rcore-os/tgoskits/pull/847))
+- *(starry-task)* implement sys_getcpu ([#924](https://github.com/rcore-os/tgoskits/pull/924))
+- *(starry-kernel)* add inotifywait support ([#894](https://github.com/rcore-os/tgoskits/pull/894))
+- *(starry)* add userspace test for prlimit64 syscall ([#801](https://github.com/rcore-os/tgoskits/pull/801))
+- *(axnet-ng)* implement SO_TYPE, SO_PROTOCOL, SO_DOMAIN socket options ([#884](https://github.com/rcore-os/tgoskits/pull/884))
+- *(starry-kernel)* implement xattr syscall stubs for rsext4 ([#882](https://github.com/rcore-os/tgoskits/pull/882))
+- *(starry-kernel)* add /proc/self/statm and /proc/loadavg, add procps test ([#853](https://github.com/rcore-os/tgoskits/pull/853))
+- *(starry)* expose dumpable in procfs status and complete uid/gid tests ([#757](https://github.com/rcore-os/tgoskits/pull/757))
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+- *(starryos)* add OpenSSH app test and implement PR_SET_NO_NEW_PRIVS ([#810](https://github.com/rcore-os/tgoskits/pull/810))
+- *(starry-kernel)* implement waitid syscall ([#781](https://github.com/rcore-os/tgoskits/pull/781))
+
+### Fixed
+
+- *(kernel)* fix riscv64 static-pie segfault in ELF loader ([#1033](https://github.com/rcore-os/tgoskits/pull/1033))
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+- *(starry-kernel)* validate sync_file_range flags and offsets ([#823](https://github.com/rcore-os/tgoskits/pull/823))
+- *(starry-net)* SIOCGIFINDEX + non-zero SIOCGIFCONF sizing for OpenJDK NetworkInterface ([#923](https://github.com/rcore-os/tgoskits/pull/923))
+- *(loongarch64)* make userspace LSX usable (preserve FP/LSX state + fix uc_mcontext offset + advertise AT_HWCAP) ([#917](https://github.com/rcore-os/tgoskits/pull/917))
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+- *(starry-kernel,x86-qemu-q35)* probe terminal size, deliver SIGWINCH, batch ONLCR writes ([#913](https://github.com/rcore-os/tgoskits/pull/913))
+- *(starry-task)* suspend on SIGSTOP instead of killing (job control) ([#925](https://github.com/rcore-os/tgoskits/pull/925))
+- *(starry-mm)* fix use-after-free when evicting a page-cache page shared across split file mappings ([#920](https://github.com/rcore-os/tgoskits/pull/920))
+- *(starry)* align mount and umount2 semantics with Linux ([#876](https://github.com/rcore-os/tgoskits/pull/876))
+- *(starry)* repair SG2002 CI build ([#929](https://github.com/rcore-os/tgoskits/pull/929))
+- *(starry-kernel)* add Threads: line to /proc/[pid]/status and implement /proc/[pid]/statm ([#915](https://github.com/rcore-os/tgoskits/pull/915))
+- *(starry-kernel)* copy under-aligned epoll_event byte-wise (fixes Go netpoll EFAULT) ([#914](https://github.com/rcore-os/tgoskits/pull/914))
+- *(starry-kernel)* close EPOLLET race window and NoEvent busy-loop ([#910](https://github.com/rcore-os/tgoskits/pull/910))
+- *(starry-kernel)* handle COW write faults from kernel-mode user-memory writes ([#909](https://github.com/rcore-os/tgoskits/pull/909))
+- *(starry-kernel)* align file sync syscalls with Linux semantics ([#903](https://github.com/rcore-os/tgoskits/pull/903))
+- *(epoll,sigmask-related)* align sigsetsize checks with linux abi ([#900](https://github.com/rcore-os/tgoskits/pull/900))
+- *(starry-kernel)* correct splice error handling ([#896](https://github.com/rcore-os/tgoskits/pull/896))
+- *(starry)* snapshot thread context in file syscalls ([#885](https://github.com/rcore-os/tgoskits/pull/885))
+- *(starry)* avoid teardown usercopy from kernel tasks ([#878](https://github.com/rcore-os/tgoskits/pull/878))
+- *(signal)* add wake_task after signal delivery and dumpable/no_new_privs fields ([#797](https://github.com/rcore-os/tgoskits/pull/797))
+- *(starry-kernel)* support TCP socket FIONREAD ([#869](https://github.com/rcore-os/tgoskits/pull/869))
+- *(starry)* preserve vfork parent blocking ([#693](https://github.com/rcore-os/tgoskits/pull/693))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+- *(starry)* expose SMP CPU topology in sysfs ([#842](https://github.com/rcore-os/tgoskits/pull/842))
+- *(starry)* implement conservative riscv hwprobe ([#843](https://github.com/rcore-os/tgoskits/pull/843))
+- *(starry-kernel)* pidfd open/getfd/send_signal Linux conformance ([#707](https://github.com/rcore-os/tgoskits/pull/707))
+- *(busybox-run_parts)* retry non-ELF executables via /bin/sh in execve ([#517](https://github.com/rcore-os/tgoskits/pull/517))
+
+### Other
+
+- namespace实现 ([#981](https://github.com/rcore-os/tgoskits/pull/981))
+- *(ci)* bump Rust toolchain to nightly-2026-05-28 and fix clippy ([#1027](https://github.com/rcore-os/tgoskits/pull/1027))
+- *(starry-kernel)* add memtrack alloc backtrace e2e ([#1020](https://github.com/rcore-os/tgoskits/pull/1020))
+- *(sched)* add sched-family test suite and fix kernel scheduler sys… ([#986](https://github.com/rcore-os/tgoskits/pull/986))
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- replace SpinNoIrq with ax_sync::Mutex to allow sleeping during init ([#964](https://github.com/rcore-os/tgoskits/pull/964))
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+- Adds support for kernel symbol dumping via kallsyms ([#837](https://github.com/rcore-os/tgoskits/pull/837))
+- Remove ARM PL011 UART driver and integrate DesignWare APB UART support ([#965](https://github.com/rcore-os/tgoskits/pull/965))
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- Fix/starryos： 完善了StarryOS的sys_membarrier和sys_rseq两个系统调用。 ([#897](https://github.com/rcore-os/tgoskits/pull/897))
+- Test socket syscalls ([#871](https://github.com/rcore-os/tgoskits/pull/871))
+- *(syscall)* add test-shm-family shm syscall conformance suite ([#865](https://github.com/rcore-os/tgoskits/pull/865))
+- *(starryos)* add capget syscall test and fix NULL datap handling ([#863](https://github.com/rcore-os/tgoskits/pull/863))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+- *(syscall)* add regression tests for StarryOS signal extension syscalls and fixup ([#806](https://github.com/rcore-os/tgoskits/pull/806))
+- *(syscall)* add comprehensive select/poll/pselect6/ppoll deep test suite ([#679](https://github.com/rcore-os/tgoskits/pull/679))
+
 ### Added
 
 - *(prctl)* implement `PR_SET_CHILD_SUBREAPER` and `PR_GET_CHILD_SUBREAPER` with orphan reparenting tests.

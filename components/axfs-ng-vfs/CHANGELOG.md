@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.2...axfs-ng-vfs-v0.4.3) - 2026-06-02
+
+### Added
+
+- *(starry-kernel)* support cgroup2 hierarchy mkdir and rmdir ([#1015](https://github.com/rcore-os/tgoskits/pull/1015))
+
+### Fixed
+
+- *(axfs-ng-vfs)* skip children cache transfer on rename to avoid stale parent references ([#938](https://github.com/rcore-os/tgoskits/pull/938))
+- *(ci)* stabilize Starry LoongArch apk-curl test ([#959](https://github.com/rcore-os/tgoskits/pull/959))
+- *(starry)* align mount and umount2 semantics with Linux ([#876](https://github.com/rcore-os/tgoskits/pull/876))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.1...axfs-ng-vfs-v0.4.2) - 2026-05-22
 
 ### Fixed

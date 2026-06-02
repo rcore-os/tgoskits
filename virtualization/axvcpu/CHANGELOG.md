@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axvcpu-v0.5.9...axvcpu-v0.6.0) - 2026-06-02
+
+### Added
+
+- *(axvisor)* support x86_64 Linux guest boot (vmx) ([#930](https://github.com/rcore-os/tgoskits/pull/930))
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.5.9](https://github.com/rcore-os/tgoskits/compare/axvcpu-v0.5.8...axvcpu-v0.5.9) - 2026-05-22
 
 ### Other

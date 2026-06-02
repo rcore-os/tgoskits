@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.1...buddy-slab-allocator-v0.4.2) - 2026-06-02
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
 ## [0.3.1](https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.3.0...v0.3.1) - 2026-04-10
 
 ### Other

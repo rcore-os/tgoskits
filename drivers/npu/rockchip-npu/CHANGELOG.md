@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.1...rockchip-npu-v0.2.2) - 2026-06-02
+
+### Added
+
+- *(dma-api)* add high-level dma sync helpers ([#1028](https://github.com/rcore-os/tgoskits/pull/1028))
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- *(dma-api)* split coherent and streaming DMA APIs ([#932](https://github.com/rcore-os/tgoskits/pull/932))
+
 ## [0.2.1](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.0...rockchip-npu-v0.2.1) - 2026-05-22
 
 ### Other

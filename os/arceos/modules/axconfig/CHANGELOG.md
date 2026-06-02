@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/ax-config-v0.5.10...ax-config-v0.5.11) - 2026-06-02
+
+### Added
+
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+
+### Other
+
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/ax-config-v0.5.9...ax-config-v0.5.10) - 2026-05-15
 
 ### Other

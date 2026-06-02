@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.1.2...eth-intel-v0.1.3) - 2026-06-02
+
+### Added
+
+- *(dma-api)* add high-level dma sync helpers ([#1028](https://github.com/rcore-os/tgoskits/pull/1028))
+
+### Other
+
+- *(dma-api)* split coherent and streaming DMA APIs ([#932](https://github.com/rcore-os/tgoskits/pull/932))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.1.1](https://github.com/drivercraft/sparreal-os/compare/eth-intel-v0.1.0...eth-intel-v0.1.1) - 2026-04-10
 
 ### Other
