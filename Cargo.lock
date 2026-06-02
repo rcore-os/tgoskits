@@ -4989,6 +4989,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "k230-kpu"
+version = "0.1.0"
+
+[[package]]
 name = "kapi"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8063,6 +8067,7 @@ dependencies = [
  "axbacktrace",
  "axfs-ng-vfs",
  "axnsproxy",
+ "axklib",
  "axplat-dyn",
  "axpoll",
  "bitflags 2.11.1",
@@ -8081,6 +8086,7 @@ dependencies = [
  "indoc",
  "inherit-methods-macro",
  "kbpf-basic",
+ "k230-kpu",
  "kernel-elf-parser",
  "kmod-loader",
  "kprobe",

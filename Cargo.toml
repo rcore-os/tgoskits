@@ -291,6 +291,7 @@ rdif-timer = { version = "0.6.1", path = "drivers/interface/rdif-timer" }
 rdif-vsock = { version = "0.1.0", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2.0", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.2.1", path = "drivers/npu/rockchip-npu" }
+k230-kpu = { version = "0.1.0", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.2.0", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.3", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.3.0", path = "drivers/soc/rockchip/rockchip-soc" }
