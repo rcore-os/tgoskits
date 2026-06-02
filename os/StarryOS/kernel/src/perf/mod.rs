@@ -31,7 +31,7 @@ use kbpf_basic::{
 };
 
 use crate::{
-    ebpf::transform::EbpfKernelAuxiliary,
+    ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::VmBytes,
 };
@@ -160,7 +160,7 @@ pub fn perf_event_open(
 ) -> AxResult<isize> {
     let args =
         PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(attr, pid, cpu, group_fd, flags)
-            .map_err(|_| AxError::InvalidInput)?;
+            .into_ax_result()?;
     let event: Box<dyn PerfEventOps> = match args.type_ {
         PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
         PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),

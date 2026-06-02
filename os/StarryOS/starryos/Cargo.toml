@@ -72,7 +72,7 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
+ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }

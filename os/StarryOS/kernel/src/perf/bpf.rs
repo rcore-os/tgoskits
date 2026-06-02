@@ -23,7 +23,7 @@ use rbpf::EbpfVmRaw;
 
 use super::PerfEventOps;
 use crate::{
-    ebpf::{BPF_HELPER_FUN_SET, prog::BpfProg},
+    ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
 };
 
@@ -55,9 +55,7 @@ impl BpfPerfEventWrapper {
             // — Linux behavior on EINVAL would alarm libbpf-style readers.
             return Ok(());
         }
-        self.inner
-            .write_event(data)
-            .map_err(|_| AxError::InvalidInput)?;
+        self.inner.write_event(data).into_ax_result()?;
         if self.inner.enabled() {
             self.poll_ready.wake();
         }
@@ -73,12 +71,12 @@ impl Debug for BpfPerfEventWrapper {
 
 impl PerfEventOps for BpfPerfEventWrapper {
     fn enable(&mut self) -> AxResult<()> {
-        self.inner.enable().map_err(|_| AxError::InvalidInput)?;
+        self.inner.enable().into_ax_result()?;
         Ok(())
     }
 
     fn disable(&mut self) -> AxResult<()> {
-        self.inner.disable().map_err(|_| AxError::InvalidInput)?;
+        self.inner.disable().into_ax_result()?;
         Ok(())
     }
 

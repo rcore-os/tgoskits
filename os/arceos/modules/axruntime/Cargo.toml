@@ -11,6 +11,7 @@ version = "0.5.16"
 default = []
 
 dma = ["paging"]
+ext-ld = []
 ipi = ["dep:ax-ipi"]
 irq = [
   "ax-hal/irq",

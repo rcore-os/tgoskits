@@ -70,11 +70,12 @@ fn primary_entry(fdt_addr: usize) -> ! {
     <<super::Arch as crate::ArchTrait>::Console as crate::console::ArchConsoleOps>::init();
     println!("RISC-V64 SBI kernel entry.");
 
-    let kernel_start = super::kernel_load_address();
+    let kernel_code_start_lma = ext_sym_addr!(_head);
+    let kernel_code_end_lma = ext_sym_addr!(__kernel_code_end);
 
     crate::entry::primary_init_early(PrimaryCpuInitInfo {
-        kernel_start: kernel_start.into(),
-        kernel_end: (__kernel_code_end as *const () as usize).into(),
+        kernel_start: kernel_code_start_lma.into(),
+        kernel_end: kernel_code_end_lma.into(),
         kernel_start_link: crate::consts::VM_LOAD_ADDRESS.into(),
     });
     super::paging::enable_mmu()

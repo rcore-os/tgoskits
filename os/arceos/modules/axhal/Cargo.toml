@@ -90,6 +90,7 @@ hv = [
     "ax-percpu/arm-el2",
     "axplat-dyn?/hv",
 ]
+axvisor-linker = []
 
 # Custom or default platforms
 myplat = []

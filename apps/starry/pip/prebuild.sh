@@ -3,7 +3,7 @@ set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 arch="${STARRY_ARCH:-x86_64}"
-base_rootfs="${STARRY_BASE_ROOTFS:-}"
+base_rootfs="${STARRY_ROOTFS:-${STARRY_BASE_ROOTFS:-}}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/pip-apk-cache"
@@ -71,14 +71,18 @@ install_pip_packages() {
 
     mkdir -p "$apk_cache"
     echo "[pip prebuild] installing python3 and py3-pip via qemu-user apk..."
-    "$qemu_runner" -L "$staging_root" \
-        "$staging_root/sbin/apk" \
-        --root / \
-        --cache-dir "$apk_cache" \
-        --update-cache \
-        --no-progress \
-        --no-scripts \
-        add python3 py3-pip
+    QEMU_LD_PREFIX="$staging_root" \
+    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
+        "$qemu_runner" -L "$staging_root" \
+            "$staging_root/sbin/apk" \
+            --root "$staging_root" \
+            --repositories-file "$staging_root/etc/apk/repositories" \
+            --keys-dir "$staging_root/etc/apk/keys" \
+            --cache-dir "$apk_cache" \
+            --update-cache \
+            --no-progress \
+            --no-scripts \
+            add python3 py3-pip
 }
 
 copy_file_to_overlay() {
@@ -168,7 +172,7 @@ populate_overlay() {
     install -Dm0755 "$app_dir/test_pip.sh" "$overlay_dir/usr/bin/test_pip.sh"
 }
 
-require_env STARRY_BASE_ROOTFS "$base_rootfs"
+require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
 

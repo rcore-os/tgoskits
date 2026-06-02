@@ -128,7 +128,7 @@ members = [
     "test-suit/arceos/rust/net/*",
     "test-suit/arceos/rust/task/*",
     "test-suit/arceos/std/qemu-smp1/*",
-    "test-suit/starryos/normal/qemu-smp1/rust-hello/rust",
+    "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",
     "xtask",
@@ -363,9 +363,3 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
-
-# `kbpf-basic` depends on `ax-errno` from crates.io; redirect it to our own
-# workspace copy so the kernel and kbpf-basic share a single `ax-errno`
-# (otherwise `BpfError`/`AxError` would be two distinct types).
-[patch.crates-io]
-ax-errno = { path = "components/axerrno" }
