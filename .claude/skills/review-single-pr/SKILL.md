@@ -178,23 +178,23 @@ Do not accept "success path" tests that silently skip on unexpected failure, suc
 
 Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from normal groups, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving normal regression coverage.
 
-### Crates.io Patch And Dependency Boundaries
+### Crates.io Patch Policy
 
-When a PR touches `Cargo.toml`, `Cargo.lock`, dependency metadata, duplicate crate versions, third-party dependency APIs, or error-boundary code, inspect whether it adds, changes, or relies on a `[patch.crates-io]` override. Do not approve PRs that patch any crates.io dependency to a local path, fork, or git revision. This includes, but is not limited to, redirects like `[patch.crates-io] ax-errno = { path = "components/axerrno" }`.
+When a PR touches `Cargo.toml`, `Cargo.lock`, dependency metadata, duplicate crate versions, third-party dependency APIs, or code that bridges between dependency-owned and workspace-owned types, inspect whether it adds, changes, or relies on a `[patch.crates-io]` override. Do not approve PRs that introduce or depend on any crates.io patch, regardless of whether the patch target is a local path, fork, git revision, registry replacement, or another override form.
 
-Normal workspace dependency declarations, such as a workspace member using `{ path = "...", version = "..." }`, are not the same as a crates.io patch. The blocking case is overriding crates.io resolution for a dependency that another crate expects to get from the registry.
+Normal workspace dependency declarations, such as a workspace member using `{ path = "...", version = "..." }`, are not the same as a crates.io patch. The blocking case is overriding crates.io resolution through `[patch.crates-io]`.
 
-The preferred fix is to keep third-party dependencies using their normal crates.io resolution and adapt only at the local boundary:
+The preferred fix is to keep third-party dependencies using their normal crates.io resolution and adapt through explicit local boundaries:
 
 - use the dependency crate's exported public types, traits, error types, or result aliases instead of referencing or replacing that dependency's internal dependency paths;
 - add a crate-private adapter near the boundary when local code needs a local type, error, trait object, or ABI representation;
 - replace implicit `?` conversions that cross dependency-local and workspace-local types with explicit `.map_err(...)`, `TryFrom`, wrapper newtypes, or a crate-private extension trait;
 - keep dependency-facing trait/API code in the dependency's own exported types when it is still implementing or satisfying that dependency's public boundary;
-- if the dependency itself is wrong, prefer an upstream fix or a normal dependency upgrade path, not a workspace-level crates.io patch in the PR.
+- if the dependency itself is wrong, prefer an upstream fix, a normal dependency upgrade path, or a clearly scoped local adapter, not a workspace-level crates.io patch in the PR.
 
 For error-type mismatches, convert through stable public information exposed by the dependency. For example, when the dependency exports an errno-bearing error, convert the public code into the local errno/error type at the boundary and provide an explicit fallback for unknown values.
 
-For the known `kbpf-basic`/Starry eBPF case, the review should suggest this shape instead of accepting an `ax-errno` patch: keep `kbpf-basic` on crates.io `ax-errno`; use `kbpf_basic::BpfError` and `kbpf_basic::BpfResult`; add a crate-private eBPF error adapter that converts `err.code()` into local `ax_errno::LinuxError` and then `ax_errno::AxError`; use that adapter in Starry eBPF/perf entry points that return local `AxResult`.
+Example: for the `kbpf-basic`/Starry eBPF boundary, do not accept `[patch.crates-io] ax-errno = { path = "components/axerrno" }`. Keep `kbpf-basic` on crates.io `ax-errno`; use `kbpf_basic::BpfError` and `kbpf_basic::BpfResult`; add a crate-private eBPF error adapter that converts `err.code()` into local `ax_errno::LinuxError` and then `ax_errno::AxError`; use that adapter in Starry eBPF/perf entry points that return local `AxResult`.
 
 ## Duplicate And Overlap Analysis
 
@@ -314,7 +314,7 @@ Treat these as blocking unless clearly non-blocking:
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
 - bug fixes lack meaningful reproduction coverage;
-- the PR adds, changes, or relies on `[patch.crates-io]` to redirect any crates.io dependency to a local path, fork, or git revision, instead of adapting through the dependency's exported public API or an explicit local boundary adapter;
+- the PR adds, changes, or relies on any `[patch.crates-io]` override, instead of using normal dependency resolution, an upstream fix, a dependency upgrade, or an explicit local boundary adapter;
 - merge conflicts are unresolved, conflict repair resurrects outdated base APIs instead of adapting PR intent to current base, or the repaired head was not revalidated after push;
 - StarryOS app-support PRs place app workflows under `test-suit/starryos/normal` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching normal test-suit case;
 - the implementation is a test-only or fake fix that does not implement the intended behavior;
