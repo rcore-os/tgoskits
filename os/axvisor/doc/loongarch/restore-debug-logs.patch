@@ -1,0 +1,277 @@
+--- a/components/loongarch_vcpu/src/exception.rs
++++ b/components/loongarch_vcpu/src/exception.rs
+@@ -125,6 +125,24 @@
+ 
+ static GUEST_IOCSR_IPI_STATUS: AtomicUsize = AtomicUsize::new(0);
+ static GUEST_IOCSR_IPI_ENABLE: AtomicUsize = AtomicUsize::new(0);
++static DBG_TIMER_FORWARD_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_TIMER_WRITE_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_IDLE_EXIT_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_IOCSR_EMULATION_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_FETCHED_INSTRUCTION_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_GSPR_EMULATION_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_IRQ_EXIT_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_PC_ADVANCE_COUNT: AtomicUsize = AtomicUsize::new(0);
++static DBG_BRANCH_EMULATION_COUNT: AtomicUsize = AtomicUsize::new(0);
++
++fn dbg_log_sparse(counter: &AtomicUsize) -> Option<usize> {
++    let count = counter.fetch_add(1, Ordering::Relaxed) + 1;
++    if count <= 16 || count.is_power_of_two() {
++        Some(count)
++    } else {
++        None
++    }
++}
+ 
+ #[repr(u8)]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -370,6 +388,10 @@
+     ctx.gcsr_crmd &= !(CSR_CRMD_PLV_MASK | CSR_CRMD_IE);
+     ctx.sepc = ctx.gcsr_eentry + ecode * guest_exception_vector_size(ctx);
+     ctx.guest_pc = ctx.sepc;
++    log::debug!(
++        "LoongArch inject guest exception: ecode={:#x}, esubcode={:#x}, pc={:#x}, badv={:#x}, entry={:#x}, gcrmd={:#x}, gestat={:#x}, gbadi={:#x}",
++        ecode, esubcode, pc, badv, ctx.sepc, ctx.gcsr_crmd, ctx.gcsr_estat, ctx.gcsr_badi,
++    );
+ }
+ 
+ fn inject_guest_emulated_memory_fault(
+@@ -404,6 +426,10 @@
+     ctx.gcsr_crmd =
+         (ctx.gcsr_crmd | CSR_CRMD_DA) & !(CSR_CRMD_PG | CSR_CRMD_PLV_MASK | CSR_CRMD_IE);
+     ctx.sepc = ctx.gcsr_tlbrentry;
++    log::debug!(
++        "LoongArch inject guest TLB refill: pc={:#x}, badv={:#x}, tlbrentry={:#x}, tlbrehi={:#x}, pgd={:#x}",
++        pc, badv, ctx.sepc, ctx.gcsr_tlbrehi, ctx.gcsr_pgd,
++    );
+ }
+ 
+ fn get_guest_interrupt_status(ctx: &LoongArchContextFrame) -> usize {
+@@ -417,7 +443,14 @@
+ }
+ 
+ fn forward_timer_interrupt(ctx: &mut LoongArchContextFrame) {
++    let old_gestat = ctx.gcsr_estat;
+     ctx.gcsr_estat |= TIMER_BIT;
++    if let Some(count) = dbg_log_sparse(&DBG_TIMER_FORWARD_COUNT) {
++        log::debug!(
++            "LoongArch forward guest timer #{count}: pc={:#x}, sepc={:#x}, host_estat={:#x}, gcrmd={:#x}, gecfg={:#x}, old_gestat={:#x}, new_gestat={:#x}, host_tcfg={:#x}, host_tval={:#x}",
++            get_guest_pc(ctx), ctx.sepc, ctx.host_estat, ctx.gcsr_crmd, ctx.gcsr_ectl, old_gestat, ctx.gcsr_estat, read_host_timer_csr(CSR_TCFG), read_host_timer_csr(CSR_TVAL),
++        );
++    }
+     ack_host_timer_interrupt();
+ }
+ 
+@@ -447,16 +480,33 @@
+ }
+ 
+ fn advance_guest_pc(ctx: &mut LoongArchContextFrame) {
+-    let pc = get_guest_pc(ctx).wrapping_add(4);
++    let old_pc = get_guest_pc(ctx);
++    let old_sepc = ctx.sepc;
++    let old_gcsr_era = ctx.gcsr_era;
++    let pc = old_pc.wrapping_add(4);
+     ctx.sepc = pc;
+     ctx.guest_pc = pc;
+     ctx.gcsr_estat &= !CSR_ESTAT_EXC_MASK;
++    if let Some(count) = dbg_log_sparse(&DBG_PC_ADVANCE_COUNT) {
++        log::debug!(
++            "LoongArch guest PC advance #{count}: old_pc={:#x}, new_pc={:#x}, old_sepc={:#x}, preserved_gcsr_era={:#x}, host_tlbrera={:#x}",
++            old_pc, pc, old_sepc, old_gcsr_era, ctx.host_tlbrera,
++        );
++    }
+ }
+ 
+ fn set_guest_pc(ctx: &mut LoongArchContextFrame, pc: usize) {
++    let old_pc = get_guest_pc(ctx);
++    let old_sepc = ctx.sepc;
+     ctx.sepc = pc;
+     ctx.guest_pc = pc;
+     ctx.gcsr_estat &= !CSR_ESTAT_EXC_MASK;
++    if let Some(count) = dbg_log_sparse(&DBG_BRANCH_EMULATION_COUNT) {
++        log::debug!(
++            "LoongArch guest branch emulation #{count}: old_pc={:#x}, new_pc={:#x}, old_sepc={:#x}, host_era={:#x}, host_estat={:#x}",
++            old_pc, pc, old_sepc, ctx.host_era, ctx.host_estat,
++        );
++    }
+ }
+ 
+ fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
+@@ -488,6 +538,10 @@
+     emulate_guest_csr(ctx, rd, rj, csr);
+     advance_guest_pc(ctx);
+     if csr == CSR_CRMD && ctx.gcsr_crmd & CSR_CRMD_IE != 0 && ctx.gcsr_estat & TIMER_BIT != 0 {
++        log::debug!(
++            "LoongArch guest CRMD enables pending timer: pc={:#x}, gcrmd={:#x}, gecfg={:#x}, gestat={:#x}",
++            get_guest_pc(ctx), ctx.gcsr_crmd, ctx.gcsr_ectl, ctx.gcsr_estat,
++        );
+         forward_timer_interrupt(ctx);
+     }
+     AxVCpuExitReason::Nothing
+@@ -531,7 +585,10 @@
+         CSR_STLBPS => ctx.gcsr_stlbps,
+         CSR_TCFG | CSR_TVAL | CSR_TICLR => read_host_timer_csr(csr),
+         CSR_SAVE0..=CSR_SAVE15 => read_guest_save_csr(ctx, csr),
+-        _ => 0,
++        _ => {
++            log::debug!("LoongArch GSPR csrrd emulation: csr={:#x}", csr);
++            0
++        },
+     }
+ }
+ 
+@@ -552,7 +609,10 @@
+         CSR_STLBPS => ctx.gcsr_stlbps = value,
+         CSR_TCFG | CSR_TVAL | CSR_TICLR => emulate_timer_write(ctx, csr, value),
+         CSR_SAVE0..=CSR_SAVE15 => write_guest_save_csr(ctx, csr, value),
+-        _ => {}
++        _ => log::debug!(
++            "LoongArch GSPR csr write emulation ignored: csr={:#x}, value={:#x}",
++            csr, value,
++        )
+     }
+ }
+ 
+@@ -606,6 +666,12 @@
+ /// when it fires the IRQ handler injects the interrupt into the guest ESTAT.
+ fn emulate_timer_write(ctx: &mut LoongArchContextFrame, csr: usize, value: usize) {
+     write_host_timer_csr(csr, value);
++    if let Some(count) = dbg_log_sparse(&DBG_TIMER_WRITE_COUNT) {
++        log::debug!(
++            "LoongArch guest timer CSR write #{count}: csr={:#x}, value={:#x}, pc={:#x}, gcrmd={:#x}, gecfg={:#x}, gestat={:#x}, host_tcfg={:#x}, host_tval={:#x}",
++            csr, value, get_guest_pc(ctx), ctx.gcsr_crmd, ctx.gcsr_ectl, ctx.gcsr_estat, read_host_timer_csr(CSR_TCFG), read_host_timer_csr(CSR_TVAL),
++        );
++    }
+     if csr == CSR_TICLR && (value & CSR_TICLR_TI) != 0 {
+         ctx.gcsr_estat &= !TIMER_BIT;
+         ack_host_timer_interrupt();
+@@ -639,12 +705,22 @@
+ }
+ 
+ fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> AxVCpuExitReason {
++    log::debug!(
++        "LoongArch GSPR cacop emulation skipped at guest_pc={:#x}",
++        get_guest_pc(ctx),
++    );
+     advance_guest_pc(ctx);
+     AxVCpuExitReason::Nothing
+ }
+ 
+ fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
+-    let _ = ins;
++    let level = extract_field(ins, 0, 15);
++    if let Some(count) = dbg_log_sparse(&DBG_IDLE_EXIT_COUNT) {
++        log::debug!(
++            "LoongArch guest idle request #{count}: level={:#x}, pc={:#x}, gcrmd={:#x}, gecfg={:#x}, gestat={:#x}, host_tcfg={:#x}, host_tval={:#x}",
++            level, get_guest_pc(ctx), ctx.gcsr_crmd, ctx.gcsr_ectl, ctx.gcsr_estat, read_host_timer_csr(CSR_TCFG), read_host_timer_csr(CSR_TVAL),
++        );
++    }
+     advance_guest_pc(ctx);
+     AxVCpuExitReason::Idle
+ }
+@@ -687,6 +763,12 @@
+     let rj = extract_field(ins, 5, 5);
+     let rj_value = ctx.x[rj];
+     let rd_value = ctx.x[rd];
++    if let Some(count) = dbg_log_sparse(&DBG_IOCSR_EMULATION_COUNT) {
++        log::debug!(
++            "LoongArch IOCSR emulation #{count}: pc={:#x}, ins={:#x}, ty={}, rd={}, rd_value={:#x}, rj={}, rj_value={:#x}, host_estat={:#x}, host_badi={:#x}",
++            get_guest_pc(ctx), ins, ty, rd, rd_value, rj, rj_value, ctx.host_estat, ctx.host_badi,
++        );
++    }
+ 
+     if ty <= 3 {
+         if let Some(value) = read_guest_iocsr_ipi(rj_value) {
+@@ -1227,7 +1309,7 @@
+     ins: u32,
+ ) -> Option<AxVCpuExitReason> {
+     let ins = ins as usize;
+-    emulate_guest_pointer_access(ctx, ins)
++    let result =     emulate_guest_pointer_access(ctx, ins)
+         .or_else(|| emulate_guest_regular_memory_access(ctx, ins))
+         .or_else(|| emulate_guest_ll_sc(ctx, ins))
+         .or_else(|| emulate_guest_logical_imm(ctx, ins))
+@@ -1246,7 +1328,14 @@
+         .or_else(|| emulate_guest_alu_reg(ctx, ins))
+         .or_else(|| emulate_guest_compact_branch(ctx, ins))
+         .or_else(|| emulate_guest_branch(ctx, ins))
+-        .or_else(|| try_emulate_gspr(ctx, ins))
++        .or_else(|| try_emulate_gspr(ctx, ins));
++    if let Some(count) = dbg_log_sparse(&DBG_FETCHED_INSTRUCTION_COUNT) {
++        log::debug!(
++            "LoongArch fetched instruction emulation #{count}: pc={:#x}, sepc={:#x}, gcsr_era={:#x}, host_era={:#x}, host_badi={:#x}, ins={:#x}, result={:?}",
++            get_guest_pc(ctx), ctx.sepc, ctx.gcsr_era, ctx.host_era, ctx.host_badi, ins, result,
++        );
++    }
++    result
+ }
+ 
+ fn try_emulate_gspr(ctx: &mut LoongArchContextFrame, ins: usize) -> Option<AxVCpuExitReason> {
+@@ -1287,12 +1376,22 @@
+ 
+ fn emulate_gspr(ctx: &mut LoongArchContextFrame) -> AxVCpuExitReason {
+     let ins = get_guest_instruction(ctx);
++    if let Some(count) = dbg_log_sparse(&DBG_GSPR_EMULATION_COUNT) {
++        log::debug!(
++            "LoongArch GSPR emulation #{count}: pc={:#x}, ins={:#x}, host_estat={:#x}, host_badi={:#x}, guest_badi={:#x}, sepc={:#x}, gcsr_era={:#x}, host_era={:#x}",
++            get_guest_pc(ctx), ins, ctx.host_estat, ctx.host_badi, ctx.gcsr_badi, ctx.sepc, ctx.gcsr_era, ctx.host_era,
++        );
++    }
+     if let Some(reason) = try_emulate_gspr(ctx, ins) {
+         return reason;
+     }
+ 
+     let pc = get_guest_pc(ctx);
+     let fetch_gpa = direct_map_guest_addr_to_gpa(pc);
++    log::debug!(
++        "LoongArch GSPR BADI did not decode, fetching guest instruction: pc={:#x}, fetch_gpa={:#x}, badi={:#x}",
++        pc, fetch_gpa, ins,
++    );
+     AxVCpuExitReason::GuestInstructionFetch {
+         addr: GuestPhysAddr::from(fetch_gpa),
+     }
+@@ -1400,6 +1499,10 @@
+             } else if is_qemu_invalid_badi(ins) {
+                 let pc = get_guest_pc(ctx);
+                 let fetch_gpa = direct_map_guest_addr_to_gpa(pc);
++                log::debug!(
++                    "LoongArch INE BADI did not decode, fetching guest instruction: pc={:#x}, fetch_gpa={:#x}, badi={:#x}",
++                    pc, fetch_gpa, ins,
++                );
+                 Ok(AxVCpuExitReason::GuestInstructionFetch {
+                     addr: GuestPhysAddr::from(fetch_gpa),
+                 })
+@@ -1441,6 +1544,10 @@
+     // is never taken. Forward the timer interrupt into the guest by setting the
+     // timer bit in the guest ESTAT so that it is observed on the next VM entry.
+     if get_guest_interrupt_status(ctx) & TIMER_BIT != 0 {
++        log::debug!(
++            "LoongArch pending timer after sync: result={:?}, pc={:#x}, host_estat={:#x}, gestat={:#x}",
++            result, get_guest_pc(ctx), ctx.host_estat, ctx.gcsr_estat,
++        );
+         forward_timer_interrupt(ctx);
+     }
+     result
+@@ -1451,6 +1558,12 @@
+     let is = guest_is;
+ 
+     if let Some(vector) = decode_interrupt_vector(is) {
++        if let Some(count) = dbg_log_sparse(&DBG_IRQ_EXIT_COUNT) {
++            log::debug!(
++                "LoongArch irq exit #{count}: vector={}, guest_is={:#x}, host_estat={:#x}, pc={:#x}, gcrmd={:#x}, gecfg={:#x}, gestat={:#x}",
++                vector, guest_is, ctx.host_estat, get_guest_pc(ctx), ctx.gcsr_crmd, ctx.gcsr_ectl, ctx.gcsr_estat,
++            );
++        }
+         // Inject the timer interrupt into the guest by setting the timer bit
+         // in the guest ESTAT. On the next VM entry RESTORE_GUEST_REGS will
+         // write this to GCSR ESTAT, so the guest sees the interrupt.
+--- a/components/loongarch_vcpu/src/vcpu.rs
++++ b/components/loongarch_vcpu/src/vcpu.rs
+@@ -182,6 +182,7 @@
+     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+         #[cfg(target_arch = "loongarch64")]
+         {
++            log::debug!("LoongArch guest entry context:\n{}", self.ctx);
+             self.ctx.guest_pc = self.ctx.sepc;
+             let exit_reason = unsafe {
+                 save_host_sp();
