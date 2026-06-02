@@ -2,45 +2,37 @@
 #
 [base]
 # Guest vm id.
-id = 1
+id = 2
 # Guest vm name.
-name = "linux"
+name = "arceos"
 # Virtualization type.
 vm_type = 1
 # The number of virtual CPUs.
-cpu_num = 1
+cpu_num = 2
 # The physical CPU ids.
-phys_cpu_ids = [0x00]
+phys_cpu_ids = [0x201, 0x100]
 
 #
 # Vm kernel configs
 #
 [kernel]
 # The entry point of the kernel image.
-entry_point = 0x2_4008_0000
+entry_point = 0x20_2008_0000
 # The location of image: "memory" | "fs".
 # Load from file system.
 image_location = "fs"
 # The load address of the kernel image.
-kernel_load_addr = 0x2_4008_0000
+kernel_load_addr = 0x20_2008_0000
 # The file path of the kernel image.
-# kernel_path = "/guest/orangepi-5-plus"
-kernel_path = "/guest/linux/orangepi-5-plus"
+kernel_path = "/guest/arceos/phytiumpi"
 # The file path of the device tree blob (DTB).
-dtb_load_addr = 0x2_4000_0000
-# The file path of the device tree blob (DTB).
-# dtb_path = "/path/to/axvisor/configs/vms/orangepi-5-plus-guest.dtb"
-
-ramdisk_path = "/guest/linux/initramfs.cpio"
-# The load address of the ramdisk image (U-Boot ramdisk_addr_r).
-ramdisk_load_addr = 0xc000_0000
-
+# dtb_path = "/path/to/axvisor/configs/vms/phytiumpi/arceos-smp2.dtb"
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x20_2000_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
-    [0xb000_0000, 0x1000_0000, 0x7, 2],
-    [0xc000_0000, 0x3000_0000, 0x7, 2],
-    [0x2_4000_0000, 0x8000_0000, 0x7, 1], # System RAM MAP_IDENTICAL
+  [0x20_2000_0000, 0x2000_0000, 0x7, 1], # System RAM MAP_IDENTICAL
 ]
 
 #
@@ -52,11 +44,7 @@ interrupt_mode = "passthrough"
 
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
-emu_devices = [
-  ["gppt-gicd", 0xfe60_0000, 0x1_0000, 0, 0x21, []],
-  ["gppt-gicr", 0xfe68_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
-  # ["gppt-gits", 0xfe64_0000, 0x2_0000, 0, 0x22, [0xfe64_0000]],
-]
+emu_devices = []
 
 # Pass-through devices.
 # Name Base-Ipa Base-Pa Length Alloc-Irq.
