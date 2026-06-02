@@ -918,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "ax-errno"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "log",
  "strum 0.27.2",
