@@ -70,7 +70,27 @@ ensure_tools() {
 
     command -v rust-nm >/dev/null 2>&1
     command -v rust-objcopy >/dev/null 2>&1
+    command -v rust-objdump >/dev/null 2>&1
     command -v gen_ksym >/dev/null 2>&1
+}
+
+kallsyms_section_size() {
+    section_hex=$(rust-objdump -h "$KERNEL_ELF" | awk "\$2 == \".kallsyms\" { print \$3; found = 1 } END { if (!found) exit 1 }")
+    printf "%d\n" "0x$section_hex"
+}
+
+pad_kallsyms_to_section() {
+    section_size="$1"
+    kallsyms_size=$(wc -c < "$kallsyms" | tr -d ' ')
+    if [ "$kallsyms_size" -gt "$section_size" ]; then
+        echo "generated kallsyms (${kallsyms_size} bytes) exceed .kallsyms section (${section_size} bytes)" >&2
+        echo "remove the stale kernel ELF or rebuild it so the linker script reserve is restored" >&2
+        exit 1
+    fi
+
+    if [ "$kallsyms_size" -lt "$section_size" ]; then
+        dd if=/dev/zero bs=1 count=$((section_size - kallsyms_size)) >> "$kallsyms" 2>/dev/null
+    fi
 }
 
 generate_kallsyms() {
@@ -84,6 +104,8 @@ generate_kallsyms() {
         | awk '$3 != "$x"' \
         | gen_ksym > "$kallsyms"
 
+    section_size=$(kallsyms_section_size)
+    pad_kallsyms_to_section "$section_size"
     rust-objcopy --update-section .kallsyms="$kallsyms" "$KERNEL_ELF"
 }
 

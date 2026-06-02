@@ -15,6 +15,7 @@ smp = ["ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
+xuantie-c9xx = ["ax-hal/xuantie-c9xx"]
 
 # User space support
 uspace = ["ax-hal/uspace", "ax-task?/uspace"]
@@ -25,6 +26,7 @@ irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
 
 # Custom or default platforms
+ext-ld = ["ax-runtime/ext-ld"]
 myplat = ["ax-hal/myplat"]
 defplat = ["ax-hal/defplat"]
 plat-dyn = [

@@ -9,6 +9,8 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "k230-kpu")]
+mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
@@ -24,6 +26,7 @@ mod memtrack;
 mod rknpu_card;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod rknpu_drm;
+mod rtc;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod tpu;
 pub mod tty;
@@ -292,6 +295,39 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(CpuDmaLatency),
         ),
     );
+    root.add(
+        "rtc0",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            rtc::RTC0_DEVICE_ID,
+            Arc::new(rtc::Rtc),
+        ),
+    );
+
+    #[cfg(feature = "k230-kpu")]
+    {
+        if let Some(kpu_device) = kpu::KpuDevice::probe().map(Arc::new) {
+            root.add(
+                "kpu",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device.clone(),
+                ),
+            );
+            root.add(
+                "kpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device,
+                ),
+            );
+        }
+    }
 
     // This is mounted to a tmpfs in `new_procfs`
     root.add(

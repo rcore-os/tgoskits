@@ -62,6 +62,7 @@ const LOONGARCH64_HERMIT_JSON: &str =
 const TARGET_JSON_ROOT: &str = "scripts/targets";
 const NO_PIE_TARGET_DIR: &str = "no-pie";
 const PIE_TARGET_DIR: &str = "pie";
+pub(crate) const ARCEOS_LINKER_SCRIPT: &str = "linker.x";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -212,10 +213,10 @@ impl BuildInfo {
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
         self.resolve_features_with_metadata(package, target, plat_dyn, metadata);
-        let extra_rustflags = toolchain_rustflags(&self.env);
         let cargo_target = cargo_target_json_path(target, plat_dyn)?;
         let cargo_target = cargo_target.display().to_string();
-        let args = Self::build_cargo_args(&cargo_target, &extra_rustflags);
+        let rustflags = toolchain_rustflags(&self.env);
+        let args = Self::build_cargo_args(&cargo_target, &rustflags);
         self.env.insert(
             "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
             "true".to_string(),
@@ -675,7 +676,7 @@ fn supports_platform_dynamic(target: &str) -> bool {
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
-    !target.starts_with("x86_64-")
+    !target.starts_with("x86_64-") && !target.starts_with("loongarch64-")
 }
 
 fn normalize_legacy_feature_alias(feature: &str) -> String {
@@ -1590,6 +1591,7 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg.contains("-Tlinker.x")));
         assert!(!args.iter().any(|arg| arg.contains("-Taxplat.x")));
+        assert!(!args.iter().any(|arg| arg.contains("-Truntime.x")));
     }
 
     #[test]
@@ -1612,6 +1614,24 @@ mod tests {
                 .any(|arg| arg.contains("scripts/targets/no-pie")),
             "config key must not use the spec path"
         );
+    }
+
+    #[test]
+    fn target_specs_embed_only_final_linker_script() {
+        let specs = [
+            include_str!("../../targets/no-pie/aarch64-unknown-none-softfloat.json"),
+            include_str!("../../targets/no-pie/loongarch64-unknown-none-softfloat.json"),
+            include_str!("../../targets/no-pie/riscv64gc-unknown-none-elf.json"),
+            include_str!("../../targets/no-pie/x86_64-unknown-none.json"),
+            include_str!("../../targets/pie/aarch64-unknown-none-softfloat.json"),
+            include_str!("../../targets/pie/riscv64gc-unknown-none-elf.json"),
+        ];
+
+        for spec in specs {
+            assert!(spec.contains("-Tlinker.x"));
+            assert!(!spec.contains("-Taxplat.x"));
+            assert!(!spec.contains("-Truntime.x"));
+        }
     }
 
     #[test]

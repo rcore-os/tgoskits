@@ -366,10 +366,10 @@ impl NvmeBlockQueue {
                 }
                 let mut list = self.free_prp_lists.pop().ok_or(BlkError::Retry)?;
                 for entry in 0..list_entries {
-                    list.set(entry, 0);
+                    list.set_cpu(entry, 0);
                 }
                 for (entry, addr) in pages[1..].iter().copied().enumerate() {
-                    list.set(entry, addr);
+                    list.set_cpu(entry, addr);
                 }
                 let addr = list.dma_addr().as_u64();
                 return Ok(PrpMapping {

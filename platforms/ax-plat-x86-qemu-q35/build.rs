@@ -27,10 +27,9 @@ fn main() {
         ld_content.replace("%KERNEL_BASE%", &format!("{:#x}", 0xffff800000200000usize));
     let ld_content = ld_content.replace("%SMP%", &format!("{smp}",));
 
-    // target/<target_triple>/<mode>/build/axvisor-xxxx/out
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let out_path = std::path::Path::new(&out_dir).join("linker.x");
-    println!("cargo:rustc-link-search={out_dir}");
-    println!("cargo:rustc-link-arg=-Tlinker.x");
-    std::fs::write(out_path, ld_content).unwrap();
+    // target/<target_triple>/<mode>/build/ax-plat-x86-qemu-q35-xxxx/out
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let out_path = out_dir.join("axplat.x");
+    println!("cargo:rustc-link-search={}", out_dir.display());
+    std::fs::write(&out_path, &ld_content).unwrap();
 }

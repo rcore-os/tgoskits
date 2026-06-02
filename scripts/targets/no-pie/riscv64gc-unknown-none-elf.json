@@ -21,9 +21,9 @@
   "panic-strategy": "abort",
   "pre-link-args": {
     "gnu-lld": [
-      "-Tlinker.x",
       "-no-pie",
-      "-znostart-stop-gc"
+      "-znostart-stop-gc",
+      "-Tlinker.x"
     ]
   },
   "relocation-model": "static",

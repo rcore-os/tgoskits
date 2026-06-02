@@ -30,6 +30,7 @@ members = [
     "components/crate_interface",
     "components/handler_table",
     "components/int_ratio",
+    "components/irq-framework",
     "components/kasm-aarch64",
     "components/kernel_guard",
     "components/kernutil",
@@ -80,6 +81,7 @@ members = [
     "drivers/usb/usb-if",
     "drivers/usb/utils/*",
 
+    "os/StarryOS/axnsproxy",
     "os/StarryOS/kernel",
     "os/StarryOS/starryos",
     "os/arceos/api/*",
@@ -126,7 +128,7 @@ members = [
     "test-suit/arceos/rust/net/*",
     "test-suit/arceos/rust/task/*",
     "test-suit/arceos/std/qemu-smp1/*",
-    "test-suit/starryos/normal/qemu-smp1/rust-hello/rust",
+    "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",
     "xtask",
@@ -188,6 +190,7 @@ ax-fs-ramfs = { version = "0.3.12", path = "components/axfs_crates/axfs_ramfs" }
 ax-fs-vfs = { version = "0.3.11", path = "components/axfs_crates/axfs_vfs" }
 ax-hal = { version = "0.5.15", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
+irq-framework = { version = "0.1.0", path = "components/irq-framework" }
 ax-helloworld = { version = "0.3.1", path = "os/arceos/examples/helloworld" }
 ax-helloworld-myplat = { version = "0.3.1", path = "os/arceos/examples/helloworld-myplat" }
 ax-httpclient = { version = "0.3.1", path = "os/arceos/examples/httpclient" }
@@ -198,7 +201,7 @@ ax-io = { version = "0.5.7", path = "components/axio" }
 ax-ipi = { version = "0.5.14", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.1", path = "components/lockdep" }
-ax-kspin = { version = "0.3.8", path = "components/kspin" }
+ax-kspin = { version = "0.3.9", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.7", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.15", path = "os/arceos/ulib/axlibc" }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }
@@ -288,6 +291,7 @@ rdif-timer = { version = "0.6.1", path = "drivers/interface/rdif-timer" }
 rdif-vsock = { version = "0.1.0", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2.0", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.2.1", path = "drivers/npu/rockchip-npu" }
+k230-kpu = { version = "0.1.0", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.2.0", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.3", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.3.0", path = "drivers/soc/rockchip/rockchip-soc" }
@@ -305,6 +309,7 @@ phytium-mci-host = { version = "0.1.1", path = "drivers/blk/phytium-mci-host", d
 sdhci-host = { version = "0.1.1", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.1.1", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
+axnsproxy = { version = "0.1.0", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.5.12", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.7", path = "components/starry-process" }
 starry-signal = { version = "0.7.0", path = "components/starry-signal" }

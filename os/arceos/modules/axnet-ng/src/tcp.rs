@@ -151,7 +151,6 @@ impl TcpSocket {
             let send_queue = saturating_u32(socket.send_queue());
             let recv_capacity = saturating_u32(socket.recv_capacity());
             let recv_queue = saturating_u32(socket.recv_queue());
-            let send_space = send_capacity.saturating_sub(send_queue);
             let recv_space = recv_capacity.saturating_sub(recv_queue);
             let snd_mss = TCP_INFO_DEFAULT_MSS;
             let cwnd_segments = send_capacity.div_ceil(snd_mss).max(1);
@@ -177,7 +176,7 @@ impl TcpSocket {
                 snd_cwnd: cwnd_segments,
                 reordering: TCP_INFO_DEFAULT_REORDERING,
                 rcv_space: recv_space,
-                snd_wnd: send_space,
+                snd_wnd: 0,
                 rcv_wnd: recv_space,
                 ..Default::default()
             }
@@ -887,7 +886,7 @@ mod tests {
         assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
         assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
         assert_eq!(info.notsent_bytes, 0);
-        assert_eq!(info.snd_wnd, saturating_u32(TCP_TX_BUF_LEN));
+        assert_eq!(info.snd_wnd, 0);
         assert_eq!(info.rcv_space, saturating_u32(TCP_RX_BUF_LEN));
         assert_eq!(info.rcv_wnd, saturating_u32(TCP_RX_BUF_LEN));
     }

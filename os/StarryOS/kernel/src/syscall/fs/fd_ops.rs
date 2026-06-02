@@ -14,8 +14,8 @@ use linux_raw_sys::general::*;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
-        get_file_like, memfd::Memfd, with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, NsFd, Pipe, add_file_like,
+        close_file_like, get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_string,
     pseudofs::{Device, dev::tty},
@@ -174,6 +174,56 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     add_file_like(f, flags & O_CLOEXEC != 0)
 }
 
+/// Check whether `path` refers to a `/proc/<pid>/ns/<type>` entry.
+/// If so, create an [`NsFd`] and add it to the fd table instead of
+/// opening a regular file.
+///
+/// Returns `Some(fd)` on success, `Some(Err(...))` on failure, or
+/// `None` if the path does not match (fall through to regular open).
+fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
+    // Must be of the form /proc/<pid>/ns/<type>
+    if !path.starts_with("/proc/") {
+        return None;
+    }
+    let rest = path.strip_prefix("/proc/")?;
+    let (pid_str, ns_type_str) = rest.split_once("/ns/")?;
+    if pid_str.is_empty() || ns_type_str.is_empty() {
+        return None;
+    }
+    // Reject paths with extra components, e.g. /proc/1/ns/uts/extra
+    if ns_type_str.contains('/') {
+        return None;
+    }
+
+    let pid: u32 = if pid_str == "self" {
+        current().as_thread().proc_data.proc.pid()
+    } else {
+        pid_str.parse().ok()?
+    };
+
+    let proc_data = match crate::task::get_process_data(pid) {
+        Ok(p) => p,
+        Err(_) => return Some(Err(AxError::NotFound)),
+    };
+
+    let nsproxy = proc_data.nsproxy.lock();
+
+    let nsfd: NsFd = match ns_type_str {
+        "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
+        "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
+        "mnt" => NsFd::Mnt(nsproxy.mnt_ns.clone()),
+        "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
+        "net" => NsFd::Net(nsproxy.net_ns.clone()),
+        "user" => NsFd::User(nsproxy.user_ns.clone()),
+        _ => return Some(Err(AxError::NotFound)),
+    };
+
+    drop(nsproxy);
+
+    let fd = nsfd.add_to_fd_table(flags & O_CLOEXEC != 0);
+    Some(fd)
+}
+
 ktracepoint::define_event_trace!(
     sys_enter_openat,
     TP_kops(crate::tracepoint::KernelTraceAux),
@@ -269,6 +319,12 @@ pub fn sys_openat(
     };
 
     let mode = mode & !thread.proc_data.umask();
+
+    // Intercept /proc/<pid>/ns/<type> opens: create an NsFd instead of
+    // a regular file descriptor so that setns(2) receives a valid target.
+    if let Some(result) = try_open_nsfd(&path, uflags) {
+        return result.map(|fd| fd as isize);
+    }
 
     let cred = thread.cred();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));

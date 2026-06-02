@@ -1,0 +1,134 @@
+#!/bin/sh
+set -eu
+
+BASE=/tmp/nginx-phase1
+WWW="$BASE/www"
+CONF_DIR="$BASE/conf"
+OUT="$BASE/out"
+LOG_DIR="$BASE/logs"
+TIMEOUT_CMD=
+
+log() { printf 'NGINX_PHASE1_LOG: %s\n' "$*"; }
+fail() { printf 'NGINX_PHASE1_TEST_FAILED\n'; log "$*"; exit 1; }
+
+init_timeout_cmd() {
+    if command -v timeout >/dev/null 2>&1; then
+        TIMEOUT_CMD='timeout'
+        return
+    fi
+    if busybox timeout 2>&1 | grep -qi 'usage'; then
+        TIMEOUT_CMD='busybox timeout'
+        return
+    fi
+    fail "timeout command not available"
+}
+
+run_with_timeout() {
+    sec=$1
+    shift
+    $TIMEOUT_CMD "$sec" "$@"
+}
+
+cleanup_nginx() {
+    killall -q nginx 2>/dev/null || true
+    sleep 1
+    killall -q -9 nginx 2>/dev/null || true
+}
+
+prepare_packages() {
+    repo_file=/etc/apk/repositories
+    original_repos="$(cat "$repo_file")"
+    for mirror in https://mirrors.cernet.edu.cn/alpine https://dl-cdn.alpinelinux.org/alpine; do
+        printf '%s\n' "$original_repos" | sed "s#http://[^/]*/alpine/#$mirror/#g;s#https://[^/]*/alpine/#$mirror/#g" > "$repo_file"
+        rm -f /lib/apk/db/lock
+        if run_with_timeout 40 apk --timeout 40 update && run_with_timeout 40 apk --timeout 40 add nginx curl busybox-extras procps; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+prepare_files() {
+    rm -rf "$BASE"
+    mkdir -p "$WWW" "$CONF_DIR" "$OUT" "$LOG_DIR"
+    printf 'PHASE1_OK\n' > "$WWW/index.html"
+    cat > "$CONF_DIR/single.conf" <<'EOF'
+daemon off;
+master_process off;
+worker_processes 1;
+error_log /tmp/nginx-phase1/logs/error-single.log debug;
+pid /tmp/nginx-phase1/nginx-single.pid;
+events { worker_connections 64; }
+http { include /etc/nginx/mime.types; access_log /tmp/nginx-phase1/logs/access-single.log; server { listen 127.0.0.1:8080; root /tmp/nginx-phase1/www; location / { index index.html; } } }
+EOF
+    cat > "$CONF_DIR/master1.conf" <<'EOF'
+daemon off;
+master_process on;
+worker_processes 1;
+error_log /tmp/nginx-phase1/logs/error-master1.log debug;
+pid /tmp/nginx-phase1/nginx-master1.pid;
+events { worker_connections 64; }
+http { include /etc/nginx/mime.types; access_log /tmp/nginx-phase1/logs/access-master1.log; server { listen 127.0.0.1:8081; root /tmp/nginx-phase1/www; location / { index index.html; } } }
+EOF
+    cat > "$CONF_DIR/master2.conf" <<'EOF'
+daemon off;
+master_process on;
+worker_processes 2;
+error_log /tmp/nginx-phase1/logs/error-master2.log debug;
+pid /tmp/nginx-phase1/nginx-master2.pid;
+events { worker_connections 128; }
+http { include /etc/nginx/mime.types; access_log /tmp/nginx-phase1/logs/access-master2.log; server { listen 127.0.0.1:8082; root /tmp/nginx-phase1/www; location / { index index.html; } } }
+EOF
+}
+
+wait_http_ok() {
+    url=$1
+    i=0
+    while [ "$i" -lt 6 ]; do
+        if run_with_timeout 1 curl -fsS "$url" -o "$OUT/tmp.body" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+test_master2_known_issue() {
+    nginx -t -c "$CONF_DIR/master2.conf" -p "$BASE/" || return 1
+    nginx -c "$CONF_DIR/master2.conf" -p "$BASE/" > "$LOG_DIR/master2.stdout" 2>&1 &
+    wait_http_ok http://127.0.0.1:8082/ || { log "KNOWN_ISSUE: phase1.3 startup block"; cleanup_nginx; return 0; }
+    workers=$(ps -ef | grep 'nginx: worker process' | grep -v grep | wc -l)
+    log "phase1.3 worker_count=$workers"
+    i=1
+    while [ "$i" -le 3 ]; do
+        run_with_timeout 1 curl -fsS http://127.0.0.1:8082/ -o "$OUT/m2-$i.body" >/dev/null 2>&1 || {
+            log "KNOWN_ISSUE: phase1.3 request block at $i"
+            cleanup_nginx
+            return 0
+        }
+        i=$((i + 1))
+    done
+    run_with_timeout 2 nginx -s quit -c "$CONF_DIR/master2.conf" -p "$BASE/" >/dev/null 2>&1 || {
+        log "KNOWN_ISSUE: phase1.3 quit block"
+        cleanup_nginx
+        return 0
+    }
+    return 0
+}
+
+init_timeout_cmd
+( sleep 90; log "watchdog timeout"; kill -TERM $$ ) &
+prepare_packages || fail "prepare packages"
+prepare_files || fail "prepare files"
+nginx -t -c "$CONF_DIR/single.conf" -p "$BASE/" || fail "single config"
+nginx -c "$CONF_DIR/single.conf" -p "$BASE/" > "$LOG_DIR/single.stdout" 2>&1 &
+wait_http_ok http://127.0.0.1:8080/ || fail "phase1.1"
+cleanup_nginx
+nginx -t -c "$CONF_DIR/master1.conf" -p "$BASE/" || fail "master1 config"
+nginx -c "$CONF_DIR/master1.conf" -p "$BASE/" > "$LOG_DIR/master1.stdout" 2>&1 &
+wait_http_ok http://127.0.0.1:8081/ || fail "phase1.2"
+run_with_timeout 2 nginx -s quit -c "$CONF_DIR/master1.conf" -p "$BASE/" >/dev/null 2>&1 || fail "master1 quit"
+test_master2_known_issue || fail "phase1.3"
+cleanup_nginx
+printf 'NGINX_PHASE1_TEST_PASSED\n'

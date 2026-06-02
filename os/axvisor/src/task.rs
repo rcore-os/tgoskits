@@ -48,13 +48,18 @@ impl VCpuTask {
 impl TaskExt for VCpuTask {}
 
 pub trait AsVCpuTask {
+    fn try_as_vcpu_task(&self) -> Option<&VCpuTask>;
+
+    #[track_caller]
     fn as_vcpu_task(&self) -> &VCpuTask;
 }
 
 impl AsVCpuTask for TaskInner {
+    fn try_as_vcpu_task(&self) -> Option<&VCpuTask> {
+        self.task_ext().map(|ext| ext.downcast_ref::<VCpuTask>())
+    }
+
     fn as_vcpu_task(&self) -> &VCpuTask {
-        self.task_ext()
-            .expect("Not a VCpuTask")
-            .downcast_ref::<VCpuTask>()
+        self.try_as_vcpu_task().expect("Not a VCpuTask")
     }
 }

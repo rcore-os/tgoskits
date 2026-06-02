@@ -16,16 +16,16 @@ jobs:
       matrix:
         include:
           - board: phytiumpi
-            vmconfigs: configs/vms/arceos-aarch64-e2000-smp1.toml
+            vmconfigs: configs/vms/phytiumpi/arceos-smp1.toml
             vmconfigs_name: ArceOS
           - board: phytiumpi
-            vmconfigs: configs/vms/linux-aarch64-e2000-smp1.toml
+            vmconfigs: configs/vms/phytiumpi/linux-smp1.toml
             vmconfigs_name: Linux
           - board: roc-rk3568-pc
-            vmconfigs: configs/vms/arceos-aarch64-rk3568-smp1.toml
+            vmconfigs: configs/vms/roc-rk3568-pc/arceos-smp1.toml
             vmconfigs_name: ArceOS
           - board: roc-rk3568-pc
-            vmconfigs: configs/vms/linux-aarch64-rk3568-smp1.toml
+            vmconfigs: configs/vms/roc-rk3568-pc/linux-smp1.toml
             vmconfigs_name: Linux
       fail-fast: false
     runs-on:

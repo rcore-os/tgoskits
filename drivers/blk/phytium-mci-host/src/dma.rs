@@ -440,11 +440,8 @@ impl PhytiumMci {
         };
         let slice = unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), len) };
         let mapped = dma
-            .map_streaming_slice(slice, BLOCK_SIZE, dma_direction)
+            .map_streaming_slice_for_device(slice, BLOCK_SIZE, dma_direction)
             .map_err(|_| Error::Misaligned)?;
-        if matches!(direction, DataDirection::Write) {
-            mapped.sync_for_device_all();
-        }
         let desc_count = len.div_ceil(IDMAC_MAX_BUF_SIZE);
         let mut descriptors = dma
             .coherent_array_zero_with_align::<IdmacDesc>(desc_count, IDMAC_DESC_ALIGN)
@@ -456,7 +453,7 @@ impl PhytiumMci {
             len,
             IDMAC_MAX_BUF_SIZE,
         )?;
-        descriptors.write_with(desc_values.len(), |dst| dst.copy_from_slice(&desc_values));
+        descriptors.write_with_cpu(desc_values.len(), |dst| dst.copy_from_slice(&desc_values));
         self.start_idmac_transfer(cmd, block_size, block_count, desc_dma)?;
 
         let progress = DmaProgress {
@@ -766,7 +763,7 @@ impl PhytiumMci {
         }
 
         if is_read {
-            progress.buffer.sync_for_cpu_all();
+            progress.buffer.complete_for_cpu_all();
         }
         progress.complete = true;
         Ok(BlockPoll::Complete)

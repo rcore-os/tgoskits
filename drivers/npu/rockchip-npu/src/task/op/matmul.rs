@@ -55,10 +55,10 @@ impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
             for kk in 1..=k {
                 let idx = feature_data(k, m, 1, 16, kk, mm, 1) as usize;
                 let src = ((mm - 1) * k + (kk - 1)) as usize;
-                self.input.set(idx, a[src]);
+                self.input.set_cpu(idx, a[src]);
             }
         }
-        self.input.sync_for_device_all();
+        self.input.prepare_for_device_all();
     }
 
     fn gen_matul(
@@ -415,22 +415,21 @@ impl MatMul<i8, i32> {
             for kk in 1..=k {
                 let idx = weight_int8(k, nn, kk) as usize;
                 let src = ((nn - 1) * k + (kk - 1)) as usize;
-                self.weight.set(idx, b[src]);
+                self.weight.set_cpu(idx, b[src]);
             }
         }
-        self.weight.sync_for_device_all();
+        self.weight.prepare_for_device_all();
     }
 
     pub fn get_output(&self, m: usize, n: usize) -> i32 {
-        self.output.sync_for_cpu_all();
-        self.output
-            .read(feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize)
-            .unwrap()
+        self.output.read_from_device(self.output.len(), |output| {
+            output[feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize]
+        })
     }
 
     pub fn output_buffer(&self) -> &[i32] {
-        self.output.sync_for_cpu_all();
-        unsafe { core::slice::from_raw_parts(self.output.as_ptr().as_ptr(), self.output.len()) }
+        self.output.complete_for_cpu_all();
+        self.output.as_slice_cpu()
     }
 }
 

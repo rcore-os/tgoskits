@@ -188,8 +188,14 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, select the run queue based on the task's CPU affinity and load balance.
-        let index = select_run_queue_index(task.cpumask());
+        // When SMP is enabled, prefer the current CPU to keep the task's
+        // cache warm. Fall back to round-robin only when affinity forbids it.
+        let current_cpu = this_cpu_id();
+        let index = if task.cpumask().get(current_cpu) {
+            current_cpu
+        } else {
+            select_run_queue_index(task.cpumask())
+        };
         AxRunQueueRef {
             inner: get_run_queue(index),
             state: irq_state,
