@@ -12,13 +12,14 @@ const IOAPIC_VECTOR_END: usize = IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT;
 const PIT_TIMER_GSI: usize = 0;
 const COM1_GSI: usize = 4;
 static IOAPIC_IRQ_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
-static IOAPIC_IRQ_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
 static IOAPIC_IRQ_FORWARD_VM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static IOAPIC_IRQ_FORWARD_VCPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static IOAPIC_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
+static IOAPIC_IRQ_HANDLERS: [AtomicBool; IOAPIC_GSI_COUNT] =
+    [const { AtomicBool::new(false) }; IOAPIC_GSI_COUNT];
 
 pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
-    if !IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
+    if !ioapic_irq_handler_registered(vector) {
         forward_passthrough_irq(vm, vcpu, vector);
     }
 }
@@ -101,7 +102,10 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
 }
 
 pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
-    if !IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
+    if !IOAPIC_IRQ_HANDLERS
+        .iter()
+        .any(|registered| registered.load(Ordering::Acquire))
+    {
         return;
     }
 
@@ -134,18 +138,14 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    if axvisor_api::irq::register_irq_hook(ioapic_irq_forwarding_hook) {
-        IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
-    } else {
-        warn!(
-            "x86 IOAPIC IRQ forwarding hook is already registered; VM-exit forwarding fallback \
-             remains active"
-        );
-    }
-
     let mut registered = 0;
     for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END {
-        if axvisor_api::irq::register_irq_handler(vector, no_op_irq_handler) {
+        let gsi = vector - IOAPIC_VECTOR_BASE;
+        if IOAPIC_IRQ_HANDLERS[gsi].load(Ordering::Acquire) {
+            continue;
+        }
+        if axvisor_api::irq::register_irq_handler(vector, ioapic_irq_forwarding_handler) {
+            IOAPIC_IRQ_HANDLERS[gsi].store(true, Ordering::Release);
             registered += 1;
         } else {
             trace!("x86 IOAPIC host vector {vector:#x} already has a host handler");
@@ -157,6 +157,15 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         IOAPIC_VECTOR_END - 1,
         registered
     );
+}
+
+fn ioapic_irq_handler_registered(vector: usize) -> bool {
+    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
+        return false;
+    }
+
+    let gsi = vector - IOAPIC_VECTOR_BASE;
+    IOAPIC_IRQ_HANDLERS[gsi].load(Ordering::Acquire)
 }
 
 pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
@@ -203,7 +212,7 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
     .unwrap();
 }
 
-fn ioapic_irq_forwarding_hook(vector: usize) {
+fn ioapic_irq_forwarding_handler(vector: usize) {
     if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
         return;
     }
@@ -217,5 +226,3 @@ fn ioapic_irq_forwarding_hook(vector: usize) {
     let bit = 1usize << (vector - IOAPIC_VECTOR_BASE);
     IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
 }
-
-fn no_op_irq_handler(_vector: usize) {}

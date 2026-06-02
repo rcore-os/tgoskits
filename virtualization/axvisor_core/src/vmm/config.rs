@@ -81,7 +81,7 @@ pub mod vmcfg {
                         continue;
                     }
                 };
-                let file_size = content.as_bytes().len();
+                let file_size = content.len();
 
                 info!("File {} size: {}", path_str, file_size);
 
