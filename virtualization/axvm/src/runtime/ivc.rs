@@ -13,7 +13,11 @@
 // limitations under the License.
 
 //! Inter-VM communication (IVC) module.
-use alloc::{collections::BTreeMap, format, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, btree_map::Entry},
+    format,
+    vec::Vec,
+};
 
 use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq as Mutex;
@@ -27,15 +31,31 @@ type HostIVCChannel = IVCChannel<crate::HostPagingHandler>;
 
 static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::new(BTreeMap::new());
 
+pub const MAX_IVC_CHANNEL_SIZE: usize = 4096;
+
 pub fn insert_channel(publisher_vm_id: usize, channel: HostIVCChannel) -> AxResult<()> {
     let mut channels = IVC_CHANNELS.lock();
-    if channels
-        .insert((publisher_vm_id, channel.key), channel)
-        .is_some()
-    {
-        Err(ax_errno::ax_err_type!(
+    let channel_key = (publisher_vm_id, channel.key);
+    match channels.entry(channel_key) {
+        Entry::Vacant(entry) => {
+            entry.insert(channel);
+            Ok(())
+        }
+        Entry::Occupied(_) => Err(ax_errno::ax_err_type!(
             AlreadyExists,
             "IVC channel already exists"
+        )),
+    }
+}
+
+pub fn ensure_channel_absent(publisher_vm_id: usize, key: usize) -> AxResult<()> {
+    if IVC_CHANNELS.lock().contains_key(&(publisher_vm_id, key)) {
+        Err(ax_errno::ax_err_type!(
+            AlreadyExists,
+            format!(
+                "IVC channel for publisher VM {} with key {} already exists",
+                publisher_vm_id, key
+            )
         ))
     } else {
         Ok(())
@@ -49,50 +69,73 @@ pub fn insert_channel(publisher_vm_id: usize, channel: HostIVCChannel) -> AxResu
 /// If the channel does not exist, it will return an error.
 pub fn unpublish_channel(publisher_vm_id: usize, key: usize) -> AxResult<(GuestPhysAddr, usize)> {
     let mut channels = IVC_CHANNELS.lock();
-    if let Some(mut channel) = channels.remove(&(publisher_vm_id, key)) {
-        let base_gpa = channel.base_gpa_in_publisher().ok_or_else(|| {
-            ax_errno::ax_err_type!(
-                NotFound,
-                format!(
-                    "IVC channel for publisher VM {} with key {} has no base GPA, it may have \
-                     been marked as unpublished",
-                    publisher_vm_id, key
-                )
-            )
-        })?;
-        let size = channel.size();
-        if channel.has_subscribers() {
-            channel.mark_unpublished(); // Mark the channel as removed.
-            // Publisher's GPA mapping will be unmapped; the shared HPA frame
-            // is freed when the last subscriber unsubscribes.
-            channels.insert((publisher_vm_id, key), channel);
-        }
-        Ok((base_gpa, size))
-    } else {
-        Err(ax_errno::ax_err_type!(
+    let channel_key = (publisher_vm_id, key);
+    let channel = channels.get_mut(&channel_key).ok_or_else(|| {
+        ax_errno::ax_err_type!(
             NotFound,
             format!(
                 "IVC channel for publisher VM {} with key {} not found",
                 publisher_vm_id, key
             )
-        ))
+        )
+    })?;
+    let base_gpa = channel.base_gpa_in_publisher().ok_or_else(|| {
+        ax_errno::ax_err_type!(
+            NotFound,
+            format!(
+                "IVC channel for publisher VM {} with key {} has no base GPA, it may have been \
+                 marked as unpublished",
+                publisher_vm_id, key
+            )
+        )
+    })?;
+    let size = channel.size();
+
+    if channel.has_subscribers() {
+        channel.mark_unpublished();
+    } else {
+        channels.remove(&channel_key);
     }
+
+    Ok((base_gpa, size))
 }
 
-pub fn get_channel_size(publisher_vm_id: usize, key: usize) -> AxResult<usize> {
-    IVC_CHANNELS
-        .lock()
-        .get(&(publisher_vm_id, key))
-        .map(|channel| channel.size())
-        .ok_or_else(|| {
-            ax_errno::ax_err_type!(
-                NotFound,
-                format!(
-                    "IVC channel for publisher VM {} with key {} not found",
-                    publisher_vm_id, key
-                )
+pub fn prepare_subscribe_channel(
+    publisher_vm_id: usize,
+    key: usize,
+    subscriber_vm_id: usize,
+) -> AxResult<usize> {
+    let channels = IVC_CHANNELS.lock();
+    let channel = channels.get(&(publisher_vm_id, key)).ok_or_else(|| {
+        ax_errno::ax_err_type!(
+            NotFound,
+            format!(
+                "IVC channel for publisher VM {} with key {} not found",
+                publisher_vm_id, key
             )
-        })
+        )
+    })?;
+
+    if channel.is_unpublished() {
+        return Err(ax_errno::ax_err_type!(
+            NotFound,
+            format!(
+                "IVC channel for publisher VM {} with key {} has been unpublished",
+                publisher_vm_id, key
+            )
+        ));
+    }
+    if channel.has_subscriber(subscriber_vm_id) {
+        return Err(ax_errno::ax_err_type!(
+            AlreadyExists,
+            format!(
+                "VM[{}] has already subscribed to publisher VM[{}] Key {:#x}",
+                subscriber_vm_id, publisher_vm_id, key
+            )
+        ));
+    }
+
+    Ok(channel.size())
 }
 
 /// Subcribe to a channel of a publisher VM with the given key,
@@ -113,6 +156,24 @@ pub fn subscribe_to_channel_of_publisher(
             )
         )
     })?;
+    if channel.is_unpublished() {
+        return Err(ax_errno::ax_err_type!(
+            NotFound,
+            format!(
+                "IVC channel for publisher VM [{}] key {:#x} has been unpublished",
+                publisher_vm_id, key
+            )
+        ));
+    }
+    if channel.has_subscriber(subscriber_vm_id) {
+        return Err(ax_errno::ax_err_type!(
+            AlreadyExists,
+            format!(
+                "VM[{}] has already subscribed to publisher VM[{}] Key {:#x}",
+                subscriber_vm_id, publisher_vm_id, key
+            )
+        ));
+    }
     // Add the subscriber VM ID to the channel.
     channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
     Ok((channel.base_hpa(), channel.size()))
@@ -253,13 +314,13 @@ impl<H: PagingHandler> IVCChannel<H> {
         base_gpa: GuestPhysAddr,
     ) -> AxResult<Self> {
         // TODO: support larger shared region sizes with alloc_frames API.
-        if shared_region_size > 4096 {
+        if shared_region_size > MAX_IVC_CHANNEL_SIZE {
             warn!(
-                "IVC channel requested size {shared_region_size:#x} > 4096; truncating to 4096 \
-                 (TODO: support larger sizes)"
+                "IVC channel requested size {shared_region_size:#x} > {MAX_IVC_CHANNEL_SIZE:#x}; \
+                 truncating to {MAX_IVC_CHANNEL_SIZE:#x} (TODO: support larger sizes)"
             );
         }
-        let shared_region_size = shared_region_size.min(4096);
+        let shared_region_size = shared_region_size.min(MAX_IVC_CHANNEL_SIZE);
         let shared_region_base = H::alloc_frame().ok_or_else(|| {
             ax_errno::ax_err_type!(NoMemory, "Failed to allocate shared region frame")
         })?;
@@ -298,9 +359,7 @@ impl<H: PagingHandler> IVCChannel<H> {
     }
 
     pub fn add_subscriber(&mut self, subscriber_vm_id: usize, subscriber_gpa: GuestPhysAddr) {
-        self.subscriber_vms
-            .entry(subscriber_vm_id)
-            .or_insert(subscriber_gpa);
+        self.subscriber_vms.insert(subscriber_vm_id, subscriber_gpa);
     }
 
     pub fn remove_subscriber(&mut self, subscriber_vm_id: usize) -> Option<GuestPhysAddr> {
@@ -316,6 +375,10 @@ impl<H: PagingHandler> IVCChannel<H> {
 
     pub fn has_subscribers(&self) -> bool {
         !self.subscriber_vms.is_empty()
+    }
+
+    pub fn has_subscriber(&self, subscriber_vm_id: usize) -> bool {
+        self.subscriber_vms.contains_key(&subscriber_vm_id)
     }
 
     pub fn mark_unpublished(&mut self) {

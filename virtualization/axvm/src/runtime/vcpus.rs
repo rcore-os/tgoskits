@@ -229,6 +229,47 @@ pub(crate) fn drain_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpu
     Ok(())
 }
 
+fn ipi_targets(
+    vm: &VMRef,
+    current_vcpu_id: usize,
+    target_cpu: u64,
+    target_cpu_aux: u64,
+    send_to_all: bool,
+    send_to_self: bool,
+) -> CpuMask<64> {
+    let mut targets = CpuMask::new();
+
+    if send_to_all {
+        for vcpu in vm.vcpu_list() {
+            if vcpu.id() != current_vcpu_id {
+                targets.set(vcpu.id(), true);
+            }
+        }
+    } else if send_to_self {
+        targets.set(current_vcpu_id, true);
+    } else {
+        #[cfg(target_arch = "aarch64")]
+        {
+            for (vcpu_id, _, phys_id) in vm.get_vcpu_affinities_pcpu_ids() {
+                let affinity = phys_id as u64;
+                let aff0 = affinity & 0xff;
+                let aff123 = affinity & !0xff;
+                if aff123 == target_cpu && aff0 < 16 && (target_cpu_aux & (1u64 << aff0)) != 0 {
+                    targets.set(vcpu_id, true);
+                }
+            }
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = target_cpu_aux;
+            targets.set(target_cpu as usize, true);
+        }
+    }
+
+    targets
+}
+
 /// Cleans up VCpu resources for a VM that is being deleted.
 /// This removes the VM's entry from the global VCpu wait queue.
 ///
@@ -567,20 +608,34 @@ fn vcpu_run() {
                         "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, \
                          target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
                     );
-                    if send_to_all {
-                        warn!("Send IPI to all CPUs is not implemented yet");
+                    let targets = ipi_targets(
+                        &vm,
+                        vcpu_id,
+                        target_cpu,
+                        target_cpu_aux,
+                        send_to_all,
+                        send_to_self,
+                    );
+                    if targets.is_empty() {
+                        warn!(
+                            "VM[{vm_id}] SendIPI has no target: target_cpu={target_cpu:#x}, \
+                             target_cpu_aux={target_cpu_aux:#x}"
+                        );
                         continue;
                     }
 
-                    if target_cpu == vcpu_id as u64 || send_to_self {
+                    if targets.get(vcpu_id) {
                         crate::inject_current_vcpu_interrupt(vector as _)
                             .expect("failed to inject self IPI into current vCPU");
-                    } else if let Err(err) =
-                        vm.inject_interrupt_to_vcpu(CpuMask::one_shot(target_cpu as _), vector as _)
+                    }
+                    let mut remote_targets = targets;
+                    remote_targets.set(vcpu_id, false);
+                    if !remote_targets.is_empty()
+                        && let Err(err) = vm.inject_interrupt_to_vcpu(remote_targets, vector as _)
                     {
                         warn!(
-                            "Failed to inject interrupt {vector} to VM[{vm_id}] CPU {target_cpu}: \
-                             {err:?}"
+                            "Failed to inject interrupt {vector} to VM[{vm_id}] targets \
+                             {remote_targets:?}: {err:?}"
                         );
                     }
                 }
