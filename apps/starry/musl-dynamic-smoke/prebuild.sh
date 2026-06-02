@@ -35,16 +35,35 @@ esac
 
 command -v debugfs >/dev/null 2>&1 || { echo "ERROR: debugfs not found" >&2; exit 1; }
 
+# Resolve the lld driver on PATH. Debian/Ubuntu's llvm-14 package installs the
+# linker as 'ld.lld', while Arch/Alpine symlink the wrapper as 'lld'. Accept
+# either so a system that has clang+ld.lld does not silently fall back to
+# musl-cross GCC, whose default GNU ld cannot consume the .relr.dyn section
+# shipped in current Alpine libc.so.
+lld_linker=""
+if command -v lld >/dev/null 2>&1; then
+    lld_linker="lld"
+elif command -v ld.lld >/dev/null 2>&1; then
+    lld_linker="ld.lld"
+fi
+
+# Build into a temp directory so the compiled ELF never lands inside the
+# application source tree. The trap cleans both sysroot and build_dir on exit.
 sysroot="$(mktemp -d)"
-trap 'rm -rf "$sysroot"' EXIT
+build_dir="$(mktemp -d)"
+trap 'rm -rf "$sysroot" "$build_dir"' EXIT
 debugfs -R "rdump / $sysroot" "$base_rootfs" >/dev/null 2>&1
 
-if command -v clang >/dev/null 2>&1 && command -v lld >/dev/null 2>&1; then
+if command -v clang >/dev/null 2>&1 && [[ -n "$lld_linker" ]]; then
     CC="clang"
     CC_FLAGS="--target=$MUSL_TARGET --sysroot=$sysroot -isystem $sysroot/usr/include -fuse-ld=lld -nostdlib -Wl,--strip-debug"
 elif command -v "${MUSL_TARGET}-gcc" >/dev/null 2>&1; then
     CC="${MUSL_TARGET}-gcc"
-    CC_FLAGS="--sysroot=$sysroot"
+    if [[ -n "$lld_linker" ]]; then
+        CC_FLAGS="--sysroot=$sysroot -fuse-ld=lld"
+    else
+        CC_FLAGS="--sysroot=$sysroot"
+    fi
 else
     echo "ERROR: no compiler for $MUSL_TARGET (tried clang+lld, ${MUSL_TARGET}-gcc)" >&2
     exit 1
@@ -57,10 +76,10 @@ $CC $CC_FLAGS \
     "$sysroot/usr/lib/crti.o" \
     -lc \
     "$sysroot/usr/lib/crtn.o" \
-    -o "$app_dir/dynamic-test" \
+    -o "$build_dir/dynamic-test" \
     "$app_dir/dynamic-test.c"
 
-INTERP=$(readelf -l "$app_dir/dynamic-test" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
+INTERP=$(readelf -l "$build_dir/dynamic-test" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
 echo "INTERP path: $INTERP"
 [[ -n "$INTERP" ]] || { echo "ERROR: no PT_INTERP found" >&2; exit 1; }
 
@@ -71,6 +90,6 @@ if [[ ! -f "$MUSL_LD" ]]; then
 fi
 [[ -f "$MUSL_LD" ]] || { echo "ERROR: musl ld not found" >&2; exit 1; }
 
-install -Dm0755 "$app_dir/dynamic-test" "$overlay_dir/usr/bin/dynamic-test"
+install -Dm0755 "$build_dir/dynamic-test" "$overlay_dir/usr/bin/dynamic-test"
 install -Dm0755 "$MUSL_LD" "$overlay_dir/$INTERP"
 install -Dm0755 "$app_dir/dynamic-test.sh" "$overlay_dir/usr/bin/dynamic-test.sh"
