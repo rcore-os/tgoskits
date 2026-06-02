@@ -169,10 +169,14 @@ For PRs that add StarryOS app support, separate operator-facing app scenarios fr
 - If the PR adds a syscall or changes syscall semantics for the app, require a minimal normal syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
 - If the PR fixes a bug found through the app, require a normal bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
 - Do not approve app-support PRs that put app workflows only into `test-suit/starryos/normal`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
+- If the PR adds or changes an app-oriented Starry QEMU case under either `apps/starry` or `test-suit/starryos`, run the actual documented app command or exact `cargo xtask starry test qemu ... -c <case>` path in QEMU for at least the changed/claimed architecture. For multi-arch `qemu-*.toml` additions, run the architecture most likely to fail from CI or PR history; if any newly added required architecture is already failing in CI, reproduce or classify that architecture before approval.
+- Do not approve when the app/test cannot be run as described by the PR, when its success depends on an unavailable or unstable external service without a controlled fallback, or when the command only passes on a narrower target than the PR claims. Report the exact command, architecture, guest-visible failure marker, and whether the failure matches remote CI.
 
 Do not approve changes that are only shaped to satisfy the added tests, such as hard-coded special cases, skipped behavior, fake state updates, no-op compatibility shims, or logic that does not implement the intended subsystem semantics. Treat this as blocking even when local tests and CI pass.
 
 Do not accept "success path" tests that silently skip on unexpected failure, such as returning early when `brk`, `sbrk`, I/O, or socket setup returns `ENOMEM`/`EAGAIN`, unless the test prints an explicit skip marker and the review explains why the environment legitimately cannot require success. Bugfix reproduction tests should fail loudly when the fixed behavior is absent.
+
+Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from normal groups, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving normal regression coverage.
 
 ## Duplicate And Overlap Analysis
 
@@ -240,6 +244,9 @@ For StarryOS app-support PRs, validate both sides when both are present:
 - Run the relevant `apps/starry` command or an equivalent documented app workflow when the PR adds or changes app support, unless it needs unavailable hardware, credentials, or long-running services; record any limitation.
 - Run the corresponding `cargo xtask starry test qemu --test-group normal ...` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims normal test coverage. App validation does not replace normal regression validation.
 - If the app scenario and normal regression cover different risks, mention both results in the review body.
+- Do not stop at `--list`, TOML parsing, script inspection, or another reviewer saying an older head passed. Those checks prove discovery only, not that the app works. Run the current head in QEMU whenever the changed app/test is intended to run in QEMU.
+- If `tmp/axbuild/rootfs` is empty, still try the relevant `cargo xtask starry rootfs --arch <arch>` or `cargo xtask starry test qemu ...` path before declaring QEMU unavailable; the xtask flow can download managed rootfs images automatically. Record a blocker only after the xtask download/run path itself fails for an environmental reason.
+- Do not run multiple Starry QEMU cases concurrently in one worktree. Run one architecture/case to completion, then move to the next architecture if needed.
 
 When the PR does not add or modify a test case, inspect the PR body and commit messages for any claimed non-board validation method, such as QEMU, host unit tests, `cargo xtask`, `cargo test`, `cargo clippy`, shell scripts, emulators, or reproducible manual commands that do not require physical hardware:
 
@@ -257,12 +264,16 @@ gh pr checks <pr> --watch=false
 
 Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link an existing or newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
+When GitHub log download fails or returns an empty log, do not infer the check passed or was irrelevant. Use `gh pr checks <pr> --repo <owner>/<repo> --watch=false` and `gh run view <run-id> --json headSha,jobs` to confirm the current head, failing job names, conclusions, and failing steps. If the failing job matches a newly added or changed app/test architecture, treat it as PR-related unless concrete evidence proves otherwise.
+
 ## Blocking Findings
 
 Treat these as blocking unless clearly non-blocking:
 
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
 - targeted tests, formatting, clippy, or PR-related CI fail;
+- a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
+- a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
 - new tests are not discovered by the project test runner or do not exercise the fixed ABI surface;
 - a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
@@ -273,6 +284,7 @@ Treat these as blocking unless clearly non-blocking:
 - the implementation is a test-only or fake fix that does not implement the intended behavior;
 - submitted buffers, DMA memory, queue tokens, or IRQ ownership can leak, be freed too early, or cross the wrong abstraction layer;
 - a change silently makes CI hang, time out, or skip the new coverage;
+- a change weakens CI or normal-regression coverage by removing cases, narrowing architectures, loosening pass/fail regexes, skipping relevant workflows, or moving required coverage to manual-only paths without an equivalent validated replacement;
 - the PR duplicates existing base-branch behavior, weakens an existing implementation, conflicts with a related open PR, or is superseded by a newer base-branch or open-PR fix;
 - the review cannot explain how this PR differs from a plausible related open PR after duplicate and overlap analysis.
 
