@@ -1,6 +1,6 @@
 args = [
   "-L",
-  "${workspace}/../../qemu-k230-docker-build/pc-bios",
+  "${workspace}/target/qemu-k230-docker-build/pc-bios",
   "-machine",
   "k230",
   "-smp",

@@ -24,6 +24,8 @@ use crate::pseudofs::{DeviceMmap, DeviceOps};
 
 pub const KPU_DEVICE_ID: DeviceId = DeviceId::new(240, 1);
 const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+// K230 exposes one KPU instance. If a future platform exposes more instances,
+// move this IRQ state into per-device storage.
 static KPU_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
 
@@ -182,15 +184,6 @@ impl DeviceOps for KpuDevice {
                 ),
                 None,
             ),
-            offset if offset == self.resource.cfg_paddr as u64 && self.resource.cfg_size != 0 => {
-                DeviceMmap::Physical(
-                    PhysAddrRange::from_start_size(
-                        PhysAddr::from(self.resource.cfg_paddr),
-                        length.min(self.resource.cfg_size),
-                    ),
-                    None,
-                )
-            }
             KPU_MMAP_L2_OFFSET if self.resource.l2_size != 0 => DeviceMmap::Physical(
                 PhysAddrRange::from_start_size(
                     PhysAddr::from(self.resource.l2_paddr),
@@ -198,15 +191,6 @@ impl DeviceOps for KpuDevice {
                 ),
                 None,
             ),
-            offset if offset == self.resource.l2_paddr as u64 && self.resource.l2_size != 0 => {
-                DeviceMmap::Physical(
-                    PhysAddrRange::from_start_size(
-                        PhysAddr::from(self.resource.l2_paddr),
-                        length.min(self.resource.l2_size),
-                    ),
-                    None,
-                )
-            }
             KPU_MMAP_FAKE_OUTPUT_OFFSET if self.resource.fake_output_size != 0 => {
                 DeviceMmap::Physical(
                     PhysAddrRange::from_start_size(
