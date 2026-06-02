@@ -72,6 +72,11 @@ impl Metadata {
         self.len
     }
 
+    /// Returns true if the file size is zero bytes.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns the file type.
     pub const fn file_type(&self) -> FileType {
         self.file_type

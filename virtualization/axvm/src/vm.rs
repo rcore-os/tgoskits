@@ -599,7 +599,7 @@ impl AxVM {
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;
             trace!("{exit_reason:#x?}");
-            let handled = match &exit_reason {
+            match exit_reason {
                 AxVCpuExitReason::MmioRead {
                     addr,
                     width,
@@ -607,61 +607,61 @@ impl AxVM {
                     reg_width,
                     signed_ext,
                 } => {
-                    let raw = self.get_devices().handle_mmio_read(*addr, *width)?;
-                    let masked = raw & width_mask(*width);
-                    let val = if *signed_ext {
-                        sign_extend_value(masked, *width)
+                    let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                    let masked = raw & width_mask(width);
+                    let val = if signed_ext {
+                        sign_extend_value(masked, width)
                     } else {
-                        masked & width_mask(*reg_width)
+                        masked & width_mask(reg_width)
                     };
-                    vcpu.set_gpr(*reg, val);
-                    true
+                    vcpu.set_gpr(reg, val);
+                    continue;
                 }
                 AxVCpuExitReason::MmioWrite { addr, width, data } => {
                     self.get_devices()
-                        .handle_mmio_write(*addr, *width, *data as usize)?;
-                    true
+                        .handle_mmio_write(addr, width, data as usize)?;
+                    continue;
                 }
                 AxVCpuExitReason::IoRead { port, width } => {
-                    let val = self.get_devices().handle_port_read(*port, *width)?;
+                    let val = self.get_devices().handle_port_read(port, width)?;
                     #[cfg(not(target_arch = "riscv64"))]
                     vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
 
                     #[cfg(target_arch = "riscv64")]
                     vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
 
-                    true
+                    continue;
                 }
                 AxVCpuExitReason::IoWrite { port, width, data } => {
                     self.get_devices()
-                        .handle_port_write(*port, *width, *data as usize)?;
-                    true
+                        .handle_port_write(port, width, data as usize)?;
+                    continue;
                 }
                 AxVCpuExitReason::SysRegRead { addr, reg } => {
                     let val = self.get_devices().handle_sys_reg_read(
-                        *addr,
+                        addr,
                         // Generally speaking, the width of system register is fixed and needless to be specified.
                         // AccessWidth::Qword here is just a placeholder, may be changed in the future.
                         AccessWidth::Qword,
                     )?;
-                    vcpu.set_gpr(*reg, val);
-                    true
+                    vcpu.set_gpr(reg, val);
+                    continue;
                 }
                 AxVCpuExitReason::SysRegWrite { addr, value } => {
                     self.get_devices().handle_sys_reg_write(
-                        *addr,
+                        addr,
                         AccessWidth::Qword,
-                        *value as usize,
+                        value as usize,
                     )?;
-                    true
+                    continue;
                 }
                 AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
-                    self.handle_nested_page_fault(*addr, *access_flags)
+                    if self.handle_nested_page_fault(addr, access_flags) {
+                        continue;
+                    }
+                    break AxVCpuExitReason::NestedPageFault { addr, access_flags };
                 }
-                _ => false,
-            };
-            if !handled {
-                break exit_reason;
+                exit_reason => break exit_reason,
             }
         };
 

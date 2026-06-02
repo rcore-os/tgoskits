@@ -124,7 +124,7 @@ struct MemoryImage {
     pub ramdisk: Option<PathBuf>,
 }
 
-fn boot_firmware_path<'a>(kernel_config: &'a Table, enable_bios: bool) -> Option<&'a str> {
+fn boot_firmware_path(kernel_config: &Table, enable_bios: bool) -> Option<&str> {
     if !enable_bios {
         return None;
     }

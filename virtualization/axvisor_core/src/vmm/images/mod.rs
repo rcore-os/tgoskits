@@ -17,10 +17,9 @@ use axaddrspace::GuestPhysAddr;
 use axvisor_api::arch::CacheOp;
 #[cfg(target_arch = "x86_64")]
 use axvm::config::VMBootProtocol;
-use axvm::{
-    VMMemoryRegion,
-    config::{AxVMCrateConfig, VmMemMappingType},
-};
+#[cfg(target_arch = "x86_64")]
+use axvm::config::VmMemMappingType;
+use axvm::{VMMemoryRegion, config::AxVMCrateConfig};
 use byte_unit::Byte;
 
 use crate::vmm::{
@@ -269,15 +268,15 @@ impl ImageLoader {
 
         #[cfg(target_arch = "x86_64")]
         if self.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
-            let firmware_path = self.config.kernel.boot_firmware_path().ok_or_else(|| {
-                ax_errno::ax_err_type!(NotFound, "UEFI firmware image path is missed")
-            })?;
-            let load_gpa = self.bios_load_gpa.ok_or_else(|| {
-                ax_errno::ax_err_type!(NotFound, "UEFI firmware load addr is missed")
-            })?;
-
             #[cfg(feature = "fs")]
             {
+                let firmware_path = self.config.kernel.boot_firmware_path().ok_or_else(|| {
+                    ax_errno::ax_err_type!(NotFound, "UEFI firmware image path is missed")
+                })?;
+                let load_gpa = self.bios_load_gpa.ok_or_else(|| {
+                    ax_errno::ax_err_type!(NotFound, "UEFI firmware load addr is missed")
+                })?;
+
                 info!(
                     "Loading UEFI firmware image {} at GPA {:#x}",
                     firmware_path,
