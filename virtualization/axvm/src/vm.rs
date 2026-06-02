@@ -948,14 +948,12 @@ impl AxVM {
             "Cannot allocate zero-sized memory region"
         );
 
-        let hva = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if hva.is_null() {
-            return Err(AxError::NoMemory);
-        }
-        let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
-        let hva = HostVirtAddr::from_mut_ptr_of(hva);
-
-        let hpa = axvisor_api::memory::virt_to_phys(hva);
+        let num_frames = layout.size().div_ceil(ax_memory_addr::PAGE_SIZE_4K);
+        let hpa = axvisor_api::memory::alloc_contiguous_frames(num_frames, layout.align())
+            .ok_or(AxError::NoMemory)?;
+        let hva = axvisor_api::memory::phys_to_virt(hpa);
+        let s = unsafe { core::slice::from_raw_parts_mut(hva.as_mut_ptr(), layout.size()) };
+        s.fill(0);
 
         let gpa = gpa.unwrap_or_else(|| hpa.as_usize().into());
 
@@ -1064,9 +1062,10 @@ impl AxVM {
                     region.hva.as_usize(),
                     region.size()
                 );
-                unsafe {
-                    alloc::alloc::dealloc(region.hva.as_mut_ptr(), region.layout);
-                }
+                axvisor_api::memory::dealloc_contiguous_frames(
+                    axvisor_api::memory::virt_to_phys(region.hva),
+                    region.size().div_ceil(ax_memory_addr::PAGE_SIZE_4K),
+                );
             } else {
                 debug!(
                     "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, \
