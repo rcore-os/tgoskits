@@ -5,7 +5,6 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_BASE_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
-qemu_runner=""
 
 READELF="${READELF:-readelf}"
 
@@ -43,18 +42,17 @@ extract_base_rootfs() {
     debugfs -R "rdump / $staging_root" "$base_rootfs"
 }
 
-find_qemu_runner() {
-    if command -v qemu-x86_64-static >/dev/null 2>&1; then
-        qemu_runner="$(command -v qemu-x86_64-static)"
-    elif command -v qemu-x86_64 >/dev/null 2>&1; then
-        qemu_runner="$(command -v qemu-x86_64)"
-    else
-        echo "error: qemu-x86_64-static or qemu-x86_64 is required" >&2
+ensure_musl_ld() {
+    local musl_ld="$staging_root/lib/ld-musl-x86_64.so.1"
+
+    if [[ ! -x "$musl_ld" ]]; then
+        echo "error: musl dynamic linker not found: $musl_ld" >&2
         exit 1
     fi
 }
 
 install_gdb_package() {
+    local musl_ld="$staging_root/lib/ld-musl-x86_64.so.1"
     local guest_apk="$staging_root/sbin/apk"
     local apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-apk-cache"
 
@@ -65,10 +63,10 @@ install_gdb_package() {
         exit 1
     fi
 
-    echo "Installing gdb via qemu-user (Alpine x86_64)..."
-    QEMU_LD_PREFIX="$staging_root" \
-    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib:$staging_root/usr/local/lib" \
-    "$qemu_runner" -L "$staging_root" "$guest_apk" \
+    echo "Installing gdb via musl ld (Alpine x86_64)..."
+    "$musl_ld" \
+        --library-path "$staging_root/lib:$staging_root/usr/lib:$staging_root/usr/local/lib" \
+        "$guest_apk" \
         --root "$staging_root" \
         --repositories-file "$staging_root/etc/apk/repositories" \
         --keys-dir "$staging_root/etc/apk/keys" \
@@ -152,6 +150,6 @@ require_env STARRY_OVERLAY_DIR "$overlay_dir"
 
 ensure_host_tools
 extract_base_rootfs
-find_qemu_runner
+ensure_musl_ld
 install_gdb_package
 populate_overlay
