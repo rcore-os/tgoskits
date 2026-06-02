@@ -32,5 +32,4 @@ fn main() {
     let out_path = out_dir.join("axplat.x");
     println!("cargo:rustc-link-search={}", out_dir.display());
     std::fs::write(&out_path, &ld_content).unwrap();
-    std::fs::write(out_dir.join("../../..").join("axplat.x"), ld_content).unwrap();
 }

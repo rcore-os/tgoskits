@@ -21,6 +21,8 @@ SECTIONS {
     scope_local : AT(ADDR(scope_local) - AX_LINKER_LOAD_OFFSET) {
         KEEP(*(scope_local))
     }
+
+    %DWARF%
 }
 INSERT AFTER .rodata;
 

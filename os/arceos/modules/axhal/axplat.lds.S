@@ -27,8 +27,6 @@ SECTIONS
         *(.sdata2 .sdata2.*)
     }
 
-    %DWARF%
-
     . = ALIGN(4K);
     _erodata = .;
 

@@ -1422,6 +1422,7 @@ dependencies = [
  "log",
  "loongArch64",
  "mmio-api",
+ "toml 1.1.2+spec-1.1.0",
  "uart_16550 0.5.0",
 ]
 

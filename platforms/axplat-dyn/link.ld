@@ -7,20 +7,6 @@ INCLUDE "link.x"
 __SMP = {{SMP}};
 AX_LINKER_LOAD_OFFSET = 0;
 
-SECTIONS {
-    debug_abbrev : { . += SIZEOF(.debug_abbrev); }
-    debug_addr : { . += SIZEOF(.debug_addr); }
-    debug_aranges : { . += SIZEOF(.debug_aranges); }
-    debug_info : { . += SIZEOF(.debug_info); }
-    debug_line : { . += SIZEOF(.debug_line); }
-    debug_line_str : { . += SIZEOF(.debug_line_str); }
-    debug_ranges : { . += SIZEOF(.debug_ranges); }
-    debug_rnglists : { . += SIZEOF(.debug_rnglists); }
-    debug_str : { . += SIZEOF(.debug_str); }
-    debug_str_offsets : { . += SIZEOF(.debug_str_offsets); }
-}
-INSERT AFTER .rodata;
-
 PROVIDE(_sbss = __bss_start);
 PROVIDE(_ebss = __bss_stop);
 PROVIDE(boot_stack = __cpu0_stack);
