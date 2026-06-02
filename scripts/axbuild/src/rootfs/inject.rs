@@ -158,9 +158,7 @@ fn collect_overlay_debugfs_commands(
         .with_context(|| format!("failed to read {}", current_dir.display()))?;
     entries.sort_by_key(|left| left.file_name());
 
-    // First pass: directories and regular files (symlinks need their targets to
-    // exist first, because debugfs `symlink` validates the target).
-    for entry in &entries {
+    for entry in entries {
         let file_name = PathBuf::from(entry.file_name());
         let relative_path = relative_dir.join(&file_name);
         let file_type = entry
@@ -174,13 +172,20 @@ fn collect_overlay_debugfs_commands(
         }
 
         if file_type.is_symlink() {
-            // Defer symlinks to second pass
+            let target = fs::read_link(entry.path())
+                .with_context(|| format!("failed to read symlink {}", entry.path().display()))?;
+            commands.push(format!("rm /{}", relative_path.display()));
+            commands.push(format!(
+                "symlink {} /{}",
+                target.display(),
+                relative_path.display()
+            ));
             continue;
         }
 
         ensure!(
             file_type.is_file(),
-            "unsupported overlay entry `{}`; only regular files, directories, and symlinks are \
+            "unsupported overlay entry `{}`; only regular files, symlinks, and directories are \
              supported",
             entry.path().display()
         );
@@ -199,37 +204,6 @@ fn collect_overlay_debugfs_commands(
                 "sif /{} mode 0{:o}",
                 relative_path.display(),
                 metadata.permissions().mode()
-            ));
-        }
-    }
-
-    // Second pass: symlinks (now all targets exist).
-    // debugfs symlink syntax (v1.47.0): symlink <link_path> <target_content>
-    // The 1st argument is where to create the symlink, the 2nd is what it
-    // points to (contrary to the man page which swaps them).
-    for entry in &entries {
-        let file_name = PathBuf::from(entry.file_name());
-        let relative_path = relative_dir.join(&file_name);
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
-
-        if file_type.is_symlink() {
-            let host_target = fs::read_link(entry.path())
-                .with_context(|| format!("failed to read symlink {}", entry.path().display()))?;
-            // Convert relative symlink target to absolute guest path so the
-            // resulting symlink resolves correctly from any CWD.
-            let guest_filespec = if host_target.is_relative() {
-                let guest_dir = Path::new("/").join(relative_dir);
-                guest_dir.join(&host_target)
-            } else {
-                host_target.clone()
-            };
-            commands.push(format!("rm /{}", relative_path.display()));
-            commands.push(format!(
-                "symlink /{} {}",
-                relative_path.display(),
-                guest_filespec.display()
             ));
         }
     }
@@ -327,49 +301,5 @@ mod tests {
         assert!(commands.contains(&"mkdir /usr/bin".to_string()));
         assert!(commands.contains(&format!("write {} /usr/bin/test-bin", binary.display())));
         assert!(commands.contains(&"sif /usr/bin/test-bin mode 0100755".to_string()));
-    }
-
-    /// Symlinks are written after regular files (two-pass) with the correct
-    /// debugfs syntax: `symlink <link_path> <target_content>`.
-    /// Relative targets are converted to absolute guest paths.
-    #[cfg(unix)]
-    #[test]
-    fn symlinks_are_emitted_after_regular_files() {
-        use std::os::unix;
-
-        let root = tempdir().unwrap();
-        let overlay_dir = root.path().join("overlay");
-        let lib = overlay_dir.join("usr/lib");
-        fs::create_dir_all(&lib).unwrap();
-
-        // ldconfig-style chain: libfoo.so -> libfoo.so.1 -> libfoo.so.1.2.0
-        fs::write(lib.join("libfoo.so.1.2.0"), b"elf").unwrap();
-        unix::fs::symlink("libfoo.so.1.2.0", lib.join("libfoo.so.1")).unwrap();
-        unix::fs::symlink("libfoo.so.1", lib.join("libfoo.so")).unwrap();
-
-        let mut commands = Vec::new();
-        collect_overlay_debugfs_commands(&overlay_dir, Path::new(""), &mut commands).unwrap();
-
-        let write_pos = commands
-            .iter()
-            .position(|c| c.contains("libfoo.so.1.2.0") && c.starts_with("write "))
-            .unwrap();
-        let sym1_pos = commands
-            .iter()
-            .position(|c| c == "symlink /usr/lib/libfoo.so.1 /usr/lib/libfoo.so.1.2.0")
-            .unwrap();
-        let sym0_pos = commands
-            .iter()
-            .position(|c| c == "symlink /usr/lib/libfoo.so /usr/lib/libfoo.so.1")
-            .unwrap();
-
-        assert!(
-            sym1_pos > write_pos,
-            "symlink must be second pass, after its target"
-        );
-        assert!(
-            sym0_pos > write_pos,
-            "symlink must be second pass, after its target"
-        );
     }
 }
