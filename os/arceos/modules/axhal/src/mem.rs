@@ -31,17 +31,22 @@ static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::ne
             flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::EXECUTE,
             name: ".text",
         });
+        let rodata_start = addr_of_sym!(_srodata);
+        let rodata_end = addr_of_sym!(_erodata);
+        let rodata_page_end = rodata_end & !(PAGE_SIZE_4K - 1);
+        // Runtime linker sections may be inserted between rodata and data.
+        // Split on page boundaries because the kernel address space maps whole pages.
         push(PhysMemRegion {
-            paddr: virt_to_phys(addr_of_sym!(_srodata).into()),
-            size: addr_of_sym!(_erodata) - addr_of_sym!(_srodata),
+            paddr: virt_to_phys(rodata_start.into()),
+            size: rodata_page_end - rodata_start,
             flags: MemRegionFlags::RESERVED | MemRegionFlags::READ,
             name: ".rodata",
         });
         push(PhysMemRegion {
-            paddr: virt_to_phys(addr_of_sym!(_erodata).into()),
-            size: addr_of_sym!(_sdata) - addr_of_sym!(_erodata),
+            paddr: virt_to_phys(rodata_page_end.into()),
+            size: addr_of_sym!(_sdata) - rodata_page_end,
             flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
-            name: ".runtime",
+            name: ".rodata .runtime",
         });
         push(PhysMemRegion {
             paddr: virt_to_phys(addr_of_sym!(_sdata).into()),
