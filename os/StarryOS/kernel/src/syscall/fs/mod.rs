@@ -13,6 +13,7 @@ mod pipe;
 mod signalfd;
 mod stat;
 mod timerfd;
+mod xattr;
 
 pub use self::{
     aio::*,
@@ -30,4 +31,5 @@ pub use self::{
     signalfd::*,
     stat::*,
     timerfd::*,
+    xattr::*,
 };

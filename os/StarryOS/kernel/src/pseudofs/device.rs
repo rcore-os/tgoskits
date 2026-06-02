@@ -17,13 +17,17 @@ use super::{SimpleFs, SimpleFsNode};
 pub enum DeviceMmap {
     /// The device is not mappable (→ ENODEV, matches Linux).
     None,
-
-    /// Maps to a physical address range.
-    Physical(PhysAddrRange),
-
-    /// Maps to a physical address range while keeping an owner object alive.
-    PhysicalAnchored(PhysAddrRange, Arc<dyn Any + Send + Sync>),
-
+    /// Maps to a physical address range. The optional retainer keeps
+    /// driver-owned backing pages alive for as long as any VMA built
+    /// from this mapping exists — pinned by the resulting
+    /// [`LinearBackend`] so userspace can't observe freed memory if
+    /// the device drops the buffer before munmap.
+    Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an already offset-resolved physical address range.
+    ///
+    /// This is for file descriptors whose mmap offset is a selector rather than
+    /// a byte offset into a linear device, such as io_uring ring offsets.
+    PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
 }

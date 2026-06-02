@@ -11,8 +11,15 @@ version = "0.5.16"
 default = []
 
 dma = ["paging"]
+ext-ld = []
 ipi = ["dep:ax-ipi"]
-irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu", "ax-driver/irq"]
+irq = [
+  "ax-hal/irq",
+  "ax-task?/irq",
+  "dep:ax-percpu",
+  "dep:axklib",
+  "ax-driver/irq",
+]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []

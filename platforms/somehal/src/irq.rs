@@ -64,6 +64,16 @@ pub fn irq_handler_with_raw(raw: usize) -> Option<IrqId> {
     Plat::irq_handler_with_raw(raw).map(|irq| irq.raw().into())
 }
 
+#[cfg(target_arch = "riscv64")]
+pub fn claim_external_irq() -> Option<IrqId> {
+    crate::arch::claim_external_irq().map(|irq| irq.raw().into())
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn complete_external_irq(irq: IrqId) {
+    crate::arch::complete_external_irq(someboot::irq::IrqId::new(irq.raw()));
+}
+
 pub fn send_ipi_to_cpu(cpu_id: usize) {
     Plat::send_ipi_to_cpu(cpu_id);
 }

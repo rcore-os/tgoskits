@@ -27,18 +27,18 @@ impl<T: DmaPod> CoherentBox<T> {
         self.data.handle.dma_addr()
     }
 
-    pub fn read(&self) -> T {
+    pub fn read_cpu(&self) -> T {
         unsafe { self.as_ptr().read() }
     }
 
-    pub fn write(&mut self, value: T) {
+    pub fn write_cpu(&mut self, value: T) {
         unsafe { self.as_ptr().write(value) };
     }
 
-    pub fn modify(&mut self, f: impl FnOnce(&mut T)) {
-        let mut value = self.read();
+    pub fn modify_cpu(&mut self, f: impl FnOnce(&mut T)) {
+        let mut value = self.read_cpu();
         f(&mut value);
-        self.write(value);
+        self.write_cpu(value);
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
@@ -49,7 +49,7 @@ impl<T: DmaPod> CoherentBox<T> {
     ///
     /// The caller must ensure the device is not concurrently accessing this
     /// memory in a way that races with CPU writes.
-    pub unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
+    pub unsafe fn as_bytes_mut_cpu(&mut self) -> &mut [u8] {
         self.data.as_mut_slice()
     }
 }
@@ -83,18 +83,18 @@ impl<T: DmaPod> ContiguousBox<T> {
         self.data.handle.dma_addr()
     }
 
-    pub fn read(&self) -> T {
+    pub fn read_cpu(&self) -> T {
         unsafe { self.as_ptr().read() }
     }
 
-    pub fn write(&mut self, value: T) {
+    pub fn write_cpu(&mut self, value: T) {
         unsafe { self.as_ptr().write(value) };
     }
 
-    pub fn modify(&mut self, f: impl FnOnce(&mut T)) {
-        let mut value = self.read();
+    pub fn modify_cpu(&mut self, f: impl FnOnce(&mut T)) {
+        let mut value = self.read_cpu();
         f(&mut value);
-        self.write(value);
+        self.write_cpu(value);
     }
 
     pub fn sync_for_device_all(&self) {
@@ -105,6 +105,29 @@ impl<T: DmaPod> ContiguousBox<T> {
         self.data.sync_for_cpu(0, core::mem::size_of::<T>());
     }
 
+    pub fn prepare_for_device_all(&self) {
+        self.sync_for_device_all();
+    }
+
+    pub fn complete_for_cpu_all(&self) {
+        self.sync_for_cpu_all();
+    }
+
+    pub fn write_for_device(&mut self, value: T) {
+        self.write_cpu(value);
+        self.prepare_for_device_all();
+    }
+
+    pub fn modify_for_device(&mut self, f: impl FnOnce(&mut T)) {
+        self.modify_cpu(f);
+        self.prepare_for_device_all();
+    }
+
+    pub fn read_from_device(&self) -> T {
+        self.complete_for_cpu_all();
+        self.read_cpu()
+    }
+
     pub fn as_ptr(&self) -> NonNull<T> {
         self.data.handle.as_ptr().cast::<T>()
     }
@@ -113,7 +136,7 @@ impl<T: DmaPod> ContiguousBox<T> {
     ///
     /// The caller must ensure the device is not concurrently accessing this
     /// memory in a way that races with CPU writes.
-    pub unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
+    pub unsafe fn as_bytes_mut_cpu(&mut self) -> &mut [u8] {
         self.data.as_mut_slice()
     }
 }

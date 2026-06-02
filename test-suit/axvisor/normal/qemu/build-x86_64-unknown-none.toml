@@ -8,4 +8,4 @@ features = [
 ]
 log = "Info"
 target = "x86_64-unknown-none"
-vm_configs = ["os/axvisor/configs/vms/linux-x86_64-qemu-smp1.toml"]
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]

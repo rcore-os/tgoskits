@@ -8,6 +8,7 @@ pub mod ion;
 pub mod memfd;
 mod net;
 pub mod netlink;
+mod nsfd;
 mod packet;
 mod pidfd;
 mod pipe;
@@ -35,6 +36,7 @@ pub use self::{
     fs::{Directory, File, resolve_at, with_fs},
     io_uring::IoUring,
     net::Socket,
+    nsfd::NsFd,
     packet::{PacketSocket, SockAddrLl},
     pidfd::PidFd,
     pipe::Pipe,
@@ -304,13 +306,6 @@ pub fn close_file_like(fd: c_int) -> AxResult {
         release_locks_on_close(f);
         return Ok(());
     }
-    #[cfg(feature = "ebpf")]
-    {
-        if crate::perf_event::perf_event_close(fd as u32).is_ok() {
-            return Ok(());
-        }
-        crate::ebpf::bpf_close_fd(fd as u32)?;
-    }
     Ok(())
 }
 
@@ -403,11 +398,6 @@ pub fn close_all_fds() {
     for key in lock_keys {
         crate::syscall::wake_lock_waiters(key);
         crate::syscall::wake_flock_waiters(key);
-    }
-    #[cfg(feature = "ebpf")]
-    {
-        crate::perf_event::perf_event_close_all();
-        crate::ebpf::bpf_close_all_fds();
     }
 }
 

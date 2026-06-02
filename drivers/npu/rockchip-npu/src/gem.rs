@@ -84,10 +84,10 @@ impl GemPool {
         }
 
         if args.flags & RKNPU_MEM_SYNC_TO_DEVICE != 0 {
-            data.sync_for_device(offset, size);
+            data.prepare_for_device(offset, size);
         }
         if args.flags & RKNPU_MEM_SYNC_FROM_DEVICE != 0 {
-            data.sync_for_cpu(offset, size);
+            data.complete_for_cpu(offset, size);
         }
         Ok(())
     }
@@ -98,14 +98,14 @@ impl GemPool {
 
     pub fn comfirm_write_all(&mut self) -> Result<(), RknpuError> {
         for data in self.pool.values_mut() {
-            data.sync_for_device_all();
+            data.prepare_for_device_all();
         }
         Ok(())
     }
 
     pub fn prepare_read_all(&mut self) -> Result<(), RknpuError> {
         for data in self.pool.values_mut() {
-            data.sync_for_cpu_all();
+            data.complete_for_cpu_all();
         }
         Ok(())
     }

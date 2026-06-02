@@ -192,8 +192,8 @@ pub fn sys_mmap(
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(_))
-                    | Ok(DeviceMmap::PhysicalAnchored(..))
+                    Ok(DeviceMmap::Physical(..))
+                    | Ok(DeviceMmap::PhysicalResolved(..))
                     | Ok(DeviceMmap::Cache(_)) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
@@ -298,30 +298,36 @@ pub fn sys_mmap(
                     .take()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(range)) => {
+                    Ok(DeviceMmap::Physical(mut range, retain)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
+                        range.start += offset;
                         if range.is_empty() {
                             return Err(AxError::InvalidInput);
                         }
                         length = length.min(range.size().align_down(page_size));
-                        Backend::new_linear(
-                            start,
-                            start.as_usize() as isize - range.start.as_usize() as isize,
-                            true,
-                        )
+                        let pa_va_offset =
+                            start.as_usize() as isize - range.start.as_usize() as isize;
+                        match retain {
+                            Some(retain) => {
+                                Backend::new_linear_anchored(start, pa_va_offset, true, retain)
+                            }
+                            None => Backend::new_linear(start, pa_va_offset, true),
+                        }
                     }
-                    Ok(DeviceMmap::PhysicalAnchored(range, anchor)) => {
+                    Ok(DeviceMmap::PhysicalResolved(range, retain)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
                         if range.is_empty() {
                             return Err(AxError::InvalidInput);
                         }
                         length = length.min(range.size().align_down(page_size));
-                        Backend::new_linear_anchored(
-                            start,
-                            start.as_usize() as isize - range.start.as_usize() as isize,
-                            true,
-                            anchor,
-                        )
+                        let pa_va_offset =
+                            start.as_usize() as isize - range.start.as_usize() as isize;
+                        match retain {
+                            Some(retain) => {
+                                Backend::new_linear_anchored(start, pa_va_offset, true, retain)
+                            }
+                            None => Backend::new_linear(start, pa_va_offset, true),
+                        }
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
                     Ok(_) => return Err(AxError::InvalidInput),
@@ -361,34 +367,43 @@ pub fn sys_mmap(
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }
-                                    DeviceMmap::Physical(range) => {
+                                    DeviceMmap::Physical(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
                                             return Err(AxError::InvalidInput);
                                         }
                                         length =
                                             capped_device_map_len(length, range.size(), page_size);
-                                        Backend::new_linear(
-                                            start,
-                                            start.as_usize() as isize
-                                                - range.start.as_usize() as isize,
-                                            true,
-                                        )
+                                        let pa_va_offset = start.as_usize() as isize
+                                            - range.start.as_usize() as isize;
+                                        match retain {
+                                            Some(retain) => Backend::new_linear_anchored(
+                                                start,
+                                                pa_va_offset,
+                                                true,
+                                                retain,
+                                            ),
+                                            None => Backend::new_linear(start, pa_va_offset, true),
+                                        }
                                     }
-                                    DeviceMmap::PhysicalAnchored(range, anchor) => {
+                                    DeviceMmap::PhysicalResolved(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
                                             return Err(AxError::InvalidInput);
                                         }
                                         length =
                                             capped_device_map_len(length, range.size(), page_size);
-                                        Backend::new_linear_anchored(
-                                            start,
-                                            start.as_usize() as isize
-                                                - range.start.as_usize() as isize,
-                                            true,
-                                            anchor,
-                                        )
+                                        let pa_va_offset = start.as_usize() as isize
+                                            - range.start.as_usize() as isize;
+                                        match retain {
+                                            Some(retain) => Backend::new_linear_anchored(
+                                                start,
+                                                pa_va_offset,
+                                                true,
+                                                retain,
+                                            ),
+                                            None => Backend::new_linear(start, pa_va_offset, true),
+                                        }
                                     }
                                     DeviceMmap::Cache(cache) => Backend::new_file(
                                         start,

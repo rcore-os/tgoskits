@@ -155,12 +155,29 @@ fn patch_starry_cargo_config(
             .or_insert_with(|| platform.to_string());
     }
 
+    inject_kallsyms_pre_build_cmd(cargo, &request.target)?;
     inject_kallsyms_post_build_cmd(cargo)?;
 
     if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
         inject_uimage_post_build_cmd(cargo, &request.arch)?;
     }
 
+    Ok(())
+}
+
+fn inject_kallsyms_pre_build_cmd(cargo: &mut Cargo, target: &str) -> anyhow::Result<()> {
+    let target_dir = crate::context::workspace_root_path()?
+        .join("target")
+        .join(target)
+        .join("release");
+    let kernel = target_dir.join(STARRY_PACKAGE);
+    let bin = target_dir.join(format!("{}.bin", STARRY_PACKAGE));
+    let cmd = format!(
+        "rm -f {} {}",
+        shell_quote(&kernel.display().to_string()),
+        shell_quote(&bin.display().to_string())
+    );
+    cargo.pre_build_cmds.push(cmd);
     Ok(())
 }
 
@@ -818,5 +835,17 @@ HELLO = "world"
         assert_eq!(cargo.post_build_cmds.len(), 2);
         assert!(cargo.post_build_cmds[0].contains("scripts/axbuild/scripts/starry-kallsyms.sh"));
         assert!(cargo.post_build_cmds[1].contains("mkimage"));
+    }
+    #[test]
+    fn starry_kallsyms_script_does_not_require_gawk_extensions() {
+        let script = crate::context::workspace_root_path()
+            .unwrap()
+            .join("scripts/axbuild/scripts/starry-kallsyms.sh");
+        let content = fs::read_to_string(script).unwrap();
+
+        assert!(
+            !content.contains("strtonum("),
+            "starry-kallsyms.sh must run with non-gawk awk implementations used by CI"
+        );
     }
 }

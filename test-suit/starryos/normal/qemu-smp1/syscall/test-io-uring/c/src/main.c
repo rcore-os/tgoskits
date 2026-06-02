@@ -30,6 +30,7 @@
 
 #define IORING_ENTER_GETEVENTS 1U
 #define IORING_REGISTER_PROBE 8U
+#define IO_URING_OP_SUPPORTED (1U << 0)
 
 #define IORING_OP_NOP 0U
 #define IORING_OP_READV 1U
@@ -278,6 +279,8 @@ int main(void)
     CHECK(probe.last_op >= IORING_OP_WRITE && probe.ops_len > 0,
           "probe reports supported operations");
     CHECK(probe.ops[0].op == IORING_OP_NOP, "probe includes NOP first");
+    CHECK((probe.ops[0].flags & IO_URING_OP_SUPPORTED) != 0,
+          "probe marks NOP as supported");
 
     struct io_uring_sqe sqe;
     memset(&sqe, 0, sizeof(sqe));

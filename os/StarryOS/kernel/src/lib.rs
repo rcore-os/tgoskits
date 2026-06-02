@@ -19,14 +19,12 @@ pub mod entry;
 
 mod cgroup;
 mod config;
-#[cfg(feature = "ebpf")]
 mod ebpf;
 mod file;
 mod kmod_loader;
 mod kprobe;
 mod mm;
-#[cfg(feature = "ebpf")]
-mod perf_event;
+mod perf;
 mod pseudofs;
 mod stop_machine;
 mod syscall;

@@ -32,6 +32,8 @@ const IORING_UNREGISTER_EVENTFD: u32 = 5;
 const IORING_REGISTER_EVENTFD_ASYNC: u32 = 7;
 const IORING_REGISTER_PROBE: u32 = 8;
 
+const IO_URING_OP_SUPPORTED: u16 = 1 << 0;
+
 const SUPPORTED_SETUP_FLAGS: u32 = IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP;
 const SUPPORTED_ENTER_FLAGS: u32 = IORING_ENTER_GETEVENTS;
 const SUPPORTED_OPS: [u8; 7] = [
@@ -239,7 +241,7 @@ fn write_probe(arg: *mut u8, nr_args: usize) -> AxResult<isize> {
         let probe_op = IoUringProbeOp {
             op,
             resv: 0,
-            flags: 0,
+            flags: IO_URING_OP_SUPPORTED,
             resv2: 0,
         };
         (arg.wrapping_add(size_of::<IoUringProbeHeader>())

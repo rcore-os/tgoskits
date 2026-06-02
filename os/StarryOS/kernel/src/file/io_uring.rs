@@ -174,7 +174,7 @@ impl IoUringRings {
         } else {
             return Ok(DeviceMmap::None);
         };
-        Ok(DeviceMmap::PhysicalAnchored(range, self.clone()))
+        Ok(DeviceMmap::PhysicalResolved(range, Some(self.clone())))
     }
 }
 
