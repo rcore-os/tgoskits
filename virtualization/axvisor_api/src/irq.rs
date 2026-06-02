@@ -28,9 +28,4 @@ pub trait IrqIf {
     ///
     /// Returns `true` if the handler was registered, `false` otherwise.
     fn register_irq_handler(vector: usize, handler: IrqHandler) -> bool;
-
-    /// Register a hook that runs after a host IRQ has been handled.
-    ///
-    /// Returns `true` if the hook was registered, `false` otherwise.
-    fn register_irq_hook(hook: IrqHandler) -> bool;
 }

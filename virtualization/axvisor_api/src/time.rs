@@ -37,8 +37,6 @@
 //! In addition to the core API trait, this module provides helper functions:
 //! - [`current_time_nanos`] - Get the current time in nanoseconds.
 //! - [`current_time`] - Get the current time as a [`TimeValue`].
-//! - [`ticks_to_time`] - Convert ticks to [`TimeValue`].
-//! - [`time_to_ticks`] - Convert [`TimeValue`] to ticks.
 //!
 //! # Implementation
 //!
@@ -195,30 +193,4 @@ pub fn current_time_nanos() -> Nanos {
 /// The current time as a [`TimeValue`] (Duration).
 pub fn current_time() -> TimeValue {
     Duration::from_nanos(current_time_nanos())
-}
-
-/// Convert ticks to a [`TimeValue`].
-///
-/// # Arguments
-///
-/// * `ticks` - The tick count to convert.
-///
-/// # Returns
-///
-/// The equivalent time as a [`TimeValue`] (Duration).
-pub fn ticks_to_time(ticks: Ticks) -> TimeValue {
-    Duration::from_nanos(ticks_to_nanos(ticks))
-}
-
-/// Convert a [`TimeValue`] to ticks.
-///
-/// # Arguments
-///
-/// * `time` - The time value to convert.
-///
-/// # Returns
-///
-/// The equivalent tick count.
-pub fn time_to_ticks(time: TimeValue) -> Ticks {
-    nanos_to_ticks(time.as_nanos() as Nanos)
 }
