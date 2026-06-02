@@ -216,8 +216,8 @@ impl VmxVcpu {
     }
 
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
-    pub fn inner_run(&mut self) -> Option<VmxExitInfo> {
-        self.inject_pending_events().unwrap();
+    pub fn inner_run(&mut self) -> AxResult<Option<VmxExitInfo>> {
+        self.inject_pending_events()?;
 
         // Run guest
         self.load_guest_xstate();
@@ -260,7 +260,7 @@ impl VmxVcpu {
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => match result {
-                Ok(()) => None,
+                Ok(()) => Ok(None),
                 Err(err) => {
                     panic!(
                         "VmxVcpu failed to handle a VM-exit that should be handled by itself: \
@@ -269,7 +269,7 @@ impl VmxVcpu {
                     );
                 }
             },
-            None => Some(exit_info),
+            None => Ok(Some(exit_info)),
         }
     }
 
@@ -1571,7 +1571,7 @@ impl AxArchVCpu for VmxVcpu {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        match self.inner_run() {
+        match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 AxVCpuExitReason::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
