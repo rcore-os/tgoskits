@@ -83,10 +83,38 @@ impl SectionMemOps for KmodMem {
 
 impl Drop for KmodMem {
     fn drop(&mut self) {
-        let page_size: usize = PageSize::Size4K as usize;
-        let total = page_size * self.num_pages;
+        let total = PAGE_SIZE_4K * self.num_pages;
+
+        // While the module was live, `change_perms()` re-protected its sections
+        // (e.g. `.text` → RX, `.rodata` → RO) in the kernel address space. The
+        // global page allocator only maintains a free-page list — it never
+        // touches the kernel PTEs — so handing back still-RO/RX pages would
+        // corrupt a later reuse: `alloc_kmod_frames()`'s zeroing `write_bytes()`
+        // would fault on a read-only page, or a non-writable page would be
+        // handed to some other kernel object. Restore a plain RW mapping (and
+        // flush the now-stale TLB entries) before returning the frames.
+        let restored = {
+            let kspace = ax_mm::kernel_aspace();
+            let mut guard = kspace.lock();
+            guard
+                .protect(self.vaddr, total, MappingFlags::READ | MappingFlags::WRITE)
+                .is_ok()
+        };
+        if !restored {
+            // Don't silently return RO/RX pages to the general allocator pool;
+            // leak them instead so a later allocation can't fault on them.
+            error!(
+                "kmod: failed to restore RW mapping for module section at {:#x} ({} pages); \
+                 leaking frames",
+                self.vaddr.as_usize(),
+                self.num_pages
+            );
+            return;
+        }
+        crate::mm::flush_tlb_range(self.vaddr, total);
+
         let vaddr = phys_to_virt(self.paddr);
-        global_allocator().dealloc_pages(vaddr.as_usize(), total / PAGE_SIZE_4K, UsageKind::Global);
+        global_allocator().dealloc_pages(vaddr.as_usize(), self.num_pages, UsageKind::Global);
     }
 }
 
