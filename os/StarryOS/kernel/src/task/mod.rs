@@ -764,11 +764,19 @@ impl ProcessData {
         self.cgroup_id.store(id, Ordering::Release);
     }
 
+    /// Whether this process still has an active cgroup membership.
+    pub(crate) fn is_cgroup_membership_active(&self) -> bool {
+        self.cgroup_membership_active.load(Ordering::Acquire)
+    }
+
+    /// Mark this process's cgroup membership inactive.
+    pub(crate) fn deactivate_cgroup_membership(&self) -> bool {
+        self.cgroup_membership_active.swap(false, Ordering::AcqRel)
+    }
+
     /// Release this process's cgroup live-count membership once.
     pub fn release_cgroup_membership_if_needed(&self) {
-        if self.cgroup_membership_active.swap(false, Ordering::AcqRel) {
-            crate::cgroup::unregister_process(self.cgroup_id());
-        }
+        crate::cgroup::release_process_membership(self);
     }
 
     /// Whether this process shares its VM address space (`CLONE_VM`).

@@ -161,14 +161,20 @@ pub fn register_process(id: CgroupId) -> AxResult<()> {
     Ok(())
 }
 
-pub fn unregister_process(id: CgroupId) {
-    let mut tree = CGROUP_TREE.lock();
+fn unregister_process_locked(tree: &mut CgroupTree, id: CgroupId) {
     if let Some(node) = tree.nodes.get_mut(&id) {
         if let Some(live_processes) = node.live_processes.checked_sub(1) {
             node.live_processes = live_processes;
         } else {
             debug_assert!(false, "cgroup live_processes underflow during unregister");
         }
+    }
+}
+
+pub fn release_process_membership(proc_data: &crate::task::ProcessData) {
+    let mut tree = CGROUP_TREE.lock();
+    if proc_data.deactivate_cgroup_membership() {
+        unregister_process_locked(&mut tree, proc_data.cgroup_id());
     }
 }
 
@@ -183,6 +189,9 @@ pub fn attach_process(target: CgroupId, pid: Pid) -> AxResult<()> {
     let mut tree = CGROUP_TREE.lock();
     if !tree.nodes.contains_key(&target) {
         return Err(AxError::NotFound);
+    }
+    if !proc_data.is_cgroup_membership_active() {
+        return Err(AxError::from(LinuxError::ESRCH));
     }
 
     let old = proc_data.cgroup_id();
