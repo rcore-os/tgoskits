@@ -1,5 +1,7 @@
 # StarryOS K230 NNCase Runtime Demo
 
+Chinese version: `docs/k230-kpu-nncase-runtime.zh.md`.
+
 This document records the K230 KPU/NPU runtime demo added for the StarryOS K230
 QEMU path. The demo is intentionally separated from the lower-level `/dev/kpu`
 smoke case: `kpu-smoke` proves the device interface, while
@@ -26,6 +28,67 @@ evidence in this demo.
 
 ## Local Assets
 
+The runtime demo intentionally does not commit large or third-party assets:
+
+- `yolov8n_320.kmodel`
+- `bus.jpg`
+- K230 SDK NNCase static libraries and headers
+- K230 SDK C++ toolchain
+- prebuilt StarryOS guest demo binaries
+
+These assets come from the official Kendryte K230 SDK and are prepared under
+`target/official-k230`, which is outside the tracked source tree.
+
+### 1. Prepare the official K230 SDK
+
+From the tgoskits repository root:
+
+```sh
+mkdir -p target/official-k230
+git clone https://github.com/kendryte/k230_sdk \
+  target/official-k230/k230-sdk-src
+```
+
+The official SDK README also lists a release tarball mirror. If GitHub cloning
+is slow, unpack that release tarball into the same directory:
+
+```text
+target/official-k230/k230-sdk-src/
+```
+
+Then download the SDK toolchain, NNCase package, utility package, and kmodel
+package with the SDK's own preparation target:
+
+```sh
+docker run --rm --platform linux/amd64 -u root \
+  -v "$PWD/target/official-k230/k230-sdk-src":/k230_sdk \
+  -v "$PWD/target/official-k230/k230-sdk-src/toolchain":/opt/toolchain \
+  -w /k230_sdk \
+  ghcr.io/kendryte/k230_sdk:latest \
+  bash -lc 'make prepare_sourcecode'
+```
+
+The `--platform linux/amd64` part is intentional: the SDK toolchain used by this
+demo is the SDK's x86_64-hosted RISC-V Linux musl toolchain.
+
+After `make prepare_sourcecode`, these files must exist:
+
+```text
+target/official-k230/k230-sdk-src/
+  toolchain/riscv64-linux-musleabi_for_x86_64-pc-linux-gnu/bin/riscv64-unknown-linux-musl-g++
+  src/big/nncase/riscv64/nncase/lib/libNncase.Runtime.Native.a
+  src/big/nncase/riscv64/rvvlib/
+  src/big/utils/lib/hhb-prebuilt-decode/
+  src/big/kmodel/ai_poc/kmodel/yolov8n_320.kmodel
+  src/big/kmodel/ai_poc/images/bus.jpg
+```
+
+The demo CMake file also accepts a fallback model path under
+`kpu-smoke/c/assets/kmodels/yolov8n_320.kmodel`, but the expected reproducible
+source is the official SDK path above.
+
+### 2. Build the StarryOS guest demo binaries
+
 This PR does not commit the real model, SDK libraries, or prebuilt binaries.
 Prepare them locally with:
 
@@ -33,15 +96,57 @@ Prepare them locally with:
 bash test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nncase-runtime-binaries.sh
 ```
 
-The script uses the local K230 SDK checkout under `target/official-k230` and
-places ignored riscv64 demo binaries under:
+The script:
+
+- finds `target/official-k230/k230-sdk-src` from the current worktree;
+- copies the StarryOS dev image's `/opt/riscv64-linux-musl-cross` sysroot into
+  a Docker volume named `tgoskits-riscv64-linux-musl-cross`;
+- enters `ghcr.io/kendryte/k230_sdk:latest` as an amd64 container;
+- links the demo programs against the K230 SDK NNCase runtime, RVV library,
+  JPEG decode library, K230 SDK C++ runtime, and the Linux musl sysroot;
+- places ignored riscv64 demo binaries under:
 
 ```text
 test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/assets/bin/
+  kpu-nncase-minimal
+  k230-yolov8n-demo
 ```
 
-The test case then installs those binaries together with `yolov8n_320.kmodel`
-and `bus.jpg` into the guest rootfs overlay.
+If a reviewer already has equivalent binaries from another trusted build, they
+can place those two files in the same ignored directory. The test case will use
+them without rebuilding from source.
+
+### 3. What `cargo xtask` installs into the guest
+
+When the `kpu-nncase-runtime` case runs, CMake installs:
+
+```text
+/usr/bin/kpu-nncase-minimal
+/usr/bin/k230-yolov8n-demo
+/usr/bin/k230-nncase-runtime-demo
+/usr/share/k230-nncase-runtime/models/yolov8n_320.kmodel
+/usr/share/k230-nncase-runtime/images/bus.jpg
+```
+
+The model and image are copied from the SDK paths listed in step 1. The two demo
+binaries are copied from `c/assets/bin/` unless the case is being built directly
+inside an amd64 K230 SDK environment with `-DK230_CXX=...`.
+
+### 4. K230 QEMU itself
+
+The runtime case also requires the K230 QEMU fork described in
+`test-suit/starryos/k230-qemu/README.md`. Prepare it with:
+
+```sh
+bash test-suit/starryos/k230-qemu/prepare-k230-qemu.sh
+```
+
+Then put that QEMU build before the default QEMU path when running the case:
+
+```sh
+PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
+  cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+```
 
 ## Validation
 

@@ -16,7 +16,11 @@ find_storage_root() {
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CASE_C_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 WORKTREE_ROOT=$(git -C "$CASE_C_DIR" rev-parse --show-toplevel)
-STORAGE_ROOT=$(find_storage_root "$WORKTREE_ROOT")
+if ! STORAGE_ROOT=$(find_storage_root "$WORKTREE_ROOT"); then
+    echo "build-nncase-runtime-binaries: missing target/official-k230/k230-sdk-src" >&2
+    echo "build-nncase-runtime-binaries: see docs/k230-kpu-nncase-runtime.md for asset preparation" >&2
+    exit 1
+fi
 REL_WORKTREE=${WORKTREE_ROOT#"$STORAGE_ROOT"/}
 IMAGE=${K230_SDK_DOCKER_IMAGE:-ghcr.io/kendryte/k230_sdk:latest}
 STARRY_DEV_IMAGE=${STARRY_DEV_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}
