@@ -1,7 +1,4 @@
-#define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <regex.h>
 
 int main(void) {
@@ -19,6 +16,7 @@ int main(void) {
         printf("regex match: OK\n");
     } else {
         printf("regex match: FAIL\n");
+        return 1;
     }
 
     regfree(&regex);

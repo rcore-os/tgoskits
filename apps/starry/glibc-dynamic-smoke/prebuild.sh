@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app_dir="$(cd "$(dirname "$0")" && pwd)"
+app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 
 if [[ -z "$overlay_dir" ]]; then
