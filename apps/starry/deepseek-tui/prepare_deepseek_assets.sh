@@ -16,6 +16,22 @@ need_cmd() {
 
 need_cmd install
 
+rust_musl_target="x86_64-unknown-linux-musl"
+
+ensure_rust_musl_target() {
+    need_cmd rustup
+
+    local toolchain
+    toolchain="$(rustup show active-toolchain)"
+    toolchain="${toolchain%% *}"
+    if rustup target list --installed --toolchain "$toolchain" | grep -qx "$rust_musl_target"; then
+        return
+    fi
+
+    echo "Installing Rust target $rust_musl_target for toolchain $toolchain..."
+    rustup target add --toolchain "$toolchain" "$rust_musl_target"
+}
+
 if [ -x "$asset_dir/deepseek" ] && [ -x "$asset_dir/deepseek-tui" ]; then
     echo "DeepSeek TUI assets already staged in $asset_dir"
     file "$asset_dir/deepseek" 2>/dev/null | head -1
@@ -35,12 +51,22 @@ docker_build() {
         "$workspace" 2>&1
     echo ""
     echo "Extracting binaries and shared libraries..."
-    docker run --rm deepseek-tui-builder tar -cO /deepseek /deepseek-tui | tar -xv -C "$asset_dir"
+    local container
+    container="$(docker create --network none deepseek-tui-builder)"
+    trap 'docker rm -f "$container" >/dev/null 2>&1 || true' RETURN
+
+    docker cp "$container:/deepseek" "$asset_dir/deepseek"
+    docker cp "$container:/deepseek-tui" "$asset_dir/deepseek-tui"
+    chmod 0755 "$asset_dir/deepseek" "$asset_dir/deepseek-tui"
+
     mkdir -p "$asset_dir/lib"
-    docker run --rm deepseek-tui-builder tar -cO /usr/lib/ | tar -xv --strip-components=2 -C "$asset_dir/lib/" 2>/dev/null || true
+    docker cp "$container:/usr/lib/." "$asset_dir/lib/" 2>/dev/null || true
+    docker rm -f "$container" >/dev/null
+    trap - RETURN
+
     echo ""
     file "$asset_dir/deepseek" 2>/dev/null || true
-    docker run --rm deepseek-tui-builder /deepseek --version 2>/dev/null || echo "(version check skipped — musl binary needs musl host)"
+    LD_LIBRARY_PATH="$asset_dir/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$asset_dir/deepseek" --version 2>/dev/null || echo "(version check skipped — musl binary needs musl host)"
     echo ""
     echo "DeepSeek TUI assets ready in $asset_dir"
     ls -lh "$asset_dir/"
@@ -63,6 +89,7 @@ direct_build() {
     echo ""
     echo "Building deepseek ($tag)..."
     cd "$src_dir"
+    ensure_rust_musl_target
 
     echo "  Building deepseek (crates/cli) with musl target..."
     cargo build --release --locked --target x86_64-unknown-linux-musl --bin deepseek

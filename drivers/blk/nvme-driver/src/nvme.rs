@@ -97,9 +97,7 @@ impl Nvme {
 
     fn reset_and_setup_controller_info(&mut self) -> Result<ControllerInfo> {
         self.reset();
-
         self.nvme_configure_admin_queue();
-
         self.reg().ready_for_read_controller_info();
 
         self.get_identfy(IdentifyController::new())
@@ -112,19 +110,14 @@ impl Nvme {
 
         self.sqes = controller.sqes_min as _;
         self.cqes = controller.cqes_min as _;
-
         self.reset();
-
         self.nvme_configure_admin_queue();
-
         self.reg().setup_cc(self.sqes, self.cqes);
-
         let controller = self.get_identfy(IdentifyController::new())?;
 
         debug!("Controller: {:?}", controller);
 
         self.num_ns = controller.number_of_namespaces as _;
-
         self.config_io_queue(config)?;
 
         debug!("IO queue ok.");

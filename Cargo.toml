@@ -128,7 +128,7 @@ members = [
     "test-suit/arceos/rust/net/*",
     "test-suit/arceos/rust/task/*",
     "test-suit/arceos/std/qemu-smp1/*",
-    "test-suit/starryos/normal/qemu-smp1/rust-hello/rust",
+    "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",
     "xtask",

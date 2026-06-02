@@ -5774,6 +5774,7 @@ dependencies = [
  "dma-api",
  "fdt-edit",
  "log",
+ "mbarrier",
  "mmio-api",
  "pcie",
  "rdif-block",
