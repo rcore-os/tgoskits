@@ -123,7 +123,7 @@ impl AxvmRuntime {
 
     /// Run an operation with a VM selected from the runtime registry.
     pub fn with_vm<T>(vm_id: VMId, f: impl FnOnce(AxVMRef) -> T) -> Option<T> {
-        crate::runtime::with_vm(vm_id, f)
+        crate::get_vm_by_id(vm_id).map(f)
     }
 
     /// Start a VM selected from the runtime registry.
@@ -150,9 +150,4 @@ impl AxvmRuntime {
 /// Register a prepared VM in the AxVM runtime.
 pub fn register_vm(vm: AxVMRef) -> bool {
     crate::runtime::register_vm(vm)
-}
-
-/// Set up the primary vCPU task for a prepared VM.
-pub fn setup_primary_vcpu(vm: AxVMRef) {
-    crate::runtime::setup_primary_vcpu(vm);
 }

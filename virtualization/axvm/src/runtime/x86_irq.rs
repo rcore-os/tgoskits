@@ -35,7 +35,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    let now_ns = crate::monotonic_time_nanos();
+    let now_ns = crate::host::arceos::monotonic_time_nanos();
     if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
         return;
     }

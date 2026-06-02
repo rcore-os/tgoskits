@@ -213,7 +213,7 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] vCPU resources not found")))?;
     let cpu_id = vm_vcpus.queue_interrupt(vcpu_id, vector)?;
     vm_vcpus.notify_all();
-    crate::send_host_ipi(cpu_id);
+    crate::host::task::send_ipi(cpu_id);
     Ok(())
 }
 
@@ -389,7 +389,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
     );
 
     if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(crate::host_cpu_mask_from_raw_bits(phys_cpu_set));
+        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(phys_cpu_set));
     }
 
     // Use Weak reference in TaskExt to avoid keeping VM alive
@@ -401,7 +401,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
         vcpu_task.id_name(),
         vcpu_task.cpumask()
     );
-    crate::spawn_host_task(vcpu_task)
+    crate::host::task::spawn_task(vcpu_task)
 }
 
 /// The main routine for VCpu task.
@@ -410,7 +410,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let curr = crate::current_host_task();
+    let curr = crate::host::task::current_task();
 
     let vm = curr.as_vcpu_task().vm();
     let vcpu = curr.as_vcpu_task().vcpu.clone();
@@ -468,10 +468,10 @@ fn vcpu_run() {
 
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
                     #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
-                    crate::dispatch_host_irq(vector as usize);
+                    crate::host::arceos::dispatch_host_irq(vector as usize);
                     #[cfg(target_arch = "riscv64")]
                     vcpu.with_current_cpu_set(|| {
-                        crate::dispatch_host_irq(vector as usize);
+                        crate::host::arceos::dispatch_host_irq(vector as usize);
                         vcpu.get_arch_vcpu().latch_hvip_from_hw();
                     });
                     crate::check_timer_events();
@@ -627,7 +627,7 @@ fn vcpu_run() {
                 super::x86_irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
 
                 sub_running_vm_count(1);
-                crate::host_wait_queue_wake(&super::VMM, 1);
+                crate::host::task::wait_queue_wake(&super::VMM, 1);
             }
 
             break;

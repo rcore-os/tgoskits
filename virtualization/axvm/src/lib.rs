@@ -40,14 +40,13 @@ pub use ax_cpumask::CpuMask;
 pub use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 pub use axhvc::{HyperCallCode, HyperCallResult};
 pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
-/// Paging handler backed by AxVM's private host adapter.
-pub use host::paging::HostPagingHandler;
-pub(crate) use host::task::{
-    AxTaskExt, AxTaskRef, CurrentTask, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle,
+pub(crate) use host::{
+    paging::HostPagingHandler,
+    task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
-    inject_current_vcpu_interrupt, register_vm, setup_primary_vcpu,
+    inject_current_vcpu_interrupt, register_vm,
 };
 #[cfg(target_arch = "riscv64")]
 pub use riscv_vcpu::GprIndex as RiscvGprIndex;
@@ -65,45 +64,6 @@ pub fn check_timer_events() {
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
     cache::clean_dcache_range(addr, size);
-}
-
-/// Dispatch a host IRQ vector through the ArceOS IRQ handler.
-#[cfg(not(target_arch = "aarch64"))]
-pub(crate) fn dispatch_host_irq(vector: usize) {
-    host::arceos::dispatch_host_irq(vector);
-}
-
-/// Build an ArceOS host CPU mask from raw bits.
-pub(crate) fn host_cpu_mask_from_raw_bits(bits: usize) -> host::task::CpuMask {
-    host::task::cpu_mask_from_raw_bits(bits)
-}
-
-/// Return the current host task.
-pub(crate) fn current_host_task() -> CurrentTask {
-    host::task::current_task()
-}
-
-/// Spawn a prepared host task.
-pub(crate) fn spawn_host_task(task: TaskInner) -> AxTaskRef {
-    host::task::spawn_task(task)
-}
-
-/// Wait on a host wait queue until `condition` becomes true.
-pub(crate) fn host_wait_queue_wait_until(
-    queue: &HostWaitQueueHandle,
-    condition: impl Fn() -> bool,
-) {
-    host::task::wait_queue_wait_until(queue, condition);
-}
-
-/// Wake tasks waiting on a host wait queue.
-pub(crate) fn host_wait_queue_wake(queue: &HostWaitQueueHandle, count: u32) {
-    host::task::wait_queue_wake(queue, count);
-}
-
-/// Send a host IPI to the given CPU.
-pub(crate) fn send_host_ipi(cpu_id: usize) {
-    host::task::send_ipi(cpu_id);
 }
 
 /// Return the host FDT boot argument physical address.
@@ -130,10 +90,4 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
 #[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
 pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
     host::arceos::shutdown_host_filesystems()
-}
-
-/// Read host monotonic time in nanoseconds.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn monotonic_time_nanos() -> u64 {
-    host::arceos::monotonic_time_nanos()
 }

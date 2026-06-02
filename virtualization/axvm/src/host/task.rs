@@ -22,8 +22,6 @@ pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> arceos::ArceOsCpuMask {
     arceos::cpu_mask_from_raw_bits(bits)
 }
 
-pub(crate) type CpuMask = arceos::ArceOsCpuMask;
-
 pub(crate) fn wait_queue_wait_until(queue: &WaitQueueHandle, condition: impl Fn() -> bool) {
     arceos::wait_queue_wait_until(queue, condition);
 }

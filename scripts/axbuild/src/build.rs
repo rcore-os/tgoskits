@@ -1121,6 +1121,32 @@ fn explicit_myplat_platform_package(
     }
 }
 
+fn explicit_default_platform_package(
+    package: &str,
+    arch: &str,
+    metadata: &Metadata,
+) -> Option<String> {
+    match (package, arch) {
+        ("axvisor", "x86_64") => {
+            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
+        }
+        _ => None,
+    }
+}
+
+fn explicit_axvisor_platform_alias(
+    package: &str,
+    platform: &str,
+    metadata: &Metadata,
+) -> Option<String> {
+    match (package, platform) {
+        ("axvisor", "x86-pc") => {
+            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
+        }
+        _ => None,
+    }
+}
+
 fn resolve_platform_package(
     package: &str,
     target: &str,
@@ -1133,7 +1159,10 @@ fn resolve_platform_package(
     if let Some(platform) = features
         .iter()
         .find_map(|feature| ax_hal_platform_feature_name(feature, Some(metadata)))
-        .and_then(|platform| ax_hal_platform_package(platform, metadata))
+        .and_then(|platform| {
+            explicit_axvisor_platform_alias(package, platform, metadata)
+                .or_else(|| ax_hal_platform_package(platform, metadata))
+        })
     {
         return Ok(platform);
     }
@@ -1177,6 +1206,10 @@ fn resolve_platform_package(
         {
             return Ok(dep.name.clone());
         }
+    }
+
+    if let Some(platform) = explicit_default_platform_package(package, arch, metadata) {
+        return Ok(platform);
     }
 
     require_default_platform_package(metadata, arch)

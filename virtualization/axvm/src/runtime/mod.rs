@@ -57,17 +57,11 @@ pub fn start() {
     }
 
     // Do not exit until all VMs are stopped.
-    crate::host_wait_queue_wait_until(&VMM, || {
+    crate::host::task::wait_queue_wait_until(&VMM, || {
         let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
         debug!("a VM exited, current running VM count: {vm_count}");
         vm_count == 0
     });
-}
-
-/// Run a closure with the specified VM.
-pub fn with_vm<T>(vm_id: usize, f: impl FnOnce(VMRef) -> T) -> Option<T> {
-    let vm = crate::get_vm_by_id(vm_id)?;
-    Some(f(vm))
 }
 
 pub fn add_running_vm_count(count: usize) {
@@ -113,9 +107,4 @@ pub fn remove_vm(vm_id: usize) -> Option<VMRef> {
 /// Register a prepared VM in the AxVM runtime.
 pub fn register_vm(vm: VMRef) -> bool {
     crate::manager::push_existing_vm(vm)
-}
-
-/// Set up the primary vCPU task for a prepared VM.
-pub fn setup_primary_vcpu(vm: VMRef) {
-    vcpus::setup_vm_primary_vcpu(vm);
 }

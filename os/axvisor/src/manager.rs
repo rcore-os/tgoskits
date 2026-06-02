@@ -210,22 +210,4 @@ impl AxvmManager {
         let size = Self::file_size(file_name)?;
         Self::read_file_exact(file_name, size)
     }
-
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
-    pub fn host_fdt_bootarg() -> usize {
-        axvm::host_fdt_bootarg()
-    }
-
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "loongarch64",
-        target_arch = "riscv64"
-    ))]
-    pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-        axvm::host_phys_to_virt(paddr)
-    }
 }

@@ -30,13 +30,13 @@ const PAGE_SIZE_4K: usize = 0x1000;
 
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
-    let bootarg: usize = crate::manager::AxvmManager::host_fdt_bootarg();
+    let bootarg: usize = axvm::host_fdt_bootarg();
     if bootarg == 0 {
         warn!("Boot argument does not contain a host FDT pointer");
         return None;
     }
 
-    let fdt_vaddr = crate::manager::AxvmManager::host_phys_to_virt(bootarg.into());
+    let fdt_vaddr = axvm::host_phys_to_virt(bootarg.into());
     let header = unsafe {
         core::slice::from_raw_parts(fdt_vaddr.as_ptr(), core::mem::size_of::<FdtHeader>())
     };

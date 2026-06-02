@@ -211,6 +211,7 @@ fn normalize_axvisor_feature_surface(
         selected_platform = features
             .iter()
             .filter_map(|feature| nested_platform_feature_name(feature, &known_platforms))
+            .filter_map(|platform| axvisor_platform_alias(platform))
             .find(|platform| axvisor_platforms.iter().any(|feature| feature == platform))
             .map(str::to_string)
             .or(default_axvisor_platform_feature(request, metadata)?);
@@ -228,7 +229,8 @@ fn normalize_axvisor_feature_surface(
         }
 
         if let Some(nested_platform) = nested_platform_feature_name(feature, &known_platforms) {
-            should_enable_platform |= nested_platform == platform;
+            should_enable_platform |=
+                axvisor_platform_alias(nested_platform) == Some(platform.as_str());
             return false;
         }
 
@@ -283,11 +285,11 @@ fn default_axvisor_platform_feature(
     }
 
     let arch = arch_for_target_checked(&request.target)?;
-    let Some(platform) = default_static_platform_for_arch(metadata, arch)? else {
+    let Some(platform) = default_static_platform_for_arch(arch) else {
         return Ok(None);
     };
-    if axvisor_declares_feature(metadata, &platform)? {
-        Ok(Some(platform))
+    if axvisor_declares_feature(metadata, platform)? {
+        Ok(Some(platform.to_string()))
     } else {
         Ok(None)
     }
@@ -311,25 +313,14 @@ fn platform_feature_names(metadata: &cargo_metadata::Metadata) -> Vec<String> {
     platforms
 }
 
-fn default_static_platform_for_arch(
-    metadata: &cargo_metadata::Metadata,
-    arch: &str,
-) -> anyhow::Result<Option<String>> {
-    metadata
-        .packages
-        .iter()
-        .filter_map(|package| {
-            let platform = package
-                .metadata
-                .get("axplat")
-                .cloned()
-                .and_then(|metadata| serde_json::from_value::<AxplatMetadata>(metadata).ok())?;
-            (platform.arch == arch && platform.default_for_arch && !platform.dynamic)
-                .then_some(platform.platform)
-        })
-        .next()
-        .map(Some)
-        .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
+fn default_static_platform_for_arch(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("x86-qemu-q35"),
+        "aarch64" => Some("aarch64-qemu-virt"),
+        "riscv64" => Some("riscv64-qemu-virt"),
+        "loongarch64" => Some("loongarch64-qemu-virt"),
+        _ => None,
+    }
 }
 
 fn axvisor_declares_feature(
@@ -366,6 +357,19 @@ fn nested_platform_feature_name<'a>(
         .or_else(|| feature.strip_prefix("ax-feat/"))
         .or_else(|| feature.strip_prefix("ax-hal/"))
         .filter(|name| is_platform_control_feature(name, known_platforms))
+}
+
+fn axvisor_platform_alias(platform: &str) -> Option<&'static str> {
+    match platform {
+        "x86-pc" => Some("x86-qemu-q35"),
+        "x86-qemu-q35" => Some("x86-qemu-q35"),
+        "aarch64-qemu-virt" => Some("aarch64-qemu-virt"),
+        "riscv64-qemu-virt" => Some("riscv64-qemu-virt"),
+        "loongarch64-qemu-virt" => Some("loongarch64-qemu-virt"),
+        "plat-dyn" => Some("dyn-plat"),
+        "dyn-plat" => Some("dyn-plat"),
+        _ => None,
+    }
 }
 
 fn is_unsupported_nested_platform_feature(feature: &str, known_platforms: &[String]) -> bool {
@@ -847,10 +851,10 @@ plat_dyn = false
     }
 
     #[test]
-    fn load_cargo_config_rejects_nested_low_level_platform_feature() {
+    fn load_cargo_config_lifts_legacy_x86_default_platform_alias() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
-        let legacy_platform_feature = ["ax-hal", "aarch64-qemu-virt"].join("/");
+        let legacy_platform_feature = ["ax-hal", "x86-pc"].join("/");
         fs::write(
             &config_path,
             format!(
@@ -864,11 +868,11 @@ plat_dyn = false
         )
         .unwrap();
 
-        let err = load_cargo_config(&ResolvedAxvisorRequest {
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.path().join("os/axvisor"),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
             plat_dyn: Some(false),
             smp: None,
             debug: false,
@@ -877,11 +881,13 @@ plat_dyn = false
             uboot_config: None,
             vmconfigs: vec![],
         })
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            err.to_string()
-                .contains("Axvisor top-level platform features")
+        assert!(cargo.features.contains(&"x86-qemu-q35".to_string()));
+        assert!(!cargo.features.contains(&legacy_platform_feature));
+        assert_eq!(
+            cargo.env.get("AX_PLATFORM"),
+            Some(&"x86-qemu-q35".to_string())
         );
     }
 
