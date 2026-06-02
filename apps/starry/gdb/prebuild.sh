@@ -63,6 +63,10 @@ install_gdb_package() {
         exit 1
     fi
 
+    if [[ -f /etc/resolv.conf ]]; then
+        cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
+    fi
+
     echo "Installing gdb via musl ld (Alpine x86_64)..."
     "$musl_ld" \
         --library-path "$staging_root/lib:$staging_root/usr/lib:$staging_root/usr/local/lib" \
@@ -141,7 +145,25 @@ copy_runtime_dependencies() {
 
 populate_overlay() {
     copy_file_to_overlay /usr/bin/gdb 0755
-    copy_runtime_dependencies /usr/bin/gdb
+    copy_file_to_overlay /usr/bin/python3 0755
+    copy_runtime_dependencies /usr/bin/gdb /usr/bin/python3
+
+    if [[ -d "$staging_root/usr/share/gdb" ]]; then
+        mkdir -p "$overlay_dir/usr/share"
+        cp -rL "$staging_root/usr/share/gdb" "$overlay_dir/usr/share/"
+    fi
+    if [[ -d "$staging_root/usr/lib/python3.12" ]]; then
+        mkdir -p "$overlay_dir/usr/lib"
+        cp -rL "$staging_root/usr/lib/python3.12" "$overlay_dir/usr/lib/"
+    fi
+    if [[ -e "$staging_root/usr/lib/python312.zip" ]]; then
+        copy_file_to_overlay /usr/lib/python312.zip 0644
+    fi
+    for lib in "$staging_root"/usr/lib/libpython3.12.so*; do
+        if [[ -f "$lib" ]] && [[ ! -L "$lib" ]]; then
+            copy_file_to_overlay "/usr/lib/$(basename "$lib")" 0644
+        fi
+    done
 }
 
 require_env STARRY_BASE_ROOTFS "$base_rootfs"
