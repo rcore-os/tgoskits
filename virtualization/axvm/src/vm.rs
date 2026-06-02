@@ -18,7 +18,7 @@ use core::{alloc::Layout, fmt};
 use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k, align_up_4k};
+use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{
     AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
 };
@@ -49,10 +49,6 @@ type VCpu = AxVCpu<AxArchVCpuImpl>;
 pub type AxVCpuRef = Arc<VCpu>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
-
-fn page_count_for_size(size: usize) -> usize {
-    size.div_ceil(PAGE_SIZE_4K)
-}
 
 fn width_mask(width: AccessWidth) -> usize {
     match width {
@@ -90,8 +86,6 @@ pub struct VMMemoryRegion {
     pub hva: HostVirtAddr,
     /// Memory layout of the region.
     pub layout: Layout,
-    /// Number of host pages backing this region when allocator-owned.
-    pub page_count: usize,
     /// Whether this region was allocated by the allocator and needs to be deallocated
     pub needs_dealloc: bool,
 }
@@ -954,12 +948,14 @@ impl AxVM {
             "Cannot allocate zero-sized memory region"
         );
 
-        let page_count = page_count_for_size(layout.size());
-        let hpa = axvisor_api::memory::alloc_contiguous_frames(page_count, layout.align())
-            .ok_or(AxError::NoMemory)?;
-        let hva = axvisor_api::memory::phys_to_virt(hpa);
-        let s = unsafe { core::slice::from_raw_parts_mut(hva.as_mut_ptr(), layout.size()) };
-        s.fill(0);
+        let hva = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if hva.is_null() {
+            return Err(AxError::NoMemory);
+        }
+        let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
+        let hva = HostVirtAddr::from_mut_ptr_of(hva);
+
+        let hpa = axvisor_api::memory::virt_to_phys(hva);
 
         let gpa = gpa.unwrap_or_else(|| hpa.as_usize().into());
 
@@ -974,7 +970,6 @@ impl AxVM {
             gpa,
             hva,
             layout,
-            page_count,
             needs_dealloc: true, // This region was allocated and needs to be freed
         });
 
@@ -1011,7 +1006,6 @@ impl AxVM {
             gpa,
             hva,
             layout,
-            page_count: 0,
             needs_dealloc: false, // This is a reserved region, not allocated
         });
         Ok(s)
@@ -1070,10 +1064,9 @@ impl AxVM {
                     region.hva.as_usize(),
                     region.size()
                 );
-                axvisor_api::memory::dealloc_contiguous_frames(
-                    region.host_paddr(),
-                    region.page_count,
-                );
+                unsafe {
+                    alloc::alloc::dealloc(region.hva.as_mut_ptr(), region.layout);
+                }
             } else {
                 debug!(
                     "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, \
