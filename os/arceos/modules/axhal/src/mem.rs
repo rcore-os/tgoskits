@@ -38,6 +38,12 @@ static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::ne
             name: ".rodata",
         });
         push(PhysMemRegion {
+            paddr: virt_to_phys(addr_of_sym!(_erodata).into()),
+            size: addr_of_sym!(_sdata) - addr_of_sym!(_erodata),
+            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
+            name: ".runtime",
+        });
+        push(PhysMemRegion {
             paddr: virt_to_phys(addr_of_sym!(_sdata).into()),
             size: addr_of_sym!(_edata) - addr_of_sym!(_sdata),
             flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
