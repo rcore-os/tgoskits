@@ -2020,6 +2020,7 @@ dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
  "ax-errno",
+ "ax-hal",
  "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",

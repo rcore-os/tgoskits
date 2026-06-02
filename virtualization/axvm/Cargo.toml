@@ -39,12 +39,12 @@ ax-percpu = { workspace = true, features = ["arm-el2"] }
 ax-std = { workspace = true, features = [
     "paging",
     "irq",
-    "ipi",
     "multitask",
     "task-ext",
     "smp",
     "hv",
 ] }
+ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axvcpu = { workspace = true }
