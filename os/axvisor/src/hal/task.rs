@@ -33,7 +33,8 @@ trait AsVCpuTaskContext {
 
 impl AsVCpuTaskContext for TaskInner {
     fn try_as_vcpu_task_context(&self) -> Option<&VCpuTaskContext> {
-        self.task_ext().map(|ext| ext.downcast_ref::<VCpuTaskContext>())
+        self.task_ext()
+            .map(|ext| ext.downcast_ref::<VCpuTaskContext>())
     }
 
     fn as_vcpu_task_context(&self) -> &VCpuTaskContext {
