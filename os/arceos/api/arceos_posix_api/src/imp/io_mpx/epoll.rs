@@ -2,7 +2,7 @@
 
 use alloc::{
     collections::{BTreeMap, btree_map::Entry},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 use core::{ffi::c_int, time::Duration};
 
@@ -29,7 +29,7 @@ pub struct EpollInstance {
 }
 
 struct WatchedEvent {
-    file: Arc<dyn FileLike>,
+    file: Weak<dyn FileLike>,
     event: ctypes::epoll_event,
     last_ready: u32,
     disabled: bool,
@@ -39,9 +39,9 @@ unsafe impl Send for ctypes::epoll_event {}
 unsafe impl Sync for ctypes::epoll_event {}
 
 impl WatchedEvent {
-    const fn new(file: Arc<dyn FileLike>, event: ctypes::epoll_event) -> Self {
+    fn new(file: Arc<dyn FileLike>, event: ctypes::epoll_event) -> Self {
         Self {
-            file,
+            file: Arc::downgrade(&file),
             event,
             last_ready: 0,
             disabled: false,
@@ -49,10 +49,14 @@ impl WatchedEvent {
     }
 
     fn update(&mut self, file: Arc<dyn FileLike>, event: ctypes::epoll_event) {
-        self.file = file;
+        self.file = Arc::downgrade(&file);
         self.event = event;
         self.last_ready = 0;
         self.disabled = false;
+    }
+
+    fn is_closed(&self) -> bool {
+        self.file.strong_count() == 0
     }
 
     fn is_edge_triggered(&self) -> bool {
@@ -64,7 +68,10 @@ impl WatchedEvent {
     }
 
     fn current_ready(&self) -> u32 {
-        match self.file.poll() {
+        let Some(file) = self.file.upgrade() else {
+            return 0;
+        };
+        match file.poll() {
             Ok(state) => {
                 let mut ready = 0;
                 let interest = self.event.events;
@@ -122,7 +129,9 @@ impl EpollInstance {
                 if is_epoll_file(&file) {
                     return Err(LinuxError::ELOOP);
                 }
-                if let Entry::Vacant(e) = self.events.lock().entry(fd as usize) {
+                let mut events = self.events.lock();
+                events.retain(|_, watch| !watch.is_closed());
+                if let Entry::Vacant(e) = events.entry(fd as usize) {
                     e.insert(WatchedEvent::new(file, event));
                 } else {
                     return Err(LinuxError::EEXIST);
@@ -136,6 +145,7 @@ impl EpollInstance {
                     return Err(LinuxError::ELOOP);
                 }
                 let mut events = self.events.lock();
+                events.retain(|_, watch| !watch.is_closed());
                 if let Entry::Occupied(mut ocp) = events.entry(fd as usize) {
                     ocp.get_mut().update(file, event);
                 } else {
@@ -159,6 +169,7 @@ impl EpollInstance {
 
     fn poll_all(&self, events: &mut [ctypes::epoll_event]) -> LinuxResult<usize> {
         let mut ready_list = self.events.lock();
+        ready_list.retain(|_, watch| !watch.is_closed());
         let mut events_num = 0;
 
         for watch in ready_list.values_mut() {
@@ -185,7 +196,9 @@ impl EpollInstance {
     }
 
     fn has_ready_events(&self) -> bool {
-        self.events.lock().values().any(|watch| {
+        let mut ready_list = self.events.lock();
+        ready_list.retain(|_, watch| !watch.is_closed());
+        ready_list.values().any(|watch| {
             let ready = watch.current_ready();
             watch.deliverable_events(ready) != 0
         })

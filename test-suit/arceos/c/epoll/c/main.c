@@ -136,6 +136,29 @@ static void test_oneshot_epoll(int epfd, int read_fd, int write_fd)
     expect_no_event(epfd);
 }
 
+static void test_registered_fd_close(void)
+{
+    char buf[1];
+    int epfd;
+    int pipefd[2];
+    struct epoll_event event;
+
+    epfd = epoll_create(1);
+    assert(epfd >= 0);
+    assert(pipe(pipefd) == 0);
+
+    event = make_event(EPOLLOUT, pipefd[1]);
+    assert(epoll_ctl(epfd, EPOLL_CTL_ADD, pipefd[1], &event) == 0);
+    expect_one_event(epfd, EPOLLOUT, pipefd[1]);
+
+    close(pipefd[1]);
+    expect_no_event(epfd);
+    assert(read(pipefd[0], buf, sizeof(buf)) == 0);
+
+    close(pipefd[0]);
+    close(epfd);
+}
+
 void main()
 {
     int epfd;
@@ -150,6 +173,7 @@ void main()
     test_level_triggered_epoll(epfd, pipefd[1]);
     test_edge_triggered_epoll(epfd, pipefd[0], pipefd[1]);
     test_oneshot_epoll(epfd, pipefd[0], pipefd[1]);
+    test_registered_fd_close();
 
     close(pipefd[0]);
     close(pipefd[1]);
