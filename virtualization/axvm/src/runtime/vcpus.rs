@@ -155,12 +155,8 @@ impl VMVCpus {
 /// # Arguments
 ///
 /// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
-fn wait(vm_id: usize) {
-    if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
-        vm_vcpus.wait();
-    } else {
-        warn!("VM[{vm_id}] vCPU wait queue not found");
-    }
+fn wait(vm_vcpus: &VMVCpus) {
+    vm_vcpus.wait();
 }
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
@@ -170,15 +166,11 @@ fn wait(vm_id: usize) {
 ///
 /// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
 /// * `condition` - A closure that returns a boolean value indicating whether the condition is met.
-fn wait_for<F>(vm_id: usize, condition: F)
+fn wait_for<F>(vm_vcpus: &VMVCpus, condition: F)
 where
     F: Fn() -> bool,
 {
-    if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
-        vm_vcpus.wait_until(condition);
-    } else {
-        warn!("VM[{vm_id}] vCPU wait queue not found");
-    }
+    vm_vcpus.wait_until(condition);
 }
 
 /// Notifies the primary VCpu task associated with the specified VM to wake up and resume execution.
@@ -214,18 +206,6 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
     let cpu_id = vm_vcpus.queue_interrupt(vcpu_id, vector)?;
     vm_vcpus.notify_all();
     crate::host::task::send_ipi(cpu_id);
-    Ok(())
-}
-
-pub(crate) fn drain_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) -> AxResult {
-    let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
-        return Ok(());
-    };
-
-    for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
-        trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
-        vcpu.inject_interrupt(vector)?;
-    }
     Ok(())
 }
 
@@ -321,12 +301,6 @@ fn mark_vcpu_running(vm_id: usize) {
     }
 }
 
-/// Marks the VCpu of the specified VM as exiting for VM shutdown. Returns true if this was the last
-/// VCpu to exit.
-fn mark_vcpu_exiting(vm_id: usize) -> bool {
-    get_vm_vcpus(vm_id).is_some_and(|vm_vcpus| vm_vcpus.mark_vcpu_exiting())
-}
-
 /// Boot target VCpu on the specified VM.
 /// This function is used to boot a secondary VCpu on a VM, setting the entry point and argument for the VCpu.
 ///
@@ -363,14 +337,13 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
         vcpu.set_gpr(crate::RiscvGprIndex::A1 as usize, arg);
     }
 
-    let vcpu_task = alloc_vcpu_task(&vm, vcpu);
-
     let vm_vcpus = get_vm_vcpus(vm.id()).ok_or_else(|| {
         ax_err_type!(
             NotFound,
             format!("VM[{}] vCPU resources not found", vm.id())
         )
     })?;
+    let vcpu_task = alloc_vcpu_task(&vm, vcpu);
     vm_vcpus.add_vcpu_task(vcpu_id, vcpu_task);
     Ok(())
 }
@@ -457,9 +430,13 @@ fn vcpu_run() {
     let vcpu = curr.as_vcpu_task().vcpu.clone();
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
+    let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
+        warn!("VM[{vm_id}] vCPU resources not found, VCpu[{vcpu_id}] exiting");
+        return;
+    };
 
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
-    wait_for(vm_id, || vm.running());
+    wait_for(&vm_vcpus, || vm.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
@@ -467,8 +444,14 @@ fn vcpu_run() {
     mark_vcpu_running(vm_id);
 
     loop {
-        if let Err(err) = drain_pending_interrupts(vm_id, vcpu_id, &vcpu) {
-            warn!("Failed to inject queued interrupts into VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}");
+        for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+            trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
+            if let Err(err) = vcpu.inject_interrupt(vector) {
+                warn!(
+                    "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] \
+                     VCpu[{vcpu_id}]: {err:?}"
+                );
+            }
         }
 
         #[cfg(target_arch = "x86_64")]
@@ -545,12 +528,12 @@ fn vcpu_run() {
                     #[cfg(target_arch = "x86_64")]
                     continue;
                     #[cfg(not(target_arch = "x86_64"))]
-                    wait(vm_id)
+                    wait(&vm_vcpus)
                 }
                 AxVCpuExitReason::Nothing => {}
                 AxVCpuExitReason::CpuDown { _state } => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
-                    wait(vm_id)
+                    wait(&vm_vcpus)
                 }
                 AxVCpuExitReason::CpuUp {
                     target_cpu,
@@ -659,7 +642,7 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
-            wait_for(vm_id, || !vm.suspending());
+            wait_for(&vm_vcpus, || !vm.suspending());
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }
@@ -671,7 +654,7 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
 
-            if mark_vcpu_exiting(vm_id) {
+            if vm_vcpus.mark_vcpu_exiting() {
                 info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
 
                 // Transition from Stopping to Stopped
