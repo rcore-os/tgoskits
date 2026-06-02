@@ -22,6 +22,8 @@ use ostool::{
     },
 };
 
+use crate::support::process::ProcessExt;
+
 mod arch;
 mod resolve;
 mod snapshot;
@@ -182,6 +184,7 @@ impl AppContext {
                 qemu,
                 debug: self.debug,
                 dtb_dump: false,
+                show_output: true,
             })),
         )
         .await;
@@ -554,13 +557,21 @@ fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
+        for suffix in [
+            "qemu-lvz-ci-install/bin",
+            "QEMU-LVZ/build",
+            "qemu-lvz/build",
+        ] {
             candidates.push(home.join(suffix));
         }
     }
 
     for ancestor in workspace_root.ancestors() {
-        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
+        for suffix in [
+            "qemu-lvz-ci-install/bin",
+            "QEMU-LVZ/build",
+            "qemu-lvz/build",
+        ] {
             candidates.push(ancestor.join(suffix));
         }
     }

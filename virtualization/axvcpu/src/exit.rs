@@ -180,11 +180,48 @@ pub enum AxVCpuExitReason {
         access_flags: MappingFlags,
     },
 
+    /// A guest memory access needs to be completed by the VM layer.
+    ///
+    /// Some architecture-specific instructions can trap before the guest has
+    /// installed its own exception vectors. The VCPU decodes the instruction,
+    /// while the VM owns the stage-2 address space needed to perform the access.
+    GuestMemoryRead {
+        /// Guest physical address being read from.
+        addr: GuestPhysAddr,
+        /// Width/size of the memory access.
+        width: AccessWidth,
+        /// Index of the guest register that will receive the read value.
+        reg: usize,
+        /// Whether to sign-extend the read value to fill the register.
+        signed_ext: bool,
+    },
+
+    /// A guest memory write needs to be completed by the VM layer.
+    GuestMemoryWrite {
+        /// Guest physical address being written to.
+        addr: GuestPhysAddr,
+        /// Width/size of the memory access.
+        width: AccessWidth,
+        /// Data being written to the memory location.
+        data: u64,
+    },
+
+    /// The VCPU needs the VM layer to fetch a guest instruction before it can
+    /// complete architecture-specific instruction emulation.
+    GuestInstructionFetch {
+        /// Guest physical address of the instruction.
+        addr: GuestPhysAddr,
+    },
+
     /// The guest VCpu has executed a halt instruction and is now idle.
     ///
     /// This typically occurs when the guest OS has no work to do and is
     /// waiting for interrupts or other events to wake it up.
     Halt,
+
+    /// The guest VCpu reached an idle instruction that should yield host time
+    /// without blocking the vCPU task indefinitely.
+    Idle,
 
     /// Request to bring up a secondary CPU core.
     ///

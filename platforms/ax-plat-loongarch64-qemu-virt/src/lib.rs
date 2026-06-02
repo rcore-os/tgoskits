@@ -28,8 +28,10 @@ mod boot;
 mod console;
 mod drivers;
 mod init;
-#[cfg(feature = "irq")]
+#[cfg(all(feature = "irq", not(feature = "hypervisor")))]
 mod irq;
+#[cfg(feature = "hypervisor")]
+pub mod irq;
 mod mem;
 #[cfg(feature = "smp")]
 mod mp;

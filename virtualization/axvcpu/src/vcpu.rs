@@ -328,6 +328,30 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     pub fn set_return_value(&self, val: usize) {
         self.get_arch_vcpu().set_return_value(val);
     }
+
+    /// Handles an already-resolved nested page mapping in architecture-specific hardware state.
+    pub fn handle_nested_page_mapping(
+        &self,
+        gpa: GuestPhysAddr,
+        hpa: HostPhysAddr,
+        access_flags: axaddrspace::MappingFlags,
+        page_size: ax_page_table_multiarch::PageSize,
+        pair_mapping: Option<(HostPhysAddr, axaddrspace::MappingFlags)>,
+    ) -> AxResult<bool> {
+        self.get_arch_vcpu().handle_nested_page_mapping(
+            gpa,
+            hpa,
+            access_flags,
+            page_size,
+            pair_mapping,
+        )
+    }
+
+    /// Completes architecture-specific instruction emulation after fetching
+    /// the instruction bytes from guest memory.
+    pub fn handle_fetched_guest_instruction(&self, ins: u32) -> AxResult<Option<AxVCpuExitReason>> {
+        self.get_arch_vcpu().handle_fetched_guest_instruction(ins)
+    }
 }
 
 #[ax_percpu::def_percpu]

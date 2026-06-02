@@ -2,6 +2,10 @@ use ax_kspin::SpinNoIrq as Mutex;
 
 pub const CSR_GSTAT: u16 = 0x50;
 pub const CSR_EENTRY: u16 = 0x0c;
+pub const CSR_TLBIDX: u16 = 0x10;
+pub const CSR_TLBEHI: u16 = 0x11;
+pub const CSR_TLBELO0: u16 = 0x12;
+pub const CSR_TLBELO1: u16 = 0x13;
 pub const CSR_GCTL: u16 = 0x51;
 pub const CSR_GTLBC: u16 = 0x15;
 pub const CSR_GINTC: u16 = 0x52;
@@ -11,6 +15,9 @@ pub const CSR_PWCL: u16 = 0x1c;
 pub const CSR_PWCH: u16 = 0x1d;
 pub const CSR_STLBPS: u16 = 0x1e;
 pub const CSR_TLBRENTRY: u16 = 0x88;
+pub const CSR_TLBRELO0: u16 = 0x8c;
+pub const CSR_TLBRELO1: u16 = 0x8d;
+pub const CSR_TLBREHI: u16 = 0x8e;
 pub const CSR_ECFG: u16 = 0x4;
 
 pub const GCSR_ESTAT: usize = 0x5;
@@ -122,8 +129,8 @@ pub(crate) unsafe fn gstat_set_gid(gid: usize) {
 }
 
 #[inline(always)]
-pub(crate) unsafe fn gstat_set_pgm(pgm: bool) {
-    set_csr_bit::<CSR_GSTAT>(1, pgm);
+pub(crate) unsafe fn gstat_set_pvm(pvm: bool) {
+    set_csr_bit::<CSR_GSTAT>(1, pvm);
 }
 
 #[inline(always)]
@@ -177,9 +184,14 @@ pub(crate) unsafe fn gcfg_set_gpm_num(gpm_num: usize) {
 }
 
 #[inline(always)]
-pub(crate) unsafe fn gintc_set_hwip(mask: usize) {
+pub(crate) unsafe fn gintc_set_hwi_passthrough(mask: usize) {
     let mut gintc = read_gintc();
     gintc &= !GINTC_HWIP_MASK;
+    // Do NOT clear HWIC here: writing HWIC bits clears the corresponding
+    // HWIS (pending) bits in GINTC.  If an HWI was pending for the guest
+    // while a timer-induced VM exit was being handled, setting HWIC would
+    // silently discard that interrupt, eventually starving the guest's
+    // UART driver and freezing the console.
     gintc |= (mask << GINTC_HWIP_SHIFT) & GINTC_HWIP_MASK;
     write_gintc(gintc);
 }
@@ -219,6 +231,25 @@ unsafe fn write_gintc(value: usize) {
     csr_write::<CSR_GINTC>(value);
 }
 
+fn current_hwis() -> usize {
+    (read_gintc() & GINTC_HWIS_MASK) >> GINTC_HWIS_SHIFT
+}
+
+unsafe fn pulse_hwi(vector: usize) {
+    let hwis_bit = 1 << (vector - INT_HWI0);
+
+    let mut gintc = read_gintc();
+    let cleared_hwis = current_hwis() & !hwis_bit;
+    gintc &= !GINTC_HWIS_MASK;
+    gintc |= (cleared_hwis << GINTC_HWIS_SHIFT) & GINTC_HWIS_MASK;
+    write_gintc(gintc);
+
+    let mut gintc = read_gintc();
+    gintc &= !GINTC_HWIS_MASK;
+    gintc |= ((cleared_hwis | hwis_bit) << GINTC_HWIS_SHIFT) & GINTC_HWIS_MASK;
+    write_gintc(gintc);
+}
+
 pub fn inject_interrupt(vector: usize) {
     if vector > INT_IPI {
         log::warn!("LoongArch64: invalid interrupt vector {vector}");
@@ -229,12 +260,7 @@ pub fn inject_interrupt(vector: usize) {
 
     unsafe {
         if (INT_HWI0..=INT_HWI7).contains(&vector) {
-            let hwis_bit = 1 << (vector - INT_HWI0);
-            let current_hwis = (read_gintc() & GINTC_HWIS_MASK) >> GINTC_HWIS_SHIFT;
-            let mut gintc = read_gintc();
-            gintc &= !GINTC_HWIS_MASK;
-            gintc |= ((current_hwis | hwis_bit) << GINTC_HWIS_SHIFT) & GINTC_HWIS_MASK;
-            write_gintc(gintc);
+            pulse_hwi(vector);
         } else {
             let estat = gcsr_read::<GCSR_ESTAT>();
             gcsr_write::<GCSR_ESTAT>(estat | (1usize << vector));

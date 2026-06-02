@@ -78,6 +78,10 @@ pub fn claim_irq() -> Option<usize> {
     }
     None
 }
+/// Write back the ISR bit to acknowledge (clear) the interrupt.
+/// Must be called after claim_irq() to allow the EIOINTC to deliver
+/// subsequent interrupts.  Required in both native and hypervisor
+/// modes.
 pub fn complete_irq(irq: usize) {
     let (offset, bit) = split_bit(irq);
     iocsr_write_d(EIOINTC_REG_ISR + offset, bit);
