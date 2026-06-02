@@ -144,7 +144,7 @@ pub fn sys_mount(
             }
         }
         "cgroup2" => {
-            let fs = crate::pseudofs::cgroup::new_cgroup2fs();
+            let fs = crate::pseudofs::cgroupfs::new_cgroupfs();
             let target = FS_CONTEXT.lock().resolve(target)?;
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
