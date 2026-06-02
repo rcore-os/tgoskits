@@ -1,4 +1,4 @@
-features = ["ax-std", "ax-std/aarch64-qemu-virt", "ax-driver/plat-static", "ax-driver/virtio-net"]
+features = ["ax-std", "ax-hal/aarch64-qemu-virt", "ax-driver/plat-static", "ax-driver/virtio-net"]
 log = "Warn"
 max_cpu_num = 4
 plat_dyn = false

@@ -164,6 +164,26 @@ pub(crate) fn wait_queue_wake(queue: &api::task::AxWaitQueueHandle, count: u32) 
     api::task::ax_wait_queue_wake(queue, count);
 }
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsIrqContext = modules::ax_hal::irq::IrqContext;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsIrqHandle = modules::ax_hal::irq::IrqHandle;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsIrqReturn = modules::ax_hal::irq::IrqReturn;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsRawIrqHandler = modules::ax_hal::irq::RawIrqHandler;
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn request_shared_irq(
+    irq: usize,
+    handler: ArceOsRawIrqHandler,
+    data: core::ptr::NonNull<()>,
+) -> Result<ArceOsIrqHandle, ArceOsIrqError> {
+    modules::ax_hal::irq::request_shared_irq(irq, handler, data)
+}
+
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",

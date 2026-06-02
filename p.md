@@ -621,7 +621,7 @@ serial = []
 
 板级 driver feature 由 Axvisor 顶层转发到 `ax-driver`。例如 OrangePi 5 Plus board build 当前使用 `dyn-plat,fs,rockchip-soc,sdmmc`，其中 `rockchip-soc` / `sdmmc` 不属于 `axvm` 的 runtime feature。
 
-`axvm` feature 当前保留自身的平台 feature，并继续传递到 `ax-std` 和虚拟化组件。但 Axvisor 顶层静态平台 feature 目前没有转发到这些 `axvm/<platform>` feature，因此这些 `axvm` 平台 feature 更像保留给独立构建或后续统一策略的入口，不能视为 Axvisor 主路径必经链路。
+`axvm` feature 不再保留静态平台 alias，避免 `axvisor/<platform>` 与 `axvm/<platform>` 双路径漂移。静态平台选择只由 Axvisor 顶层转发到 `ax-std/<platform>`；`axvm` 仅保留动态平台所需的 `plat-dyn` runtime feature。
 
 ```toml
 [features]
@@ -633,11 +633,6 @@ svm = ["axaddrspace/svm", "x86_vcpu/svm"]
 sstc = ["vmx", "riscv_vcpu/sstc"]
 4-level-ept = ["vmx"]
 plat-dyn = ["vmx", "ax-std/plat-dyn", "dep:axplat-dyn"]
-
-x86-qemu-q35 = ["vmx", "ax-std/x86-qemu-q35"]
-aarch64-qemu-virt = ["vmx", "ax-std/aarch64-qemu-virt"]
-riscv64-qemu-virt = ["vmx", "ax-std/riscv64-qemu-virt"]
-loongarch64-qemu-virt = ["vmx", "ax-std/loongarch64-qemu-virt"]
 ```
 
 `axvm` 固定依赖 ArceOS host 所需基础能力：
@@ -867,27 +862,15 @@ VGICD IIDR / TYPER 读取
 
 后续应重新生成或清理这些组件文档，否则仓库级文档会继续显示已经删除的 API 层。
 
-### 3.6 axvm 平台 feature 是否长期保留
+### 3.6 axvm 静态平台 feature 双路径
 
-`axvm` 当前仍声明：
-
-```toml
-x86-qemu-q35 = ["vmx", "ax-std/x86-qemu-q35"]
-aarch64-qemu-virt = ["vmx", "ax-std/aarch64-qemu-virt"]
-riscv64-qemu-virt = ["vmx", "ax-std/riscv64-qemu-virt"]
-loongarch64-qemu-virt = ["vmx", "ax-std/loongarch64-qemu-virt"]
-```
-
-但 Axvisor 顶层静态平台 feature 当前没有转发到这些 `axvm/<platform>` feature。后续建议二选一，避免双路径漂移：
+`axvm` 静态平台 feature 已删除。Axvisor 静态平台选择统一走：
 
 ```text
-若没有 axvm 独立构建场景:
-    删除 axvm 静态平台 feature
-
-若需要保留 axvm 独立构建场景:
-    让 axvisor/<platform> 也转发到 axvm/<platform>
-    并明确 axvm/<platform> 是 axvm 独立使用入口
+axvisor/<platform> -> ax-std/<platform> -> ax-feat/<platform> -> ax-hal/<platform>
 ```
+
+如果未来出现 `axvm` 独立构建平台选择需求，再重新引入明确文档化的入口；当前不提前保留悬空 alias。
 
 ### 3.7 Rust native std 支持
 

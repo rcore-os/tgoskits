@@ -1,6 +1,6 @@
 std = true
 features = [
-  "ax-std/aarch64-qemu-virt",
+  "ax-hal/aarch64-qemu-virt",
 ]
 log = "Info"
 max_cpu_num = 1

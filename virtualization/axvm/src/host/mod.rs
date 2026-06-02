@@ -3,6 +3,8 @@
 pub(crate) mod arceos;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod gic;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod irq;
 pub(crate) mod paging;
 pub(crate) mod task;
 pub(crate) mod traits;

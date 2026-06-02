@@ -3,11 +3,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ax_std::os::arceos::modules::ax_hal::irq;
-
 use crate::{
     InterruptTriggerMode,
     config::VMInterruptMode,
+    host::irq,
     runtime::{VCpuRef, VMRef},
 };
 

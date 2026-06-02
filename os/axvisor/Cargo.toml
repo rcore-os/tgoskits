@@ -59,8 +59,6 @@ serial = []
 spin = { workspace = true }
 
 [target.'cfg(not(any(windows, unix)))'.dependencies]
-bitflags = "2.2"
-cfg-if = "1.0"
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
@@ -77,17 +75,9 @@ axvm-types = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }
-axklib = { workspace = true }
-# ax-cpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
 ax-memory-addr = { workspace = true }
-ax-page-table-entry = { workspace = true, features = ["arm-el2"] }
-ax-page-table-multiarch = { workspace = true }
-ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
 ax-driver.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-ax-config = { workspace = true, features = ["plat-dyn"] }
-[target.'cfg(target_arch = "riscv64")'.dependencies]
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow.workspace = true

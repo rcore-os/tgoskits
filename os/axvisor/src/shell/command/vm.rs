@@ -556,9 +556,6 @@ fn resume_vm_by_id(vm_id: usize) {
         // Check if VM can be resumed
         can_resume_vm(status)?;
 
-        // Set VM status back to Running
-        vm.set_vm_status(VMStatus::Running);
-
         crate::manager::AxvmManager::resume_vm(vm_id).map_err(|_| "Failed to resume VM")?;
 
         info!("VM[{}] resumed", vm_id);

@@ -1,6 +1,6 @@
 std = true
 features = [
-  "ax-std/x86-pc",
+  "ax-hal/x86-pc",
 ]
 log = "Info"
 max_cpu_num = 1

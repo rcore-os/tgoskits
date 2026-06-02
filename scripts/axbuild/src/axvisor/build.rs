@@ -198,7 +198,6 @@ fn normalize_axvisor_feature_surface(
 ) -> anyhow::Result<()> {
     let known_platforms = platform_feature_names(metadata);
     let axvisor_platforms = axvisor_platform_features(metadata, &known_platforms)?;
-    reject_unsupported_nested_platform_features(features, &known_platforms)?;
 
     let mut selected_platform = features
         .iter()
@@ -209,7 +208,12 @@ fn normalize_axvisor_feature_surface(
         })
         .cloned();
     if selected_platform.is_none() {
-        selected_platform = default_axvisor_platform_feature(request, metadata)?;
+        selected_platform = features
+            .iter()
+            .filter_map(|feature| nested_platform_feature_name(feature, &known_platforms))
+            .find(|platform| axvisor_platforms.iter().any(|feature| feature == platform))
+            .map(str::to_string)
+            .or(default_axvisor_platform_feature(request, metadata)?);
     }
 
     let Some(platform) = selected_platform else {
@@ -233,6 +237,7 @@ fn normalize_axvisor_feature_surface(
     if should_enable_platform && !features.iter().any(|feature| feature == &platform) {
         features.push(platform);
     }
+    reject_unsupported_nested_platform_features(features, &known_platforms)?;
     Ok(())
 }
 

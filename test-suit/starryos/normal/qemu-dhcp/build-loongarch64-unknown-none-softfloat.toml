@@ -2,7 +2,7 @@ target = "loongarch64-unknown-none-softfloat"
 env = {}
 log = "Warn"
 features = [
-  "ax-feat/loongarch64-qemu-virt",
+  "ax-hal/loongarch64-qemu-virt",
   "qemu",
   "ax-driver/plat-static",
   "ax-driver/virtio-blk",

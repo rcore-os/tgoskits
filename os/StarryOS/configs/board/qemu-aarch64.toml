@@ -1,6 +1,6 @@
 env = {}
 features = [
-  "ax-feat/aarch64-qemu-virt",
+  "ax-hal/aarch64-qemu-virt",
   "qemu",
   "ax-driver/plat-static",
   "ax-driver/virtio-blk",

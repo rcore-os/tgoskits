@@ -332,7 +332,7 @@ impl BuildInfo {
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
         }
-        self.push_platform_feature(package, target, plat_dyn, has_myplat, metadata);
+        self.push_platform_feature(target, plat_dyn, has_myplat, metadata);
 
         self.features.sort();
         self.features.dedup();
@@ -340,19 +340,18 @@ impl BuildInfo {
 
     fn push_platform_feature(
         &mut self,
-        package: &str,
         target: &str,
         plat_dyn: bool,
         has_myplat: bool,
         metadata: Option<&Metadata>,
     ) {
-        if plat_dyn || has_myplat || has_ax_platform_feature(&self.features, metadata) {
+        if plat_dyn || has_myplat || has_ax_hal_platform_feature(&self.features, metadata) {
             return;
         }
 
-        if let Ok(feature) = default_ax_platform_feature(package, target, metadata) {
-            self.features.push(feature);
-        }
+        let feature = default_ax_hal_platform_feature(target, metadata)
+            .unwrap_or_else(|_| "ax-hal/defplat".to_string());
+        self.features.push(feature);
     }
 
     fn resolve_ax_feature_prefix_family(
@@ -695,10 +694,6 @@ fn normalize_legacy_feature_alias(feature: &str) -> String {
 
 fn normalize_std_feature(feature: &str) -> String {
     let normalized = normalize_legacy_feature_alias(feature);
-    if let Some(platform) = ax_platform_feature_name(&normalized, cached_workspace_metadata().ok())
-    {
-        return format!("ax-hal/{platform}");
-    }
     match normalized.as_str() {
         "ax-std" | "ax-feat" => normalized,
         feature if feature.starts_with("ax-std/") || feature.starts_with("ax-feat/") => feature
@@ -934,14 +929,16 @@ fn has_defplat_feature(features: &[String]) -> bool {
     })
 }
 
-fn ax_platform_feature_name<'a>(feature: &'a str, metadata: Option<&Metadata>) -> Option<&'a str> {
-    let platform = feature
-        .strip_prefix("ax-std/")
-        .or_else(|| feature.strip_prefix("ax-feat/"))?;
+fn ax_hal_platform_feature_name<'a>(
+    feature: &'a str,
+    metadata: Option<&Metadata>,
+) -> Option<&'a str> {
+    let platform = feature.strip_prefix("ax-hal/")?;
     match platform {
         "plat-dyn" => Some(platform),
         _ if metadata
-            .is_some_and(|metadata| platform_package_by_name(metadata, platform).is_some()) =>
+            .map(|metadata| platform_package_by_name(metadata, platform).is_some())
+            .unwrap_or_else(|| is_known_ax_hal_platform_feature(platform)) =>
         {
             Some(platform)
         }
@@ -949,33 +946,54 @@ fn ax_platform_feature_name<'a>(feature: &'a str, metadata: Option<&Metadata>) -
     }
 }
 
-fn has_ax_platform_feature(features: &[String], metadata: Option<&Metadata>) -> bool {
-    features
-        .iter()
-        .any(|feature| ax_platform_feature_name(feature, metadata).is_some())
+fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
+    matches!(
+        platform,
+        "x86-pc"
+            | "aarch64-qemu-virt"
+            | "aarch64-raspi"
+            | "aarch64-bsta1000b"
+            | "aarch64-phytium-pi"
+            | "riscv64-qemu-virt"
+            | "riscv64-sg2002"
+            | "riscv64-visionfive2"
+            | "loongarch64-qemu-virt"
+            | "x86-qemu-q35"
+    )
 }
 
-fn default_ax_platform_feature(
-    package: &str,
+fn has_ax_hal_platform_feature(features: &[String], metadata: Option<&Metadata>) -> bool {
+    features
+        .iter()
+        .any(|feature| ax_hal_platform_feature_name(feature, metadata).is_some())
+}
+
+fn default_ax_hal_platform_feature(
     target: &str,
     metadata: Option<&Metadata>,
 ) -> anyhow::Result<String> {
     let arch = target_arch_name(target)?;
-    let metadata =
-        metadata.ok_or_else(|| anyhow!("workspace metadata is required to resolve platform"))?;
-    let feature_prefix = detect_ax_feature_prefix_family(package, metadata)
-        .ok()
-        .unwrap_or(AxFeaturePrefixFamily::AxStd)
-        .prefix();
-    platform_packages(metadata)
-        .into_iter()
-        .find(|platform| {
-            platform.metadata.arch == arch
-                && platform.metadata.default_for_arch
-                && !platform.metadata.dynamic
-        })
-        .map(|platform| format!("{feature_prefix}{}", platform.metadata.platform))
-        .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
+    if let Some(metadata) = metadata
+        && let Some(platform) = platform_packages(metadata)
+            .into_iter()
+            .find(|platform| {
+                platform.metadata.arch == arch
+                    && platform.metadata.default_for_arch
+                    && !platform.metadata.dynamic
+            })
+            .map(|platform| platform.metadata.platform)
+    {
+        return Ok(format!("ax-hal/{platform}"));
+    }
+
+    Ok(match arch {
+        "x86_64" => "ax-hal/x86-pc",
+        "aarch64" => "ax-hal/aarch64-qemu-virt",
+        "riscv64" => "ax-hal/riscv64-qemu-virt",
+        "loongarch64" => "ax-hal/loongarch64-qemu-virt",
+        _ => unreachable!("unsupported arch"),
+    }
+    .to_string())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1114,7 +1132,7 @@ fn resolve_platform_package(
 
     if let Some(platform) = features
         .iter()
-        .find_map(|feature| ax_platform_feature_name(feature, Some(metadata)))
+        .find_map(|feature| ax_hal_platform_feature_name(feature, Some(metadata)))
         .and_then(|platform| ax_hal_platform_package(platform, metadata))
     {
         return Ok(platform);
@@ -1509,7 +1527,7 @@ mod tests {
         let mut info = BuildInfo {
             std_build: true,
             features: vec![
-                "ax-std/loongarch64-qemu-virt".to_string(),
+                "ax-hal/loongarch64-qemu-virt".to_string(),
                 "dns".to_string(),
             ],
             ..BuildInfo::default()
@@ -1639,7 +1657,6 @@ mod tests {
         assert!(info.features.contains(&"ax-std".to_string()));
         assert!(info.features.contains(&"arceos-rust/lockdep".to_string()));
         assert!(info.features.contains(&"arceos-rust/smp".to_string()));
-        assert!(!info.features.contains(&"ax-hal/smp".to_string()));
         assert!(!info.features.contains(&"ax-std/lockdep".to_string()));
         assert!(!info.features.contains(&"lockdep".to_string()));
     }
