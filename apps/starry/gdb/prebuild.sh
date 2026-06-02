@@ -6,7 +6,7 @@ base_rootfs="${STARRY_BASE_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 
-READELF="${READELF:-/opt/homebrew/opt/binutils/bin/readelf}"
+READELF="${READELF:-readelf}"
 
 require_env() {
     local name="$1"

@@ -777,7 +777,7 @@ fn ptrace_write_stopped_user_regs_x86_64(pid: usize, regs: X8664UserRegs) -> AxR
     let mut uctx = tracee
         .ptrace_stop_user_context()
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
-    regs.write_to(&mut uctx);
+    regs.write_to(&mut uctx)?;
     if !tracee.set_ptrace_stop_user_context(uctx) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
@@ -1680,6 +1680,25 @@ impl RiscvUserRegs {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn sanitize_ptrace_x86_64_eflags(new_eflags: u64, current_eflags: u64) -> u64 {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const TF: u64 = 1 << 8;
+    const DF: u64 = 1 << 10;
+    const OF: u64 = 1 << 11;
+    const RF: u64 = 1 << 16;
+    const AC: u64 = 1 << 18;
+    const ID: u64 = 1 << 21;
+    const USER_WRITABLE_MASK: u64 = CF | PF | AF | ZF | SF | TF | DF | OF | RF | AC | ID;
+    const RESERVED_BIT1: u64 = 1 << 1;
+
+    (current_eflags & !USER_WRITABLE_MASK) | (new_eflags & USER_WRITABLE_MASK) | RESERVED_BIT1
+}
+
+#[cfg(target_arch = "x86_64")]
 impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
     fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
         Self {
@@ -1716,7 +1735,11 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
 
 #[cfg(target_arch = "x86_64")]
 impl X8664UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
+        if self.cs != uctx.cs || self.ss != uctx.ss {
+            return Err(AxError::from(LinuxError::EINVAL));
+        }
+
         uctx.r15 = self.r15;
         uctx.r14 = self.r14;
         uctx.r13 = self.r13;
@@ -1733,12 +1756,11 @@ impl X8664UserRegs {
         uctx.rsi = self.rsi;
         uctx.rdi = self.rdi;
         uctx.rip = self.rip;
-        uctx.cs = self.cs;
-        uctx.rflags = self.eflags;
+        uctx.rflags = sanitize_ptrace_x86_64_eflags(self.eflags, uctx.rflags);
         uctx.rsp = self.rsp;
-        uctx.ss = self.ss;
         uctx.fs_base = self.fs_base;
         uctx.gs_base = self.gs_base;
+        Ok(())
     }
 #[cfg(target_arch = "riscv64")]
 impl From<PtraceStopFpData> for RiscvFpRegs {

@@ -9,8 +9,8 @@ args = [
 uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
-shell_init_cmd = "apk add gdb && echo GDB_APK_OK"
-success_regex = ["GDB_APK_OK"]
+shell_init_cmd = "/usr/bin/run-gdb-native-batch.sh"
+success_regex = ["GDB_NATIVE_BATCH_DONE"]
 fail_regex = [
     '(?i)\\bpanic(?:ked)?\\b',
     '(?m)FAIL',
