@@ -31,6 +31,7 @@ use kbpf_basic::{
     raw_tracepoint::BpfRawTracePointArg,
 };
 
+pub(crate) mod error;
 pub mod map;
 pub mod prog;
 pub mod transform;
@@ -38,7 +39,7 @@ pub mod transform;
 pub use transform::EbpfKernelAuxiliary;
 
 use crate::{
-    ebpf::{map::create_map, prog::load_prog},
+    ebpf::{error::BpfResultExt, map::create_map, prog::load_prog},
     file::add_file_like,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
@@ -75,8 +76,8 @@ fn read_bpf_attr(uattr: usize, size: u32) -> AxResult<bpf_attr> {
 }
 
 fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
-    let meta = BpfMapMeta::try_from(attr)?;
-    let map = create_map(meta)?;
+    let meta = BpfMapMeta::try_from(attr).into_ax_result()?;
+    let map = create_map(meta).into_ax_result()?;
     // Linux always creates bpf object fds with `O_CLOEXEC`
     // (`anon_inode_getfd(..., O_CLOEXEC)` in `kernel/bpf/syscall.c`).
     let fd = add_file_like(Arc::new(map), true)?;
@@ -84,8 +85,8 @@ fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
 }
 
 fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
-    let mut meta = BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr)?;
-    let prog = load_prog(&mut meta)?;
+    let mut meta = BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_ax_result()?;
+    let prog = load_prog(&mut meta).into_ax_result()?;
     // bpf prog fds are close-on-exec in Linux as well; see `handle_map_create`.
     let fd = add_file_like(Arc::new(prog), true)?;
     Ok(fd as isize)
@@ -93,42 +94,43 @@ fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
 
 fn handle_map_update(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_update_elem::<EbpfKernelAuxiliary>(arg)?;
+    bpf_map_update_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_lookup_elem::<EbpfKernelAuxiliary>(arg)?;
+    bpf_lookup_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_delete_elem::<EbpfKernelAuxiliary>(arg)?;
+    bpf_map_delete_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_get_next_key(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapGetNextKeyArg::from(attr);
-    bpf_map_get_next_key::<EbpfKernelAuxiliary>(arg)?;
+    bpf_map_get_next_key::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_freeze(attr: &bpf_attr) -> AxResult<isize> {
     let map_fd = unsafe { attr.__bindgen_anon_2.map_fd };
-    bpf_map_freeze::<EbpfKernelAuxiliary>(map_fd)?;
+    bpf_map_freeze::<EbpfKernelAuxiliary>(map_fd).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup_and_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary>(arg)?;
+    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_raw_tracepoint_open(attr: &bpf_attr) -> AxResult<isize> {
-    let arg = BpfRawTracePointArg::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr)?;
+    let arg =
+        BpfRawTracePointArg::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_ax_result()?;
     bpf_raw_tracepoint_open(arg)
 }
 
