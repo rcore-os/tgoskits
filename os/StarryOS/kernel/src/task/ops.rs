@@ -520,6 +520,16 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
 
     let process = &thr.proc_data.proc;
+
+    // Update cgroup: remove process and decrement pids counter
+    {
+        let pid = process.pid();
+        if let Some(root) = crate::cgroup::GLOBAL_CGROUP_ROOT.get() {
+            root.procs.lock().retain(|&p| p != pid);
+            root.pids.exit();
+        }
+    }
+
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
