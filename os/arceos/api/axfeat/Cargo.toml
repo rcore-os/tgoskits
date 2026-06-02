@@ -15,6 +15,7 @@ smp = ["ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
+xuantie-c9xx = ["ax-hal/xuantie-c9xx"]
 
 # User space support
 uspace = ["ax-hal/uspace", "ax-task?/uspace"]
@@ -33,15 +34,6 @@ plat-dyn = [
     "ax-runtime/plat-dyn",
     "ax-config/plat-dyn",
 ]
-# Build the aarch64 GICv3 path through `defplat`. Only meaningful
-# on aarch64; on other targets it forwards to nothing. Orthogonal
-# to `aarch64-cntv-timer`.
-aarch64-gic-v3 = ["ax-hal/aarch64-gic-v3"]
-# Build the aarch64 CNTV (virtual generic timer) path through
-# `defplat`. Only meaningful on aarch64; on other targets it
-# forwards to nothing. Orthogonal to `aarch64-gic-v3`. Required for
-# Apple HVF because CNTP is owned by EL2 there.
-aarch64-cntv-timer = ["ax-hal/aarch64-cntv-timer"]
 
 # Memory
 alloc = ["ax-alloc"]

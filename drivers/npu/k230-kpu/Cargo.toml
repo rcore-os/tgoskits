@@ -1,0 +1,15 @@
+[package]
+name = "k230-kpu"
+version = "0.1.0"
+repository = "https://github.com/rcore-os/tgoskits"
+description = "Register-level driver for the Kendryte K230 KPU."
+keywords = ["arceos", "starryos", "k230", "kpu", "npu"]
+categories = ["embedded", "no-std", "hardware-support"]
+edition.workspace = true
+authors = ["rcore-os developers"]
+license.workspace = true
+
+[dependencies]
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]

@@ -39,6 +39,7 @@ irq = ["ax-api/irq", "ax-feat/irq"]
 # Custom or default platforms
 defplat = ["ax-feat/defplat"]
 myplat = ["ax-feat/myplat"]
+plat-dyn = ["ax-feat/plat-dyn"]
 
 # Memory
 alloc = ["ax-api/alloc", "ax-feat/alloc", "ax-io/alloc"]

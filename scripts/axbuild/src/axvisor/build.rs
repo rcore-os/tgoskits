@@ -496,6 +496,17 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             let mut loaded = default_board
                 .config
                 .into_loaded(default_board.target.clone());
+            let content = fs::read_to_string(&default_board.path).map_err(|e| {
+                anyhow!(
+                    "failed to read Axvisor default board config {}: {e}",
+                    default_board.path.display()
+                )
+            })?;
+            crate::build::apply_target_defaults_if_plat_dyn_unspecified(
+                &mut loaded.build_info,
+                &loaded.target,
+                &content,
+            );
             if let Some(smp) = request.smp {
                 loaded.build_info.max_cpu_num = Some(smp);
             }
@@ -528,6 +539,11 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
 
     if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
         let mut loaded = board_config.into_loaded();
+        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
+            &mut loaded.build_info,
+            &loaded.target,
+            &content,
+        );
         if let Some(smp) = request.smp {
             loaded.build_info.max_cpu_num = Some(smp);
         }
@@ -535,7 +551,12 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
     }
 
     toml::from_str::<AxvisorBuildInfo>(&content)
-        .map(|build_info| {
+        .map(|mut build_info| {
+            crate::build::apply_target_defaults_if_plat_dyn_unspecified(
+                &mut build_info,
+                &request.target,
+                &content,
+            );
             let mut loaded = LoadedAxvisorBuildConfig {
                 build_info,
                 target: request.target.clone(),
@@ -818,7 +839,7 @@ vm_configs = []
     }
 
     #[test]
-    fn load_cargo_config_uses_top_level_default_platform_only() {
+    fn load_cargo_config_rejects_non_dynamic_aarch64_without_custom_platform() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
         fs::write(
@@ -832,7 +853,7 @@ plat_dyn = false
         )
         .unwrap();
 
-        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+        let result = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.path().join("os/axvisor"),
             arch: "aarch64".to_string(),
@@ -844,20 +865,13 @@ plat_dyn = false
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vec![],
-        })
-        .unwrap();
+        });
 
-        assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(
-            !cargo
-                .features
-                .contains(&"ax-std/aarch64-qemu-virt".to_string())
-        );
-        assert!(cargo.features.contains(&"aarch64-qemu-virt".to_string()));
-        assert!(
-            cargo
-                .target
-                .ends_with("scripts/targets/no-pie/aarch64-unknown-none-softfloat.json")
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no default platform package is registered for arch `aarch64`")
         );
     }
 
@@ -869,7 +883,7 @@ plat_dyn = false
             &config_path,
             r#"
 env = {}
-features = ["ax-std/aarch64-qemu-virt", "ept-level-4"]
+features = ["ax-std/x86-qemu-q35", "ept-level-4"]
 log = "Info"
 plat_dyn = false
 "#,
@@ -879,8 +893,8 @@ plat_dyn = false
         let err = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.path().join("os/axvisor"),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
             plat_dyn: Some(false),
             smp: None,
             debug: false,
