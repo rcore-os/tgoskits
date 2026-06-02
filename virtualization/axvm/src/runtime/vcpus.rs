@@ -418,8 +418,13 @@ fn vcpu_run() {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
 
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
-                    #[cfg(not(target_arch = "aarch64"))]
+                    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
                     crate::dispatch_host_irq(vector as usize);
+                    #[cfg(target_arch = "riscv64")]
+                    vcpu.with_current_cpu_set(|| {
+                        crate::dispatch_host_irq(vector as usize);
+                        vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                    });
                     crate::check_timer_events();
                     #[cfg(target_arch = "x86_64")]
                     super::x86_irq::forward_passthrough_irq_from_vmexit(
@@ -429,10 +434,6 @@ fn vcpu_run() {
                     );
                     #[cfg(target_arch = "x86_64")]
                     super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
-                    #[cfg(target_arch = "riscv64")]
-                    {
-                        vcpu.get_arch_vcpu().latch_hvip_from_hw();
-                    }
                 }
                 AxVCpuExitReason::PreemptionTimer => {
                     crate::timer::check_events();
