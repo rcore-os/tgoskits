@@ -763,6 +763,7 @@ impl SimpleDirOps for ThreadDir {
                 "exe",
                 "fd",
                 "ns",
+                "cgroup",
             ]
             .into_iter()
             .map(Cow::Borrowed),
@@ -909,6 +910,8 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
+            "cgroup" => SimpleFile::new_regular(fs, move || Ok(b"0::/
+".to_vec())).into(),
             _ => return Err(VfsError::NotFound),
         })
     }
