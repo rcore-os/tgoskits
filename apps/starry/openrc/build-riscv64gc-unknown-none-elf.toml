@@ -1,5 +1,14 @@
-target = "riscv64gc-unknown-none-elf"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
+features = [
+  "ax-hal/riscv64-qemu-virt",
+  "qemu",
+  "ax-driver/plat-static",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+]
 log = "Warn"
-features = ["qemu"]
 plat_dyn = false
+target = "riscv64gc-unknown-none-elf"

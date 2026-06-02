@@ -2,11 +2,13 @@
 set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-base_rootfs="${STARRY_BASE_ROOTFS:-}"
+base_rootfs="${STARRY_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-apk-cache"
 qemu_runner=""
+lld_linker=""
+lld_linker_dir=""
 
 require_env() {
     local name="$1"
@@ -23,7 +25,17 @@ ensure_host_packages() {
     command -v clang >/dev/null 2>&1 || missing+=(clang)
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
-    command -v ld.lld >/dev/null 2>&1 || missing+=(lld)
+    if command -v ld.lld >/dev/null 2>&1; then
+        lld_linker="$(command -v ld.lld)"
+    elif command -v rust-lld >/dev/null 2>&1; then
+        lld_linker_dir="$(mktemp -d "${TMPDIR:-/tmp}/gdb-smoke-lld.XXXXXX")"
+        printf '#!/usr/bin/env bash\nexec %q -flavor gnu "$@"\n' \
+            "$(command -v rust-lld)" >"$lld_linker_dir/ld.lld"
+        chmod +x "$lld_linker_dir/ld.lld"
+        lld_linker="$lld_linker_dir/ld.lld"
+    else
+        missing+=(lld)
+    fi
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
 
     if [[ ${#missing[@]} -eq 0 ]]; then
@@ -55,6 +67,26 @@ find_qemu_runner() {
     fi
 }
 
+run_guest_apk_with_retry() {
+    local attempt
+    local max_attempts=4
+
+    for attempt in $(seq 1 "$max_attempts"); do
+        if QEMU_LD_PREFIX="$staging_root" \
+            LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib:$staging_root/usr/local/lib" \
+            "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" "$@"; then
+            return 0
+        fi
+
+        if [[ "$attempt" -eq "$max_attempts" ]]; then
+            return 1
+        fi
+
+        echo "apk command failed, retrying ($attempt/$max_attempts)..." >&2
+        sleep $((attempt * 3))
+    done
+}
+
 install_guest_packages() {
     local guest_apk="$staging_root/sbin/apk"
 
@@ -64,9 +96,12 @@ install_guest_packages() {
         exit 1
     fi
 
-    QEMU_LD_PREFIX="$staging_root" \
-    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib:$staging_root/usr/local/lib" \
-    "$qemu_runner" -L "$staging_root" "$guest_apk" \
+    # Use the runner DNS settings so qemu-user apk can resolve Alpine mirrors.
+    if [[ -f /etc/resolv.conf ]]; then
+        cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
+    fi
+
+    run_guest_apk_with_retry \
         --root "$staging_root" \
         --repositories-file "$staging_root/etc/apk/repositories" \
         --keys-dir "$staging_root/etc/apk/keys" \
@@ -89,7 +124,7 @@ compile_target() {
         --target=riscv64-linux-musl \
         --sysroot="$staging_root" \
         --gcc-toolchain="$staging_root/usr" \
-        -fuse-ld=lld \
+        --ld-path="$lld_linker" \
         -static \
         "$@" \
         "$source" \
@@ -187,7 +222,7 @@ populate_overlay() {
         "$overlay_dir/usr/bin/gdbserver-smoke.sh"
 }
 
-require_env STARRY_BASE_ROOTFS "$base_rootfs"
+require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
 

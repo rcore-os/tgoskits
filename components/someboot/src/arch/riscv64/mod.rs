@@ -18,7 +18,6 @@ pub use relocate::apply as relocate;
 
 use crate::{
     ArchTrait, DCacheOp,
-    consts::KERNEL_LOAD_ADDRESS,
     mem::{PageTableInfo, mmu},
     power::CpuOnError,
 };
@@ -420,10 +419,6 @@ impl ArchTrait for Arch {
     unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
         false
     }
-}
-
-pub(crate) fn kernel_load_address() -> usize {
-    KERNEL_LOAD_ADDRESS
 }
 
 pub(crate) fn current_page_table() -> PageTableInfo {

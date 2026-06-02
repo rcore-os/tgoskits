@@ -1,4 +1,3 @@
-env = { SOMEBOOT_RISCV64_KERNEL_LOAD_PADDR = "0x08200000" }
 features = [
   "k230",
 ]

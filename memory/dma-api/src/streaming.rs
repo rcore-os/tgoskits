@@ -52,14 +52,14 @@ impl<T: DmaPod> StreamingMap<T> {
         self.handle.size()
     }
 
-    pub fn read(&self, index: usize) -> Option<T> {
+    pub fn read_cpu(&self, index: usize) -> Option<T> {
         if index >= self.len() {
             return None;
         }
         Some(unsafe { self.handle.as_ptr().cast::<T>().add(index).read() })
     }
 
-    pub fn set(&mut self, index: usize, value: T) {
+    pub fn set_cpu(&mut self, index: usize, value: T) {
         assert!(
             index < self.len(),
             "index out of range, index: {}, len: {}",
@@ -71,7 +71,7 @@ impl<T: DmaPod> StreamingMap<T> {
         }
     }
 
-    pub fn copy_from_slice(&mut self, src: &[T]) {
+    pub fn copy_from_slice_cpu(&mut self, src: &[T]) {
         assert!(
             core::mem::size_of_val(src) <= self.handle.size(),
             "source slice is larger than DMA buffer"
@@ -85,7 +85,22 @@ impl<T: DmaPod> StreamingMap<T> {
         }
     }
 
-    pub fn to_vec(&self) -> Vec<T> {
+    pub fn write_with_cpu<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+        assert!(len <= self.len(), "range out of bounds");
+        let data = unsafe {
+            core::slice::from_raw_parts_mut(self.handle.as_ptr().cast::<T>().as_ptr(), len)
+        };
+        f(data)
+    }
+
+    pub fn read_with_cpu<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
+        assert!(len <= self.len(), "range out of bounds");
+        let data =
+            unsafe { core::slice::from_raw_parts(self.handle.as_ptr().cast::<T>().as_ptr(), len) };
+        f(data)
+    }
+
+    pub fn to_vec_cpu(&self) -> Vec<T> {
         let mut vec: Vec<T> = Vec::with_capacity(self.len());
         unsafe {
             let src_ptr = self.handle.as_ptr().as_ptr().cast::<T>();
@@ -116,6 +131,33 @@ impl<T: DmaPod> StreamingMap<T> {
     pub fn sync_for_cpu_all(&self) {
         self.device
             .sync_map_for_cpu(&self.handle, 0, self.handle.size(), self.direction);
+    }
+
+    pub fn prepare_for_device(&self, offset: usize, size: usize) {
+        self.sync_for_device(offset, size);
+    }
+
+    pub fn prepare_for_device_all(&self) {
+        self.sync_for_device_all();
+    }
+
+    pub fn complete_for_cpu(&self, offset: usize, size: usize) {
+        self.sync_for_cpu(offset, size);
+    }
+
+    pub fn complete_for_cpu_all(&self) {
+        self.sync_for_cpu_all();
+    }
+
+    pub fn write_for_device<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+        let ret = self.write_with_cpu(len, f);
+        self.prepare_for_device(0, len * core::mem::size_of::<T>());
+        ret
+    }
+
+    pub fn read_from_device<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
+        self.complete_for_cpu(0, len * core::mem::size_of::<T>());
+        self.read_with_cpu(len, f)
     }
 
     pub fn bounce_ptr(&self) -> Option<NonNull<u8>> {

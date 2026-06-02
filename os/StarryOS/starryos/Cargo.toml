@@ -38,27 +38,11 @@ sg2002-dyn = [
 ]
 k230 = [
   "plat-dyn",
+  "starry-kernel/k230-kpu",
   "ax-driver/k230-sdhci",
   "ax-driver/serial",
 ]
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
-
-# Enable the GICv3 distributor + redistributor + system-register
-# CPU interface on aarch64. Only meaningful when the target is the
-# QEMU aarch64 virt platform; on other targets it is a no-op
-# feature. Off by default so QEMU TCG and physical boards that
-# ship GICv2 keep their existing behavior. Orthogonal to
-# `cntv-timer`; for the Apple HVF profile enable both, or use the
-# convenience feature `aarch64-hvf`.
-gic-v3 = ["ax-feat/aarch64-gic-v3"]
-# Enable the CNTV (virtual) generic timer and IRQ 27 (PPI 11)
-# instead of CNTP + IRQ 30 on aarch64. Required under Apple HVF
-# because CNTP is owned by EL2 there. Orthogonal to `gic-v3`.
-cntv-timer = ["ax-feat/aarch64-cntv-timer"]
-# Convenience feature for the Apple HVF profile: GICv3 + CNTV
-# together. Equivalent to `--features gic-v3,cntv-timer`. The
-# matching axconfig override is `devices.timer-irq=27`.
-aarch64-hvf = ["gic-v3", "cntv-timer"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 vf2 = ["ax-hal/riscv64-visionfive2"]
@@ -72,7 +56,7 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
+ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }

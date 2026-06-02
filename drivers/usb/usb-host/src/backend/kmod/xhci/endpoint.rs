@@ -290,7 +290,7 @@ impl Endpoint {
             let transfer_len = actual_lengths.iter().sum();
             transfer.iso_packet_actual_lengths = actual_lengths;
             if transfer_len > 0 && matches!(transfer.direction, Direction::In) {
-                transfer.sync_for_cpu_all();
+                transfer.complete_for_cpu_all();
             }
             transfer.transfer_len = transfer_len;
             trace!("ISO transfer data length: {}", transfer.transfer_len);
@@ -309,7 +309,7 @@ impl Endpoint {
         };
 
         if transfer_len > 0 && matches!(transfer.direction, Direction::In) {
-            transfer.sync_for_cpu_all();
+            transfer.complete_for_cpu_all();
         }
         transfer.transfer_len = transfer_len;
         trace!("Transfer data length: {}", transfer.transfer_len);
@@ -605,7 +605,7 @@ impl EndpointOp for Endpoint {
         let mut data_bus_addr = 0;
         if transfer.buffer_len() > 0 {
             if matches!(transfer.direction, Direction::Out) {
-                transfer.sync_for_device_all();
+                transfer.prepare_for_device_all();
             }
             data_bus_addr = transfer.dma_addr();
             let buffer_end = data_bus_addr + transfer.buffer_len() as u64;

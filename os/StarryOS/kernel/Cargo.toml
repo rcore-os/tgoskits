@@ -20,6 +20,7 @@ ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
 rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
+k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [
     "ax-feat/plat-dyn",
     "dep:ax-driver",
@@ -65,17 +66,20 @@ ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.6.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 ax-driver = { workspace = true, optional = true }
+axklib = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
+k230-kpu = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
 rdrive = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
+axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true }
 axpoll = { workspace = true }
