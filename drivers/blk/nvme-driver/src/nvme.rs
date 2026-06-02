@@ -259,9 +259,8 @@ impl Nvme {
         cmd.prp1 = buff.dma_addr().as_u64();
 
         self.admin_queue.command_sync(*cmd)?;
-        buff.sync_for_cpu_all();
 
-        let data: Vec<u8> = buff.iter().collect();
+        let data = buff.read_from_device(buff.len(), |data| data.to_vec());
         let res = want.parse(&data);
         Ok(res)
     }
@@ -282,8 +281,7 @@ impl Nvme {
             ns.lba_size,
             DmaDirection::ToDevice,
         )?;
-        dma_buff.copy_from_slice(buff);
-        dma_buff.sync_for_device_all();
+        dma_buff.copy_to_device_from_slice(buff);
 
         let blk_num = dma_buff.len() / ns.lba_size;
 
@@ -334,11 +332,7 @@ impl Nvme {
             .and_then(Option::as_mut)
             .ok_or(Error::Unknown("missing IO queue"))?
             .command_sync(cmd)?;
-        dma_buff.sync_for_cpu_all();
-
-        for (index, value) in dma_buff.iter().enumerate() {
-            buff[index] = value;
-        }
+        dma_buff.copy_from_device_to_slice(buff);
         Ok(())
     }
 

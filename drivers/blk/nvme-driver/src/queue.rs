@@ -342,7 +342,7 @@ impl SubmitQueue {
 
     // returns the submission queue tail
     pub fn submit(&mut self, data: impl Submission) -> u32 {
-        self.queue.set(self.tail as usize, data.to_submission());
+        self.queue.set_cpu(self.tail as usize, data.to_submission());
 
         self.tail += 1;
         if self.tail >= self.len() as u32 {
@@ -378,7 +378,7 @@ impl CompleteQueue {
 
     // check if there is completed command in completion queue
     fn complete(&self) -> Option<NvmeCompletion> {
-        let cqe = self.queue.read(self.head as _)?;
+        let cqe = self.queue.read_cpu(self.head as _)?;
 
         let complete = cqe.status.phase() != self.phase;
 

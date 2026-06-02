@@ -788,6 +788,12 @@ mod tests {
 
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    struct TestBuildConfigVmConfigs {
+        #[serde(default)]
+        vm_configs: Vec<PathBuf>,
+    }
+
     fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
         write_qemu_config_in_group(root, "normal", "default", case, arch, body)
     }
@@ -874,6 +880,59 @@ mod tests {
             uboot_config: None,
             vmconfigs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn checked_in_test_build_vmconfigs_exist() {
+        let workspace_root = std::env::current_dir().unwrap();
+        let axvisor_suite = workspace_root.join("test-suit/axvisor");
+        if !axvisor_suite.is_dir() {
+            return;
+        }
+
+        let mut stack = vec![axvisor_suite];
+        let mut checked = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !file_name.starts_with("build-")
+                    || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
+                {
+                    continue;
+                }
+
+                let content = fs::read_to_string(&path).unwrap();
+                let config: TestBuildConfigVmConfigs = toml::from_str(&content).unwrap();
+                for vm_config in config.vm_configs {
+                    if vm_config.starts_with("os/axvisor/tmp/vmconfigs") {
+                        continue;
+                    }
+                    checked += 1;
+                    let vm_config_path = if vm_config.is_absolute() {
+                        vm_config
+                    } else {
+                        workspace_root.join(vm_config)
+                    };
+                    assert!(
+                        vm_config_path.is_file(),
+                        "{} references missing vm_config {}",
+                        path.display(),
+                        vm_config_path.display()
+                    );
+                }
+            }
+        }
+
+        assert!(checked > 0);
     }
 
     #[test]
