@@ -1,13 +1,6 @@
 [package]
 name = "ax-errno"
-# Keep strictly ahead of the latest `ax-errno` published on crates.io. This is a
-# diverged fork (its `AxError`/`LinuxError` types differ from the registry crate)
-# that third-party crates such as `kmod-loader`/`kbpf-basic` are redirected onto
-# via `[patch.crates-io]` in the root manifest. If this version ever equals a
-# published one, cargo can resolve those crates' `ax-errno = "^0.6"` to the
-# registry copy instead of the patch, producing two incompatible `ax-errno`s in
-# the graph and an E0277 build failure. crates.io is at 0.6.0; we sit above it.
-version = "0.6.1"
+version = "0.6.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

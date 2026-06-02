@@ -25,7 +25,7 @@ use alloc::{
 };
 
 use ax_alloc::{UsageKind, global_allocator};
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoPreempt;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_runtime::hal::{
@@ -130,6 +130,12 @@ fn alloc_kmod_frames(num_pages: usize) -> AxResult<(PhysAddr, VirtAddr)> {
     Ok((virt_to_phys(vaddr), vaddr))
 }
 
+fn linux_code_to_ax_error(code: i32) -> AxError {
+    LinuxError::try_from(code)
+        .map(AxError::from)
+        .unwrap_or_else(|_| AxError::from(LinuxError::EINVAL))
+}
+
 impl KernelModuleHelper for KmodHelper {
     fn vmalloc(size: usize) -> Box<dyn SectionMemOps> {
         assert!(
@@ -184,12 +190,15 @@ static MODULES: SpinNoPreempt<BTreeMap<String, Module>> = SpinNoPreempt::new(BTr
 /// parameter string, perform relocations, run the module's `init`
 /// function, and register the module in the global table.
 pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
-    let loader = ModuleLoader::<KmodHelper>::new(elf)?;
+    let loader =
+        ModuleLoader::<KmodHelper>::new(elf).map_err(|err| linux_code_to_ax_error(err.code()))?;
     let params = match params {
         Some(p) => CString::new(p).map_err(|_| AxError::InvalidInput)?,
         None => CString::new("").unwrap(),
     };
-    let mut owner = loader.load_module(params)?;
+    let mut owner = loader
+        .load_module(params)
+        .map_err(|err| linux_code_to_ax_error(err.code()))?;
 
     // `name` is available as soon as `load_module()` returns, before init runs.
     let name = owner.name().to_string();
@@ -204,7 +213,9 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
         return Err(AxError::AlreadyExists);
     }
 
-    let ret = owner.call_init()?;
+    let ret = owner
+        .call_init()
+        .map_err(|err| linux_code_to_ax_error(err.code()))?;
     if ret != 0 {
         warn!("module `{name}` init returned {ret}");
         return Err(AxError::InvalidInput);
