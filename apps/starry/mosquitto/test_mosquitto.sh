@@ -13,4 +13,4 @@ echo "===== 2. NORMAL ====="
 echo "===== 3. STRESS ====="
 /bin/sh /usr/bin/mosquitto-stress-tests.sh
 
-echo "===== ALL MOSQUITTO TESTS PASSED ====="
+echo "ALL MOSQUITTO TESTS PASSED"
