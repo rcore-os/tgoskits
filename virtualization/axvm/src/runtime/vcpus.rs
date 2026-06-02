@@ -217,7 +217,7 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
     Ok(())
 }
 
-fn drain_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) -> AxResult {
+pub(crate) fn drain_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) -> AxResult {
     let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
         return Ok(());
     };

@@ -137,13 +137,13 @@ pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> api::task::AxCpuMask {
 }
 
 pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
-pub type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
-pub type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
-pub type ArceOsCurrentTask = modules::ax_task::CurrentTask;
-pub type ArceOsTaskInner = modules::ax_task::TaskInner;
-pub type ArceOsWaitQueue = modules::ax_task::WaitQueue;
-pub type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
-pub use modules::ax_task::TaskExt as ArceOsTaskExt;
+pub(crate) type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
+pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
+pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
+pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
+pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
+pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
+pub(crate) use modules::ax_task::TaskExt as ArceOsTaskExt;
 
 pub(crate) fn current_task() -> ArceOsCurrentTask {
     modules::ax_task::current()
@@ -199,7 +199,7 @@ pub(crate) fn request_shared_irq(
     target_arch = "loongarch64",
     target_arch = "riscv64"
 ))]
-pub fn host_fdt_bootarg() -> usize {
+pub(crate) fn host_fdt_bootarg() -> usize {
     modules::ax_hal::dtb::get_bootarg()
 }
 
@@ -208,12 +208,12 @@ pub fn host_fdt_bootarg() -> usize {
     target_arch = "loongarch64",
     target_arch = "riscv64"
 ))]
-pub fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
+pub(crate) fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
     modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
 #[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
-pub fn shutdown_host_filesystems() -> AxResult {
+pub(crate) fn shutdown_host_filesystems() -> AxResult {
     modules::ax_fs::shutdown_filesystems()
 }
 

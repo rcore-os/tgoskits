@@ -134,9 +134,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
     #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-    if vm_config_needs_host_filesystem_release(&vm_create_config) {
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
-    }
+    let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
         debug!(
@@ -200,6 +198,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
             AlreadyExists,
             format!("VM[{vm_id}] already exists")
         ));
+    }
+
+    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    if release_host_filesystem {
+        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
 
     Ok(vm_id)

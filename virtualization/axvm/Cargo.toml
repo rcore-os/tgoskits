@@ -15,9 +15,9 @@ fs = ["vmx", "ax-std/fs"]
 host-fs = ["ax-std/fs"]
 vmx = ["axaddrspace/vmx", "x86_vcpu/vmx"]
 svm = ["axaddrspace/svm", "x86_vcpu/svm"]
-sstc = ["vmx", "riscv_vcpu/sstc"]
-4-level-ept = ["vmx"]
-plat-dyn = ["vmx", "ax-std/plat-dyn", "dep:axplat-dyn"]
+sstc = ["riscv_vcpu/sstc"]
+4-level-ept = []
+plat-dyn = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 
 [dependencies]
 log = "0.4"
