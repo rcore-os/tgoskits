@@ -44,7 +44,7 @@ No missing syscall or loader blocker observed.
 | 依赖 | 版本/说明 |
 |------|----------|
 | Rust toolchain | `nightly-2026-05-28` |
-| lld | clang 链接器，`apt-get install lld-14` |
+| lld | clang 链接器，`apt-get install lld-14`（提供 `lld` 或 `ld.lld` 二者之一即可，`prebuild.sh` 自动识别） |
 | clang | 交叉编译器，支持 `--target={aarch64,riscv64,x86_64}-linux-musl` |
 | debugfs | 从 rootfs 提取 sysroot |
 | qemu-system-aarch64 / qemu-system-riscv64 / qemu-system-x86_64 | QEMU 系统模拟 |
@@ -58,6 +58,7 @@ No missing syscall or loader blocker observed.
 5. **需要 build config**：必须包含 `ax-driver/virtio-blk` 等驱动特性。
 6. **prebuild.sh 必须安装 `dynamic-test.sh`**：除了编译产物，还需安装运行脚本到 overlay。
 7. **riscv64 lld 需要 `--strip-debug`**：musl CRT 对象包含 lld 不支持的 RISC-V debug relocation。
+8. **声明依赖满足时可直接复现**：按"环境依赖"表装齐 `clang`、`lld`/`ld.lld`、`debugfs`、`qemu-system-*` 与 musl rootfs 后，"测试命令"一节中的 3 条 `cargo xtask starry app run -t musl-dynamic-smoke --arch {aarch64,riscv64,x86_64}` 可直接复现三架构 PASS，无需额外 PATH shim。
 
 ## 编译方式
 

@@ -60,12 +60,21 @@ if command -v clang >/dev/null 2>&1 && [[ -n "$lld_linker" ]]; then
 elif command -v "${MUSL_TARGET}-gcc" >/dev/null 2>&1; then
     CC="${MUSL_TARGET}-gcc"
     if [[ -n "$lld_linker" ]]; then
-        CC_FLAGS="--sysroot=$sysroot -fuse-ld=lld"
+        # -nostdlib disables the toolchain's default CRT (crt1.o/crti.o/...)
+        # so the script can supply the Alpine musl Scrt1.o/crti.o/crtn.o
+        # trio by hand without producing _start/_init/_fini duplicates.
+        # -fuse-ld=lld routes the link through the resolved lld driver,
+        # which (unlike GNU ld) handles the .relr.dyn section in current
+        # Alpine libc.so.
+        CC_FLAGS="--sysroot=$sysroot -nostdlib -fuse-ld=lld"
     else
-        CC_FLAGS="--sysroot=$sysroot"
+        echo "ERROR: ${MUSL_TARGET}-gcc found, but no lld driver (lld or ld.lld) on PATH." >&2
+        echo "  The Alpine rootfs in this smoke case uses .relr.dyn, which GNU ld cannot consume." >&2
+        echo "  Install lld/lld.lld (e.g. 'apt-get install lld-14') and retry." >&2
+        exit 1
     fi
 else
-    echo "ERROR: no compiler for $MUSL_TARGET (tried clang+lld, ${MUSL_TARGET}-gcc)" >&2
+    echo "ERROR: no compiler for $MUSL_TARGET (tried clang+lld/lld.lld, ${MUSL_TARGET}-gcc)" >&2
     exit 1
 fi
 
