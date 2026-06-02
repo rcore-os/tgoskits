@@ -9,7 +9,7 @@ struct ArchIfImpl;
 #[axvisor_api::api_impl]
 impl ArchIf for ArchIfImpl {
     fn inject_virtual_interrupt(vector: InterruptVector) {
-        crate::hal::arch::inject_interrupt(vector);
+        crate::hal::arch::inject_interrupt(vector.into());
     }
 
     fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize) {
