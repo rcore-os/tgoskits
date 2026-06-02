@@ -27,14 +27,17 @@ impl VCpuTaskContext {
 impl TaskExt for VCpuTaskContext {}
 
 trait AsVCpuTaskContext {
+    fn try_as_vcpu_task_context(&self) -> Option<&VCpuTaskContext>;
     fn as_vcpu_task_context(&self) -> &VCpuTaskContext;
 }
 
 impl AsVCpuTaskContext for TaskInner {
+    fn try_as_vcpu_task_context(&self) -> Option<&VCpuTaskContext> {
+        self.task_ext().map(|ext| ext.downcast_ref::<VCpuTaskContext>())
+    }
+
     fn as_vcpu_task_context(&self) -> &VCpuTaskContext {
-        self.task_ext()
-            .expect("Not a vCPU task")
-            .downcast_ref::<VCpuTaskContext>()
+        self.try_as_vcpu_task_context().expect("Not a vCPU task")
     }
 }
 
@@ -135,4 +138,8 @@ pub(crate) fn current_vm_id() -> usize {
 
 pub(crate) fn current_vcpu_id() -> usize {
     host_task::current().as_vcpu_task_context().vcpu_id
+}
+
+pub(crate) fn in_vcpu_task_context() -> bool {
+    host_task::current().try_as_vcpu_task_context().is_some()
 }

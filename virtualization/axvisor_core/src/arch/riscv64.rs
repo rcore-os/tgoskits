@@ -24,7 +24,7 @@ pub fn hardware_check() {
     // check page table level like aarch64
 }
 
-pub fn inject_interrupt(irq_id: usize) {
+pub fn inject_interrupt(irq_id: usize) -> bool {
     debug!("injecting interrupt id: {}", irq_id);
 
     let vplic = get_vm_by_id(current_vm_id())
@@ -38,5 +38,9 @@ pub fn inject_interrupt(irq_id: usize) {
     let width = AccessWidth::Dword;
     let val: u32 = 1 << (irq_id % 32);
 
-    let _ = vplic.handle_write(addr, width, val as _);
+    if let Err(err) = vplic.handle_write(addr, width, val as _) {
+        warn!("failed to inject interrupt id {irq_id} into guest vPLIC: {err:?}");
+        return false;
+    }
+    true
 }
