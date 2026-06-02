@@ -1,5 +1,5 @@
 use alloc::collections::vec_deque::VecDeque;
-use core::{any::Any, task::Context};
+use core::{any::Any, ptr::NonNull, task::Context};
 
 use ax_errno::{AxError, LinuxError};
 use ax_kspin::SpinNoIrq;
@@ -52,6 +52,22 @@ fn uart1_irq_handler(_irq: usize) {
 }
 fn uart2_irq_handler(_irq: usize) {
     uart_irq_handler(UART2_PADDR, &UART2_RX_BUF, &UART2_POLL);
+}
+
+unsafe fn uart1_raw_irq_handler(
+    ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    uart1_irq_handler(ctx.irq.0);
+    ax_runtime::hal::irq::IrqReturn::Handled
+}
+
+unsafe fn uart2_raw_irq_handler(
+    ctx: ax_runtime::hal::irq::IrqContext,
+    _data: NonNull<()>,
+) -> ax_runtime::hal::irq::IrqReturn {
+    uart2_irq_handler(ctx.irq.0);
+    ax_runtime::hal::irq::IrqReturn::Handled
 }
 
 #[repr(C)]
@@ -128,13 +144,14 @@ impl TtySerial {
         baud: u32,
         rx_buf: &'static SpinNoIrq<VecDeque<u8>>,
         poll_set: &'static PollSet,
-        irq_handler: fn(usize),
+        irq_handler: ax_runtime::hal::irq::RawIrqHandler,
     ) -> Self {
         let vaddr = phys_to_virt(paddr).as_usize();
         let mut uart = DwApbUart::new(vaddr);
         uart.init_with_baud_clk(baud, SG2002_UART_CLOCK);
         uart.set_ier(true);
-        ax_runtime::hal::irq::register(irq, irq_handler);
+        let _ = ax_runtime::hal::irq::request_shared_irq(irq, irq_handler, NonNull::dangling())
+            .map_err(|err| warn!("failed to request serial IRQ {irq}: {err:?}"));
         ax_runtime::hal::irq::set_enable(irq, true);
         Self {
             paddr,
@@ -281,7 +298,7 @@ pub fn new_tty_s1(baud: u32) -> TtySerial {
         baud,
         &UART1_RX_BUF,
         &UART1_POLL,
-        uart1_irq_handler,
+        uart1_raw_irq_handler,
     )
 }
 
@@ -306,6 +323,6 @@ pub fn new_tty_s2(baud: u32) -> TtySerial {
         baud,
         &UART2_RX_BUF,
         &UART2_POLL,
-        uart2_irq_handler,
+        uart2_raw_irq_handler,
     )
 }

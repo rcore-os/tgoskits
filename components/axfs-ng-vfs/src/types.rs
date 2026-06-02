@@ -69,17 +69,6 @@ impl Default for NodePermission {
     }
 }
 
-bitflags::bitflags! {
-    /// Flags accepted by `setxattr(2)`.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct XattrSetFlags: u32 {
-        /// Fail if the named attribute already exists.
-        const CREATE = 0x1;
-        /// Fail if the named attribute does not exist.
-        const REPLACE = 0x2;
-    }
-}
-
 /// Filesystem node metadata.
 #[derive(Clone, Debug)]
 pub struct Metadata {

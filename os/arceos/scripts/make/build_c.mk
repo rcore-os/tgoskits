@@ -19,7 +19,7 @@ CFLAGS += -DAX_LOG_$(shell echo $(LOG) | tr 'a-z' 'A-Z')
 
 CFLAGS += -nostdinc -fno-builtin -ffreestanding -Wall
 CFLAGS += -I$(CURDIR)/$(inc_dir)
-LDFLAGS += -nostdlib -static -no-pie --gc-sections -znostart-stop-gc -T$(LD_SCRIPT)
+LDFLAGS += -nostdlib -static -no-pie --gc-sections -znostart-stop-gc $(addprefix -L,$(LINKER_SCRIPT_DIRS)) -T$(LD_SCRIPT)
 
 ifeq ($(MODE), release)
   CFLAGS += -O3
@@ -89,6 +89,7 @@ $(app_obj_dir)/%.o: $(APP)/%.c $(ulib_hdr) $(last_app_cflags)
 
 $(OUT_ELF): $(libgcc) $(app-objs) $(c_lib) $(rust_lib)
 	@printf "    $(CYAN_C)Linking$(END_C) $(OUT_ELF)\n"
+	@test -n "$(LD_SCRIPT)" || { echo 'linker.x not found under "$(TARGET_DIR)/$(TARGET)/$(MODE)/build/ax-runtime-*/out"'; exit 1; }
 	$(call run_cmd,$(LD),$(LDFLAGS) $^ -o $@)
 
 $(APP)/axbuild.mk: ;

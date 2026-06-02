@@ -10,21 +10,19 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{
-    DeviceId, Location, MetadataUpdate, NodePermission, NodeType, XattrSetFlags, path::Path,
-};
+use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
     ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
 };
-use starry_vm::{VmPtr, vm_load, vm_write_slice};
+use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, File, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
     task::AsThread,
     time::TimeValueLike,
@@ -777,211 +775,6 @@ pub fn sys_renameat2(
 
     old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
-}
-
-const XATTR_CREATE_FLAG: i32 = 0x1;
-const XATTR_REPLACE_FLAG: i32 = 0x2;
-const XATTR_NAME_MAX: usize = 255;
-const XATTR_SIZE_MAX: usize = 65536;
-const XATTR_LIST_MAX: usize = 65536;
-
-fn xattr_path_location(path: *const c_char, follow_symlink: bool) -> AxResult<Location> {
-    let path = vm_load_string(path)?;
-    let flags = if follow_symlink {
-        0
-    } else {
-        AT_SYMLINK_NOFOLLOW
-    };
-    resolve_at(AT_FDCWD, Some(path.as_str()), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)
-}
-
-fn xattr_fd_location(fd: i32) -> AxResult<Location> {
-    if fd_is_path(fd) {
-        return Err(AxError::BadFileDescriptor);
-    }
-
-    let file_like = get_file_like(fd)?;
-    if let Ok(file) = File::from_fd(fd) {
-        return Ok(file.inner().location().clone());
-    }
-    if let Some(dir) = file_like.downcast_ref::<Directory>() {
-        return Ok(dir.inner().clone());
-    }
-    Err(AxError::BadFileDescriptor)
-}
-
-fn load_xattr_name(name: *const c_char) -> AxResult<String> {
-    let name = vm_load_string(name)?;
-    if name.is_empty() || name.len() > XATTR_NAME_MAX {
-        return Err(AxError::from(LinuxError::ERANGE));
-    }
-    Ok(name)
-}
-
-fn parse_xattr_flags(flags: i32) -> AxResult<XattrSetFlags> {
-    let valid = XATTR_CREATE_FLAG | XATTR_REPLACE_FLAG;
-    if flags & !valid != 0 {
-        return Err(AxError::InvalidInput);
-    }
-    let flags = XattrSetFlags::from_bits(flags as u32).ok_or(AxError::InvalidInput)?;
-    if flags.contains(XattrSetFlags::CREATE | XattrSetFlags::REPLACE) {
-        return Err(AxError::InvalidInput);
-    }
-    Ok(flags)
-}
-
-fn xattr_list_size(names: &[String]) -> AxResult<usize> {
-    names.iter().try_fold(0usize, |total, name| {
-        total
-            .checked_add(name.len() + 1)
-            .filter(|size| *size <= XATTR_LIST_MAX)
-            .ok_or_else(|| AxError::from(LinuxError::E2BIG))
-    })
-}
-
-fn do_listxattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
-    let names = loc.list_xattrs()?;
-    let total = xattr_list_size(&names)?;
-    if size == 0 {
-        return Ok(total as isize);
-    }
-    if total > size {
-        return Err(AxError::from(LinuxError::ERANGE));
-    }
-    if total == 0 {
-        return Ok(0);
-    }
-
-    let mut out = Vec::with_capacity(total);
-    for name in names {
-        out.extend_from_slice(name.as_bytes());
-        out.push(0);
-    }
-    vm_write_slice(list, out.as_slice())?;
-    Ok(total as isize)
-}
-
-fn do_getxattr(loc: Location, name: *const c_char, value: *mut u8, size: usize) -> AxResult<isize> {
-    let name = load_xattr_name(name)?;
-    let data = loc.get_xattr(name.as_str())?;
-    if data.len() > XATTR_SIZE_MAX {
-        return Err(AxError::from(LinuxError::E2BIG));
-    }
-    if size == 0 {
-        return Ok(data.len() as isize);
-    }
-    if data.len() > size {
-        return Err(AxError::from(LinuxError::ERANGE));
-    }
-    if !data.is_empty() {
-        vm_write_slice(value, data.as_slice())?;
-    }
-    Ok(data.len() as isize)
-}
-
-fn do_setxattr(
-    loc: Location,
-    name: *const c_char,
-    value: *const u8,
-    size: usize,
-    flags: i32,
-) -> AxResult<isize> {
-    let name = load_xattr_name(name)?;
-    let flags = parse_xattr_flags(flags)?;
-    if size > XATTR_SIZE_MAX {
-        return Err(AxError::from(LinuxError::E2BIG));
-    }
-    let data = if size == 0 {
-        Vec::new()
-    } else {
-        vm_load(value, size)?
-    };
-    loc.set_xattr(name.as_str(), data.as_slice(), flags)?;
-    Ok(0)
-}
-
-fn do_removexattr(loc: Location, name: *const c_char) -> AxResult<isize> {
-    let name = load_xattr_name(name)?;
-    loc.remove_xattr(name.as_str())?;
-    Ok(0)
-}
-
-pub fn sys_listxattr(path: *const c_char, list: *mut u8, size: usize) -> AxResult<isize> {
-    do_listxattr(xattr_path_location(path, true)?, list, size)
-}
-
-pub fn sys_llistxattr(path: *const c_char, list: *mut u8, size: usize) -> AxResult<isize> {
-    do_listxattr(xattr_path_location(path, false)?, list, size)
-}
-
-pub fn sys_flistxattr(fd: i32, list: *mut u8, size: usize) -> AxResult<isize> {
-    do_listxattr(xattr_fd_location(fd)?, list, size)
-}
-
-pub fn sys_getxattr(
-    path: *const c_char,
-    name: *const c_char,
-    value: *mut u8,
-    size: usize,
-) -> AxResult<isize> {
-    do_getxattr(xattr_path_location(path, true)?, name, value, size)
-}
-
-pub fn sys_lgetxattr(
-    path: *const c_char,
-    name: *const c_char,
-    value: *mut u8,
-    size: usize,
-) -> AxResult<isize> {
-    do_getxattr(xattr_path_location(path, false)?, name, value, size)
-}
-
-pub fn sys_fgetxattr(fd: i32, name: *const c_char, value: *mut u8, size: usize) -> AxResult<isize> {
-    do_getxattr(xattr_fd_location(fd)?, name, value, size)
-}
-
-pub fn sys_setxattr(
-    path: *const c_char,
-    name: *const c_char,
-    value: *const u8,
-    size: usize,
-    flags: i32,
-) -> AxResult<isize> {
-    do_setxattr(xattr_path_location(path, true)?, name, value, size, flags)
-}
-
-pub fn sys_lsetxattr(
-    path: *const c_char,
-    name: *const c_char,
-    value: *const u8,
-    size: usize,
-    flags: i32,
-) -> AxResult<isize> {
-    do_setxattr(xattr_path_location(path, false)?, name, value, size, flags)
-}
-
-pub fn sys_fsetxattr(
-    fd: i32,
-    name: *const c_char,
-    value: *const u8,
-    size: usize,
-    flags: i32,
-) -> AxResult<isize> {
-    do_setxattr(xattr_fd_location(fd)?, name, value, size, flags)
-}
-
-pub fn sys_removexattr(path: *const c_char, name: *const c_char) -> AxResult<isize> {
-    do_removexattr(xattr_path_location(path, true)?, name)
-}
-
-pub fn sys_lremovexattr(path: *const c_char, name: *const c_char) -> AxResult<isize> {
-    do_removexattr(xattr_path_location(path, false)?, name)
-}
-
-pub fn sys_fremovexattr(fd: i32, name: *const c_char) -> AxResult<isize> {
-    do_removexattr(xattr_fd_location(fd)?, name)
 }
 
 pub fn sys_sync() -> AxResult<isize> {

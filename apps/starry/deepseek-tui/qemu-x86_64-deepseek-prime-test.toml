@@ -1,6 +1,6 @@
 # Example only: this online flow is opt-in and is not part of test-suit or CI.
-# Prepare tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img with
-# prepare_deepseek_rootfs.sh --api-key ... before running it.
+# Run through `cargo xtask starry app qemu`; prebuild.sh injects DeepSeek assets
+# and optional DEEPSEEK_API_KEY / DEEPSEEK_ONLINE_PROXY settings into the rootfs.
 args = [
     "-machine",
     "q35",
@@ -10,7 +10,7 @@ args = [
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
@@ -42,7 +42,7 @@ deepseek --version
 
 if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
     echo "STARRY_DEEPSEEK_PRIME_TEST_MISSING_API_KEY"
-    echo "Run prepare_deepseek_rootfs.sh with --api-key first."
+    echo "Run with DEEPSEEK_API_KEY or apps/starry/deepseek-tui/run_me.sh --test --api-key."
     exit 1
 fi
 

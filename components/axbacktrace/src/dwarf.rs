@@ -10,13 +10,15 @@ pub type DwarfReader = gimli::EndianSlice<'static, gimli::RunTimeEndian>;
 struct ContextCell(UnsafeCell<Option<Context<DwarfReader>>>);
 
 // SAFETY: `CONTEXT` is written exactly once during `init()` at startup
-// (single-threaded boot, enforced by debug_assert). After initialization
-// all access is read-only. `addr2line::FrameIter` borrows `Context` across
-// iterator `next()` calls, which makes lock-based approaches
-// (Mutex/OnceCell) unworkable.
+// (single-threaded boot, enforced by the `INITIALIZED` flag). After
+// initialization all access is read-only. `addr2line::FrameIter` borrows
+// `Context` across iterator `next()` calls, which makes lock-based approaches
+// (Mutex/OnceCell) unworkable because they would require holding a lock
+// across the entire iteration.
 unsafe impl Sync for ContextCell {}
 
 static CONTEXT: ContextCell = ContextCell(UnsafeCell::new(None));
+static INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 macro_rules! generate_sections {
     ($($name:ident),*) => {
@@ -48,10 +50,12 @@ macro_rules! generate_sections {
 }
 
 pub fn init() {
-    debug_assert!(
-        unsafe { (*CONTEXT.0.get()).is_none() },
-        "axbacktrace::init() called more than once"
-    );
+    use core::sync::atomic::Ordering;
+
+    if INITIALIZED.swap(true, Ordering::SeqCst) {
+        log::warn!("axbacktrace::init() called more than once, skipping.");
+        return;
+    }
 
     generate_sections!(
         debug_abbrev,
@@ -83,12 +87,15 @@ pub fn init() {
     ) {
         Ok(ctx) => {
             // SAFETY: single-threaded boot; no concurrent access possible.
+            // INITIALIZED guard ensures this write happens exactly once.
             unsafe {
                 *CONTEXT.0.get() = Some(ctx);
             }
             info!("Initialized addr2line context successfully.");
         }
         Err(e) => {
+            // Graceful degradation: Context stays None, FrameIter returns
+            // no frames, system continues without DWARF symbol resolution.
             error!("Failed to initialize addr2line context: {e}");
         }
     }

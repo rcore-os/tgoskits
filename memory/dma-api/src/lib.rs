@@ -233,6 +233,17 @@ impl DeviceDma {
         StreamingMap::map(self, buff, align, direction)
     }
 
+    pub fn map_streaming_slice_for_device<T: DmaPod>(
+        &self,
+        buff: &mut [T],
+        align: usize,
+        direction: DmaDirection,
+    ) -> Result<StreamingMap<T>, DmaError> {
+        let map = self.map_streaming_slice(buff, align, direction)?;
+        map.prepare_for_device_all();
+        Ok(map)
+    }
+
     pub fn contiguous_buffer_pool(
         &self,
         layout: core::alloc::Layout,

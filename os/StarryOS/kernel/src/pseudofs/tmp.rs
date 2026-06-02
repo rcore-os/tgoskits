@@ -1,13 +1,12 @@
-use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
-use ax_errno::LinuxError;
 use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, StatFs, VfsError, VfsResult, WeakDirEntry, XattrSetFlags,
+    Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -165,7 +164,6 @@ enum NodeContent {
 struct Inode {
     ino: u64,
     metadata: SpinNoIrq<Metadata>,
-    xattrs: SpinNoIrq<HashMap<String, Vec<u8>>>,
     content: NodeContent,
 }
 
@@ -204,7 +202,6 @@ impl Inode {
         let result = Arc::new(Self {
             ino,
             metadata: SpinNoIrq::new(metadata),
-            xattrs: SpinNoIrq::new(HashMap::new()),
             content,
         });
         entry.insert(result.clone());
@@ -298,17 +295,6 @@ impl MemoryNode {
     }
 }
 
-fn validate_user_xattr_name(name: &str) -> VfsResult<()> {
-    if name
-        .strip_prefix("user.")
-        .is_some_and(|suffix| !suffix.is_empty())
-    {
-        Ok(())
-    } else {
-        Err(VfsError::OperationNotSupported)
-    }
-}
-
 impl NodeOps for MemoryNode {
     fn inode(&self) -> u64 {
         self.inode.ino
@@ -362,47 +348,6 @@ impl NodeOps for MemoryNode {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::ALWAYS_CACHE
-    }
-
-    fn list_xattrs(&self) -> VfsResult<Vec<String>> {
-        let mut names: Vec<_> = self.inode.xattrs.lock().keys().cloned().collect();
-        names.sort_unstable();
-        Ok(names)
-    }
-
-    fn get_xattr(&self, name: &str) -> VfsResult<Vec<u8>> {
-        validate_user_xattr_name(name)?;
-        self.inode
-            .xattrs
-            .lock()
-            .get(name)
-            .cloned()
-            .ok_or_else(|| LinuxError::ENODATA.into())
-    }
-
-    fn set_xattr(&self, name: &str, value: &[u8], flags: XattrSetFlags) -> VfsResult<()> {
-        validate_user_xattr_name(name)?;
-
-        let mut xattrs = self.inode.xattrs.lock();
-        let exists = xattrs.contains_key(name);
-        if flags.contains(XattrSetFlags::CREATE) && exists {
-            return Err(LinuxError::EEXIST.into());
-        }
-        if flags.contains(XattrSetFlags::REPLACE) && !exists {
-            return Err(LinuxError::ENODATA.into());
-        }
-        xattrs.insert(name.to_owned(), value.to_vec());
-        Ok(())
-    }
-
-    fn remove_xattr(&self, name: &str) -> VfsResult<()> {
-        validate_user_xattr_name(name)?;
-        self.inode
-            .xattrs
-            .lock()
-            .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| LinuxError::ENODATA.into())
     }
 }
 

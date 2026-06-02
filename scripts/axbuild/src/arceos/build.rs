@@ -197,6 +197,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
         );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
     }
 
     #[test]
@@ -223,6 +224,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
         );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
     }
 
     #[test]

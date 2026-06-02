@@ -33,26 +33,26 @@
 //! // busy-wait for 100 microseconds
 //! axklib::time::busy_wait(core::time::Duration::from_micros(100));
 //!
-//! // register an IRQ handler
-//! axklib::irq::register(32, my_irq_handler);
+//! // request a shared IRQ action
+//! let handle = axklib::irq::request_shared(32, my_irq_handler, data)?;
 //! ```
 
 #![no_std]
 // #![allow(missing_docs)]
 
-use core::time::Duration;
+use core::{ptr::NonNull, time::Duration};
 
 pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
+pub use irq_framework::{
+    AutoEnable as IrqAutoEnable, CpuId as IrqCpuId, CpuMask as IrqCpuMask, IrqContext, IrqError,
+    IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, RawIrqHandler,
+    ShareMode as IrqShareMode,
+};
 use trait_ffi::*;
 
 pub mod dma;
 pub mod mmio;
-
-/// A simple IRQ handler function pointer type.
-///
-/// The handler receives the IRQ number that triggered it.
-pub type IrqHandler = fn(usize);
 
 /// The kernel helper trait that platform implementations must provide.
 #[def_extern_trait]
@@ -128,13 +128,29 @@ pub trait Klib {
     /// should be enabled (true) or disabled (false).
     fn irq_set_enable(irq: usize, enabled: bool);
 
-    /// Register a simple IRQ handler for the given IRQ number.
-    ///
-    /// Returns `true` if the handler was successfully registered, `false`
-    /// otherwise. The exact semantics (e.g. whether multiple handlers are
-    /// allowed) are platform-specific; callers should consult the platform
-    /// implementation.
-    fn irq_register(irq: usize, handler: IrqHandler) -> bool;
+    /// Request a shared IRQ action and return its handle on success.
+    fn irq_request_shared(
+        irq: usize,
+        handler: RawIrqHandler,
+        data: NonNull<()>,
+    ) -> AxResult<IrqHandle>;
+
+    /// Request a per-CPU IRQ action and return its handle on success.
+    fn irq_request_percpu(
+        irq: usize,
+        cpus: IrqCpuMask,
+        handler: RawIrqHandler,
+        data: NonNull<()>,
+    ) -> AxResult<IrqHandle>;
+
+    /// Free an IRQ action previously returned by a request function.
+    fn irq_free(handle: IrqHandle) -> AxResult;
+
+    /// Enable an IRQ action by handle.
+    fn irq_enable(handle: IrqHandle) -> AxResult;
+
+    /// Disable an IRQ action by handle.
+    fn irq_disable(handle: IrqHandle) -> AxResult;
 }
 
 /// Convenience re-export for memory IO mapping.
@@ -155,5 +171,14 @@ pub mod time {
 
 /// Convenience re-exports for IRQ operations.
 pub mod irq {
-    pub use super::klib::{irq_register as register, irq_set_enable as set_enable};
+    pub use super::{
+        IrqAutoEnable as AutoEnable, IrqContext, IrqCpuId as CpuId, IrqCpuMask as CpuMask,
+        IrqError, IrqHandle, IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
+        IrqShareMode as ShareMode, IrqStatus, RawIrqHandler,
+        klib::{
+            irq_disable as disable, irq_enable as enable, irq_free as free,
+            irq_request_percpu as request_percpu, irq_request_shared as request_shared,
+            irq_set_enable as set_enable,
+        },
+    };
 }

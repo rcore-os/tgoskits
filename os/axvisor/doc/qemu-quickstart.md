@@ -152,7 +152,7 @@ Then run:
 ./scripts/quick-start.sh qemu-x86_64 start --arceos-uefi
 ```
 
-This flow uses `configs/vms/arceos-x86_64-qemu-uefi-smp1.toml` with `.github/workflows/qemu-x86_64-arceos-uefi.toml`, sets `boot_protocol = "uefi"`, and loads the configured firmware image from `uefi_firmware_path`.
+This flow uses `configs/vms/qemu/x86_64/arceos-uefi-smp1.toml` with `.github/workflows/qemu-x86_64-arceos-uefi.toml`, sets `boot_protocol = "uefi"`, and loads the configured firmware image from `uefi_firmware_path`.
 
 ### ArceOS (RISC-V64)
 
@@ -186,7 +186,7 @@ Success indicator: `Welcome to AxVisor Shell!` appears in the output.
 For guest-image flows, the script automates three steps, eliminating manual work:
 
 1. **Download images**: calls `cargo axvisor image pull` to fetch and extract guest images to `/tmp/.axvisor-images/`
-2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` and firmware paths (`bios_path` for legacy NimbOS BIOS mode, `uefi_firmware_path` for UEFI mode) to actual image paths without modifying tracked files in `configs/vms/*.toml`
+2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` and firmware paths (`bios_path` for legacy NimbOS BIOS mode, `uefi_firmware_path` for UEFI mode) to actual image paths without modifying tracked files in `configs/vms/**/*.toml`
 3. **Prepare rootfs**: copies `rootfs.img` to the project's `tmp/` directory for QEMU to use
 
 You can also perform these steps manually if you prefer not to use the script.

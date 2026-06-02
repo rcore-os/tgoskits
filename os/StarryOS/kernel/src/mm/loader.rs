@@ -31,6 +31,16 @@ const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
     | (1 << (b'D' - b'A'))
     | (1 << (b'C' - b'A'));
 
+// RISC-V relocation types
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_RELATIVE: u32 = 3;
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_JUMP_SLOT: u32 = 5;
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_64: u32 = 2;
+#[cfg(target_arch = "riscv64")]
+const R_RISCV_COPY: u32 = 4;
+
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
     AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
@@ -138,7 +148,269 @@ fn map_elf<'a>(
         // TDOO: flush the I-cache
     }
 
+    // Apply relocations for static-pie binaries
+    // On non-riscv64 architectures, apply_relocations() is a no-op stub.
+    if elf_parser.headers().header.pt1.class() == xmas_elf::header::Class::SixtyFour {
+        let is_pie = elf_parser.headers().header.pt2.type_().as_type()
+            == xmas_elf::header::Type::SharedObject;
+        if is_pie {
+            #[cfg(target_arch = "riscv64")]
+            {
+                // Populate PT_LOAD segments so relocation writes can access pages
+                for seg in elf_parser
+                    .headers()
+                    .ph
+                    .iter()
+                    .filter(|p| p.get_type() == Ok(xmas_elf::program::Type::Load))
+                {
+                    let seg_start =
+                        VirtAddr::from_usize(base + seg.virtual_addr as usize).align_down_4k();
+                    let seg_pad = (base + seg.virtual_addr as usize).align_offset_4k();
+                    let seg_size =
+                        (seg.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
+                    uspace.populate_area(seg_start, seg_size, mapping_flags(seg.flags))?;
+                }
+            }
+            apply_relocations(uspace, base, entry.borrow_cache(), &elf_parser.headers().ph)?;
+        }
+    }
+
     Ok(elf_parser)
+}
+
+/// Convert a virtual address to a file offset using PT_LOAD segments.
+///
+/// This function searches through the program headers to find which PT_LOAD
+/// segment contains the given virtual address, then calculates the
+/// corresponding file offset.
+///
+/// Returns None if the address is not within any PT_LOAD segment.
+#[cfg(target_arch = "riscv64")]
+fn vaddr_to_file_offset(vaddr: u64, ph: &[xmas_elf::program::ProgramHeader64]) -> Option<usize> {
+    let vaddr = vaddr as usize;
+    for seg in ph {
+        if seg.get_type() != Ok(xmas_elf::program::Type::Load) {
+            continue;
+        }
+        let seg_vaddr = seg.virtual_addr as usize;
+        let seg_filesz = seg.file_size as usize;
+        if vaddr >= seg_vaddr && vaddr < seg_vaddr + seg_filesz {
+            let offset_in_segment = vaddr - seg_vaddr;
+            return Some(seg.offset as usize + offset_in_segment);
+        }
+    }
+    None
+}
+
+/// Apply relocations for static-pie binaries.
+///
+/// This processes .rela.dyn and .rela.plt sections to apply
+/// R_RISCV_RELATIVE and R_RISCV_JUMP_SLOT relocations.
+#[cfg(target_arch = "riscv64")]
+fn apply_relocations(
+    uspace: &mut AddrSpace,
+    base: usize,
+    cache: &CachedFile,
+    ph: &[xmas_elf::program::ProgramHeader64],
+) -> AxResult {
+    // Find PT_DYNAMIC segment
+    let dynamic_ph = ph
+        .iter()
+        .find(|p| p.get_type() == Ok(xmas_elf::program::Type::Dynamic));
+
+    let dynamic_ph = match dynamic_ph {
+        Some(ph) => ph,
+        None => return Ok(()), // No dynamic section, nothing to do
+    };
+
+    // Read dynamic entries from file
+    let dyn_offset = dynamic_ph.offset as usize;
+    let dyn_size = dynamic_ph.file_size as usize;
+
+    if dyn_offset + dyn_size > (cache.location().len().unwrap_or(0) as usize) {
+        debug!("Dynamic section extends beyond file");
+        return Err(AxError::InvalidData);
+    }
+
+    let mut dyn_data = vec![0u8; dyn_size];
+    cache.read_at(&mut dyn_data, dyn_offset as u64)?;
+    let entry_size = 16; // sizeof(Dynamic<u64>) = 16 bytes
+    let num_entries = dyn_size / entry_size;
+
+    // Parse dynamic entries using byte-by-byte reading
+    let mut rela_addr: u64 = 0;
+    let mut rela_size: u64 = 0;
+    let mut jmprel_addr: u64 = 0;
+    let mut jmprel_size: u64 = 0;
+    let mut symtab_addr: u64 = 0;
+    let mut strtab_addr: u64 = 0;
+
+    for i in 0..num_entries {
+        let offset = i * entry_size;
+        let entry_data = &dyn_data[offset..offset + entry_size];
+
+        // Dynamic entry: tag (8 bytes) + value (8 bytes)
+        let tag = u64::from_le_bytes(entry_data[0..8].try_into().unwrap());
+        let value = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
+
+        match tag {
+            7 => rela_addr = value,    // DT_RELA
+            8 => rela_size = value,    // DT_RELASZ
+            23 => jmprel_addr = value, // DT_JMPREL
+            2 => jmprel_size = value,  // DT_PLTRELSZ
+            6 => symtab_addr = value,  // DT_SYMTAB
+            5 => strtab_addr = value,  // DT_STRTAB
+            0 => break,                // DT_NULL
+            _ => {}
+        }
+    }
+
+    // Process .rela.dyn (R_RISCV_RELATIVE)
+    if rela_addr != 0 && rela_size != 0 {
+        let rela_offset = vaddr_to_file_offset(rela_addr, ph).ok_or(AxError::InvalidData)?;
+        let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
+        let rela_count = rela_size as usize / rela_entry_size;
+        let mut copy_count: usize = 0;
+
+        debug!("Processing {} RELATIVE relocations", rela_count);
+
+        for i in 0..rela_count {
+            let entry_offset = rela_offset + i * rela_entry_size;
+            if entry_offset + rela_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+                break;
+            }
+
+            let mut entry_data = vec![0u8; rela_entry_size];
+            cache.read_at(&mut entry_data, entry_offset as u64)?;
+
+            // Rela entry: offset (8 bytes) + info (8 bytes) + addend (8 bytes)
+            let offset = u64::from_le_bytes(entry_data[0..8].try_into().unwrap()) as usize;
+            let info = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
+            let addend = i64::from_le_bytes(entry_data[16..24].try_into().unwrap());
+
+            let reloc_type = (info & 0xffffffff) as u32;
+
+            match reloc_type {
+                R_RISCV_RELATIVE => {
+                    // *(base + offset) = base + addend
+                    let target = base + offset;
+                    let value = (base as i64 + addend) as u64;
+                    uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
+                    debug!("RELATIVE: [{:#x}] = {:#x}", target, value);
+                }
+                R_RISCV_64 => {
+                    // S + A (symbol value + addend)
+                    let sym_idx = (info >> 32) as usize;
+                    if symtab_addr == 0 || strtab_addr == 0 {
+                        debug!("Missing symtab/strtab for R_RISCV_64");
+                        continue;
+                    }
+
+                    let sym_file_offset =
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                    let sym_entry_offset = sym_file_offset + sym_idx * 24;
+                    let file_len = cache.location().len().unwrap_or(0) as usize;
+                    if sym_entry_offset + 24 > file_len {
+                        continue;
+                    }
+                    let mut sym_data = vec![0u8; 24];
+                    cache.read_at(&mut sym_data, sym_entry_offset as u64)?;
+                    let st_value = u64::from_le_bytes(sym_data[8..16].try_into().unwrap());
+                    if st_value == 0 {
+                        continue;
+                    }
+                    let target = base + offset;
+                    let value = (base as i64 + st_value as i64 + addend) as u64;
+                    uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
+                }
+                R_RISCV_COPY => {
+                    copy_count += 1;
+                }
+                _ => {
+                    debug!("[apply_relocations] unknown .rela.dyn type={}", reloc_type);
+                }
+            }
+        }
+        if copy_count > 0 {
+            debug!(
+                "[apply_relocations] skipped {} R_RISCV_COPY relocations",
+                copy_count
+            );
+        }
+    }
+
+    // Process .rela.plt (R_RISCV_JUMP_SLOT)
+    if jmprel_addr != 0 && jmprel_size != 0 {
+        let jmprel_offset = vaddr_to_file_offset(jmprel_addr, ph).ok_or(AxError::InvalidData)?;
+        let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
+        let jmprel_count = jmprel_size as usize / rela_entry_size;
+
+        debug!("Processing {} JUMP_SLOT relocations", jmprel_count);
+
+        for i in 0..jmprel_count {
+            let entry_offset = jmprel_offset + i * rela_entry_size;
+            if entry_offset + rela_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+                break;
+            }
+
+            let mut entry_data = vec![0u8; rela_entry_size];
+            cache.read_at(&mut entry_data, entry_offset as u64)?;
+
+            // Rela entry: offset (8 bytes) + info (8 bytes) + addend (8 bytes)
+            let offset = u64::from_le_bytes(entry_data[0..8].try_into().unwrap()) as usize;
+            let info = u64::from_le_bytes(entry_data[8..16].try_into().unwrap());
+            let _addend = i64::from_le_bytes(entry_data[16..24].try_into().unwrap());
+
+            let reloc_type = (info & 0xffffffff) as u32;
+            let sym_idx = (info >> 32) as usize;
+
+            match reloc_type {
+                R_RISCV_JUMP_SLOT => {
+                    // For static-pie, symbols are in the binary itself
+                    // We need to look up the symbol in .dynsym
+                    if symtab_addr == 0 || strtab_addr == 0 {
+                        debug!("Missing symtab/strtab for JUMP_SLOT");
+                        continue;
+                    }
+
+                    // Read symbol from .dynsym
+                    let sym_file_offset =
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                    let sym_entry_offset = sym_file_offset + sym_idx * 24;
+                    let file_len = cache.location().len().unwrap_or(0) as usize;
+                    if sym_entry_offset + 24 > file_len {
+                        continue;
+                    }
+                    let mut sym_data = vec![0u8; 24];
+                    cache.read_at(&mut sym_data, sym_entry_offset as u64)?;
+                    let st_value = u64::from_le_bytes(sym_data[8..16].try_into().unwrap());
+
+                    if st_value == 0 {
+                        continue;
+                    }
+                    let target = base + offset;
+                    let value = base as u64 + st_value;
+                    uspace.write(VirtAddr::from_usize(target), &value.to_le_bytes())?;
+                }
+                _ => {
+                    debug!("Unsupported relocation type: {}", reloc_type);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Stub for non-riscv64 architectures
+#[cfg(not(target_arch = "riscv64"))]
+fn apply_relocations(
+    _uspace: &mut AddrSpace,
+    _base: usize,
+    _cache: &CachedFile,
+    _ph: &[xmas_elf::program::ProgramHeader64],
+) -> AxResult {
+    Ok(())
 }
 
 fn map_elf_error(err: &'static str) -> AxError {

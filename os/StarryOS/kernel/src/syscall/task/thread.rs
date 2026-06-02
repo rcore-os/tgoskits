@@ -4,17 +4,29 @@ use ax_task::current;
 use crate::task::AsThread;
 
 pub fn sys_getpid() -> AxResult<isize> {
-    Ok(current().as_thread().proc_data.proc.pid() as _)
+    let curr = current();
+    let thr = curr.as_thread();
+    let global_pid = thr.proc_data.proc.pid() as u64;
+    let nsproxy = thr.proc_data.nsproxy.lock();
+    let local = nsproxy.pid_ns.lock().local_pid(global_pid);
+    drop(nsproxy);
+    if let Some(local) = local {
+        Ok(local as isize)
+    } else {
+        Ok(global_pid as isize)
+    }
 }
 
 pub fn sys_getppid() -> AxResult<isize> {
-    current()
-        .as_thread()
-        .proc_data
-        .proc
-        .parent()
-        .ok_or(AxError::NoSuchProcess)
-        .map(|p| p.pid() as _)
+    let curr = current();
+    let thr = curr.as_thread();
+    let parent = thr.proc_data.proc.parent().ok_or(AxError::NoSuchProcess)?;
+    let parent_global_pid = parent.pid() as u64;
+    let nsproxy = thr.proc_data.nsproxy.lock();
+    match nsproxy.pid_ns.lock().local_pid(parent_global_pid) {
+        Some(local) => Ok(local as isize),
+        None => Ok(0),
+    }
 }
 
 pub fn sys_gettid() -> AxResult<isize> {

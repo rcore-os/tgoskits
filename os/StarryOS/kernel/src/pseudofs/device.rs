@@ -17,10 +17,12 @@ use super::{SimpleFs, SimpleFsNode};
 pub enum DeviceMmap {
     /// The device is not mappable (→ ENODEV, matches Linux).
     None,
-
-    /// Maps to a physical address range.
-    Physical(PhysAddrRange),
-
+    /// Maps to a physical address range. The optional retainer keeps
+    /// driver-owned backing pages alive for as long as any VMA built
+    /// from this mapping exists — pinned by the resulting
+    /// [`LinearBackend`] so userspace can't observe freed memory if
+    /// the device drops the buffer before munmap.
+    Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
 }

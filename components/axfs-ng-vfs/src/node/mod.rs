@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 
 use crate::{
     FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
-    XattrSetFlags, path::PathBuf,
+    path::PathBuf,
 };
 
 bitflags! {
@@ -86,30 +86,6 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Returns the flags of the node.
     fn flags(&self) -> NodeFlags {
         NodeFlags::empty()
-    }
-
-    /// Lists extended attribute names attached to this node.
-    ///
-    /// Filesystems that do not implement xattrs return an empty list for
-    /// compatibility with Linux user-space copy paths that probe xattrs
-    /// opportunistically.
-    fn list_xattrs(&self) -> VfsResult<Vec<String>> {
-        Ok(Vec::new())
-    }
-
-    /// Reads one extended attribute value from this node.
-    fn get_xattr(&self, _name: &str) -> VfsResult<Vec<u8>> {
-        Err(ax_errno::LinuxError::ENODATA.into())
-    }
-
-    /// Creates or replaces one extended attribute value on this node.
-    fn set_xattr(&self, _name: &str, _value: &[u8], _flags: XattrSetFlags) -> VfsResult<()> {
-        Err(VfsError::OperationNotSupported)
-    }
-
-    /// Removes one extended attribute from this node.
-    fn remove_xattr(&self, _name: &str) -> VfsResult<()> {
-        Err(VfsError::OperationNotSupported)
     }
 }
 
@@ -260,14 +236,6 @@ impl DirEntry {
     pub fn flags(&self) -> NodeFlags;
 
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
-
-    pub fn list_xattrs(&self) -> VfsResult<Vec<String>>;
-
-    pub fn get_xattr(&self, name: &str) -> VfsResult<Vec<u8>>;
-
-    pub fn set_xattr(&self, name: &str, value: &[u8], flags: XattrSetFlags) -> VfsResult<()>;
-
-    pub fn remove_xattr(&self, name: &str) -> VfsResult<()>;
 }
 
 impl DirEntry {
