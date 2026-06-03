@@ -11,8 +11,22 @@ SECTIONS {
     }
 
     .dyndbg : {
-        __dyndbg_start = .;
+        __start___dyndbg = .;
         KEEP(*(__dyndbg))
-        __dyndbg_end = .;
+        __stop___dyndbg = .;
     }
-} INSERT AFTER .data;
+
+    .tracepoint : {
+        __start_tracepoint = .;
+        KEEP(*(.tracepoint .tracepoint.*))
+        __stop_tracepoint = .;
+    }
+
+    .kallsyms : ALIGN(4K) {
+        __kallsyms_start = .;
+        . += 8M; /* reserve space for kallsyms, can be recycled */
+        __kallsyms_end = .;
+    }
+}
+
+INSERT AFTER .data;

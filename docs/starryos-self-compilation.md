@@ -63,9 +63,9 @@ Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 
 **现象**: 所有 crate 编译通过，但最终链接失败: `undefined symbol: _ex_table_end`。
 
-**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`ext_linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
+**根因**: 自编译环境中 `.cargo/config.toml` 未传递 `-Tlinker.x`。`linker.ld` 使用 `INSERT AFTER .data;` 期望 `linker.x` 先定义 `.data` 段（含 `_ex_table_end`），但缺少 linker.x 时符号未定义。
 
-**修复** (`os/StarryOS/starryos/ext_linker.ld`):
+**修复** (`os/StarryOS/starryos/linker.ld`):
 ```ld
 PROVIDE(_ex_table_start = 0);
 PROVIDE(_ex_table_end = 0);

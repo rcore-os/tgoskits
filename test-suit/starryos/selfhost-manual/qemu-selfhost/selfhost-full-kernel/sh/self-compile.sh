@@ -21,10 +21,11 @@ mkdir -p "$CARGO_TARGET_DIR"
 
 cd /opt/starryos
 
-# Prepend PROVIDE lines to ext_linker.ld if not already present.
-# Uses sed instead of cat > to preserve all existing sections
-# (including .tracepoint and .kallsyms that may be added upstream).
-if ! grep -q 'PROVIDE(_ex_table_start' os/StarryOS/starryos/ext_linker.ld 2>/dev/null; then
+# ext_linker.ld was deleted upstream; PROVIDE is now in linker.ld directly.
+# This block exists for backward compatibility with older rootfs images
+# that still carry ext_linker.ld. On current dev the file is absent and
+# this block is a safe no-op.
+if [ -f os/StarryOS/starryos/ext_linker.ld ] && ! grep -q 'PROVIDE(_ex_table_start' os/StarryOS/starryos/ext_linker.ld 2>/dev/null; then
     sed -i '1i PROVIDE(_ex_table_start = 0);\nPROVIDE(_ex_table_end = 0);\n' os/StarryOS/starryos/ext_linker.ld
 fi
 echo "LINKER_FIXED"
