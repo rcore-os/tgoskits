@@ -3,8 +3,8 @@
 //! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
 
 use ax_errno::AxResult;
-use axaddrspace::{GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType};
+use axvm_types::{GuestPhysAddrRange, HostPhysAddr};
 use bitmaps::Bitmap;
 
 use crate::{consts::*, utils::*, vplic::VPlicGlobal};
@@ -176,8 +176,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
     /// except for pending and claim/complete registers which are emulated.
     fn handle_read(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
+        width: AccessWidth,
     ) -> ax_errno::AxResult<usize> {
         assert_eq!(width, AccessWidth::Dword);
         let reg = addr - self.addr;
@@ -248,8 +248,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
     /// Writes to the claim/complete register complete interrupt handling.
     fn handle_write(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
+        width: AccessWidth,
         val: usize,
     ) -> ax_errno::AxResult {
         assert_eq!(width, AccessWidth::Dword);
@@ -351,7 +351,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
 
 #[cfg(test)]
 mod tests {
-    use axaddrspace::GuestPhysAddr;
+    use axvm_types::GuestPhysAddr;
 
     use super::*;
 

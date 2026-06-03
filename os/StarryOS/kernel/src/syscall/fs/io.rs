@@ -657,7 +657,15 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
             break;
         }
 
-        let bytes_written = dst.write(&buf[..bytes_read])?;
+        let bytes_written = match dst.write(&buf[..bytes_read]) {
+            Ok(n) => n,
+            // Socket send buffer full after partial progress: return what we
+            // managed to transfer so far rather than propagating EAGAIN.
+            // Linux sendfile(2) semantics: return the count of bytes written
+            // when a short write happens, NOT -EAGAIN.
+            Err(AxError::WouldBlock) if total_written > 0 => break,
+            Err(e) => return Err(e),
+        };
         // Advance source offset by bytes actually transferred (partial dst.write
         // must not skip unread source data).
         if let SendFile::Offset(_, user, pos) = &mut src {

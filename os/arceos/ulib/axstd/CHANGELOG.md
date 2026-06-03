@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.15...ax-std-v0.5.16) - 2026-06-03
+
+### Added
+
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+
+### Fixed
+
+- *(axvisor)* enable buddy-slab allocator ([#974](https://github.com/rcore-os/tgoskits/pull/974))
+
+### Other
+
+- *(linker)* layer platform runtime and final scripts ([#1075](https://github.com/rcore-os/tgoskits/pull/1075))
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.14...ax-std-v0.5.15) - 2026-05-22
 
 ### Other

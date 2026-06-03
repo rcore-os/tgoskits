@@ -234,7 +234,7 @@ impl TxQueue {
 
         let mut buff = self.pool.alloc()?;
         let bus_addr = buff.dma_addr().as_u64();
-        let ret = buff.write_with(len, f);
+        let ret = buff.write_with_cpu(len, f);
         Ok((
             ret,
             TxPending {
@@ -273,7 +273,7 @@ impl TxPending<'_> {
             .buff
             .as_ref()
             .expect("tx pending buffer should exist until submit succeeds");
-        buff.sync_for_device(0, self.len);
+        buff.prepare_for_device(0, self.len);
         self.queue.interface.submit(DmaBuffer {
             virt: buff.as_ptr(),
             bus_addr: self.bus_addr,
@@ -317,7 +317,7 @@ impl RxQueue {
     fn submit_buffer(&mut self, buff: ContiguousBuffer) -> Result<(), NetError> {
         let bus_addr = buff.dma_addr().as_u64();
         let len = self.config.buf_size.min(buff.len());
-        buff.sync_for_device(0, len);
+        buff.prepare_for_device(0, len);
         self.interface.submit(DmaBuffer {
             virt: buff.as_ptr(),
             bus_addr,
@@ -335,7 +335,7 @@ impl RxQueue {
             return Err(other_error("reclaimed unknown rx buffer"));
         };
         let packet_len = len.min(self.config.buf_size).min(buff.len());
-        buff.sync_for_cpu(0, packet_len);
+        buff.complete_for_cpu(0, packet_len);
         Ok(Some((buff, packet_len)))
     }
 
@@ -381,7 +381,7 @@ impl RxPacket<'_> {
 
     pub fn consume<R>(mut self, f: impl FnOnce(&[u8]) -> R) -> R {
         let buff = self.buff.as_ref().expect("rx packet buffer should exist");
-        let ret = buff.read_with(self.len, f);
+        let ret = buff.read_with_cpu(self.len, f);
         if let Some(buff) = self.buff.take() {
             let _ = self.queue.submit_buffer(buff);
         }

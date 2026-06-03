@@ -12,9 +12,9 @@ Orchestrate building, running, and testing DeepSeek TUI on StarryOS.
 
 Options:
   --build               Build deepseek assets only
-  --rootfs              Prepare offline rootfs (builds assets if needed)
-  --smoke               Run offline smoke test (build + rootfs + qemu)
-  --test                Run online C prime test (build + rootfs + qemu)
+  --rootfs              Prepare legacy standalone rootfs (builds assets if needed)
+  --smoke               Run offline smoke test through starry app qemu
+  --test                Run online C prime test through starry app qemu
   --shell               Boot interactive QEMU shell
   --api-key KEY         DeepSeek API key (for online rootfs/test)
   --proxy URL           Proxy URL (for online rootfs/test)
@@ -51,14 +51,18 @@ rootfs_online() {
     bash "$script_dir/prepare_deepseek_rootfs.sh" "${args[@]}"
 }
 
-smoke() {
-    build
-    rootfs_offline
-    echo "=== Run offline smoke test ==="
-    cd "$workspace" && cargo xtask starry qemu \
+run_app_qemu() {
+    local config="$1"
+    shift
+    cd "$workspace" && "$@" cargo xtask starry app qemu \
+        -t deepseek-tui \
         --arch x86_64 \
-        --qemu-config apps/starry/deepseek-tui/qemu-x86_64.toml \
-        --rootfs tmp/axbuild/rootfs/rootfs-x86_64-deepseek.img
+        --qemu-config "$config"
+}
+
+smoke() {
+    echo "=== Run offline smoke test ==="
+    run_app_qemu apps/starry/deepseek-tui/qemu-x86_64.toml env
 }
 
 test_online() {
@@ -66,28 +70,24 @@ test_online() {
         echo "Error: --api-key is required for --test" >&2
         exit 1
     fi
-    build
-    rootfs_online
     echo "=== Run online C prime test ==="
-    cd "$workspace" && cargo xtask starry qemu \
-        --arch x86_64 \
-        --qemu-config apps/starry/deepseek-tui/qemu-x86_64-deepseek-prime-test.toml \
-        --rootfs tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img
+    local env_args=(env "DEEPSEEK_API_KEY=$api_key")
+    if [[ -n "$proxy" ]]; then
+        env_args+=("DEEPSEEK_ONLINE_PROXY=$proxy")
+    fi
+    run_app_qemu apps/starry/deepseek-tui/qemu-x86_64-deepseek-prime-test.toml "${env_args[@]}"
 }
 
 shell() {
-    build
+    local env_args=(env)
     if [[ -n "$api_key" ]]; then
-        rootfs_online
-        local rootfs="tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img"
-    else
-        rootfs_offline
-        local rootfs="tmp/axbuild/rootfs/rootfs-x86_64-deepseek.img"
+        env_args+=("DEEPSEEK_API_KEY=$api_key")
+    fi
+    if [[ -n "$proxy" ]]; then
+        env_args+=("DEEPSEEK_ONLINE_PROXY=$proxy")
     fi
     echo "=== Interactive QEMU shell ==="
-    cd "$workspace" && cargo xtask starry qemu \
-        --arch x86_64 \
-        --rootfs "$rootfs"
+    run_app_qemu apps/starry/deepseek-tui/qemu-x86_64-shell.toml "${env_args[@]}"
 }
 
 api_key=""

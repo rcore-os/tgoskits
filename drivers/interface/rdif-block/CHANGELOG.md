@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.7.1...rdif-block-v0.8.0) - 2026-06-03
+
+### Other
+
+- *(rdif-block)* switch block drivers to submit poll ([#976](https://github.com/rcore-os/tgoskits/pull/976))
+
 ## [0.6.1](https://github.com/drivercraft/rdrive/compare/rdif-block-v0.6.0...rdif-block-v0.6.1) - 2025-09-23
 
 ### Other

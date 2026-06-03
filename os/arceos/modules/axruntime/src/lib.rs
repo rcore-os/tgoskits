@@ -44,7 +44,7 @@ mod lang_items;
 #[cfg(feature = "smp")]
 mod mp;
 
-#[cfg(feature = "paging")]
+#[cfg(any(feature = "irq", feature = "paging"))]
 mod klib;
 
 #[cfg(any(feature = "fs", feature = "fs-ng", test))]
@@ -184,12 +184,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::cpu_num()
     );
 
-    #[cfg(feature = "rtc")]
-    ax_println!(
-        "Boot at {}\n",
-        chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _),
-    );
-
     ax_log::init();
     ax_log::set_max_level(log_level); // no effect if set `log-level-*` features
     info!("Logging is enabled.");
@@ -261,7 +255,11 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     ax_task::init_scheduler();
 
     #[cfg(feature = "ipi")]
-    ax_ipi::init();
+    {
+        ax_ipi::init();
+        #[cfg(feature = "irq")]
+        ax_hal::irq::set_run_on_cpu_sync(ax_ipi_run_on_cpu_sync);
+    }
 
     #[cfg(feature = "irq")]
     {
@@ -270,6 +268,12 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     devices::probe_all_devices();
+
+    #[cfg(feature = "rtc")]
+    ax_println!(
+        "Boot at {}\n",
+        chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _),
+    );
 
     cfg_if::cfg_if! {
         if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {
@@ -394,47 +398,92 @@ fn init_allocator() {
 
 #[cfg(feature = "irq")]
 fn init_interrupt() {
-    // Setup timer interrupt handler
-    const PERIODIC_INTERVAL_NANOS: u64 =
-        ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
-
-    #[ax_percpu::def_percpu]
-    static NEXT_DEADLINE: u64 = 0;
-
-    fn update_timer(_irq_num: usize) {
-        let now_ns = ax_hal::time::monotonic_time_nanos();
-        // Safety: we have disabled preemption in IRQ handler.
-        let mut deadline = unsafe { NEXT_DEADLINE.read_current_raw() };
-        if now_ns >= deadline {
-            deadline = now_ns + PERIODIC_INTERVAL_NANOS;
-        }
-        unsafe { NEXT_DEADLINE.write_current_raw(deadline + PERIODIC_INTERVAL_NANOS) };
-        ax_hal::time::set_oneshot_timer(deadline);
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    ax_hal::irq::init_common_irq_handler();
-
-    ax_hal::irq::register(ax_hal::time::irq_num(), |irq_num| {
-        update_timer(irq_num);
-        #[cfg(feature = "multitask")]
-        ax_task::on_timer_tick();
-    });
-
-    #[cfg(feature = "ipi")]
-    ax_hal::irq::register(ax_hal::irq::IPI_IRQ, |_irq_num| {
-        ax_ipi::ipi_handler();
-    });
-
-    // Arm the first one-shot timer on the primary CPU. Otherwise the timer
-    // handler may never get the first chance to re-program subsequent ticks.
-    update_timer(ax_hal::time::irq_num());
+    init_percpu_irq(ax_hal::percpu::this_cpu_id());
 
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();
 
     #[cfg(feature = "ipi")]
     ax_ipi::mark_current_cpu_ready();
+}
+
+#[cfg(feature = "irq")]
+pub(crate) fn init_percpu_irq(cpu_id: usize) {
+    use core::ptr::NonNull;
+
+    fn unit_data() -> NonNull<()> {
+        NonNull::dangling()
+    }
+
+    ax_hal::irq::cpu_online(cpu_id).expect("failed to mark CPU online for IRQ framework");
+
+    if ax_hal::percpu::this_cpu_is_bsp() {
+        #[cfg(target_arch = "loongarch64")]
+        ax_hal::irq::init_common_irq_handler();
+
+        let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
+        ax_hal::irq::request_percpu_irq(
+            ax_hal::time::irq_num(),
+            cpus,
+            timer_irq_handler,
+            unit_data(),
+        )
+        .expect("failed to register timer IRQ handler");
+
+        #[cfg(feature = "ipi")]
+        ax_hal::irq::request_percpu_irq(ax_hal::irq::IPI_IRQ, cpus, ipi_irq_handler, unit_data())
+            .expect("failed to register IPI IRQ handler");
+    }
+
+    update_timer(ax_hal::time::irq_num());
+}
+
+#[cfg(all(feature = "irq", feature = "ipi"))]
+unsafe fn ax_ipi_run_on_cpu_sync(
+    cpu: usize,
+    f: unsafe fn(*mut ()),
+    arg: *mut (),
+) -> Result<(), ax_hal::irq::IrqError> {
+    unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, f, arg) }
+}
+
+#[cfg(feature = "irq")]
+const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
+
+#[cfg(feature = "irq")]
+#[ax_percpu::def_percpu]
+static NEXT_DEADLINE: u64 = 0;
+
+#[cfg(feature = "irq")]
+fn update_timer(_irq_num: usize) {
+    let now_ns = ax_hal::time::monotonic_time_nanos();
+    // Safety: we have disabled preemption in IRQ handler.
+    let mut deadline = unsafe { NEXT_DEADLINE.read_current_raw() };
+    if now_ns >= deadline {
+        deadline = now_ns + PERIODIC_INTERVAL_NANOS;
+    }
+    unsafe { NEXT_DEADLINE.write_current_raw(deadline + PERIODIC_INTERVAL_NANOS) };
+    ax_hal::time::set_oneshot_timer(deadline);
+}
+
+#[cfg(feature = "irq")]
+unsafe fn timer_irq_handler(
+    ctx: ax_hal::irq::IrqContext,
+    _data: core::ptr::NonNull<()>,
+) -> ax_hal::irq::IrqReturn {
+    update_timer(ctx.irq.0);
+    #[cfg(feature = "multitask")]
+    ax_task::on_timer_tick();
+    ax_hal::irq::IrqReturn::Handled
+}
+
+#[cfg(all(feature = "irq", feature = "ipi"))]
+unsafe fn ipi_irq_handler(
+    _ctx: ax_hal::irq::IrqContext,
+    _data: core::ptr::NonNull<()>,
+) -> ax_hal::irq::IrqReturn {
+    ax_ipi::ipi_handler();
+    ax_hal::irq::IrqReturn::Handled
 }
 
 #[cfg(all(feature = "tls", not(feature = "multitask")))]

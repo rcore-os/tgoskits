@@ -14,7 +14,7 @@
 
 //! This build script reads config file paths from the `AXVISOR_VM_CONFIGS` environment variable,
 //! reads them, and then outputs them to `$(OUT_DIR)/vm_configs.rs` to be used by
-//! `src/vmm/config.rs`.
+//! `src/runtime/config.rs`.
 //!
 //! The `AXVISOR_VM_CONFIGS` environment variable should follow the format convention for the `PATH`
 //! environment variable on the building platform, i.e., paths are separated by colons (`:`) on
@@ -24,7 +24,7 @@
 //! `Vec<&'static str>` containing the contents of the configuration files.
 //!
 //! If the `AXVISOR_VM_CONFIGS` environment variable is not set, `static_vm_configs` will call the
-//! `default_static_vm_configs` function from `src/vmm/config.rs` to return the default
+//! `default_static_vm_configs` function from `src/runtime/config.rs` to return the default
 //! configurations.
 //!
 //! If the `AXVISOR_VM_CONFIGS` environment variable is set but the configuration files cannot be
@@ -48,6 +48,16 @@ use anyhow::Context;
 use quote::{ToTokens, quote};
 use syn::LitStr;
 use toml::Table;
+
+fn fallback_platform_for_arch(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64-generic",
+        "loongarch64" => "loongarch64-qemu-virt",
+        "x86_64" => "x86-qemu-q35",
+        "riscv64" => "riscv64-plat-dyn",
+        _ => "dummy",
+    }
+}
 
 /// A configuration file that has been read from disk.
 struct ConfigFile {
@@ -124,7 +134,7 @@ struct MemoryImage {
     pub ramdisk: Option<PathBuf>,
 }
 
-fn boot_firmware_path<'a>(kernel_config: &'a Table, enable_bios: bool) -> Option<&'a str> {
+fn boot_firmware_path(kernel_config: &Table, enable_bios: bool) -> Option<&str> {
     if !enable_bios {
         return None;
     }
@@ -288,22 +298,20 @@ fn generate_guest_img_loading_functions(
 }
 
 fn main() -> anyhow::Result<()> {
+    println!("cargo:rerun-if-changed=linker.ld");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
+    let linker = out_dir.join("linker.x");
+    fs::write(&linker, include_str!("linker.ld"))?;
+    println!("cargo:rustc-link-search={}", out_dir.display());
+    fs::write(
+        out_dir.join("../../..").join("linker.x"),
+        include_str!("linker.ld"),
+    )?;
+
     let arch =
         std::env::var("CARGO_CFG_TARGET_ARCH").context("CARGO_CFG_TARGET_ARCH is not set")?;
 
-    // let platform = env::var("AX_PLATFORM").unwrap_or("".to_string());
-
-    let platform = if arch == "aarch64" {
-        "aarch64-generic".to_string()
-    } else if arch == "loongarch64" {
-        "loongarch64-qemu-virt".to_string()
-    } else if arch == "x86_64" {
-        "x86-qemu-q35".to_string()
-    } else if arch == "riscv64" {
-        "riscv64-qemu-virt".to_string()
-    } else {
-        "dummy".to_string()
-    };
+    let platform = fallback_platform_for_arch(&arch);
 
     println!("cargo:rustc-cfg=platform=\"{platform}\"");
 

@@ -4,8 +4,8 @@ set -euo pipefail
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 example_dir="${workspace}/apps/starry/picoclaw-cli"
 
-base_rootfs="${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
-output_rootfs="${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img"
+default_rootfs="${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+rootfs="$default_rootfs"
 asset_dir="${workspace}/target/picoclaw/assets"
 config_json=""
 security_yml=""
@@ -35,8 +35,7 @@ Usage: $0 [OPTIONS]
 Build a StarryOS x86_64 rootfs with PicoClaw injected.
 
 Options:
-  --base-rootfs PATH      Source Alpine rootfs image
-  --output-rootfs PATH    Output rootfs image
+  --rootfs PATH           Rootfs image to update
   --config-json PATH      Inject a prepared /root/.picoclaw/config.json
   --security-yml PATH     Inject a prepared /root/.picoclaw/.security.yml
   --api-key KEY           Generate online config and secret security file
@@ -63,12 +62,8 @@ EOF
 
 while (($#)); do
     case "$1" in
-        --base-rootfs)
-            base_rootfs="$2"
-            shift 2
-            ;;
-        --output-rootfs)
-            output_rootfs="$2"
+        --rootfs)
+            rootfs="$2"
             shift 2
             ;;
         --config-json)
@@ -188,22 +183,36 @@ need_cmd mktemp
 
 "${example_dir}/prepare_picoclaw_assets.sh" --asset-dir "$asset_dir"
 
-if [[ ! -f "$base_rootfs" ]]; then
-    if [[ "$base_rootfs" == "${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img" ]]; then
-        echo "Base rootfs is missing; building ${base_rootfs}"
+ensure_default_rootfs() {
+    if [[ ! -f "$default_rootfs" ]]; then
+        echo "Default rootfs is missing; building ${default_rootfs}"
         (cd "$workspace" && cargo xtask starry rootfs --arch x86_64)
-    else
-        echo "base rootfs does not exist: ${base_rootfs}" >&2
+    fi
+    if [[ ! -f "$default_rootfs" ]]; then
+        echo "default rootfs does not exist: ${default_rootfs}" >&2
         exit 1
+    fi
+}
+
+if [[ ! -f "$rootfs" ]]; then
+    ensure_default_rootfs
+    if [[ "$rootfs" != "$default_rootfs" ]]; then
+        mkdir -p "$(dirname "$rootfs")"
+        cp --reflink=auto "$default_rootfs" "$rootfs" 2>/dev/null || cp "$default_rootfs" "$rootfs"
     fi
 fi
 
-mkdir -p "$(dirname "$output_rootfs")"
-cp "$base_rootfs" "$output_rootfs"
+if [[ ! -f "$rootfs" ]]; then
+    echo "rootfs does not exist: ${rootfs}" >&2
+    exit 1
+fi
 
+mkdir -p "$(dirname "$rootfs")"
 overlay="$(mktemp -d "${TMPDIR:-/tmp}/picoclaw-rootfs.XXXXXX")"
 debug_cmds="$(mktemp "${TMPDIR:-/tmp}/picoclaw-debugfs.XXXXXX")"
-trap 'rm -rf "$overlay" "$debug_cmds"' EXIT
+tmp_rootfs="$(mktemp "${TMPDIR:-/tmp}/picoclaw-rootfs-img.XXXXXX")"
+trap 'rm -rf "$overlay" "$debug_cmds" "$tmp_rootfs"' EXIT
+cp --reflink=auto "$rootfs" "$tmp_rootfs" 2>/dev/null || cp "$rootfs" "$tmp_rootfs"
 
 install -d "${overlay}/usr/local/bin"
 install -m 0755 "${asset_dir}/picoclaw" "${overlay}/usr/local/bin/picoclaw"
@@ -299,14 +308,15 @@ while IFS= read -r -d '' file; do
     printf 'sif "%s" mode 0100%s\n' "$rel" "$mode" >>"$debug_cmds"
 done < <(find "$overlay" -type f -print0 | sort -z)
 
-debugfs -w -f "$debug_cmds" "$output_rootfs"
+debugfs -w -f "$debug_cmds" "$tmp_rootfs"
+mv "$tmp_rootfs" "$rootfs"
 
-echo "PicoClaw rootfs ready: ${output_rootfs}"
+echo "PicoClaw rootfs ready: ${rootfs}"
 echo
 echo "Offline smoke:"
-echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml --rootfs ${output_rootfs#${workspace}/}"
+echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml --rootfs ${rootfs#${workspace}/}"
 if [[ -n "$api_key" || -n "$config_json" || -n "$security_yml" ]]; then
     echo
     echo "Online agent smoke:"
-    echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml --rootfs ${output_rootfs#${workspace}/}"
+    echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml --rootfs ${rootfs#${workspace}/}"
 fi

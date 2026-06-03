@@ -5,11 +5,7 @@ use ax_errno::ax_err;
 use ax_memory_addr::VirtAddr;
 #[cfg(target_arch = "loongarch64")]
 use ax_page_table_multiarch::loongarch64::LA64MetaData;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-#[cfg(target_arch = "loongarch64")]
-use axvisor_api::memory;
-use axvisor_api::vmm::{VCpuId, VMId};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 #[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd;
 
@@ -17,6 +13,7 @@ use loongArch64::register::prmd;
 use crate::exception::{TrapKind, handle_exception_irq, handle_exception_sync};
 use crate::{
     context_frame::LoongArchContextFrame,
+    host,
     registers::{
         CSR_PGDH, CSR_PGDL, CSR_PWCH, CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_TIMER, csr_read,
         csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
@@ -332,7 +329,7 @@ impl LoongArchVCpu {
             fn handle_tlb_refill();
         }
         let tlbrentry_vaddr = VirtAddr::from_ptr_of(handle_tlb_refill as *const ());
-        let tlbrentry_paddr = memory::virt_to_phys(tlbrentry_vaddr).as_usize();
+        let tlbrentry_paddr = host::virt_to_phys(tlbrentry_vaddr).as_usize();
         let guest_exit_eentry = core::ptr::addr_of!(_exception_vectors) as usize;
 
         csr_write::<CSR_TLBRENTRY>(tlbrentry_paddr);

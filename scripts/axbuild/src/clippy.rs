@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
 use ax_config_gen::read_config_string;
 use cargo_metadata::{Metadata, Package};
+use chrono::Local;
 use serde_json::Value;
 
 use crate::support::process::run_cargo_status_with_env;
@@ -47,8 +49,14 @@ const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
     validate_clippy_args(args)?;
+    let started_at = Local::now();
+    let timer = Instant::now();
+    println!(
+        "clippy started at: {}",
+        started_at.format("%Y-%m-%d %H:%M:%S %z")
+    );
     let workspace_manifest = crate::context::workspace_manifest_path()?;
-    let metadata = if args.since.is_some() && args.packages.is_empty() && !args.all {
+    let metadata = if clippy_metadata_needs_deps(args) {
         crate::context::workspace_metadata_root_manifest_with_deps(&workspace_manifest)
     } else {
         crate::context::workspace_metadata_root_manifest(&workspace_manifest)
@@ -67,6 +75,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
             "no clippy packages selected from {}; skipping",
             workspace_root.display()
         );
+        print_clippy_timing(timer.elapsed());
         return Ok(());
     }
     let checks = expand_clippy_checks(&packages, &metadata)?;
@@ -79,8 +88,15 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     );
 
     let mut runner = ProcessCargoRunner;
-    let report = run_clippy_checks(&mut runner, &workspace_root, &checks)?;
+    let report = match run_clippy_checks(&mut runner, &workspace_root, &checks) {
+        Ok(report) => report,
+        Err(err) => {
+            print_clippy_timing(timer.elapsed());
+            return Err(err);
+        }
+    };
     print_report_summary(&report);
+    print_clippy_timing(timer.elapsed());
 
     if report.failed_packages().is_empty() {
         println!("all clippy checks passed");
@@ -92,6 +108,38 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         report.failed_packages().len(),
         report.failed_packages().join(", ")
     )
+}
+
+fn print_clippy_timing(elapsed: Duration) {
+    let finished_at = Local::now();
+    println!(
+        "clippy finished at: {}",
+        finished_at.format("%Y-%m-%d %H:%M:%S %z")
+    );
+    println!("clippy elapsed: {}", format_elapsed(elapsed));
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let millis = elapsed.subsec_millis();
+    if secs == 0 {
+        return format!("{}ms", millis);
+    }
+
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    if hours > 0 {
+        format!("{}h {}m {}s", hours, minutes, seconds)
+    } else if minutes > 0 {
+        format!("{}m {}s", minutes, seconds)
+    } else {
+        format!("{}s", seconds)
+    }
+}
+
+fn clippy_metadata_needs_deps(args: &crate::ClippyArgs) -> bool {
+    args.since.is_some() && args.packages.is_empty() && !args.all
 }
 
 fn validate_clippy_args(args: &crate::ClippyArgs) -> anyhow::Result<()> {
@@ -116,24 +164,33 @@ fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
     packages
 }
 
+#[derive(Debug, Clone)]
+struct SelectedClippyPackage {
+    package: Package,
+    deps_mode: ClippyDepsMode,
+}
+
 fn resolve_requested_packages(
     args: &crate::ClippyArgs,
     workspace_root: &Path,
     metadata: &Metadata,
     all_packages: &[Package],
-) -> anyhow::Result<Vec<Package>> {
+) -> anyhow::Result<Vec<SelectedClippyPackage>> {
     let package_lookup: HashMap<_, _> = all_packages
         .iter()
         .map(|pkg| (pkg.name.as_str(), pkg.clone()))
         .collect();
     let known_packages: HashSet<_> = all_packages.iter().map(|pkg| pkg.name.as_str()).collect();
 
-    let package_names = if !args.packages.is_empty() {
+    let selections: Vec<(String, ClippyDepsMode)> = if !args.packages.is_empty() {
         validate_requested_packages(&args.packages, &known_packages)?
+            .into_iter()
+            .map(|package| (package, ClippyDepsMode::NoDeps))
+            .collect()
     } else if args.all {
         all_packages
             .iter()
-            .map(|pkg| pkg.name.to_string())
+            .map(|pkg| (pkg.name.to_string(), ClippyDepsMode::NoDeps))
             .collect()
     } else if let Some(since) = args.since.as_deref() {
         match crate::support::git::select_incremental_packages(
@@ -142,12 +199,20 @@ fn resolve_requested_packages(
             all_packages,
             since,
         )? {
-            crate::support::git::IncrementalPackageSelection::Packages(packages) => {
+            crate::support::git::IncrementalPackageSelection::Packages { changed, affected } => {
+                let selections =
+                    incremental_clippy_selections(changed, affected, metadata, all_packages);
+                let changed_count = selections
+                    .iter()
+                    .filter(|(_, mode)| matches!(mode, ClippyDepsMode::NoDeps))
+                    .count();
                 println!(
-                    "incremental clippy since `{since}` selected {} package(s)",
-                    packages.len()
+                    "incremental clippy since `{since}` selected {} changed package(s) and {} \
+                     dependent top-level package(s)",
+                    changed_count,
+                    selections.len() - changed_count
                 );
-                packages
+                selections
             }
             crate::support::git::IncrementalPackageSelection::Full { reason } => {
                 println!(
@@ -155,25 +220,75 @@ fn resolve_requested_packages(
                 );
                 all_packages
                     .iter()
-                    .map(|pkg| pkg.name.to_string())
+                    .map(|pkg| (pkg.name.to_string(), ClippyDepsMode::NoDeps))
                     .collect()
             }
         }
     } else {
         all_packages
             .iter()
-            .map(|pkg| pkg.name.to_string())
+            .map(|pkg| (pkg.name.to_string(), ClippyDepsMode::NoDeps))
             .collect()
     };
 
-    package_names
+    selections
         .into_iter()
-        .map(|package| {
-            package_lookup
+        .map(|(package, deps_mode)| {
+            let package = package_lookup
                 .get(package.as_str())
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))
+                .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))?;
+            Ok(SelectedClippyPackage { package, deps_mode })
         })
+        .collect()
+}
+
+/// Build the incremental clippy selection from a `--since` diff.
+///
+/// Changed crates are linted with `--no-deps` (their own code, full feature
+/// matrix). The runnable top-level frontier of the affected set is linted
+/// *with* deps: `cargo clippy -p <crate>` lints every workspace member in that
+/// crate's dependency subtree (cargo does not cap-lints path/workspace deps), so
+/// one with-deps run covers the whole affected subtree below it.
+///
+/// The frontier is computed over `affected \ skipped`: an unsupported crate
+/// (e.g. `axvisor`) cannot run through this flow and can be the *only* route
+/// into part of the affected subtree, so removing it first re-promotes the
+/// crates it would otherwise orphan to their own runnable roots. Skipped crates
+/// are kept in `changed` on purpose: `skip_unsupported_packages` drops them
+/// later with a consistent skip message.
+fn incremental_clippy_selections(
+    changed: Vec<String>,
+    affected: Vec<String>,
+    metadata: &Metadata,
+    all_packages: &[Package],
+) -> Vec<(String, ClippyDepsMode)> {
+    let skipped = all_packages
+        .iter()
+        .filter(|package| clippy_skip_reason(package).is_some())
+        .map(|package| package.name.as_str())
+        .collect::<HashSet<_>>();
+    let changed_set = changed.iter().cloned().collect::<BTreeSet<_>>();
+
+    let runnable_affected = affected
+        .into_iter()
+        .filter(|package| !skipped.contains(package.as_str()))
+        .collect::<BTreeSet<_>>();
+    let integration = crate::support::git::top_level_affected_workspace_packages(
+        metadata,
+        all_packages,
+        &runnable_affected,
+    );
+
+    changed
+        .into_iter()
+        .map(|package| (package, ClippyDepsMode::NoDeps))
+        .chain(
+            integration
+                .into_iter()
+                .filter(|package| !changed_set.contains(package))
+                .map(|package| (package, ClippyDepsMode::WithDeps)),
+        )
         .collect()
 }
 
@@ -204,9 +319,16 @@ enum ClippyCheckKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ClippyDepsMode {
+    NoDeps,
+    WithDeps,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ClippyCheck {
     package: String,
     kind: ClippyCheckKind,
+    deps_mode: ClippyDepsMode,
     target: Option<String>,
     env: Vec<(String, String)>,
     axconfig_override: Option<ClippyAxconfigOverride>,
@@ -262,6 +384,9 @@ impl ClippyCheck {
                 feature.clone(),
             ],
         };
+        if matches!(self.deps_mode, ClippyDepsMode::NoDeps) {
+            args.insert(1, "--no-deps".into());
+        }
         if let Some(target) = &self.target {
             args.extend(["--target".into(), target.clone()]);
         }
@@ -334,12 +459,15 @@ fn clippy_skip_reason(package: &Package) -> Option<&str> {
         .find_map(|(name, reason)| (package.name == *name).then_some(*reason))
 }
 
-fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> {
+fn skip_unsupported_packages(packages: Vec<SelectedClippyPackage>) -> Vec<SelectedClippyPackage> {
     packages
         .into_iter()
         .filter(|package| {
-            if let Some(reason) = clippy_skip_reason(package) {
-                println!("skipping clippy for package `{}`: {reason}", package.name);
+            if let Some(reason) = clippy_skip_reason(&package.package) {
+                println!(
+                    "skipping clippy for package `{}`: {reason}",
+                    package.package.name
+                );
                 false
             } else {
                 true
@@ -441,19 +569,20 @@ fn with_axconfig_env_override(
 
 fn arceos_rust_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     let mut envs = HashMap::new();
-    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, metadata)
+    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, false, metadata)
         .context("failed to prepare arceos-rust clippy config")?;
     Ok(envs.into_iter().collect())
 }
 
 fn expand_clippy_checks(
-    packages: &[Package],
+    packages: &[SelectedClippyPackage],
     metadata: &Metadata,
 ) -> anyhow::Result<Vec<ClippyCheck>> {
     let mut checks = Vec::new();
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
 
-    for package in packages {
+    for selected in packages {
+        let package = &selected.package;
         let features: BTreeSet<_> = package
             .features
             .keys()
@@ -474,6 +603,7 @@ fn expand_clippy_checks(
             checks.push(ClippyCheck {
                 package: package.name.to_string(),
                 kind: ClippyCheckKind::Base,
+                deps_mode: selected.deps_mode.clone(),
                 target: target.clone(),
                 env: env.clone(),
                 axconfig_override: None,
@@ -492,6 +622,7 @@ fn expand_clippy_checks(
                 checks.push(ClippyCheck {
                     package: package.name.to_string(),
                     kind: ClippyCheckKind::Feature(feature.clone()),
+                    deps_mode: selected.deps_mode.clone(),
                     target: target.clone(),
                     env: with_axconfig_env_override(env.clone(), axconfig_override.as_ref()),
                     axconfig_override,
@@ -549,11 +680,7 @@ impl ClippyRunReport {
     }
 }
 
-fn run_clippy_checks<R: CargoRunner>(
-    runner: &mut R,
-    workspace_root: &Path,
-    checks: &[ClippyCheck],
-) -> anyhow::Result<ClippyRunReport> {
+fn planned_clippy_report(checks: &[ClippyCheck]) -> ClippyRunReport {
     let mut packages = Vec::new();
     let mut package_indexes = HashMap::new();
 
@@ -566,24 +693,56 @@ fn run_clippy_checks<R: CargoRunner>(
         package_indexes.insert(check.package.clone(), index);
     }
 
-    let mut passed_checks = 0;
+    ClippyRunReport {
+        total_checks: checks.len(),
+        passed_checks: 0,
+        packages,
+    }
+}
+
+fn print_clippy_check_plan(workspace_root: &Path, index: usize, total: usize, check: &ClippyCheck) {
+    let args = check.cargo_args();
+    println!("[{}/{}] {}", index + 1, total, check.label());
+    if check.env.is_empty() {
+        println!(
+            "          cd {} && cargo {}",
+            workspace_root.display(),
+            args.join(" ")
+        );
+    } else {
+        println!(
+            "          cd {} && {} cargo {}",
+            workspace_root.display(),
+            check.env_prefix(),
+            args.join(" ")
+        );
+    }
+}
+
+fn run_clippy_checks<R: CargoRunner>(
+    runner: &mut R,
+    workspace_root: &Path,
+    checks: &[ClippyCheck],
+) -> anyhow::Result<ClippyRunReport> {
+    let mut report = planned_clippy_report(checks);
+    let package_indexes = report
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| (package.package.clone(), index))
+        .collect::<HashMap<_, _>>();
 
     for (index, check) in checks.iter().enumerate() {
-        let args = check.cargo_args();
-        println!("[{}/{}] {}", index + 1, checks.len(), check.label());
-        if check.env.is_empty() {
-            println!("          cargo {}", args.join(" "));
-        } else {
-            println!("          {} cargo {}", check.env_prefix(), args.join(" "));
-        }
+        print_clippy_check_plan(workspace_root, index, checks.len(), check);
 
-        let success = runner.run_clippy(workspace_root, check)?;
         let package_index = package_indexes[check.package.as_str()];
-        let package_report = &mut packages[package_index];
+        let package_report = &mut report.packages[package_index];
         package_report.total_checks += 1;
 
+        let success = runner.run_clippy(workspace_root, check)?;
+
         if success {
-            passed_checks += 1;
+            report.passed_checks += 1;
             println!("ok: {}", check.label());
         } else {
             package_report.failed_checks.push(check.label());
@@ -595,11 +754,7 @@ fn run_clippy_checks<R: CargoRunner>(
         }
     }
 
-    Ok(ClippyRunReport {
-        total_checks: checks.len(),
-        passed_checks,
-        packages,
-    })
+    Ok(report)
 }
 
 fn print_report_summary(report: &ClippyRunReport) {
@@ -878,6 +1033,46 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    fn metadata_with_resolve(packages: Vec<Package>, deps: &[(&str, &[&str])]) -> Metadata {
+        let members = packages
+            .iter()
+            .map(|package| package.id.repr.as_str())
+            .collect::<Vec<_>>();
+        let ids = packages
+            .iter()
+            .map(|package| (package.name.as_str(), package.id.repr.as_str()))
+            .collect::<HashMap<_, _>>();
+        let nodes = deps
+            .iter()
+            .map(|(name, deps)| {
+                serde_json::json!({
+                    "id": ids[name],
+                    "dependencies": deps.iter().map(|dep| ids[dep]).collect::<Vec<_>>(),
+                    "deps": deps.iter().map(|dep| {
+                        serde_json::json!({
+                            "name": dep,
+                            "pkg": ids[dep],
+                            "dep_kinds": [{ "kind": null, "target": null }]
+                        })
+                    }).collect::<Vec<_>>(),
+                    "features": []
+                })
+            })
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "packages": packages,
+            "workspace_members": members,
+            "workspace_default_members": members,
+            "resolve": { "nodes": nodes, "root": null },
+            "target_directory": "/tmp/target",
+            "version": 1,
+            "workspace_root": "/tmp/ws",
+            "metadata": null,
+        });
+
+        serde_json::from_value(value).unwrap()
+    }
+
     fn metadata_for_packages(packages: &[Package]) -> Metadata {
         let members = packages
             .iter()
@@ -887,7 +1082,15 @@ mod tests {
     }
 
     fn expand(packages: &[Package]) -> Vec<ClippyCheck> {
-        expand_clippy_checks(packages, &metadata_for_packages(packages))
+        let selected = packages
+            .iter()
+            .cloned()
+            .map(|package| SelectedClippyPackage {
+                package,
+                deps_mode: ClippyDepsMode::NoDeps,
+            })
+            .collect::<Vec<_>>();
+        expand_clippy_checks(&selected, &metadata_for_packages(packages))
             .expect("test package clippy checks should expand")
     }
 
@@ -981,7 +1184,7 @@ mod tests {
         assert_eq!(
             resolved
                 .iter()
-                .map(|pkg| pkg.name.as_str())
+                .map(|pkg| pkg.package.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["alpha", "beta"]
         );
@@ -1011,7 +1214,7 @@ mod tests {
         assert_eq!(
             resolved
                 .iter()
-                .map(|pkg| pkg.name.as_str())
+                .map(|pkg| pkg.package.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["beta"]
         );
@@ -1069,6 +1272,7 @@ mod tests {
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Base,
+                    deps_mode: ClippyDepsMode::NoDeps,
                     target: None,
                     env: Vec::new(),
                     axconfig_override: None,
@@ -1076,6 +1280,7 @@ mod tests {
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-a".into()),
+                    deps_mode: ClippyDepsMode::NoDeps,
                     target: None,
                     env: Vec::new(),
                     axconfig_override: None,
@@ -1083,6 +1288,7 @@ mod tests {
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-b".into()),
+                    deps_mode: ClippyDepsMode::NoDeps,
                     target: None,
                     env: Vec::new(),
                     axconfig_override: None,
@@ -1126,6 +1332,207 @@ mod tests {
     }
 
     #[test]
+    fn incremental_selection_keeps_runnable_top_levels_when_some_are_skipped() {
+        let packages = vec![
+            pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+            pkg("axvm", "axvm 0.1.0 (path+file:///tmp/axvm)", &[], None),
+            pkg(
+                "axvisor",
+                "axvisor 0.1.0 (path+file:///tmp/axvisor)",
+                &[],
+                None,
+            ),
+            pkg("app", "app 0.1.0 (path+file:///tmp/app)", &[], None),
+        ];
+        let metadata = metadata_with_resolve(
+            packages.clone(),
+            &[
+                ("alpha", &[]),
+                ("axvm", &["alpha"]),
+                ("axvisor", &["axvm"]),
+                ("app", &["axvm"]),
+            ],
+        );
+
+        let selected = incremental_clippy_selections(
+            vec!["alpha".into()],
+            vec![
+                "alpha".into(),
+                "axvm".into(),
+                "axvisor".into(),
+                "app".into(),
+            ],
+            &metadata,
+            &packages,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                ("alpha".into(), ClippyDepsMode::NoDeps),
+                ("app".into(), ClippyDepsMode::WithDeps),
+            ]
+        );
+    }
+
+    #[test]
+    fn incremental_selection_falls_back_when_all_top_levels_are_skipped() {
+        let packages = vec![
+            pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+            pkg("axvm", "axvm 0.1.0 (path+file:///tmp/axvm)", &[], None),
+            pkg(
+                "axvisor",
+                "axvisor 0.1.0 (path+file:///tmp/axvisor)",
+                &[],
+                None,
+            ),
+        ];
+        let metadata = metadata_with_resolve(
+            packages.clone(),
+            &[("alpha", &[]), ("axvm", &["alpha"]), ("axvisor", &["axvm"])],
+        );
+
+        let selected = incremental_clippy_selections(
+            vec!["alpha".into()],
+            vec!["alpha".into(), "axvm".into(), "axvisor".into()],
+            &metadata,
+            &packages,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                ("alpha".into(), ClippyDepsMode::NoDeps),
+                ("axvm".into(), ClippyDepsMode::WithDeps),
+            ]
+        );
+    }
+
+    #[test]
+    fn incremental_selection_recomputes_frontier_around_skipped_top_level() {
+        // `shared` is depended on by both a runnable top-level (`app`) and the
+        // skipped top-level (`axvisor`). `axvm` sits only under `axvisor`, so
+        // merely dropping skipped top-levels would leave `axvm` unlinted. The
+        // frontier must be recomputed over `affected \ skipped` so `axvm` is
+        // re-promoted to a runnable with-deps root.
+        let packages = vec![
+            pkg(
+                "shared",
+                "shared 0.1.0 (path+file:///tmp/shared)",
+                &[],
+                None,
+            ),
+            pkg("app", "app 0.1.0 (path+file:///tmp/app)", &[], None),
+            pkg("axvm", "axvm 0.1.0 (path+file:///tmp/axvm)", &[], None),
+            pkg(
+                "axvisor",
+                "axvisor 0.1.0 (path+file:///tmp/axvisor)",
+                &[],
+                None,
+            ),
+        ];
+        let metadata = metadata_with_resolve(
+            packages.clone(),
+            &[
+                ("shared", &[]),
+                ("app", &["shared"]),
+                ("axvm", &["shared"]),
+                ("axvisor", &["axvm"]),
+            ],
+        );
+
+        let selected = incremental_clippy_selections(
+            vec!["shared".into()],
+            vec![
+                "app".into(),
+                "axvm".into(),
+                "axvisor".into(),
+                "shared".into(),
+            ],
+            &metadata,
+            &packages,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                ("shared".into(), ClippyDepsMode::NoDeps),
+                ("app".into(), ClippyDepsMode::WithDeps),
+                ("axvm".into(), ClippyDepsMode::WithDeps),
+            ]
+        );
+    }
+
+    #[test]
+    fn incremental_selection_uses_natural_frontier_when_nothing_is_skipped() {
+        let packages = vec![
+            pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+            pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
+            pkg("gamma", "gamma 0.1.0 (path+file:///tmp/gamma)", &[], None),
+        ];
+        let metadata = metadata_with_resolve(
+            packages.clone(),
+            &[("alpha", &[]), ("beta", &["alpha"]), ("gamma", &["beta"])],
+        );
+
+        let selected = incremental_clippy_selections(
+            vec!["alpha".into()],
+            vec!["alpha".into(), "beta".into(), "gamma".into()],
+            &metadata,
+            &packages,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                ("alpha".into(), ClippyDepsMode::NoDeps),
+                ("gamma".into(), ClippyDepsMode::WithDeps),
+            ]
+        );
+    }
+
+    #[test]
+    fn incremental_selection_keeps_changed_unsupported_crate_for_shared_skip_handling() {
+        // Editing an unsupported crate's own source (e.g. `axvisor`) keeps it in
+        // the `changed` selection instead of dropping it here; the shared
+        // `skip_unsupported_packages` pass then removes it and prints the skip
+        // message, matching `--all`/default behaviour.
+        let packages = vec![pkg(
+            "axvisor",
+            "axvisor 0.1.0 (path+file:///tmp/axvisor)",
+            &[],
+            None,
+        )];
+        let metadata = metadata_with_resolve(packages.clone(), &[("axvisor", &[])]);
+
+        let selected = incremental_clippy_selections(
+            vec!["axvisor".into()],
+            vec!["axvisor".into()],
+            &metadata,
+            &packages,
+        );
+
+        assert_eq!(selected, vec![("axvisor".into(), ClippyDepsMode::NoDeps)]);
+    }
+
+    #[test]
+    fn with_deps_check_omits_no_deps_flag() {
+        let check = ClippyCheck {
+            package: "alpha".into(),
+            kind: ClippyCheckKind::Base,
+            deps_mode: ClippyDepsMode::WithDeps,
+            target: None,
+            env: Vec::new(),
+            axconfig_override: None,
+        };
+
+        assert_eq!(
+            check.cargo_args(),
+            vec!["clippy", "-p", "alpha", "--", "-D", "warnings"]
+        );
+    }
+
+    #[test]
     fn package_without_features_yields_only_base_check() {
         let checks = expand(&[pkg(
             "alpha",
@@ -1139,6 +1546,7 @@ mod tests {
             vec![ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Base,
+                deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
                 axconfig_override: None,
@@ -1158,12 +1566,13 @@ mod tests {
         assert_eq!(checks.len(), 3);
         assert_eq!(
             checks[0].cargo_args(),
-            vec!["clippy", "-p", "alpha", "--", "-D", "warnings"]
+            vec!["clippy", "--no-deps", "-p", "alpha", "--", "-D", "warnings"]
         );
         assert_eq!(
             checks[1].cargo_args(),
             vec![
                 "clippy",
+                "--no-deps",
                 "-p",
                 "alpha",
                 "--no-default-features",
@@ -1178,6 +1587,7 @@ mod tests {
             checks[2].cargo_args(),
             vec![
                 "clippy",
+                "--no-deps",
                 "-p",
                 "alpha",
                 "--no-default-features",
@@ -1204,6 +1614,7 @@ mod tests {
             checks[0].cargo_args(),
             vec![
                 "clippy",
+                "--no-deps",
                 "-p",
                 "alpha",
                 "--target",
@@ -1217,6 +1628,7 @@ mod tests {
             checks[1].cargo_args(),
             vec![
                 "clippy",
+                "--no-deps",
                 "-p",
                 "alpha",
                 "--no-default-features",
@@ -1254,6 +1666,7 @@ mod tests {
             checks[0].cargo_args(),
             vec![
                 "clippy",
+                "--no-deps",
                 "-p",
                 "alpha",
                 "--target",
@@ -1319,7 +1732,7 @@ mod tests {
         assert!(docs_rs_targets(&package).is_empty());
         assert_eq!(
             expand(&[package])[0].cargo_args(),
-            vec!["clippy", "-p", "alpha", "--", "-D", "warnings"]
+            vec!["clippy", "--no-deps", "-p", "alpha", "--", "-D", "warnings"]
         );
     }
 
@@ -1335,12 +1748,19 @@ mod tests {
             ),
         ];
 
+        let packages = packages
+            .into_iter()
+            .map(|package| SelectedClippyPackage {
+                package,
+                deps_mode: ClippyDepsMode::NoDeps,
+            })
+            .collect();
         let filtered = skip_unsupported_packages(packages);
 
         assert_eq!(
             filtered
                 .iter()
-                .map(|package| package.name.as_str())
+                .map(|package| package.package.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["alpha"]
         );
@@ -1442,7 +1862,14 @@ mod tests {
             .cloned()
             .expect("arceos-rust package should be in workspace metadata");
 
-        let checks = expand_clippy_checks(&[package], &metadata).unwrap();
+        let checks = expand_clippy_checks(
+            &[SelectedClippyPackage {
+                package,
+                deps_mode: ClippyDepsMode::NoDeps,
+            }],
+            &metadata,
+        )
+        .unwrap();
 
         assert!(
             checks[0].env.iter().any(|(key, value)| {
@@ -1463,6 +1890,7 @@ mod tests {
             ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Base,
+                deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
                 axconfig_override: None,
@@ -1470,6 +1898,7 @@ mod tests {
             ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Feature("feat-a".into()),
+                deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
                 axconfig_override: None,
@@ -1477,6 +1906,7 @@ mod tests {
             ClippyCheck {
                 package: "beta".into(),
                 kind: ClippyCheckKind::Base,
+                deps_mode: ClippyDepsMode::NoDeps,
                 target: None,
                 env: Vec::new(),
                 axconfig_override: None,
@@ -1524,5 +1954,13 @@ mod tests {
 
         assert_eq!(report.failed_packages(), vec!["alpha"]);
         assert_eq!(report.passed_packages(), vec!["beta"]);
+    }
+
+    #[test]
+    fn elapsed_format_uses_largest_needed_units() {
+        assert_eq!(format_elapsed(Duration::from_millis(250)), "250ms");
+        assert_eq!(format_elapsed(Duration::from_secs(42)), "42s");
+        assert_eq!(format_elapsed(Duration::from_secs(125)), "2m 5s");
+        assert_eq!(format_elapsed(Duration::from_secs(3661)), "1h 1m 1s");
     }
 }

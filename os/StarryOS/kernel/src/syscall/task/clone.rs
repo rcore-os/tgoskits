@@ -119,16 +119,10 @@ impl CloneArgs {
             return Err(AxError::InvalidInput);
         }
 
-        let namespace_flags = CloneFlags::NEWNS
-            | CloneFlags::NEWIPC
-            | CloneFlags::NEWNET
-            | CloneFlags::NEWPID
-            | CloneFlags::NEWUSER
-            | CloneFlags::NEWUTS
-            | CloneFlags::NEWCGROUP;
-
-        if flags.intersects(namespace_flags) {
-            warn!("sys_clone/sys_clone3: namespace flags detected, stub support only");
+        // CLONE_NEWCGROUP is not yet implemented.
+        if flags.contains(CloneFlags::NEWCGROUP) {
+            error!("sys_clone/sys_clone3: unsupported namespace flag CLONE_NEWCGROUP");
+            return Err(AxError::InvalidInput);
         }
 
         Ok(())
@@ -250,6 +244,42 @@ impl CloneArgs {
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
             proc_data.set_thp_disable(old_proc_data.thp_disable());
+
+            // Inherit the parent's namespace proxy, then unshare
+            // each namespace for which a CLONE_NEW* flag is set.
+            let mut new_nsproxy = old_proc_data.nsproxy.lock().clone_all();
+            if flags.contains(CloneFlags::NEWUTS) {
+                new_nsproxy.unshare_uts();
+            }
+            if flags.contains(CloneFlags::NEWIPC) {
+                new_nsproxy.unshare_ipc();
+            }
+            if flags.contains(CloneFlags::NEWNS) {
+                new_nsproxy.unshare_mnt();
+            }
+            if flags.contains(CloneFlags::NEWPID) {
+                new_nsproxy.unshare_pid();
+                new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
+            }
+            if flags.contains(CloneFlags::NEWNET) {
+                new_nsproxy.unshare_net();
+            }
+            if flags.contains(CloneFlags::NEWUSER) {
+                new_nsproxy.unshare_user();
+            }
+
+            // Consume a pending child PID namespace prepared by
+            // unshare(CLONE_NEWPID) in the parent (Linux: the parent is
+            // not moved; the child becomes PID 1 in the new namespace).
+            if !flags.contains(CloneFlags::NEWPID) {
+                let mut parent_ns = old_proc_data.nsproxy.lock();
+                if let Some(child_pid_ns) = parent_ns.child_pid_ns.take() {
+                    new_nsproxy.pid_ns = child_pid_ns;
+                    new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
+                }
+            }
+
+            *proc_data.nsproxy.lock() = new_nsproxy;
 
             {
                 let mut scope = proc_data.scope.write();

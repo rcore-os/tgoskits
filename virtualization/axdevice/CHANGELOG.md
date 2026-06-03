@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.10...axdevice-v0.4.11) - 2026-06-03
+
+### Added
+
+- *(axvisor)* support x86_64 Linux guest boot (vmx) ([#930](https://github.com/rcore-os/tgoskits/pull/930))
+
+### Other
+
+- Remove range-alloc-arceos crate and its associated files ([#991](https://github.com/rcore-os/tgoskits/pull/991))
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.4.10](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.9...axdevice-v0.4.10) - 2026-05-22
 
 ### Other

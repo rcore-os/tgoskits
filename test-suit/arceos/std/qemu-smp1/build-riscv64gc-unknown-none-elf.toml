@@ -1,9 +1,8 @@
 std = true
-features = [
-  "ax-hal/riscv64-qemu-virt",
-]
+features = []
 log = "Info"
 max_cpu_num = 1
+plat_dyn = true
 
 [env]
 AX_GW = "10.0.2.2"

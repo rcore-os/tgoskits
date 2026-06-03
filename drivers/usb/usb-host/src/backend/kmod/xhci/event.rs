@@ -41,7 +41,7 @@ impl EventRing {
             .map_err(|_| USBError::NoMemory)?;
 
         for (index, segment) in segments.iter().enumerate() {
-            ste.set(
+            ste.set_cpu(
                 index,
                 EventRingSte {
                     addr: segment.trbs.dma_addr().as_u64(),
@@ -116,7 +116,7 @@ impl EventRing {
     fn current_data(&self) -> super::ring::TrbData {
         self.current_segment()
             .trbs
-            .read(self.trb_index)
+            .read_cpu(self.trb_index)
             .expect("event ring TRB index out of bounds")
     }
 

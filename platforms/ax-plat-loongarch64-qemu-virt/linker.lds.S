@@ -2,6 +2,7 @@ OUTPUT_ARCH(%ARCH%)
 
 BASE_ADDRESS = %KERNEL_BASE_VADDR%;
 PHYS_VIRT_OFFSET = %PHYS_VIRT_OFFSET%;
+AX_LINKER_LOAD_OFFSET = PHYS_VIRT_OFFSET;
 PHYS_BASE_ADDRESS = %KERNEL_BASE_PADDR%;
 CPU_NUM = %CPU_NUM%;
 
@@ -44,10 +45,6 @@ SECTIONS
         _sdata = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
-
-        __sdriver_register = .;
-        KEEP(*(.driver.register*))
-        __edriver_register = .;
     }
 
     /*

@@ -169,7 +169,7 @@ if [[ "$should_prepare" -eq 1 ]]; then
     echo "model:     $model"
     echo "api_base:  $api_base"
     echo "rootfs:    $rootfs"
-    run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --output-rootfs '$rootfs'"
+    run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
 else
     say "复用已有 PicoClaw rootfs"
     echo "rootfs: $rootfs"

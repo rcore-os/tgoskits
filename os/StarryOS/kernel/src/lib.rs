@@ -3,6 +3,7 @@
 
 #![no_std]
 #![feature(likely_unlikely)]
+#![feature(c_variadic)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -19,14 +20,12 @@ pub mod entry;
 
 mod cgroup;
 mod config;
-#[cfg(feature = "ebpf")]
 mod ebpf;
 mod file;
-mod kmod_loader;
+mod kmod;
 mod kprobe;
 mod mm;
-#[cfg(feature = "ebpf")]
-mod perf_event;
+mod perf;
 mod pseudofs;
 mod stop_machine;
 mod syscall;

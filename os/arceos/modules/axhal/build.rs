@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const LINKER_SCRIPT_NAME: &str = "linker.x";
-const LINKER_TEMPLATE_NAME: &str = "linker.lds.S";
+const LINKER_SCRIPT_NAME: &str = "axplat.x";
+const LINKER_TEMPLATE_NAME: &str = "axplat.lds.S";
 const SELECTED_PLATFORM_NAME: &str = "selected_platform.rs";
 
 struct PlatformFeature {
@@ -31,31 +31,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "ax_plat_x86_qemu_q35",
     },
     PlatformFeature {
-        feature: "aarch64-qemu-virt",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_qemu_virt",
-    },
-    PlatformFeature {
-        feature: "aarch64-raspi",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_raspi",
-    },
-    PlatformFeature {
-        feature: "aarch64-bsta1000b",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_bsta1000b",
-    },
-    PlatformFeature {
-        feature: "aarch64-phytium-pi",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_phytium_pi",
-    },
-    PlatformFeature {
-        feature: "riscv64-qemu-virt",
-        target_arch: Some("riscv64"),
-        crate_name: "ax_plat_riscv64_qemu_virt",
-    },
-    PlatformFeature {
         feature: "riscv64-sg2002",
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",
@@ -73,9 +48,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
 ];
 
 const DEFAULT_PLATFORMS: &[(&str, &str)] = &[
-    ("aarch64", "ax_plat_aarch64_qemu_virt"),
     ("loongarch64", "ax_plat_loongarch64_qemu_virt"),
-    ("riscv64", "ax_plat_riscv64_qemu_virt"),
     ("x86_64", "ax_plat_x86_pc"),
 ];
 
@@ -100,7 +73,14 @@ fn main() {
 
     let config = load_linker_config().unwrap();
 
-    if config.platform != "dummy" {
+    let platform_linker_is_external = selected_platform.is_some_and(|platform| {
+        matches!(
+            platform.feature,
+            "plat-dyn" | "x86-qemu-q35" | "loongarch64-qemu-virt"
+        )
+    });
+
+    if config.platform != "dummy" && !platform_linker_is_external {
         gen_linker_script(&arch, &config).unwrap();
     }
 }
@@ -249,6 +229,10 @@ fn get_string(value: &toml::Value, keys: &[&str]) -> Result<String> {
 
 fn get_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
     let value = get_value(value, keys)?;
+    parse_value_usize(value, keys)
+}
+
+fn parse_value_usize(value: &toml::Value, keys: &[&str]) -> Result<usize> {
     match value {
         toml::Value::Integer(value) => usize::try_from(*value)
             .map_err(|_| invalid_data(format!("{} is out of range", keys.join(".")))),
@@ -296,42 +280,23 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
         .replace("%ARCH%", output_arch)
         .replace("%KERNEL_BASE%", &format!("{:#x}", config.kernel_base_vaddr))
         .replace(
+            "%KERNEL_BASE_VADDR%",
+            &format!("{:#x}", config.kernel_base_vaddr),
+        )
+        .replace(
             "%KERNEL_BASE_PADDR%",
             &format!("{:#x}", config.kernel_base_paddr),
         )
-        .replace("%CPU_NUM%", &format!("{}", config.max_cpu_num))
-        .replace(
-            "%DWARF%",
-            if std::env::var("DWARF").is_ok_and(|v| v == "y") {
-                r#"debug_abbrev : { . += SIZEOF(.debug_abbrev); }
-    debug_addr : { . += SIZEOF(.debug_addr); }
-    debug_aranges : { . += SIZEOF(.debug_aranges); }
-    debug_info : { . += SIZEOF(.debug_info); }
-    debug_line : { . += SIZEOF(.debug_line); }
-    debug_line_str : { . += SIZEOF(.debug_line_str); }
-    debug_ranges : { . += SIZEOF(.debug_ranges); }
-    debug_rnglists : { . += SIZEOF(.debug_rnglists); }
-    debug_str : { . += SIZEOF(.debug_str); }
-    debug_str_offsets : { . += SIZEOF(.debug_str_offsets); }"#
-            } else {
-                ""
-            },
-        );
+        .replace("%CPU_NUM%", &format!("{}", config.max_cpu_num));
 
     // target/<target_triple>/<mode>/build/ax-hal-xxxx/out
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let linker_path = out_dir.join(LINKER_SCRIPT_NAME);
 
-    // target/<target_triple>/<mode>/build/ax-hal-xxxx/out/linker.x
+    // target/<target_triple>/<mode>/build/ax-hal-xxxx/out/axplat.x
     fs::write(&linker_path, &ld_content)?;
 
     println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-arg=-T{}", linker_path.display());
-
-    // Keep a stable copy under target/<target_triple>/<mode>/ for callers
-    // that still link outside Cargo build-script search paths.
-    let target_dir = out_dir.join("../../..");
-    fs::write(target_dir.join(LINKER_SCRIPT_NAME), &ld_content)?;
 
     Ok(())
 }

@@ -19,12 +19,13 @@ use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
-use axaddrspace::{
-    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
-};
+use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice_base::AccessWidth;
 use axvcpu::{AxVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::InterruptVector;
+#[cfg(target_arch = "x86_64")]
+use axvm_types::EmulatedDeviceType;
+use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
@@ -35,8 +36,7 @@ use crate::vcpu::AxVCpuCreateConfig;
 use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
-    hal::PagingHandlerImpl,
-    has_hardware_support,
+    host::paging::{HostPagingHandler, virt_to_phys},
     vcpu::AxArchVCpuImpl,
 };
 
@@ -98,7 +98,7 @@ impl VMMemoryRegion {
 
     /// Returns the host physical address backing this guest memory region.
     pub fn host_paddr(&self) -> HostPhysAddr {
-        axvisor_api::memory::virt_to_phys(self.hva)
+        virt_to_phys(self.hva)
     }
 
     /// Returns `true` if the guest physical address is identical to the host physical address.
@@ -109,7 +109,7 @@ impl VMMemoryRegion {
 
 struct AxVMInnerMut {
     // Todo: use more efficient lock.
-    address_space: AddrSpace<PagingHandlerImpl>,
+    address_space: AddrSpace<HostPagingHandler>,
     memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
     vm_status: VMStatus,
@@ -209,15 +209,6 @@ impl AxVM {
     /// Returns the configured VM interrupt mode.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.inner_mut.lock().config.interrupt_mode()
-    }
-
-    /// Returns whether this VM loads its images from the host filesystem and maps passthrough
-    /// devices or address ranges that can require exclusive ownership after VM start.
-    pub fn has_host_fs_passthrough_conflict(&self) -> bool {
-        let inner_mut = self.inner_mut.lock();
-        inner_mut.config.images_loaded_from_filesystem()
-            && (!inner_mut.config.pass_through_devices().is_empty()
-                || !inner_mut.config.pass_through_addresses().is_empty())
     }
 
     /// Sets up the VM before booting.
@@ -342,8 +333,7 @@ impl AxVM {
 
         #[cfg(target_arch = "aarch64")]
         {
-            let passthrough =
-                inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+            let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
             if passthrough {
                 let spis = inner_mut.config.pass_through_spis();
                 let cpu_id = self.id() - 1; // FIXME: get the real CPU id.
@@ -392,8 +382,7 @@ impl AxVM {
         for vcpu in self.vcpu_list() {
             #[cfg(target_arch = "aarch64")]
             let setup_config = {
-                let passthrough =
-                    inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+                let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
                 crate::vcpu::AxVCpuSetupConfig {
                     passthrough_interrupt: passthrough,
                     passthrough_timer: passthrough,
@@ -401,8 +390,7 @@ impl AxVM {
             };
             #[cfg(target_arch = "loongarch64")]
             let setup_config = {
-                let passthrough =
-                    inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+                let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
                 crate::vcpu::AxVCpuSetupConfig {
                     passthrough_interrupt: passthrough,
                     passthrough_timer: passthrough,
@@ -421,7 +409,7 @@ impl AxVM {
                     .config
                     .emu_devices()
                     .iter()
-                    .any(|dev| dev.emu_type == axvmconfig::EmulatedDeviceType::Console),
+                    .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
             };
 
             let entry = if vcpu.id() == 0 {
@@ -516,9 +504,7 @@ impl AxVM {
 
     /// Boots the VM by transitioning to Running state.
     pub fn boot(&self) -> AxResult {
-        if !has_hardware_support() {
-            ax_err!(Unsupported, "Hardware does not support virtualization")
-        } else if self.running() {
+        if self.running() {
             ax_err!(BadState, format!("VM[{}] is already running", self.id()))
         } else {
             info!("Booting VM[{}]", self.id());
@@ -586,74 +572,70 @@ impl AxVM {
 
         vcpu.bind()?;
 
-        let exit_reason = loop {
-            let exit_reason = vcpu.run()?;
-            trace!("{exit_reason:#x?}");
-            let handled = match &exit_reason {
-                AxVCpuExitReason::MmioRead {
-                    addr,
-                    width,
-                    reg,
-                    reg_width,
-                    signed_ext,
-                } => {
-                    let raw = self.get_devices().handle_mmio_read(*addr, *width)?;
-                    let masked = raw & width_mask(*width);
-                    let val = if *signed_ext {
-                        sign_extend_value(masked, *width)
-                    } else {
-                        masked & width_mask(*reg_width)
-                    };
-                    vcpu.set_gpr(*reg, val);
-                    true
-                }
-                AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                    self.get_devices()
-                        .handle_mmio_write(*addr, *width, *data as usize)?;
-                    true
-                }
-                AxVCpuExitReason::IoRead { port, width } => {
-                    let val = self.get_devices().handle_port_read(*port, *width)?;
-                    #[cfg(not(target_arch = "riscv64"))]
-                    vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
+        let exit_reason = vcpu.with_current_cpu_set(|| -> AxResult<AxVCpuExitReason> {
+            loop {
+                crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
 
-                    #[cfg(target_arch = "riscv64")]
-                    vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
+                let exit_reason = vcpu.run()?;
+                trace!("{exit_reason:#x?}");
+                match exit_reason {
+                    AxVCpuExitReason::MmioRead {
+                        addr,
+                        width,
+                        reg,
+                        reg_width,
+                        signed_ext,
+                    } => {
+                        let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                        let masked = raw & width_mask(width);
+                        let val = if signed_ext {
+                            sign_extend_value(masked, width)
+                        } else {
+                            masked & width_mask(reg_width)
+                        };
+                        vcpu.set_gpr(reg, val);
+                    }
+                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                        self.get_devices()
+                            .handle_mmio_write(addr, width, data as usize)?;
+                    }
+                    AxVCpuExitReason::IoRead { port, width } => {
+                        let val = self.get_devices().handle_port_read(port, width)?;
+                        #[cfg(not(target_arch = "riscv64"))]
+                        vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
 
-                    true
+                        #[cfg(target_arch = "riscv64")]
+                        vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
+                    }
+                    AxVCpuExitReason::IoWrite { port, width, data } => {
+                        self.get_devices()
+                            .handle_port_write(port, width, data as usize)?;
+                    }
+                    AxVCpuExitReason::SysRegRead { addr, reg } => {
+                        let val = self.get_devices().handle_sys_reg_read(
+                            addr,
+                            // Generally speaking, the width of system register is fixed and needless to be specified.
+                            // AccessWidth::Qword here is just a placeholder, may be changed in the future.
+                            AccessWidth::Qword,
+                        )?;
+                        vcpu.set_gpr(reg, val);
+                    }
+                    AxVCpuExitReason::SysRegWrite { addr, value } => {
+                        self.get_devices().handle_sys_reg_write(
+                            addr,
+                            AccessWidth::Qword,
+                            value as usize,
+                        )?;
+                    }
+                    AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
+                        if !self.handle_nested_page_fault(addr, access_flags) {
+                            break Ok(AxVCpuExitReason::NestedPageFault { addr, access_flags });
+                        }
+                    }
+                    exit_reason => break Ok(exit_reason),
                 }
-                AxVCpuExitReason::IoWrite { port, width, data } => {
-                    self.get_devices()
-                        .handle_port_write(*port, *width, *data as usize)?;
-                    true
-                }
-                AxVCpuExitReason::SysRegRead { addr, reg } => {
-                    let val = self.get_devices().handle_sys_reg_read(
-                        *addr,
-                        // Generally speaking, the width of system register is fixed and needless to be specified.
-                        // AccessWidth::Qword here is just a placeholder, may be changed in the future.
-                        AccessWidth::Qword,
-                    )?;
-                    vcpu.set_gpr(*reg, val);
-                    true
-                }
-                AxVCpuExitReason::SysRegWrite { addr, value } => {
-                    self.get_devices().handle_sys_reg_write(
-                        *addr,
-                        AccessWidth::Qword,
-                        *value as usize,
-                    )?;
-                    true
-                }
-                AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
-                    self.handle_nested_page_fault(*addr, *access_flags)
-                }
-                _ => false,
-            };
-            if !handled {
-                break exit_reason;
             }
-        };
+        })?;
 
         vcpu.unbind()?;
         Ok(exit_reason)
@@ -783,19 +765,11 @@ impl AxVM {
         targets: CpuMask<TEMP_MAX_VCPU_NUM>,
         irq: usize,
     ) -> AxResult {
-        let vm_id = self.id();
-        // Check if the current running vm is self.
-        //
-        // It is not supported to inject interrupt to a vcpu in another VM yet.
-        //
-        // It may be supported in the future, as a essential feature for cross-VM communication.
-        let current_running_vm = axvisor_api::vmm::current_vm_id();
-        if current_running_vm != vm_id {
-            panic!("Injecting interrupt to a vcpu in another VM is not supported");
+        for vcpu in self.vcpu_list() {
+            if targets.get(vcpu.id()) {
+                crate::runtime::vcpus::queue_interrupt(self.id(), vcpu.id(), irq)?;
+            }
         }
-
-        axvisor_api::vmm::inject_interrupt_to_cpus(vm_id, targets, irq as InterruptVector);
-
         Ok(())
     }
 
@@ -951,7 +925,7 @@ impl AxVM {
         let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
         let hva = HostVirtAddr::from_mut_ptr_of(hva);
 
-        let hpa = axvisor_api::memory::virt_to_phys(hva);
+        let hpa = virt_to_phys(hva);
 
         let gpa = gpa.unwrap_or_else(|| hpa.as_usize().into());
 

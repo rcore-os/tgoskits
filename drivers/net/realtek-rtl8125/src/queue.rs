@@ -72,9 +72,9 @@ impl ITxQueue for Rtl8125TxQueue {
 
         let ring_end = idx == QUEUE_SIZE - 1;
         let desc = TxDesc::new_cpu_owned(buffer.bus_addr, buffer.len, ring_end);
-        self.desc.set(idx, desc);
+        self.desc.set_cpu(idx, desc);
         release_dma_descriptor();
-        self.desc.set(idx, desc.release_to_hw());
+        self.desc.set_cpu(idx, desc.release_to_hw());
         self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.submitted = self.submitted.saturating_add(1);
@@ -96,7 +96,7 @@ impl ITxQueue for Rtl8125TxQueue {
     fn reclaim(&mut self) -> Option<u64> {
         let idx = self.next_reclaim;
         self.bus_addrs[idx]?;
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         if desc.is_owned_by_hw() {
             return None;
         }
@@ -203,9 +203,9 @@ impl IRxQueue for Rtl8125RxQueue {
 
         let ring_end = idx == QUEUE_SIZE - 1;
         let desc = RxDesc::new_cpu_owned(buffer.bus_addr, RX_BUF_SIZE, ring_end);
-        self.desc.set(idx, desc);
+        self.desc.set_cpu(idx, desc);
         release_dma_descriptor();
-        self.desc.set(idx, desc.release_to_hw());
+        self.desc.set_cpu(idx, desc.release_to_hw());
         self.bus_addrs[idx] = Some(buffer.bus_addr);
         self.next_submit = next;
         self.submitted = self.submitted.saturating_add(1);
@@ -217,7 +217,10 @@ impl IRxQueue for Rtl8125RxQueue {
                 was_ready
             };
             if !was_ready {
-                let last_opts1 = self.desc.read(QUEUE_SIZE - 1).map_or(0, |desc| desc.opts1);
+                let last_opts1 = self
+                    .desc
+                    .read_cpu(QUEUE_SIZE - 1)
+                    .map_or(0, |desc| desc.opts1);
                 info!(
                     "RTL8125 rx ring ready: submitted={}, last_desc_opts1={:#x}",
                     self.submitted, last_opts1
@@ -231,7 +234,7 @@ impl IRxQueue for Rtl8125RxQueue {
     fn reclaim(&mut self) -> Option<(u64, usize)> {
         let idx = self.next_reclaim;
         let bus_addr = self.bus_addrs[idx]?;
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         if desc.is_owned_by_hw() {
             self.idle_polls = self.idle_polls.saturating_add(1);
             let status = read_status(self.regs);
@@ -260,7 +263,7 @@ impl IRxQueue for Rtl8125RxQueue {
             return None;
         }
         acquire_dma_descriptor();
-        let desc = self.desc.read(idx)?;
+        let desc = self.desc.read_cpu(idx)?;
         self.idle_polls = 0;
         self.last_rx_rearm_idle = 0;
 
@@ -317,9 +320,9 @@ impl Rtl8125RxQueue {
 
         let ring_end = idx == QUEUE_SIZE - 1;
         let desc = RxDesc::new_cpu_owned(bus_addr, RX_BUF_SIZE, ring_end);
-        self.desc.set(idx, desc);
+        self.desc.set_cpu(idx, desc);
         release_dma_descriptor();
-        self.desc.set(idx, desc.release_to_hw());
+        self.desc.set_cpu(idx, desc.release_to_hw());
         self.bus_addrs[idx] = Some(bus_addr);
         self.next_submit = next;
         self.submitted = self.submitted.saturating_add(1);

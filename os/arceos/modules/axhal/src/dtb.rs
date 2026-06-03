@@ -13,22 +13,6 @@ fn dtb_paddr_from_boot_context() -> Option<usize> {
         return Some(arg);
     }
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Why fallback is needed:
-        // - On QEMU `virt`, when booting with Linux kernel boot protocol
-        //   (non-ELF passed to `-kernel`), DTB address is passed in register
-        //   (`x0` on AArch64).
-        // - For "bare-metal" boot paths (for example ELF passed to `-kernel`),
-        //   QEMU documentation states DTB is placed at start of RAM.
-        //
-        // Ref:
-        // https://www.qemu.org/docs/master/system/arm/virt.html#hardware-configuration-information-for-bare-metal-programming
-        if ax_config::PLATFORM == "aarch64-qemu-virt" {
-            return Some(ax_config::plat::PHYS_MEMORY_BASE);
-        }
-    }
-
     None
 }
 

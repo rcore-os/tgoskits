@@ -51,12 +51,12 @@ impl ContextData {
             ContextData::Context32(ctx) => {
                 let mut input = Input32Byte::new_32byte();
                 f(&mut input);
-                ctx.input.write(input);
+                ctx.input.write_cpu(input);
             }
             ContextData::Context64(ctx) => {
                 let mut input = Input64Byte::new_64byte();
                 f(&mut input);
-                ctx.input.write(input);
+                ctx.input.write_cpu(input);
             }
         }
     }
@@ -67,14 +67,14 @@ impl ContextData {
     {
         match self {
             ContextData::Context32(ctx) => {
-                let mut input = ctx.input.read();
+                let mut input = ctx.input.read_cpu();
                 f(&mut input);
-                ctx.input.write(input);
+                ctx.input.write_cpu(input);
             }
             ContextData::Context64(ctx) => {
-                let mut input = ctx.input.read();
+                let mut input = ctx.input.read_cpu();
                 f(&mut input);
-                ctx.input.write(input);
+                ctx.input.write_cpu(input);
             }
         }
     }
@@ -122,7 +122,7 @@ impl DeviceContextList {
             Err(USBError::SlotLimitReached)?;
         }
         let ctx = ContextData::new(is_64, dma)?;
-        self.dcbaa.set(slot_id.as_usize(), ctx.dcbaa());
+        self.dcbaa.set_cpu(slot_id.as_usize(), ctx.dcbaa());
         Ok(ctx)
     }
 }
@@ -147,13 +147,13 @@ impl ScratchpadBufferArray {
                     DmaDirection::Bidirectional,
                 )
                 .map_err(|_| USBError::NoMemory)?;
-            page.sync_for_device_all();
+            page.prepare_for_device_all();
             pages.push(page);
         }
 
         // 将每个页面的地址写入到 entries 数组中
         for (i, page) in pages.iter().enumerate() {
-            entries_vec.set(i, page.dma_addr().as_u64());
+            entries_vec.set_cpu(i, page.dma_addr().as_u64());
         }
 
         Ok(Self {

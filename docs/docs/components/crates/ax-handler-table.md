@@ -67,8 +67,8 @@ flowchart TD
 graph LR
     ax_handler_table["ax-handler-table"] --> axplat["ax_plat::irq"]
     axplat --> x86["ax-plat-x86-pc / x86-q35"]
-    axplat --> riscv["ax-plat-riscv64-qemu-virt"]
-    axplat --> aarch64["ax-plat-aarch64-peripherals"]
+    axplat --> riscv["ax-plat-riscv64-sg2002"]
+    axplat --> aarch64["axplat-dyn / somehal"]
     axplat --> loongarch["ax-plat-loongarch64-qemu-virt"]
 ```
 
@@ -77,7 +77,7 @@ graph LR
 
 ### 主要消费者
 - `ax_plat::irq`：把 `HandlerTable` 作为平台 IRQ 管理接口的一部分导出。
-- 各平台 IRQ 实现：如 `ax-plat-x86-pc`、`ax-plat-riscv64-qemu-virt` 等，都直接声明静态 `IRQ_HANDLER_TABLE`。
+- 各平台 IRQ 实现：如 `ax-plat-x86-pc`、`ax-plat-riscv64-sg2002` 等，都直接声明静态 `IRQ_HANDLER_TABLE`。
 
 ## 开发指南
 ### 接入方式

@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.10"
+version = "0.5.11"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
 keywords = ["arceos", "os", "hal", "embedded", "loongarch"]
@@ -38,6 +38,9 @@ arch = "loongarch64"
 config = "axconfig.toml"
 crate = "ax_plat_loongarch64_qemu_virt"
 default-for-arch = true
+
+[build-dependencies]
+toml.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["loongarch64-unknown-none"]
