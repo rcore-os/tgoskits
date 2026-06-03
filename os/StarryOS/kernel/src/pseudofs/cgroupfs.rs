@@ -101,6 +101,11 @@ impl SimpleDirOps for CgroupDirOps {
                                             n.pids.current.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                                             // Update process's cgroup reference
                                             *pd.cgroup.write() = n.clone();
+                                            // Sync cpu.weight to scheduler task
+                                            let weight = n.cpu.weight.load(core::sync::atomic::Ordering::Relaxed);
+                                            if let Ok(task) = crate::task::get_task(pid as _) {
+                                                task.set_cgroup_weight(weight as isize);
+                                            }
                                         }
                                     } else {
                                         // PID not found — just add to procs list

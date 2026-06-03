@@ -86,6 +86,9 @@ pub fn bandwidth_tick() {
         ax_task::set_current_throttled(true);
         bw.nr_throttled.fetch_add(1, Ordering::Relaxed);
         bw.throttled_usec.fetch_add(tick_usec_u64, Ordering::Relaxed);
+        // Force the current task off the CPU so the scheduler picks
+        // the idle task (or another non-throttled task).
+        ax_task::yield_now();
     }
 }
 
