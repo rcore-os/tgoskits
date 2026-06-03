@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- release ([#1083](https://github.com/rcore-os/tgoskits/pull/1083))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.2.1...rdif-eth-v0.3.0) - 2026-06-03
+
+### Other
+
 - *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
 
 ## [0.2.0](https://github.com/drivercraft/sparreal-os/compare/rdif-eth-v0.1.1...rdif-eth-v0.2.0) - 2026-04-10
