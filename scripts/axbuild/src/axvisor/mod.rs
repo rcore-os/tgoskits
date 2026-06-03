@@ -43,7 +43,7 @@ pub enum Command {
     /// Guest image management
     Image(image::Args),
     /// HTTP Boot helpers
-    Httpboot(httpboot::Args),
+    Httpboot(Box<httpboot::Args>),
 }
 
 #[derive(Args, Clone)]
@@ -263,7 +263,7 @@ impl Axvisor {
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
             Command::Image(args) => self.image(args).await,
-            Command::Httpboot(args) => self.httpboot(args).await,
+            Command::Httpboot(args) => self.httpboot(*args).await,
             Command::Test(args) => self.test(args).await,
         }
     }

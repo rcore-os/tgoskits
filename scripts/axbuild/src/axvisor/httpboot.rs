@@ -10,7 +10,7 @@ use object::{
     Object, ObjectSymbol,
     read::elf::{FileHeader, ProgramHeader},
 };
-use ostool::board::terminal;
+use ostool::board::{load_board_global_config_with_notice, terminal};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -324,8 +324,8 @@ async fn publish_artifacts_for_session(
     validate_manifest_address("kernel_load_addr", &kernel_load_addr, report.load_addr)?;
     validate_manifest_address("entry_point", &entry_point, report.entry_paddr)?;
 
-    let kernel_bytes = fs::read(&kernel_bin)
-        .with_context(|| format!("failed to read {}", kernel_bin.display()))?;
+    let kernel_bytes =
+        fs::read(kernel_bin).with_context(|| format!("failed to read {}", kernel_bin.display()))?;
     let kernel_size = kernel_bytes.len() as u64;
     let kernel_file = client
         .upload_http_boot_file(&session.session_id, &remote_name, kernel_bytes)
@@ -437,10 +437,21 @@ struct PublishConfig {
 
 impl PublishConfig {
     fn load(path: Option<&Path>, workspace_root: &Path) -> anyhow::Result<Self> {
+        let global_config = load_board_global_config_with_notice()?;
+        let (server, port) = global_config.resolve_server(None, None);
+        Self::with_server_defaults(path, workspace_root, server, port)
+    }
+
+    fn with_server_defaults(
+        path: Option<&Path>,
+        workspace_root: &Path,
+        server: String,
+        port: u16,
+    ) -> anyhow::Result<Self> {
         let mut config = Self {
             board_type: None,
-            server: "127.0.0.1".to_string(),
-            port: 2999,
+            server,
+            port,
             remote_name: Some("kernel.bin".to_string()),
             kernel_load_addr: None,
             entry_point: None,
@@ -545,7 +556,7 @@ struct HttpbootElfReport {
 }
 
 impl HttpbootElfReport {
-    fn print(&self, elf_path: &PathBuf) {
+    fn print(&self, elf_path: &Path) {
         println!("=== Axvisor x86_64 HTTP Boot phase-0 check ===");
         println!("elf: {}", elf_path.display());
         println!("kernel_load_addr: {}", hex(self.load_addr));
@@ -591,28 +602,28 @@ impl HttpbootElfReport {
     }
 }
 
-fn inspect_elf(path: &PathBuf) -> anyhow::Result<HttpbootElfReport> {
+fn inspect_elf(path: &Path) -> anyhow::Result<HttpbootElfReport> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let elf: object::read::elf::ElfFile64<'_, object::Endianness> =
         object::read::elf::ElfFile64::parse(bytes.as_slice())
             .map_err(|e| anyhow!("failed to parse x86_64 ELF {}: {e}", path.display()))?;
     let endian = elf.endian();
-    let entry: u64 = elf.elf_header().e_entry(endian).into();
+    let entry: u64 = elf.elf_header().e_entry(endian);
 
     let mut load_segments = Vec::new();
     for (index, header) in elf.elf_program_headers().iter().enumerate() {
         if header.p_type(endian) != object::elf::PT_LOAD {
             continue;
         }
-        let file_size = header.p_filesz(endian).into();
-        let mem_size = header.p_memsz(endian).into();
+        let file_size = header.p_filesz(endian);
+        let mem_size = header.p_memsz(endian);
         if mem_size == 0 {
             continue;
         }
         load_segments.push(SegmentInfo {
             index,
-            vaddr: header.p_vaddr(endian).into(),
-            paddr: header.p_paddr(endian).into(),
+            vaddr: header.p_vaddr(endian),
+            paddr: header.p_paddr(endian),
             file_size,
             mem_size,
         });
@@ -679,11 +690,11 @@ fn write_flat_binary_from_elf(
         if header.p_type(endian) != object::elf::PT_LOAD {
             continue;
         }
-        let file_size: u64 = header.p_filesz(endian).into();
+        let file_size: u64 = header.p_filesz(endian);
         if file_size == 0 {
             continue;
         }
-        let paddr: u64 = header.p_paddr(endian).into();
+        let paddr: u64 = header.p_paddr(endian);
         let offset = paddr.checked_sub(report.load_addr).ok_or_else(|| {
             anyhow!(
                 "PT_LOAD segment paddr {} is below load addr {}",
@@ -704,7 +715,7 @@ fn write_flat_binary_from_elf(
             );
         }
 
-        let file_offset: u64 = header.p_offset(endian).into();
+        let file_offset: u64 = header.p_offset(endian);
         let input_start = usize::try_from(file_offset).context("segment file offset overflow")?;
         let input_end = input_start
             .checked_add(output_len)
@@ -1131,6 +1142,8 @@ impl SessionHeartbeat {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::{PublishConfig, PublishConfigFile, build_base_url, render_init_config};
 
     #[test]
@@ -1172,6 +1185,47 @@ mod tests {
         assert_eq!(config.board_type.as_deref(), Some("x86-httpboot"));
         assert!(config.power_cycle);
         assert!(config.open_console);
+    }
+
+    #[test]
+    fn publish_config_uses_global_server_defaults_without_httpboot_config() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        let config = PublishConfig::with_server_defaults(
+            None,
+            workspace.path(),
+            "10.3.10.229".to_string(),
+            2999,
+        )
+        .unwrap();
+
+        assert_eq!(config.server, "10.3.10.229");
+        assert_eq!(config.port, 2999);
+    }
+
+    #[test]
+    fn publish_config_file_overrides_global_server_defaults() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config_path = workspace.path().join(".httpboot.toml");
+        fs::write(
+            &config_path,
+            r#"
+            server = "10.0.0.2"
+            port = 9000
+            "#,
+        )
+        .unwrap();
+
+        let config = PublishConfig::with_server_defaults(
+            None,
+            workspace.path(),
+            "10.3.10.229".to_string(),
+            2999,
+        )
+        .unwrap();
+
+        assert_eq!(config.server, "10.0.0.2");
+        assert_eq!(config.port, 9000);
     }
 
     #[test]

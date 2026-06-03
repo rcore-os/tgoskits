@@ -1278,7 +1278,8 @@ impl VmxVcpu {
         ];
 
         for (level, index) in indexes.into_iter().enumerate() {
-            let entry = read_guest_phys_u64(table + index * size_of::<u64>());
+            let entry =
+                self.read_guest_phys_u64(GuestPhysAddr::from(table + index * size_of::<u64>()))?;
             if entry & PRESENT == 0 {
                 return ax_err!(
                     InvalidInput,

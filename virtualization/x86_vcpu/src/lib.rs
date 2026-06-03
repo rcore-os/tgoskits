@@ -24,6 +24,7 @@ extern crate log;
 extern crate alloc;
 
 use alloc::vec::Vec;
+
 use axaddrspace::{GuestPhysAddr, HostVirtAddr};
 
 #[cfg(all(feature = "vmx", feature = "svm"))]
