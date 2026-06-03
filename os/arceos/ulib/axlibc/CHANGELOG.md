@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.15...ax-libc-v0.5.16) - 2026-06-03
+
+### Other
+
+- *(platform)* remove static aarch64 platforms ([#1074](https://github.com/rcore-os/tgoskits/pull/1074))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.14...ax-libc-v0.5.15) - 2026-05-22
 
 ### Other
