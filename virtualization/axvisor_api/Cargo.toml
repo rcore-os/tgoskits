@@ -28,8 +28,9 @@ ax-memory-addr = { workspace = true }
 ax-cpumask = { workspace = true }
 
 [features]
-default = []
+default = ["shell"]
 fs = []
+shell = []
 
 [package.metadata.docs.rs]
 all-features = true

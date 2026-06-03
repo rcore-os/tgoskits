@@ -350,7 +350,7 @@ fn do_exit(cmd: &ParsedCommand) {
     };
 
     println!("Bye~");
-    axvisor_api::process::exit(exit_code);
+    axvisor_api::host::exit(exit_code);
 }
 
 fn do_log(cmd: &ParsedCommand) {

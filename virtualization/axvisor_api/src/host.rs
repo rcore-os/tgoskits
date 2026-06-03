@@ -83,4 +83,8 @@ pub trait HostIf {
 
     /// Yield the current host task/thread.
     fn yield_now();
+
+    /// Terminates the current host runtime with `exit_code`.
+    #[cfg(feature = "shell")]
+    fn exit(exit_code: i32) -> !;
 }

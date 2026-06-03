@@ -8,9 +8,10 @@ license = "Apache-2.0"
 repository = "https://github.com/rcore-os/tgoskits"
 
 [features]
-default = ["vmx"]
+default = ["vmx", "shell"]
 ept-level-4 = []
 fs = ["axvisor_api/fs"]
+shell = ["axvisor_api/shell"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 vmx = ["axvm/vmx"]

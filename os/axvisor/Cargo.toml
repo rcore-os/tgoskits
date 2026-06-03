@@ -33,9 +33,10 @@ name = "xtask"
 path = "xtask/src/main.rs"
 
 [features]
-default = []
+default = ["shell"]
 ept-level-4 = ["axvisor_core/ept-level-4"]
 fs = ["ax-std/fs", "axvisor_core/fs"]
+shell = ["axvisor_api/shell", "axvisor_core/shell"]
 vmx = ["axvisor_core/vmx"]
 svm = ["axvisor_core/svm"]
 sstc = ["axvisor_core/sstc"]

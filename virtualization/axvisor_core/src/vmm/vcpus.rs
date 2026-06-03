@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_cpumask::CpuMask;
@@ -194,7 +194,10 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 ///
 /// This should be called after all VCpu threads have exited to avoid resource leaks.
 /// It will join all VCpu tasks to ensure they are fully cleaned up.
+#[cfg(feature = "shell")]
 pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
+    use alloc::vec::Vec;
+
     if let Some(vm_vcpus) = VM_VCPU_TASKS.lock().remove(&vm_id) {
         // Take task references out before joining so we never block while
         // holding the per-VM task-list lock.

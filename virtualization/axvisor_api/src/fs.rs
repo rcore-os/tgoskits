@@ -144,6 +144,7 @@ impl File {
     }
 
     /// Creates or truncates a host file for writing.
+    #[cfg(feature = "shell")]
     pub fn create(path: &str) -> AxResult<Self> {
         Ok(Self {
             raw: create_file(path)?,
@@ -178,11 +179,13 @@ impl File {
     }
 
     /// Writes bytes from `buf`.
+    #[cfg(feature = "shell")]
     pub fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
         file_write(self.raw, buf)
     }
 
     /// Writes all bytes from `buf`.
+    #[cfg(feature = "shell")]
     pub fn write_all(&mut self, mut buf: &[u8]) -> AxResult<()> {
         while !buf.is_empty() {
             let n = self.write(buf)?;
@@ -195,6 +198,7 @@ impl File {
     }
 
     /// Flushes pending output for this file handle.
+    #[cfg(feature = "shell")]
     pub fn flush(&mut self) -> AxResult<()> {
         file_flush(self.raw)
     }
@@ -206,6 +210,7 @@ impl Drop for File {
     }
 }
 
+#[cfg(feature = "shell")]
 impl core::fmt::Write for File {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.write_all(s.as_bytes()).map_err(|_| core::fmt::Error)
@@ -274,11 +279,13 @@ pub fn metadata(path: &str) -> AxResult<Metadata> {
 }
 
 /// Creates a directory.
+#[cfg(feature = "shell")]
 pub fn create_dir(path: &str) -> AxResult<()> {
     fs_create_dir(path)
 }
 
 /// Creates a directory and all missing parent directories.
+#[cfg(feature = "shell")]
 pub fn create_dir_all(path: &str) -> AxResult<()> {
     if path.is_empty() {
         return Err(ax_err_type!(InvalidInput, "empty path"));
@@ -318,26 +325,31 @@ pub fn create_dir_all(path: &str) -> AxResult<()> {
 }
 
 /// Removes an empty directory.
+#[cfg(feature = "shell")]
 pub fn remove_dir(path: &str) -> AxResult<()> {
     fs_remove_dir(path)
 }
 
 /// Removes a file.
+#[cfg(feature = "shell")]
 pub fn remove_file(path: &str) -> AxResult<()> {
     fs_remove_file(path)
 }
 
 /// Renames or moves a file or directory.
+#[cfg(feature = "shell")]
 pub fn rename(from: &str, to: &str) -> AxResult<()> {
     fs_rename(from, to)
 }
 
 /// Returns the current working directory.
+#[cfg(feature = "shell")]
 pub fn current_dir() -> AxResult<String> {
     fs_current_dir()
 }
 
 /// Changes the current working directory.
+#[cfg(feature = "shell")]
 pub fn set_current_dir(path: &str) -> AxResult<()> {
     fs_set_current_dir(path)
 }
@@ -349,6 +361,7 @@ pub trait FsIf {
     fn open_file(path: &str) -> AxResult<usize>;
 
     /// Creates or truncates a host file for writing.
+    #[cfg(feature = "shell")]
     fn create_file(path: &str) -> AxResult<usize>;
 
     /// Closes a previously opened file handle.
@@ -361,9 +374,11 @@ pub trait FsIf {
     fn file_read(file: usize, buf: &mut [u8]) -> AxResult<usize>;
 
     /// Writes bytes from `buf` to a file handle.
+    #[cfg(feature = "shell")]
     fn file_write(file: usize, buf: &[u8]) -> AxResult<usize>;
 
     /// Flushes a file handle.
+    #[cfg(feature = "shell")]
     fn file_flush(file: usize) -> AxResult<()>;
 
     /// Returns metadata for a filesystem path.
@@ -373,20 +388,26 @@ pub trait FsIf {
     fn fs_read_dir(path: &str) -> AxResult<Vec<DirEntry>>;
 
     /// Creates a directory.
+    #[cfg(feature = "shell")]
     fn fs_create_dir(path: &str) -> AxResult<()>;
 
     /// Removes an empty directory.
+    #[cfg(feature = "shell")]
     fn fs_remove_dir(path: &str) -> AxResult<()>;
 
     /// Removes a file.
+    #[cfg(feature = "shell")]
     fn fs_remove_file(path: &str) -> AxResult<()>;
 
     /// Renames or moves a file or directory.
+    #[cfg(feature = "shell")]
     fn fs_rename(from: &str, to: &str) -> AxResult<()>;
 
     /// Returns the current working directory.
+    #[cfg(feature = "shell")]
     fn fs_current_dir() -> AxResult<String>;
 
     /// Changes the current working directory.
+    #[cfg(feature = "shell")]
     fn fs_set_current_dir(path: &str) -> AxResult<()>;
 }

@@ -32,4 +32,9 @@ impl HostIf for HostImpl {
     fn yield_now() {
         std::thread::yield_now();
     }
+
+    #[cfg(feature = "shell")]
+    fn exit(exit_code: i32) -> ! {
+        std::process::exit(exit_code)
+    }
 }

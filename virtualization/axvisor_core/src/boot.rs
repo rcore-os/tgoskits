@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use axvisor_api::host;
 use axvm::AxVMPerCpu;
 
-use crate::{shell, vmm};
+use crate::vmm;
 
 /// Startup banners printed before the hypervisor begins initialization.
 ///
@@ -62,7 +62,8 @@ pub fn run() {
 
     info!("[OK] Default guest initialized");
 
-    shell::console_init();
+    #[cfg(feature = "shell")]
+    crate::shell::console_init();
 }
 
 fn print_logo() {

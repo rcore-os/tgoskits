@@ -531,7 +531,7 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         "exit" | "quit" => {
             println!("Goodbye!");
-            axvisor_api::process::exit(0);
+            axvisor_api::host::exit(0);
         }
         "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
