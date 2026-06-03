@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axvisor_api::vmm::{current_vcpu_id, current_vm_id, inject_interrupt as inject_vcpu_interrupt};
+use axvisor_api::{
+    task::{current_vcpu_id, current_vm_id},
+    vmm::inject_interrupt as inject_vcpu_interrupt,
+};
 
 pub fn hardware_check() {}
 

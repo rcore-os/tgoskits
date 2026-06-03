@@ -64,4 +64,3 @@ mod impl_platform;
 mod impl_process;
 mod impl_task;
 mod impl_time;
-mod impl_vmm;

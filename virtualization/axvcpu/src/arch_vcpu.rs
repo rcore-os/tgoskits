@@ -14,7 +14,7 @@
 
 use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axvisor_api::vmm::{VCpuId, VMId};
+use axvisor_api::types::{VCpuId, VMId};
 
 use crate::exit::AxVCpuExitReason;
 

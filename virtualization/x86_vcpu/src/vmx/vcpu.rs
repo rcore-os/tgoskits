@@ -29,7 +29,7 @@ use axdevice_base::BaseDeviceOps;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 use axvisor_api::{
     memory::{self, PhysAddr},
-    vmm::{VCpuId, VMId},
+    types::{VCpuId, VMId},
 };
 use bit_field::BitField;
 use raw_cpuid::CpuId;

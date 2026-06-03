@@ -45,7 +45,7 @@
 
 use super::{
     memory::{PhysAddr, VirtAddr},
-    vmm::InterruptVector,
+    types::InterruptVector,
 };
 
 /// Cache maintenance operations required by the hypervisor core.

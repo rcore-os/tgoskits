@@ -18,8 +18,8 @@ use ax_errno::{AxError, AxResult, ax_err_type};
 use axaddrspace::{HostPhysAddr, device::AccessWidth};
 use axvisor_api::{
     memory::PhysFrame,
+    types::{VCpuId, VMId},
     vmm,
-    vmm::{VCpuId, VMId},
 };
 use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -325,7 +325,7 @@ impl VirtualApicRegs {
             // Logical mode: "dest" is message destination addr
             // to be compared with the logical APIC ID in LDR.
 
-            let vcpu_mask = vmm::active_vcpus(vmm::current_vm_id()).unwrap();
+            let vcpu_mask = vmm::active_vcpus(axvisor_api::task::current_vm_id()).unwrap();
             for i in 0..vmm::current_vm_vcpu_num() {
                 if vcpu_mask & (1 << i) != 0 {
                     if !self.is_dest_field_matched(dest)? {
@@ -384,7 +384,11 @@ impl VirtualApicRegs {
         }
 
         debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
-        vmm::inject_interrupt(vmm::current_vm_id(), vcpu_id as usize, vector as u8);
+        vmm::inject_interrupt(
+            axvisor_api::task::current_vm_id(),
+            vcpu_id as usize,
+            vector as u8,
+        );
     }
 
     /// Record interrupt acceptance in the virtual APIC page.

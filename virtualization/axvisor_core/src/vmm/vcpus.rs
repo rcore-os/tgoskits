@@ -370,8 +370,8 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskHandle {
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let vm_id = axvisor_api::vmm::current_vm_id();
-    let vcpu_id = axvisor_api::vmm::current_vcpu_id();
+    let vm_id = axvisor_api::task::current_vm_id();
+    let vcpu_id = axvisor_api::task::current_vcpu_id();
     let (vm, vcpu) = super::with_vm_and_vcpu(vm_id, vcpu_id, |vm, vcpu| (vm, vcpu))
         .expect("current vCPU task is not bound to a live VM/vCPU");
 

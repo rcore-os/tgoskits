@@ -41,7 +41,7 @@ use axaddrspace::{
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use axvisor_api::{
     memory,
-    vmm::{VCpuId, VMId},
+    types::{VCpuId, VMId},
 };
 
 use crate::{

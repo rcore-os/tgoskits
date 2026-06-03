@@ -12,25 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Virtual machine management APIs for the AxVisor hypervisor.
+//! Virtual machine management APIs provided by AxVisor core.
 //!
-//! This module provides APIs for managing virtual machines (VMs) and virtual
-//! CPUs (vCPUs), including querying VM/vCPU information and interrupt
-//! injection.
+//! This module provides APIs for querying VM/vCPU topology and injecting
+//! virtual interrupts.
 //!
 //! # Overview
 //!
-//! The VMM (Virtual Machine Monitor) APIs enable:
-//! - Querying the current VM and vCPU context
-//! - Getting information about VMs and their vCPUs
-//! - Injecting interrupts into virtual CPUs
-//! - Timer expiration notifications
+//! The VMM (Virtual Machine Monitor) APIs enable lower-level virtualization
+//! components to:
+//! - Get information about VMs and their vCPUs
+//! - Inject interrupts into virtual CPUs
+//!
+//! Current VM/vCPU context belongs to the host tasking contract and is exposed
+//! through [`crate::task`].
 //!
 //! # Types
 //!
-//! - [`VMId`] - Virtual machine identifier.
-//! - [`VCpuId`] - Virtual CPU identifier.
-//! - [`InterruptVector`] - Interrupt vector number.
+//! - [`crate::types::VMId`] - Virtual machine identifier.
+//! - [`crate::types::VCpuId`] - Virtual CPU identifier.
+//! - [`crate::types::InterruptVector`] - Interrupt vector number.
 //!
 //! # Helper Functions
 //!
@@ -40,70 +41,20 @@
 //!
 //! # Implementation
 //!
-//! To implement these APIs, use the [`api_impl`](crate::api_impl) attribute
-//! macro on an impl block:
+//! These APIs are implemented by `axvisor-core`, not by host OS adapters.
 //!
-//! ```rust,ignore
-//! struct VmmIfImpl;
-//!
-//! #[axvisor_api::api_impl]
-//! impl axvisor_api::vmm::VmmIf for VmmIfImpl {
-//!     fn current_vm_id() -> VMId {
-//!         // Return the current VM's ID
-//!     }
-//!     // ... implement other functions
-//! }
-//! ```
+//! Lower-level virtualization components call this module to query VM topology
+//! and request interrupt injection without depending directly on
+//! `axvisor-core`.
 
-/// Virtual machine identifier type.
-///
-/// Each virtual machine is assigned a unique identifier that can be used
-/// to reference it in API calls.
-pub type VMId = usize;
-
-/// Virtual CPU identifier type.
-///
-/// Each vCPU within a VM is assigned a unique identifier (0-indexed).
-pub type VCpuId = usize;
-
-/// Interrupt vector type.
-///
-/// Represents the interrupt vector number to be injected into a guest.
-pub type InterruptVector = u8;
-
-/// The maximum number of virtual CPUs supported in a virtual machine.
-pub const MAX_VCPU_NUM: usize = 64;
-
-/// A set of virtual CPUs.
-pub type VCpuSet = ax_cpumask::CpuMask<MAX_VCPU_NUM>;
+use crate::types::{InterruptVector, VCpuId, VCpuSet, VMId};
 
 /// The API trait for virtual machine management functionalities.
 ///
 /// This trait defines the core VM management interface required by the
-/// hypervisor components. Implementations should be provided by the VMM
-/// layer.
+/// hypervisor components. This interface is implemented by Axvisor core.
 #[crate::api_def]
 pub trait VmmIf {
-    /// Notify that a virtual CPU timer has expired.
-    /// Get the identifier of the current virtual machine.
-    ///
-    /// This function returns the VM ID of the VM that the calling context
-    /// belongs to.
-    ///
-    /// # Returns
-    ///
-    /// The current VM's identifier.
-    fn current_vm_id() -> VMId;
-
-    /// Get the identifier of the current virtual CPU.
-    ///
-    /// This function returns the vCPU ID within the current VM context.
-    ///
-    /// # Returns
-    ///
-    /// The current vCPU's identifier (0-indexed within the VM).
-    fn current_vcpu_id() -> VCpuId;
-
     /// Get the number of virtual CPUs in a virtual machine.
     ///
     /// # Arguments
@@ -145,7 +96,7 @@ pub trait VmmIf {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use axvisor_api::vmm::{inject_interrupt, current_vm_id};
+    /// use axvisor_api::{task::current_vm_id, vmm::inject_interrupt};
     ///
     /// // Inject timer interrupt (vector 0x20) to vCPU 0 of the current VM
     /// inject_interrupt(current_vm_id(), 0, 0x20);
@@ -154,28 +105,13 @@ pub trait VmmIf {
 
     /// Inject an interrupt to a set of virtual CPUs.
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector);
-
-    /// Notify that a virtual CPU's timer has expired.
-    ///
-    /// This function is called when a vCPU's virtual timer expires and needs
-    /// to be handled.
-    ///
-    /// # Arguments
-    ///
-    /// * `vm_id` - The identifier of the virtual machine.
-    /// * `vcpu_id` - The identifier of the virtual CPU whose timer expired.
-    ///
-    /// # Note
-    ///
-    /// This API may be revised in future versions as the timer virtualization
-    /// design evolves.
-    fn notify_vcpu_timer_expired(vm_id: VMId, vcpu_id: VCpuId);
 }
 
 /// Get the number of virtual CPUs in the current virtual machine executing on
 /// the current physical CPU.
 ///
-/// This is a convenience function that combines [`current_vm_id`] and
+/// This is a convenience function that combines [`crate::task::current_vm_id`]
+/// and
 /// [`vcpu_num`].
 ///
 /// # Returns
@@ -184,16 +120,16 @@ pub trait VmmIf {
 ///
 /// # Panics
 ///
-/// Panics if called outside of a valid VM context (when [`current_vm_id`]
-/// returns an invalid ID).
+/// Panics if called outside of a valid VM context.
 pub fn current_vm_vcpu_num() -> usize {
-    vcpu_num(current_vm_id()).unwrap()
+    vcpu_num(crate::task::current_vm_id()).unwrap()
 }
 
 /// Get the bitmask of active virtual CPUs in the current virtual machine
 /// executing on the current physical CPU.
 ///
-/// This is a convenience function that combines [`current_vm_id`] and
+/// This is a convenience function that combines [`crate::task::current_vm_id`]
+/// and
 /// [`active_vcpus`].
 ///
 /// # Returns
@@ -202,8 +138,7 @@ pub fn current_vm_vcpu_num() -> usize {
 ///
 /// # Panics
 ///
-/// Panics if called outside of a valid VM context (when [`current_vm_id`]
-/// returns an invalid ID).
+/// Panics if called outside of a valid VM context.
 pub fn current_vm_active_vcpus() -> usize {
-    active_vcpus(current_vm_id()).unwrap()
+    active_vcpus(crate::task::current_vm_id()).unwrap()
 }

@@ -28,7 +28,9 @@
 | --- | --- | --- |
 | `memory` | 宿主内存能力 | 页帧分配/释放、连续页分配、PA/VA 转换、`AxMmHalApiImpl`、`PhysFrame` |
 | `time` | 时间与定时器 | tick/nanos/time 转换、定时器注册与取消 |
-| `vmm` | VM 管理 API | 当前 VM/vCPU ID、vCPU 数量、向 vCPU 注入中断 |
+| `types` | 公共类型 | `VMId`、`VCpuId`、`InterruptVector`、`VCpuSet` |
+| `task` | 宿主任务能力 | vCPU task、wait queue、当前 VM/vCPU task 上下文 |
+| `vmm` | VM 管理 API | vCPU 数量、活跃 vCPU 集合、向 vCPU 注入中断 |
 | `host` | 宿主全局信息 | CPU 数量 |
 | `arch` | 架构相关扩展 | 当前仅 AArch64 的虚拟中断注入与 host GIC 信息 |
 | `__priv` | 宏展开私有支撑 | `ax-crate-interface` 的内部重导出 |
@@ -128,19 +130,27 @@ mod memory_api_impl {
 
 #### `vmm`
 
-- `current_vm_id()`
-- `current_vcpu_id()`
 - `vcpu_num()`
 - `active_vcpus()`
 - `inject_interrupt()`
-- `notify_vcpu_timer_expired()`
 
-需要注意的是，当前 `os/axvisor` 的实现中：
+`vmm` 接口由 `axvisor-core` 实现，低层组件仍通过 `axvisor_api::vmm` 调用，以避免直接依赖 `axvisor-core`。
 
-- `active_vcpus()` 仍是 `todo!()`
-- `notify_vcpu_timer_expired()` 仍是 `todo!()`
+当前 VM/vCPU 上下文不属于 `VmmIf`，而是由 `task` 接口提供：
 
-因此这两个接口当前在契约层存在，但实现层尚未闭环。
+- `current_vm_id()`
+- `current_vcpu_id()`
+
+调用方应直接使用 `axvisor_api::task::current_vm_id()` / `current_vcpu_id()` 获取当前上下文。
+
+#### `types`
+
+- `VMId`
+- `VCpuId`
+- `InterruptVector`
+- `VCpuSet`
+
+这些类型不再归属到 `vmm` 语义下，新代码应从 `axvisor_api::types` 引用。
 
 #### `host`
 
@@ -160,14 +170,15 @@ mod memory_api_impl {
 
 ### 1.6 与任务/调度边界
 
-一个容易误解的点是：虽然很多 hypervisor 组件确实需要“当前 VM / 当前 vCPU / 当前任务”等上下文信息，但当前 `axvisor_api` 并 **没有** 单独的 `task` 模块。
+一个容易误解的点是：虽然很多 hypervisor 组件确实需要“当前 VM / 当前 vCPU / 当前任务”等上下文信息，但这些信息本质上绑定在当前 host task 上，而不是 VM manager 查询。
 
 现有设计中：
 
-- 当前 VM/vCPU 查询经 `vmm` 模块提供
+- 当前 VM/vCPU task 上下文经 `task` 模块提供
+- VM 拓扑查询和中断注入经 `vmm` 模块提供，并由 `axvisor-core` 实现
 - 真正如何从宿主任务上下文中提取这些信息，则由 `os/axvisor` 的 HAL 实现层完成
 
-这说明 `axvisor_api` 故意把接口面收得较窄，只暴露跨组件真正稳定的那部分能力。
+这说明 `axvisor_api` 正在把 host task context 与 core VMM service 分开，避免 `vmm` 继续承载底座任务语义。
 
 ## 核心功能
 
@@ -194,7 +205,7 @@ flowchart TD
 
 - `riscv_vcpu`、`riscv_vplic` 使用 `memory::phys_to_virt()` 做宿主侧 MMIO 访问
 - `arm_vcpu` 使用 `arch::hardware_inject_virtual_interrupt()` 走 AArch64 快速注入路径
-- `axvcpu` 和其它组件通过 `vmm::current_vm_id()` / `current_vcpu_id()` 获取上下文
+- `axvcpu` 和其它组件可通过 `task::current_vm_id()` / `current_vcpu_id()` 获取当前 vCPU task 上下文
 
 ### 2.3 适用场景
 
@@ -253,7 +264,7 @@ graph TD
 
 ### 4.3 当前实现上的注意事项
 
-- `vmm::active_vcpus()` 和 `notify_vcpu_timer_expired()` 在实现侧尚未完成
+- `vmm` 模块由 `axvisor-core` 实现，host adapter 不应再实现 VM 查询和中断注入
 - `arch` 模块当前只覆盖 AArch64，不应误认为是通用架构接口
 - `axvisor_api` 在仓库中是独立 workspace 维护的，而不是普通主 workspace 成员
 

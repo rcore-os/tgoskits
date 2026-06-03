@@ -68,5 +68,5 @@ mod api_reexp {
         pa!(0)
     }
 
-    pub fn hardware_inject_virtual_interrupt(_vector: axvisor_api::vmm::InterruptVector) {}
+    pub fn hardware_inject_virtual_interrupt(_vector: axvisor_api::types::InterruptVector) {}
 }

@@ -157,6 +157,7 @@ pub mod platform;
 pub mod process;
 pub mod task;
 pub mod time;
+pub mod types;
 pub mod vmm;
 
 #[doc(hidden)]

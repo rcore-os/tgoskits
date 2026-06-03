@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
-use axvisor_api::vmm::current_vm_id;
+use axvisor_api::task::current_vm_id;
 
 use crate::vmm::vm_list::get_vm_by_id;
 

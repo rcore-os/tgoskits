@@ -33,6 +33,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_lazyinit::LazyInit;
+use axvisor_api::{
+    api_impl,
+    types::{InterruptVector, VCpuId, VCpuSet, VMId},
+    vmm as api_vmm,
+};
 pub use timer::init_percpu as init_timer_percpu;
 
 /// The instantiated VM type.
@@ -137,8 +142,8 @@ pub fn with_vm_and_vcpu_on_pcpu(
     // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
     let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
-    let current_vm = axvisor_api::vmm::current_vm_id();
-    let current_vcpu = axvisor_api::vmm::current_vcpu_id();
+    let current_vm = axvisor_api::task::current_vm_id();
+    let current_vcpu = axvisor_api::task::current_vcpu_id();
 
     // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {
@@ -164,4 +169,36 @@ pub fn add_running_vm_count(count: usize) {
 
 pub fn sub_running_vm_count(count: usize) {
     RUNNING_VM_COUNT.fetch_sub(count, Ordering::Release);
+}
+
+struct VmmIfImpl;
+
+#[api_impl]
+impl api_vmm::VmmIf for VmmIfImpl {
+    fn vcpu_num(vm_id: VMId) -> Option<usize> {
+        with_vm(vm_id, |vm| vm.vcpu_num())
+    }
+
+    fn active_vcpus(vm_id: VMId) -> Option<usize> {
+        with_vm(vm_id, |vm| {
+            let vcpu_num = vm.vcpu_num();
+            if vcpu_num >= usize::BITS as usize {
+                usize::MAX
+            } else {
+                (1usize << vcpu_num) - 1
+            }
+        })
+    }
+
+    fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector) {
+        let _ = with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
+            vcpu.inject_interrupt(vector as usize).unwrap();
+        });
+    }
+
+    fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {
+        for vcpu_id in &vcpu_set {
+            Self::inject_interrupt(vm_id, vcpu_id, vector);
+        }
+    }
 }

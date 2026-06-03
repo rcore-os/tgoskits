@@ -24,7 +24,7 @@ use axaddrspace::{
 };
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::InterruptVector;
+use axvisor_api::types::InterruptVector;
 use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
@@ -793,7 +793,7 @@ impl AxVM {
         // It is not supported to inject interrupt to a vcpu in another VM yet.
         //
         // It may be supported in the future, as a essential feature for cross-VM communication.
-        let current_running_vm = axvisor_api::vmm::current_vm_id();
+        let current_running_vm = axvisor_api::task::current_vm_id();
         if current_running_vm != vm_id {
             panic!("Injecting interrupt to a vcpu in another VM is not supported");
         }

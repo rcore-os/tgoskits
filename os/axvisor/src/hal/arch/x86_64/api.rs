@@ -1,7 +1,7 @@
 use axvisor_api::{
     arch::{ArchIf, CacheOp},
     memory::VirtAddr,
-    vmm::InterruptVector,
+    types::InterruptVector,
 };
 
 struct ArchImpl;

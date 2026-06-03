@@ -50,4 +50,12 @@ impl TaskIf for TaskImpl {
     fn task_join(task: TaskHandle) -> i32 {
         task::task_join(task)
     }
+
+    fn current_vm_id() -> usize {
+        task::current_vm_id()
+    }
+
+    fn current_vcpu_id() -> usize {
+        task::current_vcpu_id()
+    }
 }

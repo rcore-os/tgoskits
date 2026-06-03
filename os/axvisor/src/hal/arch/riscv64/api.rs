@@ -4,7 +4,7 @@ compile_error!("riscv64 Axvisor requires the dyn-plat feature");
 use axvisor_api::{
     arch::{ArchIf, CacheOp},
     memory::VirtAddr,
-    vmm::InterruptVector,
+    types::InterruptVector,
 };
 
 pub(super) fn init_platform_irq_injector() {

@@ -18,7 +18,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, string::String};
 
-use crate::vmm::{VCpuId, VMId};
+use crate::types::{VCpuId, VMId};
 
 /// An opaque host task handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -160,4 +160,10 @@ pub trait TaskIf {
 
     /// Waits for the task to exit and returns its exit code.
     fn task_join(task: TaskHandle) -> i32;
+
+    /// Returns the VM ID bound to the current vCPU host task.
+    fn current_vm_id() -> VMId;
+
+    /// Returns the vCPU ID bound to the current vCPU host task.
+    fn current_vcpu_id() -> VCpuId;
 }
