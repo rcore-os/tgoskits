@@ -189,24 +189,27 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
 
 ## 测试配置
 
-测试用例位于 `test-suit/starryos/selfhost-manual/`，**不在** `normal/` 目录下，不参与标准 CI。
+测试用例位于 `apps/starry/selfhost/`，通过 Starry app 系统运行。
 
 ```
-test-suit/starryos/selfhost-manual/
-└── qemu-selfhost/                             # 构建包装器（xtask 发现此 build-*.toml）
-    ├── build-riscv64gc-unknown-none-elf.toml  # 构建配置
-    ├── selfhost-full-kernel/                  # 完整编译测试（timeout=7200s）
-    │   ├── qemu-riscv64.toml
-    │   └── sh/self-compile.sh                 # Guest 内执行的编译脚本
-    └── test-selfhost-check/                   # 快速工具检查（timeout=120s）
-        └── qemu-riscv64.toml
+apps/starry/selfhost/
+├── build-riscv64gc-unknown-none-elf.toml      # 构建配置
+├── selfhost-full-kernel/                      # 完整编译测试（timeout=7200s）
+│   ├── qemu-riscv64.toml
+│   └── sh/self-compile.sh                     # Guest 内执行的编译脚本
+└── test-selfhost-check/                       # 快速工具检查（timeout=120s）
+    └── qemu-riscv64.toml
 ```
 
 **CI 不运行的原因**: Debian rootfs 镜像（~8-12GB）未上传到 tgosimages release，CI 容器无法下载。
 
 **手动运行**:
 ```bash
-cargo xtask starry test qemu --arch riscv64 --test-group selfhost-manual -c selfhost-full-kernel
+# 完整自编译
+cargo xtask starry app qemu --arch riscv64 --app-case selfhost/selfhost-full-kernel
+
+# 快速工具检查
+cargo xtask starry app qemu --arch riscv64 --app-case selfhost/test-selfhost-check
 ```
 
 ## 已知限制
