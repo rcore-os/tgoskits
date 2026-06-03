@@ -287,15 +287,15 @@ async fn publish_artifacts_for_session(
     report: &HttpbootElfReport,
     keep_session: bool,
 ) -> anyhow::Result<()> {
-    if session.boot_mode != "uefi_http" {
+    if !matches!(session.boot_mode.as_str(), "httpboot" | "uefi_http") {
         bail!(
-            "unsupported remote boot mode `{}`; only `uefi_http` is supported",
+            "unsupported remote boot mode `{}`; only `httpboot` is supported",
             session.boot_mode
         );
     }
 
     let boot_profile = client.get_boot_profile(&session.session_id).await?;
-    let profile = boot_profile.uefi_http_profile()?;
+    let profile = boot_profile.httpboot_profile()?;
     let remote_name = publish_config
         .remote_name
         .clone()
@@ -1019,10 +1019,10 @@ struct BootProfileResponse {
 }
 
 impl BootProfileResponse {
-    fn uefi_http_profile(&self) -> anyhow::Result<&UefiHttpProfile> {
+    fn httpboot_profile(&self) -> anyhow::Result<&UefiHttpProfile> {
         match &self.boot {
             RemoteBootConfig::UefiHttp(profile) => Ok(profile),
-            _ => bail!("server returned a non-uefi_http boot profile"),
+            _ => bail!("server returned a non-httpboot boot profile"),
         }
     }
 }
@@ -1032,6 +1032,7 @@ impl BootProfileResponse {
 enum RemoteBootConfig {
     Uboot,
     Pxe,
+    #[serde(rename = "httpboot", alias = "uefi_http")]
     UefiHttp(UefiHttpProfile),
 }
 
