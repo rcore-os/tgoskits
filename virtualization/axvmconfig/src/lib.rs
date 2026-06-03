@@ -23,11 +23,9 @@ extern crate alloc;
 extern crate log;
 
 use alloc::{string::String, vec::Vec};
-use core::fmt::{Display, Formatter};
 
 use ax_errno::AxResult;
-use enumerable::Enumerable;
-use serde_repr::{Deserialize_repr, Serialize_repr};
+pub use axvm_types::EmulatedDeviceType;
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 /// A part of `AxVMConfig`, which represents guest VM type.
@@ -105,150 +103,6 @@ pub struct VmMemConfig {
     pub map_type: VmMemMappingType,
 }
 
-/// The type of Emulated Device.
-///
-/// Allocation scheme:
-/// - 0x00 - 0x1F: Special devices, and abstract device types that does not specify a concrete
-///   interface or implementation. The device objects created from these types depend on the target
-///   architecture and the specific implementation of the hypervisor.
-/// - 0x20 - 0x7F: Concrete emulated device types.
-///   - 0x20 - 0x2F: Interrupt controller devices.
-///   - 0x30 - 0x3F: Reserved for future use.
-/// - 0x80 - 0xDF: Reserved for future use.
-/// - 0xE0 - 0xEF: Virtio devices.
-/// - 0xF0 - 0xFF: Reserved for future use.
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize_repr, Deserialize_repr, Enumerable,
-)]
-#[repr(u8)]
-pub enum EmulatedDeviceType {
-    // Special devices and abstract device types.
-    /// Dummy device type.
-    #[default]
-    Dummy               = 0x0,
-    /// Interrupt controller device, e.g. vGICv2 in aarch64, vLAPIC in x86.
-    InterruptController = 0x1,
-    /// Console (serial) device.
-    Console             = 0x2,
-    /// An emulated device that provides Inter-VM Communication (IVC) channel.
-    ///
-    /// This device is used for communication between different VMs,
-    /// the corresponding memory region of this device should be marked as `Reserved` in
-    /// device tree or ACPI table.
-    IVCChannel          = 0xA,
-
-    // Arch-specific interrupt controller devices.
-    // 0x20 - 0x22: GPPT (GIC Partial Passthrough) devices.
-    /// ARM GIC Partial Passthrough Redistributor device.
-    GPPTRedistributor   = 0x20,
-    /// ARM GIC Partial Passthrough Distributor device.
-    GPPTDistributor     = 0x21,
-    /// ARM GIC Partial Passthrough Interrupt Translation Service device.
-    GPPTITS             = 0x22,
-
-    // 0x23 - 0x24: x86 platform devices.
-    /// x86 virtual IO APIC device.
-    X86IoApic           = 0x23,
-    /// x86 virtual PIT/8254 timer device.
-    X86Pit              = 0x24,
-
-    // 0x30: PPPT (PLIC Partial Passthrough) devices.
-    /// RISC-V PLIC Partial Passthrough Global device.
-    PPPTGlobal          = 0x30,
-
-    // Virtio devices.
-    /// Virtio block device.
-    VirtioBlk           = 0xE1,
-    /// Virtio net device.
-    VirtioNet           = 0xE2,
-    /// Virtio console device.
-    VirtioConsole       = 0xE3,
-    // Following are some other emulated devices that are not currently used and removed from the enum temporarily.
-    // /// IOMMU device.
-    // IOMMU = 0x6,
-    // /// Interrupt ICC SRE device.
-    // ICCSRE = 0x7,
-    // /// Interrupt ICC SGIR device.
-    // SGIR = 0x8,
-    // /// Interrupt controller GICR device.
-    // GICR = 0x9,
-}
-
-impl Display for EmulatedDeviceType {
-    // Implementation of the Display trait for EmulatedDeviceType.
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self {
-            EmulatedDeviceType::Console => write!(f, "console"),
-            EmulatedDeviceType::InterruptController => write!(f, "interrupt controller"),
-            EmulatedDeviceType::GPPTRedistributor => {
-                write!(f, "gic partial passthrough redistributor")
-            }
-            EmulatedDeviceType::GPPTDistributor => write!(f, "gic partial passthrough distributor"),
-            EmulatedDeviceType::GPPTITS => write!(f, "gic partial passthrough its"),
-            EmulatedDeviceType::X86IoApic => write!(f, "x86 io apic"),
-            EmulatedDeviceType::X86Pit => write!(f, "x86 pit"),
-            EmulatedDeviceType::PPPTGlobal => write!(f, "plic partial passthrough global"),
-            // EmulatedDeviceType::IOMMU => write!(f, "iommu"),
-            // EmulatedDeviceType::ICCSRE => write!(f, "interrupt icc sre"),
-            // EmulatedDeviceType::SGIR => write!(f, "interrupt icc sgir"),
-            // EmulatedDeviceType::GICR => write!(f, "interrupt controller gicr"),
-            EmulatedDeviceType::IVCChannel => write!(f, "ivc channel"),
-            EmulatedDeviceType::Dummy => write!(f, "meta device"),
-            EmulatedDeviceType::VirtioBlk => write!(f, "virtio block"),
-            EmulatedDeviceType::VirtioNet => write!(f, "virtio net"),
-            EmulatedDeviceType::VirtioConsole => write!(f, "virtio console"),
-        }
-    }
-}
-
-/// Implementation of methods for EmulatedDeviceType.
-impl EmulatedDeviceType {
-    /// Returns true if the device is removable.
-    pub fn removable(&self) -> bool {
-        matches!(
-            *self,
-            EmulatedDeviceType::InterruptController
-                // | EmulatedDeviceType::SGIR
-                // | EmulatedDeviceType::ICCSRE
-                | EmulatedDeviceType::GPPTRedistributor
-                | EmulatedDeviceType::X86IoApic
-                | EmulatedDeviceType::X86Pit
-                | EmulatedDeviceType::VirtioBlk
-                | EmulatedDeviceType::VirtioNet
-                // | EmulatedDeviceType::GICR
-                | EmulatedDeviceType::VirtioConsole
-        )
-    }
-
-    /// Converts a usize value to an EmulatedDeviceType.
-    pub fn from_usize(value: usize) -> EmulatedDeviceType {
-        match value {
-            0x0 => EmulatedDeviceType::Dummy,
-            0x1 => EmulatedDeviceType::InterruptController,
-            0x2 => EmulatedDeviceType::Console,
-            0xA => EmulatedDeviceType::IVCChannel,
-            0x20 => EmulatedDeviceType::GPPTRedistributor,
-            0x21 => EmulatedDeviceType::GPPTDistributor,
-            0x22 => EmulatedDeviceType::GPPTITS,
-            0x23 => EmulatedDeviceType::X86IoApic,
-            0x24 => EmulatedDeviceType::X86Pit,
-            0x30 => EmulatedDeviceType::PPPTGlobal,
-            0xE1 => EmulatedDeviceType::VirtioBlk,
-            0xE2 => EmulatedDeviceType::VirtioNet,
-            0xE3 => EmulatedDeviceType::VirtioConsole,
-            // 0x6 => EmulatedDeviceType::IOMMU,
-            // 0x7 => EmulatedDeviceType::ICCSRE,
-            // 0x8 => EmulatedDeviceType::SGIR,
-            // 0x9 => EmulatedDeviceType::GICR,
-            _ => {
-                warn!("Unknown emulated device type value: {value}, default to Meta");
-                EmulatedDeviceType::Dummy
-            }
-        }
-    }
-}
-
 /// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -262,9 +116,38 @@ pub struct EmulatedDeviceConfig {
     /// The IRQ (Interrupt Request) ID of the device.
     pub irq_id: usize,
     /// The type of emulated device.
+    #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(with = "u8"))]
+    #[serde(with = "emu_device_type_serde")]
     pub emu_type: EmulatedDeviceType,
     /// The config_list of the device
     pub cfg_list: Vec<usize>,
+}
+
+mod emu_device_type_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::*;
+
+    pub fn serialize<S>(emu_type: &EmulatedDeviceType, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u8(*emu_type as u8)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<EmulatedDeviceType, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = usize::from(u8::deserialize(deserializer)?);
+        match EmulatedDeviceType::from_usize(value) {
+            Some(emu_type) => Ok(emu_type),
+            None => {
+                warn!("Unknown emulated device type value: {value}, default to Meta");
+                Ok(EmulatedDeviceType::Dummy)
+            }
+        }
+    }
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of a pass-through device for a virtual machine.

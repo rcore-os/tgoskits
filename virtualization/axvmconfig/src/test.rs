@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use enumerable::Enumerable;
-
 use crate::{
     AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol, VMDevicesConfig, VMInterruptMode,
     VmMemMappingType,
@@ -251,14 +249,16 @@ fn test_boot_config_validation_rejects_direct_bios_mix() {
 
 #[test]
 fn test_emu_dev_type_from_usize() {
-    for emu_dev_type in EmulatedDeviceType::enumerator() {
-        let converted = EmulatedDeviceType::from_usize(emu_dev_type as usize);
+    for emu_dev_type in EmulatedDeviceType::all() {
+        let converted = EmulatedDeviceType::from_usize(*emu_dev_type as usize).unwrap();
         assert_eq!(
-            converted, emu_dev_type,
+            converted, *emu_dev_type,
             "Value mismatch after bidirectional conversion: {:?} -> {:?}",
             emu_dev_type, converted
         );
     }
+
+    assert_eq!(EmulatedDeviceType::from_usize(0x3), None);
 }
 
 #[test]

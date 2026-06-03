@@ -24,7 +24,7 @@
 //!
 //! - [`BaseDeviceOps`]: The core trait that all emulated devices must implement.
 //! - [`EmuDeviceType`]: Enumeration representing the type of emulator devices
-//!   (re-exported from `axvmconfig` crate).
+//!   (re-exported from `axvm-types` crate).
 //! - [`EmulatedDeviceConfig`]: Configuration structure for device initialization.
 //! - Trait aliases for specific device types:
 //!   - [`BaseMmioDeviceOps`]: For MMIO (Memory-Mapped I/O) devices.
@@ -90,8 +90,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
 pub use ax_errno::AxResult;
-pub use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
-pub use axvmconfig::EmulatedDeviceType as EmuDeviceType;
+pub use axvm_types::{EmulatedDeviceType as EmuDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 pub use device::{
     AccessWidth, DeviceAddr, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };

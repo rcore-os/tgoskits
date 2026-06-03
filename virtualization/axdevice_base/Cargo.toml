@@ -18,7 +18,6 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 axvm-types = { workspace = true }
-axvmconfig = { workspace = true, default-features = false }
 [dev-dependencies]
 
 [package.metadata.docs.rs]

@@ -1727,7 +1727,6 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax-memory-addr",
  "axvm-types",
- "axvmconfig",
  "serde",
 ]
 
@@ -1997,8 +1996,8 @@ name = "axvmconfig"
 version = "0.5.2"
 dependencies = [
  "ax-errno 0.6.0",
+ "axvm-types",
  "clap",
- "enumerable",
  "env_logger",
  "log",
  "schemars",
@@ -3518,27 +3517,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
 dependencies = [
  "once_cell",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "enumerable"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d05481ae0c653c7de79f2f62d515b09049fed59cbfc5755a4afe55c95181492b"
-dependencies = [
- "enumerable_derive",
-]
-
-[[package]]
-name = "enumerable_derive"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef47b28174f7ef4ccb124c8766565006263114c1cc129cd119a66f1e15635125"
-dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
