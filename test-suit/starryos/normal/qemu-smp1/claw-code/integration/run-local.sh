@@ -4,7 +4,7 @@
 #   bash test-suit/starryos/normal/qemu-smp1/claw-code/integration/run-local.sh
 set -eu
 
-CLAW_URL="https://github.com/rcore-os/tgoskits/releases/download/claw-code-binary/claw"
+CLAW_URL="https://github.com/MuZhao2333/tgoskits/releases/download/claw-code-binary/claw"
 ROOTFS="/workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
 CLAW_BIN="/tmp/claw"
 
