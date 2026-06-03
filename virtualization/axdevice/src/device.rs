@@ -22,13 +22,13 @@ use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
-use axaddrspace::{
-    GuestPhysAddr, GuestPhysAddrRange,
-    device::{AccessWidth, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange},
-};
 #[cfg(target_arch = "x86_64")]
 use axdevice_base::map_device_of_type;
-use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
+    DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
+};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;

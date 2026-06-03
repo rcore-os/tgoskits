@@ -16,7 +16,7 @@
 
 use alloc::{string::String, vec::Vec};
 
-use axaddrspace::GuestPhysAddr;
+use axvm_types::GuestPhysAddr;
 pub use axvmconfig::{
     AxVMCrateConfig, EmulatedDeviceConfig, PassThroughAddressConfig, PassThroughDeviceConfig,
     VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,

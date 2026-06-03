@@ -19,10 +19,9 @@ use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use ax_memory_set::{MemoryArea, MemorySet};
 use ax_page_table_multiarch::PagingHandler;
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
-use crate::{
-    GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err, npt::NestedPageTable as PageTable,
-};
+use crate::{mapping_err_to_ax_err, npt::NestedPageTable as PageTable};
 
 mod backend;
 

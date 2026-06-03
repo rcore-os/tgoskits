@@ -16,9 +16,8 @@ use core::{convert::TryFrom, fmt};
 
 use ax_page_table_entry::{GenericPTE, MappingFlags};
 use ax_page_table_multiarch::{PageTable64, PagingMetaData};
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use bit_field::BitField;
-
-use crate::{GuestPhysAddr, HostPhysAddr};
 
 bitflags::bitflags! {
     /// EPT entry flags. (SDM Vol. 3C, Section 28.3.2)

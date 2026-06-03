@@ -16,8 +16,7 @@ use core::cell::UnsafeCell;
 
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axvm_types::{VCpuId, VMId};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 
 use super::{AxArchVCpu, AxVCpuExitReason, InterruptTriggerMode};
 

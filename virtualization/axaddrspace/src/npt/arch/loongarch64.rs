@@ -16,8 +16,7 @@ use core::{arch::asm, fmt};
 
 use ax_page_table_entry::{GenericPTE, MappingFlags};
 use ax_page_table_multiarch::PagingMetaData;
-
-use crate::{GuestPhysAddr, HostPhysAddr};
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 
 bitflags::bitflags! {
     #[derive(Debug)]

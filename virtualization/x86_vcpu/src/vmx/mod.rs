@@ -20,7 +20,7 @@ mod vcpu;
 mod vmcs;
 
 use ax_errno::ax_err_type;
-use axaddrspace::HostPhysAddr;
+use axvm_types::HostPhysAddr;
 use x86_vlapic::EmulatedLocalApic;
 
 use self::structs::VmxBasic;

@@ -41,6 +41,6 @@ mod vcpu; // Main VCpu implementation and state management
 
 // Public API exports
 pub use arch_vcpu::{AxArchVCpu, InterruptTriggerMode}; // Architecture-specific VCpu trait
-pub use exit::AxVCpuExitReason;
+pub use exit::{AxVCpuExitReason, NestedPageFaultInfo};
 pub use percpu::*; // Per-CPU state management types
 pub use vcpu::*; // Main VCpu types and functions // VM exit reasons

@@ -8,9 +8,8 @@
 // None of the methods are ever called at runtime in such configurations.
 
 use ax_errno::{AxResult, ax_err};
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvcpu::{AxArchPerCpu, AxArchVCpu, AxVCpuExitReason};
-use axvm_types::{VCpuId, VMId};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 
 use crate::X86VCpuSetupConfig;
 

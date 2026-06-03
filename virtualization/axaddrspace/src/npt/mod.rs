@@ -17,8 +17,7 @@ use ax_memory_addr::PhysAddr;
 use ax_memory_set::MappingError;
 use ax_page_table_entry::MappingFlags;
 use ax_page_table_multiarch::{PageSize, PagingHandler};
-
-use crate::GuestPhysAddr;
+use axvm_types::GuestPhysAddr;
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
@@ -85,7 +84,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
     /// Maps a virtual address to a physical address.
     pub fn map(
         &mut self,
-        vaddr: crate::GuestPhysAddr,
+        vaddr: GuestPhysAddr,
         paddr: PhysAddr,
         size: PageSize,
         flags: ax_page_table_entry::MappingFlags,
@@ -190,7 +189,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
     /// Queries a virtual address to get physical address and mapping info.
     pub fn query(
         &self,
-        vaddr: crate::GuestPhysAddr,
+        vaddr: GuestPhysAddr,
     ) -> ax_page_table_multiarch::PagingResult<(
         PhysAddr,
         ax_page_table_entry::MappingFlags,
@@ -204,7 +203,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
     }
 
     /// Translates a virtual address to a physical address.
-    pub fn translate(&self, vaddr: crate::GuestPhysAddr) -> Option<crate::HostPhysAddr> {
+    pub fn translate(&self, vaddr: GuestPhysAddr) -> Option<axvm_types::HostPhysAddr> {
         self.query(vaddr).ok().map(|(paddr, ..)| paddr)
     }
 }

@@ -16,8 +16,8 @@ use core::{cell::UnsafeCell, ptr};
 
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
-use axdevice_base::BaseDeviceOps;
+use axdevice_base::{AccessWidth, BaseDeviceOps};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use log::{debug, trace};
 use spin::Once;
 
@@ -90,8 +90,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
 
     fn handle_read(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
     ) -> ax_errno::AxResult<usize> {
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
@@ -158,8 +158,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
 
     fn handle_write(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
         value: usize,
     ) -> ax_errno::AxResult<()> {
         let gicr_base = self.host_gicr_base_this_cpu;

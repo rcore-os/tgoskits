@@ -17,8 +17,10 @@ mod test_utils;
 use core::sync::atomic::Ordering;
 
 use ax_memory_addr::PhysAddr;
-use axaddrspace::{AddrSpace, GuestPhysAddr, MappingFlags};
+use ax_page_table_entry::MappingFlags;
+use axaddrspace::AddrSpace;
 use axin::axin;
+use axvm_types::GuestPhysAddr;
 use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test};
 
 fn mock_hal_test_with_dealloc_count<F, R>(expected_dealloc_count: usize) -> impl FnOnce(F) -> R

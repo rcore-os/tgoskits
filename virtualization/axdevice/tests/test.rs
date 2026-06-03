@@ -16,10 +16,9 @@ use std::sync::{Arc, Mutex};
 
 use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
-use axdevice_base::BaseDeviceOps;
-use axvm_types::{InterruptVector, VCpuId, VMId};
+use axdevice_base::{AccessWidth, BaseDeviceOps};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, InterruptVector, VCpuId, VMId};
 use axvmconfig::EmulatedDeviceType;
 use x86_vlapic::host::X86VlapicHostIf;
 

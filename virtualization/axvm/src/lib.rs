@@ -37,9 +37,11 @@ mod vm;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
-pub use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+pub use ax_page_table_entry::MappingFlags;
+pub use axdevice_base::AccessWidth;
 pub use axhvc::{HyperCallCode, HyperCallResult};
 pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
+pub use axvm_types::{GuestPhysAddr, HostPhysAddr};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},

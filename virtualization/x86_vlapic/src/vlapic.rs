@@ -15,8 +15,8 @@
 use core::ptr::NonNull;
 
 use ax_errno::{AxError, AxResult, ax_err_type};
-use axaddrspace::{HostPhysAddr, device::AccessWidth};
-use axvm_types::{VCpuId, VMId};
+use axdevice_base::AccessWidth;
+use axvm_types::{HostPhysAddr, VCpuId, VMId};
 use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 

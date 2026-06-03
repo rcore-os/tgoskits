@@ -125,7 +125,9 @@ mod riscv64 {
     use ax_crate_interface::impl_interface;
     use ax_memory_addr::{PhysAddr, VirtAddr};
     #[cfg(feature = "plat-dyn")]
-    use axaddrspace::{GuestPhysAddr, device::AccessWidth};
+    use axdevice_base::AccessWidth;
+    #[cfg(feature = "plat-dyn")]
+    use axvm_types::GuestPhysAddr;
     use riscv_vcpu::host::RiscvVcpuHostIf;
     use riscv_vplic::host::RiscvVplicHostIf;
 

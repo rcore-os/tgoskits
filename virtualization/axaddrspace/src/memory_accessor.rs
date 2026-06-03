@@ -19,8 +19,7 @@
 //! memory safety concerns.
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddr;
-
-use crate::GuestPhysAddr;
+use axvm_types::GuestPhysAddr;
 
 /// A stateful accessor to the memory space of a guest
 pub trait GuestMemoryAccessor {

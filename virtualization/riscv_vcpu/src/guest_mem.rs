@@ -14,7 +14,7 @@
 
 use core::arch::riscv64::hfence_vvma_all;
 
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
+use axvm_types::{GuestPhysAddr, GuestVirtAddr};
 use riscv_h::register::vsatp::Vsatp;
 
 use crate::trap::Exception;

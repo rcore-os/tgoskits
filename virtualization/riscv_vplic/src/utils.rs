@@ -5,7 +5,8 @@
 use core::result::Result::Ok;
 
 use ax_errno::AxResult;
-use axaddrspace::{HostPhysAddr, device::AccessWidth};
+use axdevice_base::AccessWidth;
+use axvm_types::HostPhysAddr;
 
 use crate::host;
 

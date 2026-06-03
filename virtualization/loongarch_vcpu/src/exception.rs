@@ -1,6 +1,7 @@
 use ax_errno::AxResult;
-use axaddrspace::{GuestPhysAddr, MappingFlags};
+use ax_page_table_entry::MappingFlags;
 use axvcpu::AxVCpuExitReason;
+use axvm_types::GuestPhysAddr;
 
 use crate::context_frame::LoongArchContextFrame;
 

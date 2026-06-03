@@ -22,26 +22,14 @@ extern crate alloc;
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("features `vmx` and `svm` are mutually exclusive");
 
-mod addr;
 mod address_space;
-pub mod device;
 mod memory_accessor;
 mod npt;
 
-pub use addr::*;
-pub use address_space::*;
+pub use address_space::{AddrSpace, MappingFlags};
 use ax_errno::AxError;
 use ax_memory_set::MappingError;
 pub use memory_accessor::GuestMemoryAccessor;
-
-/// Information about nested page faults.
-#[derive(Debug)]
-pub struct NestedPageFaultInfo {
-    /// Access type that caused the nested page fault.
-    pub access_flags: MappingFlags,
-    /// Guest physical address that caused the nested page fault.
-    pub fault_guest_paddr: GuestPhysAddr,
-}
 
 fn mapping_err_to_ax_err(err: MappingError) -> AxError {
     warn!("Mapping error: {err:?}");

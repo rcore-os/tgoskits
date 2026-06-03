@@ -1,7 +1,6 @@
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
-use axaddrspace::device::{AccessWidth, Port, PortRange};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, Port, PortRange};
 
 use crate::host;
 

@@ -35,12 +35,8 @@ use core::cell::UnsafeCell;
 
 use ax_errno::AxResult;
 use ax_memory_addr::{AddrRange, PAGE_SIZE_4K};
-use axaddrspace::{
-    GuestPhysAddr, HostPhysAddr, HostVirtAddr,
-    device::{AccessWidth, SysRegAddr, SysRegAddrRange},
-};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvm_types::{VCpuId, VMId};
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, SysRegAddr, SysRegAddrRange};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, VCpuId, VMId};
 
 use crate::{
     consts::{x2apic::x2apic_msr_access_reg, xapic::xapic_mmio_access_reg_offset},

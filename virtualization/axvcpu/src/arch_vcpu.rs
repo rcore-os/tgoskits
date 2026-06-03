@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use ax_errno::AxResult;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axvm_types::{VCpuId, VMId};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 
 use crate::exit::AxVCpuExitReason;
 

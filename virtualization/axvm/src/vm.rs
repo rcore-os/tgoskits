@@ -19,11 +19,11 @@ use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{align_down_4k, align_up_4k};
-use axaddrspace::{
-    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
-};
+use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice_base::AccessWidth;
 use axvcpu::{AxVCpu, AxVCpuExitReason};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};

@@ -14,9 +14,10 @@
 
 use ax_memory_addr::PhysAddr;
 use ax_page_table_multiarch::{MappingFlags, PagingHandler};
+use axvm_types::GuestPhysAddr;
 
 use super::Backend;
-use crate::{GuestPhysAddr, npt::NestedPageTable as PageTable};
+use crate::npt::NestedPageTable as PageTable;
 
 impl<H: PagingHandler> Backend<H> {
     /// Creates a new linear mapping backend.

@@ -16,8 +16,9 @@
 
 use ax_memory_set::MappingBackend;
 use ax_page_table_multiarch::{MappingFlags, PagingHandler};
+use axvm_types::GuestPhysAddr;
 
-use crate::{GuestPhysAddr, npt::NestedPageTable as PageTable};
+use crate::npt::NestedPageTable as PageTable;
 
 mod alloc;
 mod linear;

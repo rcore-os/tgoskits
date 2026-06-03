@@ -24,8 +24,8 @@ vgicv3 = []
 [dependencies]
 ax-kspin.workspace = true
 ax-crate-interface = { workspace = true }
-axaddrspace = { workspace = true }
 axdevice_base = { workspace = true }
+axvm-types = { workspace = true }
 aarch64-cpu = "11.0"
 aarch64_sysreg = { workspace = true }
 ax-errno = { workspace = true }

@@ -15,8 +15,8 @@
 use core::cell::UnsafeCell;
 
 use ax_errno::AxResult;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use bitmaps::Bitmap;
 use log::debug;
 
@@ -110,8 +110,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 
     fn handle_read(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
     ) -> ax_errno::AxResult<usize> {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
@@ -180,8 +180,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 
     fn handle_write(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
         val: usize,
     ) -> ax_errno::AxResult {
         let gicd_base = self.host_gicd_addr;

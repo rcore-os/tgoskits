@@ -19,7 +19,8 @@
 
 use ax_errno::{AxResult, ax_err};
 use ax_page_table_entry::MappingFlags;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
+use axvcpu::NestedPageFaultInfo;
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use bit_field::BitField;
 use x86::bits64::vmx;
 

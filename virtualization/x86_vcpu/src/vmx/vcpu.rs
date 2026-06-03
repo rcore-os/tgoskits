@@ -21,13 +21,10 @@ use core::{
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
-use axaddrspace::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
-    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
-};
-use axdevice_base::BaseDeviceOps;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvm_types::{VCpuId, VMId};
+use ax_page_table_entry::MappingFlags;
+use axdevice_base::{AccessWidth, BaseDeviceOps, Port, SysRegAddr, SysRegAddrRange};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, NestedPageFaultInfo};
+use axvm_types::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, VCpuId, VMId};
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -1955,7 +1952,7 @@ mod tests {
         #[test]
         fn test_access_width_operations() {
             // Test access width enumeration
-            use axaddrspace::device::AccessWidth;
+            use axdevice_base::AccessWidth;
 
             assert_eq!(AccessWidth::Byte as usize, 0);
             assert_eq!(AccessWidth::Word as usize, 1);

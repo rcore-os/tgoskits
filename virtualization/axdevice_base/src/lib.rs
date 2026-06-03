@@ -37,8 +37,8 @@
 //! trait with the appropriate address range type:
 //!
 //! ```rust,ignore
-//! use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-//! use axaddrspace::{GuestPhysAddrRange, device::AccessWidth};
+//! use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+//! use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 //! use ax_errno::AxResult;
 //!
 //! struct MyDevice {
@@ -84,15 +84,15 @@
 
 extern crate alloc;
 
+mod device;
+
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
 use ax_errno::AxResult;
-use axaddrspace::{
-    GuestPhysAddrRange,
-    device::{AccessWidth, DeviceAddrRange, PortRange, SysRegAddrRange},
-};
+use axvm_types::GuestPhysAddrRange;
 pub use axvmconfig::EmulatedDeviceType as EmuDeviceType;
+pub use device::*;
 
 /// Represents the configuration of an emulated device for a virtual machine.
 ///

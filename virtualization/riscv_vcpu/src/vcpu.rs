@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use ax_errno::{AxError, AxErrorKind, AxResult};
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+use ax_page_table_entry::MappingFlags;
+use axdevice_base::AccessWidth;
 use axvcpu::AxVCpuExitReason;
+use axvm_types::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
