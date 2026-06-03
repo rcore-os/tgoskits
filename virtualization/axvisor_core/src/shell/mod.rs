@@ -16,6 +16,8 @@ mod command;
 
 use alloc::string::ToString;
 
+use axvisor_api::console::{ConsoleReader, ConsoleWriter};
+
 use crate::shell::command::{
     CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, prompt_string,
     run_cmd_bytes,
@@ -37,8 +39,8 @@ enum InputState {
 
 // Initialize the console shell.
 pub fn console_init() {
-    let mut stdin = axvisor_api::fs::stdin();
-    let mut stdout = axvisor_api::fs::stdout();
+    let mut stdin = ConsoleReader::new();
+    let mut stdout = ConsoleWriter::new();
     let mut history = CommandHistory::new(100);
 
     let mut buf = [0; MAX_LINE_LEN];

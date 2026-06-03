@@ -15,24 +15,10 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::sync::Mutex;
 
-const STDIN_HANDLE: usize = 0;
-const STDOUT_HANDLE: usize = 1;
-
 #[cfg(feature = "fs")]
-struct HostReadDir {
-    entries: Vec<DirEntry>,
-    next: usize,
-}
-
-#[cfg(feature = "fs")]
-static FILE_IDS: AtomicUsize = AtomicUsize::new(2);
+static FILE_IDS: AtomicUsize = AtomicUsize::new(1);
 #[cfg(feature = "fs")]
 static FILES: SpinNoIrq<BTreeMap<usize, Arc<Mutex<fs::File>>>> = SpinNoIrq::new(BTreeMap::new());
-
-#[cfg(feature = "fs")]
-static READ_DIR_IDS: AtomicUsize = AtomicUsize::new(1);
-#[cfg(feature = "fs")]
-static READ_DIRS: SpinNoIrq<BTreeMap<usize, HostReadDir>> = SpinNoIrq::new(BTreeMap::new());
 
 fn map_io_err<T>(res: io::Result<T>) -> AxResult<T> {
     res.map_err(|err| ax_err_type!(Io, err.to_string()))
@@ -103,7 +89,7 @@ impl FsIf for FsImpl {
 
     fn close_file(file: usize) {
         #[cfg(feature = "fs")]
-        if file > STDOUT_HANDLE {
+        {
             FILES.lock().remove(&file);
         }
     }
@@ -111,12 +97,6 @@ impl FsIf for FsImpl {
     fn file_metadata(file: usize) -> AxResult<Metadata> {
         #[cfg(feature = "fs")]
         {
-            if file <= STDOUT_HANDLE {
-                return Err(ax_err_type!(
-                    Unsupported,
-                    "metadata is unavailable for stdio"
-                ));
-            }
             let file = get_file(file)?;
             let file = file.lock();
             map_io_err(file.metadata()).map(map_metadata)
@@ -131,85 +111,42 @@ impl FsIf for FsImpl {
     fn file_read(file: usize, buf: &mut [u8]) -> AxResult<usize> {
         #[cfg(feature = "fs")]
         {
-            match file {
-                STDIN_HANDLE => {
-                    let mut stdin = io::stdin();
-                    map_io_err(stdin.read(buf))
-                }
-                STDOUT_HANDLE => Err(ax_err_type!(Unsupported, "stdout is not readable")),
-                _ => {
-                    let file = get_file(file)?;
-                    let mut file = file.lock();
-                    map_io_err(file.read(buf))
-                }
-            }
+            let file = get_file(file)?;
+            let mut file = file.lock();
+            map_io_err(file.read(buf))
         }
         #[cfg(not(feature = "fs"))]
         {
-            match file {
-                STDIN_HANDLE => {
-                    let mut stdin = io::stdin();
-                    map_io_err(stdin.read(buf))
-                }
-                _ => Err(ax_err_type!(Unsupported, "filesystem support is disabled")),
-            }
+            let _ = (file, buf);
+            Err(ax_err_type!(Unsupported, "filesystem support is disabled"))
         }
     }
 
     fn file_write(file: usize, buf: &[u8]) -> AxResult<usize> {
         #[cfg(feature = "fs")]
         {
-            match file {
-                STDIN_HANDLE => Err(ax_err_type!(Unsupported, "stdin is not writable")),
-                STDOUT_HANDLE => {
-                    let mut stdout = io::stdout();
-                    map_io_err(stdout.write(buf))
-                }
-                _ => {
-                    let file = get_file(file)?;
-                    let mut file = file.lock();
-                    map_io_err(file.write(buf))
-                }
-            }
+            let file = get_file(file)?;
+            let mut file = file.lock();
+            map_io_err(file.write(buf))
         }
         #[cfg(not(feature = "fs"))]
         {
-            match file {
-                STDOUT_HANDLE => {
-                    let mut stdout = io::stdout();
-                    map_io_err(stdout.write(buf))
-                }
-                _ => Err(ax_err_type!(Unsupported, "filesystem support is disabled")),
-            }
+            let _ = (file, buf);
+            Err(ax_err_type!(Unsupported, "filesystem support is disabled"))
         }
     }
 
     fn file_flush(file: usize) -> AxResult<()> {
         #[cfg(feature = "fs")]
         {
-            match file {
-                STDIN_HANDLE => Ok(()),
-                STDOUT_HANDLE => {
-                    let mut stdout = io::stdout();
-                    map_io_err(stdout.flush())
-                }
-                _ => {
-                    let file = get_file(file)?;
-                    let mut file = file.lock();
-                    map_io_err(file.flush())
-                }
-            }
+            let file = get_file(file)?;
+            let mut file = file.lock();
+            map_io_err(file.flush())
         }
         #[cfg(not(feature = "fs"))]
         {
-            match file {
-                STDIN_HANDLE => Ok(()),
-                STDOUT_HANDLE => {
-                    let mut stdout = io::stdout();
-                    map_io_err(stdout.flush())
-                }
-                _ => Err(ax_err_type!(Unsupported, "filesystem support is disabled")),
-            }
+            let _ = file;
+            Err(ax_err_type!(Unsupported, "filesystem support is disabled"))
         }
     }
 
@@ -225,7 +162,7 @@ impl FsIf for FsImpl {
         }
     }
 
-    fn open_read_dir(path: &str) -> AxResult<usize> {
+    fn fs_read_dir(path: &str) -> AxResult<Vec<DirEntry>> {
         #[cfg(feature = "fs")]
         {
             let mut entries = Vec::new();
@@ -242,51 +179,7 @@ impl FsIf for FsImpl {
                 ));
             }
 
-            let id = READ_DIR_IDS.fetch_add(1, Ordering::Relaxed);
-            READ_DIRS
-                .lock()
-                .insert(id, HostReadDir { entries, next: 0 });
-            Ok(id)
-        }
-        #[cfg(not(feature = "fs"))]
-        {
-            let _ = path;
-            Err(ax_err_type!(Unsupported, "filesystem support is disabled"))
-        }
-    }
-
-    fn read_dir_next(dir: usize) -> AxResult<Option<DirEntry>> {
-        #[cfg(feature = "fs")]
-        {
-            let mut dirs = READ_DIRS.lock();
-            let dir = dirs
-                .get_mut(&dir)
-                .ok_or_else(|| ax_err_type!(NotFound, "directory handle not found"))?;
-            if dir.next >= dir.entries.len() {
-                return Ok(None);
-            }
-            let entry = dir.entries[dir.next].clone();
-            dir.next += 1;
-            Ok(Some(entry))
-        }
-        #[cfg(not(feature = "fs"))]
-        {
-            let _ = dir;
-            Err(ax_err_type!(Unsupported, "filesystem support is disabled"))
-        }
-    }
-
-    fn close_read_dir(dir: usize) {
-        #[cfg(feature = "fs")]
-        {
-            READ_DIRS.lock().remove(&dir);
-        }
-    }
-
-    fn fs_read_to_string(path: &str) -> AxResult<String> {
-        #[cfg(feature = "fs")]
-        {
-            map_io_err(fs::read_to_string(path))
+            Ok(entries)
         }
         #[cfg(not(feature = "fs"))]
         {
@@ -299,18 +192,6 @@ impl FsIf for FsImpl {
         #[cfg(feature = "fs")]
         {
             map_io_err(fs::create_dir(path))
-        }
-        #[cfg(not(feature = "fs"))]
-        {
-            let _ = path;
-            Err(ax_err_type!(Unsupported, "filesystem support is disabled"))
-        }
-    }
-
-    fn fs_create_dir_all(path: &str) -> AxResult<()> {
-        #[cfg(feature = "fs")]
-        {
-            map_io_err(fs::create_dir_all(path))
         }
         #[cfg(not(feature = "fs"))]
         {

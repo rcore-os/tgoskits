@@ -22,6 +22,7 @@ use alloc::{
     vec::Vec,
 };
 
+use axvisor_api::console::ConsoleWriter;
 pub use base::*;
 pub use history::*;
 use spin::LazyLock;
@@ -468,7 +469,7 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 
 pub fn print_prompt() {
     print!("{}", prompt_string());
-    axvisor_api::fs::stdout().flush().ok();
+    ConsoleWriter::new().flush().ok();
 }
 
 pub fn prompt_string() -> String {
@@ -534,7 +535,7 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
-            axvisor_api::fs::stdout().flush().ok();
+            ConsoleWriter::new().flush().ok();
             true
         }
         _ if input.starts_with("help ") => {

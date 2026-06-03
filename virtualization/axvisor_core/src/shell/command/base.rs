@@ -20,6 +20,8 @@ use alloc::{
 #[cfg(feature = "fs")]
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(feature = "fs")]
+use axvisor_api::console::ConsoleWriter;
+#[cfg(feature = "fs")]
 use axvisor_api::fs::{self as host_fs, File, FileType};
 
 use crate::shell::command::{CommandNode, FlagDef, ParsedCommand};
@@ -123,7 +125,7 @@ fn do_cat(cmd: &ParsedCommand) {
     fn cat_one(fname: &str) -> AxResult<()> {
         let mut buf = [0; 1024];
         let mut file = File::open(fname)?;
-        let mut stdout = host_fs::stdout();
+        let mut stdout = ConsoleWriter::new();
         loop {
             let n = file.read(&mut buf)?;
             if n > 0 {

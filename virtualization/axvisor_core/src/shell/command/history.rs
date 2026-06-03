@@ -15,6 +15,8 @@
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 
+use axvisor_api::console::ConsoleWriter;
+
 pub struct CommandHistory {
     history: Vec<String>,
     current_index: usize,
@@ -67,7 +69,7 @@ impl CommandHistory {
 
 #[allow(unused_must_use)]
 pub fn clear_line_and_redraw(
-    stdout: &mut axvisor_api::fs::File,
+    stdout: &mut ConsoleWriter,
     prompt: &str,
     content: &str,
     cursor_pos: usize,

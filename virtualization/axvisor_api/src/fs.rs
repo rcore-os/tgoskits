@@ -12,16 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Host filesystem and console stream APIs for AxVisor.
+//! Host filesystem APIs for AxVisor.
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 
 use ax_errno::{AxResult, ax_err_type};
-
-const STDIN_HANDLE: usize = 0;
-const STDOUT_HANDLE: usize = 1;
 
 /// File type used by the host filesystem abstraction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,7 +129,7 @@ impl DirEntry {
     }
 }
 
-/// An opaque file/stream handle.
+/// An opaque file handle.
 #[derive(Debug)]
 pub struct File {
     raw: usize,
@@ -151,16 +148,6 @@ impl File {
         Ok(Self {
             raw: create_file(path)?,
         })
-    }
-
-    /// Returns a handle to the host standard input stream.
-    pub const fn stdin() -> Self {
-        Self { raw: STDIN_HANDLE }
-    }
-
-    /// Returns a handle to the host standard output stream.
-    pub const fn stdout() -> Self {
-        Self { raw: STDOUT_HANDLE }
     }
 
     /// Returns the raw host-provided handle.
@@ -228,23 +215,19 @@ impl core::fmt::Write for File {
 /// A host directory iterator handle.
 #[derive(Debug)]
 pub struct ReadDir {
-    raw: usize,
+    entries: alloc::vec::IntoIter<DirEntry>,
 }
 
 impl ReadDir {
-    fn from_raw(raw: usize) -> Self {
-        Self { raw }
+    fn new(entries: Vec<DirEntry>) -> Self {
+        Self {
+            entries: entries.into_iter(),
+        }
     }
 
     /// Returns the next directory entry, or `None` when exhausted.
     pub fn next_entry(&mut self) -> AxResult<Option<DirEntry>> {
-        read_dir_next(self.raw)
-    }
-}
-
-impl Drop for ReadDir {
-    fn drop(&mut self) {
-        close_read_dir(self.raw);
+        Ok(self.entries.next())
     }
 }
 
@@ -262,12 +245,27 @@ impl Iterator for ReadDir {
 
 /// Opens a host directory iterator.
 pub fn read_dir(path: &str) -> AxResult<ReadDir> {
-    Ok(ReadDir::from_raw(open_read_dir(path)?))
+    Ok(ReadDir::new(fs_read_dir(path)?))
 }
 
 /// Reads a whole host file into a string.
 pub fn read_to_string(path: &str) -> AxResult<String> {
-    fs_read_to_string(path)
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    if let Ok(metadata) = file.metadata() {
+        bytes.reserve(metadata.len() as usize);
+    }
+
+    let mut buf = [0; 4096];
+    loop {
+        let read_len = file.read(&mut buf)?;
+        if read_len == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..read_len]);
+    }
+
+    String::from_utf8(bytes).map_err(|_| ax_err_type!(InvalidData, "file is not valid UTF-8"))
 }
 
 /// Returns filesystem metadata for `path`.
@@ -282,7 +280,48 @@ pub fn create_dir(path: &str) -> AxResult<()> {
 
 /// Creates a directory and all missing parent directories.
 pub fn create_dir_all(path: &str) -> AxResult<()> {
-    fs_create_dir_all(path)
+    if path.is_empty() {
+        return Err(ax_err_type!(InvalidInput, "empty path"));
+    }
+
+    let mut current = String::new();
+    if path.starts_with('/') {
+        current.push('/');
+    }
+
+    for component in path.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if !current.ends_with('/') && !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(component);
+        } else {
+            if !current.ends_with('/') && !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(component);
+        }
+
+        match create_dir(&current) {
+            Ok(()) => {}
+            Err(err)
+                if matches!(
+                    ax_errno::AxErrorKind::try_from(err.canonicalize()),
+                    Ok(ax_errno::AxErrorKind::AlreadyExists)
+                ) =>
+            {
+                if !metadata(&current)?.is_dir() {
+                    return Err(err);
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(())
 }
 
 /// Removes an empty directory.
@@ -310,17 +349,7 @@ pub fn set_current_dir(path: &str) -> AxResult<()> {
     fs_set_current_dir(path)
 }
 
-/// Returns a handle to host stdin.
-pub const fn stdin() -> File {
-    File::stdin()
-}
-
-/// Returns a handle to host stdout.
-pub const fn stdout() -> File {
-    File::stdout()
-}
-
-/// Filesystem and console-stream APIs required by AxVisor.
+/// Filesystem APIs required by AxVisor.
 #[crate::api_def]
 pub trait FsIf {
     /// Opens a host file for reading.
@@ -347,23 +376,11 @@ pub trait FsIf {
     /// Returns metadata for a filesystem path.
     fn path_metadata(path: &str) -> AxResult<Metadata>;
 
-    /// Opens a directory iterator for a filesystem path.
-    fn open_read_dir(path: &str) -> AxResult<usize>;
-
-    /// Returns the next entry from a directory iterator.
-    fn read_dir_next(dir: usize) -> AxResult<Option<DirEntry>>;
-
-    /// Closes a directory iterator.
-    fn close_read_dir(dir: usize);
-
-    /// Reads a whole file into a string.
-    fn fs_read_to_string(path: &str) -> AxResult<String>;
+    /// Reads directory entries for a filesystem path.
+    fn fs_read_dir(path: &str) -> AxResult<Vec<DirEntry>>;
 
     /// Creates a directory.
     fn fs_create_dir(path: &str) -> AxResult<()>;
-
-    /// Creates a directory and all missing parent directories.
-    fn fs_create_dir_all(path: &str) -> AxResult<()>;
 
     /// Removes an empty directory.
     fn fs_remove_dir(path: &str) -> AxResult<()>;
