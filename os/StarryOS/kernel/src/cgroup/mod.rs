@@ -279,9 +279,12 @@ pub fn path(id: CgroupId) -> AxResult<String> {
 }
 
 pub fn procs_text(id: CgroupId) -> AxResult<String> {
-    ensure_node_exists(id)?;
+    let processes = crate::task::processes();
+    let tree = CGROUP_TREE.lock();
+    let node = tree.nodes.get(&id).ok_or(AxError::NotFound)?;
+    debug_assert_eq!(node.id, id);
 
-    let mut pids: Vec<_> = crate::task::processes()
+    let mut pids: Vec<_> = processes
         .into_iter()
         .filter(|proc_data| proc_data.is_cgroup_membership_active() && proc_data.cgroup_id() == id)
         .map(|proc_data| proc_data.proc.pid())
