@@ -269,7 +269,7 @@ pub fn inject_interrupt(vector: usize) {
     unsafe {
         if (INT_HWI0..=INT_HWI7).contains(&vector) {
             if INJECT_INT_LOGS.fetch_add(1, Ordering::Relaxed) < 16 {
-                log::info!(
+                log::debug!(
                     "LoongArch vcpu pulse HWI: vector={}, gintc_before={:#x}, hwis_before={:#x}",
                     vector,
                     read_gintc(),
