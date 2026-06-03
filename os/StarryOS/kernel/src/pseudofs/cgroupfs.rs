@@ -86,10 +86,28 @@ impl SimpleDirOps for CgroupDirOps {
                             let s = core::str::from_utf8(data).unwrap_or("");
                             for line in s.lines() {
                                 if let Ok(pid) = line.trim().parse::<u32>() {
-                                    let mut procs = n.procs.lock();
-                                    if !procs.contains(&pid) {
-                                        procs.push(pid);
-                                        n.pids.current.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                                    // Migrate process to this cgroup
+                                    if let Ok(pd) = crate::task::get_process_data(pid as _) {
+                                        let old_cgroup = pd.cgroup.read().clone();
+                                        // Remove from old cgroup
+                                        if old_cgroup.path != n.path {
+                                            old_cgroup.procs.lock().retain(|&p| p != pid);
+                                            old_cgroup.pids.exit();
+                                            // Add to new cgroup
+                                            let mut procs = n.procs.lock();
+                                            if !procs.contains(&pid) {
+                                                procs.push(pid);
+                                            }
+                                            n.pids.current.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                                            // Update process's cgroup reference
+                                            *pd.cgroup.write() = n.clone();
+                                        }
+                                    } else {
+                                        // PID not found — just add to procs list
+                                        let mut procs = n.procs.lock();
+                                        if !procs.contains(&pid) {
+                                            procs.push(pid);
+                                        }
                                     }
                                 }
                             }

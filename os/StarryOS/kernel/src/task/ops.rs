@@ -524,10 +524,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // Update cgroup: remove process and decrement pids counter
     {
         let pid = process.pid();
-        if let Some(root) = crate::cgroup::GLOBAL_CGROUP_ROOT.get() {
-            root.procs.lock().retain(|&p| p != pid);
-            root.pids.exit();
-        }
+        let cgroup = thr.proc_data.cgroup.read().clone();
+        cgroup.procs.lock().retain(|&p| p != pid);
+        cgroup.pids.exit();
     }
 
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After

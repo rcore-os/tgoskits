@@ -35,7 +35,7 @@ pub struct CgroupNode {
 }
 
 impl CgroupNode {
-    fn new_root() -> Arc<Self> {
+    pub fn new_root() -> Arc<Self> {
         Arc::new(Self {
             name: String::new(),
             path: "/".to_string(),

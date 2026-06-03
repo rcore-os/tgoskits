@@ -259,18 +259,18 @@ impl CloneArgs {
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
 
+            // Inherit parent's cgroup and register child
+            let parent_cgroup = old_proc_data.cgroup.read().clone();
+            *proc_data.cgroup.write() = parent_cgroup.clone();
+
             // Check cgroup pids limit before creating
-            if let Some(root) = crate::cgroup::GLOBAL_CGROUP_ROOT.get()
-                && !root.pids.can_fork()
-            {
+            if !parent_cgroup.pids.can_fork() {
                 return Err(AxError::WouldBlock);
             }
 
-            // Inherit parent's cgroup membership and update pids counter
-            if let Some(root) = crate::cgroup::GLOBAL_CGROUP_ROOT.get() {
-                root.procs.lock().push(tid);
-                root.pids.fork();
-            }
+            // Register in parent's cgroup and update pids counter
+            parent_cgroup.procs.lock().push(tid);
+            parent_cgroup.pids.fork();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
