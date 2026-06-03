@@ -89,6 +89,7 @@ impl SimpleDirOps for CgroupDirOps {
                                     let mut procs = n.procs.lock();
                                     if !procs.contains(&pid) {
                                         procs.push(pid);
+                                        n.pids.current.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
                             }
