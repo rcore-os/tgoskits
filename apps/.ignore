@@ -1,3 +1,7 @@
 # Starry apps skipped by default app discovery.
 apps/starry/orangepi-5-plus-uvc
 apps/starry/orangepi-5-plus-uvc-rknn
+apps/starry/llama-cpp
+apps/starry/deepseek-tui
+apps/starry/gdb-smoke
+apps/starry/mariadb

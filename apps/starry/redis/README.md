@@ -5,13 +5,23 @@ This case runs Redis inside StarryOS through the app runner.
 Default QEMU configs run the functional Redis app checks:
 
 ```bash
-cargo xtask starry app run -t redis --arch riscv64
+cargo xtask starry app qemu -t redis --arch riscv64
+```
+
+
+The Redis AOF appendonly regression is kept as an explicit app config:
+
+```bash
+cargo xtask starry app qemu \
+  -t redis \
+  --arch riscv64 \
+  --qemu-config qemu-riscv64-aof-appendonly.toml
 ```
 
 Stress configs are available as explicit QEMU config variants:
 
 ```bash
-cargo xtask starry app run \
+cargo xtask starry app qemu \
   -t redis \
   --arch riscv64 \
   --qemu-config qemu-riscv64-stress.toml

@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 示例程序
 - crate 形态：二进制 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `aarch64-bsta1000b`、`aarch64-phytium-pi`、`aarch64-qemu-virt`、`aarch64-raspi4`、`loongarch64-qemu-virt`、`riscv64-qemu-virt`、`x86-pc` 控制编译期能力装配。
+- feature 视角：主要通过 `loongarch64-qemu-virt`、`riscv64-qemu-virt`、`x86-pc` 控制编译期静态平台装配；AArch64 默认测试路径走动态平台。
 - 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 模块结构
@@ -31,10 +31,6 @@
 ```mermaid
 graph LR
     current["ax-helloworld-myplat"]
-    current --> axplat_aarch64_bsta1000b["ax-plat-aarch64-bsta1000b"]
-    current --> axplat_aarch64_phytium_pi["ax-plat-aarch64-phytium-pi"]
-    current --> axplat_aarch64_qemu_virt["ax-plat-aarch64-qemu-virt"]
-    current --> axplat_aarch64_raspi["ax-plat-aarch64-raspi"]
     current --> ax_plat_loongarch64_qemu_virt["ax-plat-loongarch64-qemu-virt"]
     current --> ax_plat_riscv64_qemu_virt["ax-plat-riscv64-qemu-virt"]
     current --> ax_plat_x86_pc["ax-plat-x86-pc"]
@@ -42,10 +38,6 @@ graph LR
 ```
 
 ### 直接依赖
-- `ax-plat-aarch64-bsta1000b`
-- `ax-plat-aarch64-phytium-pi`
-- `ax-plat-aarch64-qemu-virt`
-- `ax-plat-aarch64-raspi`
 - `ax-plat-loongarch64-qemu-virt`
 - `ax-plat-riscv64-qemu-virt`
 - `ax-plat-x86-pc`

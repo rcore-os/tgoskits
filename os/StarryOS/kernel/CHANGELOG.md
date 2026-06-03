@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - support `FUTEX_WAKE_OP` in Starry futex syscall handling.
+- *(prctl)* implement `PR_SET_CHILD_SUBREAPER` and `PR_GET_CHILD_SUBREAPER` with orphan reparenting tests.
 
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.11...starry-kernel-v0.5.12) - 2026-05-22
 

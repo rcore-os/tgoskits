@@ -16,9 +16,9 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
+use axvm::config::AxVMCrateConfig;
 #[cfg(target_arch = "x86_64")]
-use axvm::config::VMBootProtocol;
-use axvm::config::{AxVMCrateConfig, VmMemMappingType};
+use axvm::config::{VMBootProtocol, VmMemMappingType};
 use byte_unit::Byte;
 
 use crate::hal::CacheOp;

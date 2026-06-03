@@ -157,11 +157,6 @@ flowchart TB
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
-| `ax-plat-aarch64-bsta1000b` | 组件层 | `platforms/ax-plat-aarch64-bsta1000b` | 6 | 1 | [查看](crates/ax-plat-aarch64-bsta1000b) |
-| `ax-plat-aarch64-peripherals` | 组件层 | `platforms/ax-plat-aarch64-peripherals` | 7 | 4 | [查看](crates/ax-plat-aarch64-peripherals) |
-| `ax-plat-aarch64-phytium-pi` | 组件层 | `platforms/ax-plat-aarch64-phytium-pi` | 5 | 1 | [查看](crates/ax-plat-aarch64-phytium-pi) |
-| `ax-plat-aarch64-qemu-virt` | 组件层 | `platforms/ax-plat-aarch64-qemu-virt` | 5 | 5 | [查看](crates/ax-plat-aarch64-qemu-virt) |
-| `ax-plat-aarch64-raspi` | 组件层 | `platforms/ax-plat-aarch64-raspi` | 5 | 1 | [查看](crates/ax-plat-aarch64-raspi) |
 | `ax-plat-loongarch64-qemu-virt` | 组件层 | `platforms/ax-plat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
 | `ax-plat-macros` | 组件层 | `platforms/ax-plat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
 | `ax-plat-riscv64-qemu-virt` | 组件层 | `platforms/ax-plat-riscv64-qemu-virt` | 6 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
@@ -182,7 +177,7 @@ flowchart TB
 | `axhvc` | 组件层 | `virtualization/axhvc` | 1 | 1 | [查看](crates/axhvc) |
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
 | `axplat-dyn` | 平台层 | `platforms/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
-| `ax-plat-x86-qemu-q35` | 平台层 | `platforms/ax-plat-x86-qemu-q35` | 7 | 1 | [查看](crates/ax-plat-x86-qemu-q35) |
+| `ax-plat-x86-qemu-q35` | 平台层 | `platforms/ax-plat-x86-qemu-q35` | 7 | 1 | [查看](crates/axplat-x86-qemu-q35) |
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](crates/axpoll) |
 | `axvcpu` | 组件层 | `virtualization/axvcpu` | 5 | 5 | [查看](crates/axvcpu) |
 | `axvisor` | Axvisor 层 | `os/axvisor` | 27 | 0 | [查看](crates/axvisor) |

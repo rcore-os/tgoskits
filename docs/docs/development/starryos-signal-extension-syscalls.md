@@ -75,14 +75,16 @@ failed to run test-raw-msg-peek prebuild.sh
 
 ## 学习笔记
 
-| syscall | 笔记 |
+本轮未拆分独立学习笔记，以下 syscall 的语义和验证结果已在本文汇总。
+
+| syscall | 记录 |
 |---------|------|
-| `sigaltstack` | [sigaltstack](./starryos-signal-extension-syscalls/sigaltstack.md) |
-| `rt_sigsuspend` | [rt_sigsuspend](./starryos-signal-extension-syscalls/rt_sigsuspend.md) |
-| `rt_sigqueueinfo` | [rt_sigqueueinfo](./starryos-signal-extension-syscalls/rt_sigqueueinfo.md) |
-| `rt_tgsigqueueinfo` | [rt_tgsigqueueinfo](./starryos-signal-extension-syscalls/rt_tgsigqueueinfo.md) |
-| `rt_sigtimedwait` | [rt_sigtimedwait](./starryos-signal-extension-syscalls/rt_sigtimedwait.md) |
-| `rt_sigreturn` | [rt_sigreturn](./starryos-signal-extension-syscalls/rt_sigreturn.md) |
+| `sigaltstack` | 本文汇总 |
+| `rt_sigsuspend` | 本文汇总 |
+| `rt_sigqueueinfo` | 本文汇总 |
+| `rt_tgsigqueueinfo` | 本文汇总 |
+| `rt_sigtimedwait` | 本文汇总 |
+| `rt_sigreturn` | 本文汇总 |
 
 ## 后续建议
 

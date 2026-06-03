@@ -3,8 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace="$(cd "$script_dir/../../.." && pwd)"
-base_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
-output_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-codex.img"
+default_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+rootfs="$default_rootfs"
 auth_json="${CODEX_AUTH_JSON:-}"
 proxy_url="${CODEX_ONLINE_PROXY:-}"
 env_file=""
@@ -22,17 +22,15 @@ Options:
   --proxy URL          Write /root/.codex/starry-online-env with HTTP(S)/ALL proxy exports
                        (default: CODEX_ONLINE_PROXY when set)
   --env-file PATH      Inject an existing shell env file as /root/.codex/starry-online-env
-  --base-rootfs PATH   Base rootfs image to copy before injection
+  --rootfs PATH        Rootfs image to update for the example
                        (default: tmp/axbuild/rootfs/rootfs-x86_64-alpine.img)
-  --output-rootfs PATH Output rootfs image for the example
-                       (default: tmp/axbuild/rootfs/rootfs-x86_64-codex.img)
   --ca-cert PATH       CA bundle to inject as /etc/ssl/certs/ca-certificates.crt
                        (default: SSL_CERT_FILE or /etc/ssl/certs/ca-certificates.crt)
   -h, --help           Show this help
 
 Example:
   apps/starry/codex-cli/prepare_codex_rootfs.sh \\
-    --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img \\
+    --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img \\
     --auth-json target/auth.json \\
     --proxy http://10.0.2.2:7890
 EOF
@@ -73,12 +71,8 @@ while [[ $# -gt 0 ]]; do
             env_file="$2"
             shift 2
             ;;
-        --base-rootfs)
-            base_rootfs="$2"
-            shift 2
-            ;;
-        --output-rootfs)
-            output_rootfs="$2"
+        --rootfs)
+            rootfs="$2"
             shift 2
             ;;
         --ca-cert)
@@ -100,8 +94,7 @@ done
 if [[ -n "$auth_json" ]]; then
     auth_json="$(workspace_path "$auth_json")"
 fi
-base_rootfs="$(workspace_path "$base_rootfs")"
-output_rootfs="$(workspace_path "$output_rootfs")"
+rootfs="$(workspace_path "$rootfs")"
 ca_cert="$(workspace_path "$ca_cert")"
 if [[ -n "$env_file" ]]; then
     env_file="$(workspace_path "$env_file")"
@@ -119,15 +112,27 @@ if [[ -n "$auth_json" && ! -f "$auth_json" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$base_rootfs" ]]; then
-    if [[ "$base_rootfs" == "$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img" ]]; then
-        echo "Base rootfs not found; preparing the default x86_64 Alpine rootfs..."
+ensure_default_rootfs() {
+    if [[ ! -f "$default_rootfs" ]]; then
+        echo "Default rootfs not found; preparing the x86_64 Alpine rootfs..."
         (cd "$workspace" && cargo xtask starry rootfs --arch x86_64)
+    fi
+    if [[ ! -f "$default_rootfs" ]]; then
+        echo "error: default rootfs not found: $default_rootfs" >&2
+        exit 1
+    fi
+}
+
+if [[ ! -f "$rootfs" ]]; then
+    ensure_default_rootfs
+    if [[ "$rootfs" != "$default_rootfs" ]]; then
+        mkdir -p "$(dirname "$rootfs")"
+        cp --reflink=auto "$default_rootfs" "$rootfs" 2>/dev/null || cp "$default_rootfs" "$rootfs"
     fi
 fi
 
-if [[ ! -f "$base_rootfs" ]]; then
-    echo "error: base rootfs not found: $base_rootfs" >&2
+if [[ ! -f "$rootfs" ]]; then
+    echo "error: rootfs not found: $rootfs" >&2
     exit 1
 fi
 
@@ -140,7 +145,7 @@ if [[ ! -x "$codex_bin" || ! -x "$rg_bin" ]]; then
     exit 1
 fi
 
-mkdir -p "$(dirname "$output_rootfs")"
+mkdir -p "$(dirname "$rootfs")"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/starry-codex-rootfs.XXXXXX")"
 cleanup() {
     rm -rf "$tmp_dir"
@@ -184,7 +189,7 @@ else
 fi
 
 tmp_rootfs="$tmp_dir/rootfs.img"
-cp --reflink=auto "$base_rootfs" "$tmp_rootfs" 2>/dev/null || cp "$base_rootfs" "$tmp_rootfs"
+cp --reflink=auto "$rootfs" "$tmp_rootfs" 2>/dev/null || cp "$rootfs" "$tmp_rootfs"
 
 debugfs_script="$tmp_dir/inject.debugfs"
 {
@@ -208,9 +213,9 @@ if ! debugfs -w -f "$debugfs_script" "$tmp_rootfs" >"$debugfs_log" 2>&1; then
     cat "$debugfs_log" >&2
     exit 1
 fi
-mv "$tmp_rootfs" "$output_rootfs"
+mv "$tmp_rootfs" "$rootfs"
 
-display_rootfs="$output_rootfs"
+display_rootfs="$rootfs"
 case "$display_rootfs" in
     "$workspace"/*)
         display_rootfs="${display_rootfs#"$workspace"/}"
@@ -218,7 +223,7 @@ case "$display_rootfs" in
 esac
 
 echo "Codex example rootfs ready:"
-echo "  $output_rootfs"
+echo "  $rootfs"
 echo
 echo "Run the offline help example with:"
 echo "  cargo xtask starry qemu --arch x86_64 \\"

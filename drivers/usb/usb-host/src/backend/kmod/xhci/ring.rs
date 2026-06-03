@@ -135,11 +135,11 @@ impl Ring {
     }
 
     fn set_transfer_trb(&mut self, index: usize, trb: transfer::Allowed) {
-        self.trbs.set(index, trb.into());
+        self.trbs.set_cpu(index, trb.into());
     }
 
     pub fn enque_trb(&mut self, trb: TrbData) -> BusAddr {
-        self.trbs.set(self.i, trb);
+        self.trbs.set_cpu(self.i, trb);
         let addr = self.trb_bus_addr(self.i);
         self.next_index();
         addr
@@ -165,7 +165,7 @@ impl Ring {
             }
             let trb = command::Allowed::Link(link);
 
-            self.trbs.set(len - 1, trb.into());
+            self.trbs.set_cpu(len - 1, trb.into());
 
             self.cycle = !self.cycle;
         } else if self.i >= len {

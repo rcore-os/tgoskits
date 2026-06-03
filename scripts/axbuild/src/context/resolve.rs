@@ -59,10 +59,18 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_arceos_arch_and_target(effective_arch, effective_target)?;
-        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
-        let smp = cli.smp.or(snapshot.smp);
-        let inherit_snapshot_runtime =
-            cli.package.is_none() && cli.arch.is_none() && cli.target.is_none();
+        let inherit_snapshot_runtime = cli.package.is_none()
+            && cli.arch.is_none()
+            && cli.target.is_none()
+            && cli.config.is_none();
+        let plat_dyn = cli.plat_dyn.or_else(|| {
+            inherit_snapshot_runtime
+                .then_some(snapshot.plat_dyn)
+                .flatten()
+        });
+        let smp = cli
+            .smp
+            .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
             if inherit_snapshot_runtime {
