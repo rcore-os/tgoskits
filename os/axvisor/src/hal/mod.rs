@@ -60,6 +60,5 @@ mod impl_fs;
 mod impl_host;
 mod impl_irq;
 mod impl_memory;
-mod impl_platform;
 mod impl_task;
 mod impl_time;

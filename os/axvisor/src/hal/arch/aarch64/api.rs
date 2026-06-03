@@ -16,7 +16,7 @@ use ax_hal::mem::virt_to_phys;
 use axvisor_api::{
     arch::{ArchIf, CacheOp},
     irq,
-    memory::VirtAddr,
+    memory::{PhysAddr, VirtAddr},
     types::InterruptVector,
 };
 
@@ -30,6 +30,11 @@ impl ArchIf for ArchImpl {
 
     fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize) {
         crate::hal::arch::cache::dcache_range(op, addr, size);
+    }
+
+    fn host_fdt_paddr() -> Option<PhysAddr> {
+        let bootarg = ax_hal::dtb::get_bootarg();
+        (bootarg != 0).then(|| bootarg.into())
     }
 
     fn hardware_inject_virtual_interrupt(irq: InterruptVector) {

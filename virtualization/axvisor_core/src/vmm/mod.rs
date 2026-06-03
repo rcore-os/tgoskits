@@ -83,7 +83,7 @@ fn release_host_filesystem_for_guest_passthrough() -> AxResult {
         return Ok(());
     }
 
-    axvisor_api::platform::shutdown_host_filesystems()?;
+    axvisor_api::host::release_host_filesystems()?;
     info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     Ok(())
 }

@@ -31,7 +31,7 @@ const PAGE_SIZE_4K: usize = 0x1000;
 
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
-    let bootarg = axvisor_api::platform::get_host_fdt_ptr();
+    let bootarg = axvisor_api::arch::host_fdt_paddr();
     let Some(bootarg) = bootarg else {
         warn!("Boot argument does not contain a host FDT pointer");
         return None;

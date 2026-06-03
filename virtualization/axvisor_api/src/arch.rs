@@ -23,6 +23,7 @@
 //! - **AArch64**: GIC distributor and redistributor operations for virtual
 //!   interrupt injection and GIC initialization.
 //! - **x86_64**: host TSC frequency discovery for guest CPUID emulation.
+//! - **DTB boot architectures**: host FDT discovery for guest FDT generation.
 //!
 //! # Usage
 //!
@@ -69,6 +70,9 @@ pub trait ArchIf {
 
     /// Perform a data-cache maintenance operation on the specified address range.
     fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize);
+
+    /// Returns the physical address of the host-provided FDT blob, if any.
+    fn host_fdt_paddr() -> Option<PhysAddr>;
 
     /// Get the host TSC frequency in MHz.
     ///
