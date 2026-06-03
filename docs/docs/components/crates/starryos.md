@@ -64,7 +64,7 @@ flowchart TD
 ### 1.5 包级配置文件的作用
 这个包目录下除了 `main.rs` 以外，还有两个重要配置文件：
 
-- `.axconfig.toml`：描述平台和硬件布局，当前默认是 `riscv64-qemu-virt`。
+- build config：描述平台和硬件布局；RISC-V/AArch64 QEMU 默认走动态平台。
 - `.qemu.toml`：描述包级 QEMU 参数，当前不带 success/fail 正则。
 
 这与 `test-suit/starryos` 不同。`starryos` 是带着本地平台配置和运行配置一起存在的“镜像包”。

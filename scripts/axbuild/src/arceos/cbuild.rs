@@ -672,7 +672,7 @@ mod tests {
             "ax-feat/paging",
             "ax-driver/plat-static",
             "ax-driver/virtio-net",
-            "ax-hal/riscv64-qemu-virt",
+            "ax-hal/loongarch64-qemu-virt",
             "some-crate/feature",
         ]));
 
@@ -694,14 +694,14 @@ mod tests {
     fn map_c_app_features_preserves_driver_features() {
         let features = map_c_app_features(
             &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
-            &strings(&["ax-hal/riscv64-qemu-virt"]),
+            &strings(&["ax-hal/loongarch64-qemu-virt"]),
         );
 
         assert!(features.contains(&"net".to_string()));
         assert!(features.contains(&"fd".to_string()));
         assert!(features.contains(&"ax-driver/plat-static".to_string()));
         assert!(features.contains(&"ax-driver/virtio-net".to_string()));
-        assert!(features.contains(&"ax-hal/riscv64-qemu-virt".to_string()));
+        assert!(features.contains(&"ax-hal/loongarch64-qemu-virt".to_string()));
     }
 
     #[test]
@@ -815,8 +815,8 @@ mod tests {
             &target_dir,
             target,
             mode,
-            "riscv64-qemu-virt",
-            &strings(&["ax-hal/riscv64-qemu-virt"]),
+            "riscv64-sg2002",
+            &strings(&["ax-hal/riscv64-sg2002"]),
         )
         .unwrap();
 
