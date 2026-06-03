@@ -22,6 +22,7 @@ if [ -z "$out" ]; then echo "PASS: git stash list empty"; PASS=$((PASS+1))
 else echo "FAIL: git stash list not empty ($out)"; FAIL=$((FAIL+1)); fi
 
 section "4. stash on clean tree"
+git checkout -- file.txt
 out=$(git stash 2>&1); rc=$?
 echo "$out"
 if echo "$out" | grep -qi "No local changes"; then echo "PASS: git stash clean tree"; PASS=$((PASS+1))
