@@ -1,5 +1,9 @@
 # How to run ArceOS on phytium pi
 
+> Note: the in-tree static AArch64 Phytium Pi platform crate has been removed.
+> The board flow below now requires an external custom platform package or an
+> explicit platform config.
+
 First, we need `ostool` to build and upload the image to the board. It also supports windows.
 
 ```bash
@@ -35,15 +39,10 @@ Then the cmdline will wait for you to put board power on or reset.
 
 `Ctrl+C` to exit.
 
-Modify config in `.project.toml` to change platform for phytium pi.
-
-Find `shell=[[ ... "make A=examples/helloworld ARCH=aarch64"  ]]`, add `MYPLAT` like:
-
- `"make MYPLAT=axplat-aarch64-phytium-pi A=examples/helloworld-myplat SMP=4 APP_FEATURES=aarch64-phytium-pi"`.
-
-Find `elf = "examples/helloworld/helloworld_aarch64-qemu-virt.elf"` and change to:
-
-`elf = "examples/helloworld/helloworld_aarch64-phytium-pi.elf"`.
+Modify config in `.project.toml` to select the external Phytium Pi platform.
+For example, update the `shell` command that builds `examples/helloworld` so it
+passes your custom platform package or platform config, and update the `elf`
+path to the board-specific output produced by that build.
 
 Then run `ostool run uboot` again. When see `等待 U-Boot 启动...` , put board power on or reset.
 

@@ -31,26 +31,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "ax_plat_x86_qemu_q35",
     },
     PlatformFeature {
-        feature: "aarch64-qemu-virt",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_qemu_virt",
-    },
-    PlatformFeature {
-        feature: "aarch64-raspi",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_raspi",
-    },
-    PlatformFeature {
-        feature: "aarch64-bsta1000b",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_bsta1000b",
-    },
-    PlatformFeature {
-        feature: "aarch64-phytium-pi",
-        target_arch: Some("aarch64"),
-        crate_name: "ax_plat_aarch64_phytium_pi",
-    },
-    PlatformFeature {
         feature: "riscv64-qemu-virt",
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_qemu_virt",
@@ -73,7 +53,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
 ];
 
 const DEFAULT_PLATFORMS: &[(&str, &str)] = &[
-    ("aarch64", "ax_plat_aarch64_qemu_virt"),
     ("loongarch64", "ax_plat_loongarch64_qemu_virt"),
     ("riscv64", "ax_plat_riscv64_qemu_virt"),
     ("x86_64", "ax_plat_x86_pc"),

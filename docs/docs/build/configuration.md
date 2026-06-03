@@ -74,12 +74,12 @@ flowchart TD
 
 | 架构 | 默认 rootfs 镜像 | StarryOS 默认平台 | GNU 工具前缀 | qemu-user 二进制 |
 |------|-----------------|------------------|-------------|-----------------|
-| `aarch64` | `rootfs-aarch64-alpine.img` | `aarch64-qemu-virt` | `aarch64-linux-musl` | `qemu-aarch64-static` |
+| `aarch64` | `rootfs-aarch64-alpine.img` | 动态平台 | `aarch64-linux-musl` | `qemu-aarch64-static` |
 | `x86_64` | `rootfs-x86_64-alpine.img` | `x86-pc` | `x86_64-linux-musl` | `qemu-x86_64-static` |
 | `riscv64` | `rootfs-riscv64-alpine.img` | `riscv64-qemu-virt` | `riscv64-linux-musl` | `qemu-riscv64-static` |
 | `loongarch64` | `rootfs-loongarch64-alpine.img` | `loongarch64-qemu-virt` | `loongarch64-linux-musl` | `qemu-loongarch64-static` |
 
-这些字段由 `CrossCompileSpec` 承载，被 StarryOS 和 Axvisor 的 C/Python 测试用例的 prebuild 环境和 CMake 交叉编译流程所使用。`starry_default_platform_for_arch_checked()` 直接查表返回 StarryOS 的默认平台名。
+这些字段由 `CrossCompileSpec` 承载，被 StarryOS 和 Axvisor 的 C/Python 测试用例的 prebuild 环境和 CMake 交叉编译流程所使用。AArch64 默认不再绑定静态 StarryOS 平台，相关构建走动态平台路径。
 
 ## Snapshot
 
@@ -301,7 +301,7 @@ flowchart TD
 
 生成步骤：
 
-1. **定位平台包**：从目标包的 `Cargo.toml` 依赖中查找名称匹配 `ax-plat-*` 的平台包（如 `ax-plat-aarch64-qemu-virt`）
+1. **定位平台包**：从目标包的 `Cargo.toml` 依赖中查找名称匹配 `ax-plat-*` 的平台包（如 `ax-plat-riscv64-qemu-virt`）
 2. **查找配置规格**：在平台包的 `Cargo.toml` 同目录下查找 `axconfig.toml` 配置规格文件
 3. **合并生成**：调用 `ax_config_gen` 配置引擎，将全局 `defconfig.toml`（`os/arceos/configs/defconfig.toml`）与平台 `axconfig.toml` 合并，同时注入自动生成的字段和用户覆盖值
 4. **写入产物**：输出到 `tmp/axbuild/axconfig/<package>/<target>/.axconfig.toml`
@@ -369,7 +369,7 @@ axbuild 在编译期和运行时使用多个环境变量，分布在配置、运
 | `SMP` | `BuildInfo.max_cpu_num` | 启动 CPU 核数 |
 | `AX_IP` / `AX_GW` | `BuildInfo.env` | QEMU slirp 网络 IP / 网关 |
 | `AX_CONFIG_PATH` | axbuild 生成 | `.axconfig.toml` 路径（仅 `plat_dyn = false`） |
-| `AX_PLATFORM` | 平台检测 | 平台名（如 `aarch64-qemu-virt`） |
+| `AX_PLATFORM` | 平台检测 | 平台名（如 `riscv64-qemu-virt`；动态平台构建通常不设置） |
 | `AX_ARCH` | arch 解析 | CPU 架构名 |
 | `AX_TARGET` | target 解析 | target triple |
 | `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置文件列表（仅 Axvisor） |

@@ -417,6 +417,9 @@ dependencies = [
 [[package]]
 name = "arceos-rust"
 version = "0.1.1"
+dependencies = [
+ "walkdir",
+]
 
 [[package]]
 name = "arceos-rust-interface"
@@ -1042,10 +1045,6 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat",
- "ax-plat-aarch64-bsta1000b",
- "ax-plat-aarch64-phytium-pi",
- "ax-plat-aarch64-qemu-virt",
- "ax-plat-aarch64-raspi",
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-qemu-virt",
  "ax-plat-riscv64-sg2002",
@@ -1081,10 +1080,6 @@ version = "0.3.1"
 dependencies = [
  "ax-driver",
  "ax-hal",
- "ax-plat-aarch64-bsta1000b",
- "ax-plat-aarch64-phytium-pi",
- "ax-plat-aarch64-qemu-virt",
- "ax-plat-aarch64-raspi",
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-qemu-virt",
  "ax-plat-x86-pc",
@@ -1340,80 +1335,6 @@ dependencies = [
  "irq-framework",
  "rdrive",
  "spin 0.12.0",
-]
-
-[[package]]
-name = "ax-plat-aarch64-bsta1000b"
-version = "0.5.11"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-kspin",
- "ax-page-table-entry",
- "ax-plat",
- "ax-plat-aarch64-peripherals",
- "axklib",
- "log",
- "some-serial",
-]
-
-[[package]]
-name = "ax-plat-aarch64-peripherals"
-version = "0.5.10"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "arm-gic-driver",
- "ax-arm-pl031",
- "ax-cpu",
- "ax-int-ratio",
- "ax-kspin",
- "ax-lazyinit",
- "ax-plat",
- "log",
- "some-serial",
- "spin 0.12.0",
-]
-
-[[package]]
-name = "ax-plat-aarch64-phytium-pi"
-version = "0.5.11"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-page-table-entry",
- "ax-plat",
- "ax-plat-aarch64-peripherals",
- "axklib",
- "log",
-]
-
-[[package]]
-name = "ax-plat-aarch64-qemu-virt"
-version = "0.5.10"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-page-table-entry",
- "ax-plat",
- "ax-plat-aarch64-peripherals",
- "axklib",
- "log",
- "mmio-api",
-]
-
-[[package]]
-name = "ax-plat-aarch64-raspi"
-version = "0.5.11"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "ax-config-macros",
- "ax-cpu",
- "ax-page-table-entry",
- "ax-plat",
- "ax-plat-aarch64-peripherals",
- "axklib",
- "log",
 ]
 
 [[package]]
@@ -5086,11 +5007,11 @@ dependencies = [
 
 [[package]]
 name = "kmod-loader"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550f9b0e0c6e219e177bc0c6e6a10630deec3befdc3c9951b2ce7fb0b3f3070c"
+checksum = "a5d13c9132595e1b16ba64390fc23a19ab0f9b940a144445bdd270854e61f544"
 dependencies = [
- "axerrno",
+ "ax-errno 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitfield-struct 0.13.0",
  "bitflags 2.11.1",
  "cfg-if",
@@ -5370,6 +5291,16 @@ checksum = "b8518a02caf4803c6135450571d6af9bdb382880e5617adbd88c0e0eba237cbb"
 dependencies = [
  "bindgen 0.72.1",
  "log",
+]
+
+[[package]]
+name = "lwprintf-rs"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaa1793daa377959c5d73ee413228fe8f8ebfbac58f02b14d662da7d115a0222"
+dependencies = [
+ "bindgen 0.72.1",
+ "cc",
 ]
 
 [[package]]
@@ -8066,8 +7997,8 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
- "axnsproxy",
  "axklib",
+ "axnsproxy",
  "axplat-dyn",
  "axpoll",
  "bitflags 2.11.1",
@@ -8085,15 +8016,17 @@ dependencies = [
  "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",
- "kbpf-basic",
  "k230-kpu",
+ "kbpf-basic",
  "kernel-elf-parser",
  "kmod-loader",
+ "kmod-tools",
  "kprobe",
  "ksym",
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",
+ "lwprintf-rs",
  "num_enum",
  "ouroboros",
  "rand 0.10.1",

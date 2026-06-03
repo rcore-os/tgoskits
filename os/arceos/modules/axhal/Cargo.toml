@@ -10,10 +10,6 @@ license.workspace = true
 [features]
 smp = [
     "ax-plat-x86-pc?/smp",
-    "ax-plat-aarch64-qemu-virt?/smp",
-    "ax-plat-aarch64-raspi?/smp",
-    "ax-plat-aarch64-bsta1000b?/smp",
-    "ax-plat-aarch64-phytium-pi?/smp",
     "ax-plat-riscv64-qemu-virt?/smp",
     "ax-plat-riscv64-sg2002?/smp",
     "ax-plat-riscv64-visionfive2?/smp",
@@ -24,10 +20,6 @@ smp = [
 ]
 irq = [
     "ax-plat-x86-pc?/irq",
-    "ax-plat-aarch64-qemu-virt?/irq",
-    "ax-plat-aarch64-raspi?/irq",
-    "ax-plat-aarch64-bsta1000b?/irq",
-    "ax-plat-aarch64-phytium-pi?/irq",
     "ax-plat-riscv64-qemu-virt?/irq",
     "ax-plat-riscv64-sg2002?/irq",
     "ax-plat-riscv64-visionfive2?/irq",
@@ -40,10 +32,6 @@ irq = [
 fp-simd = [
     "ax-cpu/fp-simd",
     "ax-plat-x86-pc?/fp-simd",
-    "ax-plat-aarch64-qemu-virt?/fp-simd",
-    "ax-plat-aarch64-raspi?/fp-simd",
-    "ax-plat-aarch64-bsta1000b?/fp-simd",
-    "ax-plat-aarch64-phytium-pi?/fp-simd",
     "ax-plat-riscv64-qemu-virt?/fp-simd",
     "ax-plat-riscv64-sg2002?/fp-simd",
     "ax-plat-riscv64-visionfive2?/fp-simd",
@@ -54,10 +42,6 @@ fp-simd = [
 xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
 rtc = [
     "ax-plat-x86-pc?/rtc",
-    "ax-plat-aarch64-qemu-virt?/rtc",
-    "ax-plat-aarch64-raspi?/rtc",
-    "ax-plat-aarch64-bsta1000b?/rtc",
-    "ax-plat-aarch64-phytium-pi?/rtc",
     "ax-plat-riscv64-qemu-virt?/rtc",
     "ax-plat-riscv64-sg2002?/rtc",
     "ax-plat-riscv64-visionfive2?/rtc",
@@ -65,20 +49,10 @@ rtc = [
     "ax-plat-x86-qemu-q35?/rtc",
     "axplat-dyn?/rtc",
 ]
-# Forward the GICv3 toggle to the aarch64 qemu-virt platform.
-# `?` lets non-aarch64 builds pass the feature through without
-# requiring the optional dependency. Orthogonal to
-# `aarch64-cntv-timer` below.
-aarch64-gic-v3 = ["ax-plat-aarch64-qemu-virt?/gic-v3"]
-# Forward the CNTV (virtual generic timer) toggle to the aarch64
-# qemu-virt platform. Required under Apple HVF because CNTP is
-# owned by EL2 there. Orthogonal to `aarch64-gic-v3`.
-aarch64-cntv-timer = ["ax-plat-aarch64-qemu-virt?/cntv-timer"]
 paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",
     "ax-page-table-multiarch/ax-errno",
-    "ax-plat-aarch64-qemu-virt?/paging",
     "ax-plat-loongarch64-qemu-virt?/paging",
     "ax-plat-riscv64-qemu-virt?/paging",
 ]
@@ -97,10 +71,6 @@ axvisor-linker = []
 myplat = []
 plat-dyn = ["axplat-dyn"]
 x86-pc = ["dep:ax-plat-x86-pc"]
-aarch64-qemu-virt = ["dep:ax-plat-aarch64-qemu-virt"]
-aarch64-raspi = ["dep:ax-plat-aarch64-raspi"]
-aarch64-bsta1000b = ["dep:ax-plat-aarch64-bsta1000b"]
-aarch64-phytium-pi = ["dep:ax-plat-aarch64-phytium-pi"]
 riscv64-qemu-virt = ["dep:ax-plat-riscv64-qemu-virt"]
 riscv64-sg2002 = ["dep:ax-plat-riscv64-sg2002"]
 riscv64-visionfive2 = ["dep:ax-plat-riscv64-visionfive2"]
@@ -108,7 +78,6 @@ loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
 x86-qemu-q35 = ["dep:ax-plat-x86-qemu-q35", "ax-plat-x86-qemu-q35/reboot-on-system-off"]
 defplat = [
     "dep:ax-plat-x86-pc",
-    "dep:ax-plat-aarch64-qemu-virt",
     "dep:ax-plat-riscv64-qemu-virt",
     "dep:ax-plat-loongarch64-qemu-virt",
 ]
@@ -139,12 +108,6 @@ ax-plat-x86-qemu-q35 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 axplat-dyn = { workspace = true, default-features = false, optional = true }
-
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-ax-plat-aarch64-qemu-virt = { workspace = true, optional = true }
-ax-plat-aarch64-raspi = { workspace = true, optional = true }
-ax-plat-aarch64-bsta1000b = { workspace = true, optional = true }
-ax-plat-aarch64-phytium-pi = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-plat-riscv64-qemu-virt = { workspace = true, optional = true }

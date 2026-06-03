@@ -11,6 +11,9 @@ build = "build.rs"
 
 [lib]
 
+[build-dependencies]
+walkdir = "2"
+
 [features]
 # Default features are specified in `lib/Cargo.toml`
 default = []
@@ -28,6 +31,7 @@ ipi = []
 # Custom or default platforms
 myplat = []
 defplat = []
+plat-dyn = []
 
 # Memory
 alloc = []
