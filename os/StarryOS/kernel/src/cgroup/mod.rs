@@ -161,6 +161,24 @@ pub fn register_process(id: CgroupId) -> AxResult<()> {
     Ok(())
 }
 
+pub fn register_fork_child(parent: &crate::task::ProcessData) -> AxResult<CgroupId> {
+    let mut tree = CGROUP_TREE.lock();
+    if !parent.is_cgroup_membership_active() {
+        return Err(AxError::from(LinuxError::ESRCH));
+    }
+
+    let id = parent.cgroup_id();
+    let node = tree
+        .nodes
+        .get_mut(&id)
+        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+    node.live_processes = node
+        .live_processes
+        .checked_add(1)
+        .ok_or_else(|| AxError::from(LinuxError::EINVAL))?;
+    Ok(id)
+}
+
 fn unregister_process_locked(tree: &mut CgroupTree, id: CgroupId) {
     if let Some(node) = tree.nodes.get_mut(&id) {
         if let Some(live_processes) = node.live_processes.checked_sub(1) {

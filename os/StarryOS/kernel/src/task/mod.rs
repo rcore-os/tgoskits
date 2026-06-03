@@ -17,6 +17,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
+use ax_errno::AxResult;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
@@ -665,6 +666,11 @@ pub struct ProcessData {
     cont_event: Arc<PollSet>,
 }
 
+pub enum ProcessCgroupInit<'a> {
+    Root,
+    Inherit(&'a ProcessData),
+}
+
 impl ProcessData {
     /// Create a new [`ProcessData`].
     pub fn new(
@@ -674,11 +680,11 @@ impl ProcessData {
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
         vm_aspace_shared: bool,
-        initial_cgroup_id: crate::cgroup::CgroupId,
-    ) -> Arc<Self> {
+        cgroup_init: ProcessCgroupInit<'_>,
+    ) -> AxResult<Arc<Self>> {
         let this = Arc::new(Self {
             proc,
-            cgroup_id: AtomicU64::new(initial_cgroup_id),
+            cgroup_id: AtomicU64::new(crate::cgroup::root_id()),
             cgroup_membership_active: AtomicBool::new(false),
             exe_path: RwLock::new(image.exe_path),
             cmdline: RwLock::new(image.cmdline),
@@ -748,10 +754,17 @@ impl ProcessData {
         // expression would nest a sleepable lock inside atomic context.
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
-        crate::cgroup::register_process(this.cgroup_id())
-            .expect("initial process cgroup must exist");
+        let cgroup_id = match cgroup_init {
+            ProcessCgroupInit::Root => {
+                let id = crate::cgroup::root_id();
+                crate::cgroup::register_process(id)?;
+                id
+            }
+            ProcessCgroupInit::Inherit(parent) => crate::cgroup::register_fork_child(parent)?,
+        };
+        this.cgroup_id.store(cgroup_id, Ordering::Release);
         this.cgroup_membership_active.store(true, Ordering::Release);
-        this
+        Ok(this)
     }
 
     /// Return the current cgroup v2 membership id.

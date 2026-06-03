@@ -14,7 +14,10 @@ use starry_vm::VmMutPtr;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
-    task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
+    task::{
+        AsThread, ProcessCgroupInit, ProcessData, ProcessImage, Thread, add_task_to_table,
+        new_user_task,
+    },
 };
 
 bitflags! {
@@ -233,8 +236,8 @@ impl CloneArgs {
                 signal_actions,
                 exit_signal,
                 flags.contains(CloneFlags::VM),
-                old_proc_data.cgroup_id(),
-            );
+                ProcessCgroupInit::Inherit(old_proc_data),
+            )?;
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
