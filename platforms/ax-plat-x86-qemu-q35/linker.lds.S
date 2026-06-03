@@ -1,6 +1,7 @@
 OUTPUT_ARCH(%ARCH%)
 
 BASE_ADDRESS = %KERNEL_BASE%;
+AX_LINKER_LOAD_OFFSET = 0;
 SMP = %SMP%;
 
 ENTRY(_start)
@@ -30,10 +31,6 @@ SECTIONS
         _sdata = .;
         *(.data.boot_page_table)
         . = ALIGN(4K);
-        __sdriver_register = .;
-        KEEP(*(.driver.register*))
-        __edriver_register = .;
-
         *(.data .data.*)
         *(.sdata .sdata.*)
         *(.got .got.*)
@@ -86,8 +83,3 @@ SECTIONS
         *(.comment) *(.gnu*) *(.note*) *(.eh_frame*)
     }
 }
-
-SECTIONS {
-    scope_local : { *(scope_local) }
-}
-INSERT AFTER .tbss;

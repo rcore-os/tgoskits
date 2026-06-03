@@ -26,10 +26,6 @@
 #define SYSLOG_ACTION_SIZE_UNREAD 9
 #define SYSLOG_ACTION_SIZE_BUFFER 10
 
-#ifndef SYS_setresuid
-#define SYS_setresuid 147
-#endif
-
 static int run_in_child(void (*func)(void)) {
     pid_t pid = fork();
     if (pid < 0)
@@ -50,7 +46,14 @@ static int run_in_child(void (*func)(void)) {
 
 static void child_syslog_eperm(void) {
     char tmp[16];
-    syscall(SYS_setresuid, 1000, 1000, 1000);
+    int setup_failures = __fail;
+
+    CHECK_RET(setresuid(1000, 1000, 1000), 0,
+              "drop to uid 1000 before non-root syslog checks");
+    CHECK_RET(getuid(), 1000, "ruid is 1000 after privilege drop");
+    CHECK_RET(geteuid(), 1000, "euid is 1000 after privilege drop");
+    if (__fail != setup_failures)
+        return;
 
     CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ, tmp, (int)sizeof(tmp)),
               EPERM, "non-root READ returns EPERM");

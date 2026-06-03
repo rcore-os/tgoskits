@@ -1,7 +1,7 @@
 //! Dummy implementation of platform-related interfaces defined in [`axplat`].
 
 #[cfg(feature = "irq")]
-use ax_plat::irq::{IpiTarget, IrqHandler, IrqIf};
+use ax_plat::irq::{IpiTarget, IrqIf};
 use ax_plat::{
     console::ConsoleIf,
     impl_plat_interface,
@@ -128,14 +128,6 @@ impl PowerIf for DummyPower {
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
     fn set_enable(_irq: usize, _enabled: bool) {}
-
-    fn register(_irq: usize, _handler: IrqHandler) -> bool {
-        false
-    }
-
-    fn unregister(_irq: usize) -> Option<IrqHandler> {
-        None
-    }
 
     fn handle(_irq: usize) -> Option<usize> {
         None

@@ -68,7 +68,7 @@ flowchart TD
 Axvisor 使用两层 TOML：
 
 - `configs/board/*.toml`：板级/构建配置，决定目标架构、feature、日志级别、默认 `vm_configs` 等。
-- `configs/vms/*.toml`：客户机配置，决定 VM id、CPU 数、内存区域、镜像路径、设备列表等。
+- `configs/vms/**/*.toml`：客户机配置，决定 VM id、CPU 数、内存区域、镜像路径、设备列表等。
 
 对应的协同关系是：
 

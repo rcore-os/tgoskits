@@ -1,0 +1,4 @@
+# No arches enabled yet. Xwayland on top of weston needs /dev/dri/card0
+# from the DRM PR (#506) plus an e2tools fix for symlink-to-directory
+# entries in rootfs_extras (xkeyboard-config-2 -> X11/xkb). Re-enable
+# per-arch once both land and a verified baseline is captured.

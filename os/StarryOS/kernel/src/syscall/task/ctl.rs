@@ -116,6 +116,7 @@ pub fn sys_get_mempolicy(
 /// - PR_SET_NAME: set the name of the calling thread, using the value pointed to by `arg2`
 /// - PR_GET_NAME: get the name of the calling
 /// - PR_SET_SECCOMP: enable seccomp mode, with the mode specified in `arg2`
+/// - PR_SET_CHILD_SUBREAPER / PR_GET_CHILD_SUBREAPER: control orphan reparenting
 /// - PR_MCE_KILL: set the machine check exception policy
 /// - PR_SET_MM options: set various memory management options (start/end code/data/brk/stack)
 pub fn sys_prctl(
@@ -151,6 +152,21 @@ pub fn sys_prctl(
         PR_GET_PDEATHSIG => {
             let sig = current().as_thread().pdeathsig() as i32;
             (arg2 as *mut i32).vm_write(sig)?;
+        }
+        PR_SET_CHILD_SUBREAPER => {
+            current()
+                .as_thread()
+                .proc_data
+                .proc
+                .set_child_subreaper(arg2 != 0);
+        }
+        PR_GET_CHILD_SUBREAPER => {
+            let enabled = if current().as_thread().proc_data.proc.is_child_subreaper() {
+                1
+            } else {
+                0
+            };
+            (arg2 as *mut i32).vm_write(enabled)?;
         }
         PR_CAPBSET_READ => {
             if arg2 > CAP_LAST_CAP as usize {

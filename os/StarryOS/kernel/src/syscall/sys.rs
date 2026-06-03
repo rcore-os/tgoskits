@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
-use ax_config::ARCH;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_sync::Mutex;
@@ -119,27 +118,63 @@ fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bo
     old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
 }
 
+fn user_ns_is_root() -> bool {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    nsproxy.user_ns.lock().is_root
+}
+
+fn user_ns_overflow_uid() -> u32 {
+    if user_ns_is_root() {
+        return 0;
+    }
+    65534
+}
+
 pub fn sys_getuid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.uid as isize)
 }
 
 pub fn sys_geteuid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.euid as isize)
 }
 
 pub fn sys_getgid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.gid as isize)
 }
 
 pub fn sys_getegid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.egid as isize)
 }
 
 pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        ruid.vm_write(overflow)?;
+        euid.vm_write(overflow)?;
+        suid.vm_write(overflow)?;
+        return Ok(0);
+    }
     let cred = current().as_thread().cred();
     ruid.vm_write(cred.uid)?;
     euid.vm_write(cred.euid)?;
@@ -148,6 +183,13 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult
 }
 
 pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        rgid.vm_write(overflow)?;
+        egid.vm_write(overflow)?;
+        sgid.vm_write(overflow)?;
+        return Ok(0);
+    }
     let cred = current().as_thread().cred();
     rgid.vm_write(cred.gid)?;
     egid.vm_write(cred.egid)?;
@@ -539,27 +581,61 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     Ok(0)
 }
 
-const fn pad_str(info: &str) -> [c_char; 65] {
-    let mut data: [c_char; 65] = [0; 65];
-    // this needs #![feature(const_copy_from_slice)]
-    // data[..info.len()].copy_from_slice(info.as_bytes());
-    unsafe {
-        core::ptr::copy_nonoverlapping(info.as_ptr().cast(), data.as_mut_ptr(), info.len());
-    }
-    data
+pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
+    let curr = current();
+    // Build the utsname inside a block so the SpinNoIrq guard is dropped
+    // before we touch user memory via vm_write (access_user_memory requires
+    // IRQs enabled, but SpinNoIrq disables them).
+    let uts = {
+        let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+        let ns = nsproxy.uts_ns.lock();
+        axnsproxy::build_utsname(&ns)
+    };
+    name.vm_write(uts)?;
+    Ok(0)
 }
 
-const UTSNAME: new_utsname = new_utsname {
-    sysname: pad_str("Linux"),
-    nodename: pad_str("starry"),
-    release: pad_str("10.0.0"),
-    version: pad_str("10.0.0"),
-    machine: pad_str(ARCH),
-    domainname: pad_str("https://github.com/Starry-OS/StarryOS"),
-};
+pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
+    if len > 64 {
+        return Err(AxError::InvalidInput);
+    }
+    let curr = current();
+    if curr.as_thread().cred().euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
+    vm_read_slice(name.cast::<u8>(), &mut buf)?;
+    let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
+    let mut nodename: [c_char; 65] = [0; 65];
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), nodename.as_mut_ptr(), len);
+    }
+    let proc_data = &curr.as_thread().proc_data;
+    proc_data.nsproxy.lock().uts_ns.lock().nodename = nodename;
+    Ok(0)
+}
 
-pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
-    name.vm_write(UTSNAME)?;
+pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
+    if len > 64 {
+        return Err(AxError::InvalidInput);
+    }
+    let curr = current();
+    if curr.as_thread().cred().euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
+    vm_read_slice(name.cast::<u8>(), &mut buf)?;
+    let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
+    let mut domainname: [c_char; 65] = [0; 65];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr().cast::<c_char>(),
+            domainname.as_mut_ptr(),
+            len,
+        );
+    }
+    let proc_data = &curr.as_thread().proc_data;
+    proc_data.nsproxy.lock().uts_ns.lock().domainname = domainname;
     Ok(0)
 }
 

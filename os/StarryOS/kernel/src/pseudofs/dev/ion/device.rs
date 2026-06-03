@@ -288,10 +288,10 @@ impl DeviceOps for IonDevice {
                     offset, phys_addr, size
                 );
 
-                DeviceMmap::Physical(PhysAddrRange::from_start_size(
-                    ax_memory_addr::PhysAddr::from(phys_addr),
-                    size,
-                ))
+                DeviceMmap::Physical(
+                    PhysAddrRange::from_start_size(ax_memory_addr::PhysAddr::from(phys_addr), size),
+                    None,
+                )
             }
             Err(e) => {
                 warn!(

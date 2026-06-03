@@ -11,74 +11,74 @@ sidebar_label: "层级关系"
 
 ```mermaid
 flowchart TB
-    direction TB
-    L16["<b>层级 16</b><br/>堆叠层（依赖更底层 crate）<br/>`arceos-affinity`、`arceos-display`、`arceos-exception`、`arceos-fs-shell`、`arceos-irq`、`arceos-memtest`、`arceos-net-echoserver`、`arceos-net-httpclient`、`arceos-net-httpserver`、`arceos-net-udpserver`、`arceos-parallel`、`arceos-priority`、`arceos-sleep`、`arceos-tls`、`arceos-wait-queue`、`arceos-yield`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver` …共22个"]
-    classDef ls16 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
-    class L16 ls16
-    L15["<b>层级 15</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-libc`、`ax-std`、`starryos`、`starryos-test`"]
-    classDef ls15 fill:#f8bbd0,stroke:#c2185b,stroke-width:2px,color:#000
-    class L15 ls15
-    L14["<b>层级 14</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-api`、`ax-posix-api`、`starry-kernel`"]
-    classDef ls14 fill:#b2ebf2,stroke:#00838f,stroke-width:2px,color:#000
-    class L14 ls14
-    L13["<b>层级 13</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-feat`"]
-    classDef ls13 fill:#ffcdd2,stroke:#c62828,stroke-width:2px,color:#000
-    class L13 ls13
-    L12["<b>层级 12</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-runtime`"]
-    classDef ls12 fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px,color:#000
-    class L12 ls12
-    L11["<b>层级 11</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-net-ng`"]
-    classDef ls11 fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px,color:#000
-    class L11 ls11
-    L10["<b>层级 10</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-display`、`ax-fs`、`ax-fs-ng`、`ax-input`、`ax-net`"]
-    classDef ls10 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
-    class L10 ls10
-    L9["<b>层级 9</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-driver`"]
-    classDef ls9 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
-    class L9 ls9
-    L8["<b>层级 8</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-dma`、`ax-sync`"]
-    classDef ls8 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
-    class L8 ls8
-    L7["<b>层级 7</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-ipi`、`ax-mm`、`ax-task`、`axvm`"]
-    classDef ls7 fill:#f8bbd0,stroke:#c2185b,stroke-width:2px,color:#000
-    class L7 ls7
-    L6["<b>层级 6</b><br/>堆叠层（依赖更底层 crate）<br/>`arm_vcpu`、`ax-hal`、`axdevice`、`riscv_vcpu`、`x86_vcpu`"]
-    classDef ls6 fill:#b2ebf2,stroke:#00838f,stroke-width:2px,color:#000
-    class L6 ls6
-    L5["<b>层级 5</b><br/>堆叠层（依赖更底层 crate）<br/>`arm_vgic`、`ax-plat-aarch64-bsta1000b`、`ax-plat-aarch64-phytium-pi`、`ax-plat-aarch64-qemu-virt`、`ax-plat-aarch64-raspi`、`ax-plat-riscv64-qemu-virt`、`ax-plat-riscv64-qemu-virt`、`axvcpu`、`riscv_vplic`、`x86_vlapic`"]
-    classDef ls5 fill:#ffcdd2,stroke:#c62828,stroke-width:2px,color:#000
-    class L5 ls5
-    L4["<b>层级 4</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-plat-aarch64-peripherals`、`ax-plat-loongarch64-qemu-virt`、`ax-plat-x86-pc`、`axdevice_base`、`axplat-dyn`、`ax-plat-x86-qemu-q35`、`axvisor_api`、`starry-signal`"]
-    classDef ls4 fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px,color:#000
-    class L4 ls4
-    L3["<b>层级 3</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-alloc`、`ax-cpu`、`ax-log`、`ax-plat`、`axaddrspace`、`scope-local`、`starry-process`、`test-simple`、`test-weak`、`test-weak-partial`、`tg-xtask`"]
-    classDef ls3 fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px,color:#000
-    class L3 ls3
-    L2["<b>层级 2</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-config`、`ax-fs-devfs`、`ax-fs-ramfs`、`ax-kspin`、`ax-page-table-multiarch`、`ax-percpu`、`axbuild`、`impl-simple-traits`、`impl-weak-partial`、`impl-weak-traits`"]
-    classDef ls2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
-    class L2 ls2
-    L1["<b>层级 1</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-allocator`、`ax-config-macros`、`ax-ctor-bare`、`ax-fs-vfs`、`ax-io`、`ax-kernel-guard`、`ax-memory-set`、`ax-page-table-entry`、`ax-plat-macros`、`ax-sched`、`axfs-ng-vfs`、`axhvc`、`axklib`、`axvmconfig`、`define-simple-traits`、`define-weak-traits` …共19个"]
-    classDef ls1 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
-    class L1 ls1
-    L0["<b>层级 0</b><br/>基础层（无仓库内直接依赖）<br/>`aarch64_sysreg`、`ax-arm-pl031`、`ax-cap-access`、`ax-config-gen`、`ax-cpumask`、`ax-crate-interface`、`ax-crate-interface-lite`、`ax-ctor-bare-macros`、`ax-errno`、`ax-handler-table`、`ax-int-ratio`、`ax-lazyinit`、`ax-linked-list-r4l`、`ax-memory-addr`、`ax-percpu-macros`、`ax-riscv-plic`、`ax-timer-list` …共29个"]
-    classDef ls0 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
-    class L0 ls0
-    L16 --> L15
-    L15 --> L14
-    L14 --> L13
-    L13 --> L12
-    L12 --> L11
-    L11 --> L10
-    L10 --> L9
-    L9 --> L8
-    L8 --> L7
-    L7 --> L6
-    L6 --> L5
-    L5 --> L4
-    L4 --> L3
-    L3 --> L2
-    L2 --> L1
-    L1 --> L0
+  direction TB
+  L16["<b>层级 16</b><br/>堆叠层（依赖更底层 crate）<br/>`arceos-affinity`、`arceos-display`、`arceos-exception`、`arceos-fs-shell`、`arceos-irq`、`arceos-memtest`、`arceos-net-echoserver`、`arceos-net-httpclient`、`arceos-net-httpserver`、`arceos-net-udpserver`、`arceos-parallel`、`arceos-priority`、`arceos-sleep`、`arceos-tls`、`arceos-wait-queue`、`arceos-yield`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver` …共22个"]
+  classDef ls16 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
+  class L16 ls16
+  L15["<b>层级 15</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-libc`、`ax-std`、`starryos`、`starryos-test`"]
+  classDef ls15 fill:#f8bbd0,stroke:#c2185b,stroke-width:2px,color:#000
+  class L15 ls15
+  L14["<b>层级 14</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-api`、`ax-posix-api`、`starry-kernel`"]
+  classDef ls14 fill:#b2ebf2,stroke:#00838f,stroke-width:2px,color:#000
+  class L14 ls14
+  L13["<b>层级 13</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-feat`"]
+  classDef ls13 fill:#ffcdd2,stroke:#c62828,stroke-width:2px,color:#000
+  class L13 ls13
+  L12["<b>层级 12</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-runtime`"]
+  classDef ls12 fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px,color:#000
+  class L12 ls12
+  L11["<b>层级 11</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-net-ng`"]
+  classDef ls11 fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px,color:#000
+  class L11 ls11
+  L10["<b>层级 10</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-display`、`ax-fs`、`ax-fs-ng`、`ax-input`、`ax-net`"]
+  classDef ls10 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
+  class L10 ls10
+  L9["<b>层级 9</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-driver`"]
+  classDef ls9 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+  class L9 ls9
+  L8["<b>层级 8</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-dma`、`ax-sync`"]
+  classDef ls8 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
+  class L8 ls8
+  L7["<b>层级 7</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-ipi`、`ax-mm`、`ax-task`、`axvm`"]
+  classDef ls7 fill:#f8bbd0,stroke:#c2185b,stroke-width:2px,color:#000
+  class L7 ls7
+  L6["<b>层级 6</b><br/>堆叠层（依赖更底层 crate）<br/>`arm_vcpu`、`ax-hal`、`axdevice`、`riscv_vcpu`、`x86_vcpu`"]
+  classDef ls6 fill:#b2ebf2,stroke:#00838f,stroke-width:2px,color:#000
+  class L6 ls6
+  L5["<b>层级 5</b><br/>堆叠层（依赖更底层 crate）<br/>`arm_vgic`、`ax-plat-riscv64-qemu-virt`、`ax-plat-riscv64-qemu-virt`、`axvcpu`、`riscv_vplic`、`x86_vlapic`"]
+  classDef ls5 fill:#ffcdd2,stroke:#c62828,stroke-width:2px,color:#000
+  class L5 ls5
+  L4["<b>层级 4</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-plat-loongarch64-qemu-virt`、`ax-plat-x86-pc`、`axdevice_base`、`axplat-dyn`、`ax-plat-x86-qemu-q35`、`axvisor_api`、`starry-signal`"]
+  classDef ls4 fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px,color:#000
+  class L4 ls4
+  L3["<b>层级 3</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-alloc`、`ax-cpu`、`ax-log`、`ax-plat`、`axaddrspace`、`scope-local`、`starry-process`、`test-simple`、`test-weak`、`test-weak-partial`、`tg-xtask`"]
+  classDef ls3 fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px,color:#000
+  class L3 ls3
+  L2["<b>层级 2</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-config`、`ax-fs-devfs`、`ax-fs-ramfs`、`ax-kspin`、`ax-page-table-multiarch`、`ax-percpu`、`axbuild`、`impl-simple-traits`、`impl-weak-partial`、`impl-weak-traits`"]
+  classDef ls2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
+  class L2 ls2
+  L1["<b>层级 1</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-allocator`、`ax-config-macros`、`ax-ctor-bare`、`ax-fs-vfs`、`ax-io`、`ax-kernel-guard`、`ax-memory-set`、`ax-page-table-entry`、`ax-plat-macros`、`ax-sched`、`axfs-ng-vfs`、`axhvc`、`axklib`、`axvmconfig`、`define-simple-traits`、`define-weak-traits` …共19个"]
+  classDef ls1 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+  class L1 ls1
+  L0["<b>层级 0</b><br/>基础层（无仓库内直接依赖）<br/>`aarch64_sysreg`、`ax-arm-pl031`、`ax-cap-access`、`ax-config-gen`、`ax-cpumask`、`ax-crate-interface`、`ax-crate-interface-lite`、`ax-ctor-bare-macros`、`ax-errno`、`ax-handler-table`、`ax-int-ratio`、`ax-lazyinit`、`ax-linked-list-r4l`、`ax-memory-addr`、`ax-percpu-macros`、`ax-riscv-plic`、`ax-timer-list` …共28个"]
+  classDef ls0 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
+  class L0 ls0
+  L16 --> L15
+  L15 --> L14
+  L14 --> L13
+  L13 --> L12
+  L12 --> L11
+  L11 --> L10
+  L10 --> L9
+  L9 --> L8
+  L8 --> L7
+  L7 --> L6
+  L6 --> L5
+  L5 --> L4
+  L4 --> L3
+  L3 --> L2
+  L2 --> L1
+  L1 --> L0
 ```
 
 
@@ -155,17 +155,12 @@ flowchart TB
 | 3 | 堆叠层 | 组件层 | `test-weak-partial` | `0.3.0` | `components/crate_interface/test_crates/test-weak-partial` |
 | 4 | 堆叠层 | 平台层 | `axplat-dyn` | `0.5.0` | `platforms/axplat-dyn` |
 | 4 | 堆叠层 | 平台层 | `ax-plat-x86-qemu-q35` | `0.4.0` | `platforms/ax-plat-x86-qemu-q35` |
-| 4 | 堆叠层 | 组件层 | `ax-plat-aarch64-peripherals` | `0.5.1` | `platforms/ax-plat-aarch64-peripherals` |
 | 4 | 堆叠层 | 组件层 | `ax-plat-loongarch64-qemu-virt` | `0.5.1` | `platforms/ax-plat-loongarch64-qemu-virt` |
 | 4 | 堆叠层 | 组件层 | `ax-plat-x86-pc` | `0.5.1` | `platforms/ax-plat-x86-pc` |
 | 4 | 堆叠层 | 组件层 | `axdevice_base` | `0.4.2` | `virtualization/axdevice_base` |
 | 4 | 堆叠层 | 组件层 | `axvisor_api` | `0.5.0` | `virtualization/axvisor_api` |
 | 4 | 堆叠层 | 组件层 | `starry-signal` | `0.5.0` | `components/starry-signal` |
 | 5 | 堆叠层 | 组件层 | `arm_vgic` | `0.4.2` | `virtualization/arm_vgic` |
-| 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-bsta1000b` | `0.5.1` | `platforms/ax-plat-aarch64-bsta1000b` |
-| 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-phytium-pi` | `0.5.1` | `platforms/ax-plat-aarch64-phytium-pi` |
-| 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-qemu-virt` | `0.5.1` | `platforms/ax-plat-aarch64-qemu-virt` |
-| 5 | 堆叠层 | 组件层 | `ax-plat-aarch64-raspi` | `0.5.1` | `platforms/ax-plat-aarch64-raspi` |
 | 5 | 堆叠层 | 组件层 | `ax-plat-riscv64-qemu-virt` | `0.5.1` | `platforms/ax-plat-riscv64-qemu-virt` |
 | 5 | 堆叠层 | 组件层 | `axvcpu` | `0.5.0` | `virtualization/axvcpu` |
 | 5 | 堆叠层 | 组件层 | `riscv_vplic` | `0.4.2` | `virtualization/riscv_vplic` |
@@ -228,8 +223,8 @@ flowchart TB
 | 1 | 19 | `ax-allocator` `ax-config-macros` `ax-ctor-bare` `ax-fs-vfs` `ax-io` `ax-kernel-guard` `ax-memory-set` `ax-page-table-entry` `ax-plat-macros` `ax-sched` `axfs-ng-vfs` `axhvc` `axklib` `axvmconfig` `define-simple-traits` `define-weak-traits` `fxmac_rs` `smoltcp-fuzz` `starry-vm` |
 | 2 | 10 | `ax-config` `ax-fs-devfs` `ax-fs-ramfs` `ax-kspin` `ax-page-table-multiarch` `ax-percpu` `axbuild` `impl-simple-traits` `impl-weak-partial` `impl-weak-traits` |
 | 3 | 11 | `ax-alloc` `ax-cpu` `ax-log` `ax-plat` `axaddrspace` `scope-local` `starry-process` `test-simple` `test-weak` `test-weak-partial` `tg-xtask` |
-| 4 | 8 | `ax-plat-aarch64-peripherals` `ax-plat-loongarch64-qemu-virt` `ax-plat-x86-pc` `axdevice_base` `axplat-dyn` `ax-plat-x86-qemu-q35` `axvisor_api` `starry-signal` |
-| 5 | 10 | `arm_vgic` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-riscv64-qemu-virt` `ax-plat-riscv64-qemu-virt` `axvcpu` `riscv_vplic` `x86_vlapic` |
+| 4 | 7 | `ax-plat-loongarch64-qemu-virt` `ax-plat-x86-pc` `axdevice_base` `axplat-dyn` `ax-plat-x86-qemu-q35` `axvisor_api` `starry-signal` |
+| 5 | 5 | `arm_vgic` `ax-plat-riscv64-qemu-virt` `axvcpu` `riscv_vplic` `x86_vlapic` |
 | 6 | 5 | `arm_vcpu` `ax-hal` `axdevice` `riscv_vcpu` `x86_vcpu` |
 | 7 | 4 | `ax-ipi` `ax-mm` `ax-task` `axvm` |
 | 8 | 2 | `ax-dma` `ax-sync` |
@@ -243,7 +238,7 @@ flowchart TB
 | 16 | 22 | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `ax-helloworld` `ax-helloworld-myplat` `ax-httpclient` `ax-httpserver` `ax-shell` `axvisor` |
 ### 4.3 直接依赖 / 被直接依赖（仓库内组件）
 
-下列仅统计**本仓库 137 个 crate 之间**的直接边。
+下列仅统计**本仓库 132 个 crate 之间**的直接边。
 **层级**与本文 §4.1 一致（自底向上编号，0 为仅依赖仓库外的底层）。简介优先 `Cargo.toml` 的 `description`，否则取 crate 文档摘要，否则为路径启发说明；**不超过 50 字**。
 列为空时记为 —。
 
@@ -271,12 +266,11 @@ flowchart TB
 | `ax-alloc` | 3 | ArceOS global memory allocator | `ax-allocator` `ax-errno` `ax-kspin` `ax-memory-addr` `ax-percpu` `axbacktrace` | `ax-api` `ax-dma` `ax-driver` `ax-feat` `ax-fs-ng` `ax-hal` `ax-mm` `ax-posix-api` `ax-runtime` `axplat-dyn` `starry-kernel` |
 | `ax-allocator` | 1 | Various allocator algorithms in a unified interfa… | `ax-errno` `bitmap-allocator` | `ax-alloc` `ax-dma` |
 | `ax-api` | 14 | Public APIs and types for ArceOS modules | `ax-alloc` `ax-config` `ax-display` `ax-dma` `ax-driver` `ax-errno` `ax-feat` `ax-fs` `ax-hal` `ax-io` `ax-ipi` `ax-log` `ax-mm` `ax-net` `ax-runtime` `ax-sync` `ax-task` | `ax-std` |
-| `ax-arm-pl031` | 0 | System Real Time Clock (RTC) Drivers for aarch64 … | — | `ax-plat-aarch64-peripherals` |
 | `ax-cap-access` | 0 | Provide basic capability-based access control to … | — | `ax-fs` |
 | `ax-config` | 2 | Platform-specific constants and parameters for Ar… | `ax-config-macros` | `ax-api` `ax-dma` `ax-driver` `ax-feat` `ax-hal` `ax-ipi` `ax-net-ng` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
 | `ax-config-gen` | 0 | A TOML-based configuration generation tool for Ar… | — | `ax-config-macros` |
-| `ax-config-macros` | 1 | Procedural macros for converting TOML format conf… | `ax-config-gen` | `ax-config` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `axplat-dyn` `ax-plat-x86-qemu-q35` |
-| `ax-cpu` | 3 | Privileged instruction and structure abstractions… | `ax-lazyinit` `ax-memory-addr` `ax-page-table-entry` `ax-page-table-multiarch` `ax-percpu` `axbacktrace` | `ax-hal` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-peripherals` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `axplat-dyn` `ax-plat-x86-qemu-q35` `starry-signal` |
+| `ax-config-macros` | 1 | Procedural macros for converting TOML format conf… | `ax-config-gen` | `ax-config` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `axplat-dyn` `ax-plat-x86-qemu-q35` |
+| `ax-cpu` | 3 | Privileged instruction and structure abstractions… | `ax-lazyinit` `ax-memory-addr` `ax-page-table-entry` `ax-page-table-multiarch` `ax-percpu` `axbacktrace` | `ax-hal` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `axplat-dyn` `ax-plat-x86-qemu-q35` `starry-signal` |
 | `ax-cpumask` | 0 | CPU mask library in Rust | — | `ax-task` `axvisor` `axvisor_api` `axvm` |
 | `ax-crate-interface` | 0 | Provides a way to define an interface (trait) in … | — | `arceos-fs-shell` `ax-driver` `ax-kernel-guard` `ax-log` `ax-plat` `ax-plat-macros` `ax-plat-riscv64-qemu-virt` `ax-runtime` `ax-task` `axvisor` `axvisor_api` `define-simple-traits` `define-weak-traits` `fxmac_rs` `impl-simple-traits` `impl-weak-partial` `impl-weak-traits` `riscv_vcpu` `test-simple` `test-weak` `test-weak-partial` `x86_vcpu` |
 | `ax-crate-interface-lite` | 0 | Provides a way to define an interface (trait) in … | — | — |
@@ -292,19 +286,19 @@ flowchart TB
 | `ax-fs-ng` | 10 | ArceOS filesystem module | `ax-alloc` `ax-driver` `ax-errno` `ax-hal` `ax-io` `ax-kspin` `ax-sync` `axfs-ng-vfs` `axpoll` `scope-local` | `ax-feat` `ax-net-ng` `ax-runtime` `starry-kernel` |
 | `ax-fs-ramfs` | 2 | RAM filesystem used by ArceOS | `ax-fs-vfs` | `arceos-fs-shell` `ax-fs` |
 | `ax-fs-vfs` | 1 | Virtual filesystem interfaces used by ArceOS | `ax-errno` | `arceos-fs-shell` `ax-fs` `ax-fs-devfs` `ax-fs-ramfs` |
-| `ax-hal` | 6 | ArceOS hardware abstraction layer, provides unifi… | `ax-alloc` `ax-config` `ax-cpu` `ax-kernel-guard` `ax-memory-addr` `ax-page-table-multiarch` `ax-percpu` `ax-plat` `ax-plat-aarch64-qemu-virt` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `axplat-dyn` | `ax-api` `ax-dma` `ax-driver` `ax-feat` `ax-fs` `ax-fs-ng` `ax-ipi` `ax-mm` `ax-net` `ax-net-ng` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
+| `ax-hal` | 6 | ArceOS hardware abstraction layer, provides unifi… | `ax-alloc` `ax-config` `ax-cpu` `ax-kernel-guard` `ax-memory-addr` `ax-page-table-multiarch` `ax-percpu` `ax-plat` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `axplat-dyn` | `ax-api` `ax-dma` `ax-driver` `ax-feat` `ax-fs` `ax-fs-ng` `ax-ipi` `ax-mm` `ax-net` `ax-net-ng` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
 | `ax-handler-table` | 0 | A lock-free table of event handlers | — | `ax-plat` |
 | `ax-helloworld` | 16 | ArceOS 示例程序 | `ax-std` | — |
-| `ax-helloworld-myplat` | 16 | ArceOS 示例程序 | `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-std` | — |
+| `ax-helloworld-myplat` | 16 | ArceOS 示例程序 | `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-std` | — |
 | `ax-httpclient` | 16 | ArceOS 示例程序 | `ax-std` | — |
 | `ax-httpserver` | 16 | Simple HTTP server. Benchmark with Apache HTTP se… | `ax-std` | — |
 | `ax-input` | 10 | Input device management for ArceOS | `ax-driver` `ax-lazyinit` `ax-sync` | `ax-feat` `ax-runtime` `starry-kernel` |
-| `ax-int-ratio` | 0 | The type of ratios represented by two integers. | — | `ax-plat-aarch64-peripherals` `ax-plat-x86-pc` `ax-plat-x86-qemu-q35` |
+| `ax-int-ratio` | 0 | The type of ratios represented by two integers. | — | `ax-plat-x86-pc` `ax-plat-x86-qemu-q35` |
 | `ax-io` | 1 | `std::io` for `no_std` environment | `ax-errno` | `ax-api` `ax-fs` `ax-fs-ng` `ax-libc` `ax-net` `ax-net-ng` `ax-posix-api` `ax-std` `starry-kernel` |
 | `ax-ipi` | 7 | ArceOS IPI management module | `ax-config` `ax-hal` `ax-kspin` `ax-lazyinit` `ax-percpu` | `ax-api` `ax-feat` `ax-runtime` |
 | `ax-kernel-guard` | 1 | RAII wrappers to create a critical section with l… | `ax-crate-interface` | `ax-hal` `ax-kspin` `ax-percpu` `ax-task` `axvisor` `starry-kernel` |
-| `ax-kspin` | 2 | Spinlocks used for kernel space that can disable … | `ax-kernel-guard` | `ax-alloc` `ax-dma` `ax-feat` `ax-fs-ng` `ax-ipi` `ax-log` `ax-mm` `ax-plat` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-peripherals` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-std` `ax-sync` `ax-task` `ax-plat-x86-qemu-q35` `axvisor` `starry-kernel` `starry-process` `starry-signal` |
-| `ax-lazyinit` | 0 | Initialize a static value lazily. | — | `ax-cpu` `ax-display` `ax-fs` `ax-input` `ax-ipi` `ax-mm` `ax-net` `ax-plat-aarch64-peripherals` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-std` `ax-task` `axaddrspace` `ax-plat-x86-qemu-q35` `axvisor` `starry-process` |
+| `ax-kspin` | 2 | Spinlocks used for kernel space that can disable … | `ax-kernel-guard` | `ax-alloc` `ax-dma` `ax-feat` `ax-fs-ng` `ax-ipi` `ax-log` `ax-mm` `ax-plat` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-std` `ax-sync` `ax-task` `ax-plat-x86-qemu-q35` `axvisor` `starry-kernel` `starry-process` `starry-signal` |
+| `ax-lazyinit` | 0 | Initialize a static value lazily. | — | `ax-cpu` `ax-display` `ax-fs` `ax-input` `ax-ipi` `ax-mm` `ax-net` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-std` `ax-task` `axaddrspace` `ax-plat-x86-qemu-q35` `axvisor` `starry-process` |
 | `ax-libc` | 15 | ArceOS user program library for C apps | `ax-errno` `ax-feat` `ax-io` `ax-posix-api` | — |
 | `ax-linked-list-r4l` | 0 | Linked lists that supports arbitrary removal in c… | — | `ax-sched` |
 | `ax-log` | 3 | Macros for multi-level formatted logging used by … | `ax-crate-interface` `ax-kspin` | `ax-api` `ax-feat` `ax-posix-api` `ax-runtime` `starry-kernel` |
@@ -313,20 +307,14 @@ flowchart TB
 | `ax-mm` | 7 | ArceOS virtual memory management module | `ax-alloc` `ax-errno` `ax-hal` `ax-kspin` `ax-lazyinit` `ax-memory-addr` `ax-memory-set` `ax-page-table-multiarch` | `ax-api` `ax-dma` `ax-runtime` `starry-kernel` |
 | `ax-net` | 10 | ArceOS network module | `ax-driver` `ax-errno` `ax-hal` `ax-io` `ax-lazyinit` `ax-sync` `ax-task` `smoltcp` | `ax-api` `ax-feat` `ax-posix-api` `ax-runtime` |
 | `ax-net-ng` | 11 | ArceOS network module | `ax-config` `ax-driver` `ax-errno` `ax-fs-ng` `ax-hal` `ax-io` `ax-sync` `ax-task` `axfs-ng-vfs` `axpoll` `smoltcp` | `ax-runtime` `starry-kernel` |
-| `ax-page-table-entry` | 1 | Page table entry definition for various hardware … | `ax-memory-addr` | `ax-cpu` `ax-page-table-multiarch` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-loongarch64-qemu-virt` `axaddrspace` `axvisor` `axvm` `riscv_vcpu` `x86_vcpu` |
+| `ax-page-table-entry` | 1 | Page table entry definition for various hardware … | `ax-memory-addr` | `ax-cpu` `ax-page-table-multiarch` `ax-plat-loongarch64-qemu-virt` `axaddrspace` `axvisor` `axvm` `riscv_vcpu` `x86_vcpu` |
 | `ax-page-table-multiarch` | 2 | Generic page table structures for various hardwar… | `ax-errno` `ax-memory-addr` `ax-page-table-entry` | `ax-cpu` `ax-hal` `ax-mm` `axaddrspace` `axvisor` `axvm` `starry-kernel` |
 | `ax-percpu` | 2 | Define and access per-CPU data structures | `ax-kernel-guard` `ax-percpu-macros` | `arm_vcpu` `ax-alloc` `ax-cpu` `ax-hal` `ax-ipi` `ax-plat` `ax-plat-x86-pc` `ax-runtime` `ax-task` `axplat-dyn` `ax-plat-x86-qemu-q35` `axvcpu` `axvisor` `axvm` `scope-local` `starry-kernel` |
 | `ax-percpu-macros` | 0 | Macros to define and access a per-CPU data struct… | — | `ax-percpu` |
-| `ax-plat` | 3 | This crate provides a unified abstraction layer f… | `ax-crate-interface` `ax-handler-table` `ax-kspin` `ax-memory-addr` `ax-percpu` `ax-plat-macros` | `ax-hal` `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-peripherals` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-runtime` `axplat-dyn` `ax-plat-x86-qemu-q35` |
-| `ax-plat-aarch64-bsta1000b` | 5 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-kspin` `ax-page-table-entry` `ax-plat` `ax-plat-aarch64-peripherals` | `ax-helloworld-myplat` |
-| `ax-plat-aarch64-peripherals` | 4 | ARM64 common peripheral drivers with `axplat` com… | `ax-arm-pl031` `ax-cpu` `ax-int-ratio` `ax-kspin` `ax-lazyinit` `ax-plat` `some-serial` | `ax-plat-aarch64-bsta1000b` `ax-plat-aarch64-phytium-pi` `ax-plat-aarch64-qemu-virt` `ax-plat-aarch64-raspi` |
-| `ax-plat-aarch64-phytium-pi` | 5 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-page-table-entry` `ax-plat` `ax-plat-aarch64-peripherals` | `ax-helloworld-myplat` |
-| `ax-plat-aarch64-qemu-virt` | 5 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-page-table-entry` `ax-plat` `ax-plat-aarch64-peripherals` | `ax-hal` `ax-helloworld-myplat` |
-| `ax-plat-aarch64-raspi` | 5 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-page-table-entry` `ax-plat` `ax-plat-aarch64-peripherals` | `ax-helloworld-myplat` |
+| `ax-plat` | 3 | This crate provides a unified abstraction layer f… | `ax-crate-interface` `ax-handler-table` `ax-kspin` `ax-memory-addr` `ax-percpu` `ax-plat-macros` | `ax-hal` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` `ax-runtime` `axplat-dyn` `ax-plat-x86-qemu-q35` |
 | `ax-plat-loongarch64-qemu-virt` | 4 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-kspin` `ax-lazyinit` `ax-page-table-entry` `ax-plat` | `ax-hal` `ax-helloworld-myplat` |
 | `ax-plat-macros` | 1 | Procedural macros for the `axplat` crate | `ax-crate-interface` | `ax-plat` |
 | `ax-plat-riscv64-qemu-virt` | 5 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-crate-interface` `ax-kspin` `ax-lazyinit` `ax-plat` `ax-riscv-plic` `axvisor_api` | `ax-hal` `ax-helloworld-myplat` `axvisor` |
-| `ax-plat-riscv64-qemu-virt` | 5 | Axvisor Hypervisor 运行时 | `ax-config-macros` `ax-cpu` `ax-crate-interface` `ax-kspin` `ax-lazyinit` `ax-plat` `ax-riscv-plic` `axvisor_api` | `ax-hal` `ax-helloworld-myplat` `axvisor` |
 | `ax-plat-x86-pc` | 4 | Implementation of `axplat` hardware abstraction l… | `ax-config-macros` `ax-cpu` `ax-int-ratio` `ax-kspin` `ax-lazyinit` `ax-percpu` `ax-plat` | `ax-hal` `ax-helloworld-myplat` |
 | `ax-posix-api` | 14 | POSIX-compatible APIs for ArceOS modules | `ax-alloc` `ax-config` `ax-errno` `ax-feat` `ax-fs` `ax-hal` `ax-io` `ax-log` `ax-net` `ax-runtime` `ax-sync` `ax-task` `scope-local` | `ax-libc` |
 | `ax-riscv-plic` | 0 | RISC-V platform-level interrupt controller (PLIC)… | — | `ax-plat-riscv64-qemu-virt` |
@@ -360,11 +348,9 @@ flowchart TB
 | `define-weak-traits` | 1 | Define traits with default implementations using … | `ax-crate-interface` | `impl-weak-partial` `impl-weak-traits` `test-weak` `test-weak-partial` |
 | `deptool` | 0 | ArceOS 配套工具与辅助程序 | — | — |
 | `fxmac_rs` | 1 | FXMAC Ethernet driver in Rust for PhytiumPi (Phyt… | `ax-crate-interface` | `ax-driver` |
-| | 6 | 可复用基础组件 | `ax-plat` `ax-plat-aarch64-qemu-virt` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` | — |
 | `impl-simple-traits` | 2 | Implement the simple traits defined in define-sim… | `ax-crate-interface` `define-simple-traits` | `test-simple` |
 | `impl-weak-partial` | 2 | Partial implementation of WeakDefaultIf trait. Th… | `ax-crate-interface` `define-weak-traits` | `test-weak-partial` |
 | `impl-weak-traits` | 2 | Full implementation of weak_default traits define… | `ax-crate-interface` `define-weak-traits` | `test-weak` |
-| | 6 | 可复用基础组件 | `ax-config-macros` `ax-cpu` `ax-plat` `ax-plat-aarch64-qemu-virt` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` | — |
 | `mingo` | 0 | ArceOS 配套工具与辅助程序 | — | — |
 | `riscv-h` | 0 | RISC-V virtualization-related registers | — | `riscv_vcpu` `riscv_vplic` |
 | `riscv_vcpu` | 6 | ArceOS-Hypervisor riscv vcpu module | `ax-crate-interface` `ax-errno` `ax-memory-addr` `ax-page-table-entry` `axaddrspace` `axvcpu` `axvisor_api` `riscv-h` | `axvisor` `axvm` |
@@ -373,7 +359,6 @@ flowchart TB
 | `scope-local` | 3 | Scope local storage | `ax-percpu` | `ax-fs-ng` `ax-posix-api` `starry-kernel` |
 | `smoltcp` | 0 | A TCP/IP stack designed for bare-metal, real-time… | — | `ax-net` `ax-net-ng` `smoltcp-fuzz` |
 | `smoltcp-fuzz` | 1 | 可复用基础组件 | `smoltcp` | — |
-| | 6 | 可复用基础组件 | `ax-config-macros` `ax-cpu` `ax-memory-addr` `ax-percpu` `ax-plat` `ax-plat-aarch64-qemu-virt` `ax-plat-loongarch64-qemu-virt` `ax-plat-riscv64-qemu-virt` `ax-plat-x86-pc` | — |
 | `starry-kernel` | 14 | A Linux-compatible OS kernel built on ArceOS unik… | `ax-alloc` `ax-config` `ax-display` `ax-driver` `ax-errno` `ax-feat` `ax-fs-ng` `ax-hal` `ax-input` `ax-io` `ax-kernel-guard` `ax-kspin` `ax-log` `ax-memory-addr` `ax-memory-set` `ax-mm` `ax-net-ng` `ax-page-table-multiarch` `ax-percpu` `ax-runtime` `ax-sync` `ax-task` `axbacktrace` `axfs-ng-vfs` `axpoll` `scope-local` `starry-process` `starry-signal` `starry-vm` | `starryos` `starryos-test` |
 | `starry-process` | 3 | Process management for Starry OS | `ax-kspin` `ax-lazyinit` | `starry-kernel` |
 | `starry-signal` | 4 | Signal management library for Starry OS | `ax-cpu` `ax-kspin` `starry-vm` | `starry-kernel` |

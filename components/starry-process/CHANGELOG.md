@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Track child subreaper state and reparent orphans to the nearest living subreaper before falling back to init.
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.6...starry-process-v0.4.7) - 2026-05-22
 
 ### Added

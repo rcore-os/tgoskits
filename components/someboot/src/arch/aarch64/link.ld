@@ -14,6 +14,7 @@ ENTRY(_head)
 PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
 	note PT_NOTE FLAGS(4);	/* R__ */
+	tls PT_TLS FLAGS(4);	/* R__ */
 }
 
 SECTIONS
@@ -46,6 +47,7 @@ SECTIONS
         *(.data .data.*)
         *(.init.data)
         *(.sdata .sdata.*)
+        *(.got .got.*)
 
         . = ALIGN(64);
         __percpu_start = .;
@@ -64,13 +66,12 @@ SECTIONS
     }
     _edata = .;
     __kernel_load_end = .;
-    __bss_start = .; 
 
     .tdata : {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
-    }
+    } :text :tls
 
     .tbss : {
         _stbss = .;
@@ -78,11 +79,13 @@ SECTIONS
         *(.init.bss)
         *(.tcommon)
         _etbss = .;
-    }
+    } :text :tls
  
+    . = ALIGN(8);
+    __bss_start = .; 
     .sbss :  { 
         *(.dynsbss) *(.sbss) *(.scommon) 
-    } 
+    } :text
     .bss :  { 
         *(.dynbss) 
         *(.bss .bss.*) 
@@ -94,7 +97,7 @@ SECTIONS
         . += STACK_SIZE;
         __cpu0_stack_top = .;
         
-    } 
+    } :text
     . = ALIGN(PAGE_SIZE);
     __bss_stop = .;
     _end = .;
@@ -136,4 +139,3 @@ SECTIONS
         *(.eh_frame)
     }
 }
-

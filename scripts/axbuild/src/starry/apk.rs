@@ -41,7 +41,7 @@ pub(crate) fn parse_apk_region(value: Option<&str>) -> anyhow::Result<ApkRegion>
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase)
     {
-        None => Ok(ApkRegion::China),
+        None => Ok(ApkRegion::Us),
         Some(value) if matches!(value.as_str(), "china" | "cn") => Ok(ApkRegion::China),
         Some(value) if matches!(value.as_str(), "us" | "usa") => Ok(ApkRegion::Us),
         Some(value) => bail!(
@@ -114,9 +114,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_apk_region_defaults_to_china() {
-        assert_eq!(parse_apk_region(None).unwrap(), ApkRegion::China);
-        assert_eq!(parse_apk_region(Some("")).unwrap(), ApkRegion::China);
+    fn parse_apk_region_defaults_to_us() {
+        assert_eq!(parse_apk_region(None).unwrap(), ApkRegion::Us);
+        assert_eq!(parse_apk_region(Some("")).unwrap(), ApkRegion::Us);
     }
 
     #[test]

@@ -268,6 +268,9 @@ pub fn sys_waitid(
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
 ) -> AxResult<isize> {
+    let curr = current();
+    let proc = &curr.as_thread().proc_data.proc;
+
     // Validate idtype
     let target = match idtype {
         P_ALL => WaitTarget::Any,
@@ -278,8 +281,15 @@ pub fn sys_waitid(
             WaitTarget::Pid(id as Pid)
         }
         P_PGID => {
-            // Not yet supported.
-            return Err(AxError::InvalidInput);
+            if id < 0 {
+                return Err(AxError::InvalidInput);
+            }
+            let pgid = if id == 0 {
+                proc.group().pgid()
+            } else {
+                id as Pid
+            };
+            WaitTarget::Pgid(pgid)
         }
         P_PIDFD => waitid_pidfd_target(id)?,
         _ => return Err(AxError::InvalidInput),
@@ -293,9 +303,6 @@ pub fn sys_waitid(
     }
 
     info!("sys_waitid <= idtype: {idtype}, id: {id}, options: {options:?}");
-
-    let curr = current();
-    let proc = &curr.as_thread().proc_data.proc;
 
     let children = waitable_processes(proc, target, proc.pid());
     if children.is_empty() {

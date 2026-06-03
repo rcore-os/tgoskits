@@ -56,7 +56,18 @@ fn load_build_info_with_makefile_features_and_metadata(
     build::ensure_build_info(&request.build_info_path, || {
         ArceosBuildInfo::default_for_target(&request.target)
     })?;
-    let mut build_info: ArceosBuildInfo = build::load_build_info(&request.build_info_path)?;
+    let content = fs::read_to_string(&request.build_info_path)?;
+    let mut build_info: ArceosBuildInfo = toml::from_str(&content).with_context(|| {
+        format!(
+            "failed to parse build info {}",
+            request.build_info_path.display()
+        )
+    })?;
+    build::apply_target_defaults_if_plat_dyn_unspecified(
+        &mut build_info,
+        &request.target,
+        &content,
+    );
 
     if build_info.normalize_legacy_feature_aliases() {
         warn!(
@@ -197,15 +208,17 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
         );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
     }
 
     #[test]
-    fn resolves_non_dynamic_platform_features_and_args() {
+    fn resolves_non_dynamic_aarch64_to_defplat_without_static_default() {
         let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
         build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", false);
 
+        assert!(build_info.features.contains(&"ax-hal/defplat".to_string()));
         assert!(
-            build_info
+            !build_info
                 .features
                 .contains(&"ax-hal/aarch64-qemu-virt".to_string())
         );
@@ -222,6 +235,26 @@ mod tests {
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
+    }
+
+    #[test]
+    fn preparing_non_dynamic_aarch64_without_custom_platform_fails() {
+        let metadata = repo_metadata();
+        let result = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+            .into_prepared_base_cargo_config_with_metadata(
+                "ax-helloworld",
+                "aarch64-unknown-none-softfloat",
+                Some(false),
+                &metadata,
+            );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no default platform package is registered for arch `aarch64`")
         );
     }
 
@@ -327,6 +360,127 @@ AX_IP = "10.0.2.15"
         let rewritten = fs::read_to_string(path).unwrap();
         assert!(rewritten.contains("ax-std"));
         assert!(!rewritten.contains("axstd"));
+    }
+
+    #[test]
+    fn load_build_info_defaults_unspecified_aarch64_to_dynamic_platform() {
+        let root = tempdir().unwrap();
+        let path = root
+            .path()
+            .join("build-aarch64-unknown-none-softfloat.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["ax-std", "ax-std/backtrace"]
+log = "Info"
+
+[env]
+BACKTRACE = "y"
+"#,
+        )
+        .unwrap();
+        let request = request(
+            "ax-backtrace",
+            "aarch64-unknown-none-softfloat",
+            None,
+            path.clone(),
+        );
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert!(build_info.plat_dyn);
+
+        let metadata = repo_metadata();
+        let cargo = build_info
+            .into_prepared_base_cargo_config_with_metadata(
+                &request.package,
+                &request.target,
+                request.plat_dyn,
+                &metadata,
+            )
+            .unwrap();
+
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+        );
+        assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
+    }
+
+    #[test]
+    fn load_build_info_preserves_explicit_non_dynamic_aarch64() {
+        let root = tempdir().unwrap();
+        let path = root
+            .path()
+            .join("build-aarch64-unknown-none-softfloat.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["ax-std"]
+env = {}
+log = "Info"
+plat_dyn = false
+"#,
+        )
+        .unwrap();
+        let request = request(
+            "ax-helloworld",
+            "aarch64-unknown-none-softfloat",
+            None,
+            path,
+        );
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert!(!build_info.plat_dyn);
+    }
+
+    #[test]
+    fn load_build_info_preserves_unspecified_riscv_static_platform() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("build-riscv64gc-unknown-none-elf.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["ax-std"]
+log = "Warn"
+max_cpu_num = 4
+
+[env]
+AX_GW = "10.0.2.2"
+AX_IP = "10.0.2.15"
+"#,
+        )
+        .unwrap();
+        let request = request("arceos-sleep", "riscv64gc-unknown-none-elf", None, path);
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert!(!build_info.plat_dyn);
+
+        let metadata = repo_metadata();
+        let cargo = build_info
+            .into_prepared_base_cargo_config_with_metadata(
+                &request.package,
+                &request.target,
+                request.plat_dyn,
+                &metadata,
+            )
+            .unwrap();
+
+        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"ax-hal/riscv64-qemu-virt".to_string())
+        );
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/no-pie/riscv64gc-unknown-none-elf.json")
+        );
     }
 
     #[test]

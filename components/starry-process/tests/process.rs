@@ -49,6 +49,70 @@ fn reap() {
 }
 
 #[test]
+fn child_subreaper_flag_is_process_local() {
+    let parent = init_proc().new_child();
+    assert!(!parent.is_child_subreaper());
+
+    parent.set_child_subreaper(true);
+    assert!(parent.is_child_subreaper());
+
+    let child = parent.new_child();
+    assert!(!child.is_child_subreaper());
+
+    parent.set_child_subreaper(false);
+    assert!(!parent.is_child_subreaper());
+}
+
+#[test]
+fn reap_to_nearest_child_subreaper() {
+    let subreaper = init_proc().new_child();
+    subreaper.set_child_subreaper(true);
+
+    let parent = subreaper.new_child();
+    let child = parent.new_child();
+
+    parent.exit();
+
+    assert!(Arc::ptr_eq(&subreaper, &child.parent().unwrap()));
+    assert!(subreaper.children().iter().any(|c| Arc::ptr_eq(c, &child)));
+    assert!(!parent.children().iter().any(|c| Arc::ptr_eq(c, &child)));
+}
+
+#[test]
+fn reap_to_nearest_nested_child_subreaper() {
+    let outer = init_proc().new_child();
+    outer.set_child_subreaper(true);
+
+    let inner = outer.new_child();
+    inner.set_child_subreaper(true);
+
+    let parent = inner.new_child();
+    let child = parent.new_child();
+
+    parent.exit();
+
+    assert!(Arc::ptr_eq(&inner, &child.parent().unwrap()));
+}
+
+#[test]
+fn exiting_child_subreaper_reparents_to_next_subreaper() {
+    let outer = init_proc().new_child();
+    outer.set_child_subreaper(true);
+
+    let inner = outer.new_child();
+    inner.set_child_subreaper(true);
+
+    let parent = inner.new_child();
+    let child = parent.new_child();
+
+    parent.exit();
+    assert!(Arc::ptr_eq(&inner, &child.parent().unwrap()));
+
+    inner.exit();
+    assert!(Arc::ptr_eq(&outer, &child.parent().unwrap()));
+}
+
+#[test]
 fn thread_exit() {
     let parent = init_proc();
     let child = parent.new_child();

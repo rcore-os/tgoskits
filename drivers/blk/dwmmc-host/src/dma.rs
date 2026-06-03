@@ -387,7 +387,7 @@ impl DwMmc {
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_read_block_count(size)?;
         let map = dma
-            .map_streaming_slice(
+            .map_streaming_slice_for_device(
                 unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::FromDevice,
@@ -426,13 +426,12 @@ impl DwMmc {
     ) -> Result<BlockRequest, Error> {
         let block_count = dma_write_block_count(size)?;
         let map = dma
-            .map_streaming_slice(
+            .map_streaming_slice_for_device(
                 unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
                 BLOCK_SIZE,
                 DmaDirection::ToDevice,
             )
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
-        map.sync_for_device_all();
         let mut desc = dma
             .coherent_array_zero_with_align::<IdmacDesc>(block_count as usize, IDMAC_DESC_ALIGN)
             .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
@@ -647,7 +646,7 @@ impl DwMmc {
             return Err(Error::InvalidArgument);
         }
 
-        desc.write_with(block_count as usize, |descs| {
+        desc.write_with_cpu(block_count as usize, |descs| {
             for (index, desc) in descs.iter_mut().enumerate() {
                 let last = index + 1 == block_count as usize;
                 let next = if last {
@@ -743,7 +742,7 @@ impl DwMmc {
                 stop_after_complete,
                 ..
             } => {
-                map.sync_for_cpu_all();
+                map.complete_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
