@@ -9,23 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
-/* Linux syscall numbers */
-#ifndef SYS_setresuid
-#define SYS_setresuid 147
-#endif
-#ifndef SYS_setresgid
-#define SYS_setresgid 170
-#endif
-
 static int switch_user(uid_t uid, gid_t gid) {
-    if (syscall(SYS_setresgid, gid, gid, (gid_t)0) != 0) {
+    if (setresgid(gid, gid, (gid_t)0) != 0) {
         fprintf(stderr, "setresgid(%u) failed: %s\n", gid, strerror(errno));
         return -1;
     }
-    if (syscall(SYS_setresuid, uid, uid, (uid_t)0) != 0) {
+    if (setresuid(uid, uid, (uid_t)0) != 0) {
         fprintf(stderr, "setresuid(%u) failed: %s\n", uid, strerror(errno));
         return -1;
     }

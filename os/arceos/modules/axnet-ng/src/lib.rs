@@ -220,7 +220,7 @@ fn dhcp_bootstrap() {
 #[cfg(test)]
 pub(crate) mod test_support {
     use alloc::boxed::Box;
-    use std::sync::Once;
+    use std::sync::{Mutex as StdMutex, MutexGuard, Once};
 
     use ax_sync::Mutex;
     use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
@@ -236,6 +236,12 @@ pub(crate) mod test_support {
     pub(crate) const PEER_MASK: u32 = 1 << 1;
     pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
     pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
+
+    static NETWORK_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    pub(crate) fn network_test_guard() -> MutexGuard<'static, ()> {
+        NETWORK_TEST_LOCK.lock().unwrap()
+    }
 
     pub(crate) fn init_split_route_network() {
         static INIT: Once = Once::new();

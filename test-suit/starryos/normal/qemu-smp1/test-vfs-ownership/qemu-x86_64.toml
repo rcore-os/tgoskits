@@ -8,7 +8,7 @@ args = [
     "-netdev", "user,id=net0",
 ]
 uefi = false
-to_bin = true
+to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-vfs-ownership"
 success_regex = ["(?m)DONE: \\d+ pass, 0 fail"]

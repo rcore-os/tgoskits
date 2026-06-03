@@ -31,9 +31,7 @@ mod link;
 mod rename;
 
 pub use blocks::build_file_block_mapping_with_inode_num;
-pub use create::{
-    create_symbol_link, create_symbol_link_with_owner, mkfile, mkfile_with_owner,
-};
+pub use create::{create_symbol_link, create_symbol_link_with_owner, mkfile, mkfile_with_owner};
 pub use delete::{delete_dir, delete_file, is_dir_empty, unlink};
 pub use io::{read_file, truncate, write_file, write_inode_data};
 pub use link::link;
