@@ -21,7 +21,6 @@ use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv64/mod.rs")]
 pub mod arch;
-pub mod task;
 
 pub struct AxMmHalImpl;
 
@@ -60,5 +59,6 @@ mod impl_fs;
 mod impl_host;
 mod impl_irq;
 mod impl_memory;
+mod impl_sync;
 mod impl_task;
 mod impl_time;

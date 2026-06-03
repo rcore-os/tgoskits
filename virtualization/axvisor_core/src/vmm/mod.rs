@@ -48,7 +48,7 @@ pub type VMRef = axvm::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
 pub type VCpuRef = axvm::AxVCpuRef;
 
-static VMM: LazyInit<axvisor_api::task::WaitQueue> = LazyInit::new();
+static VMM: LazyInit<axvisor_api::sync::WaitQueue> = LazyInit::new();
 
 /// The number of running VMs. This is used to determine when to exit the VMM.
 static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -58,7 +58,7 @@ static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// This function creates the VM structures and sets up the primary VCpu for each VM.
 pub fn init() {
     info!("Initializing VMM...");
-    VMM.init_once(axvisor_api::task::WaitQueue::new());
+    VMM.init_once(axvisor_api::sync::WaitQueue::new());
     // Initialize guest VM according to config file.
     config::init_guest_vms();
 

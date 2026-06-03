@@ -20,7 +20,10 @@ use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
-use axvisor_api::task::{TaskHandle, TaskOptions, WaitQueue};
+use axvisor_api::{
+    sync::WaitQueue,
+    task::{TaskHandle, TaskOptions},
+};
 
 use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
 
@@ -607,7 +610,7 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                 super::devices::x86::disable_ioapic_irq_forwarding_for_vm(vm_id);
 
                 sub_running_vm_count(1);
-                super::VMM.wake(1);
+                super::VMM.wake_one();
             }
 
             break;

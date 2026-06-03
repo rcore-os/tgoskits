@@ -153,6 +153,7 @@ pub mod fs;
 pub mod host;
 pub mod irq;
 pub mod memory;
+pub mod sync;
 pub mod task;
 pub mod time;
 pub mod types;
