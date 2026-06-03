@@ -580,12 +580,10 @@ name = "arm_vcpu"
 version = "0.5.10"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-percpu",
- "axaddrspace",
- "axdevice_base",
  "axvcpu",
- "axvisor_api",
  "log",
  "numeric-enum-macro",
  "spin 0.12.0",
@@ -597,12 +595,12 @@ version = "0.4.11"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
+ "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
- "axaddrspace",
  "axdevice_base",
- "axvisor_api",
+ "axvm-types",
  "bitmaps",
  "log",
  "spin 0.12.0",
@@ -1615,6 +1613,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-page-table-multiarch",
  "axin",
+ "axvm-types",
  "bit_field",
  "bitflags 2.11.1",
  "cfg-if",
@@ -1686,13 +1685,12 @@ name = "axdevice"
 version = "0.4.11"
 dependencies = [
  "arm_vgic",
+ "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
- "axaddrspace",
  "axdevice_base",
- "axvisor_api",
- "axvmconfig",
+ "axvm-types",
  "cfg-if",
  "log",
  "riscv_vplic",
@@ -1704,8 +1702,8 @@ name = "axdevice_base"
 version = "0.4.12"
 dependencies = [
  "ax-errno 0.6.0",
- "axaddrspace",
- "axvmconfig",
+ "ax-memory-addr",
+ "axvm-types",
  "serde",
 ]
 
@@ -1883,22 +1881,51 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
+ "ax-page-table-entry",
  "ax-percpu",
- "axaddrspace",
- "axvisor_api",
+ "axdevice_base",
+ "axvm-types",
 ]
 
 [[package]]
 name = "axvisor"
 version = "0.5.9"
 dependencies = [
- "aarch64-cpu-ext",
  "anyhow",
+ "ax-driver",
+ "ax-errno 0.6.0",
+ "ax-hal",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-memory-addr",
+ "ax-std",
+ "axbuild",
+ "axvm",
+ "axvmconfig",
+ "byte-unit",
+ "clap",
+ "fdt-parser",
+ "hashbrown 0.14.5",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "spin 0.12.0",
+ "syn 2.0.117",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "axvm"
+version = "0.5.10"
+dependencies = [
+ "aarch64-cpu-ext",
  "arm-gic-driver",
- "ax-config",
+ "arm_vcpu",
+ "arm_vgic",
  "ax-cpumask",
  "ax-crate-interface",
- "ax-driver",
  "ax-errno 0.6.0",
  "ax-hal",
  "ax-kernel-guard",
@@ -1911,82 +1938,34 @@ dependencies = [
  "ax-std",
  "ax-timer-list",
  "axaddrspace",
- "axbuild",
  "axdevice",
  "axdevice_base",
  "axhvc",
- "axklib",
  "axplat-dyn",
  "axvcpu",
- "axvisor_api",
- "axvm",
- "bitflags 2.11.1",
+ "axvm-types",
  "byte-unit",
  "cfg-if",
- "clap",
  "extern-trait",
- "fdt-parser",
- "hashbrown 0.14.5",
  "log",
- "prettyplease",
- "proc-macro2",
- "quote",
+ "loongarch_vcpu",
  "rdif-intc",
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
  "spin 0.12.0",
- "syn 2.0.117",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
+ "x86_vcpu",
+ "x86_vlapic",
 ]
 
 [[package]]
-name = "axvisor_api"
-version = "0.5.12"
+name = "axvm-types"
+version = "0.5.11"
 dependencies = [
- "ax-cpumask",
- "ax-crate-interface",
- "ax-memory-addr",
- "axaddrspace",
- "axvisor_api_proc",
-]
-
-[[package]]
-name = "axvisor_api_proc"
-version = "0.5.8"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "axvm"
-version = "0.5.10"
-dependencies = [
- "arm_vcpu",
- "arm_vgic",
  "ax-cpumask",
  "ax-errno 0.6.0",
- "ax-kspin",
  "ax-memory-addr",
- "ax-page-table-entry",
  "ax-page-table-multiarch",
- "ax-percpu",
- "axaddrspace",
- "axdevice",
- "axdevice_base",
- "axvcpu",
- "axvisor_api",
- "axvmconfig",
- "cfg-if",
- "log",
- "loongarch_vcpu",
- "riscv_vcpu",
- "spin 0.12.0",
- "x86_vcpu",
 ]
 
 [[package]]
@@ -1994,8 +1973,8 @@ name = "axvmconfig"
 version = "0.6.0"
 dependencies = [
  "ax-errno 0.6.0",
+ "axvm-types",
  "clap",
- "enumerable",
  "env_logger",
  "log",
  "schemars",
@@ -3515,27 +3494,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
 dependencies = [
  "once_cell",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "enumerable"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d05481ae0c653c7de79f2f62d515b09049fed59cbfc5755a4afe55c95181492b"
-dependencies = [
- "enumerable_derive",
-]
-
-[[package]]
-name = "enumerable_derive"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef47b28174f7ef4ccb124c8766565006263114c1cc129cd119a66f1e15635125"
-dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -5225,14 +5183,13 @@ dependencies = [
 name = "loongarch_vcpu"
 version = "0.5.4"
 dependencies = [
+ "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
  "ax-page-table-multiarch",
  "ax-percpu",
- "axaddrspace",
  "axvcpu",
- "axvisor_api",
  "log",
  "loongArch64",
 ]
@@ -6977,10 +6934,8 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-memory-addr",
- "ax-page-table-entry",
- "axaddrspace",
  "axvcpu",
- "axvisor_api",
+ "axvm-types",
  "bit_field",
  "bitflags 2.11.1",
  "cfg-if",
@@ -6999,11 +6954,12 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.4.13"
 dependencies = [
+ "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-kspin",
- "axaddrspace",
+ "ax-memory-addr",
  "axdevice_base",
- "axvisor_api",
+ "axvm-types",
  "bitmaps",
  "log",
  "riscv-h",
@@ -10158,11 +10114,9 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
- "ax-page-table-entry",
- "axaddrspace",
  "axdevice_base",
  "axvcpu",
- "axvisor_api",
+ "axvm-types",
  "bit_field",
  "bitflags 2.11.1",
  "cfg-if",
@@ -10181,12 +10135,12 @@ dependencies = [
 name = "x86_vlapic"
 version = "0.4.11"
 dependencies = [
+ "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
- "axaddrspace",
  "axdevice_base",
- "axvisor_api",
+ "axvm-types",
  "bit",
  "log",
  "paste",

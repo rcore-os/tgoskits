@@ -7,16 +7,12 @@ use core::{
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
-use axaddrspace::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
-    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
+use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
+use axvcpu::{
+    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
+    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
 };
-use axdevice_base::BaseDeviceOps;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::{
-    memory::{self, PhysAddr},
-    vmm::{VCpuId, VMId},
-};
+use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;
@@ -1178,7 +1174,7 @@ impl SvmVcpu {
 
     fn read_guest_u8(&self, gva: GuestVirtAddr) -> AxResult<u8> {
         let gpa = self.translate_guest_linear(gva)?;
-        let hva = memory::phys_to_virt(PhysAddr::from(gpa.as_usize()));
+        let hva = crate::host::phys_to_virt(HostPhysAddr::from(gpa.as_usize()));
         Ok(unsafe { core::ptr::read_volatile(hva.as_ptr()) })
     }
 
@@ -1523,6 +1519,6 @@ impl AxArchVCpu for SvmVcpu {
 }
 
 fn read_guest_phys_u64(gpa: usize) -> u64 {
-    let hva = memory::phys_to_virt(PhysAddr::from(gpa));
+    let hva = crate::host::phys_to_virt(HostPhysAddr::from(gpa));
     unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) }
 }

@@ -25,6 +25,7 @@ mod consts;
 /// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
 mod detect;
 mod guest_mem;
+pub mod host;
 mod percpu;
 mod regs;
 mod sbi_console;

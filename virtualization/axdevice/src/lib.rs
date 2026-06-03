@@ -30,6 +30,13 @@ mod config;
 mod device;
 mod range_alloc;
 
+pub use axdevice_base::{
+    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Port,
+    SysRegAddr,
+};
+pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
-pub use device::AxVmDevices;
+pub use device::{AxEmuDevices, AxVmDevices};
+#[cfg(target_arch = "x86_64")]
+pub use x86_vlapic::IoApicInterrupt;
 // pub use virtio_dev::*;

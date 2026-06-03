@@ -230,7 +230,7 @@ ax-std = { version = "0.5.16", path = "os/arceos/ulib/axstd" }
 ax-sync = { version = "0.5.16", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.5.17", path = "os/arceos/modules/axtask" }
 ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
-axaddrspace = { version = "0.5.12", path = "memory/axaddrspace" }
+axaddrspace = { version = "0.5.12", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4.1", path = "components/axbacktrace" }
 axbuild = { version = "0.4.9", path = "scripts/axbuild" }
 axdevice = { version = "0.4.11", path = "virtualization/axdevice" }
@@ -244,9 +244,8 @@ ax-plat-x86-qemu-q35 = { version = "0.4.9", path = "platforms/ax-plat-x86-qemu-q
 axpoll = { version = "0.3.10", path = "components/axpoll" }
 axvcpu = { version = "0.6.0", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.9", path = "os/axvisor" }
-axvisor_api = { version = "0.5.12", path = "virtualization/axvisor_api" }
-axvisor_api_proc = { version = "0.5.8", path = "virtualization/axvisor_api_proc" }
 axvm = { version = "0.5.10", path = "virtualization/axvm", default-features = false }
+axvm-types = { version = "0.5.11", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.6.0", path = "virtualization/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.6", path = "memory/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }

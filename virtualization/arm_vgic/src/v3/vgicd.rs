@@ -15,9 +15,8 @@
 use core::cell::UnsafeCell;
 
 use ax_errno::AxResult;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvisor_api::memory::phys_to_virt;
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use bitmaps::Bitmap;
 use log::debug;
 
@@ -25,6 +24,7 @@ use super::{
     registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
+use crate::host;
 
 /// Default size for GICD region.
 pub const DEFAULT_GICD_SIZE: usize = 0x10000; // 64K
@@ -76,7 +76,7 @@ impl VGicD {
 
         // TODO: update host GICD_ITARGETSR and GICD_IROUTER registers
         let gicd_itargetsr_paddr = self.host_gicd_addr + GICD_ITARGETSR + irq as usize;
-        let gicd_itargetsr_vaddr = phys_to_virt(gicd_itargetsr_paddr);
+        let gicd_itargetsr_vaddr = host::phys_to_virt(gicd_itargetsr_paddr);
         unsafe {
             core::ptr::write_volatile(
                 gicd_itargetsr_vaddr.as_mut_ptr_of::<u8>(),
@@ -85,7 +85,7 @@ impl VGicD {
         }
 
         let gicd_irouter_paddr = self.host_gicd_addr + GICD_IROUTER + (irq as usize) * 8;
-        let gicd_irouter_vaddr = phys_to_virt(gicd_irouter_paddr);
+        let gicd_irouter_vaddr = host::phys_to_virt(gicd_irouter_paddr);
         unsafe {
             core::ptr::write_volatile(
                 gicd_irouter_vaddr.as_mut_ptr_of::<u64>(),
@@ -110,8 +110,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 
     fn handle_read(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
     ) -> ax_errno::AxResult<usize> {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
@@ -180,8 +180,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 
     fn handle_write(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
         val: usize,
     ) -> ax_errno::AxResult {
         let gicd_base = self.host_gicd_addr;

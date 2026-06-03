@@ -19,7 +19,6 @@ cfg_if::cfg_if! {
         pub use x86_vcpu::X86ArchVCpu as AxArchVCpuImpl;
         pub use x86_vcpu::X86ArchPerCpuState as AxVMArchPerCpuImpl;
         pub use x86_vcpu::X86VCpuSetupConfig as AxVCpuSetupConfig;
-        pub use x86_vcpu::has_hardware_support;
         #[allow(dead_code)]
         pub type AxVCpuCreateConfig = ();
 
@@ -36,7 +35,6 @@ cfg_if::cfg_if! {
         pub use riscv_vcpu::RISCVVCpu as AxArchVCpuImpl;
         pub use riscv_vcpu::RISCVPerCpu as AxVMArchPerCpuImpl;
         pub use riscv_vcpu::RISCVVCpuCreateConfig as AxVCpuCreateConfig;
-        pub use riscv_vcpu::has_hardware_support;
 
         /// RISC-V uses Sv39 (3 levels) or Sv48 (4 levels) for guest page tables.
         /// Default to 4 levels (Sv48) for maximum address space.
@@ -46,7 +44,6 @@ cfg_if::cfg_if! {
         pub use loongarch_vcpu::LoongArchVCpu as AxArchVCpuImpl;
         pub use loongarch_vcpu::LoongArchVCpuCreateConfig as AxVCpuCreateConfig;
         pub use loongarch_vcpu::LoongArchVCpuSetupConfig as AxVCpuSetupConfig;
-        pub use loongarch_vcpu::has_hardware_support;
 
         /// LoongArch guests currently use 4-level page tables.
         pub fn max_guest_page_table_levels() -> usize { 4 }
@@ -55,7 +52,6 @@ cfg_if::cfg_if! {
         pub use arm_vcpu::Aarch64PerCpu as AxVMArchPerCpuImpl;
         pub use arm_vcpu::Aarch64VCpuCreateConfig as AxVCpuCreateConfig;
         pub use arm_vcpu::Aarch64VCpuSetupConfig as AxVCpuSetupConfig;
-        pub use arm_vcpu::has_hardware_support;
         pub use arm_vcpu::max_guest_page_table_levels;
 
         pub use arm_vgic::vtimer::get_sysreg_device;

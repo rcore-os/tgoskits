@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use enumerable::Enumerable;
-
 use crate::{
     AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol, VMDevicesConfig, VMInterruptMode,
     VmMemMappingType,
@@ -251,14 +249,52 @@ fn test_boot_config_validation_rejects_direct_bios_mix() {
 
 #[test]
 fn test_emu_dev_type_from_usize() {
-    for emu_dev_type in EmulatedDeviceType::enumerator() {
-        let converted = EmulatedDeviceType::from_usize(emu_dev_type as usize);
+    for emu_dev_type in EmulatedDeviceType::all() {
+        let converted = EmulatedDeviceType::from_usize(*emu_dev_type as usize).unwrap();
         assert_eq!(
-            converted, emu_dev_type,
+            converted, *emu_dev_type,
             "Value mismatch after bidirectional conversion: {:?} -> {:?}",
             emu_dev_type, converted
         );
     }
+
+    assert_eq!(EmulatedDeviceType::from_usize(0x3), None);
+}
+
+#[test]
+fn test_rejects_unknown_emulated_device_type() {
+    const EXAMPLE_DEVICE_CONFIG: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["bad-device", 0x1000, 0x1000, 0, 0x3, []],
+]
+    "#;
+
+    assert!(toml::from_str::<VMDevicesConfig>(EXAMPLE_DEVICE_CONFIG).is_err());
+}
+
+#[test]
+fn test_rejects_incomplete_explicit_passthrough_device() {
+    const EXAMPLE_DEVICE_CONFIG: &str = r#"
+passthrough_devices = [
+    ["bad-device", 0x1000, 0x1000],
+]
+emu_devices = []
+    "#;
+
+    assert!(toml::from_str::<VMDevicesConfig>(EXAMPLE_DEVICE_CONFIG).is_err());
+
+    const FDT_PATH_DEVICE_CONFIG: &str = r#"
+passthrough_devices = [
+    ["/"],
+]
+emu_devices = []
+    "#;
+
+    let config: VMDevicesConfig = toml::from_str(FDT_PATH_DEVICE_CONFIG).unwrap();
+    assert_eq!(config.passthrough_devices.len(), 1);
+    assert_eq!(config.passthrough_devices[0].name, "/");
+    assert_eq!(config.passthrough_devices[0].length, 0);
 }
 
 #[test]
