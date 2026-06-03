@@ -109,8 +109,12 @@ pub(crate) fn monotonic_time_nanos() -> u64 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn handle_host_irq(vector: usize) -> bool {
-    modules::ax_hal::irq::handle_irq(vector)
+pub(crate) fn handle_host_irq(vector: usize) -> Option<usize> {
+    let guard = ax_kernel_guard::NoPreempt::new();
+    let handled = modules::ax_hal::irq::handle(vector);
+
+    drop(guard);
+    handled
 }
 
 #[cfg(not(target_arch = "aarch64"))]

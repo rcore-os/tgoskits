@@ -140,7 +140,7 @@ pub(crate) fn handle_current_irq() -> Option<usize> {
     // AArch64 ArceOS platform IRQ handlers acknowledge the current IRQ
     // internally. The raw vector argument is ignored by current GIC-backed
     // platforms, so keep the ack/EOI ownership inside the platform handler.
-    arceos::handle_host_irq(0).then_some(0)
+    arceos::handle_host_irq(0)
 }
 
 pub(crate) fn fetch_irq() -> usize {

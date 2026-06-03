@@ -112,6 +112,12 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
+    if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) != vm.id()
+        || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) != vcpu.id()
+    {
+        return;
+    }
+
     loop {
         let pending = IOAPIC_IRQ_PENDING.swap(0, Ordering::AcqRel);
         if pending == 0 {
