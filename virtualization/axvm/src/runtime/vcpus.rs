@@ -361,22 +361,24 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
 pub fn setup_vm_primary_vcpu(vm: VMRef) {
     info!("Initializing VM[{}]'s {} vcpus", vm.id(), vm.vcpu_num());
     let vm_id = vm.id();
-    if get_vm_vcpus(vm_id).is_some() {
-        debug!("VM[{vm_id}] vCPU resources already exist");
-        return;
-    }
-    let vm_vcpus = Arc::new(VMVCpus::new(vm.clone()));
-
     let primary_vcpu_id = 0;
 
     let Some(primary_vcpu) = vm.vcpu_list().get(primary_vcpu_id).cloned() else {
         warn!("VM[{vm_id}] has no primary vCPU");
         return;
     };
+    let vm_vcpus = Arc::new(VMVCpus::new(vm.clone()));
+    {
+        let mut vm_vcpu_tasks = VM_VCPU_TASKS.lock();
+        if vm_vcpu_tasks.contains_key(&vm_id) {
+            debug!("VM[{vm_id}] vCPU resources already exist");
+            return;
+        }
+        vm_vcpu_tasks.insert(vm_id, vm_vcpus.clone());
+    }
+
     let primary_vcpu_task = alloc_vcpu_task(&vm, primary_vcpu);
     vm_vcpus.add_vcpu_task(0, primary_vcpu_task);
-
-    VM_VCPU_TASKS.lock().insert(vm_id, vm_vcpus);
 }
 
 /// Allocates arceos task for vcpu, set the task's entry function to [`vcpu_run()`],

@@ -48,8 +48,8 @@ pub fn start() {
     for vm in crate::get_vm_list() {
         match vm.boot() {
             Ok(_) => {
-                vcpus::notify_primary_vcpu(vm.id());
                 RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);
+                vcpus::notify_primary_vcpu(vm.id());
                 info!("VM[{}] boot success", vm.id())
             }
             Err(err) => warn!("VM[{}] boot failed, error {:?}", vm.id(), err),
@@ -81,8 +81,8 @@ pub fn start_vm(vm_id: usize) -> AxResult {
 
     vcpus::setup_vm_primary_vcpu(vm.clone());
     vm.boot()?;
-    vcpus::notify_primary_vcpu(vm_id);
     add_running_vm_count(1);
+    vcpus::notify_primary_vcpu(vm_id);
     Ok(())
 }
 

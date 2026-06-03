@@ -31,7 +31,7 @@ pub use axvm_types::{
 };
 
 mod emu_device_type_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer, de};
 
     use super::*;
 
@@ -49,12 +49,19 @@ mod emu_device_type_serde {
         let value = usize::from(u8::deserialize(deserializer)?);
         match EmulatedDeviceType::from_usize(value) {
             Some(emu_type) => Ok(emu_type),
-            None => {
-                warn!("Unknown emulated device type value: {value}, default to Meta");
-                Ok(EmulatedDeviceType::Dummy)
-            }
+            None => Err(de::Error::custom(alloc::format!(
+                "unknown emulated device type value: {value}"
+            ))),
         }
     }
+}
+
+fn is_passthrough_discovery_device(device: &PassThroughDeviceConfig) -> bool {
+    device.name.starts_with('/')
+        && device.base_gpa == 0
+        && device.base_hpa == 0
+        && device.length == 0
+        && device.irq_id == 0
 }
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
@@ -246,7 +253,7 @@ impl From<&PassThroughDeviceConfig> for PassThroughDeviceConfigSerde {
 }
 
 mod passthrough_device_config_vec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
     use super::*;
 
@@ -265,12 +272,19 @@ mod passthrough_device_config_vec_serde {
     where
         D: Deserializer<'de>,
     {
-        Ok(
-            Vec::<PassThroughDeviceConfigSerde>::deserialize(deserializer)?
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        )
+        Vec::<PassThroughDeviceConfigSerde>::deserialize(deserializer)?
+            .into_iter()
+            .map(|value| {
+                let device = PassThroughDeviceConfig::from(value);
+                if !is_passthrough_discovery_device(&device) && device.length == 0 {
+                    return Err(de::Error::custom(alloc::format!(
+                        "passthrough device {} has zero length",
+                        device.name
+                    )));
+                }
+                Ok(device)
+            })
+            .collect()
     }
 }
 
