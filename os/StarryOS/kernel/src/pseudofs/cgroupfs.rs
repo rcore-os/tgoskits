@@ -194,32 +194,40 @@ impl SimpleDirOps for CgroupDirOps {
                             let parts: Vec<&str> = s.split_whitespace().collect();
                             if !parts.is_empty() {
                                 if parts[0] == "max" {
-                                    n.cpu
-                                        .cfs_quota
-                                        .store(-1, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu.cfs_quota.store(-1, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu.bandwidth.quota.store(-1, core::sync::atomic::Ordering::Relaxed);
                                 } else if let Ok(quota) = parts[0].parse::<i64>() {
-                                    n.cpu
-                                        .cfs_quota
-                                        .store(quota, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu.cfs_quota.store(quota, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu.bandwidth.quota.store(quota, core::sync::atomic::Ordering::Relaxed);
                                 }
                             }
                             if parts.len() > 1
                                 && let Ok(period) = parts[1].parse::<i64>()
                             {
-                                n.cpu
-                                    .cfs_period
-                                    .store(period, core::sync::atomic::Ordering::Relaxed);
+                                n.cpu.cfs_period.store(period, core::sync::atomic::Ordering::Relaxed);
+                                n.cpu.bandwidth.period.store(period, core::sync::atomic::Ordering::Relaxed);
                             }
+                            // Reset consumed on quota/period change
+                            n.cpu.bandwidth.consumed.store(0, core::sync::atomic::Ordering::Relaxed);
+                            n.cpu.bandwidth.period_start.store(0, core::sync::atomic::Ordering::Relaxed);
                             Ok(None)
                         }
                     }),
                 )
                 .into()
             }
-            "cpu.stat" => SimpleFile::new_regular(fs, || {
-                Ok(b"nr_periods 0\nnr_throttled 0\nthrottled_usec 0\n".to_vec())
-            })
-            .into(),
+            "cpu.stat" => {
+                let n = self.node.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let bw = &n.cpu.bandwidth;
+                    let nr_periods = bw.nr_periods.load(core::sync::atomic::Ordering::Relaxed);
+                    let nr_throttled = bw.nr_throttled.load(core::sync::atomic::Ordering::Relaxed);
+                    let throttled_usec = bw.throttled_usec.load(core::sync::atomic::Ordering::Relaxed);
+                    Ok(format!("nr_periods {}\nnr_throttled {}\nthrottled_usec {}\n",
+                               nr_periods, nr_throttled, throttled_usec).into_bytes())
+                })
+                .into()
+            },
             _ => {
                 let children = self.node.children.lock();
                 if let Some(child) = children.get(name) {

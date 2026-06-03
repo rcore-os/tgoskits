@@ -361,6 +361,202 @@ static void test_cpu_stub_files(void)
                     "restore cpu.max = max 100000");
 }
 
+/*
+ * Test 4: pids.max = "max" (unlimited) — fork should always succeed.
+ */
+static void test_pids_unlimited(void)
+{
+    char path[256];
+
+    /* Ensure pids.max is "max" */
+    snprintf(path, sizeof(path), "%s/pids.max", CGROUP_ROOT);
+    expect_write_ok(path, "max", "set pids.max = max (unlimited)");
+
+    /* Fork multiple children — all should succeed */
+    pid_t children[4];
+    int count = 0;
+    for (int i = 0; i < 4; i++) {
+        children[i] = fork();
+        if (children[i] == 0) {
+            usleep(100000);
+            _exit(0);
+        }
+        if (children[i] > 0) count++;
+    }
+
+    CHECK(count == 4, "all 4 forks succeed with pids.max = max");
+
+    /* Wait for all children */
+    for (int i = 0; i < 4; i++) {
+        if (children[i] > 0) {
+            int status;
+            waitpid(children[i], &status, 0);
+        }
+    }
+}
+
+/*
+ * Test 5: pids.current decrements when children exit.
+ */
+static void test_pids_current_decrement(void)
+{
+    /* Record initial pids.current */
+    int before = read_pids_current(CGROUP_ROOT);
+    CHECK(before >= 0, "read pids.current before fork");
+
+    /* Fork a child */
+    pid_t child = fork();
+    if (child == 0) {
+        _exit(0);
+    }
+    CHECK(child > 0, "fork child for decrement test");
+
+    /* Wait for child to exit */
+    int status;
+    waitpid(child, &status, 0);
+
+    /* Give the kernel time to update pids.current */
+    usleep(10000);
+
+    /* pids.current should be back to the original value */
+    int after = read_pids_current(CGROUP_ROOT);
+    CHECK(after == before,
+          "pids.current returns to original after child exits");
+}
+
+/*
+ * Test 6: cgroup.procs read-back contains current PID.
+ */
+static void test_cgroup_procs_readback(void)
+{
+    char path[256];
+    char buf[4096];
+
+    /* Move to root cgroup */
+    snprintf(path, sizeof(path), "%s/cgroup.procs", CGROUP_ROOT);
+    char pid_str[32];
+    snprintf(pid_str, sizeof(pid_str), "%d", getpid());
+    expect_write_ok(path, pid_str, "write current PID to root cgroup.procs");
+
+    /* Read back and check */
+    ssize_t n = read_text(path, buf, sizeof(buf));
+    CHECK(n >= 0, "read root cgroup.procs");
+    if (n >= 0) {
+        char *found = strstr(buf, pid_str);
+        CHECK(found != NULL,
+              "root cgroup.procs contains current PID");
+    }
+}
+
+/*
+ * Test 7: pids.max = 0 — no new processes allowed.
+ */
+static void test_pids_max_zero(void)
+{
+    char path[256];
+
+    /* Set pids.max = 0 */
+    snprintf(path, sizeof(path), "%s/pids.max", CGROUP_ROOT);
+    expect_write_ok(path, "0", "set pids.max = 0");
+
+    /* Fork should fail */
+    errno = 0;
+    pid_t child = fork();
+    if (child == 0) {
+        _exit(0);
+    }
+    if (child > 0) {
+        int status;
+        waitpid(child, &status, 0);
+        CHECK(0, "fork should fail with pids.max = 0 (but succeeded)");
+    } else {
+        CHECK(errno == EAGAIN || errno == ENOMEM,
+              "fork fails with EAGAIN when pids.max = 0");
+    }
+
+    /* Restore */
+    expect_write_ok(path, "max", "restore pids.max = max");
+}
+
+/*
+ * Test 8: Migration between cgroups updates pids.current.
+ */
+static void test_migration_updates_count(void)
+{
+    char path[256];
+    char pid_str[32];
+    snprintf(pid_str, sizeof(pid_str), "%d", getpid());
+
+    /* Create a child cgroup */
+    errno = 0;
+    mkdir(CGROUP_CHILD, 0755);
+
+    /* Record root pids.current before migration */
+    int root_before = read_pids_current(CGROUP_ROOT);
+
+    /* Move to child cgroup */
+    snprintf(path, sizeof(path), "%s/cgroup.procs", CGROUP_CHILD);
+    expect_write_ok(path, pid_str, "move to child cgroup");
+
+    /* Give kernel time to update */
+    usleep(10000);
+
+    /* Child cgroup should have pids.current >= 1 */
+    int child_current = read_pids_current(CGROUP_CHILD);
+    CHECK(child_current >= 1,
+          "child cgroup pids.current >= 1 after migration");
+
+    /* Root cgroup pids.current should have decreased */
+    int root_after = read_pids_current(CGROUP_ROOT);
+    CHECK(root_after < root_before,
+          "root pids.current decreased after migration");
+
+    /* Move back to root */
+    snprintf(path, sizeof(path), "%s/cgroup.procs", CGROUP_ROOT);
+    expect_write_ok(path, pid_str, "move back to root cgroup");
+
+    /* Cleanup */
+    rmdir(CGROUP_CHILD);
+}
+
+/*
+ * Test 9: Nested cgroup pids isolation.
+ */
+static void test_nested_cgroup_isolation(void)
+{
+    char path[256];
+    char parent_path[256], child_path[256];
+
+    /* Create parent and child cgroups */
+    snprintf(parent_path, sizeof(parent_path), "%s/nest-parent", CGROUP_ROOT);
+    snprintf(child_path, sizeof(child_path), "%s/nest-parent/child", CGROUP_ROOT);
+
+    errno = 0;
+    mkdir(parent_path, 0755);
+    mkdir(child_path, 0755);
+
+    /* Set different limits */
+    snprintf(path, sizeof(path), "%s/pids.max", parent_path);
+    expect_write_ok(path, "10", "set parent pids.max = 10");
+
+    snprintf(path, sizeof(path), "%s/pids.max", child_path);
+    expect_write_ok(path, "3", "set child pids.max = 3");
+
+    /* Verify independence */
+    snprintf(path, sizeof(path), "%s/pids.max", parent_path);
+    char buf[32];
+    read_text(path, buf, sizeof(buf));
+    CHECK(atoi(buf) == 10, "parent pids.max is 10");
+
+    snprintf(path, sizeof(path), "%s/pids.max", child_path);
+    read_text(path, buf, sizeof(buf));
+    CHECK(atoi(buf) == 3, "child pids.max is 3");
+
+    /* Cleanup */
+    rmdir(child_path);
+    rmdir(parent_path);
+}
+
 /* ================================================================ */
 
 int main(void)
@@ -370,6 +566,12 @@ int main(void)
     test_root_files();
     test_root_pids_limit();
     test_child_pids_limit();
+    test_pids_unlimited();
+    test_pids_current_decrement();
+    test_cgroup_procs_readback();
+    test_pids_max_zero();
+    test_migration_updates_count();
+    test_nested_cgroup_isolation();
     test_cpu_stub_files();
 
     TEST_DONE();
