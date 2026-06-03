@@ -3,6 +3,7 @@ use core::{arch::global_asm, mem::offset_of};
 use crate::irq;
 
 const SCAUSE_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
+const SCAUSE_SUPERVISOR_TIMER: usize = 5;
 
 #[repr(C)]
 struct TrapFrame {
@@ -65,8 +66,11 @@ pub fn trap_addr() -> usize {
 extern "C" fn __riscv64_handle_trap(tf: &mut TrapFrame) {
     let scause = tf.scause;
     if (scause & SCAUSE_INTERRUPT_BIT) != 0 {
-        irq::handle_irq(irq::IrqId::new(scause));
-        return;
+        let cause = scause & !SCAUSE_INTERRUPT_BIT;
+        if cause == SCAUSE_SUPERVISOR_TIMER {
+            irq::handle_irq(irq::systimer_irq());
+            return;
+        }
     }
 
     panic!(

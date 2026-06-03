@@ -427,10 +427,15 @@ StarryOS 测试配置与 ArceOS 类似，但增加了 shell 交互：
 ```toml
 # build config
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
-features = ["qemu"]
+features = [
+  "ax-feat/rtc",
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]
 log = "Warn"
-plat_dyn = false
-target = "aarch64-unknown-none-softfloat"
+plat_dyn = true
+target = "riscv64gc-unknown-none-elf"
 ```
 
 ```toml

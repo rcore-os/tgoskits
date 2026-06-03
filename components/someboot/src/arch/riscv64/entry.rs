@@ -63,6 +63,7 @@ fn primary_head_entry(fdt_addr: usize) -> ! {
 
 fn primary_entry(fdt_addr: usize) -> ! {
     clear_bss();
+    early_trap_init();
     unsafe {
         crate::fdt::FDT_ADDR = fdt_addr;
     }
@@ -91,6 +92,8 @@ unsafe extern "C" {
     fn __kernel_code_end();
     fn __bss_start();
     fn __bss_stop();
+    fn __cpu0_stack();
+    fn __cpu0_stack_top();
 }
 
 #[unsafe(naked)]
@@ -114,10 +117,28 @@ fn secondary_start(cpu_meta_paddr: usize) -> ! {
 fn clear_bss() {
     let start = __bss_start as *const () as usize;
     let end = __bss_stop as *const () as usize;
-    let len = end.saturating_sub(start);
-    if len != 0 {
-        unsafe {
-            core::ptr::write_bytes(start as *mut u8, 0, len);
-        }
+    let stack_start = __cpu0_stack as *const () as usize;
+    let stack_end = __cpu0_stack_top as *const () as usize;
+
+    clear_bss_range(start, stack_start.min(end));
+    clear_bss_range(stack_end.max(start), end);
+}
+
+fn clear_bss_range(start: usize, end: usize) {
+    if end <= start {
+        return;
+    }
+
+    unsafe {
+        core::ptr::write_bytes(start as *mut u8, 0, end - start);
+    }
+}
+
+fn early_trap_init() {
+    super::disable_local_irqs();
+    let _ = super::sbi::set_timer(u64::MAX);
+
+    if crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS {
+        super::trap::setup();
     }
 }

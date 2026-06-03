@@ -47,19 +47,40 @@ SECTIONS
         *(.rela .rela*)
         __rela_dyn_end = .;
     }
+    .dynsym : ALIGN(8) {
+        *(.dynsym)
+    }
+    .gnu.hash : ALIGN(8) {
+        *(.gnu.hash)
+    }
+    .hash : ALIGN(8) {
+        *(.hash)
+    }
+    .dynstr : ALIGN(1) {
+        *(.dynstr)
+    }
+    .eh_frame_hdr : ALIGN(4) {
+        *(.eh_frame_hdr)
+    }
     .sdata : ALIGN(8) {
         *(.sdata)
         . = ALIGN(PAGE_SIZE);
     }
-    _edata = .;
-    __kernel_load_end = .;
-    __bss_start = .;
 
     .tdata : {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
     }
+
+    .dynamic : ALIGN(8) {
+        *(.dynamic)
+    }
+    .got : ALIGN(8) {
+        *(.got .got.*)
+    }
+    _edata = .;
+    __kernel_load_end = .;
 
     .tbss : {
         _stbss = .;
@@ -68,6 +89,8 @@ SECTIONS
         *(.tcommon)
         _etbss = .;
     }
+
+    __bss_start = .;
 
     .sbss : {
         *(.dynsbss)
