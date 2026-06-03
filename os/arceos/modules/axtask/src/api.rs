@@ -173,6 +173,20 @@ pub fn on_timer_tick() {
     current_run_queue::<NoOp>().scheduler_timer_tick();
 }
 
+/// Register a function to be called on every scheduler timer tick.
+/// Used by cgroup bandwidth control.
+pub fn set_tick_hook(f: fn()) {
+    crate::run_queue::set_tick_hook(f);
+}
+
+/// Set the throttled flag on the currently running task.
+/// Only available with the `sched-cfs` feature.
+#[cfg(feature = "sched-cfs")]
+pub fn set_current_throttled(throttled: bool) {
+    use ax_kernel_guard::NoPreemptIrqSave;
+    current_run_queue::<NoPreemptIrqSave>().set_current_throttled(throttled);
+}
+
 /// Adds the given task to the run queue, returns the task reference.
 pub fn spawn_task(task: TaskInner) -> AxTaskRef {
     let task_ref = task.into_arc();

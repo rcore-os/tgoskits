@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
     ops::Deref,
-    sync::atomic::{AtomicIsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicIsize, Ordering},
 };
 
 use crate::BaseScheduler;
@@ -13,6 +13,12 @@ pub struct CFSTask<T> {
     delta: AtomicIsize,
     nice: AtomicIsize,
     id: AtomicIsize,
+    /// cgroup cpu.weight (1..10000, default 100).  Multiplied with the
+    /// nice-derived weight to produce the effective scheduling weight.
+    cgroup_weight: AtomicIsize,
+    /// When true the task is throttled by cgroup cpu.max and must not be
+    /// scheduled until the next bandwidth period.
+    throttled: AtomicBool,
 }
 
 // https://elixir.bootlin.com/linux/latest/source/include/linux/sched/prio.h
@@ -39,6 +45,8 @@ impl<T> CFSTask<T> {
             delta: AtomicIsize::new(0_isize),
             nice: AtomicIsize::new(0_isize),
             id: AtomicIsize::new(0_isize),
+            cgroup_weight: AtomicIsize::new(100_isize),
+            throttled: AtomicBool::new(false),
         }
     }
 
@@ -56,11 +64,17 @@ impl<T> CFSTask<T> {
     }
 
     fn get_vruntime(&self) -> isize {
-        if self.nice.load(Ordering::Acquire) == 0 {
-            self.init_vruntime.load(Ordering::Acquire) + self.delta.load(Ordering::Acquire)
+        let nice_weight = self.get_weight();
+        let cgroup_w = self.cgroup_weight.load(Ordering::Acquire);
+        // Effective weight: nice_weight * cgroup_weight / 100
+        // vruntime increment: delta * 1024 / effective_weight
+        let effective_weight = nice_weight * cgroup_w / 100;
+        if effective_weight == 0 {
+            // Avoid division by zero; treat as very high weight (low priority)
+            self.init_vruntime.load(Ordering::Acquire) + self.delta.load(Ordering::Acquire) * 1024
         } else {
             self.init_vruntime.load(Ordering::Acquire)
-                + self.delta.load(Ordering::Acquire) * 1024 / self.get_weight()
+                + self.delta.load(Ordering::Acquire) * 1024 / effective_weight
         }
     }
 
@@ -80,6 +94,23 @@ impl<T> CFSTask<T> {
 
     fn set_id(&self, id: isize) {
         self.id.store(id, Ordering::Release);
+    }
+
+    /// Set the cgroup cpu.weight for this task.
+    pub fn set_cgroup_weight(&self, weight: isize) {
+        // Clamp to valid range [1, 10000]
+        let clamped = weight.clamp(1, 10000);
+        self.cgroup_weight.store(clamped, Ordering::Release);
+    }
+
+    /// Returns true if this task is throttled by cgroup cpu.max.
+    pub fn is_throttled(&self) -> bool {
+        self.throttled.load(Ordering::Acquire)
+    }
+
+    /// Set the throttled state.
+    pub fn set_throttled(&self, throttled: bool) {
+        self.throttled.store(throttled, Ordering::Release);
     }
 
     fn task_tick(&self) {
@@ -161,11 +192,25 @@ impl<T> BaseScheduler for CFScheduler<T> {
     }
 
     fn pick_next_task(&mut self) -> Option<Self::SchedItem> {
-        if let Some((_, v)) = self.ready_queue.pop_first() {
-            Some(v)
-        } else {
-            None
+        // Skip throttled tasks — they must wait for the next bandwidth period.
+        let mut skipped = alloc::vec::Vec::new();
+        let result = loop {
+            let Some((key, _)) = self.ready_queue.first_key_value() else {
+                break None;
+            };
+            let key = key.clone();
+            let task = self.ready_queue.remove(&key).unwrap();
+            if task.is_throttled() {
+                skipped.push((key, task));
+            } else {
+                break Some(task);
+            }
+        };
+        // Re-insert skipped tasks
+        for (key, task) in skipped {
+            self.ready_queue.insert(key, task);
         }
+        result
     }
 
     fn put_prev_task(&mut self, prev: Self::SchedItem, _preempt: bool) {
@@ -177,6 +222,10 @@ impl<T> BaseScheduler for CFScheduler<T> {
 
     fn task_tick(&mut self, current: &Self::SchedItem) -> bool {
         current.task_tick();
+        // Throttled tasks must be rescheduled immediately
+        if current.is_throttled() {
+            return true;
+        }
         if self.ready_queue.is_empty() {
             return false;
         }

@@ -16,6 +16,16 @@ use crate::{
     wait_queue::WaitQueueGuard,
 };
 
+/// Optional hook called on every scheduler timer tick (e.g. cgroup bandwidth).
+static TICK_HOOK: ax_kspin::SpinRaw<Option<fn()>> = ax_kspin::SpinRaw::new(None);
+
+/// Register a function to be called on every scheduler timer tick.
+pub fn set_tick_hook(f: fn()) {
+    // Safety: SpinRaw provides interior mutability without locking.
+    // The hook is only set once during initialization.
+    *TICK_HOOK.lock() = Some(f);
+}
+
 macro_rules! percpu_static {
     ($(
         $(#[$comment:meta])*
@@ -359,11 +369,24 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
+        // Call registered tick hook (e.g. cgroup bandwidth check)
+        {
+            let hook = TICK_HOOK.lock();
+            if let Some(f) = *hook {
+                f();
+            }
+        }
         let curr = &self.current_task;
         if !curr.is_idle() && self.inner.scheduler.lock().task_tick(curr) {
             #[cfg(feature = "preempt")]
             curr.set_preempt_pending(true);
         }
+    }
+
+    /// Set the throttled flag on the current task.
+    #[cfg(feature = "sched-cfs")]
+    pub fn set_current_throttled(&self, throttled: bool) {
+        self.current_task.set_throttled(throttled);
     }
 
     /// Yield the current task and reschedule.

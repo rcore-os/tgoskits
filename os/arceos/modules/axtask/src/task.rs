@@ -927,6 +927,12 @@ impl CurrentTask {
         Arc::ptr_eq(&self.0, other)
     }
 
+    /// Set the throttled flag on this task (CFS scheduler only).
+    #[cfg(feature = "sched-cfs")]
+    pub fn set_throttled(&self, throttled: bool) {
+        (**self.0).set_throttled(throttled);
+    }
+
     pub(crate) unsafe fn init_current(init_task: AxTaskRef) {
         assert!(init_task.is_init());
         #[cfg(feature = "tls")]
