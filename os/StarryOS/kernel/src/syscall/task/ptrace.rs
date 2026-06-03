@@ -39,6 +39,8 @@ const PTRACE_GETREGS: u32 = 12;
 const PTRACE_SETREGS: u32 = 13;
 const PTRACE_GETFPREGS: u32 = 14;
 const PTRACE_SETFPREGS: u32 = 15;
+const PTRACE_GETFPXREGS: u32 = 18;
+const PTRACE_SETFPXREGS: u32 = 19;
 const PTRACE_ATTACH: u32 = 16;
 const PTRACE_DETACH: u32 = 17;
 const PTRACE_SYSCALL: u32 = 24;
@@ -57,6 +59,8 @@ const NT_PRSTATUS: usize = 1;
     target_arch = "aarch64",
     target_arch = "loongarch64"
 ))]
+const NT_FPREGSET: usize = 2;
+#[cfg(target_arch = "x86_64")]
 const NT_FPREGSET: usize = 2;
 
 const PTRACE_O_TRACESYSGOOD: usize = 1;
@@ -226,6 +230,8 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
         PTRACE_SETREGS => ptrace_setregs(pid, data),
         PTRACE_GETFPREGS => ptrace_getfpregs(pid, data),
         PTRACE_SETFPREGS => ptrace_setfpregs(pid, data),
+        PTRACE_GETFPXREGS => ptrace_getfpregs(pid, data),
+        PTRACE_SETFPXREGS => ptrace_setfpregs(pid, data),
         PTRACE_ATTACH => ptrace_attach(pid),
         PTRACE_DETACH => ptrace_detach(pid, data),
         PTRACE_SYSCALL => ptrace_syscall(pid, data),
@@ -441,6 +447,8 @@ fn ptrace_getregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
             target_arch = "loongarch64"
         ))]
         NT_FPREGSET => ptrace_getregset_fpregset(pid, data),
+        #[cfg(target_arch = "x86_64")]
+        NT_FPREGSET => ptrace_getregset_fpregset_x86_64(pid, data),
         _ => Err(AxError::Unsupported),
     }
 }
@@ -454,6 +462,8 @@ fn ptrace_setregset(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
             target_arch = "loongarch64"
         ))]
         NT_FPREGSET => ptrace_setregset_fpregset(pid, data),
+        #[cfg(target_arch = "x86_64")]
+        NT_FPREGSET => ptrace_setregset_fpregset_x86_64(pid, data),
         _ => Err(AxError::Unsupported),
     }
 }
@@ -554,7 +564,17 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "x86_64")]
+fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
+    if data == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let fp_data = ptrace_read_stopped_fp_x86_64(pid)?;
+    vm_write_slice(data as *mut u8, &fp_data)?;
+    Ok(0)
+}
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
 fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
@@ -569,7 +589,19 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     ptrace_write_stopped_fp_regs(pid, regs)
 }
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "x86_64")]
+fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
+    if data == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let mut fp_data: [u8; 512] = [0; 512];
+    let bytes =
+        unsafe { slice::from_raw_parts_mut(fp_data.as_mut_ptr().cast::<MaybeUninit<u8>>(), 512) };
+    starry_vm::vm_read_slice(data as *const u8, bytes)?;
+    ptrace_write_stopped_fp_x86_64(pid, fp_data)
+}
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
 fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     let _ = (pid, data);
     Err(AxError::Unsupported)
@@ -918,6 +950,55 @@ fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> AxResult<isize>
         return Err(AxError::from(LinuxError::ESRCH));
     }
     Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_read_stopped_fp_x86_64(pid: usize) -> AxResult<[u8; 512]> {
+    let tracee = ptrace_stopped_tracee(pid)?;
+    tracee
+        .ptrace_stop_fp_data()
+        .ok_or_else(|| AxError::from(LinuxError::ESRCH))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_write_stopped_fp_x86_64(pid: usize, data: [u8; 512]) -> AxResult<isize> {
+    let tracee = ptrace_stopped_tracee(pid)?;
+    if !tracee.set_ptrace_stop_fp_data(data) {
+        return Err(AxError::from(LinuxError::ESRCH));
+    }
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_getregset_fpregset_x86_64(pid: usize, data: usize) -> AxResult<isize> {
+    if data == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let fp_data = ptrace_read_stopped_fp_x86_64(pid)?;
+    let mut iov = (data as *const IoVec).vm_read()?;
+    if iov.iov_len < 512 {
+        return Err(AxError::InvalidInput);
+    }
+    vm_write_slice(iov.iov_base, &fp_data)?;
+    iov.iov_len = 512;
+    (data as *mut IoVec).vm_write(iov)?;
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_setregset_fpregset_x86_64(pid: usize, data: usize) -> AxResult<isize> {
+    if data == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let iov = (data as *const IoVec).vm_read()?;
+    if iov.iov_len < 512 {
+        return Err(AxError::InvalidInput);
+    }
+    let mut fp_data: [u8; 512] = [0; 512];
+    let bytes =
+        unsafe { slice::from_raw_parts_mut(fp_data.as_mut_ptr().cast::<MaybeUninit<u8>>(), 512) };
+    starry_vm::vm_read_slice(iov.iov_base, bytes)?;
+    ptrace_write_stopped_fp_x86_64(pid, fp_data)
 }
 
 fn ptrace_peekdata(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
