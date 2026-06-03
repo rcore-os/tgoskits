@@ -591,5 +591,42 @@ mod tests {
         assert_eq!(block.block_num, AbsoluteBN::new(100));
         assert_eq!(block.data.len(), BLOCK_SIZE);
         assert!(block.dirty);
+
+        let stats = cache.stats();
+        assert_eq!(stats.total_entries, 1);
+        assert_eq!(stats.dirty_entries, 1);
+    }
+
+    #[test]
+    fn test_invalidate() {
+        let cache = DataBlockCache::new(8, BLOCK_SIZE);
+
+        let device = TestBlockDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        cache
+            .create_new(&mut jbd2_dev, AbsoluteBN::new(100))
+            .expect("create new block");
+        assert_eq!(cache.stats().total_entries, 1);
+
+        cache.invalidate(AbsoluteBN::new(100));
+        assert_eq!(cache.stats().total_entries, 0);
+    }
+
+    #[test]
+    fn create_new_respects_lru_limit() {
+        let cache = DataBlockCache::new(2, BLOCK_SIZE);
+        let device = TestBlockDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        for block in 10..14 {
+            cache
+                .create_new(&mut jbd2_dev, AbsoluteBN::new(block))
+                .expect("create new block");
+        }
+
+        let stats = cache.stats();
+        assert_eq!(stats.total_entries, 2);
+        assert_eq!(stats.max_entries, 2);
     }
 }
