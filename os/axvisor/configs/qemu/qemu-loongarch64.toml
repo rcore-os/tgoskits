@@ -11,6 +11,8 @@ args = [
   "-serial",
   "mon:stdio",
   "-no-reboot",
+  "-net",
+  "none",
   "-device",
   "virtio-blk-pci,drive=disk0",
   "-drive",

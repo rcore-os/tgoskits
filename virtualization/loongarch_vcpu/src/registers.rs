@@ -1,11 +1,16 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use ax_kspin::SpinNoIrq as Mutex;
 
 pub const CSR_GSTAT: u16 = 0x50;
+pub const CSR_CRMD: u16 = 0x0;
+pub const CSR_PRMD: u16 = 0x1;
 pub const CSR_EENTRY: u16 = 0x0c;
 pub const CSR_TLBIDX: u16 = 0x10;
 pub const CSR_TLBEHI: u16 = 0x11;
 pub const CSR_TLBELO0: u16 = 0x12;
 pub const CSR_TLBELO1: u16 = 0x13;
+pub const CSR_ASID: u16 = 0x18;
 pub const CSR_GCTL: u16 = 0x51;
 pub const CSR_GTLBC: u16 = 0x15;
 pub const CSR_GINTC: u16 = 0x52;
@@ -18,7 +23,9 @@ pub const CSR_TLBRENTRY: u16 = 0x88;
 pub const CSR_TLBRELO0: u16 = 0x8c;
 pub const CSR_TLBRELO1: u16 = 0x8d;
 pub const CSR_TLBREHI: u16 = 0x8e;
+pub const CSR_TLBRERA: u16 = 0x8a;
 pub const CSR_ECFG: u16 = 0x4;
+pub const CSR_KSAVE_KSP: u16 = 0x30;
 
 pub const GCSR_ESTAT: usize = 0x5;
 pub const GCSR_EENTRY: usize = 0x0c;
@@ -34,6 +41,7 @@ pub const INT_TIMER: usize = 11;
 pub const INT_IPI: usize = 12;
 
 static INJECT_INT_LOCK: Mutex<()> = Mutex::new(());
+static INJECT_INT_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_arch = "loongarch64")]
 #[inline(always)]
@@ -53,7 +61,7 @@ pub(crate) unsafe fn csr_read<const CSR_NUM: u16>() -> usize {
 #[cfg(target_arch = "loongarch64")]
 #[inline(always)]
 pub(crate) unsafe fn csr_write<const CSR_NUM: u16>(value: usize) {
-    core::arch::asm!("csrwr {}, {}", in(reg) value, const CSR_NUM);
+    core::arch::asm!("csrwr {}, {}", inout(reg) value => _, const CSR_NUM);
 }
 
 #[cfg(not(target_arch = "loongarch64"))]
@@ -80,7 +88,7 @@ pub(crate) unsafe fn gcsr_read<const GCSR_NUM: usize>() -> usize {
 #[cfg(target_arch = "loongarch64")]
 #[inline(always)]
 pub(crate) unsafe fn gcsr_write<const GCSR_NUM: usize>(value: usize) {
-    core::arch::asm!("gcsrwr {}, {}", in(reg) value, const GCSR_NUM);
+    core::arch::asm!("gcsrwr {}, {}", inout(reg) value => _, const GCSR_NUM);
 }
 
 #[cfg(not(target_arch = "loongarch64"))]
@@ -260,6 +268,14 @@ pub fn inject_interrupt(vector: usize) {
 
     unsafe {
         if (INT_HWI0..=INT_HWI7).contains(&vector) {
+            if INJECT_INT_LOGS.fetch_add(1, Ordering::Relaxed) < 16 {
+                log::info!(
+                    "LoongArch vcpu pulse HWI: vector={}, gintc_before={:#x}, hwis_before={:#x}",
+                    vector,
+                    read_gintc(),
+                    current_hwis()
+                );
+            }
             pulse_hwi(vector);
         } else {
             let estat = gcsr_read::<GCSR_ESTAT>();

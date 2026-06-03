@@ -34,9 +34,9 @@ phys-virt-offset = "0x9000_0000_0000_0000"      # uint
 phys-bus-offset = 0                             # uint
 
 # Base physical address of the kernel image.
-kernel-base-paddr = 0x0020_0000                 # uint
+kernel-base-paddr = 0x8000_0000                 # uint
 # Base virtual address of the kernel image.
-kernel-base-vaddr = "0x9000_0000_0020_0000"     # uint
+kernel-base-vaddr = "0x9000_0000_8000_0000"     # uint
 # Kernel page-table-backed address space.
 #
 # LoongArch64 uses the 0x9000_0000_0000_0000 DMW window for cached direct

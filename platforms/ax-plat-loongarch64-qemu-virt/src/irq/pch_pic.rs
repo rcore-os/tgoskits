@@ -7,7 +7,10 @@ const PIC_REG_COUNT: usize = 2;
 const PIC_IRQ_COUNT: usize = PIC_COUNT_PER_REG * PIC_REG_COUNT;
 
 const PCH_PIC_MASK: usize = 0x20;
+const PCH_PIC_HTMSI_EN: usize = 0x40;
 const PCH_PIC_EDGE: usize = 0x60;
+const PCH_PIC_CLR: usize = 0x80;
+const PCH_INT_ROUTE: usize = 0x100;
 const PCH_PIC_POL: usize = 0x3e0;
 const PCH_INT_HTVEC: usize = 0x200;
 
@@ -24,12 +27,21 @@ fn write_w(addr: usize, val: u32) {
 }
 
 pub fn init() {
-    // High level triggered
     for i in 0..PIC_REG_COUNT {
         let offset = i * 4;
         write_w(PCH_PIC_MASK + offset, u32::MAX);
+        write_w(PCH_PIC_CLR + offset, u32::MAX);
+        // High level triggered.
         write_w(PCH_PIC_EDGE + offset, 0);
         write_w(PCH_PIC_POL + offset, 0);
+        write_w(PCH_PIC_HTMSI_EN + offset, u32::MAX);
+    }
+
+    for irq in 0..(PIC_COUNT_PER_REG * PIC_REG_COUNT) {
+        unsafe {
+            ((MMIO_BASE + PCH_INT_ROUTE + irq) as *mut u8).write_volatile(1);
+            ((MMIO_BASE + PCH_INT_HTVEC + irq) as *mut u8).write_volatile(irq as _);
+        }
     }
 }
 
@@ -39,6 +51,19 @@ fn split_bit(irq: usize) -> (usize, u32) {
 
 const fn valid_irq(irq: usize) -> bool {
     irq < PIC_IRQ_COUNT
+}
+
+#[cfg(feature = "hypervisor")]
+pub fn debug_snapshot(irq: usize) -> (u32, u32, u32, u32, u8) {
+    let (offset, _) = split_bit(irq);
+    let htv = unsafe { ((MMIO_BASE + PCH_INT_HTVEC + irq) as *mut u8).read_volatile() };
+    (
+        read_w(PCH_PIC_MASK + offset),
+        read_w(PCH_PIC_HTMSI_EN + offset),
+        read_w(PCH_PIC_EDGE + offset),
+        read_w(PCH_PIC_POL + offset),
+        htv,
+    )
 }
 
 pub fn enable_irq(irq: usize) {

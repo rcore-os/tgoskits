@@ -123,11 +123,13 @@ impl TimeIf for TimeIfImpl {
     /// LoongArch64 TCFG CSR: <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#timer-configuration>
     #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64) {
-        use loongArch64::register::tcfg;
+        use loongArch64::register::{tcfg, ticlr};
 
         let ticks_now = Self::current_ticks();
         let ticks_deadline = Self::nanos_to_ticks(deadline_ns);
         let init_value = ticks_deadline.saturating_sub(ticks_now).max(1);
+        ticlr::clear_timer_interrupt();
+        tcfg::set_periodic(false);
         tcfg::set_init_val(init_value as _);
         tcfg::set_en(true);
     }

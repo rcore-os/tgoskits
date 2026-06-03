@@ -155,7 +155,10 @@ impl MemIf for MemIfImpl {
     /// Note that the ranges returned should not include the range where the
     /// kernel is loaded.
     fn reserved_phys_ram_ranges() -> &'static [RawRange] {
-        &[(0, 0x200000)] // boot_info + fdt
+        // AxVisor is loaded from high memory on LoongArch. Keep the low RAM
+        // bank out of the host allocator so passthrough devices can DMA to
+        // guest identity-mapped low memory.
+        &[(LOW_MEMORY_BASE, LOW_MEMORY_SIZE)]
     }
 
     /// Returns all device memory (MMIO) ranges on the platform.

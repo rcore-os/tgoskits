@@ -111,10 +111,6 @@ pub struct LoongArchContextFrame {
     pub host_badi: usize,
     pub host_tlbrbadv: usize,
     pub host_tlbrera: usize,
-    pub guest_pc: usize,
-    pub entry_host_era: usize,
-    pub entry_guest_era: usize,
-    pub entry_gstat: usize,
 }
 
 impl LoongArchContextFrame {
@@ -220,10 +216,6 @@ impl fmt::Display for LoongArchContextFrame {
         writeln!(f, "host_badv: {:016x}", self.host_badv)?;
         writeln!(f, "host_badi: {:016x}", self.host_badi)?;
         writeln!(f, "host_tlbrbadv: {:016x}", self.host_tlbrbadv)?;
-        writeln!(f, "host_tlbrera: {:016x}", self.host_tlbrera)?;
-        writeln!(f, "guest_pc: {:016x}", self.guest_pc)?;
-        writeln!(f, "entry_host_era: {:016x}", self.entry_host_era)?;
-        writeln!(f, "entry_guest_era: {:016x}", self.entry_guest_era)?;
-        write!(f, "entry_gstat: {:016x}", self.entry_gstat)
+        write!(f, "host_tlbrera: {:016x}", self.host_tlbrera)
     }
 }

@@ -5,6 +5,7 @@
 .equ CSR_CRMD,         0x0
 .equ CSR_PRMD,         0x1
 .equ CSR_ECFG,         0x4
+.equ CSR_BADI,         0x8
 .equ CSR_SAVE0,        0x30
 .equ CSR_SAVE1,        0x31
 .equ CSR_PGD,          0x1b
@@ -26,7 +27,7 @@
     st.d    $r0,  $sp, 0
     st.d    $r1,  $sp, 8
     st.d    $r2,  $sp, 16
-    csrrd   $t0, CSR_SAVE0
+    csrrd   $t0, 0x502
     st.d    $t0, $sp, 24
     st.d    $r4,  $sp, 32
     st.d    $r5,  $sp, 40
@@ -36,7 +37,7 @@
     st.d    $r9,  $sp, 72
     st.d    $r10, $sp, 80
     st.d    $r11, $sp, 88
-    csrrd   $t0, CSR_TLBRSAVE
+    csrrd   $t0, CSR_SAVE0
     st.d    $t0, $sp, 96
     st.d    $r13, $sp, 104
     st.d    $r14, $sp, 112
@@ -148,8 +149,11 @@
     st.d    $t0, $sp, 600
     gcsrrd  $t0, 0x41
     st.d    $t0, $sp, 608
-    gcsrrd  $t0, 0x42
-    st.d    $t0, $sp, 616
+    /*
+     * Keep the software timer's logical TVAL in the Rust context. QEMU-LVZ
+     * reuses GCSR_TVAL as a pause/resume remaining-ticks value while the guest
+     * is stopped, so snapshotting it here pollutes the emulated guest timer.
+     */
     gcsrrd  $t0, 0x43
     st.d    $t0, $sp, 624
     gcsrrd  $t0, 0x44
@@ -187,11 +191,11 @@
     st.d    $t0, $sp, 752
     csrrd   $t0, 0x7
     st.d    $t0, $sp, 760
-    csrrd   $t0, 0x8
+    csrrd   $t0, CSR_BADI
     st.d    $t0, $sp, 768
     csrrd   $t0, 0x89
     st.d    $t0, $sp, 776
-    csrrd   $t0, 0x8a
+    csrrd   $t0, CSR_TLBRERA
     st.d    $t0, $sp, 784
 .endm
 
@@ -235,11 +239,17 @@
     ori     $t1, $t1, CSR_GTLBC_TGID0
     csrwr   $t1, CSR_GTLBC
 
+    li.d    $t0, CSR_GSTAT_PVM
+    csrxchg $t0, $t0, CSR_GSTAT
+
+    csrrd   $t0, CSR_ECFG
+    ori     $t0, $t0, CSR_TIMER_IE
+    csrwr   $t0, CSR_ECFG
 .endm
 
 .macro RESTORE_GUEST_REGS
     ld.d    $t0, $sp, 24
-    csrwr   $t0, CSR_SAVE0
+    csrwr   $t0, 0x502
 
     ld.d    $t0, $sp, 256
     csrwr   $t0, 0x6
@@ -336,10 +346,9 @@
     ld.d    $t0, $sp, 608
     gcsrwr  $t0, 0x41
     /*
-     * Do not restore GCSR_TVAL. QEMU-LVZ treats TVAL as the remaining
-     * ticks snapshot while guest mode is paused; writing it back on every
-     * VM entry re-bases a relative timer and keeps pushing the guest timer
-     * deadline into the future.
+     * QEMU-LVZ stores GCSR_TVAL as remaining ticks while guest mode is
+     * paused.  Rewriting it on every VM entry re-bases the relative guest
+     * timer and can keep pushing one-shot deadlines into the future.
      */
     ld.d    $t0, $sp, 624
     gcsrwr  $t0, 0x43
@@ -371,7 +380,6 @@
     gcsrwr  $t0, 0x182
     ld.d    $t0, $sp, 736
     gcsrwr  $t0, 0x183
-
     ld.d    $t0, $sp, 256
     csrwr   $t0, 0x6
     csrrd   $t1, CSR_TLBRERA
@@ -382,16 +390,6 @@
     li.d    $t0, -9
     and     $t1, $t1, $t0
     csrwr   $t1, CSR_TLBRPRMD
-
-    li.d    $t0, CSR_GSTAT_PVM
-    csrxchg $t0, $t0, CSR_GSTAT
-
-    csrrd   $t0, 0x6
-    st.d    $t0, $sp, 800
-    gcsrrd  $t0, 0x6
-    st.d    $t0, $sp, 808
-    csrrd   $t0, CSR_GSTAT
-    st.d    $t0, $sp, 816
 
     ld.d    $r1,  $sp, 8
     ld.d    $r2,  $sp, 16
@@ -424,13 +422,13 @@
     ld.d    $r30, $sp, 240
     ld.d    $r31, $sp, 248
     ld.d    $r0,  $sp, 0
-    csrrd   $sp, CSR_SAVE0
+    csrrd   $sp, 0x502
 .endm
 
 .global _run_guest
 _run_guest:
     move    $t1, $ra
-    addi.d  $t0, $a0, 832
+    addi.d  $t0, $a0, 792
     csrwr   $t0, 0x33
     move    $sp, $a0
     PREPARE_GUEST_ENTRY
@@ -465,62 +463,170 @@ _guest_tlb_refill_vector:
 
 .Lguest_stage2_tlb_invalid:
     csrrd   $t0, CSR_TLBRSAVE
-    csrwr   $t0, CSR_TLBRSAVE
+    csrwr   $t0, CSR_SAVE0
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, CSR_SAVE0
+    csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -832
+    addi.d  $sp, $sp, -792
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     li.d    $a0, 0
     b       _guest_exit
 
-.section .text.vectors, "ax"
-.balign 0x10000
+.section .vectors, "ax"
+.align 12
 .global _exception_vectors
 _exception_vectors:
-    .set __vec_slot, 0
-    .rept 512
-        .org __vec_slot * 0x80
-        .if __vec_slot == 0
-            b       _irq_handler_vector
-        .elseif __vec_slot >= 64
-            b       _irq_handler_vector
-        .else
-            b       _sync_handler_vector
-        .endif
-        .set __vec_slot, __vec_slot + 1
-    .endr
-    .org 0x10000
+    .org 0x0
+    b       _irq_handler_vector
+    .org 0x80
+    b       _sync_handler_vector
+    .org 0x100
+    b       _sync_handler_vector
+    .org 0x180
+    b       _sync_handler_vector
+    .org 0x200
+    b       _sync_handler_vector
+    .org 0x280
+    b       _sync_handler_vector
+    .org 0x400
+    b       _sync_handler_vector
+    .org 0x480
+    b       _sync_handler_vector
+    .org 0x500
+    b       _sync_handler_vector
+    .org 0x580
+    b       _sync_handler_vector
+    .org 0x600
+    b       _sync_handler_vector
+    .org 0x680
+    b       _sync_handler_vector
+    .org 0x700
+    b       _sync_handler_vector
+    .org 0x780
+    b       _sync_handler_vector
+    .org 0x800
+    b       _sync_handler_vector
+    .org 0x880
+    b       _sync_handler_vector
+    .org 0x900
+    b       _sync_handler_vector
+    .org 0x980
+    b       _sync_handler_vector
+    .org 0xa00
+    b       _sync_handler_vector
+    .org 0xa80
+    b       _sync_handler_vector
+    .org 0xb00
+    b       _hvc_handler_vector
+    .org 0xb80
+    b       _sync_handler_vector
+    .org 0xc00
+    b       _sync_handler_vector
+    .org 0xc80
+    b       _sync_handler_vector
+    .org 0xd00
+    b       _sync_handler_vector
+    .org 0xd80
+    b       _sync_handler_vector
+
+    /*
+     * Hardware interrupts use EENTRY + (64 + vector) * vec_size.  With VS=5
+     * each slot is 0x80 bytes, so local interrupt 11 (timer) lands at 0x2580.
+     */
+    .org 0x2000
+    b       _irq_handler_vector
+    .org 0x2080
+    b       _irq_handler_vector
+    .org 0x2100
+    b       _irq_handler_vector
+    .org 0x2180
+    b       _irq_handler_vector
+    .org 0x2200
+    b       _irq_handler_vector
+    .org 0x2280
+    b       _irq_handler_vector
+    .org 0x2300
+    b       _irq_handler_vector
+    .org 0x2380
+    b       _irq_handler_vector
+    .org 0x2400
+    b       _irq_handler_vector
+    .org 0x2480
+    b       _irq_handler_vector
+    .org 0x2500
+    b       _irq_handler_vector
+    .org 0x2580
+    b       _irq_handler_vector
+    .org 0x2600
+    b       _irq_handler_vector
+    .org 0x2680
+    b       _irq_handler_vector
+    .org 0x2700
+    b       _irq_handler_vector
+    .org 0x2780
+    b       _irq_handler_vector
+    .org 0x2800
+    b       _irq_handler_vector
+    .org 0x2880
+    b       _irq_handler_vector
+    .org 0x2900
+    b       _irq_handler_vector
+    .org 0x2980
+    b       _irq_handler_vector
+    .org 0x2a00
+    b       _irq_handler_vector
+    .org 0x2a80
+    b       _irq_handler_vector
+    .org 0x2b00
+    b       _irq_handler_vector
+    .org 0x2b80
+    b       _irq_handler_vector
+    .org 0x2c00
+    b       _irq_handler_vector
+    .org 0x2c80
+    b       _irq_handler_vector
+    .org 0x2d00
+    b       _irq_handler_vector
+    .org 0x2d80
+    b       _irq_handler_vector
+    .org 0x2e00
+    b       _irq_handler_vector
+    .org 0x2e80
+    b       _irq_handler_vector
+    .org 0x2f00
+    b       _irq_handler_vector
+    .org 0x2f80
+    b       _irq_handler_vector
 
 _irq_handler_vector:
-    csrwr   $t0, CSR_TLBRSAVE
+    csrwr   $t0, CSR_SAVE0
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, CSR_SAVE0
+    csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -832
+    addi.d  $sp, $sp, -792
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     li.d    $a0, 1
     b       _guest_exit
 
 _sync_handler_vector:
-    csrwr   $t0, CSR_TLBRSAVE
+    csrwr   $t0, CSR_SAVE0
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, CSR_SAVE0
+    csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -832
+    addi.d  $sp, $sp, -792
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     li.d    $a0, 0
     b       _guest_exit
 
 _hvc_handler_vector:
-    csrwr   $t0, CSR_TLBRSAVE
+    csrwr   $t0, CSR_SAVE0
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, CSR_SAVE0
+    csrwr   $sp, 0x502
     csrrd   $sp, 0x33
-    addi.d  $sp, $sp, -832
+    addi.d  $sp, $sp, -792
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     li.d    $a0, 0

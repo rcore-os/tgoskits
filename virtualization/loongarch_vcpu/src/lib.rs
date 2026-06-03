@@ -1,6 +1,8 @@
 #![no_std]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 mod context_frame;
 mod exception;
 pub mod host;
