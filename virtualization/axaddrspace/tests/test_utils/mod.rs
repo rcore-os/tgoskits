@@ -17,7 +17,6 @@ use std::sync::Mutex;
 
 use ax_memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
 use ax_page_table_multiarch::PagingHandler;
-use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use lazy_static::lazy_static;
 
 /// The starting physical address for the simulated memory region in tests.
@@ -59,30 +58,9 @@ pub static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static ALLOC_SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
-/// A mock implementation of AxMmHal for testing purposes.
+/// A mock paging handler for testing purposes.
 /// It simulates memory allocation and deallocation without actual hardware interaction.
-///
-/// The `Debug` trait is derived because `assert_matches!` on `Result<PhysFrame<MockHal>, _>`
-/// requires `PhysFrame<MockHal>` (the `T` type) to implement `Debug` for diagnostic output on assertion failure.
 pub struct MockHal {}
-
-impl AxMmHal for MockHal {
-    fn alloc_frame() -> Option<HostPhysAddr> {
-        Self::mock_alloc_frame()
-    }
-
-    fn dealloc_frame(_paddr: HostPhysAddr) {
-        Self::mock_dealloc_frame(_paddr)
-    }
-
-    fn phys_to_virt(paddr: HostPhysAddr) -> HostVirtAddr {
-        Self::mock_phys_to_virt(paddr)
-    }
-
-    fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr {
-        Self::mock_virt_to_phys(vaddr)
-    }
-}
 
 impl PagingHandler for MockHal {
     fn alloc_frame() -> Option<PhysAddr> {
@@ -129,15 +107,6 @@ where
     test_fn()
 }
 
-/// A utility function to verify the number of deallocations performed by the MockHal.
-pub fn test_dealloc_count(expected: usize) {
-    let actual_dealloc_count = DEALLOC_COUNT.load(Ordering::SeqCst);
-    assert_eq!(
-        actual_dealloc_count, expected,
-        "Expected {expected} deallocations, but found {actual_dealloc_count}"
-    );
-}
-
 impl MockHal {
     /// Simulates the allocation of a single physical frame.
     pub fn mock_alloc_frame() -> Option<PhysAddr> {
@@ -171,24 +140,6 @@ impl MockHal {
         );
         let offset = paddr_usize - BASE_PADDR;
         VirtAddr::from_usize(MEMORY.lock().unwrap().0.as_ptr() as usize + offset)
-    }
-
-    /// Maps a virtual address (within the test process) back to a simulated physical address.
-    pub fn mock_virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-        let base_virt = MEMORY.lock().unwrap().0.as_ptr() as usize;
-        let vaddr_usize = vaddr.as_usize();
-        assert!(
-            vaddr_usize >= base_virt && vaddr_usize < base_virt + MEMORY_LEN,
-            "Virtual address {:#x} out of bounds",
-            vaddr_usize
-        );
-        let offset = vaddr_usize - base_virt;
-        PhysAddr::from_usize(offset + BASE_PADDR)
-    }
-
-    /// Helper function to control the simulated allocation failure.
-    pub fn set_alloc_fail(fail: bool) {
-        ALLOC_SHOULD_FAIL.store(fail, Ordering::SeqCst);
     }
 
     /// Resets all static state of the MockHal to its initial, clean state.

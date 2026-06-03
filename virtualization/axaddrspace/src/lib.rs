@@ -25,8 +25,6 @@ compile_error!("features `vmx` and `svm` are mutually exclusive");
 mod addr;
 mod address_space;
 pub mod device;
-mod frame;
-mod hal;
 mod memory_accessor;
 mod npt;
 
@@ -34,8 +32,6 @@ pub use addr::*;
 pub use address_space::*;
 use ax_errno::AxError;
 use ax_memory_set::MappingError;
-pub use frame::PhysFrame;
-pub use hal::AxMmHal;
 pub use memory_accessor::GuestMemoryAccessor;
 
 /// Information about nested page faults.

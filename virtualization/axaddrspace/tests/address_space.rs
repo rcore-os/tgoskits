@@ -19,9 +19,7 @@ use core::sync::atomic::Ordering;
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpace, GuestPhysAddr, MappingFlags};
 use axin::axin;
-use test_utils::{
-    ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test, test_dealloc_count,
-};
+use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test};
 
 fn mock_hal_test_with_dealloc_count<F, R>(expected_dealloc_count: usize) -> impl FnOnce(F) -> R
 where
@@ -30,7 +28,11 @@ where
     move |test_fn: F| {
         mock_hal_test(|| {
             let result = test_fn();
-            test_dealloc_count(expected_dealloc_count);
+            let actual_dealloc_count = DEALLOC_COUNT.load(Ordering::SeqCst);
+            assert_eq!(
+                actual_dealloc_count, expected_dealloc_count,
+                "Expected {expected_dealloc_count} deallocations, but found {actual_dealloc_count}"
+            );
             result
         })
     }

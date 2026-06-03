@@ -3,8 +3,8 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use ax_errno::AxResult;
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_errno::{AxResult, ax_err_type};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use axvm_types::{InterruptVector, VCpuId, VMId};
 
 /// Host operations required by x86 vLAPIC, PIT, and serial emulation.
@@ -60,27 +60,45 @@ pub trait X86VlapicHostIf {
 }
 
 /// RAII host frame used by x86 virtual interrupt-controller structures.
-pub type PhysFrame = axaddrspace::PhysFrame<X86VlapicMmHal>;
-
-/// Memory HAL backed by [`X86VlapicHostIf`].
 #[derive(Debug)]
-pub struct X86VlapicMmHal;
+pub struct PhysFrame {
+    start_paddr: PhysAddr,
+}
 
-impl axaddrspace::AxMmHal for X86VlapicMmHal {
-    fn alloc_frame() -> Option<PhysAddr> {
-        ax_crate_interface::call_interface!(X86VlapicHostIf::alloc_frame())
+impl PhysFrame {
+    /// Allocate a host frame.
+    pub fn alloc_zero() -> AxResult<Self> {
+        let frame = Self::alloc()?;
+        unsafe { core::ptr::write_bytes(frame.as_mut_ptr(), 0, PAGE_SIZE_4K) };
+        Ok(frame)
     }
 
-    fn dealloc_frame(paddr: PhysAddr) {
-        ax_crate_interface::call_interface!(X86VlapicHostIf::dealloc_frame(paddr));
+    fn alloc() -> AxResult<Self> {
+        let start_paddr = ax_crate_interface::call_interface!(X86VlapicHostIf::alloc_frame())
+            .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
+        assert_ne!(start_paddr.as_usize(), 0);
+        Ok(Self { start_paddr })
     }
 
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        ax_crate_interface::call_interface!(X86VlapicHostIf::phys_to_virt(paddr))
+    /// Get the starting physical address of the frame.
+    pub fn start_paddr(&self) -> PhysAddr {
+        self.start_paddr
     }
 
-    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-        ax_crate_interface::call_interface!(X86VlapicHostIf::virt_to_phys(vaddr))
+    /// Get a mutable pointer to the frame.
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        ax_crate_interface::call_interface!(X86VlapicHostIf::phys_to_virt(self.start_paddr))
+            .as_mut_ptr()
+    }
+}
+
+impl Drop for PhysFrame {
+    fn drop(&mut self) {
+        ax_crate_interface::call_interface!(X86VlapicHostIf::dealloc_frame(self.start_paddr));
+        log::debug!(
+            "[x86_vlapic] deallocated PhysFrame({:#x})",
+            self.start_paddr
+        );
     }
 }
 

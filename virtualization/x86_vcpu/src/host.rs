@@ -1,6 +1,7 @@
 //! Host callbacks required by the x86 vCPU implementation.
 
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_errno::{AxResult, ax_err_type};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 
 /// Host memory and time operations required by x86 virtualization backends.
 #[ax_crate_interface::def_interface]
@@ -25,27 +26,61 @@ pub trait X86VcpuHostIf {
 }
 
 /// RAII host frame used by x86 VMX/SVM structures.
-pub type PhysFrame = axaddrspace::PhysFrame<X86VcpuMmHal>;
-
-/// Memory HAL backed by [`X86VcpuHostIf`].
 #[derive(Debug)]
-pub struct X86VcpuMmHal;
+pub struct PhysFrame {
+    start_paddr: Option<PhysAddr>,
+}
 
-impl axaddrspace::AxMmHal for X86VcpuMmHal {
-    fn alloc_frame() -> Option<PhysAddr> {
-        ax_crate_interface::call_interface!(X86VcpuHostIf::alloc_frame())
+impl PhysFrame {
+    /// Allocate a host frame.
+    pub fn alloc() -> AxResult<Self> {
+        let start_paddr = ax_crate_interface::call_interface!(X86VcpuHostIf::alloc_frame())
+            .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
+        assert_ne!(start_paddr.as_usize(), 0);
+        Ok(Self {
+            start_paddr: Some(start_paddr),
+        })
     }
 
-    fn dealloc_frame(paddr: PhysAddr) {
-        ax_crate_interface::call_interface!(X86VcpuHostIf::dealloc_frame(paddr));
+    /// Allocate a host frame and fill it with zeros.
+    pub fn alloc_zero() -> AxResult<Self> {
+        let mut frame = Self::alloc()?;
+        frame.fill(0);
+        Ok(frame)
     }
 
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        ax_crate_interface::call_interface!(X86VcpuHostIf::phys_to_virt(paddr))
+    /// Create an uninitialized frame placeholder.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the placeholder is replaced before being accessed.
+    pub const unsafe fn uninit() -> Self {
+        Self { start_paddr: None }
     }
 
-    fn virt_to_phys(_vaddr: VirtAddr) -> PhysAddr {
-        unreachable!("x86_vcpu does not require host virtual-to-physical translation")
+    /// Get the starting physical address of the frame.
+    pub fn start_paddr(&self) -> PhysAddr {
+        self.start_paddr.expect("uninitialized PhysFrame")
+    }
+
+    /// Get a mutable pointer to the frame.
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        ax_crate_interface::call_interface!(X86VcpuHostIf::phys_to_virt(self.start_paddr()))
+            .as_mut_ptr()
+    }
+
+    /// Fill the frame with a byte.
+    pub fn fill(&mut self, byte: u8) {
+        unsafe { core::ptr::write_bytes(self.as_mut_ptr(), byte, PAGE_SIZE_4K) };
+    }
+}
+
+impl Drop for PhysFrame {
+    fn drop(&mut self) {
+        if let Some(start_paddr) = self.start_paddr {
+            ax_crate_interface::call_interface!(X86VcpuHostIf::dealloc_frame(start_paddr));
+            log::debug!("[x86_vcpu] deallocated PhysFrame({start_paddr:#x})");
+        }
     }
 }
 
