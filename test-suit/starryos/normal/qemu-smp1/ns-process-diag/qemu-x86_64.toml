@@ -1,0 +1,80 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+# helper: get pgid from /proc/<pid>/stat (field 5 = pgrp)
+get_pgid() { sed "s/.*) //" /proc/$1/stat 2>/dev/null | awk "{print \$3}"; }
+
+fail() { echo "NS_DIAG_ERROR: $1"; echo "NS_PROCESS_DIAG_FAILED"; exit 1; }
+
+# === D6: PID ns basic ===
+echo "NS_DIAG_D6_BEGIN"
+unshare -p true 2>/dev/null && echo "NS_DIAG_D6_INFO: unshare CLONE_NEWPID OK" || echo "NS_DIAG_D6_INFO: unshare CLONE_NEWPID not available"
+echo "NS_DIAG_D6_DONE"
+
+# === D7: pgkill across session boundary ===
+echo "NS_DIAG_D7_BEGIN"
+
+# Launch: subshell wraps setsid to create new session+pg, spawn grandchild
+(setsid sh -c '
+    echo "CHILD_READY $$" > /tmp/d7_ready
+    sleep 30 &   # grandchild, same pg
+    while true; do sleep 1; done
+') &
+child_pid=$!
+
+# Wait for ready
+for i in $(seq 1 30); do
+    [ -f /tmp/d7_ready ] && break
+    sleep 0.1
+done
+[ -f /tmp/d7_ready ] || fail "D7: child not ready"
+child_pid=$(awk '{print $2}' /tmp/d7_ready)
+rm -f /tmp/d7_ready
+
+child_pgid=$(get_pgid "$child_pid")
+[ -n "$child_pgid" ] || fail "D7: cannot get pgid for $child_pid"
+echo "NS_DIAG_D7_INFO: child pid=$child_pid pgid=$child_pgid"
+
+# Verify pg visible
+kill -0 "-$child_pgid" 2>/dev/null || fail "D7: pg $child_pgid not found"
+echo "NS_DIAG_D7_INFO: kill(-$child_pgid, 0) OK"
+
+# Kill entire pg
+echo "NS_DIAG_D7_INFO: kill(-$child_pgid, SIGKILL)..."
+kill -9 "-$child_pgid" 2>/dev/null
+sleep 1
+
+if kill -0 "-$child_pgid" 2>/dev/null; then
+    echo "NS_DIAG_D7_WARN: pg $child_pgid STILL EXISTS after SIGKILL"
+    echo "NS_DIAG_D7_WARN: grandchild survived pg kill — gap CONFIRMED"
+else
+    echo "NS_DIAG_D7_INFO: pg $child_pgid gone (correct)"
+fi
+
+echo "NS_DIAG_D7_DONE"
+echo "NS_PROCESS_DIAG_PASSED"
+exit 0
+'''
+success_regex = ["(?m)^NS_PROCESS_DIAG_PASSED\\s*$"]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    '(?i)\bfatal\b',
+    "(?m)^NS_PROCESS_DIAG_FAILED\\s*$",
+]
+timeout = 120

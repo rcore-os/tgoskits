@@ -573,6 +573,36 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
         }
 
+        // If this process was the init of a non-root PID namespace,
+        // send SIGKILL to all remaining processes in that namespace
+        // (Linux: zap_pid_ns_processes).
+        {
+            let ns = thr.proc_data.nsproxy.lock();
+            let pid_ns_lock = ns.pid_ns.lock();
+            if pid_ns_lock.level > 0 && pid_ns_lock.init_global_tid() == Some(process.pid() as u64)
+            {
+                let ns_ptr = Arc::as_ptr(&ns.pid_ns) as usize;
+                drop(pid_ns_lock);
+                drop(ns);
+
+                let proc_table = PROCESS_TABLE.read();
+                let victims: Vec<Pid> = proc_table
+                    .values()
+                    .filter(|pd| {
+                        pd.proc.pid() != process.pid()
+                            && Arc::as_ptr(&pd.nsproxy.lock().pid_ns) as usize == ns_ptr
+                    })
+                    .map(|pd| pd.proc.pid())
+                    .collect();
+                drop(proc_table);
+
+                let sig = SignalInfo::new_kernel(Signo::SIGKILL);
+                for pid in victims {
+                    let _ = send_signal_to_process(pid, Some(sig.clone()));
+                }
+            }
+        }
+
         thr.proc_data.exit_event.wake();
 
         // Unblock a vfork parent waiting for this child to exit.

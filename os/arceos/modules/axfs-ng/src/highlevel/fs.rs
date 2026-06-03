@@ -3,8 +3,10 @@ use alloc::{
     collections::vec_deque::VecDeque,
     string::String,
     sync::{Arc, Weak},
+    vec,
     vec::Vec,
 };
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_io::{Read, Write};
 use ax_kspin::SpinNoIrq;
@@ -31,6 +33,7 @@ pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
 static FS_REGISTRY: SpinNoIrq<Vec<Weak<Mutex<FsContext>>>> = SpinNoIrq::new(Vec::new());
+static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
 fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
@@ -51,6 +54,9 @@ pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
     };
     for ctx_arc in refs {
         let ctx = ctx_arc.lock();
+        if !ctx.mount_namespace_contains(mp) {
+            continue;
+        }
         if Arc::ptr_eq(ctx.root_dir().mountpoint(), mp)
             || Arc::ptr_eq(ctx.current_dir().mountpoint(), mp)
         {
@@ -58,6 +64,47 @@ pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
         }
     }
     false
+}
+
+/// Namespace-local mount tree visible to an [`FsContext`].
+#[derive(Debug, Clone)]
+pub struct MountNamespace {
+    id: u64,
+    root_mount: Arc<Mountpoint>,
+}
+
+impl MountNamespace {
+    fn new(root_mount: Arc<Mountpoint>) -> Self {
+        Self {
+            id: MOUNT_NAMESPACE_ID.fetch_add(1, Ordering::Relaxed),
+            root_mount,
+        }
+    }
+
+    /// Returns a kernel-local identifier for diagnostics.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Returns the root mountpoint of this namespace.
+    pub fn root_mount(&self) -> &Arc<Mountpoint> {
+        &self.root_mount
+    }
+
+    fn clone_namespace(&self) -> Arc<Self> {
+        Arc::new(Self::new(self.root_mount.clone_tree()))
+    }
+
+    fn contains_mountpoint(&self, mountpoint: &Arc<Mountpoint>) -> bool {
+        let mut stack = vec![self.root_mount.clone()];
+        while let Some(current) = stack.pop() {
+            if Arc::ptr_eq(&current, mountpoint) {
+                return true;
+            }
+            stack.extend(current.children());
+        }
+        false
+    }
 }
 
 scope_local::scope_local! {
@@ -89,6 +136,7 @@ pub struct ReadDirEntry {
 /// Provides `std::fs`-like interface.
 #[derive(Debug, Clone)]
 pub struct FsContext {
+    mnt_ns: Arc<MountNamespace>,
     root_dir: Location,
     current_dir: Location,
 }
@@ -96,10 +144,25 @@ pub struct FsContext {
 impl FsContext {
     /// Creates a new context with `root_dir` as both root and current directory.
     pub fn new(root_dir: Location) -> Self {
+        let mnt_ns = Arc::new(MountNamespace::new(root_dir.mountpoint().clone()));
+        Self::new_in_namespace(mnt_ns, root_dir)
+    }
+
+    fn new_in_namespace(mnt_ns: Arc<MountNamespace>, root_dir: Location) -> Self {
         Self {
             root_dir: root_dir.clone(),
             current_dir: root_dir,
+            mnt_ns,
         }
+    }
+
+    /// Returns the mount namespace backing this filesystem context.
+    pub fn mount_namespace(&self) -> &Arc<MountNamespace> {
+        &self.mnt_ns
+    }
+
+    fn mount_namespace_contains(&self, mountpoint: &Arc<Mountpoint>) -> bool {
+        self.mnt_ns.contains_mountpoint(mountpoint)
     }
 
     /// Returns a reference to the root directory.
@@ -126,7 +189,23 @@ impl FsContext {
         Ok(Self {
             root_dir: self.root_dir.clone(),
             current_dir,
+            mnt_ns: self.mnt_ns.clone(),
         })
+    }
+
+    /// Rebind this context to a freshly cloned mount namespace.
+    pub fn unshare_mount_namespace(&mut self) -> VfsResult<()> {
+        let root_path = self.root_dir.absolute_path()?;
+        let current_path = self.current_dir.absolute_path()?;
+        let new_ns = self.mnt_ns.clone_namespace();
+        let new_root_loc = new_ns.root_mount().root_location();
+        let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
+        let root_dir = resolver.resolve(root_path)?;
+        let current_dir = resolver.resolve(current_path)?;
+        self.mnt_ns = new_ns;
+        self.root_dir = root_dir;
+        self.current_dir = current_dir;
+        Ok(())
     }
 
     /// Attempts to resolve a possible symlink, at the current location (this

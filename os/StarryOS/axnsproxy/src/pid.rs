@@ -20,6 +20,8 @@ pub struct PidNamespace {
     next_pid: u32,
     /// Map from global TID to namespace-local PID.
     pid_map: BTreeMap<u64, u32>,
+    /// Global TID of the PID namespace init process (PID 1 in this ns).
+    init_global_tid: Option<u64>,
 }
 
 impl PidNamespace {
@@ -28,6 +30,7 @@ impl PidNamespace {
             level: 0,
             next_pid: 1,
             pid_map: BTreeMap::new(),
+            init_global_tid: None,
         }
     }
 
@@ -38,6 +41,7 @@ impl PidNamespace {
             level: self.level + 1,
             next_pid: 1,
             pid_map: BTreeMap::new(),
+            init_global_tid: None,
         }
     }
 
@@ -56,5 +60,15 @@ impl PidNamespace {
             return Some(global_tid as u32);
         }
         self.pid_map.get(&global_tid).copied()
+    }
+
+    /// Record the global TID of this namespace's init process (PID 1).
+    pub fn set_init_global_tid(&mut self, tid: u64) {
+        self.init_global_tid = Some(tid);
+    }
+
+    /// Returns the global TID of this namespace's init process.
+    pub fn init_global_tid(&self) -> Option<u64> {
+        self.init_global_tid
     }
 }

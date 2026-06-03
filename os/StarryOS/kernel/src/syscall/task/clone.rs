@@ -115,6 +115,9 @@ impl CloneArgs {
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
             return Err(AxError::InvalidInput);
         }
+        if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
+            return Err(AxError::InvalidInput);
+        }
 
         // CLONE_NEWCGROUP is not yet implemented.
         if flags.contains(CloneFlags::NEWCGROUP) {
@@ -256,6 +259,7 @@ impl CloneArgs {
             if flags.contains(CloneFlags::NEWPID) {
                 new_nsproxy.unshare_pid();
                 new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
+                new_nsproxy.pid_ns.lock().set_init_global_tid(tid as u64);
             }
             if flags.contains(CloneFlags::NEWNET) {
                 new_nsproxy.unshare_net();
@@ -271,7 +275,11 @@ impl CloneArgs {
                 let mut parent_ns = old_proc_data.nsproxy.lock();
                 if let Some(child_pid_ns) = parent_ns.child_pid_ns.take() {
                     new_nsproxy.pid_ns = child_pid_ns;
-                    new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
+                    {
+                        let mut pid_ns = new_nsproxy.pid_ns.lock();
+                        pid_ns.alloc_local_pid(tid as u64);
+                        pid_ns.set_init_global_tid(tid as u64);
+                    }
                 }
             }
 
@@ -295,7 +303,10 @@ impl CloneArgs {
                 if flags.contains(CloneFlags::FS) {
                     FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
                 } else {
-                    let fs_context = FS_CONTEXT.lock().clone();
+                    let mut fs_context = FS_CONTEXT.lock().clone();
+                    if flags.contains(CloneFlags::NEWNS) {
+                        fs_context.unshare_mount_namespace()?;
+                    }
                     *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
                 }
             }

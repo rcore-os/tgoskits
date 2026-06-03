@@ -1,4 +1,5 @@
 use ax_errno::{AxError, AxResult};
+use ax_fs::FS_CONTEXT;
 use ax_task::current;
 use linux_raw_sys::general::{
     CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
@@ -21,25 +22,33 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
-    let mut nsproxy = proc_data.nsproxy.lock();
+    let want_ns = flags & CLONE_NEWNS != 0;
 
-    if flags & CLONE_NEWUTS != 0 {
-        nsproxy.unshare_uts();
+    // Phase 1: spinlock-protected nsproxy ops (SpinNoIrq — no sleeping).
+    {
+        let mut nsproxy = proc_data.nsproxy.lock();
+        if flags & CLONE_NEWUTS != 0 {
+            nsproxy.unshare_uts();
+        }
+        if flags & CLONE_NEWPID != 0 {
+            nsproxy.prepare_child_pid_ns();
+        }
+        if flags & CLONE_NEWNET != 0 {
+            nsproxy.unshare_net();
+        }
+        if flags & CLONE_NEWIPC != 0 {
+            nsproxy.unshare_ipc();
+        }
+        if flags & CLONE_NEWUSER != 0 {
+            nsproxy.unshare_user();
+        }
     }
-    if flags & CLONE_NEWPID != 0 {
-        nsproxy.prepare_child_pid_ns();
-    }
-    if flags & CLONE_NEWNS != 0 {
-        nsproxy.unshare_mnt();
-    }
-    if flags & CLONE_NEWNET != 0 {
-        nsproxy.unshare_net();
-    }
-    if flags & CLONE_NEWIPC != 0 {
-        nsproxy.unshare_ipc();
-    }
-    if flags & CLONE_NEWUSER != 0 {
-        nsproxy.unshare_user();
+
+    // Phase 2: mount-namespace ops require the FS_CONTEXT Mutex
+    // (blocking), which must not be held inside SpinNoIrq.
+    if want_ns {
+        FS_CONTEXT.lock().unshare_mount_namespace()?;
+        proc_data.nsproxy.lock().unshare_mnt();
     }
 
     Ok(0)

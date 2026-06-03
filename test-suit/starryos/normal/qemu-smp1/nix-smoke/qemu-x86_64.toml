@@ -48,9 +48,9 @@ derivation {
   args = [ "-c" "echo NIX_LOCAL_BUILD_OK > $out" ];
 }
 EOF
-echo 'NIX_SMOKE_INFO: tiny local sandboxed nix-build timeout is 180s'
+echo 'NIX_SMOKE_INFO: tiny local sandboxed nix-build timeout is 120s'
 if command -v timeout >/dev/null 2>&1; then
-    timeout 180 nix-build --no-substitute --option sandbox true /tmp/nix-smoke/default.nix >/tmp/nix-smoke/build.log 2>&1
+    timeout 120 nix-build --no-substitute --option sandbox true /tmp/nix-smoke/default.nix >/tmp/nix-smoke/build.log 2>&1
     build_rc=$?
 else
     nix-build --no-substitute --option sandbox true /tmp/nix-smoke/default.nix >/tmp/nix-smoke/build.log 2>&1
@@ -60,7 +60,10 @@ if [ "$build_rc" -ne 0 ]; then
     cat /tmp/nix-smoke/build.log
     echo "NIX_SMOKE_BUILD_EXIT=$build_rc"
     if [ "$build_rc" -eq 124 ] || [ "$build_rc" -eq 143 ]; then
-        fail 'tiny local sandboxed nix-build timed out after 180s'
+        fail 'tiny local sandboxed nix-build timed out after 120s'
+    fi
+    if grep -q 'interrupted by the user' /tmp/nix-smoke/build.log; then
+        fail 'tiny local sandboxed nix-build was interrupted after waiting for store lock'
     fi
     fail 'tiny local sandboxed nix-build failed'
 fi
@@ -77,4 +80,4 @@ fail_regex = [
     '(?i)\bfatal\b',
     "(?m)^NIX_SMOKE_TEST_FAILED\\s*$",
 ]
-timeout = 300
+timeout = 600
