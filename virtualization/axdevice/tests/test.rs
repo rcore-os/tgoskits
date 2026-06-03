@@ -18,8 +18,9 @@ use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::{AccessWidth, BaseDeviceOps};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, InterruptVector, VCpuId, VMId};
-use axvmconfig::EmulatedDeviceType;
+use axvm_types::{
+    EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector, VCpuId, VMId,
+};
 use x86_vlapic::host::X86VlapicHostIf;
 
 struct MockMmioDevice {

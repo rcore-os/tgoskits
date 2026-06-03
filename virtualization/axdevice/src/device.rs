@@ -28,8 +28,7 @@ use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
     DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
-use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]

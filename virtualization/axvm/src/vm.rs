@@ -23,6 +23,8 @@ use axaddrspace::{AddrSpace, MappingFlags};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::AccessWidth;
 use axvcpu::{AxVCpu, AxVCpuExitReason};
+#[cfg(target_arch = "x86_64")]
+use axvm_types::EmulatedDeviceType;
 use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
@@ -331,8 +333,7 @@ impl AxVM {
 
         #[cfg(target_arch = "aarch64")]
         {
-            let passthrough =
-                inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+            let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
             if passthrough {
                 let spis = inner_mut.config.pass_through_spis();
                 let cpu_id = self.id() - 1; // FIXME: get the real CPU id.
@@ -381,8 +382,7 @@ impl AxVM {
         for vcpu in self.vcpu_list() {
             #[cfg(target_arch = "aarch64")]
             let setup_config = {
-                let passthrough =
-                    inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+                let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
                 crate::vcpu::AxVCpuSetupConfig {
                     passthrough_interrupt: passthrough,
                     passthrough_timer: passthrough,
@@ -390,8 +390,7 @@ impl AxVM {
             };
             #[cfg(target_arch = "loongarch64")]
             let setup_config = {
-                let passthrough =
-                    inner_mut.config.interrupt_mode() == axvmconfig::VMInterruptMode::Passthrough;
+                let passthrough = inner_mut.config.interrupt_mode() == VMInterruptMode::Passthrough;
                 crate::vcpu::AxVCpuSetupConfig {
                     passthrough_interrupt: passthrough,
                     passthrough_timer: passthrough,
@@ -410,7 +409,7 @@ impl AxVM {
                     .config
                     .emu_devices()
                     .iter()
-                    .any(|dev| dev.emu_type == axvmconfig::EmulatedDeviceType::Console),
+                    .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
             };
 
             let entry = if vcpu.id() == 0 {

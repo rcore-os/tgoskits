@@ -15,9 +15,9 @@
 use alloc::format;
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
-use axvm::config::AxVMCrateConfig;
+use axvmconfig::AxVMCrateConfig;
 #[cfg(target_arch = "x86_64")]
-use axvm::config::{VMBootProtocol, VmMemMappingType};
+use axvmconfig::{VMBootProtocol, VmMemMappingType};
 use byte_unit::Byte;
 
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
