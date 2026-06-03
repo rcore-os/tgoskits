@@ -90,21 +90,7 @@ static void expect_write_ok(const char *path, const char *data, const char *msg)
     CHECK(ret == 0, msg);
 }
 
-static void expect_write_errno(const char *path, const char *data,
-                               int expected_errno, const char *msg)
-{
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
-        CHECK(0, msg);
-        return;
-    }
-    errno = 0;
-    ssize_t written = write(fd, data, strlen(data));
-    int saved_errno = errno;
-    close(fd);
-    errno = saved_errno;
-    CHECK(written == -1 && saved_errno == expected_errno, msg);
-}
+/* expect_write_errno removed — not used in this test */
 
 static int read_int(const char *path)
 {
@@ -133,15 +119,7 @@ static pid_t try_fork(void)
     return pid;
 }
 
-static void wait_for_all(pid_t *pids, int count)
-{
-    for (int i = 0; i < count; i++) {
-        if (pids[i] > 0) {
-            int status;
-            waitpid(pids[i], &status, 0);
-        }
-    }
-}
+/* wait_for_all removed — using direct waitpid calls */
 
 /* ================================================================ */
 
@@ -210,14 +188,12 @@ static void test_root_pids_limit(void)
     }
 
     /* Fork one child — should succeed (we have 1 slot) */
-    pid_t child = try_fork();
-    CHECK(child > 0, "first fork succeeds (within pids limit)");
-    if (child > 0) {
-        int status;
-        waitpid(child, &status, 0);
-    }
+    pid_t child1 = try_fork();
+    CHECK(child1 > 0, "first fork succeeds (within pids limit)");
 
-    /* Fork another child — should fail with EAGAIN (limit reached) */
+    /* Fork another child IMMEDIATELY — should fail with EAGAIN.
+     * We must NOT wait for child1 to exit, because that would decrement
+     * pids.current and free up a slot. */
     errno = 0;
     pid_t child2 = try_fork();
     if (child2 == 0) {
@@ -234,7 +210,11 @@ static void test_root_pids_limit(void)
               "second fork fails with EAGAIN when pids limit reached");
     }
 
-    /* Restore pids.max to unlimited */
+    /* Clean up: wait for child1, then restore pids.max */
+    if (child1 > 0) {
+        int status;
+        waitpid(child1, &status, 0);
+    }
     snprintf(path, sizeof(path), "%s/pids.max", CGROUP_ROOT);
     expect_write_ok(path, "max", "restore root pids.max to unlimited");
 }
@@ -292,12 +272,9 @@ static void test_child_pids_limit(void)
     /* Try to fork — should succeed (within limit of 2) */
     pid_t child1 = try_fork();
     CHECK(child1 > 0, "first fork in child cgroup succeeds");
-    if (child1 > 0) {
-        int status;
-        waitpid(child1, &status, 0);
-    }
 
-    /* Try to fork again — should fail with EAGAIN (limit = 2, already 2) */
+    /* Try to fork again IMMEDIATELY — should fail with EAGAIN (limit = 2,
+     * already 2: parent + child1).  Do NOT wait for child1 first. */
     errno = 0;
     pid_t child2 = try_fork();
     if (child2 == 0) {
@@ -313,6 +290,12 @@ static void test_child_pids_limit(void)
         CHECK(errno == EAGAIN || errno == ENOMEM,
               "TDD: second fork in child cgroup fails with EAGAIN — "
               "per-process cgroup tracking works!");
+    }
+
+    /* Clean up children */
+    if (child1 > 0) {
+        int status;
+        waitpid(child1, &status, 0);
     }
 
     /* Move back to root */
