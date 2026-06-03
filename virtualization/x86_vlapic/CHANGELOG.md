@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.4.10...x86_vlapic-v0.4.11) - 2026-06-03
+
+### Added
+
+- Enhance SVM support and improve PIT handling for Linux guests ([#1005](https://github.com/rcore-os/tgoskits/pull/1005))
+- *(axvisor)* support x86_64 Linux guest boot (vmx) ([#930](https://github.com/rcore-os/tgoskits/pull/930))
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.4.10](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.4.9...x86_vlapic-v0.4.10) - 2026-05-22
 
 ### Other
