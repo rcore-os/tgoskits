@@ -1,5 +1,6 @@
 features = ["ax-std", "ax-std/backtrace"]
 log = "Info"
+plat_dyn = true
 
 [env]
 BACKTRACE = "y"

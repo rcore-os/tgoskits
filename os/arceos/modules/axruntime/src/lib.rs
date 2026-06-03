@@ -184,12 +184,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::cpu_num()
     );
 
-    #[cfg(feature = "rtc")]
-    ax_println!(
-        "Boot at {}\n",
-        chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _),
-    );
-
     ax_log::init();
     ax_log::set_max_level(log_level); // no effect if set `log-level-*` features
     info!("Logging is enabled.");
@@ -274,6 +268,12 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     devices::probe_all_devices();
+
+    #[cfg(feature = "rtc")]
+    ax_println!(
+        "Boot at {}\n",
+        chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _),
+    );
 
     cfg_if::cfg_if! {
         if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {

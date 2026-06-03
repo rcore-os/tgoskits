@@ -1,3 +1,4 @@
+#[cfg(target_arch = "aarch64")]
 use ax_arm_pl031::Rtc as Pl031Rtc;
 use log::{debug, info};
 use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
@@ -6,6 +7,7 @@ use riscv_goldfish::Rtc as GoldfishRtc;
 
 use crate::mmio::iomap;
 
+#[cfg(target_arch = "aarch64")]
 crate::model_register!(
     name: "pl031 rtc",
     level: ProbeLevel::PostKernel,
@@ -27,6 +29,7 @@ crate::model_register!(
     }],
 );
 
+#[cfg(target_arch = "aarch64")]
 fn probe_pl031(info: FdtInfo<'_>, _plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let mmio_base = map_first_reg(&info)?;
     let rtc = unsafe { Pl031Rtc::new(mmio_base.as_ptr().cast()) };
