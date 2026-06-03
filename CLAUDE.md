@@ -85,7 +85,7 @@ Organized by device type: `blk/`, `net/`, `pci/`, `intc/`, `serial/`, `usb/`, `s
 
 ### Platform (`platform/`)
 
-Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv64-visionfive2`, `riscv64-qemu-virt`, `x86-qemu-q35`.
+Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv64-visionfive2`, `x86-qemu-q35`; RISC-V QEMU uses the dynamic platform path.
 
 ## CI
 

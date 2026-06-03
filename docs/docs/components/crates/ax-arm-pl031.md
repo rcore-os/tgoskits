@@ -43,7 +43,7 @@
 
 ```mermaid
 flowchart TD
-    A["axplat-dyn / somehal discovers RTC"] --> B["ax-driver/rtc"]
+    A["axplat-dyn / somehal discovers RTC"] --> B["ax-driver dynamic RTC probe"]
     B --> C["Rtc::new(mmio_ptr)"]
     C --> D["get_unix_timestamp()"]
     D --> E["提供墙钟或 RTC 设备能力"]
@@ -96,7 +96,7 @@ let _ = secs;
 ```mermaid
 graph LR
     chrono["chrono (optional)"] --> current["ax-arm-pl031"]
-    current --> driver["ax-driver/rtc"]
+    current --> driver["ax-driver dynamic RTC probe"]
     driver --> dyn["axplat-dyn"]
     dyn --> arceos["ArceOS aarch64 动态平台路径"]
 ```
@@ -106,7 +106,7 @@ graph LR
 - `chrono` 是可选依赖，用于提供更方便的时间表示层。
 
 ### 主要消费者
-- `ax-driver/rtc`：在动态平台设备发现后注册 PL031 RTC 能力。
+- `ax-driver` 动态平台 RTC probe：在动态平台设备发现后注册 PL031 RTC 能力。
 
 ### 3.3 间接消费者
 - 通过 `axplat-dyn` / `ax-hal` 共享这条平台路径的 ArceOS 栈。
@@ -194,7 +194,7 @@ Axvisor 的依赖图可能会间接包含 `ax-arm-pl031`，但它更多体现为
 ```mermaid
 graph LR
     current["ax-arm-pl031"]
-    ax_driver_rtc["ax-driver/rtc"] --> current
+    ax_driver_rtc["ax-driver dynamic RTC probe"] --> current
 ```
 
 ### 直接依赖
@@ -204,7 +204,7 @@ graph LR
 - 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
 
 ### 3.3 被依赖情况
-- `ax-driver/rtc`
+- `ax-driver` 动态平台 RTC probe
 
 ### 被依赖情况
 - `arceos-affinity`

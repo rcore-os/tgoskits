@@ -31,11 +31,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "ax_plat_x86_qemu_q35",
     },
     PlatformFeature {
-        feature: "riscv64-qemu-virt",
-        target_arch: Some("riscv64"),
-        crate_name: "ax_plat_riscv64_qemu_virt",
-    },
-    PlatformFeature {
         feature: "riscv64-sg2002",
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",
@@ -54,7 +49,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
 
 const DEFAULT_PLATFORMS: &[(&str, &str)] = &[
     ("loongarch64", "ax_plat_loongarch64_qemu_virt"),
-    ("riscv64", "ax_plat_riscv64_qemu_virt"),
     ("x86_64", "ax_plat_x86_pc"),
 ];
 
