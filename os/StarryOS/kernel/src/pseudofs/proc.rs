@@ -538,6 +538,82 @@ impl SimpleDirOps for ThreadFdDir {
     }
 }
 
+/// The /proc/[pid]/ns directory — namespace entries.
+///
+/// Each entry is a regular file displaying the namespace identifier.
+/// When opened, the kernel intercepts the open path and creates an
+/// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
+struct NsDir {
+    fs: Arc<SimpleFs>,
+    task: WeakAxTaskRef,
+}
+
+impl SimpleDirOps for NsDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            ["uts", "ipc", "mnt", "pid", "net", "user"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let task_ref = self.task.clone();
+        let Some(task) = task_ref.upgrade() else {
+            return Err(VfsError::NotFound);
+        };
+        let proc_data = &task.as_thread().proc_data;
+
+        let content: String = match name {
+            "uts" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let nodename = &nsproxy.uts_ns.lock().nodename;
+                let nodename_str = core::ffi::CStr::from_bytes_until_nul(unsafe {
+                    core::mem::transmute::<&[core::ffi::c_char; 65], &[u8; 65]>(nodename)
+                })
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default();
+                format!("uts:[{}]\n", nodename_str)
+            }
+            "ipc" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let ns_id = nsproxy.ipc_ns.lock().ns_id;
+                format!("ipc:[{}]\n", ns_id)
+            }
+            "mnt" => "mnt:[root]\n".to_string(),
+            "pid" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let level = nsproxy.pid_ns.lock().level;
+                format!("pid:[{}]\n", level)
+            }
+            "net" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let ns_id = nsproxy.net_ns.lock().ns_id;
+                format!("net:[{}]\n", ns_id)
+            }
+            "user" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let inner = nsproxy.user_ns.lock();
+                if inner.is_root {
+                    "user:[root]\n".to_string()
+                } else {
+                    format!("user:[{}]\n", inner.owner_uid)
+                }
+            }
+            _ => return Err(VfsError::NotFound),
+        };
+
+        let content = content.into_bytes();
+        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone())).into())
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
 /// The /proc/[pid] directory
 struct ThreadDir {
     fs: Arc<SimpleFs>,
@@ -690,6 +766,7 @@ impl SimpleDirOps for ThreadDir {
                 "gid_map",
                 "setgroups",
                 "cgroup",
+                "ns",
             ]
             .into_iter()
             .map(Cow::Borrowed),
@@ -944,6 +1021,14 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
+            "ns" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(NsDir {
+                    fs,
+                    task: self.task.clone(),
+                }),
+            )
+            .into(),
             _ => return Err(VfsError::NotFound),
         })
     }

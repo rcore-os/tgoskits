@@ -274,8 +274,11 @@ impl<T: DirectRwFsFileOps> Pollable for SpecialFsFile<T> {
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {
-        // TODO: support poll for special files when needed
-        unimplemented!("poll is not implemented for SpecialFsFile yet")
+        // SpecialFsFile reports itself as always-ready via `poll()` (IN|OUT),
+        // so registration is a no-op. Matches `SimpleFile::register` above —
+        // turning this into `unimplemented!()` was a regression that panicked
+        // the kernel on any `epoll_ctl` against debugfs/procfs special files
+        // (tracepoint trace_pipe, saved_cmdlines, dyn_debug controls, …).
     }
 }
 

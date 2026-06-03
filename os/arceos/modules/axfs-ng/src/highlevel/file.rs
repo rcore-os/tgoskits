@@ -5,7 +5,7 @@ use alloc::{
 };
 use core::{
     num::NonZeroUsize,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     task::Context,
 };
 
@@ -465,7 +465,12 @@ impl Drop for PageCache {
     }
 }
 
-type EvictListenerFn = Box<dyn Fn(u32, &PageCache) + Send + Sync>;
+/// Eviction listener callback.  Returns `true` if the listener
+/// successfully invalidated all mappings for the evicted page.
+/// When `false` is returned, the caller must **not** drop the page
+/// (doing so would free the physical frame while PTEs still reference
+/// it); instead the page is returned to the cache for a later retry.
+type EvictListenerFn = Box<dyn Fn(u32, &PageCache) -> bool + Send + Sync>;
 
 struct EvictListener {
     listener: EvictListenerFn,
@@ -493,6 +498,129 @@ impl CachedFileShared {
             evict_listeners: Mutex::new(LinkedList::default()),
         }
     }
+
+    /// Scan the LRU and evict up to `max` clean pages.
+    ///
+    /// Two-phase eviction:
+    /// 1. Under `page_cache` lock: identify clean pages, pop them from the
+    ///    cache, and move them into a local buffer.
+    /// 2. Outside `page_cache` lock: invoke evict listeners.  If all
+    ///    listeners confirm the PTE unmap, the page is dropped (freeing its
+    ///    physical frame).  If any listener cannot unmap (e.g., AddrSpace
+    ///    lock contention), the page is re-inserted into the cache to
+    ///    prevent use-after-free.
+    ///
+    /// Returns the number of pages successfully evicted.
+    ///
+    /// # Lock ordering
+    ///
+    /// `page_cache` is released before acquiring `evict_listeners`,
+    /// eliminating the latent deadlock risk that exists when listeners
+    /// are called under the cache lock.
+    fn try_evict_clean_pages(&self, max: usize) -> usize {
+        let limit = max.min(256);
+
+        // Phase 1: Pop clean pages from LRU under page_cache lock.
+        // Two-pass: first collect page numbers (borrows cache immutably),
+        // then pop by number (borrows cache mutably).
+        let mut pending: Vec<(u32, PageCache)> = Vec::new();
+        {
+            let Some(mut cache) = self.page_cache.try_lock() else {
+                return 0;
+            };
+            let mut to_pop = [0u32; 256];
+            let mut cnt = 0;
+            for (&pn, page) in cache.iter().rev() {
+                if !page.dirty && cnt < limit {
+                    to_pop[cnt] = pn;
+                    cnt += 1;
+                }
+            }
+            for &pn in to_pop[..cnt].iter() {
+                if let Some(page) = cache.pop(&pn) {
+                    pending.push((pn, page));
+                }
+            }
+        } // page_cache lock released
+
+        // Phase 2: Invoke listeners outside page_cache lock.
+        let mut evicted = 0;
+        for (pn, page) in pending.into_iter() {
+            let mut all_ok = true;
+            for listener in self.evict_listeners.lock().iter() {
+                if !(listener.listener)(pn, &page) {
+                    all_ok = false;
+                    break;
+                }
+            }
+            if all_ok {
+                // All listeners confirmed unmap — drop page (frees physical frame).
+                drop(page);
+                evicted += 1;
+            } else {
+                // Listener could not unmap (e.g., AddrSpace lock contention).
+                // Re-insert page into cache to avoid freeing a physical frame
+                // that still has live PTEs pointing to it.
+                let mut cache = self.page_cache.lock();
+                cache.put(pn, page);
+            }
+        }
+        evicted
+    }
+}
+
+struct ReclaimGuard;
+
+impl Drop for ReclaimGuard {
+    fn drop(&mut self) {
+        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Weak<CachedFileShared>>> =
+    spin::RwLock::new(alloc::vec::Vec::new());
+
+static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn page_cache_reclaim(num_pages: usize) -> usize {
+    if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        return 0;
+    }
+    let _guard = ReclaimGuard;
+
+    let mut reclaimed = 0;
+    let target = num_pages.max(16) * 2;
+    let mut file_count = 0;
+
+    if let Some(guard) = GLOBAL_CACHED_FILES.try_read() {
+        for weak in guard.iter() {
+            if let Some(file) = weak.upgrade() {
+                let freed = file.try_evict_clean_pages(target - reclaimed);
+                reclaimed += freed;
+                file_count += 1;
+                if reclaimed >= target {
+                    break;
+                }
+            }
+        }
+    } else {
+        return 0;
+    }
+
+    if reclaimed > 0 {
+        debug!(
+            "page_cache_reclaim: evicted {} clean pages across {} files",
+            reclaimed, file_count
+        );
+    }
+
+    reclaimed
+}
+
+fn register_cached_file(file: &Arc<CachedFileShared>) {
+    let mut guard = GLOBAL_CACHED_FILES.write();
+    guard.retain(|w| w.upgrade().is_some());
+    guard.push(Arc::downgrade(file));
 }
 
 /// A file handle with an LRU page cache for buffered I/O.
@@ -536,21 +664,28 @@ impl CachedFile {
         let in_memory = location.filesystem().name() == "tmpfs";
 
         let mut guard = location.user_data();
-        let shared = if let Some(shared) = guard.get::<FileUserData>().and_then(|it| it.get()) {
-            shared
-        } else {
-            let (shared, user_data) = if in_memory {
-                let shared = Arc::new(CachedFileShared::new_unbounded());
-                (shared.clone(), FileUserData::Strong(shared))
+        let (shared, is_new) =
+            if let Some(shared) = guard.get::<FileUserData>().and_then(|it| it.get()) {
+                (shared, false)
             } else {
-                let shared = Arc::new(CachedFileShared::new());
-                let user_data = FileUserData::Weak(Arc::downgrade(&shared));
-                (shared, user_data)
+                let (shared, user_data) = if in_memory {
+                    let shared = Arc::new(CachedFileShared::new_unbounded());
+                    (shared.clone(), FileUserData::Strong(shared))
+                } else {
+                    let shared = Arc::new(CachedFileShared::new());
+                    let user_data = FileUserData::Weak(Arc::downgrade(&shared));
+                    (shared, user_data)
+                };
+                guard.insert(user_data);
+                (shared, true)
             };
-            guard.insert(user_data);
-            shared
-        };
         drop(guard);
+
+        // In-memory files (tmpfs) have no backing store, so evicting clean
+        // pages would lose data. Only register disk-backed files for reclaim.
+        if is_new && !in_memory {
+            register_cached_file(&shared);
+        }
 
         Self {
             inner: location,
@@ -576,7 +711,7 @@ impl CachedFile {
     /// [`remove_evict_listener`](Self::remove_evict_listener).
     pub fn add_evict_listener<F>(&self, listener: F) -> usize
     where
-        F: Fn(u32, &PageCache) + Send + Sync + 'static,
+        F: Fn(u32, &PageCache) -> bool + Send + Sync + 'static,
     {
         let pointer = Box::new(EvictListener {
             listener: Box::new(listener),
@@ -599,7 +734,12 @@ impl CachedFile {
 
     fn evict_cache(&self, file: &FileNode, pn: u32, page: &mut PageCache) -> VfsResult<()> {
         for listener in self.shared.evict_listeners.lock().iter() {
-            (listener.listener)(pn, page);
+            // In the LRU-eviction path (triggered by page_or_insert), the
+            // populate process holds AddrSpace and handles the unmap via
+            // PopulateCallback.  The listener's return value is irrelevant
+            // here — if try_lock fails, the caller is the populate process
+            // itself and it will unmap the old page after inserting the new one.
+            let _ = (listener.listener)(pn, page);
         }
         if page.dirty {
             let page_start = pn as u64 * PAGE_SIZE as u64;

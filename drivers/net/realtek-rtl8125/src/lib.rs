@@ -230,7 +230,7 @@ impl Interface for Rtl8125 {
             .dma
             .coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, DMA_ALIGN)
             .ok()?;
-        desc.set(
+        desc.set_cpu(
             QUEUE_SIZE - 1,
             TxDesc {
                 opts1: RING_END,

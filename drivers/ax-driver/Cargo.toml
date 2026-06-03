@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -34,7 +34,7 @@ virtio-socket = ["vsock", "virtio"]
 ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "dep:simple-ahci"]
-nvme = ["block", "plat-static", "dep:nvme-driver"]
+nvme = ["block", "dep:nvme-driver"]
 cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
 ixgbe = ["net", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
@@ -47,7 +47,6 @@ xhci-mmio = ["usb", "plat-dyn"]
 xhci-pci = ["usb"]
 serial = ["plat-dyn", "dep:some-serial"]
 sg2002-placeholder = ["plat-dyn"]
-rtc = ["plat-dyn", "dep:ax-arm-pl031", "dep:riscv_goldfish"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rockchip-sdhci = [
     "block",
@@ -64,6 +63,13 @@ phytium-mci = [
     "plat-dyn",
     "dep:ax-kspin",
     "dep:phytium-mci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/sdio",
+]
+k230-sdhci = [
+    "block",
+    "plat-dyn",
+    "dep:sdhci-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]
@@ -95,7 +101,6 @@ arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-crate-interface = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
-ax-arm-pl031 = { workspace = true, optional = true }
 ax-kernel-guard = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
@@ -138,4 +143,7 @@ spin.workspace = true
 virtio-drivers = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv_goldfish = { version = "0.1", optional = true }
+riscv_goldfish = "0.1"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ax-arm-pl031.workspace = true

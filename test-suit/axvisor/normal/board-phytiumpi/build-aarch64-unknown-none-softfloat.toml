@@ -6,4 +6,4 @@ features = [
 log = "Info"
 plat_dyn = true
 target = "aarch64-unknown-none-softfloat"
-vm_configs = ["os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml"]
+vm_configs = ["os/axvisor/configs/vms/phytiumpi/linux-smp1.toml"]

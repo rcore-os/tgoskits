@@ -30,10 +30,8 @@ need_cmd() {
 need_cmd curl curl
 need_cmd tar tar
 need_cmd install coreutils
-need_cmd patchelf patchelf
 need_cmd as binutils
 need_cmd ld binutils
-need_cmd qemu-x86_64-static qemu-user-static
 need_cmd sha256sum coreutils
 
 verify_sha256() {
@@ -74,13 +72,13 @@ verify_sha256 "$ALPINE_MINIROOTFS_SHA256" "$alpine_tgz"
 staging="$TMPDIR/staging"
 mkdir -p "$staging"
 tar xzf "$alpine_tgz" -C "$staging"
+MUSL_LD="$staging/lib/ld-musl-x86_64.so.1"
+MUSL_LIBPATH="$staging/lib:$staging/usr/lib"
 
 # Install packages into staging root via qemu-user + apk.
 # Unset LD_LIBRARY_PATH to prevent host tools from loading the staging musl libc.
 (
     unset LD_LIBRARY_PATH
-    MUSL_LD="$staging/lib/ld-musl-x86_64.so.1"
-    MUSL_LIBPATH="$staging/lib:$staging/usr/lib"
     "$MUSL_LD" --library-path "$MUSL_LIBPATH" \
         "$staging/sbin/apk" \
         --root "$staging" --initdb --allow-untrusted --no-progress --no-scripts \
@@ -103,13 +101,12 @@ done
 
 # ── Patch jcode.bin via staging root's patchelf ─────────────────────────────
 PATCHELF="$staging/usr/bin/patchelf"
-QEMU_USER="/usr/bin/qemu-x86_64-static"
 MUSL_INTERP="/lib/ld-musl-x86_64.so.1"
 MUSL_LIBC="libc.musl-x86_64.so.1"
 GLIBC_INTERP="ld-linux-x86-64.so.2"
 
 run_patchelf() {
-    "$QEMU_USER" -L "$staging" "$PATCHELF" "$@"
+    "$MUSL_LD" --library-path "$MUSL_LIBPATH" "$PATCHELF" "$@"
 }
 
 run_patchelf \
@@ -224,7 +221,7 @@ ld -shared -L "$staging/usr/lib" -L "$staging/lib" -lc -o "$STUB_SO" "$STUB_OBJ"
 chmod 755 "$STUB_SO"
 
 # Replace glibc NEEDED with musl so the stub loads in the musl guest.
-patchelf --replace-needed "libc.so.6" "$MUSL_LIBC" "$STUB_SO"
+run_patchelf --replace-needed "libc.so.6" "$MUSL_LIBC" "$STUB_SO"
 
 # Inject stub as NEEDED into jcode.bin (must come before libc).
 run_patchelf --add-needed "libglibc_stub.so" "$staging/usr/lib/jcode/jcode.bin"

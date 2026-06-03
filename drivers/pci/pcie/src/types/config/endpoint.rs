@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::{
-    fmt::{Debug, Display},
+    fmt::{self, Debug, Display, Write},
     ops::{Deref, DerefMut, Range},
 };
 
@@ -181,20 +181,44 @@ impl Display for Endpoint {
         let address = self.base.address();
         let class_info = self.base.revision_and_class();
         let device_type = self.device_type();
-        let class_name = format!("{device_type:?}");
 
         write!(
             f,
-            "{:04x}:{:02x}:{:02x}.{} {:<24} {:04x}:{:04x} (rev {:02x}, prog-if {:02x})",
+            "{:04x}:{:02x}:{:02x}.{} {} {:04x}:{:04x} (rev {:02x}, prog-if {:02x})",
             address.segment(),
             address.bus(),
             address.device(),
             address.function(),
-            class_name,
+            PaddedDebug(&device_type, 24),
             self.base.vendor_id(),
             self.base.device_id(),
             class_info.revision_id,
             class_info.interface,
         )
+    }
+}
+
+struct PaddedDebug<'a, T>(&'a T, usize);
+
+impl<T: Debug> Display for PaddedDebug<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct Counter<'a, 'b> {
+            inner: &'a mut fmt::Formatter<'b>,
+            len: usize,
+        }
+
+        impl fmt::Write for Counter<'_, '_> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.len += s.len();
+                self.inner.write_str(s)
+            }
+        }
+
+        let mut counter = Counter { inner: f, len: 0 };
+        write!(counter, "{:?}", self.0)?;
+        for _ in counter.len..self.1 {
+            counter.inner.write_str(" ")?;
+        }
+        Ok(())
     }
 }

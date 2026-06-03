@@ -114,7 +114,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return ReplayStatus::Incomplete;
         };
 
-        jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks)
+        let status = jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks);
+        self.inner.invalidate_cache();
+        status
     }
 
     /// Enables or disables journal use at runtime.
@@ -197,7 +199,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
                 .iter()
                 .find(|queued| queued.0 == block_id)
         {
-            self.inner.cache_clean_block(block_id, &update.1);
+            self.inner.cache_clean_block(block_id, &update.1)?;
             return Ok(());
         }
 

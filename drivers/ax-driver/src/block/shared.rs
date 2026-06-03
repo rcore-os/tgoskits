@@ -41,6 +41,7 @@ impl<T> SharedDriver<T> {
     }
 
     #[cfg(any(
+        feature = "k230-sdhci",
         feature = "phytium-mci",
         feature = "rockchip-dwmmc",
         feature = "rockchip-sdhci"

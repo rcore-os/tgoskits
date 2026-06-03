@@ -80,7 +80,7 @@ impl FileLike for IonBufferFile {
     }
 
     fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.phys_range()))
+        Ok(DeviceMmap::Physical(self.phys_range(), None))
     }
 }
 

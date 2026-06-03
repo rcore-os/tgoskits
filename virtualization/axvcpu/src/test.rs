@@ -24,8 +24,8 @@ mod tests {
     use core::cell::RefCell;
 
     use ax_errno::{AxError, AxResult};
-    use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-    use axvisor_api::vmm::{VCpuId, VMId};
+    use axdevice_base::AccessWidth;
+    use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 
     use crate::{AxArchVCpu, AxVCpu, VCpuState, exit::AxVCpuExitReason};
 
@@ -312,9 +312,9 @@ mod tests {
     fn test_exit_reason_debug_format() {
         let exit_mmio = AxVCpuExitReason::MmioRead {
             addr: GuestPhysAddr::from(0x1000),
-            width: axaddrspace::device::AccessWidth::Dword,
+            width: AccessWidth::Dword,
             reg: 5,
-            reg_width: axaddrspace::device::AccessWidth::Qword,
+            reg_width: AccessWidth::Qword,
             signed_ext: false,
         };
 

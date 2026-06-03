@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -34,6 +34,7 @@ irq = ["ax-api/irq", "ax-feat/irq"]
 ipi = ["ax-api/ipi", "ax-feat/ipi"]
 
 # Custom or default platforms
+ext-ld = ["ax-feat/ext-ld"]
 myplat = ["ax-feat/myplat"]
 defplat = ["ax-feat/defplat"]
 plat-dyn = ["ax-feat/plat-dyn"]

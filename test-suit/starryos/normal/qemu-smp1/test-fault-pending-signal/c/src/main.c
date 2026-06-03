@@ -44,6 +44,9 @@ static atomic_int g_stop_peer;
 static pid_t g_main_pid;
 static pid_t g_main_tid;
 
+#define REQUIRED_USR1_DELIVERIES 8
+#define POST_READY_SIGUSR1_BURST 128
+
 static pid_t my_gettid(void)
 {
     return (pid_t)syscall(SYS_gettid);
@@ -63,14 +66,20 @@ static void usr1_handler(int sig)
 static void *peer_signaler(void *arg)
 {
     (void)arg;
-    /* Hammer SIGUSR1 at the main thread's *thread-level* pending
-     * queue via tgkill, so it is dequeued ahead of (or interleaved
-     * with) the synchronous SIGSEGV the main thread is about to
-     * raise. The kernel invariant under test is that even a stream of
-     * such handler-only deliveries cannot consume the fault-dump tag
-     * that `raise_signal_fatal` bound to SIGSEGV. */
+    /* Send SIGUSR1 at the main thread's *thread-level* pending queue
+     * via tgkill, so it is dequeued ahead of (or interleaved with) the
+     * synchronous SIGSEGV the main thread is about to raise. Keep the
+     * post-ready stream bounded: a normal CI case must not rely on an
+     * infinite lower-numbered signal flood, because single-vCPU QEMU can
+     * otherwise keep SIGUSR1 ahead of SIGSEGV long enough to trip the
+     * case timeout instead of proving the kernel invariant. */
+    int post_ready = 0;
     while (!atomic_load(&g_stop_peer)) {
         my_tgkill(g_main_pid, g_main_tid, SIGUSR1);
+        if (atomic_load(&g_usr1_count) >= REQUIRED_USR1_DELIVERIES
+            && ++post_ready >= POST_READY_SIGUSR1_BURST) {
+            break;
+        }
         /* tiny pause to let the handler run and re-arm the pending
          * set, instead of hard-spinning the cpu */
         struct timespec ts = {0, 1000};
@@ -115,7 +124,7 @@ int main(void)
          * pending or actively delivering on this thread's
          * thread-level queue when we fault. */
         for (int i = 0; i < 200; ++i) {
-            if (atomic_load(&g_usr1_count) >= 8) break;
+            if (atomic_load(&g_usr1_count) >= REQUIRED_USR1_DELIVERIES) break;
             struct timespec ts = {0, 1000 * 1000};
             nanosleep(&ts, NULL);
         }

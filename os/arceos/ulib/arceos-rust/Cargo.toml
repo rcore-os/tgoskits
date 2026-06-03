@@ -4,12 +4,15 @@ description = "Rust std support for ArceOS"
 authors = [
     "eternalcomet <mydragonos@outlook.com>"
 ]
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
 
 [lib]
+
+[build-dependencies]
+walkdir = "2"
 
 [features]
 # Default features are specified in `lib/Cargo.toml`
@@ -28,6 +31,7 @@ ipi = []
 # Custom or default platforms
 myplat = []
 defplat = []
+plat-dyn = []
 
 # Memory
 alloc = []

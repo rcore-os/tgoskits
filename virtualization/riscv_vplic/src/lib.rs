@@ -11,7 +11,7 @@
 //!
 //! ## Basic Usage
 //! ```rust,no_run
-//! use axaddrspace::GuestPhysAddr;
+//! use axvm_types::GuestPhysAddr;
 //! use riscv_vplic::VPlicGlobal;
 //!
 //! // Create a virtual PLIC with 2 contexts
@@ -22,6 +22,7 @@
 
 mod consts;
 mod devops_impl;
+pub mod host;
 mod utils;
 mod vplic;
 

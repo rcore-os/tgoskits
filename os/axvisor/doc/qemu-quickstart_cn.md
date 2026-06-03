@@ -144,7 +144,7 @@ cargo xtask qemu \
 对于需要 guest 镜像的启动链路，该脚本自动完成以下三步，省去手动操作：
 
 1. **下载镜像**：调用 `cargo axvisor image pull` 将 Guest 镜像下载并解压到 `/tmp/.axvisor-images/`
-2. **生成临时配置**：复制模板 VM 配置到 `tmp/vmconfigs/*.generated.toml`，并用 `sed` 更新 `kernel_path`（以及 NimbOS 的 `bios_path`）到实际镜像路径，不修改仓库内 `configs/vms/*.toml`
+2. **生成临时配置**：复制模板 VM 配置到 `tmp/vmconfigs/*.generated.toml`，并用 `sed` 更新 `kernel_path`（以及 NimbOS 的 `bios_path`）到实际镜像路径，不修改仓库内 `configs/vms/**/*.toml`
 3. **准备 rootfs**：将 `rootfs.img` 复制到项目的 `tmp/` 目录下供 QEMU 使用
 
 如果不想使用脚本，也可以手动执行上述步骤。

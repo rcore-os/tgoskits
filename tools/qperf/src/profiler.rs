@@ -23,12 +23,33 @@ use zerocopy::IntoBytes;
 
 use crate::reg::{AllRegs, Frame, Reg, Target};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SamplingMode {
+    Tb,
+    Insn,
+}
+
+impl std::str::FromStr for SamplingMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "tb" => Ok(SamplingMode::Tb),
+            "insn" => Ok(SamplingMode::Insn),
+            _ => bail!("invalid sampling mode: {s} (expected 'tb' or 'insn')"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PluginArgs {
     freq: u32,
     out: PathBuf,
     max_depth: usize,
     queue_size: usize,
+    mode: SamplingMode,
+    filter_start: Option<u64>,
+    filter_end: Option<u64>,
 }
 
 impl TryFrom<&Args> for PluginArgs {
@@ -63,6 +84,20 @@ impl TryFrom<&Args> for PluginArgs {
             .unwrap_or("qperf.bin".into());
         let max_depth = parse_usize_arg(args, "max_depth")?.unwrap_or(128);
         let queue_size = parse_usize_arg(args, "queue_size")?.unwrap_or(4096);
+        let mode = args
+            .parsed
+            .get("mode")
+            .map(|v| {
+                if let Value::String(s) = v {
+                    s.parse::<SamplingMode>()
+                } else {
+                    bail!("invalid mode")
+                }
+            })
+            .transpose()?
+            .unwrap_or(SamplingMode::Tb);
+        let filter_start = parse_u64_hex_arg(args, "filter_start")?;
+        let filter_end = parse_u64_hex_arg(args, "filter_end")?;
         if max_depth == 0 {
             bail!("max_depth must be greater than 0");
         }
@@ -74,6 +109,9 @@ impl TryFrom<&Args> for PluginArgs {
             out,
             max_depth,
             queue_size,
+            mode,
+            filter_start,
+            filter_end,
         })
     }
 }
@@ -93,6 +131,20 @@ fn parse_usize_arg(args: &Args, name: &str) -> anyhow::Result<Option<usize>> {
         .transpose()
 }
 
+fn parse_u64_hex_arg(args: &Args, name: &str) -> anyhow::Result<Option<u64>> {
+    args.parsed
+        .get(name)
+        .map(|v| {
+            if let Value::String(s) = v {
+                u64::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16)
+                    .with_context(|| format!("invalid {name}: expected hex address"))
+            } else {
+                bail!("invalid {name}: expected hex string")
+            }
+        })
+        .transpose()
+}
+
 #[derive(Default)]
 struct Stats {
     samples: AtomicU64,
@@ -106,6 +158,9 @@ pub struct Profiler {
     tx: Sender<Vec<u64>>,
     intvl: Duration,
     max_depth: usize,
+    mode: SamplingMode,
+    filter_start: Option<u64>,
+    filter_end: Option<u64>,
     last: Arc<Mutex<Instant>>,
     regs: Arc<AllRegs>,
     stats: Arc<Stats>,
@@ -118,6 +173,9 @@ impl Default for Profiler {
             tx: bounded(0).0,
             intvl: Duration::MAX,
             max_depth: 128,
+            mode: SamplingMode::Tb,
+            filter_start: None,
+            filter_end: None,
             last: Arc::new(Mutex::new(Instant::now())),
             regs: Arc::default(),
             stats: Arc::default(),
@@ -192,11 +250,20 @@ impl HasCallbacks for Profiler {
         const KERNEL_MASK: u64 = 1 << 63;
 
         let ip = tb.vaddr();
-        if ip & KERNEL_MASK != 0 {
-            tb.instructions().for_each(|insn| {
-                let ip = insn.vaddr();
+        if ip & KERNEL_MASK == 0 {
+            return Ok(());
+        }
+
+        if let (Some(start), Some(end)) = (self.filter_start, self.filter_end)
+            && (ip < start || ip >= end)
+        {
+            return Ok(());
+        }
+
+        match self.mode {
+            SamplingMode::Tb => {
                 let mut this = self.clone();
-                insn.register_execute_callback_flags(
+                tb.register_execute_callback_flags(
                     move |_| {
                         if this.sample(ip).is_err() {
                             this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
@@ -204,7 +271,21 @@ impl HasCallbacks for Profiler {
                     },
                     CallbackFlags::QEMU_PLUGIN_CB_R_REGS,
                 );
-            });
+            }
+            SamplingMode::Insn => {
+                tb.instructions().for_each(|insn| {
+                    let ip = insn.vaddr();
+                    let mut this = self.clone();
+                    insn.register_execute_callback_flags(
+                        move |_| {
+                            if this.sample(ip).is_err() {
+                                this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
+                            }
+                        },
+                        CallbackFlags::QEMU_PLUGIN_CB_R_REGS,
+                    );
+                });
+            }
         }
 
         Ok(())
@@ -266,6 +347,9 @@ impl Register for Profiler {
         self.tx = tx;
         self.intvl = Duration::from_secs_f64(1.0 / args.freq as f64);
         self.max_depth = args.max_depth;
+        self.mode = args.mode;
+        self.filter_start = args.filter_start;
+        self.filter_end = args.filter_end;
         self.stats = stats;
 
         Ok(())

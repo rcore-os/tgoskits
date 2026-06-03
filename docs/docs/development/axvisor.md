@@ -39,7 +39,7 @@ cargo xtask axvisor defconfig qemu-aarch64
 该脚本完成以下操作：
 
 1. 从 `axvisor-guest` GitHub 仓库下载 Guest 镜像到 `/tmp/.axvisor-images/qemu_aarch64_arceos`
-2. 从 `configs/vms/arceos-aarch64-qemu-smp1.toml` 生成 `os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
+2. 从 `configs/vms/qemu/aarch64/arceos-smp1.toml` 生成 `os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
 3. 自动修正 VM 配置中的 `kernel_path`
 4. 复制 `rootfs.img` 到 `os/axvisor/tmp/rootfs.img`
 
@@ -329,7 +329,7 @@ vm_configs = []   # 注意：默认为空，需手动指定或通过 setup_qemu.
 
 1. 创建 `os/axvisor/configs/board/<board>.toml`
 2. 在 `platforms/` 下添加对应平台 crate（如需要）
-3. 创建对应的 VM 配置 `configs/vms/<guest>-<arch>-<board>.toml`
+3. 创建对应的 VM 配置 `configs/vms/<board>/<guest>-<variant>.toml`
 4. 验证：
 
 ```bash
@@ -391,7 +391,7 @@ Axvisor 测试配置与 StarryOS 类似，使用 shell 交互模式：
 
 ```toml
 # build config
-vm_configs = ["os/axvisor/configs/vms/linux-aarch64-qemu-smp1.toml"]
+vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml"]
 features = ["ept-level-4", "ax-std/bus-mmio", "fs"]
 ```
 

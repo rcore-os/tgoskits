@@ -441,7 +441,7 @@ fn with_axconfig_env_override(
 
 fn arceos_rust_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     let mut envs = HashMap::new();
-    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, metadata)
+    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, false, metadata)
         .context("failed to prepare arceos-rust clippy config")?;
     Ok(envs.into_iter().collect())
 }

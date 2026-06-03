@@ -13,11 +13,8 @@
 // limitations under the License.
 
 use ax_errno::AxResult;
-use axaddrspace::{
-    GuestPhysAddrRange,
-    device::{AccessWidth, DeviceAddrRange},
-};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType};
+use axvm_types::GuestPhysAddrRange;
 
 use crate::vgic::Vgic;
 

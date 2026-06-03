@@ -1,0 +1,18 @@
+[package]
+name = "axvm-types"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["hypervisor", "virtualization", "no-std"]
+categories = ["virtualization", "no-std"]
+description = "Shared base types for AxVM virtualization components"
+
+[dependencies]
+ax-cpumask = { workspace = true }
+ax-errno = { workspace = true }
+ax-memory-addr = { workspace = true }
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+ax-page-table-multiarch = { workspace = true }

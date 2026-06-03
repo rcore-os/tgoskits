@@ -91,7 +91,7 @@ but theoretically, you can use whatever you want.
     [start4.elf](https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/start4.elf), 
     [fixup4.dat](https://github.com/raspberrypi/firmware/raw/master/boot/fixup4.dat), 
     [bcm2711-rpi-4-b.dtb](https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2711-rpi-4-b.dtb)
-    5. just run `make A=examples/helloworld MYPLAT=axplat-aarch64-raspi chainboot`, then should display this image.
+    5. run `make A=examples/helloworld ARCH=aarch64 chainboot` with an external Raspberry Pi 4 platform selection, then it should display this image.
 
     <table>
     <thead> <tr>
@@ -165,7 +165,7 @@ but theoretically, you can use whatever you want.
 
 ### Start Debugging
 
-    1. just run `make A=examples/helloworld MYPLAT=axplat-aarch64-raspi chainboot` and Power up the board., then should display this image.
+    1. run `make A=examples/helloworld ARCH=aarch64 chainboot` with an external Raspberry Pi 4 platform selection and power up the board, then it should display this image.
 
     ```
     Minipush 1.0
@@ -202,11 +202,11 @@ but theoretically, you can use whatever you want.
     *the following guidelines is basically like previous datasheets, In fact, if you're a senior developer, skip the following. XD*
     3. My personal suggestions is using zellij, but you could choice what ever you want.
     4. A: Keeping this miniload running (just don't terminate it) in terminal A.
-    5. B: run `make A=examples/helloworld MYPLAT=axplat-aarch64-raspi openocd`, 
+    5. B: run `make A=examples/helloworld ARCH=aarch64 openocd` with the same external Raspberry Pi 4 platform selection,
     the windows should display following, but it doesn't matter, we don't need to care about this.
 
     ```
-    $ make A=examples/helloworld MYPLAT=axplat-aarch64-raspi openocd  
+    $ make A=examples/helloworld ARCH=aarch64 openocd
 
     Launching OpenOCD
     [sudo] password for jacky: 
@@ -241,7 +241,7 @@ but theoretically, you can use whatever you want.
 
     ```
 
-    6. C: run `make A=examples/helloworld MYPLAT=axplat-aarch64-raspi gdb` in terminal C.
+    6. C: run `make A=examples/helloworld ARCH=aarch64 gdb` with the same external Raspberry Pi 4 platform selection in terminal C.
     7. You are now in GDB, but just don't start your debug immediately.
     Because the use of minipush script, we could simple push our image to board before power up the board.
     Like a double-edged sword. It also constrains our behavior, 
@@ -272,5 +272,4 @@ but theoretically, you can use whatever you want.
 3. [Rust Raspberry Pi OS tutorials 08 HW debug JTAG by hikalium 2021-09-20](https://www.youtube.com/watch?v=6ULvzK1Drgo&t=21s)
 4. [my record](https://bitbucket.org/jackyliu16/blog/src/master/content/jtag-load-failure-debug.cn.md)
 4. openocd docs, bcm2711 docs, gdb docs ... etc.
-
 
