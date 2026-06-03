@@ -193,19 +193,20 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
 
 ```
 test-suit/starryos/selfhost-manual/
-├── build-riscv64gc-unknown-none-elf.toml    # 构建配置
-├── selfhost-full-kernel/                     # 完整编译测试（timeout=7200s）
-│   ├── qemu-riscv64.toml
-│   └── sh/self-compile.sh                   # Guest 内执行的编译脚本
-└── test-selfhost-check/                      # 快速工具检查（timeout=120s）
-    └── qemu-riscv64.toml
+└── qemu-selfhost/                             # 构建包装器（xtask 发现此 build-*.toml）
+    ├── build-riscv64gc-unknown-none-elf.toml  # 构建配置
+    ├── selfhost-full-kernel/                  # 完整编译测试（timeout=7200s）
+    │   ├── qemu-riscv64.toml
+    │   └── sh/self-compile.sh                 # Guest 内执行的编译脚本
+    └── test-selfhost-check/                   # 快速工具检查（timeout=120s）
+        └── qemu-riscv64.toml
 ```
 
 **CI 不运行的原因**: Debian rootfs 镜像（~8-12GB）未上传到 tgosimages release，CI 容器无法下载。
 
 **手动运行**:
 ```bash
-cargo xtask starry test qemu --arch riscv64 --test-suite test-suit/starryos/selfhost-manual -c selfhost-full-kernel
+cargo xtask starry test qemu --arch riscv64 --test-group selfhost-manual -c selfhost-full-kernel
 ```
 
 ## 已知限制
