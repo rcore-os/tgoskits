@@ -3,6 +3,7 @@
 
 #![no_std]
 #![feature(likely_unlikely)]
+#![feature(c_variadic)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -21,7 +22,7 @@ mod cgroup;
 mod config;
 mod ebpf;
 mod file;
-mod kmod_loader;
+mod kmod;
 mod kprobe;
 mod mm;
 mod perf;
