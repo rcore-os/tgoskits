@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use alloc::boxed::Box;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -87,6 +88,7 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::set_oneshot_timer(deadline_ns);
     }
 
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn register_timer(
         &self,
         deadline_ns: u64,

@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use alloc::boxed::Box;
 use core::time::Duration;
 
@@ -49,6 +50,7 @@ pub trait HostTime {
     fn set_oneshot_timer(&self, deadline_ns: u64);
 
     /// Register a VM timer callback.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn register_timer(
         &self,
         deadline_ns: u64,

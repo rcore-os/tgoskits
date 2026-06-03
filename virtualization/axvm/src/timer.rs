@@ -3,10 +3,10 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use core::time::Duration;
 
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
@@ -14,6 +14,7 @@ use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 use crate::host::{HostTime, default_host};
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
 
 struct VmTimerEvent {
@@ -23,6 +24,7 @@ struct VmTimerEvent {
 }
 
 impl VmTimerEvent {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn new<F>(token: usize, callback: F) -> Self
     where
         F: FnOnce(TimeValue) + Send + 'static,
@@ -46,6 +48,7 @@ impl TimerEvent for VmTimerEvent {
 #[ax_percpu::def_percpu]
 static TIMER_LIST: LazyInit<SpinNoIrq<TimerList<VmTimerEvent>>> = LazyInit::new();
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) fn register_timer(
     deadline_ns: u64,
     callback: Box<dyn FnOnce(Duration) + Send + 'static>,
