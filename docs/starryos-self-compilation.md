@@ -8,8 +8,8 @@
 
 | 架构 | 种子内核 | QEMU 启动 | rootfs | 自编译 | 耗时 | 备注 |
 |------|---------|----------|--------|--------|------|------|
-| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1 |
-| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | 6m53s | KVM + SMP=1, 301 crates |
+| riscv64 | ✅ | ✅ | 已就绪 | ✅ | ~100 min | TCG 模拟，SMP=1, 12GB RAM |
+| x86_64 | ✅ | ✅ (KVM) | 已就绪 | ✅ | 6m53s | KVM + SMP=1, 12GB RAM, 301 crates |
 
 ### 测试链路
 
@@ -18,11 +18,11 @@ Host (Linux)
   └─ scripts/self-compile.sh --arch <arch>
       ├─ cargo xtask starry build        (种子内核)
       ├─ loopback mount → inject files   (脚本/配置注入)
-      └─ expect + QEMU (-m 8G)
+      └─ expect + QEMU (-m 12G)
           └─ StarryOS 内核
               └─ Debian rootfs (ext4)
                   └─ /usr/bin/self-compile-inner.sh
-                      ├─ mount tmpfs (8G)
+                      ├─ mount tmpfs (12G)
                       ├─ filter-workspace.sh (架构过滤)
                       └─ cargo build -p starryos --offline
 ```
@@ -39,17 +39,17 @@ Host (Linux)
 
 ### 1. 内存检测仅识别 512MB
 
-**现象**: QEMU `-m 8G` 但内核只识别 ~510MB。
+**现象**: QEMU `-m 12G` 但内核只识别 ~510MB。
 
 **根因**: `axplat-riscv64-qemu-virt` 的 `axconfig.toml` 硬编码 `phys-memory-size = 0x2000_0000`。
 
-**修复**: 改为 `phys-memory-size = "0x2_0000_0000"` (8GB)。x86_64 使用 `axplat-dyn` + `somehal::mem::memory_map()` 动态检测，无此问题。
+**修复**: 改为 `phys-memory-size = "0x2_0000_0000"` (8GB)。x86_64 使用 `axplat-dyn` + `somehal::mem::memory_map()` 动态检测，无此问题。**注**: 实际测试中 8GB 存在 OOM 风险，建议使用 `0x3_0000_0000` (12GB)。
 
 **注**: PR #987 重构了 ax-alloc，移除了旧 bitmap 页分配器（及 `page-alloc-*` 特性），改用 TLSF/buddy-slab。TLSF 无硬编码容量限制，不再需要 `page-alloc-64g` passthrough。
 
 ### 2. TMPFS 挂载失败
 
-**现象**: `mount -t tmpfs -o size=8G tmpfs /tmp` 失败。
+**现象**: `mount -t tmpfs -o size=12G tmpfs /tmp` 失败。
 
 **根因**: mount(8) 优先使用新版 mount API（`fsopen`/`fsconfig`/`fsmount`）。StarryOS 将 `fsopen` 实现为 `sys_dummy_fd`（返回伪 fd），mount(8) 误以为挂载成功但后续操作失败，不会回退到传统 `mount(2)`。
 
@@ -214,7 +214,7 @@ cargo xtask starry app qemu --arch riscv64 --app-case selfhost/test-selfhost-che
 
 ## 已知限制
 
-1. **`phys-memory-size` 硬编码 8GB**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。标准 CI 测试使用默认内存配置，自编译需要 `-m 8G`。
+1. **`phys-memory-size` 硬编码**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。自编译需要 `-m 12G` + `axconfig_overrides = ["plat.phys-memory-size=0x3_0000_0000"]`。8GB 在实测中出现 OOM，不建议使用。
 2. **自编译测试不在标准 CI 中运行**: 需要 8-12GB rootfs 镜像，仅支持本地手动测试。
 3. **SMP > 1 未验证**: ext4 `SpinNoPreempt` 死锁 workaround 为 SMP=1。x86_64 通过 KVM 加速弥补单核性能。
 4. **aarch64 引导已验证**: rootfs 准备 + 种子内核引导 + shell 可用均通过，完整编译因 TCG 模拟性能限制（预计 4-8h）未运行。需 `plat_dyn=true` + PIE 目标（`--config test-suit/starryos/normal/qemu-smp1/build-aarch64-unknown-none-softfloat.toml`）。
@@ -222,7 +222,7 @@ cargo xtask starry app qemu --arch riscv64 --app-case selfhost/test-selfhost-che
 
 ## 环境要求
 
-- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG), `-m 8G`
+- **QEMU**: riscv64 (TCG) / x86_64 (KVM) / aarch64 (TCG), `-m 12G`
 - **内核**: StarryOS (dev 分支)
 - **根文件系统**: Debian (per-arch), ext4, rustc nightly-2026-04-27
 - **Host 依赖**: `qemu-system-*`, `expect`, `sudo`（免密）, `systemd-nspawn`
