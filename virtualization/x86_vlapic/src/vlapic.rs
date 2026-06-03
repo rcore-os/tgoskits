@@ -18,8 +18,8 @@ use ax_errno::{AxError, AxResult, ax_err_type};
 use axaddrspace::{HostPhysAddr, device::AccessWidth};
 use axvisor_api::{
     memory::PhysFrame,
-    types::{VCpuId, VMId},
     vmm,
+    vmm::{VCpuId, VMId},
 };
 use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};

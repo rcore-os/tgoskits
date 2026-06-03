@@ -45,10 +45,7 @@
 //! }
 //! ```
 
-use super::{
-    memory::{PhysAddr, VirtAddr},
-    types::InterruptVector,
-};
+use super::memory::{PhysAddr, VirtAddr};
 
 /// Cache maintenance operations required by the hypervisor core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,9 +62,6 @@ pub enum CacheOp {
 /// host system or HAL layer.
 #[crate::api_def]
 pub trait ArchIf {
-    /// Inject a virtual interrupt into the current vCPU context.
-    fn inject_virtual_interrupt(vector: InterruptVector);
-
     /// Perform a data-cache maintenance operation on the specified address range.
     fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize);
 
@@ -96,7 +90,7 @@ pub trait ArchIf {
     /// This function is only available on AArch64 platforms with GICv2/v3
     /// virtualization extensions.
     #[cfg(target_arch = "aarch64")]
-    fn hardware_inject_virtual_interrupt(vector: InterruptVector);
+    fn hardware_inject_virtual_interrupt(vector: u8);
 
     /// Read the TYPER (Type Register) of the GIC distributor.
     ///
@@ -166,12 +160,4 @@ pub trait ArchIf {
     /// Retrieve the current pending interrupt for the CPU from the physical hardware.
     #[cfg(target_arch = "aarch64")]
     fn fetch_irq() -> u64;
-    /// Calls the IRQ handler of the underlying OS to handle a pending interrupt.
-    ///
-    /// TODO: Determine if this function should be exposed in other architectures (and moved to
-    /// `host` module) or remain architecture-specific.
-    ///
-    /// TODO: Consider whether this function should replace `AxVCpuExitReason::ExternalInterrupt`.
-    #[cfg(target_arch = "aarch64")]
-    fn handle_irq();
 }

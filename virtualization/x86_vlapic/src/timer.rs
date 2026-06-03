@@ -18,8 +18,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use ax_errno::{AxResult, ax_err};
 use axvisor_api::{
     time,
-    types::{VCpuId, VMId},
-    vmm::{cancel_timer, inject_interrupt, register_timer},
+    vmm::{VCpuId, VMId, cancel_timer, inject_interrupt, register_timer},
 };
 
 use crate::{
@@ -403,7 +402,7 @@ fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) ->
 
 #[cfg(test)]
 mod tests {
-    use axvisor_api::types::{VCpuId, VMId};
+    use axvisor_api::vmm::{VCpuId, VMId};
 
     use crate::{regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode, timer::ApicTimer};
 

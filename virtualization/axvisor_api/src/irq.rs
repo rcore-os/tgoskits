@@ -22,7 +22,7 @@ pub type IrqHandler = fn(usize);
 pub trait IrqIf {
     /// Dispatch a host IRQ or VM-exit delivered interrupt vector through the
     /// underlying runtime's IRQ handling path.
-    fn handle_irq(vector: usize);
+    fn handle_irq(vector: usize) -> bool;
 
     /// Register a host IRQ handler for `vector`.
     ///

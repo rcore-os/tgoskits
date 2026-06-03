@@ -9,7 +9,7 @@ use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "loongarch64")]
 use axvisor_api::memory;
-use axvisor_api::types::{VCpuId, VMId};
+use axvisor_api::vmm::{VCpuId, VMId};
 #[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd;
 

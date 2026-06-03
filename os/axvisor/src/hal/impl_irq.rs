@@ -15,8 +15,8 @@ struct IrqImpl;
 
 #[axvisor_api::api_impl]
 impl IrqIf for IrqImpl {
-    fn handle_irq(vector: usize) {
-        ax_hal::irq::handle_irq(vector);
+    fn handle_irq(vector: usize) -> bool {
+        ax_hal::irq::handle_irq(vector)
     }
 
     fn register_irq_handler(vector: usize, handler: IrqHandler) -> bool {

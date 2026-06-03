@@ -135,18 +135,10 @@ mod memory_api_impl {
 
 #### `arch`
 
-- `inject_virtual_interrupt()`
 - `dcache_range()`
 - `host_tsc_frequency_mhz()`：仅 x86_64，用于 x86 vCPU CPUID 频率叶子兜底。
 
-#### `types`
-
-- `VMId`
-- `VCpuId`
-- `InterruptVector`
-- `VCpuSet`
-
-这些类型不再归属到 `vmm` 语义下，新代码应从 `axvisor_api::types` 引用。
+`VMId`、`VCpuId`、`InterruptVector`、`VCpuSet` 等 VMM 相关类型归属到 `vmm` 语义下，新代码应从 `axvisor_api::vmm` 引用。
 
 #### `host`
 

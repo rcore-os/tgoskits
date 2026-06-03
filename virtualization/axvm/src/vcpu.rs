@@ -37,7 +37,7 @@ cfg_if::cfg_if! {
             use ax_errno::{AxResult, ax_err};
             use axaddrspace::{GuestPhysAddr, HostPhysAddr};
             use axvcpu::{AxArchPerCpu, AxArchVCpu, AxVCpuExitReason};
-            use axvisor_api::types::{VCpuId, VMId};
+            use axvisor_api::vmm::{VCpuId, VMId};
 
             pub struct NoBackendPerCpu;
 

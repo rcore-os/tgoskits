@@ -15,7 +15,7 @@ use axdevice_base::BaseDeviceOps;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 use axvisor_api::{
     memory::{self, PhysAddr},
-    types::{VCpuId, VMId},
+    vmm::{VCpuId, VMId},
 };
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};

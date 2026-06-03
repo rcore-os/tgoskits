@@ -17,7 +17,7 @@ use alloc::collections::BTreeMap;
 use ax_kspin::SpinNoIrq;
 use axvisor_api::{
     task::TaskHandle,
-    types::{VCpuId, VMId},
+    vmm::{VCpuId, VMId},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

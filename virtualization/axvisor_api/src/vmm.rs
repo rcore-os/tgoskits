@@ -30,9 +30,9 @@
 //!
 //! # Types
 //!
-//! - [`crate::types::VMId`] - Virtual machine identifier.
-//! - [`crate::types::VCpuId`] - Virtual CPU identifier.
-//! - [`crate::types::InterruptVector`] - Interrupt vector number.
+//! - [`VMId`] - Virtual machine identifier.
+//! - [`VCpuId`] - Virtual CPU identifier.
+//! - [`InterruptVector`] - Interrupt vector number.
 //! - [`CancelToken`] - Token used to cancel a registered VMM timer.
 //!
 //! # Helper Functions
@@ -53,10 +53,28 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use crate::{
-    time::TimeValue,
-    types::{InterruptVector, VCpuId, VCpuSet, VMId},
-};
+use crate::time::TimeValue;
+
+/// Virtual machine identifier type.
+///
+/// Each virtual machine is assigned a unique identifier that can be used to
+/// reference it in API calls.
+pub type VMId = usize;
+
+/// Virtual CPU identifier type.
+///
+/// Each vCPU within a VM is assigned a unique identifier, usually 0-indexed
+/// within the VM.
+pub type VCpuId = usize;
+
+/// Interrupt vector type used by VMM interrupt injection APIs.
+pub type InterruptVector = u8;
+
+/// The maximum number of virtual CPUs supported in a virtual machine.
+pub const MAX_VCPU_NUM: usize = 64;
+
+/// A set of virtual CPUs.
+pub type VCpuSet = ax_cpumask::CpuMask<MAX_VCPU_NUM>;
 
 /// Cancel token type for VMM timer cancellation.
 ///

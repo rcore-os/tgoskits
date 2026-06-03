@@ -17,7 +17,7 @@ use log::{debug, warn};
 mod api;
 pub mod cache;
 
-pub fn inject_interrupt(irq: usize) {
+fn inject_interrupt(irq: usize) {
     debug!("Injecting virtual interrupt: {irq}");
 
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
@@ -54,7 +54,7 @@ pub fn inject_interrupt(irq: usize) {
     panic!("no gic driver found")
 }
 
-pub fn inject_interrupt_gic_v3(vector: usize) {
+fn inject_interrupt_gic_v3(vector: usize) {
     use arm_gic_driver::v3::*;
 
     debug!("Injecting virtual interrupt: vector={vector}");

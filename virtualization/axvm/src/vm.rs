@@ -24,7 +24,7 @@ use axaddrspace::{
 };
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
-use axvisor_api::types::InterruptVector;
+use axvisor_api::vmm::InterruptVector;
 use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};

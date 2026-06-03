@@ -15,19 +15,13 @@
 use ax_hal::mem::virt_to_phys;
 use axvisor_api::{
     arch::{ArchIf, CacheOp},
-    irq,
     memory::{PhysAddr, VirtAddr},
-    types::InterruptVector,
 };
 
 struct ArchImpl;
 
 #[axvisor_api::api_impl]
 impl ArchIf for ArchImpl {
-    fn inject_virtual_interrupt(irq: InterruptVector) {
-        crate::hal::arch::inject_interrupt(irq as usize);
-    }
-
     fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize) {
         crate::hal::arch::cache::dcache_range(op, addr, size);
     }
@@ -37,8 +31,8 @@ impl ArchIf for ArchImpl {
         (bootarg != 0).then(|| bootarg.into())
     }
 
-    fn hardware_inject_virtual_interrupt(irq: InterruptVector) {
-        crate::hal::arch::inject_interrupt(irq as _);
+    fn hardware_inject_virtual_interrupt(irq: u8) {
+        super::inject_interrupt(irq as _);
     }
 
     fn read_vgicd_typer() -> u32 {
@@ -119,9 +113,5 @@ impl ArchIf for ArchImpl {
             return gic.cpu_interface().ack1().to_u32() as _;
         }
         panic!("No GIC driver found");
-    }
-
-    fn handle_irq() {
-        irq::handle_irq(0);
     }
 }

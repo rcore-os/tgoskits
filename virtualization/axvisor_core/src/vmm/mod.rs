@@ -36,8 +36,8 @@ use ax_lazyinit::LazyInit;
 use axvisor_api::{
     api_impl,
     time::TimeValue,
-    types::{InterruptVector, VCpuId, VCpuSet, VMId},
     vmm as api_vmm,
+    vmm::{InterruptVector, VCpuId, VCpuSet, VMId},
 };
 pub use timer::init_percpu as init_timer_percpu;
 
