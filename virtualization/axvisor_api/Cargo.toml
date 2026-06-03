@@ -27,6 +27,10 @@ ax-memory-addr = { workspace = true }
 # CPU mask
 ax-cpumask = { workspace = true }
 
+[features]
+default = []
+fs = []
+
 [package.metadata.docs.rs]
 all-features = true
 default-target = "x86_64-unknown-linux-gnu"

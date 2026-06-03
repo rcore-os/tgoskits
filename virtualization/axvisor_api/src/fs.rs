@@ -293,17 +293,10 @@ pub fn create_dir_all(path: &str) -> AxResult<()> {
         if component.is_empty() || component == "." {
             continue;
         }
-        if component == ".." {
-            if !current.ends_with('/') && !current.is_empty() {
-                current.push('/');
-            }
-            current.push_str(component);
-        } else {
-            if !current.ends_with('/') && !current.is_empty() {
-                current.push('/');
-            }
-            current.push_str(component);
+        if !current.ends_with('/') && !current.is_empty() {
+            current.push('/');
         }
+        current.push_str(component);
 
         match create_dir(&current) {
             Ok(()) => {}

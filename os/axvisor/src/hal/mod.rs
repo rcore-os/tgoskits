@@ -55,6 +55,7 @@ impl AxMmHal for AxMmHalImpl {
 // }
 
 mod impl_console;
+#[cfg(feature = "fs")]
 mod impl_fs;
 mod impl_host;
 mod impl_irq;

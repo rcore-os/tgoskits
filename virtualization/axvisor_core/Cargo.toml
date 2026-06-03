@@ -10,7 +10,7 @@ repository = "https://github.com/rcore-os/tgoskits"
 [features]
 default = ["vmx"]
 ept-level-4 = []
-fs = []
+fs = ["axvisor_api/fs"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 vmx = ["axvm/vmx"]
