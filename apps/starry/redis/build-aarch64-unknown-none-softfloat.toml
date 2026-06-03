@@ -1,14 +1,12 @@
-env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
+target = "aarch64-unknown-none-softfloat"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+log = "Warn"
 features = [
-  "ax-hal/aarch64-qemu-virt",
   "qemu",
-  "ax-driver/plat-static",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
 ]
-log = "Warn"
-plat_dyn = false
-target = "aarch64-unknown-none-softfloat"
+plat_dyn = true

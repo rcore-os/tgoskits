@@ -1,6 +1,7 @@
 mod fs;
 mod io_mpx;
 mod ipc;
+mod kmod;
 mod mm;
 mod net;
 mod ns;
@@ -838,12 +839,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4() as _,
         ),
         Sysno::init_module => {
-            crate::kmod_loader::sys_init_module(uctx.arg0(), uctx.arg1(), uctx.arg2())
+            kmod::sys_init_module(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
-        Sysno::delete_module => crate::kmod_loader::sys_delete_module(uctx.arg0(), uctx.arg1()),
         Sysno::finit_module => {
-            crate::kmod_loader::sys_finit_module(uctx.arg0() as _, uctx.arg1(), uctx.arg2())
+            kmod::sys_finit_module(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
+        Sysno::delete_module => kmod::sys_delete_module(uctx.arg0() as _, uctx.arg1() as _),
 
         Sysno::fanotify_init => Err(AxError::Unsupported),
 

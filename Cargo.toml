@@ -217,11 +217,6 @@ ax-page-table-multiarch = { version = "0.8.10", path = "memory/page_table_multia
 ax-percpu = { version = "0.4.11", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.5.8", path = "platforms/ax-plat" }
-ax-plat-aarch64-bsta1000b = { version = "0.5.11", path = "platforms/ax-plat-aarch64-bsta1000b" }
-ax-plat-aarch64-peripherals = { version = "0.5.10", path = "platforms/ax-plat-aarch64-peripherals" }
-ax-plat-aarch64-phytium-pi = { version = "0.5.11", path = "platforms/ax-plat-aarch64-phytium-pi" }
-ax-plat-aarch64-qemu-virt = { version = "0.5.10", path = "platforms/ax-plat-aarch64-qemu-virt" }
-ax-plat-aarch64-raspi = { version = "0.5.11", path = "platforms/ax-plat-aarch64-raspi" }
 ax-plat-loongarch64-qemu-virt = { version = "0.5.10", path = "platforms/ax-plat-loongarch64-qemu-virt", default-features = false }
 ax-plat-macros = { version = "0.3.6", path = "platforms/ax-plat-macros" }
 ax-plat-riscv64-qemu-virt = { version = "0.5.9", path = "platforms/ax-plat-riscv64-qemu-virt" }
@@ -291,6 +286,7 @@ rdif-timer = { version = "0.6.1", path = "drivers/interface/rdif-timer" }
 rdif-vsock = { version = "0.1.0", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2.0", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.2.1", path = "drivers/npu/rockchip-npu" }
+k230-kpu = { version = "0.1.0", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.2.0", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.3", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.3.0", path = "drivers/soc/rockchip/rockchip-soc" }

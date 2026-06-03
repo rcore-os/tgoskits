@@ -68,7 +68,7 @@ graph LR
     ax_handler_table["ax-handler-table"] --> axplat["ax_plat::irq"]
     axplat --> x86["ax-plat-x86-pc / x86-q35"]
     axplat --> riscv["ax-plat-riscv64-qemu-virt"]
-    axplat --> aarch64["ax-plat-aarch64-peripherals"]
+    axplat --> aarch64["axplat-dyn / somehal"]
     axplat --> loongarch["ax-plat-loongarch64-qemu-virt"]
 ```
 
