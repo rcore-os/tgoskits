@@ -1,0 +1,22 @@
+[workspace]
+members = ["analyzer"]
+resolver = "3"
+
+[package]
+name = "qperf"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1.0.100"
+bincode = "2.0.1"
+crossbeam-channel = "0.5.15"
+qemu-plugin = { version = "10.1.0-v2", default-features = false, features = [
+    "anyhow",
+    "plugin-api-v4",
+] }
+zerocopy = { version = "0.8.26", features = ["derive", "std"] }

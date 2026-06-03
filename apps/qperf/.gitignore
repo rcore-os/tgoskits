@@ -1,0 +1,6 @@
+/target
+*.data
+*.folded
+*.pprof
+*.pb.gz
+*.svg
