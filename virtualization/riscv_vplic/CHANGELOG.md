@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.12...riscv_vplic-v0.4.13) - 2026-06-03
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.11...riscv_vplic-v0.4.12) - 2026-05-22
 
 ### Other

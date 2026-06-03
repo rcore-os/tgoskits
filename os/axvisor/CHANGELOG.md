@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.8...axvisor-v0.5.9) - 2026-06-03
+
+### Added
+
+- *(irq)* introduce shared IRQ framework ([#1065](https://github.com/rcore-os/tgoskits/pull/1065))
+- Enhance SVM support and improve PIT handling for Linux guests ([#1005](https://github.com/rcore-os/tgoskits/pull/1005))
+- *(axvisor)* support x86_64 Linux guest boot (vmx) ([#930](https://github.com/rcore-os/tgoskits/pull/930))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+- *(axvisor)* add PhytiumPi and ROC-RK3568 board tests ([#934](https://github.com/rcore-os/tgoskits/pull/934))
+- *(axvisor)* bring up minimal LoongArch ArceOS guest ([#768](https://github.com/rcore-os/tgoskits/pull/768))
+
+### Fixed
+
+- *(axvisor)* enable buddy-slab allocator ([#974](https://github.com/rcore-os/tgoskits/pull/974))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(platform)* migrate riscv64 qemu to dynamic platform ([#1085](https://github.com/rcore-os/tgoskits/pull/1085))
+- *(linker)* layer platform runtime and final scripts ([#1075](https://github.com/rcore-os/tgoskits/pull/1075))
+- *(axvisor)* reorganize VM configs into platform-first directory structure ([#1063](https://github.com/rcore-os/tgoskits/pull/1063))
+- [AxVisor] add x86_64 UEFI guest support ([#760](https://github.com/rcore-os/tgoskits/pull/760))
+- *(rdif-block)* switch block drivers to submit poll ([#976](https://github.com/rcore-os/tgoskits/pull/976))
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+- Refactor FDT handling, error management, and improve code clarity ([#966](https://github.com/rcore-os/tgoskits/pull/966))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- Refactor workspace structure and update dependencies ([#864](https://github.com/rcore-os/tgoskits/pull/864))
+
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.7...axvisor-v0.5.8) - 2026-05-22
 
 ### Added
