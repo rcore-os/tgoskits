@@ -211,6 +211,23 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
     Ok(())
 }
 
+pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) {
+    let Some(vm_vcpus) = get_vm_vcpus(vm_id) else {
+        warn!("VM[{vm_id}] vCPU resources not found, cannot drain VCpu[{vcpu_id}] interrupts");
+        return;
+    };
+
+    for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+        trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
+        if let Err(err) = vcpu.inject_interrupt(vector) {
+            warn!(
+                "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]: \
+                 {err:?}"
+            );
+        }
+    }
+}
+
 fn ipi_targets(
     vm: &VMRef,
     current_vcpu_id: usize,
@@ -448,15 +465,7 @@ fn vcpu_run() {
     mark_vcpu_running(vm_id);
 
     loop {
-        for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
-            trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
-            if let Err(err) = vcpu.inject_interrupt(vector) {
-                warn!(
-                    "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] \
-                     VCpu[{vcpu_id}]: {err:?}"
-                );
-            }
-        }
+        inject_pending_interrupts(vm_id, vcpu_id, &vcpu);
 
         #[cfg(target_arch = "x86_64")]
         super::x86_irq::drain_pending_ioapic_irqs(&vm, &vcpu);

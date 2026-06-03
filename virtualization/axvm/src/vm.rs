@@ -574,6 +574,8 @@ impl AxVM {
 
         let exit_reason = vcpu.with_current_cpu_set(|| -> AxResult<AxVCpuExitReason> {
             loop {
+                crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
+
                 let exit_reason = vcpu.run()?;
                 trace!("{exit_reason:#x?}");
                 match exit_reason {
