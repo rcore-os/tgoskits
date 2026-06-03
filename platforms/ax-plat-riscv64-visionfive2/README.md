@@ -60,7 +60,7 @@ TODO: 初始化分区表、OpenSBI 等
 
 ## 移植说明
 
-该平台与 QEMU RISC-V Virt Machine 相似程度较高，本仓库的适配代码与 `axplat-riscv64-qemu-virt` 也仅存在一些配置上的差异。以下对其简单说明：
+该平台与仓库内其他 RISC-V 静态板级平台实现较接近，主要差异集中在板级配置。以下对其简单说明：
 
 1. 配置文件：参考 [Linux 中的设备树配置文件](https://github.com/torvalds/linux/blob/master/arch/riscv/boot/dts/starfive/jh7110-common.dtsi)，修改 axconfig.toml，主要有以下内容需要调整：
    - `phys-memory-base`/`phys-memory-size`：物理内存区域

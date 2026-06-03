@@ -421,6 +421,16 @@ impl ArchTrait for Arch {
     }
 }
 
+pub(crate) fn disable_local_irqs() {
+    unsafe {
+        core::arch::asm!(
+            "csrc sstatus, {mask}",
+            mask = in(reg) SSTATUS_SIE,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
 pub(crate) fn current_page_table() -> PageTableInfo {
     let satp: usize;
     unsafe {

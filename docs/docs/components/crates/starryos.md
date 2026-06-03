@@ -24,7 +24,7 @@
 ### 1.2 feature 与装配关系
 `Cargo.toml` 里的 feature 设计直接决定镜像长什么样：
 
-- `qemu`：二进制 `[[bin]]` 的必需 feature，同时启用 `ax-feat/defplat`、`ax-feat/bus-pci`、`ax-feat/display`、`ax-feat/fs-ng-times`，以及 `starry-kernel` 的 `input`、`vsock`、`dev-log`。
+- `qemu`：静态 QEMU 平台 feature，主要用于 x86_64/loongarch64 等静态平台构建；AArch64 与 RISC-V QEMU 默认通过 `plat-dyn` 和显式驱动 feature 运行。
 - `smp`：启用 `ax-feat/smp`，并在 VisionFive2 平台上联动开启 SMP。
 - `vf2`：引入可选依赖 `ax-plat-riscv64-visionfive2`，并额外打开 `ax-feat/driver-sdmmc`。
 
@@ -64,7 +64,7 @@ flowchart TD
 ### 1.5 包级配置文件的作用
 这个包目录下除了 `main.rs` 以外，还有两个重要配置文件：
 
-- `.axconfig.toml`：描述平台和硬件布局，当前默认是 `riscv64-qemu-virt`。
+- build config：描述平台和硬件布局；RISC-V/AArch64 QEMU 默认走动态平台。
 - `.qemu.toml`：描述包级 QEMU 参数，当前不带 success/fail 正则。
 
 这与 `test-suit/starryos` 不同。`starryos` 是带着本地平台配置和运行配置一起存在的“镜像包”。
