@@ -49,6 +49,16 @@ use quote::{ToTokens, quote};
 use syn::LitStr;
 use toml::Table;
 
+fn fallback_platform_for_arch(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64-generic",
+        "loongarch64" => "loongarch64-qemu-virt",
+        "x86_64" => "x86-qemu-q35",
+        "riscv64" => "riscv64-plat-dyn",
+        _ => "dummy",
+    }
+}
+
 /// A configuration file that has been read from disk.
 struct ConfigFile {
     /// The path to the configuration file.
@@ -301,19 +311,7 @@ fn main() -> anyhow::Result<()> {
     let arch =
         std::env::var("CARGO_CFG_TARGET_ARCH").context("CARGO_CFG_TARGET_ARCH is not set")?;
 
-    // let platform = env::var("AX_PLATFORM").unwrap_or("".to_string());
-
-    let platform = if arch == "aarch64" {
-        "aarch64-generic".to_string()
-    } else if arch == "loongarch64" {
-        "loongarch64-qemu-virt".to_string()
-    } else if arch == "x86_64" {
-        "x86-qemu-q35".to_string()
-    } else if arch == "riscv64" {
-        "riscv64-qemu-virt".to_string()
-    } else {
-        "dummy".to_string()
-    };
+    let platform = fallback_platform_for_arch(&arch);
 
     println!("cargo:rustc-cfg=platform=\"{platform}\"");
 

@@ -7,8 +7,7 @@
 //! Currently supported platforms (specify by cargo features):
 //!
 //! - `x86-pc`: Standard PC with x86_64 ISA.
-//! - `riscv64-qemu-virt`: QEMU virt machine with RISC-V ISA.
-//! - `plat-dyn`: Runtime-discovered platform, including AArch64 boards.
+//! - `plat-dyn`: Runtime-discovered platform, including AArch64 and RISC-V QEMU boards.
 //! - `dummy`: If none of the above platform is selected, the dummy platform
 //!   will be used. In this platform, most of the operations are no-op or
 //!   `unimplemented!()`. This platform is mainly used for [cargo test].

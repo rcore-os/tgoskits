@@ -99,8 +99,9 @@ tgoskits/
 │       └── xtask/             # Axvisor 专用构建任务
 ├── platforms/                  # 平台适配层
 │   ├── axplat-dyn/            # 动态平台支持
-│   ├── riscv64-qemu-virt/     # RISC-V QEMU virt 平台
-│   └── x86-qemu-q35/          # x86 Q35 平台
+│   ├── ax-plat-riscv64-sg2002/ # RISC-V SG2002 静态平台
+│   ├── ax-plat-riscv64-visionfive2/ # RISC-V VisionFive2 静态平台
+│   └── ax-plat-x86-qemu-q35/  # x86 Q35 平台
 ├── drivers/                   # SoC 专用驱动（RK3588 时钟 / NPU / 电源管理）
 ├── test-suit/                 # 系统级测试套件
 │   ├── arceos/                # ArceOS（7 C + 18 Rust）

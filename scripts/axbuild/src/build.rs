@@ -712,7 +712,7 @@ pub(crate) fn apply_target_defaults_if_plat_dyn_unspecified(
         return;
     }
 
-    if target.starts_with("aarch64-") {
+    if target.starts_with("aarch64-") || target.starts_with("riscv64") {
         build_info.plat_dyn = BuildInfo::default_for_target(target).plat_dyn;
     }
 }
@@ -1016,7 +1016,6 @@ fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
     matches!(
         platform,
         "x86-pc"
-            | "riscv64-qemu-virt"
             | "riscv64-sg2002"
             | "riscv64-visionfive2"
             | "loongarch64-qemu-virt"
@@ -1050,11 +1049,10 @@ fn default_ax_hal_platform_feature(
 
     Ok(match arch {
         "x86_64" => "ax-hal/x86-pc",
-        "riscv64" => "ax-hal/riscv64-qemu-virt",
         "loongarch64" => "ax-hal/loongarch64-qemu-virt",
-        "aarch64" => {
+        "aarch64" | "riscv64" => {
             return Err(anyhow!(
-                "no static default ax-hal platform for arch `aarch64`"
+                "no static default ax-hal platform for arch `{arch}`"
             ));
         }
         _ => unreachable!("unsupported arch"),
@@ -1548,7 +1546,7 @@ mod tests {
     fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         let mut envs = HashMap::new();
         let mut features = vec![
-            "ax-hal/riscv64-qemu-virt".to_string(),
+            "ax-hal/loongarch64-qemu-virt".to_string(),
             "ax-driver/plat-dyn".to_string(),
             "ax-driver/virtio-blk".to_string(),
             "ax-driver/virtio-net".to_string(),
@@ -1561,7 +1559,7 @@ mod tests {
         assert_eq!(
             envs.get("ARCEOS_RUST_FEATURES"),
             Some(
-                &"ax-hal/riscv64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
+                &"ax-hal/loongarch64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
                   virtio-net"
                     .to_string()
             )
@@ -1825,27 +1823,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(platform, "ax-plat-aarch64-custom");
-    }
-
-    #[test]
-    fn find_local_platform_config_path_resolves_workspace_platform_dir() {
-        let metadata = repo_metadata();
-        let path = find_local_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata)
-            .unwrap()
-            .expect("workspace platform config should exist");
-
-        assert!(path.ends_with("platforms/ax-plat-riscv64-qemu-virt/axconfig.toml"));
-    }
-
-    #[test]
-    fn resolve_platform_config_path_uses_workspace_config() {
-        let metadata = repo_metadata();
-        let deps_metadata = workspace_metadata_with_deps().unwrap();
-        let path =
-            resolve_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata, &deps_metadata)
-                .unwrap();
-
-        assert!(path.ends_with("platforms/ax-plat-riscv64-qemu-virt/axconfig.toml"));
     }
 
     #[test]

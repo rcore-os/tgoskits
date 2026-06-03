@@ -438,7 +438,7 @@ plat_dyn = false
     }
 
     #[test]
-    fn load_build_info_preserves_unspecified_riscv_static_platform() {
+    fn load_build_info_defaults_unspecified_riscv_to_dynamic_platform() {
         let root = tempdir().unwrap();
         let path = root.path().join("build-riscv64gc-unknown-none-elf.toml");
         fs::write(
@@ -458,7 +458,7 @@ AX_IP = "10.0.2.15"
 
         let build_info = load_build_info(&request).unwrap();
 
-        assert!(!build_info.plat_dyn);
+        assert!(build_info.plat_dyn);
 
         let metadata = repo_metadata();
         let cargo = build_info
@@ -470,16 +470,17 @@ AX_IP = "10.0.2.15"
             )
             .unwrap();
 
-        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(
-            cargo
+            !cargo
                 .features
-                .contains(&"ax-hal/riscv64-qemu-virt".to_string())
+                .iter()
+                .any(|feature| feature.starts_with("ax-hal/riscv64-"))
         );
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/no-pie/riscv64gc-unknown-none-elf.json")
+                .ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json")
         );
     }
 
