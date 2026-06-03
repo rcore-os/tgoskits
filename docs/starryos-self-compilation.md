@@ -34,6 +34,7 @@ Host (Linux)
 | #797 | 信号传递修复：`interrupt_waker.wake()` 唤醒被 `future_blocked_resched` 移出运行队列的任务 | 无此修复，cargo 子进程（build script）挂起，父进程 waitpid 永远阻塞 |
 | #1007 | 页回收：内存压力下驱逐干净文件支持页面，`try_page_reclaim()` 最多重试 4 次 | 无此修复，编译 `syn` 时 OOM panic（大量源码/产物占满文件缓存） |
 | #971 | rsext4 clock LRU 缓存（4 入口/16 KiB），减少 virtio 块设备 round-trip | 加速离线 registry 读取，将依赖解析从分钟级降到秒级 |
+| #1076 | `scripts/self-compile.sh` 升级：tmpfs、rootfs 清理、jemalloc 过滤、QEMU 12G | host 端自助编译流程依赖此 PR 获得 12G 内存和 tmpfs 支持 |
 
 ## 共通阻塞点（riscv64 + x86_64）
 
@@ -203,13 +204,18 @@ apps/starry/selfhost/
 
 **CI 不运行的原因**: Debian rootfs 镜像（~8-12GB）未上传到 tgosimages release，CI 容器无法下载。
 
-**手动运行**:
+**手动运行（app 方式，使用 apps/starry/selfhost/ 中的 12G 配置）**:
 ```bash
 # 完整自编译
-cargo xtask starry app qemu --arch riscv64 --app-case selfhost/selfhost-full-kernel
+cargo xtask starry app qemu --arch riscv64 -t selfhost/selfhost-full-kernel
 
 # 快速工具检查
-cargo xtask starry app qemu --arch riscv64 --app-case selfhost/test-selfhost-check
+cargo xtask starry app qemu --arch riscv64 -t selfhost/test-selfhost-check
+```
+
+**手动运行（host 脚本方式，需先合入 PR #1076 以升级到 12G）**:
+```bash
+./scripts/self-compile.sh --arch riscv64
 ```
 
 ## 已知限制
