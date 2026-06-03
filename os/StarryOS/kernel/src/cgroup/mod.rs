@@ -246,8 +246,7 @@ pub fn attach_process(target: CgroupId, pid: Pid) -> AxResult<()> {
     Ok(())
 }
 
-pub fn path(id: CgroupId) -> AxResult<String> {
-    let tree = CGROUP_TREE.lock();
+fn path_locked(tree: &CgroupTree, id: CgroupId) -> AxResult<String> {
     let mut current = id;
     let mut names = Vec::new();
     loop {
@@ -274,12 +273,17 @@ pub fn path(id: CgroupId) -> AxResult<String> {
     Ok(path)
 }
 
+pub fn path(id: CgroupId) -> AxResult<String> {
+    let tree = CGROUP_TREE.lock();
+    path_locked(&tree, id)
+}
+
 pub fn procs_text(id: CgroupId) -> AxResult<String> {
     ensure_node_exists(id)?;
 
     let mut pids: Vec<_> = crate::task::processes()
         .into_iter()
-        .filter(|proc_data| proc_data.cgroup_id() == id)
+        .filter(|proc_data| proc_data.is_cgroup_membership_active() && proc_data.cgroup_id() == id)
         .map(|proc_data| proc_data.proc.pid())
         .collect();
     pids.sort_unstable();
@@ -292,7 +296,11 @@ pub fn procs_text(id: CgroupId) -> AxResult<String> {
 }
 
 pub fn proc_cgroup_text(proc_data: &crate::task::ProcessData) -> AxResult<String> {
-    let path = path(proc_data.cgroup_id())?;
+    let tree = CGROUP_TREE.lock();
+    if !proc_data.is_cgroup_membership_active() {
+        return Err(AxError::from(LinuxError::ESRCH));
+    }
+    let path = path_locked(&tree, proc_data.cgroup_id())?;
     let mut text = String::new();
     let _ = writeln!(text, "0::{path}");
     Ok(text)
