@@ -19,6 +19,8 @@ pub type AxvisorBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
+const AXVISOR_PLAT_DYN_FEATURES: &[&str] =
+    &["axvm/plat-dyn", "ax-std/plat-dyn", "ax-driver/plat-dyn"];
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
@@ -145,13 +147,7 @@ fn to_cargo_config(
             metadata,
         )?;
     if plat_dyn {
-        cargo.features.retain(|feature| {
-            !matches!(
-                feature.as_str(),
-                "ax-std/plat-dyn" | "ax-feat/plat-dyn" | "dyn-plat"
-            )
-        });
-        cargo.features.push("dyn-plat".to_string());
+        normalize_axvisor_plat_dyn_features(&mut cargo.features);
     }
     patch_axvisor_cargo_config(&mut cargo, request, metadata, &config.vm_configs)?;
     Ok(cargo)
@@ -172,8 +168,14 @@ fn patch_axvisor_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    let plat_dyn = cargo.features.iter().any(|feature| feature == "dyn-plat");
+    let plat_dyn = cargo
+        .features
+        .iter()
+        .any(|feature| is_axvisor_plat_dyn_feature(feature));
     normalize_axvisor_feature_surface(&mut cargo.features, &request.target, plat_dyn, metadata)?;
+    if plat_dyn {
+        normalize_axvisor_plat_dyn_features(&mut cargo.features);
+    }
 
     let vmconfigs = if request.vmconfigs.is_empty() {
         config_vmconfigs
@@ -207,9 +209,8 @@ fn normalize_axvisor_feature_surface(
     metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<()> {
     let known_platforms = platform_feature_names(metadata);
-    let axvisor_platforms = axvisor_platform_features(metadata)?;
     let selected_platform =
-        select_axvisor_platform_feature(features, target, plat_dyn, &axvisor_platforms)?;
+        select_axvisor_platform_feature(features, target, plat_dyn, &known_platforms, metadata)?;
 
     let Some(platform) = selected_platform else {
         return Ok(());
@@ -220,14 +221,15 @@ fn normalize_axvisor_feature_surface(
             return true;
         }
 
-        if axvisor_platforms
-            .iter()
-            .any(|platform| platform.feature == *feature)
-        {
+        if nested_platform_feature_name(feature, &known_platforms).is_some() {
             return false;
         }
 
-        if nested_platform_feature_name(feature, &known_platforms).is_some() {
+        if ax_hal_platform_feature_name(feature, &known_platforms).is_some() {
+            return false;
+        }
+
+        if known_platforms.iter().any(|platform| platform == feature) {
             return false;
         }
 
@@ -245,56 +247,61 @@ fn reject_unsupported_nested_platform_features(
 ) -> anyhow::Result<()> {
     if let Some(feature) = features
         .iter()
-        .find(|feature| nested_platform_feature_name(feature, known_platforms).is_some())
+        .find(|feature| is_axvisor_plat_dyn_feature(feature))
     {
         return Err(anyhow!(
-            "Axvisor build configs must use Axvisor top-level platform features; found `{feature}`"
+            "Axvisor build configs must use `plat_dyn = true` instead of dynamic platform \
+             features; found `{feature}`"
+        ));
+    }
+
+    if let Some(feature) = features.iter().find(|feature| {
+        nested_platform_feature_name(feature, known_platforms).is_some()
+            || known_platforms.iter().any(|platform| platform == *feature)
+    }) {
+        return Err(anyhow!(
+            "Axvisor build configs must use ax-hal platform features directly; found `{feature}`"
         ));
     }
     Ok(())
 }
 
-fn axvisor_platform_features(
-    metadata: &cargo_metadata::Metadata,
-) -> anyhow::Result<Vec<AxvisorPlatformFeature>> {
-    let mut features = Vec::new();
-    for platform in platform_metadata_entries(metadata) {
-        let feature = platform.platform.clone();
-        if axvisor_declares_feature(metadata, &feature)? {
-            features.push(AxvisorPlatformFeature {
-                feature,
-                arch: Some(platform.arch),
-                default_for_arch: platform.default_for_arch,
-                dynamic: platform.dynamic,
-            });
-        }
-    }
-    if axvisor_declares_feature(metadata, "dyn-plat")? {
-        features.push(AxvisorPlatformFeature {
-            feature: "dyn-plat".to_string(),
-            arch: None,
-            default_for_arch: false,
-            dynamic: true,
-        });
-    }
-    features.sort_by(|a, b| a.feature.cmp(&b.feature));
-    features.dedup_by(|a, b| a.feature == b.feature);
-    Ok(features)
+fn normalize_axvisor_plat_dyn_features(features: &mut Vec<String>) {
+    features.retain(|feature| !is_axvisor_plat_dyn_feature(feature));
+    features.extend(
+        AXVISOR_PLAT_DYN_FEATURES
+            .iter()
+            .map(|feature| (*feature).to_string()),
+    );
+}
+
+fn is_axvisor_plat_dyn_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "dyn-plat"
+            | "plat-dyn"
+            | "ax-feat/plat-dyn"
+            | "ax-hal/plat-dyn"
+            | "ax-std/plat-dyn"
+            | "axvm/plat-dyn"
+            | "ax-driver/plat-dyn"
+    )
 }
 
 fn select_axvisor_platform_feature(
     features: &[String],
     target: &str,
     plat_dyn: bool,
-    axvisor_platforms: &[AxvisorPlatformFeature],
+    known_platforms: &[String],
+    metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Option<String>> {
+    if plat_dyn {
+        return Ok(None);
+    }
+
     let explicit = features
         .iter()
-        .filter(|feature| {
-            axvisor_platforms
-                .iter()
-                .any(|platform| platform.feature == ***feature)
-        })
+        .filter(|feature| ax_hal_platform_feature_name(feature, known_platforms).is_some())
         .cloned()
         .collect::<Vec<_>>();
 
@@ -308,41 +315,30 @@ fn select_axvisor_platform_feature(
         return Ok(Some(platform));
     }
 
-    default_axvisor_platform_feature(target, plat_dyn, axvisor_platforms)
+    default_axvisor_platform_feature(target, metadata)
 }
 
 fn default_axvisor_platform_feature(
     target: &str,
-    plat_dyn: bool,
-    axvisor_platforms: &[AxvisorPlatformFeature],
+    metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Option<String>> {
-    if plat_dyn {
-        return Ok(axvisor_platforms
-            .iter()
-            .find(|platform| platform.feature == "dyn-plat")
-            .map(|platform| platform.feature.clone()));
+    let arch = arch_for_target_checked(target)?;
+    if arch == "x86_64" {
+        return Ok(Some("ax-hal/x86-qemu-q35".to_string()));
     }
 
-    let arch = arch_for_target_checked(target)?;
-    let candidates = axvisor_platforms
-        .iter()
-        .filter(|platform| {
-            !platform.dynamic
-                && platform
-                    .arch
-                    .as_deref()
-                    .is_some_and(|platform_arch| platform_arch == arch)
-        })
+    let candidates = platform_metadata_entries(metadata)
+        .into_iter()
+        .filter(|platform| !platform.dynamic && platform.arch == arch)
         .collect::<Vec<_>>();
     let defaults = candidates
         .iter()
-        .copied()
         .filter(|platform| platform.default_for_arch)
         .collect::<Vec<_>>();
     let platform = match defaults.as_slice() {
         [platform] => Some(*platform),
         [] => match candidates.as_slice() {
-            [platform] => Some(*platform),
+            [platform] => Some(platform),
             [] => None,
             _ => {
                 return Err(anyhow!(
@@ -357,7 +353,7 @@ fn default_axvisor_platform_feature(
             ));
         }
     };
-    Ok(platform.map(|platform| platform.feature.clone()))
+    Ok(platform.map(|platform| format!("ax-hal/{}", platform.platform)))
 }
 
 fn platform_feature_names(metadata: &cargo_metadata::Metadata) -> Vec<String> {
@@ -384,35 +380,12 @@ fn platform_metadata_entries(metadata: &cargo_metadata::Metadata) -> Vec<AxplatM
         .collect()
 }
 
-fn axvisor_declares_feature(
-    metadata: &cargo_metadata::Metadata,
-    feature: &str,
-) -> anyhow::Result<bool> {
-    Ok(metadata
-        .packages
-        .iter()
-        .find(|package| {
-            metadata.workspace_members.contains(&package.id) && package.name == AXVISOR_PACKAGE
-        })
-        .ok_or_else(|| anyhow!("workspace package `{AXVISOR_PACKAGE}` not found"))?
-        .features
-        .contains_key(feature))
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "kebab-case")]
 struct AxplatMetadata {
     platform: String,
     arch: String,
-    default_for_arch: bool,
-    dynamic: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AxvisorPlatformFeature {
-    feature: String,
-    arch: Option<String>,
     default_for_arch: bool,
     dynamic: bool,
 }
@@ -424,8 +397,16 @@ fn nested_platform_feature_name<'a>(
     feature
         .strip_prefix("ax-std/")
         .or_else(|| feature.strip_prefix("ax-feat/"))
-        .or_else(|| feature.strip_prefix("ax-hal/"))
         .filter(|name| is_platform_control_feature(name, known_platforms))
+}
+
+fn ax_hal_platform_feature_name<'a>(
+    feature: &'a str,
+    known_platforms: &[String],
+) -> Option<&'a str> {
+    feature
+        .strip_prefix("ax-hal/")
+        .filter(|name| known_platforms.iter().any(|platform| platform == name))
 }
 
 fn is_platform_control_feature(name: &str, known_platforms: &[String]) -> bool {
@@ -690,17 +671,22 @@ vm_configs = []
         .unwrap();
 
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"dyn-plat".to_string()));
         assert!(
-            !cargo
+            cargo
                 .features
                 .contains(&concat!("ax-driver/", "plat-dyn").to_string())
         );
         assert!(
-            !cargo
+            cargo
                 .features
                 .contains(&concat!("ax-std/", "plat-dyn").to_string())
         );
+        assert!(
+            cargo
+                .features
+                .contains(&concat!("axvm/", "plat-dyn").to_string())
+        );
+        assert!(!cargo.features.contains(&"dyn-plat".to_string()));
         assert!(path.exists());
     }
 
@@ -802,7 +788,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["x86-qemu-q35", "ept-level-4", "fs", "vmx"]
+features = ["ax-hal/x86-qemu-q35", "ept-level-4", "fs", "vmx"]
 log = "Info"
 vm_configs = []
 "#,
@@ -835,7 +821,7 @@ vm_configs = []
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(!cargo.features.contains(&"ax-std/x86-pc".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
-        assert!(cargo.features.contains(&"x86-qemu-q35".to_string()));
+        assert!(cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     }
 
     #[test]
@@ -907,21 +893,21 @@ plat_dyn = false
 
         assert!(
             err.to_string()
-                .contains("Axvisor top-level platform features")
+                .contains("ax-hal platform features directly")
         );
     }
 
     #[test]
-    fn load_cargo_config_rejects_low_level_platform_feature() {
+    fn load_cargo_config_accepts_axhal_platform_feature() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
-        let low_level_platform_feature = ["ax-hal", "x86-pc"].join("/");
+        let platform_feature = ["ax-hal", "x86-qemu-q35"].join("/");
         fs::write(
             &config_path,
             format!(
                 r#"
 env = {{}}
-features = ["{low_level_platform_feature}", "ept-level-4"]
+features = ["{platform_feature}", "ept-level-4"]
 log = "Info"
 plat_dyn = false
 "#,
@@ -929,7 +915,7 @@ plat_dyn = false
         )
         .unwrap();
 
-        let err = load_cargo_config(&ResolvedAxvisorRequest {
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.path().join("os/axvisor"),
             arch: "x86_64".to_string(),
@@ -942,12 +928,9 @@ plat_dyn = false
             uboot_config: None,
             vmconfigs: vec![],
         })
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            err.to_string()
-                .contains("Axvisor top-level platform features")
-        );
+        assert!(cargo.features.contains(&platform_feature));
     }
 
     #[test]
@@ -979,7 +962,7 @@ log = "Info"
         })
         .unwrap();
 
-        assert!(cargo.features.contains(&"x86-qemu-q35".to_string()));
+        assert!(cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
         assert!(!cargo.features.contains(&"dyn-plat".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
     }
