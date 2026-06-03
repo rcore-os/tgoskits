@@ -69,7 +69,7 @@ fn mkdir_internal<B: BlockDevice>(
     for part in parts.iter().take(parts.len().saturating_sub(1)) {
         cur_path.push('/');
         cur_path.push_str(part);
-        ensure_directory(device, fs, &cur_path)?;
+        ensure_directory(device, fs, &cur_path, uid, gid)?;
     }
 
     let child = parts.last().unwrap().to_string();
@@ -202,12 +202,23 @@ pub(crate) fn ensure_directory<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
-    mkdir_internal(device, fs, path, true, 0, 0)
+    mkdir_internal(device, fs, path, true, uid, gid)
 }
 
-/// Creates a directory and any missing parent directories.
+/// Creates a directory and any missing parent directories (root-owned).
 pub fn mkdir<B: BlockDevice>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    path: &str,
+) -> Ext4Result<Ext4Inode> {
+    mkdir_internal(device, fs, path, false, 0, 0)
+}
+
+/// Creates a directory with explicit uid/gid ownership.
+pub fn mkdir_with_owner<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,

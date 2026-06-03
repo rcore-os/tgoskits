@@ -519,10 +519,11 @@ impl DirNodeOps for Inode {
             }
 
             if node_type == NodeType::Directory {
-                rsext4::mkdir(dev, fs, &path, uid, gid).map_err(into_vfs_err)?;
+                rsext4::mkdir_with_owner(dev, fs, &path, uid, gid).map_err(into_vfs_err)?;
             } else {
                 let file_type = vfs_type_to_dir_entry(node_type).ok_or(VfsError::InvalidData)?;
-                rsext4::mkfile(dev, fs, &path, None, Some(file_type), uid, gid).map_err(into_vfs_err)?;
+                rsext4::mkfile_with_owner(dev, fs, &path, None, Some(file_type), uid, gid)
+                    .map_err(into_vfs_err)?;
             };
 
             let (ino, _inode) = rsext4::dir::get_inode_with_num(fs, dev, &path)
