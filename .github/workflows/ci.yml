@@ -221,33 +221,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: |
-              set -eux
-              git_cmd() {
-                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
-              }
-              ensure_since_ref() {
-                ref="$1"
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
-                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
-              }
-
-              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-                cargo xtask sync-lint --since "${{ github.event.pull_request.base.sha }}"
-              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-                before="${{ github.event.before }}"
-                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
-                  cargo xtask sync-lint
-                elif ensure_since_ref "${before}"; then
-                  cargo xtask sync-lint --since "${before}"
-                else
-                  echo "::notice::before commit ${before} is unavailable; running full sync-lint"
-                  cargo xtask sync-lint
-                fi
-              else
-                cargo xtask sync-lint
-              fi
+            command: cargo xtask sync-lint --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
             cache_key: ""
             container_image: base
             fetch_depth: full
@@ -304,33 +278,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: |
-              set -eux
-              git_cmd() {
-                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
-              }
-              ensure_since_ref() {
-                ref="$1"
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
-                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
-              }
-
-              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
-              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-                before="${{ github.event.before }}"
-                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
-                  cargo xtask clippy
-                elif ensure_since_ref "${before}"; then
-                  cargo xtask clippy --since "${before}"
-                else
-                  echo "::notice::before commit ${before} is unavailable; running full clippy"
-                  cargo xtask clippy
-                fi
-              else
-                cargo xtask clippy
-              fi
+            command: cargo xtask clippy --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
             cache_key: ""
             container_image: base
             fetch_depth: full
