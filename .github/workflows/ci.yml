@@ -211,14 +211,16 @@ jobs:
         include:
           - name: Check formatting
             use_container: false
-            runs_on: '["ubuntu-latest"]'
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
             command: cargo fmt --all -- --check
             cache_key: ""
-            container_image: ""
+            container_image: base
             fetch_depth: "1"
           - name: Run sync-lint
             use_container: true
-            runs_on: '["ubuntu-latest"]'
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
             command: |
               set -eux
               git_cmd() {
@@ -246,13 +248,38 @@ jobs:
               else
                 cargo xtask sync-lint
               fi
-            cache_key: sync-lint
+            cache_key: ""
             container_image: base
             fetch_depth: full
     uses: ./.github/workflows/reusable-command.yml
     with:
-      runs_on: ${{ matrix.runs_on }}
-      use_container: ${{ matrix.use_container }}
+      runs_on: >-
+        ${{
+          matrix.self_hosted_owner != ''
+          && (
+            github.repository_owner != matrix.self_hosted_owner
+            || (
+              github.event_name == 'pull_request'
+              && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
+            )
+          )
+          && '["ubuntu-latest"]'
+          || matrix.runs_on
+        }}
+      use_container: >-
+        ${{
+          matrix.use_container
+          || (
+            matrix.self_hosted_owner != ''
+            && (
+              github.repository_owner != matrix.self_hosted_owner
+              || (
+                github.event_name == 'pull_request'
+                && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
+              )
+            )
+          )
+        }}
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
       container_image: >-
