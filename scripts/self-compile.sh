@@ -151,24 +151,7 @@ cd /opt/starryos
 
 # Pre-extracted registry sources from nspawn are readable by
 # rsext4 — cargo only needs READ access during compilation.
-echo "[self-compile] Setting up tmpfs (best-effort)..."
-REGISTRY_SRC=/root/.cargo/registry/src
-if ! mountpoint -q "\$REGISTRY_SRC" 2>/dev/null; then
-    if mount -t tmpfs -o size=1500M none "\$REGISTRY_SRC" 2>/dev/null; then
-        echo "[self-compile] Registry tmpfs mounted"
-    else
-        echo "[self-compile] Registry tmpfs mount failed — running on ext4"
-    fi
-fi
-mkdir -p /opt/starryos/false
-if ! mountpoint -q /opt/starryos/false 2>/dev/null; then
-    if mount -t tmpfs -o size=100M none /opt/starryos/false 2>/dev/null; then
-        echo "[self-compile] Workspace tmpfs mounted"
-    else
-        echo "[self-compile] Workspace tmpfs mount failed — running on ext4"
-    fi
-fi
-echo "[self-compile] tmpfs setup complete"
+echo "[self-compile] Using pre-extracted registry sources (no re-extraction)"
 
 echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
@@ -272,46 +255,13 @@ sudo umount "$MNT_DIR"
 sudo losetup -d "$MNT_LOOP"
 rmdir "$MNT_DIR"
 
-# ─── Rootfs cleanup (on interrupt or after QEMU) ──────────────────────────
-# Removes injected files to keep the rootfs pristine. Re-mounts via loopback
-# and deletes the files we injected in Step 2, then unmounts.
-# Called explicitly after QEMU exits AND via trap for Ctrl+C/kill during QEMU.
-# _CLEANUP_DONE guards against double-execution (INT trap + explicit call).
-_CLEANUP_DONE=0
-cleanup_rootfs() {
-    if [ "$_CLEANUP_DONE" -ne 0 ]; then
-        return
-    fi
-    _CLEANUP_DONE=1
-
-    local _loop _mnt
-    info "Cleaning injected files from rootfs..."
-    _loop="$(sudo losetup -f --show "$ROOTFS_IMG")" || { echo "[self-compile] Cleanup: losetup failed — skipping"; return; }
-    _mnt="$(mktemp -d /tmp/rootfs-cleanup.XXXXXX)" || { sudo losetup -d "$_loop"; return; }
-    sudo mount "$_loop" "$_mnt" || { sudo losetup -d "$_loop"; rmdir "$_mnt"; return; }
-
-    sudo rm -f "$_mnt/opt/starryos/linker.x"
-    sudo rm -f "$_mnt/opt/starryos/.axconfig.toml"
-    sudo rm -f "$_mnt/opt/starryos/os/arceos/modules/axalloc/Cargo.toml"
-    sudo rm -f "$_mnt/usr/bin/filter-workspace.sh"
-    sudo rm -f "$_mnt/usr/bin/self-compile-inner.sh"
-    sudo rmdir "$_mnt/run/udev/data" 2>/dev/null || true
-
-    sync
-    sudo umount "$_mnt"
-    sudo losetup -d "$_loop"
-    rmdir "$_mnt"
-    info "Rootfs cleaned."
-}
-trap cleanup_rootfs INT TERM
-
 # ─── Step 3: Boot QEMU and run the compile via expect ──────────────────────────
 
 info "Booting QEMU ($QEMU_BIN) for self-compilation (this may take ~2 hours)..."
 info "QEMU log: $QEMU_LOG"
 
 set +e
-expect << EXPECT_EOF 2>&1 | tee "$QEMU_LOG" | sed '/jemalloc/d'
+expect << EXPECT_EOF 2>&1 | tee "$QEMU_LOG"
 set timeout 7500
 log_user 1
 
@@ -321,7 +271,7 @@ spawn $QEMU_BIN \
     -cpu $QEMU_CPU \
     $QEMU_EXTRA \
     -smp $SMP \
-    -m 12G \
+    -m 8G \
     -kernel $SEED_KERNEL \
     -device $QEMU_BLK_DEV \
     -drive id=disk0,if=none,format=raw,file=$ROOTFS_IMG,file.locking=off \
@@ -367,10 +317,6 @@ EXPECT_EOF
 
 EXPECT_EXIT=$?
 set -e
-
-# Clean up injected files (runs after QEMU exits, whether success or failure).
-# Also registered via trap for SIGINT/SIGTERM during the QEMU step.
-cleanup_rootfs
 
 # ─── Step 4: Verify result ─────────────────────────────────────────────────────
 
