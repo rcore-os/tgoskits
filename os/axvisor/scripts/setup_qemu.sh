@@ -228,18 +228,19 @@ done
 
 [[ -n "${GUEST}" ]] || usage
 
-# Guest configuration: image_name|vmconfig|build_config|qemu_config|kernel_file|success_msg
+# Guest configuration:
+# image_name|vmconfig_template|generated_vmconfig_name|build_config|qemu_config|kernel_file|success_msg
 case "$GUEST" in
-  arceos)         CFG="qemu_aarch64_arceos|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
-  arceos-riscv64) CFG="qemu_riscv64_arceos|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
-  linux)          CFG="qemu_aarch64_linux|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
-  nimbos)         CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
-  nimbos-uefi)    CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
-  linux-x86_64-uefi) CFG="qemu_x86_64_linux|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
+  arceos)         CFG="qemu_aarch64_arceos|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
+  arceos-riscv64) CFG="qemu_riscv64_arceos|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
+  linux)          CFG="qemu_aarch64_linux|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
+  nimbos)         CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
+  nimbos-uefi)    CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
+  linux-x86_64-uefi) CFG="qemu_x86_64_linux|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
   *)       echo "Unknown guest: $GUEST" >&2; usage ;;
 esac
 
-IFS='|' read -r IMAGE_NAME VMCONFIG BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS_MSG <<< "$CFG"
+IFS='|' read -r IMAGE_NAME VMCONFIG VMCONFIG_OUTPUT_NAME BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS_MSG <<< "$CFG"
 # NOTE:
 #  - `cargo axvisor image pull` extracts images to
 #    `/tmp/.axvisor-images/<IMAGE_NAME>` by default.
@@ -248,7 +249,7 @@ IFS='|' read -r IMAGE_NAME VMCONFIG BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS
 IMAGE_DIR="${IMAGE_STORAGE_ROOT}/${IMAGE_NAME}"
 VMCONFIG_TEMPLATE_PATH="${REPO_ROOT}/configs/vms/${VMCONFIG}"
 VMCONFIG_TMP_DIR="${REPO_ROOT}/tmp/vmconfigs"
-GENERATED_VMCONFIG_PATH="${VMCONFIG_TMP_DIR}/${VMCONFIG%.toml}.generated.toml"
+GENERATED_VMCONFIG_PATH="${VMCONFIG_TMP_DIR}/${VMCONFIG_OUTPUT_NAME%.toml}.generated.toml"
 ROOTFS_TARGET="${REPO_ROOT}/tmp/rootfs.img"
 KERNEL_IMAGE="${IMAGE_DIR}/${KERNEL_FILE}"
 ROOTFS_IMAGE="${IMAGE_DIR}/rootfs.img"

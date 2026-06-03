@@ -1,7 +1,9 @@
 args = [
-    "-nographic", "-cpu", "rv64",
+    "-nographic",
+    "-m", "512M",
+    "-cpu", "rv64",
     "-device", "virtio-blk-pci,drive=disk0",
-    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-gdb-smoke.img",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]

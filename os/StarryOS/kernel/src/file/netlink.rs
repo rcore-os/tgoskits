@@ -42,9 +42,10 @@ use linux_raw_sys::{
 };
 use spin::LazyLock;
 
-use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
+use super::net::{ETH0_IFINDEX, ETH0_REAL_MAC};
 use crate::{
     file::{FileLike, IoDst, IoSrc},
+    syscall::in_root_net_ns,
     task::AsThread,
 };
 
@@ -206,7 +207,7 @@ const LINKS: &[LinkInfo] = &[
         qlen: 1000,
         qdisc: "mq",
         operstate: IF_OPER_UP,
-        address: ETH0_HWADDR,
+        address: ETH0_REAL_MAC,
         broadcast: [0xff; 6],
     },
 ];
@@ -394,15 +395,22 @@ impl NetlinkSocket {
 
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let pid = self.local_pid();
+        let in_root = in_root_net_ns();
         let mut response = Vec::new();
         match header.ty {
             RTM_GETLINK => {
                 for link in LINKS {
+                    if !in_root && link.index != 1 {
+                        continue;
+                    }
                     push_link_message(&mut response, header.seq, pid, link);
                 }
             }
             RTM_GETADDR => {
                 for addr in ADDRS {
+                    if !in_root && addr.index != 1 {
+                        continue;
+                    }
                     push_addr_message(&mut response, header.seq, pid, addr);
                 }
             }

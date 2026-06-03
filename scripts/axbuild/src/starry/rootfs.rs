@@ -150,7 +150,7 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     store::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path)).await
 }
 
-fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
+pub(crate) fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
     if !looks_like_ext_image(rootfs_img)? {
         return Ok(());
     }

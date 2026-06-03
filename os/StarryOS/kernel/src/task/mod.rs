@@ -513,6 +513,8 @@ pub struct ProcessData {
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// The resource scope
     pub scope: RwLock<Scope>,
+    /// The namespace proxy — aggregates all namespace types for this process.
+    pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
     /// The user heap top
     heap_top: AtomicUsize,
 
@@ -694,6 +696,8 @@ impl ProcessData {
             )),
 
             futex_table: Arc::new(FutexTable::new()),
+
+            nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
 
             vfork_done: SpinNoIrq::new(None),
 

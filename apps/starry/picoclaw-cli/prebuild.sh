@@ -55,6 +55,12 @@ ensure_host_packages() {
         exit 1
     fi
 
+    if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+        echo "error: missing required host packages: ${missing[*]}" >&2
+        echo "error: install them first with: sudo apt-get install -y --no-install-recommends ${missing[*]}" >&2
+        exit 1
+    fi
+
     echo "installing missing host packages: ${missing[*]}"
     apt-get update
     apt-get install -y --no-install-recommends "${missing[@]}"

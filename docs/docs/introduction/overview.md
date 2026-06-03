@@ -229,7 +229,7 @@ flowchart TD
 | 虚拟化抽象 | `axvm`（VM 管理）、`axvcpu`（vCPU 抽象）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
 | Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
-| 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/*.toml`）双层结构 |
+| 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |
 
 → 开发指南：[Axvisor 开发指南](/docs/development/axvisor) | 架构说明：[Axvisor 架构](/docs/architecture/axvisor)
 

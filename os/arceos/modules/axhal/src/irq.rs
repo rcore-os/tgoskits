@@ -1,31 +1,16 @@
 //! Interrupt management.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
 #[cfg(feature = "ipi")]
 pub use ax_config::devices::IPI_IRQ;
 use ax_cpu::trap::{irq_handler, set_irq_handler};
+pub use ax_plat::irq::{
+    AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOutcome, IrqRequest,
+    IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode, cpu_online, disable_irq,
+    dispatch_irq, enable_irq, free_irq, handle, irq_status, request_irq, request_percpu_irq,
+    request_shared_irq, set_enable, set_run_on_cpu_sync,
+};
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
-pub use ax_plat::irq::{handle, register, set_enable, unregister};
-
-static IRQ_HOOK: AtomicUsize = AtomicUsize::new(0);
-
-/// Register a hook function called after an IRQ is handled.
-///
-/// This function can be called only once; subsequent calls will return false.
-///
-/// TODO: design a better api!
-pub fn register_irq_hook(hook: fn(usize)) -> bool {
-    IRQ_HOOK
-        .compare_exchange(
-            0,
-            hook as *const () as usize,
-            Ordering::Release,
-            Ordering::Relaxed,
-        )
-        .is_ok()
-}
 
 /// IRQ handler.
 ///
@@ -35,17 +20,10 @@ pub fn register_irq_hook(hook: fn(usize)) -> bool {
 #[irq_handler]
 pub fn handle_irq(vector: usize) -> bool {
     let guard = ax_kernel_guard::NoPreempt::new();
-
-    if let Some(irq) = handle(vector) {
-        let hook = IRQ_HOOK.load(Ordering::Acquire);
-        if hook != 0 {
-            let hook = unsafe { core::mem::transmute::<usize, fn(usize)>(hook) };
-            hook(irq);
-        }
-    }
+    let handled = handle(vector).is_some();
 
     drop(guard); // rescheduling may occur when preemption is re-enabled.
-    true
+    handled
 }
 
 /// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.

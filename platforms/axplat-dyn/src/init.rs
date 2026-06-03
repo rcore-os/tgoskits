@@ -10,6 +10,8 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(cpu_id: usize, _dtb: usize) {
+        #[cfg(not(target_arch = "riscv64"))]
+        let _ = cpu_id;
         #[cfg(target_arch = "riscv64")]
         somehal::arch::register_current_cpu_id(cpu_id, ax_plat::percpu::this_cpu_id);
         ax_cpu::init::init_trap();
@@ -24,6 +26,8 @@ impl InitIf for InitIfImpl {
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(cpu_id: usize) {
+        #[cfg(not(target_arch = "riscv64"))]
+        let _ = cpu_id;
         #[cfg(target_arch = "riscv64")]
         somehal::arch::register_current_cpu_id(cpu_id, ax_plat::percpu::this_cpu_id);
         ax_cpu::init::init_trap();

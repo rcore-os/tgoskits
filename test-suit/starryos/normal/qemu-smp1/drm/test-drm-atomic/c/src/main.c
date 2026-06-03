@@ -336,12 +336,48 @@ int main(void)
     CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
           "rejected commit left state intact");
 
-    /* --- destroy blob，再读应该 ENOENT --- */
+    /* --- destroy-after-commit blob lifecycle ---
+     * Linux DRM keeps a kernel reference on a `MODE_ID` blob from the
+     * CRTC state that committed it. A user `DESTROYPROPBLOB` only
+     * releases the user-publish handle; `GETPROPBLOB` on the same id
+     * keeps succeeding until a later atomic commit replaces the
+     * `MODE_ID` (or clears it). */
     struct drm_mode_destroy_blob db = { .blob_id = cb.blob_id };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &db), 0,
-              "DESTROYPROPBLOB");
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb), ENOENT,
-              "destroyed blob is ENOENT");
+              "DESTROYPROPBLOB releases user publish");
+    /* OBJ_GETPROPERTIES still reports the committed MODE_ID. */
+    CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_MODE_ID)
+              == cb.blob_id,
+          "MODE_ID survives DESTROYPROPBLOB while CRTC state references it");
+    /* GETPROPBLOB on the still-referenced id keeps working. */
+    struct drm_mode_get_blob gb_after = {
+        .blob_id = cb.blob_id, .length = sizeof(struct drm_mode_mode_info),
+    };
+    struct drm_mode_mode_info readback = {0};
+    gb_after.data = (uint64_t)(uintptr_t)&readback;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb_after), 0,
+              "GETPROPBLOB on destroyed-but-committed blob succeeds");
+    CHECK(gb_after.length == sizeof(readback),
+          "post-destroy GETPROPBLOB returns the full mode payload");
+
+    /* A blob that was never referenced by committed state should
+     * disappear on DESTROYPROPBLOB. Build a second blob, do not commit
+     * it, then destroy and confirm ENOENT. */
+    struct drm_mode_create_blob cb_orphan = {
+        .data = (uint64_t)(uintptr_t)&modes[0],
+        .length = sizeof(modes[0]),
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &cb_orphan), 0,
+              "CREATEPROPBLOB (orphan)");
+    struct drm_mode_destroy_blob db_orphan = { .blob_id = cb_orphan.blob_id };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &db_orphan), 0,
+              "DESTROYPROPBLOB (orphan)");
+    struct drm_mode_get_blob gb_orphan = {
+        .blob_id = cb_orphan.blob_id, .length = sizeof(struct drm_mode_mode_info),
+        .data = (uint64_t)(uintptr_t)&readback,
+    };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb_orphan), ENOENT,
+              "orphan blob is ENOENT after destroy");
 
     close(fd);
     TEST_DONE();

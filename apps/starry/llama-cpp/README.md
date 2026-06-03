@@ -57,6 +57,6 @@ Application-level stability: 100% (17/18 PASS, 1 kernel issue).
 
 ## Build Config
 
-Features: `ax-hal/<arch>`, `qemu`, `ax-driver/pci`, `ax-driver/virtio-blk`, `ax-driver/virtio-net`, `ax-driver/virtio-gpu`, `ax-driver/virtio-input`, `ax-driver/virtio-socket`.
+Features: `ax-hal/<arch>`, `qemu`, `ax-driver/virtio-blk`, `ax-driver/virtio-net`, `ax-driver/virtio-gpu`, `ax-driver/virtio-input`, `ax-driver/virtio-socket`.
 
 x86_64 QEMU requires `-cpu max` for SSE4.2 support.

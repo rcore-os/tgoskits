@@ -34,7 +34,7 @@ virtio-socket = ["vsock", "virtio"]
 ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "dep:simple-ahci"]
-nvme = ["block", "plat-static", "dep:nvme-driver"]
+nvme = ["block", "dep:nvme-driver"]
 cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
 ixgbe = ["net", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
@@ -64,6 +64,13 @@ phytium-mci = [
     "plat-dyn",
     "dep:ax-kspin",
     "dep:phytium-mci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/sdio",
+]
+k230-sdhci = [
+    "block",
+    "plat-dyn",
+    "dep:sdhci-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
 ]

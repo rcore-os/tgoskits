@@ -198,8 +198,8 @@ setup_qemu_aarch64() {
     run_cmd cp configs/board/qemu-aarch64.toml tmp/configs/
 
     info "Preparing guest config files..."
-    run_cmd cp configs/vms/arceos-aarch64-qemu-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/linux-aarch64-qemu-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/qemu/aarch64/arceos-smp1.toml tmp/configs/arceos-aarch64-qemu-smp1.toml
+    run_cmd cp configs/vms/qemu/aarch64/linux-smp1.toml tmp/configs/linux-aarch64-qemu-smp1.toml
 
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_aarch64_arceos/qemu-aarch64"|g' tmp/configs/arceos-aarch64-qemu-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-aarch64-qemu-smp1.toml
@@ -260,7 +260,7 @@ setup_qemu_riscv64() {
     run_cmd cp configs/board/qemu-riscv64.toml tmp/configs/
 
     info "Preparing guest config file..."
-    run_cmd cp configs/vms/arceos-riscv64-qemu-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/qemu/riscv64/arceos-smp1.toml tmp/configs/arceos-riscv64-qemu-smp1.toml
 
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_riscv64_arceos/qemu-riscv64"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
@@ -333,7 +333,7 @@ setup_qemu_x86_64() {
     run_cmd cp configs/board/qemu-x86_64.toml tmp/configs/
 
     info "Preparing guest config file..."
-    run_cmd cp configs/vms/nimbos-x86_64-qemu-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/qemu/x86_64/nimbos-smp1.toml tmp/configs/nimbos-x86_64-qemu-smp1.toml
 
     info "Preparing QEMU config file..."
     run_cmd cp .github/workflows/qemu-x86_64.toml tmp/configs/qemu-x86_64-runtime.toml
@@ -370,7 +370,7 @@ setup_qemu_x86_64_uefi() {
     fi
 
     info "Preparing UEFI guest config file..."
-    run_cmd cp configs/vms/nimbos-x86_64-qemu-uefi-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/qemu/x86_64/nimbos-uefi-smp1.toml tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_nimbos/qemu-x86_64"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
     run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
 
@@ -433,7 +433,7 @@ setup_qemu_x86_64_arceos_uefi() {
     run_cmd cp configs/board/qemu-x86_64.toml tmp/configs/
 
     info "Preparing ArceOS UEFI guest config file..."
-    run_cmd cp configs/vms/arceos-x86_64-qemu-uefi-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/qemu/x86_64/arceos-uefi-smp1.toml tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "'"$kernel_path"'"|g' tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
     run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
 
@@ -509,8 +509,8 @@ setup_phytiumpi() {
     run_cmd cp configs/board/phytiumpi.toml tmp/configs/
 
     info "Preparing guest config files..."
-    run_cmd cp configs/vms/arceos-aarch64-e2000-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/linux-aarch64-e2000-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/phytiumpi/arceos-smp1.toml tmp/configs/arceos-aarch64-e2000-smp1.toml
+    run_cmd cp configs/vms/phytiumpi/linux-smp1.toml tmp/configs/linux-aarch64-e2000-smp1.toml
 
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/phytiumpi_arceos/phytiumpi"|g' tmp/configs/arceos-aarch64-e2000-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-aarch64-e2000-smp1.toml
@@ -623,8 +623,8 @@ setup_roc_rk3568_pc() {
     run_cmd cp configs/board/roc-rk3568-pc.toml tmp/configs/
 
     info "Preparing guest config files..."
-    run_cmd cp configs/vms/arceos-aarch64-rk3568-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/linux-aarch64-rk3568-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/roc-rk3568-pc/arceos-smp1.toml tmp/configs/arceos-aarch64-rk3568-smp1.toml
+    run_cmd cp configs/vms/roc-rk3568-pc/linux-smp1.toml tmp/configs/linux-aarch64-rk3568-smp1.toml
 
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/roc-rk3568-pc_arceos/roc-rk3568-pc"|g' tmp/configs/arceos-aarch64-rk3568-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-aarch64-rk3568-smp1.toml
@@ -759,8 +759,8 @@ setup_rdk_s100() {
     run_cmd cp configs/board/rdk-s100.toml tmp/configs/
 
     info "Preparing guest config files..."
-    run_cmd cp configs/vms/arceos-aarch64-s100-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/linux-aarch64-s100-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/rdk-s100/arceos-smp1.toml tmp/configs/arceos-aarch64-s100-smp1.toml
+    run_cmd cp configs/vms/rdk-s100/linux-smp1.toml tmp/configs/linux-aarch64-s100-smp1.toml
 
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/'"${arceos_image}"'/rdk-s100p"|g' tmp/configs/arceos-aarch64-s100-smp1.toml
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/'"${linux_image}"'/rdk-s100p"|g' tmp/configs/linux-aarch64-s100-smp1.toml

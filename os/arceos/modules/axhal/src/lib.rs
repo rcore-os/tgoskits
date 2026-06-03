@@ -8,8 +8,7 @@
 //!
 //! - `x86-pc`: Standard PC with x86_64 ISA.
 //! - `riscv64-qemu-virt`: QEMU virt machine with RISC-V ISA.
-//! - `aarch64-qemu-virt`: QEMU virt machine with AArch64 ISA.
-//! - `aarch64-raspi`: Raspberry Pi with AArch64 ISA.
+//! - `plat-dyn`: Runtime-discovered platform, including AArch64 boards.
 //! - `dummy`: If none of the above platform is selected, the dummy platform
 //!   will be used. In this platform, most of the operations are no-op or
 //!   `unimplemented!()`. This platform is mainly used for [cargo test].

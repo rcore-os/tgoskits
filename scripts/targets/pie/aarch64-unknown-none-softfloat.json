@@ -22,7 +22,7 @@
     "gnu-lld": [
       "-pie",
       "-znostart-stop-gc",
-      "-Taxplat.x"
+      "-Tlinker.x"
     ]
   },
   "relocation-model": "pic",
