@@ -40,7 +40,7 @@ use x86::multiboot as x86_boot;
 
 #[cfg(target_arch = "x86_64")]
 pub fn is_x86_linux_image_config(config: &AxVMCrateConfig) -> bool {
-    if config.kernel.enable_bios {
+    if !should_direct_boot_x86_linux(config) {
         return false;
     }
 
@@ -150,7 +150,9 @@ impl ImageLoader {
         let vm_imags = memory_images_for_vm(&self.config)?;
 
         #[cfg(target_arch = "x86_64")]
-        if let Some(header) = detect_x86_linux_image(vm_imags.kernel) {
+        if should_direct_boot_x86_linux(&self.config)
+            && let Some(header) = detect_x86_linux_image(vm_imags.kernel)
+        {
             return self.load_x86_linux_images_from_memory(
                 header,
                 vm_imags.kernel,
@@ -624,15 +626,17 @@ pub mod fs {
         info!("Loading VM images from filesystem");
         #[cfg(target_arch = "x86_64")]
         {
-            let kernel_probe = kernel_read(&loader.config, x86_linux::HEADER_READ_SIZE);
-            match kernel_probe {
-                Ok(data) => {
-                    if let Some(header) = detect_x86_linux_image(&data) {
-                        let kernel = read_image_file(&loader.config.kernel.kernel_path)?;
-                        return loader.load_x86_linux_images_from_filesystem(header, &kernel);
+            if should_direct_boot_x86_linux(&loader.config) {
+                let kernel_probe = kernel_read(&loader.config, x86_linux::HEADER_READ_SIZE);
+                match kernel_probe {
+                    Ok(data) => {
+                        if let Some(header) = detect_x86_linux_image(&data) {
+                            let kernel = read_image_file(&loader.config.kernel.kernel_path)?;
+                            return loader.load_x86_linux_images_from_filesystem(header, &kernel);
+                        }
                     }
+                    Err(err) => debug!("Unable to probe x86 Linux bzImage header: {err:?}"),
                 }
-                Err(err) => debug!("Unable to probe x86 Linux bzImage header: {err:?}"),
             }
         }
         // Load kernel image.
@@ -799,6 +803,11 @@ fn should_patch_x86_multiboot_info(config: &AxVMCrateConfig) -> bool {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn should_direct_boot_x86_linux(config: &AxVMCrateConfig) -> bool {
+    !config.kernel.enable_bios && config.kernel.effective_boot_protocol() == VMBootProtocol::Direct
+}
+
+#[cfg(target_arch = "x86_64")]
 fn detect_x86_linux_image(image: &[u8]) -> Option<x86_linux::X86LinuxHeader> {
     match x86_linux::X86LinuxHeader::parse(image) {
         Ok(header) => Some(header),
@@ -937,5 +946,24 @@ mod tests {
         cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
 
         assert!(!should_patch_x86_multiboot_info(&cfg));
+    }
+
+    #[test]
+    fn x86_linux_direct_boot_requires_direct_protocol() {
+        let mut cfg = AxVMCrateConfig::default();
+
+        assert!(should_direct_boot_x86_linux(&cfg));
+
+        cfg.kernel.enable_bios = true;
+        assert!(!should_direct_boot_x86_linux(&cfg));
+
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+        assert!(!should_direct_boot_x86_linux(&cfg));
+
+        cfg.kernel.boot_protocol = Some(VMBootProtocol::Direct);
+        assert!(!should_direct_boot_x86_linux(&cfg));
+
+        cfg.kernel.enable_bios = false;
+        assert!(should_direct_boot_x86_linux(&cfg));
     }
 }

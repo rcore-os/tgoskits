@@ -213,6 +213,7 @@ fn normalize_axvisor_feature_surface(
         select_axvisor_platform_feature(features, target, plat_dyn, &known_platforms, metadata)?;
 
     let Some(platform) = selected_platform else {
+        retain_non_platform_features(features, &known_platforms);
         return Ok(());
     };
 
@@ -239,6 +240,14 @@ fn normalize_axvisor_feature_surface(
         features.push(platform);
     }
     Ok(())
+}
+
+fn retain_non_platform_features(features: &mut Vec<String>, known_platforms: &[String]) {
+    features.retain(|feature| {
+        nested_platform_feature_name(feature, known_platforms).is_none()
+            && ax_hal_platform_feature_name(feature, known_platforms).is_none()
+            && !known_platforms.iter().any(|platform| platform == feature)
+    });
 }
 
 fn reject_unsupported_nested_platform_features(
@@ -931,6 +940,46 @@ plat_dyn = false
         .unwrap();
 
         assert!(cargo.features.contains(&platform_feature));
+    }
+
+    #[test]
+    fn load_cargo_config_drops_static_platform_when_plat_dyn_is_enabled() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["ax-hal/riscv64-sg2002", "fs"]
+log = "Info"
+plat_dyn = true
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "riscv64".to_string(),
+            target: "riscv64gc-unknown-none-elf".to_string(),
+            plat_dyn: Some(true),
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(
+            !cargo
+                .features
+                .contains(&"ax-hal/riscv64-sg2002".to_string())
+        );
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
     }
 
     #[test]
