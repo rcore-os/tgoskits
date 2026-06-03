@@ -23,7 +23,7 @@ use riscv_decode::{
 #[cfg(feature = "sstc")]
 use riscv_h::register::vstimecmp;
 use riscv_h::register::{
-    hgeie, hie, hstatus, htimedelta, hvip,
+    henvcfg, hgeie, hie, hstatus, htimedelta, hvip,
     vsatp::{self, Vsatp},
     vscause::{self, Vscause},
     vsepc,
@@ -154,6 +154,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         self.regs.virtual_hs_csrs.hie = hie.bits();
         self.regs.virtual_hs_csrs.hvip = 0;
         self.regs.virtual_hs_csrs.hgeie = 0;
+        self.regs.virtual_hs_csrs.henvcfg = GUEST_HENVCFG;
 
         Ok(())
     }
@@ -223,6 +224,8 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             let hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
             hvip.write();
             hgeie::write(self.regs.virtual_hs_csrs.hgeie);
+            self.regs.hyp_regs.henvcfg = henvcfg::read();
+            henvcfg::write(self.regs.hyp_regs.henvcfg | self.regs.virtual_hs_csrs.henvcfg);
             core::arch::asm!(
                 "csrw hgatp, {hgatp}",
                 hgatp = in(reg) self.regs.virtual_hs_csrs.hgatp,
@@ -262,6 +265,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             // previous guest's virtual IRQs into later host/guest execution.
             hvip::Hvip::from_bits(0).write();
             hgeie::write(0);
+            henvcfg::write(self.regs.hyp_regs.henvcfg);
             #[cfg(feature = "sstc")]
             vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");

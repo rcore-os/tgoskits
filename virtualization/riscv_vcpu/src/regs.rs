@@ -136,6 +136,7 @@ pub struct HypervisorCpuState {
     pub gprs: GeneralPurposeRegisters,
     pub sstatus: usize,
     pub hstatus: usize,
+    pub henvcfg: usize,
     pub scounteren: usize,
     pub stvec: usize,
     pub sscratch: usize,
@@ -201,19 +202,25 @@ pub struct GuestVirtualHsCsrs {
     pub hvip: usize,
     pub hgeie: usize,
     pub hgatp: usize,
+    pub henvcfg: usize,
 }
 
 impl GuestVirtualHsCsrs {
     /// Load the virtualized HS-level CSRs from hardware into this structure.
     pub fn load_from_hw(&mut self) {
-        use riscv_h::register::{hgatp, hgeie, hie, hvip};
+        use riscv_h::register::{henvcfg, hgatp, hgeie, hie, hvip};
 
         self.hie = hie::read().bits();
         self.hvip = hvip::read().bits();
         self.hgeie = hgeie::read();
         self.hgatp = hgatp::read().bits();
+        self.henvcfg = henvcfg::read();
     }
 }
+
+pub const HENVCFG_ADUE: usize = 1 << 61;
+pub const HENVCFG_PBMTE: usize = 1 << 62;
+pub const GUEST_HENVCFG: usize = HENVCFG_ADUE | HENVCFG_PBMTE;
 
 /// CSRs written on an exit from virtualization that are used by the hypervisor to determine the cause
 /// of the trap.
