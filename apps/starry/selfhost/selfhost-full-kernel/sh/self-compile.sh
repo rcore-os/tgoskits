@@ -11,7 +11,7 @@ echo "CARGO=$(cargo --version)"
 echo "FREE_KB=$(df /opt | tail -1 | awk '{print $4}')"
 
 echo "MOUNT_TEST_START"
-mount -t tmpfs -o size=8G tmpfs /tmp
+mount -t tmpfs -o size=12G tmpfs /tmp
 echo "TMPFS_MOUNTED"
 df -h /tmp
 
