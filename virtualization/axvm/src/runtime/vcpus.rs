@@ -17,6 +17,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
+#[cfg(target_arch = "riscv64")]
+use riscv_vcpu::GprIndex as RiscvGprIndex;
 
 use crate::{
     AsVCpuTask, AxVCpuExitReason, CpuMask, GuestPhysAddr, VCpuState, VCpuTask,
@@ -333,8 +335,8 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
             "vcpu_on: vcpu[{}] entry={:x} opaque={:x}",
             vcpu_id, entry_point, arg
         );
-        vcpu.set_gpr(crate::RiscvGprIndex::A0 as usize, vcpu_id);
-        vcpu.set_gpr(crate::RiscvGprIndex::A1 as usize, arg);
+        vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
+        vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
     }
 
     let vm_vcpus = get_vm_vcpus(vm.id()).ok_or_else(|| {
@@ -564,7 +566,7 @@ fn vcpu_run() {
                             #[cfg(not(target_arch = "riscv64"))]
                             vcpu.set_gpr(0, 0);
                             #[cfg(target_arch = "riscv64")]
-                            vcpu.set_gpr(crate::RiscvGprIndex::A0 as usize, 0);
+                            vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
                         }
                         Err(err) => {
                             warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");

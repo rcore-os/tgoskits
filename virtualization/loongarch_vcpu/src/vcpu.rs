@@ -5,8 +5,7 @@ use ax_errno::ax_err;
 use ax_memory_addr::VirtAddr;
 #[cfg(target_arch = "loongarch64")]
 use ax_page_table_multiarch::loongarch64::LA64MetaData;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 #[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd;
 

@@ -68,7 +68,6 @@ ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axvisor-
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false }
-axvm-types = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
 ax-errno = { workspace = true }

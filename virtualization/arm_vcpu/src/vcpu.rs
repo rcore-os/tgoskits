@@ -14,9 +14,7 @@
 
 use aarch64_cpu::registers::*;
 use ax_errno::AxResult;
-use axdevice_base::SysRegAddr;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvm_types::{GuestPhysAddr, HostPhysAddr};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, SysRegAddr};
 
 use crate::{
     TrapFrame,

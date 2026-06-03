@@ -8,8 +8,7 @@ use alloc::vec::Vec;
 use alloc::{string::String, vec, vec::Vec};
 
 use ax_errno::AxResult;
-use axvm::{AxVMRef, AxvmRuntime};
-use axvm_types::VMId;
+use axvm::{AxVMRef, AxvmRuntime, VMId};
 
 /// AxVM top-level manager.
 ///

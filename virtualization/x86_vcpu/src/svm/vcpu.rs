@@ -7,10 +7,12 @@ use core::{
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
-use ax_page_table_entry::MappingFlags;
-use axdevice_base::{AccessWidth, BaseDeviceOps, Port, SysRegAddr, SysRegAddrRange};
-use axvcpu::{AxArchVCpu, AxVCpuExitReason, NestedPageFaultInfo};
-use axvm_types::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, VCpuId, VMId};
+use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
+use axvcpu::{
+    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
+    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
+};
+use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;

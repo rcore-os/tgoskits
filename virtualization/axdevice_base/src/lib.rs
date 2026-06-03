@@ -89,10 +89,12 @@ mod device;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
-use ax_errno::AxResult;
-use axvm_types::GuestPhysAddrRange;
+pub use ax_errno::AxResult;
+pub use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 pub use axvmconfig::EmulatedDeviceType as EmuDeviceType;
-pub use device::*;
+pub use device::{
+    AccessWidth, DeviceAddr, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
+};
 
 /// Represents the configuration of an emulated device for a virtual machine.
 ///

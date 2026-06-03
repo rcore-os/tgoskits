@@ -80,6 +80,12 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
     }
 }
 
+impl<R: DeviceAddrRange + 'static> Default for AxEmuDevices<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 type AxEmuMmioDevices = AxEmuDevices<GuestPhysAddrRange>;
 type AxEmuSysRegDevices = AxEmuDevices<SysRegAddrRange>;
 type AxEmuPortDevices = AxEmuDevices<PortRange>;

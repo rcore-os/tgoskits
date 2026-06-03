@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvm_types::HostPhysAddr;
+use axvcpu::HostPhysAddr;
 
 use crate::host;
 

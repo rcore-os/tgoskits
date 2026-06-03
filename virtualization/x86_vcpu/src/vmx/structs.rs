@@ -14,7 +14,7 @@
 
 use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvm_types::HostPhysAddr;
+use axvcpu::HostPhysAddr;
 use bit_field::BitField;
 use bitflags::bitflags;
 

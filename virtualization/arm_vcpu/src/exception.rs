@@ -14,9 +14,7 @@
 
 use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 use ax_errno::{AxError, AxResult};
-use axdevice_base::{AccessWidth, SysRegAddr};
-use axvcpu::AxVCpuExitReason;
-use axvm_types::GuestPhysAddr;
+use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, SysRegAddr};
 use log::error;
 
 use crate::{

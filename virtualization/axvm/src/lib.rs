@@ -38,10 +38,9 @@ pub mod config;
 
 pub use ax_cpumask::CpuMask;
 pub use ax_page_table_entry::MappingFlags;
-pub use axdevice_base::AccessWidth;
-pub use axhvc::{HyperCallCode, HyperCallResult};
+pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
 pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
-pub use axvm_types::{GuestPhysAddr, HostPhysAddr};
+pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VMId};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
@@ -50,8 +49,6 @@ pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
 };
-#[cfg(target_arch = "riscv64")]
-pub use riscv_vcpu::GprIndex as RiscvGprIndex;
 pub use task::{AsVCpuTask, VCpuTask};
 pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
 

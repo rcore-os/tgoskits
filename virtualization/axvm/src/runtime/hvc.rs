@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
+use axhvc::{HyperCallCode, HyperCallResult};
 
 use crate::{
-    GuestPhysAddr, HyperCallCode, HyperCallResult, MappingFlags,
+    GuestPhysAddr, MappingFlags,
     runtime::{
         VMRef,
         ivc::{self, IVCChannel},
