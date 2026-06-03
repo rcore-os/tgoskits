@@ -143,20 +143,17 @@ pub fn with_vm_and_vcpu_on_pcpu(
     // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
     let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
-    let current_vm = axvisor_api::task::current_vm_id();
-    let current_vcpu = axvisor_api::task::current_vcpu_id();
-
-    // The target vCPU is the current task, execute the closure directly.
-    if current_vm == vm_id && current_vcpu == vcpu_id {
+    if let Some(context) = crate::context::try_current_vcpu_context()
+        && context.vm_id == vm_id
+        && context.vcpu_id == vcpu_id
+    {
         with_vm_and_vcpu(vm_id, vcpu_id, f).ok_or_else(|| ax_err_type!(NotFound))?;
         return Ok(());
     }
 
-    // The target vCPU is not the current task, send an IPI to the target physical CPU.
     drop(guard);
 
-    let _pcpu_id = vcpus::with_vcpu_task(vm_id, vcpu_id, |task| task.cpu_id())
-        .ok_or_else(|| ax_err_type!(NotFound))?;
+    vcpus::with_vcpu_task(vm_id, vcpu_id, |_| ()).ok_or_else(|| ax_err_type!(NotFound))?;
 
     ax_errno::ax_err!(
         Unsupported,
@@ -198,6 +195,12 @@ impl api_vmm::VmmIf for VmmIfImpl {
     }
 
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {
+        if let Some(context) = crate::context::try_current_vcpu_context()
+            && context.vm_id != vm_id
+        {
+            panic!("Injecting interrupt to a vcpu in another VM is not supported");
+        }
+
         for vcpu_id in &vcpu_set {
             Self::inject_interrupt(vm_id, vcpu_id, vector);
         }

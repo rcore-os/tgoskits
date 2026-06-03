@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
-use axvisor_api::task::current_vm_id;
 
 use crate::vmm::vm_list::get_vm_by_id;
 
@@ -24,10 +23,17 @@ pub fn hardware_check() {
     // check page table level like aarch64
 }
 
-pub fn inject_interrupt(irq_id: usize) -> bool {
+pub fn inject_current_interrupt(irq_id: usize) -> bool {
+    let Some(context) = crate::context::try_current_vcpu_context() else {
+        return false;
+    };
+    inject_interrupt(context.vm_id, irq_id)
+}
+
+pub fn inject_interrupt(vm_id: usize, irq_id: usize) -> bool {
     debug!("injecting interrupt id: {}", irq_id);
 
-    let vplic = get_vm_by_id(current_vm_id())
+    let vplic = get_vm_by_id(vm_id)
         .unwrap()
         .get_devices()
         .find_mmio_dev(GuestPhysAddr::from_usize(GUEST_PLIC_PADDR))

@@ -20,7 +20,7 @@ use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
-use axvisor_api::task::{TaskHandle, WaitQueue};
+use axvisor_api::task::{TaskHandle, TaskOptions, WaitQueue};
 
 use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
 
@@ -42,6 +42,7 @@ pub struct VMVCpus {
     wait_queue: WaitQueue,
     // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
     vcpu_task_list: Mutex<BTreeMap<usize, TaskHandle>>,
+    vcpu_task_names: Mutex<BTreeMap<usize, alloc::string::String>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -65,6 +66,7 @@ impl VMVCpus {
             _vm_id: vm.id(),
             wait_queue: WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
+            vcpu_task_names: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
@@ -74,8 +76,14 @@ impl VMVCpus {
     /// # Arguments
     ///
     /// * `vcpu_task` - A reference to the task associated with a VCpu that is to be added.
-    fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: TaskHandle) {
+    fn add_vcpu_task(
+        &self,
+        vcpu_id: usize,
+        vcpu_task: TaskHandle,
+        task_name: alloc::string::String,
+    ) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
+        self.vcpu_task_names.lock().insert(vcpu_id, task_name);
     }
 
     /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
@@ -201,24 +209,29 @@ pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = VM_VCPU_TASKS.lock().remove(&vm_id) {
         // Take task references out before joining so we never block while
         // holding the per-VM task-list lock.
-        let tasks: Vec<_> = vm_vcpus.vcpu_task_list.lock().values().cloned().collect();
+        let tasks: Vec<_> = vm_vcpus
+            .vcpu_task_list
+            .lock()
+            .iter()
+            .map(|(&vcpu_id, &task)| {
+                let name = vm_vcpus
+                    .vcpu_task_names
+                    .lock()
+                    .get(&vcpu_id)
+                    .cloned()
+                    .unwrap_or_else(|| alloc::format!("VM[{vm_id}]-VCpu[{vcpu_id}]"));
+                (vcpu_id, task, name)
+            })
+            .collect();
         let task_count = tasks.len();
 
         info!("VM[{}] Joining {} VCpu tasks...", vm_id, task_count);
 
         // Join all VCpu tasks to ensure they have fully exited and cleaned up
-        for (idx, task) in tasks.iter().enumerate() {
-            debug!(
-                "VM[{}] Joining VCpu task[{}]: {}",
-                vm_id,
-                idx,
-                task.id_name()
-            );
-            let exit_code = task.join();
-            debug!(
-                "VM[{}] VCpu task[{}] exited with code: {}",
-                vm_id, idx, exit_code
-            );
+        for (idx, (_vcpu_id, task, task_name)) in tasks.iter().enumerate() {
+            debug!("VM[{}] Joining VCpu task[{}]: {}", vm_id, idx, task_name);
+            axvisor_api::task::join_task(*task);
+            debug!("VM[{}] VCpu task[{}] exited", vm_id, idx);
         }
 
         info!(
@@ -279,7 +292,7 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
         vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, arg);
     }
 
-    let vcpu_task = alloc_vcpu_task(&vm, vcpu);
+    let (vcpu_task, task_name) = alloc_vcpu_task(&vm, vcpu);
 
     let vm_vcpus = get_vm_vcpus(vm.id()).ok_or_else(|| {
         ax_err_type!(
@@ -287,7 +300,7 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
             format!("VM[{}] vCPU resources not found", vm.id())
         )
     })?;
-    vm_vcpus.add_vcpu_task(vcpu_id, vcpu_task);
+    vm_vcpus.add_vcpu_task(vcpu_id, vcpu_task, task_name);
     Ok(())
 }
 
@@ -314,8 +327,8 @@ pub fn setup_vm_primary_vcpu(vm: VMRef) {
         warn!("VM[{vm_id}] has no primary vCPU");
         return;
     };
-    let primary_vcpu_task = alloc_vcpu_task(&vm, primary_vcpu);
-    vm_vcpus.add_vcpu_task(0, primary_vcpu_task);
+    let (primary_vcpu_task, task_name) = alloc_vcpu_task(&vm, primary_vcpu);
+    vm_vcpus.add_vcpu_task(0, primary_vcpu_task, task_name);
 
     VM_VCPU_TASKS.lock().insert(vm_id, vm_vcpus);
 }
@@ -354,17 +367,21 @@ pub fn with_vcpu_task<T, F: FnOnce(&TaskHandle) -> T>(
 /// * The task associated with the VCpu is created with a kernel stack size of 256 KiB.
 /// * The task is created in blocked state and added to the wait queue directly,
 ///   instead of being added to the ready queue. It will be woken up by notify_primary_vcpu().
-fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskHandle {
+fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> (TaskHandle, alloc::string::String) {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
-    let task = axvisor_api::task::spawn_vcpu_task(
-        vm.id(),
-        vcpu.id(),
-        vcpu.phys_cpu_set(),
-        KERNEL_STACK_SIZE,
-        vcpu_run,
+    let vm_id = vm.id();
+    let vcpu_id = vcpu.id();
+    let task_name = alloc::format!("VM[{vm_id}]-VCpu[{vcpu_id}]");
+    let task = axvisor_api::task::spawn_task(
+        TaskOptions {
+            name: task_name.clone(),
+            stack_size: KERNEL_STACK_SIZE,
+            cpu_set: vcpu.phys_cpu_set(),
+        },
+        move || vcpu_run(vm_id, vcpu_id),
     );
-    info!("VCpu task {} created", task.id_name());
-    task
+    info!("VCpu task {} created", task_name);
+    (task, task_name)
 }
 
 /// The main routine for VCpu task.
@@ -372,9 +389,9 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> TaskHandle {
 ///
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
-fn vcpu_run() {
-    let vm_id = axvisor_api::task::current_vm_id();
-    let vcpu_id = axvisor_api::task::current_vcpu_id();
+fn vcpu_run(vm_id: usize, vcpu_id: usize) {
+    let _context_guard = crate::context::bind_current_vcpu_context(vm_id, vcpu_id);
+
     let (vm, vcpu) = super::with_vm_and_vcpu(vm_id, vcpu_id, |vm, vcpu| (vm, vcpu))
         .expect("current vCPU task is not bound to a live VM/vCPU");
 
@@ -531,7 +548,12 @@ fn vcpu_run() {
                     }
 
                     if target_cpu == vcpu_id as u64 || send_to_self {
-                        axvisor_api::arch::inject_virtual_interrupt(vector as _);
+                        if let Err(err) = vcpu.inject_interrupt(vector as _) {
+                            warn!(
+                                "Failed to inject interrupt {vector} to current VM[{vm_id}] \
+                                 VCpu[{vcpu_id}]: {err:?}"
+                            );
+                        }
                     } else if let Err(err) =
                         vm.inject_interrupt_to_vcpu(CpuMask::one_shot(target_cpu as _), vector as _)
                     {

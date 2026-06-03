@@ -1,46 +1,20 @@
-use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_kspin::SpinNoIrq;
-use axvisor_api::task::TaskHandle;
+use axvisor_api::task::{TaskHandle, TaskOptions};
 use std::os::arceos::{
     api::task::{
         AxCpuMask, AxWaitQueueHandle, ax_wait_queue_wait, ax_wait_queue_wait_until,
         ax_wait_queue_wake,
     },
-    modules::ax_task::{self as host_task, AxTaskExt, AxTaskRef, TaskExt, TaskInner},
+    modules::ax_task::{self as host_task, AxTaskRef, TaskInner},
 };
 
-/// Task-local vCPU execution context attached to each spawned vCPU host task.
-pub(crate) struct VCpuTaskContext {
-    vm_id: usize,
-    vcpu_id: usize,
-}
-
-impl VCpuTaskContext {
-    pub const fn new(vm_id: usize, vcpu_id: usize) -> Self {
-        Self { vm_id, vcpu_id }
-    }
-}
+pub(crate) struct HostTaskExt;
 
 #[extern_trait::extern_trait]
-impl TaskExt for VCpuTaskContext {}
-
-trait AsVCpuTaskContext {
-    fn try_as_vcpu_task_context(&self) -> Option<&VCpuTaskContext>;
-    fn as_vcpu_task_context(&self) -> &VCpuTaskContext;
-}
-
-impl AsVCpuTaskContext for TaskInner {
-    fn try_as_vcpu_task_context(&self) -> Option<&VCpuTaskContext> {
-        self.task_ext()
-            .map(|ext| ext.downcast_ref::<VCpuTaskContext>())
-    }
-
-    fn as_vcpu_task_context(&self) -> &VCpuTaskContext {
-        self.try_as_vcpu_task_context().expect("Not a vCPU task")
-    }
-}
+impl host_task::TaskExt for HostTaskExt {}
 
 static WAIT_QUEUE_IDS: AtomicUsize = AtomicUsize::new(1);
 static WAIT_QUEUES: SpinNoIrq<BTreeMap<usize, Arc<AxWaitQueueHandle>>> =
@@ -93,54 +67,44 @@ pub(crate) fn wait_queue_wake(queue: usize, count: u32) {
     ax_wait_queue_wake(queue.as_ref(), count);
 }
 
-pub(crate) fn spawn_vcpu_task_raw(
-    vm_id: usize,
-    vcpu_id: usize,
-    phys_cpu_set: Option<usize>,
-    stack_size: usize,
+pub(crate) fn spawn_task_raw(
+    options: TaskOptions,
     entry: Box<dyn FnOnce() + Send + 'static>,
 ) -> TaskHandle {
-    let mut vcpu_task = TaskInner::new(
-        move || entry(),
-        format!("VM[{vm_id}]-VCpu[{vcpu_id}]"),
-        stack_size,
+    let registered = Arc::new(AtomicBool::new(false));
+    let registered_for_task = registered.clone();
+    let task = TaskInner::new(
+        move || {
+            while !registered_for_task.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            entry();
+        },
+        options.name,
+        options.stack_size,
     );
 
-    if let Some(phys_cpu_set) = phys_cpu_set {
-        vcpu_task.set_cpumask(AxCpuMask::from_raw_bits(phys_cpu_set));
+    if let Some(cpu_set) = options.cpu_set {
+        task.set_cpumask(AxCpuMask::from_raw_bits(cpu_set));
     }
 
-    *vcpu_task.task_ext_mut() = Some(AxTaskExt::from_impl(VCpuTaskContext::new(vm_id, vcpu_id)));
-
-    let task = host_task::spawn_task(vcpu_task);
+    let task = host_task::spawn_task(task);
     let handle = TaskHandle::from_raw(task.id().as_u64() as usize);
     TASKS.lock().insert(handle.as_raw(), task);
+    registered.store(true, Ordering::Release);
     handle
 }
 
-pub(crate) fn task_id_name(task: TaskHandle) -> String {
-    get_task(task).id_name()
-}
-
-pub(crate) fn task_cpu_id(task: TaskHandle) -> usize {
-    get_task(task).cpu_id() as usize
-}
-
-pub(crate) fn task_join(task: TaskHandle) -> i32 {
+pub(crate) fn join_task(task: TaskHandle) {
     let task_ref = get_task(task);
-    let exit_code = task_ref.join();
+    task_ref.join();
     TASKS.lock().remove(&task.as_raw());
-    exit_code
 }
 
-pub(crate) fn current_vm_id() -> usize {
-    host_task::current().as_vcpu_task_context().vm_id
+pub(crate) fn current_task() -> Option<TaskHandle> {
+    host_task::current_may_uninit().map(|task| TaskHandle::from_raw(task.id().as_u64() as usize))
 }
 
-pub(crate) fn current_vcpu_id() -> usize {
-    host_task::current().as_vcpu_task_context().vcpu_id
-}
-
-pub(crate) fn in_vcpu_task_context() -> bool {
-    host_task::current().try_as_vcpu_task_context().is_some()
+pub(crate) fn yield_now() {
+    std::thread::yield_now();
 }

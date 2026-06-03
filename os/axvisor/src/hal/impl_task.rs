@@ -1,4 +1,4 @@
-use axvisor_api::task::{TaskHandle, TaskIf};
+use axvisor_api::task::{TaskHandle, TaskIf, TaskOptions};
 
 use crate::hal::task;
 
@@ -29,33 +29,22 @@ impl TaskIf for TaskImpl {
         task::wait_queue_wake(queue, count)
     }
 
-    fn spawn_vcpu_task_raw(
-        vm_id: usize,
-        vcpu_id: usize,
-        phys_cpu_set: Option<usize>,
-        stack_size: usize,
+    fn spawn_task_raw(
+        options: TaskOptions,
         entry: alloc::boxed::Box<dyn FnOnce() + Send + 'static>,
     ) -> TaskHandle {
-        task::spawn_vcpu_task_raw(vm_id, vcpu_id, phys_cpu_set, stack_size, entry)
+        task::spawn_task_raw(options, entry)
     }
 
-    fn task_id_name(task: TaskHandle) -> alloc::string::String {
-        task::task_id_name(task)
+    fn join_task(task: TaskHandle) {
+        task::join_task(task)
     }
 
-    fn task_cpu_id(task: TaskHandle) -> usize {
-        task::task_cpu_id(task)
+    fn current_task() -> Option<TaskHandle> {
+        task::current_task()
     }
 
-    fn task_join(task: TaskHandle) -> i32 {
-        task::task_join(task)
-    }
-
-    fn current_vm_id() -> usize {
-        task::current_vm_id()
-    }
-
-    fn current_vcpu_id() -> usize {
-        task::current_vcpu_id()
+    fn yield_now() {
+        task::yield_now()
     }
 }

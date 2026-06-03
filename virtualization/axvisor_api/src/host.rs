@@ -81,9 +81,6 @@ pub trait HostIf {
     /// placement request.
     fn spawn_cpu_init_task(cpu_id: usize, task: Box<dyn FnOnce() + Send + 'static>);
 
-    /// Yield the current host task/thread.
-    fn yield_now();
-
     /// Release host filesystem resources before handing storage resources to
     /// guests.
     #[cfg(feature = "fs")]

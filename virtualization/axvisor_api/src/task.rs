@@ -18,8 +18,6 @@ extern crate alloc;
 
 use alloc::{boxed::Box, string::String};
 
-use crate::types::{VCpuId, VMId};
-
 /// An opaque host task handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct TaskHandle(usize);
@@ -34,21 +32,16 @@ impl TaskHandle {
     pub const fn as_raw(self) -> usize {
         self.0
     }
+}
 
-    /// Returns a human-readable identifier for the task.
-    pub fn id_name(self) -> String {
-        task_id_name(self)
-    }
-
-    /// Returns the host CPU on which the task is running or queued.
-    pub fn cpu_id(self) -> usize {
-        task_cpu_id(self)
-    }
-
-    /// Waits for the task to exit and returns its exit code.
-    pub fn join(self) -> i32 {
-        task_join(self)
-    }
+/// Options used when spawning a host task.
+pub struct TaskOptions {
+    /// Human-readable task name.
+    pub name: String,
+    /// Requested kernel stack size in bytes.
+    pub stack_size: usize,
+    /// Optional host CPU affinity mask.
+    pub cpu_set: Option<usize>,
 }
 
 /// An opaque wait queue handle allocated by the host runtime.
@@ -111,18 +104,12 @@ impl Drop for WaitQueue {
     }
 }
 
-/// Spawns a host task that will execute the specified vCPU entry routine.
-pub fn spawn_vcpu_task<F>(
-    vm_id: VMId,
-    vcpu_id: VCpuId,
-    phys_cpu_set: Option<usize>,
-    stack_size: usize,
-    entry: F,
-) -> TaskHandle
+/// Spawns a host task.
+pub fn spawn_task<F>(options: TaskOptions, entry: F) -> TaskHandle
 where
     F: FnOnce() + Send + 'static,
 {
-    spawn_vcpu_task_raw(vm_id, vcpu_id, phys_cpu_set, stack_size, Box::new(entry))
+    spawn_task_raw(options, Box::new(entry))
 }
 
 /// The host tasking API required by AxVisor.
@@ -143,27 +130,18 @@ pub trait TaskIf {
     /// Wakes up to `count` tasks blocked on the specified wait queue.
     fn wait_queue_wake(queue: usize, count: u32);
 
-    /// Spawns a host task bound to a vCPU execution context.
-    fn spawn_vcpu_task_raw(
-        vm_id: VMId,
-        vcpu_id: VCpuId,
-        phys_cpu_set: Option<usize>,
-        stack_size: usize,
+    /// Spawns a host task.
+    fn spawn_task_raw(
+        options: TaskOptions,
         entry: Box<dyn FnOnce() + Send + 'static>,
     ) -> TaskHandle;
 
-    /// Returns a human-readable identifier for the task.
-    fn task_id_name(task: TaskHandle) -> String;
+    /// Waits for the task to exit.
+    fn join_task(task: TaskHandle);
 
-    /// Returns the host CPU on which the task is running or queued.
-    fn task_cpu_id(task: TaskHandle) -> usize;
+    /// Returns the current host task, if execution is in a task context.
+    fn current_task() -> Option<TaskHandle>;
 
-    /// Waits for the task to exit and returns its exit code.
-    fn task_join(task: TaskHandle) -> i32;
-
-    /// Returns the VM ID bound to the current vCPU host task.
-    fn current_vm_id() -> VMId;
-
-    /// Returns the vCPU ID bound to the current vCPU host task.
-    fn current_vcpu_id() -> VCpuId;
+    /// Yield the current host task/thread.
+    fn yield_now();
 }

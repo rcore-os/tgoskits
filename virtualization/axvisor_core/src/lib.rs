@@ -47,6 +47,7 @@ macro_rules! println {
 
 pub mod arch;
 pub mod boot;
+pub mod context;
 #[cfg(feature = "shell")]
 pub mod shell;
 pub mod vmm;

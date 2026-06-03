@@ -25,8 +25,8 @@
 //! - Inject interrupts into virtual CPUs
 //! - Register and cancel virtual timer callbacks
 //!
-//! Current VM/vCPU context belongs to the host tasking contract and is exposed
-//! through [`crate::task`].
+//! Current VM/vCPU context is maintained inside `axvisor-core` and is not part
+//! of the host tasking contract.
 //!
 //! # Types
 //!
@@ -38,8 +38,8 @@
 //! # Helper Functions
 //!
 //! In addition to the core API trait, this module provides helper functions:
-//! - [`current_vm_vcpu_num`] - Get the vCPU count of the current VM.
-//! - [`current_vm_active_vcpus`] - Get the active vCPU mask of the current VM.
+//! - [`vm_vcpu_num`] - Get the vCPU count of a VM.
+//! - [`vm_active_vcpus`] - Get the active vCPU mask of a VM.
 //!
 //! # Implementation
 //!
@@ -111,10 +111,10 @@ pub trait VmmIf {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use axvisor_api::{task::current_vm_id, vmm::inject_interrupt};
+    /// use axvisor_api::vmm::inject_interrupt;
     ///
     /// // Inject timer interrupt (vector 0x20) to vCPU 0 of the current VM
-    /// inject_interrupt(current_vm_id(), 0, 0x20);
+    /// inject_interrupt(vm_id, 0, 0x20);
     /// ```
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector);
 
@@ -166,12 +166,7 @@ pub trait VmmIf {
     fn cancel_timer(token: CancelToken);
 }
 
-/// Get the number of virtual CPUs in the current virtual machine executing on
-/// the current physical CPU.
-///
-/// This is a convenience function that combines [`crate::task::current_vm_id`]
-/// and
-/// [`vcpu_num`].
+/// Get the number of virtual CPUs in the given virtual machine.
 ///
 /// # Returns
 ///
@@ -180,16 +175,11 @@ pub trait VmmIf {
 /// # Panics
 ///
 /// Panics if called outside of a valid VM context.
-pub fn current_vm_vcpu_num() -> usize {
-    vcpu_num(crate::task::current_vm_id()).unwrap()
+pub fn vm_vcpu_num(vm_id: VMId) -> usize {
+    vcpu_num(vm_id).unwrap()
 }
 
-/// Get the bitmask of active virtual CPUs in the current virtual machine
-/// executing on the current physical CPU.
-///
-/// This is a convenience function that combines [`crate::task::current_vm_id`]
-/// and
-/// [`active_vcpus`].
+/// Get the bitmask of active virtual CPUs in the given virtual machine.
 ///
 /// # Returns
 ///
@@ -198,6 +188,6 @@ pub fn current_vm_vcpu_num() -> usize {
 /// # Panics
 ///
 /// Panics if called outside of a valid VM context.
-pub fn current_vm_active_vcpus() -> usize {
-    active_vcpus(crate::task::current_vm_id()).unwrap()
+pub fn vm_active_vcpus(vm_id: VMId) -> usize {
+    active_vcpus(vm_id).unwrap()
 }

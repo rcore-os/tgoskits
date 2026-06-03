@@ -29,7 +29,7 @@ use crate::{
 fn poll_delay(duration: Duration) {
     let deadline = axvisor_api::time::current_time() + duration;
     while axvisor_api::time::current_time() < deadline {
-        axvisor_api::host::yield_now();
+        axvisor_api::task::yield_now();
     }
 }
 

@@ -57,6 +57,7 @@ const APIC_VERSION_MAX_LVT_ENTRIES: u32 = 6 << 16;
 
 /// Virtual-APIC Registers.
 pub struct VirtualApicRegs {
+    vm_id: VMId,
     /// The virtual-APIC page is a 4-KByte region of memory
     /// that the processor uses to virtualize certain accesses to APIC registers and to manage virtual interrupts.
     /// The physical address of the virtual-APIC page is the virtual-APIC address,
@@ -89,6 +90,7 @@ impl VirtualApicRegs {
     pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
         let apic_frame = PhysFrame::alloc_zero().expect("allocate virtual-APIC page failed");
         let regs = Self {
+            vm_id,
             // virtual-APIC ID is the same as the VCPU ID.
             vapic_id: vcpu_id as _,
             esr_pending: ErrorStatusRegisterLocal::new(0),
@@ -312,7 +314,7 @@ impl VirtualApicRegs {
 
         if is_broadcast {
             // Broadcast in both logical and physical modes.
-            dmask = vmm::current_vm_active_vcpus() as u64;
+            dmask = vmm::vm_active_vcpus(self.vm_id) as u64;
         } else if is_phys {
             // Physical mode: "dest" is local APIC ID.
             // Todo: distinguish between APIC ID and vCPU ID.
@@ -325,8 +327,8 @@ impl VirtualApicRegs {
             // Logical mode: "dest" is message destination addr
             // to be compared with the logical APIC ID in LDR.
 
-            let vcpu_mask = vmm::active_vcpus(axvisor_api::task::current_vm_id()).unwrap();
-            for i in 0..vmm::current_vm_vcpu_num() {
+            let vcpu_mask = vmm::active_vcpus(self.vm_id).unwrap();
+            for i in 0..vmm::vm_vcpu_num(self.vm_id) {
                 if vcpu_mask & (1 << i) != 0 {
                     if !self.is_dest_field_matched(dest)? {
                         continue;
@@ -356,10 +358,10 @@ impl VirtualApicRegs {
                 dmask.set_bit(self.vapic_id as usize, true);
             }
             APICDestination::AllIncludingSelf => {
-                dmask = vmm::current_vm_active_vcpus() as u64;
+                dmask = vmm::vm_active_vcpus(self.vm_id) as u64;
             }
             APICDestination::AllExcludingSelf => {
-                dmask = vmm::current_vm_active_vcpus() as u64;
+                dmask = vmm::vm_active_vcpus(self.vm_id) as u64;
                 dmask &= !(1 << self.vapic_id);
             }
         }
@@ -384,11 +386,7 @@ impl VirtualApicRegs {
         }
 
         debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
-        vmm::inject_interrupt(
-            axvisor_api::task::current_vm_id(),
-            vcpu_id as usize,
-            vector as u8,
-        );
+        vmm::inject_interrupt(self.vm_id, vcpu_id as usize, vector as u8);
     }
 
     /// Record interrupt acceptance in the virtual APIC page.
@@ -550,7 +548,7 @@ impl VirtualApicRegs {
             let dmask = self.calculate_dest(shorthand, is_broadcast, dest, is_phys, false)?;
 
             // TODO: we need to get the specific vcpu number somehow.
-            for i in 0..vmm::current_vm_vcpu_num() as u32 {
+            for i in 0..vmm::vm_vcpu_num(self.vm_id) as u32 {
                 if dmask & (1 << i) != 0 {
                     match mode {
                         APICDeliveryMode::Fixed => {

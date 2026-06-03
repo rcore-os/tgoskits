@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axvisor_api::{
-    task::{current_vcpu_id, current_vm_id},
-    vmm::inject_interrupt as inject_vcpu_interrupt,
-};
+use axvisor_api::vmm::inject_interrupt as inject_vcpu_interrupt;
 
 pub fn hardware_check() {}
 
-pub fn inject_interrupt(vector: u8) {
-    let vm_id = current_vm_id();
-    let vcpu_id = current_vcpu_id();
+pub fn inject_current_interrupt(vector: u8) {
+    let context = crate::context::current_vcpu_context();
+    inject_interrupt(context.vm_id, context.vcpu_id, vector);
+}
 
+pub fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
     debug!(
         "Injecting x86_64 virtual interrupt: vm_id={vm_id}, vcpu_id={vcpu_id}, vector={vector:#x}"
     );

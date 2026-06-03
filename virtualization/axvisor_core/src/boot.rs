@@ -132,7 +132,7 @@ fn enable_virtualization_on_all_cores() {
     info!("Waiting for all cores to enable hardware virtualization...");
 
     while CORES.load(Ordering::Acquire) != cpu_count {
-        host::yield_now();
+        axvisor_api::task::yield_now();
     }
 
     info!("All cores have enabled hardware virtualization support.");

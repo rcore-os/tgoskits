@@ -14,6 +14,6 @@
 
 mod api;
 pub mod cache;
-pub use axvisor_core::arch::x86_64::inject_interrupt;
+pub use axvisor_core::arch::x86_64::inject_current_interrupt as inject_interrupt;
 
 pub fn prepare_virtualization() {}

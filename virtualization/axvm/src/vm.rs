@@ -787,18 +787,7 @@ impl AxVM {
         targets: CpuMask<TEMP_MAX_VCPU_NUM>,
         irq: usize,
     ) -> AxResult {
-        let vm_id = self.id();
-        // Check if the current running vm is self.
-        //
-        // It is not supported to inject interrupt to a vcpu in another VM yet.
-        //
-        // It may be supported in the future, as a essential feature for cross-VM communication.
-        let current_running_vm = axvisor_api::task::current_vm_id();
-        if current_running_vm != vm_id {
-            panic!("Injecting interrupt to a vcpu in another VM is not supported");
-        }
-
-        axvisor_api::vmm::inject_interrupt_to_cpus(vm_id, targets, irq as InterruptVector);
+        axvisor_api::vmm::inject_interrupt_to_cpus(self.id(), targets, irq as InterruptVector);
 
         Ok(())
     }

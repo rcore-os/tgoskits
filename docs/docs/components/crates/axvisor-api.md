@@ -133,18 +133,11 @@ mod memory_api_impl {
 
 `vmm` 接口由 `axvisor-core` 实现，低层组件仍通过 `axvisor_api::vmm` 调用，以避免直接依赖 `axvisor-core`。其中 timer 注册与取消属于 axvisor-core 的 VMM timer service，不属于底座 `TimeIf` 能力。
 
-当前 VM/vCPU 上下文不属于 `VmmIf`，而是由 `task` 接口提供：
-
 #### `arch`
 
 - `inject_virtual_interrupt()`
 - `dcache_range()`
 - `host_tsc_frequency_mhz()`：仅 x86_64，用于 x86 vCPU CPUID 频率叶子兜底。
-
-- `current_vm_id()`
-- `current_vcpu_id()`
-
-调用方应直接使用 `axvisor_api::task::current_vm_id()` / `current_vcpu_id()` 获取当前上下文。
 
 #### `types`
 
@@ -173,15 +166,15 @@ mod memory_api_impl {
 
 ### 1.6 与任务/调度边界
 
-一个容易误解的点是：虽然很多 hypervisor 组件确实需要“当前 VM / 当前 vCPU / 当前任务”等上下文信息，但这些信息本质上绑定在当前 host task 上，而不是 VM manager 查询。
+一个容易误解的点是：虽然很多 hypervisor 组件确实需要“当前 VM / 当前 vCPU / 当前任务”等上下文信息，但这些信息是 axvisor-core 的内部执行上下文，不应该成为 host 底座 API。
 
 现有设计中：
 
-- 当前 VM/vCPU task 上下文经 `task` 模块提供
+- `task` 模块只描述 host 提供的通用调度能力，例如 spawn task、join task、current task、yield 和 wait queue
+- 当前 VM/vCPU task 上下文由 axvisor-core 内部维护和传递
 - VM 拓扑查询和中断注入经 `vmm` 模块提供，并由 `axvisor-core` 实现
-- 真正如何从宿主任务上下文中提取这些信息，则由 `os/axvisor` 的 HAL 实现层完成
 
-这说明 `axvisor_api` 正在把 host task context 与 core VMM service 分开，避免 `vmm` 继续承载底座任务语义。
+这说明 `axvisor_api` 正在把 host 调度能力、core VMM service 和 axvisor-core 内部上下文分开，避免把 vCPU 语义泄漏到底座适配层。
 
 ## 核心功能
 
@@ -208,7 +201,7 @@ flowchart TD
 
 - `riscv_vcpu`、`riscv_vplic` 使用 `memory::phys_to_virt()` 做宿主侧 MMIO 访问
 - `arm_vcpu` 使用 `arch::hardware_inject_virtual_interrupt()` 走 AArch64 快速注入路径
-- `axvcpu` 和其它组件可通过 `task::current_vm_id()` / `current_vcpu_id()` 获取当前 vCPU task 上下文
+- `axvisor-core` 通过内部上下文维护当前 VM/vCPU 信息，底层 host task API 不暴露 vCPU 语义
 
 ### 2.3 适用场景
 
