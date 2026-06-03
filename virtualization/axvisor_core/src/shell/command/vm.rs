@@ -17,6 +17,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::time::Duration;
 
 use axvm::VMStatus;
 
@@ -24,6 +25,13 @@ use crate::{
     shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand},
     vmm::{add_running_vm_count, vcpus, vm_list, with_vm},
 };
+
+fn poll_delay(duration: Duration) {
+    let deadline = axvisor_api::time::current_time() + duration;
+    while axvisor_api::time::current_time() < deadline {
+        axvisor_api::host::yield_now();
+    }
+}
 
 /// Check if a VM can transition to Running state.
 /// Returns Ok(()) if the transition is valid, Err with a message otherwise.
@@ -404,7 +412,7 @@ fn restart_vm_by_id(vm_id: usize, force: bool) {
                                 return;
                             }
                             // Sleep for 100ms
-                            axvisor_api::time::busy_wait(core::time::Duration::from_millis(100));
+                            poll_delay(Duration::from_millis(100));
                         }
                         _ => {
                             println!("⚠ VM[{}] in unexpected state: {:?}", vm_id, vm_status);
@@ -518,7 +526,7 @@ fn suspend_vm_by_id(vm_id: usize) {
                 }
 
                 iterations += 1;
-                axvisor_api::time::busy_wait(core::time::Duration::from_millis(100));
+                poll_delay(Duration::from_millis(100));
             }
 
             if all_suspended {

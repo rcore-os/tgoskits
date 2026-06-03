@@ -27,12 +27,12 @@
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
 | `memory` | 宿主内存能力 | 页帧分配/释放、连续页分配、PA/VA 转换、`AxMmHalApiImpl`、`PhysFrame` |
-| `time` | 时间与定时器 | tick/nanos/time 转换、定时器注册与取消 |
+| `time` | 宿主时间能力 | tick/nanos/time 转换、host one-shot timer 编程 |
 | `types` | 公共类型 | `VMId`、`VCpuId`、`InterruptVector`、`VCpuSet` |
 | `task` | 宿主任务能力 | vCPU task、wait queue、当前 VM/vCPU task 上下文 |
-| `vmm` | VM 管理 API | vCPU 数量、活跃 vCPU 集合、向 vCPU 注入中断 |
+| `vmm` | axvisor-core 反向服务 | vCPU 数量、活跃 vCPU 集合、向 vCPU 注入中断、VMM timer 注册与取消 |
 | `host` | 宿主全局信息 | CPU 数量 |
-| `arch` | 架构相关扩展 | 当前仅 AArch64 的虚拟中断注入与 host GIC 信息 |
+| `arch` | 架构相关扩展 | 虚拟中断注入、cache 维护、AArch64 host GIC 信息、x86_64 host TSC 频率 |
 | `__priv` | 宏展开私有支撑 | `ax-crate-interface` 的内部重导出 |
 
 除此之外，还有独立的过程宏 crate：
@@ -115,28 +115,31 @@ mod memory_api_impl {
 
 #### `time`
 
-- `current_ticks()`
-- `ticks_to_nanos()`
-- `nanos_to_ticks()`
-- `register_timer()`
-- `cancel_timer()`
+- `current_time_nanos()`
+- `set_oneshot_timer()`
 
 以及几个纯函数包装：
 
-- `current_time_nanos()`
 - `current_time()`
-- `ticks_to_time()`
-- `time_to_ticks()`
 
 #### `vmm`
 
 - `vcpu_num()`
 - `active_vcpus()`
 - `inject_interrupt()`
+- `inject_interrupt_to_cpus()`
+- `register_timer()`
+- `cancel_timer()`
 
-`vmm` 接口由 `axvisor-core` 实现，低层组件仍通过 `axvisor_api::vmm` 调用，以避免直接依赖 `axvisor-core`。
+`vmm` 接口由 `axvisor-core` 实现，低层组件仍通过 `axvisor_api::vmm` 调用，以避免直接依赖 `axvisor-core`。其中 timer 注册与取消属于 axvisor-core 的 VMM timer service，不属于底座 `TimeIf` 能力。
 
 当前 VM/vCPU 上下文不属于 `VmmIf`，而是由 `task` 接口提供：
+
+#### `arch`
+
+- `inject_virtual_interrupt()`
+- `dcache_range()`
+- `host_tsc_frequency_mhz()`：仅 x86_64，用于 x86 vCPU CPUID 频率叶子兜底。
 
 - `current_vm_id()`
 - `current_vcpu_id()`

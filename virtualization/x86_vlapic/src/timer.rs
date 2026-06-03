@@ -17,9 +17,9 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err};
 use axvisor_api::{
-    time::{self, register_timer},
+    time,
     types::{VCpuId, VMId},
-    vmm::inject_interrupt,
+    vmm::{cancel_timer, inject_interrupt, register_timer},
 };
 
 use crate::{
@@ -286,7 +286,7 @@ impl ApicTimer {
         self.shared.deadline_ns.store(0, Ordering::Release);
 
         if let Some(token) = self.cancel_token.take() {
-            time::cancel_timer(token);
+            cancel_timer(token);
         }
 
         Ok(())

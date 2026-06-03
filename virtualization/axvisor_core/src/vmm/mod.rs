@@ -35,6 +35,7 @@ use ax_errno::{AxResult, ax_err_type};
 use ax_lazyinit::LazyInit;
 use axvisor_api::{
     api_impl,
+    time::TimeValue,
     types::{InterruptVector, VCpuId, VCpuSet, VMId},
     vmm as api_vmm,
 };
@@ -200,5 +201,16 @@ impl api_vmm::VmmIf for VmmIfImpl {
         for vcpu_id in &vcpu_set {
             Self::inject_interrupt(vm_id, vcpu_id, vector);
         }
+    }
+
+    fn register_timer(
+        deadline: TimeValue,
+        handler: alloc::boxed::Box<dyn FnOnce(TimeValue) + Send + 'static>,
+    ) -> api_vmm::CancelToken {
+        timer::register_timer(deadline.as_nanos() as u64, handler)
+    }
+
+    fn cancel_timer(token: api_vmm::CancelToken) {
+        timer::cancel_timer(token)
     }
 }

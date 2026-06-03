@@ -22,6 +22,7 @@
 //!
 //! - **AArch64**: GIC distributor and redistributor operations for virtual
 //!   interrupt injection and GIC initialization.
+//! - **x86_64**: host TSC frequency discovery for guest CPUID emulation.
 //!
 //! # Usage
 //!
@@ -68,6 +69,13 @@ pub trait ArchIf {
 
     /// Perform a data-cache maintenance operation on the specified address range.
     fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize);
+
+    /// Get the host TSC frequency in MHz.
+    ///
+    /// This is used by x86 vCPU CPUID emulation when the host CPUID frequency
+    /// leaf does not provide a usable value.
+    #[cfg(target_arch = "x86_64")]
+    fn host_tsc_frequency_mhz() -> Option<u32>;
 
     /// Inject a virtual interrupt to the current virtual CPU using hardware
     /// virtualization support.

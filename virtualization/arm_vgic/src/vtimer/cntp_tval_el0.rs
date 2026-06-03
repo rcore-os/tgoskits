@@ -21,7 +21,7 @@ use aarch64_sysreg::SystemRegType;
 use ax_errno::AxResult;
 use axaddrspace::device::{AccessWidth, DeviceAddrRange, SysRegAddr, SysRegAddrRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axvisor_api::time::{current_time_nanos, register_timer};
+use axvisor_api::{time::current_time_nanos, vmm::register_timer};
 use log::info;
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {

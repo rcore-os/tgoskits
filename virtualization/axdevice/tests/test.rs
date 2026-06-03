@@ -132,28 +132,9 @@ struct MockTimeIfImpl;
 
 #[axvisor_api::api_impl]
 impl axvisor_api::time::TimeIf for MockTimeIfImpl {
-    fn current_ticks() -> axvisor_api::time::Ticks {
+    fn current_time_nanos() -> axvisor_api::time::Nanos {
         0
     }
-
-    fn ticks_to_nanos(ticks: axvisor_api::time::Ticks) -> axvisor_api::time::Nanos {
-        ticks
-    }
-
-    fn nanos_to_ticks(nanos: axvisor_api::time::Nanos) -> axvisor_api::time::Ticks {
-        nanos
-    }
-
-    fn register_timer(
-        _deadline: axvisor_api::time::TimeValue,
-        _callback: Box<dyn FnOnce(axvisor_api::time::TimeValue) + Send + 'static>,
-    ) -> axvisor_api::time::CancelToken {
-        0
-    }
-
-    fn cancel_timer(_token: axvisor_api::time::CancelToken) {}
-
-    fn busy_wait(_duration: axvisor_api::time::TimeValue) {}
 
     fn set_oneshot_timer(_deadline: axvisor_api::time::TimeValue) {}
 }

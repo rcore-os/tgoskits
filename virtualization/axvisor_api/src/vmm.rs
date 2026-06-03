@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Virtual machine management APIs provided by AxVisor core.
+//! Virtual machine monitor APIs provided by AxVisor core.
 //!
-//! This module provides APIs for querying VM/vCPU topology and injecting
-//! virtual interrupts.
+//! This module provides APIs for querying VM/vCPU topology, injecting virtual
+//! interrupts, and scheduling VMM timers.
 //!
 //! # Overview
 //!
@@ -23,6 +23,7 @@
 //! components to:
 //! - Get information about VMs and their vCPUs
 //! - Inject interrupts into virtual CPUs
+//! - Register and cancel virtual timer callbacks
 //!
 //! Current VM/vCPU context belongs to the host tasking contract and is exposed
 //! through [`crate::task`].
@@ -32,6 +33,7 @@
 //! - [`crate::types::VMId`] - Virtual machine identifier.
 //! - [`crate::types::VCpuId`] - Virtual CPU identifier.
 //! - [`crate::types::InterruptVector`] - Interrupt vector number.
+//! - [`CancelToken`] - Token used to cancel a registered VMM timer.
 //!
 //! # Helper Functions
 //!
@@ -47,7 +49,20 @@
 //! and request interrupt injection without depending directly on
 //! `axvisor-core`.
 
-use crate::types::{InterruptVector, VCpuId, VCpuSet, VMId};
+extern crate alloc;
+
+use alloc::boxed::Box;
+
+use crate::{
+    time::TimeValue,
+    types::{InterruptVector, VCpuId, VCpuSet, VMId},
+};
+
+/// Cancel token type for VMM timer cancellation.
+///
+/// This token is returned when registering a VMM timer and can be used to
+/// cancel the timer before it fires.
+pub type CancelToken = usize;
 
 /// The API trait for virtual machine management functionalities.
 ///
@@ -105,6 +120,50 @@ pub trait VmmIf {
 
     /// Inject an interrupt to a set of virtual CPUs.
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector);
+
+    /// Register a VMM timer that will fire at the specified deadline.
+    ///
+    /// When the deadline is reached, the callback function will be called
+    /// with the actual time at which it was invoked.
+    ///
+    /// # Arguments
+    ///
+    /// * `deadline` - The monotonic time at which the timer should fire.
+    /// * `callback` - The function to call when the timer fires. It receives
+    ///   the actual time as an argument.
+    ///
+    /// # Returns
+    ///
+    /// A [`CancelToken`] that can be used to cancel the timer with
+    /// [`cancel_timer`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use axvisor_api::{
+    ///     time::current_time,
+    ///     vmm::register_timer,
+    /// };
+    /// use core::time::Duration;
+    ///
+    /// let deadline = current_time() + Duration::from_millis(100);
+    /// let token = register_timer(deadline, Box::new(|actual_time| {
+    ///     println!("Timer fired at {:?}", actual_time);
+    /// }));
+    /// ```
+    fn register_timer(
+        deadline: TimeValue,
+        callback: Box<dyn FnOnce(TimeValue) + Send + 'static>,
+    ) -> CancelToken;
+
+    /// Cancel a previously registered VMM timer.
+    ///
+    /// If the timer has already fired, this function has no effect.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The cancel token returned by [`register_timer`].
+    fn cancel_timer(token: CancelToken);
 }
 
 /// Get the number of virtual CPUs in the current virtual machine executing on
