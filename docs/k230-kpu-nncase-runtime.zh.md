@@ -1,6 +1,8 @@
 # StarryOS K230 NNCase Runtime Demo
 
-本文记录 StarryOS K230 QEMU 路径上的 KPU/NPU runtime demo。该 demo
+本文记录 StarryOS K230 QEMU 路径上的 KPU/NPU runtime demo。面向使用者和
+课堂展示的 app 位于 `apps/starry/k230-kpu-nncase`；`test-suit/starryos`
+下的 `kpu-nncase-runtime` case 是复用同一份 app 源码的 CI wrapper。该 demo
 有意和底层 `/dev/kpu` smoke case 分开：`kpu-smoke` 证明设备接口可用，
 `kpu-nncase-runtime` 证明真实 `.kmodel` 可以在 StarryOS guest 内由官方
 NNCase runtime 加载并执行。
@@ -80,15 +82,16 @@ target/official-k230/k230-sdk-src/
   src/big/kmodel/ai_poc/images/bus.jpg
 ```
 
-demo CMake 也支持从 `kpu-smoke/c/assets/kmodels/yolov8n_320.kmodel`
-读取模型作为 fallback，但可复现的推荐来源仍然是上面的官方 SDK 路径。
+模型和图片的可复现推荐来源是上面的官方 SDK 路径。demo CMake 也支持显式
+传入 `K230_KMODEL` 和 `K230_BUS_JPG`，方便本地 review 或课堂环境复用已有
+资产。
 
 ### 2. 构建 StarryOS guest demo 二进制
 
 在 tgoskits 仓库根目录执行：
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nncase-runtime-binaries.sh
+bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
 ```
 
 该脚本会：
@@ -102,7 +105,7 @@ bash test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nnc
 - 在下面的 ignored 目录中生成两个 RISC-V demo 二进制：
 
 ```text
-test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/assets/bin/
+apps/starry/k230-kpu-nncase/c/assets/bin/
   kpu-nncase-minimal
   k230-yolov8n-demo
 ```
@@ -124,8 +127,8 @@ overlay：
 ```
 
 模型和图片来自第 1 步列出的 SDK 路径。两个 demo 二进制来自
-`c/assets/bin/`，除非当前环境本身就是 amd64 K230 SDK 构建环境并显式传入
-`-DK230_CXX=...`。
+`apps/starry/k230-kpu-nncase/c/assets/bin/`，除非当前环境本身就是 amd64
+K230 SDK 构建环境并显式传入 `-DK230_CXX=...`。
 
 ### 4. 准备 K230 QEMU
 
@@ -169,12 +172,25 @@ all starry k230-qemu qemu tests passed
 面向课堂展示的终端 demo 可以使用：
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+bash apps/starry/k230-kpu-nncase/demo-teacher.sh
 ```
 
 该脚本会把完整 QEMU/Cargo 输出实时打印到终端，同时保存到
 `target/k230-kpu-demo/teacher-nncase-runtime.log`。case 结束后，它还会打印
 一段简短证据摘要，方便现场讲解。
+
+也可以通过 Starry app runner 运行：
+
+```sh
+PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
+  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+```
+
+旧的 test-suit 教师脚本路径保留为 wrapper，已有笔记仍然可用：
+
+```sh
+bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+```
 
 ## 当前边界
 

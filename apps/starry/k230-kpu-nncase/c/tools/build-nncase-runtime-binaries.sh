@@ -41,7 +41,7 @@ docker run --rm --platform linux/amd64 \
     -v "$SYSROOT_VOLUME":/linux-musl-cross:ro \
     -w "/workspace/$REL_WORKTREE" \
     "$IMAGE" \
-    bash -lc "set -eu; rm -rf '$BUILD_DIR'; cmake -S test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c -B '$BUILD_DIR' -DK230_CXX='$SDK_CXX' -DK230_LINUX_MUSL_PREFIX=/linux-musl-cross; cmake --build '$BUILD_DIR' -j2; test -x '$BUILD_DIR/kpu-nncase-minimal'; test -x '$BUILD_DIR/k230-yolov8n-demo'"
+    bash -lc "set -eu; rm -rf '$BUILD_DIR'; cmake -S apps/starry/k230-kpu-nncase/c -B '$BUILD_DIR' -DK230_CXX='$SDK_CXX' -DK230_LINUX_MUSL_PREFIX=/linux-musl-cross; cmake --build '$BUILD_DIR' -j2; test -x '$BUILD_DIR/kpu-nncase-minimal'; test -x '$BUILD_DIR/k230-yolov8n-demo'"
 
 mkdir -p "$HOST_ASSET_DIR"
 install -m 755 "$HOST_BUILD_DIR/kpu-nncase-minimal" "$HOST_ASSET_DIR/kpu-nncase-minimal"

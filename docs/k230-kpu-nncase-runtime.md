@@ -3,10 +3,12 @@
 Chinese version: `docs/k230-kpu-nncase-runtime.zh.md`.
 
 This document records the K230 KPU/NPU runtime demo added for the StarryOS K230
-QEMU path. The demo is intentionally separated from the lower-level `/dev/kpu`
-smoke case: `kpu-smoke` proves the device interface, while
-`kpu-nncase-runtime` proves that a real `.kmodel` can be loaded by the official
-NNCase runtime inside the StarryOS guest.
+QEMU path. The operator-facing app lives under
+`apps/starry/k230-kpu-nncase`; the `test-suit/starryos` case is a CI-oriented
+wrapper that reuses the same app sources. The demo is intentionally separated
+from the lower-level `/dev/kpu` smoke case: `kpu-smoke` proves the device
+interface, while `kpu-nncase-runtime` proves that a real `.kmodel` can be
+loaded by the official NNCase runtime inside the StarryOS guest.
 
 ## Goal
 
@@ -83,9 +85,9 @@ target/official-k230/k230-sdk-src/
   src/big/kmodel/ai_poc/images/bus.jpg
 ```
 
-The demo CMake file also accepts a fallback model path under
-`kpu-smoke/c/assets/kmodels/yolov8n_320.kmodel`, but the expected reproducible
-source is the official SDK path above.
+The expected reproducible source for the model and image is the official SDK
+path above. The demo CMake file also accepts explicit `K230_KMODEL` and
+`K230_BUS_JPG` paths for local review or classroom environments.
 
 ### 2. Build the StarryOS guest demo binaries
 
@@ -93,7 +95,7 @@ This PR does not commit the real model, SDK libraries, or prebuilt binaries.
 Prepare them locally with:
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nncase-runtime-binaries.sh
+bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
 ```
 
 The script:
@@ -107,7 +109,7 @@ The script:
 - places ignored riscv64 demo binaries under:
 
 ```text
-test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/assets/bin/
+apps/starry/k230-kpu-nncase/c/assets/bin/
   kpu-nncase-minimal
   k230-yolov8n-demo
 ```
@@ -129,8 +131,9 @@ When the `kpu-nncase-runtime` case runs, CMake installs:
 ```
 
 The model and image are copied from the SDK paths listed in step 1. The two demo
-binaries are copied from `c/assets/bin/` unless the case is being built directly
-inside an amd64 K230 SDK environment with `-DK230_CXX=...`.
+binaries are copied from `apps/starry/k230-kpu-nncase/c/assets/bin/` unless the
+case is being built directly inside an amd64 K230 SDK environment with
+`-DK230_CXX=...`.
 
 ### 4. K230 QEMU itself
 
@@ -174,12 +177,26 @@ all starry k230-qemu qemu tests passed
 For a teacher-facing terminal demo, use:
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+bash apps/starry/k230-kpu-nncase/demo-teacher.sh
 ```
 
 The script streams the full QEMU/Cargo output to the terminal and saves the same
 output under `target/k230-kpu-demo/teacher-nncase-runtime.log`. It prints a
 short evidence summary after the case finishes.
+
+The app can also be run through the Starry app runner:
+
+```sh
+PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
+  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+```
+
+The legacy test-suite teacher script path remains as a wrapper for existing
+notes:
+
+```sh
+bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+```
 
 ## Current Boundary
 

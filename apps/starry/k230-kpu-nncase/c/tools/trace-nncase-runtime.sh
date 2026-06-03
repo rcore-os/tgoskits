@@ -16,10 +16,10 @@ GUEST_CMD=${STARRY_TRACE_GUEST_CMD:-/usr/bin/k230-nncase-runtime-demo}
 
 KERNEL="$WORKTREE_ROOT/target/riscv64gc-unknown-none-elf/release/starryos.bin"
 DTB="$WORKTREE_ROOT/os/StarryOS/configs/board/k230-canmv.dtb"
-PCBIOS="$WORKTREE_ROOT/target/qemu-k230/pc-bios"
+PCBIOS="$WORKTREE_ROOT/target/qemu-k230-docker-build/pc-bios"
 CASE_QEMU_DIR="$WORKTREE_ROOT/target/riscv64gc-unknown-none-elf/qemu-cases/qemu-k230/kpu-nncase-runtime"
 ROOTFS=${STARRY_TRACE_ROOTFS:-}
-QEMU=${QEMU_SYSTEM_RISCV64:-"$WORKTREE_ROOT/target/qemu-k230/bin/qemu-system-riscv64"}
+QEMU=${QEMU_SYSTEM_RISCV64:-"$WORKTREE_ROOT/target/qemu-k230-docker-build/qemu-system-riscv64"}
 
 if [ -z "$ROOTFS" ]; then
     mapfile -t ROOTFS_CANDIDATES < <(

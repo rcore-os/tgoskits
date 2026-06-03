@@ -52,6 +52,25 @@ cargo xtask starry qemu \
 See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
 flows.
 
+## K230 KPU NNCase
+
+The `k230-kpu-nncase` case is the operator-facing K230 KPU/NPU demo. It installs
+the StarryOS guest NNCase runtime demo binaries, `yolov8n_320.kmodel`, and
+`bus.jpg` into the K230 rootfs overlay, then runs:
+
+```text
+.kmodel -> NNCase runtime -> KPU command stream -> /dev/kpu -> IRQ/done -> output hashes
+```
+
+```bash
+bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
+PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
+  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+```
+
+See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
+asset preparation flow.
+
 ## Redis
 
 The `redis` case is a QEMU app workflow that installs Redis into a temporary

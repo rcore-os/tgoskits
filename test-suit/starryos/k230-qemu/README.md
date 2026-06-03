@@ -92,15 +92,16 @@ KPU_SMOKE: runtime_image file_runtime_arg_table_direct_io
 KPU_SMOKE_PASS
 ```
 
-The NNCase runtime case also needs local K230 SDK assets or prebuilt demo
-binaries under the case-local ignored `c/assets/bin/` directory. The full asset
-preparation flow, including how to obtain `yolov8n_320.kmodel`, `bus.jpg`, SDK
-NNCase libraries, and the prebuilt guest binaries, is documented in
+The NNCase runtime case reuses the operator-facing app under
+`apps/starry/k230-kpu-nncase`. It also needs local K230 SDK assets or prebuilt
+demo binaries under the app-local ignored `c/assets/bin/` directory. The full
+asset preparation flow, including how to obtain `yolov8n_320.kmodel`, `bus.jpg`,
+SDK NNCase libraries, and the prebuilt guest binaries, is documented in
 `docs/k230-kpu-nncase-runtime.md` and
 `docs/k230-kpu-nncase-runtime.zh.md`. Build those binaries with:
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/kpu-nncase-runtime/c/tools/build-nncase-runtime-binaries.sh
+bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
 ```
 
 Then run:
