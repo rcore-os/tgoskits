@@ -475,6 +475,14 @@ mod tests {
     }
 
     #[test]
+    fn default_riscv64_starry_build_info_uses_dynamic_platform() {
+        let build_info = default_starry_build_info_for_target("riscv64gc-unknown-none-elf");
+
+        assert!(build_info.plat_dyn);
+        assert!(!build_info.features.contains(&"qemu".to_string()));
+    }
+
+    #[test]
     fn default_x86_starry_build_info_keeps_static_qemu_feature() {
         let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
 

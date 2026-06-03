@@ -3,13 +3,15 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
 log = "Warn"
 features = [
-  "ax-hal/riscv64-qemu-virt",
-  "qemu",
-  "ax-driver/plat-static",
+  "ax-feat/display",
+  "ax-feat/rtc",
+  "ax-driver/serial",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
 ]
-plat_dyn = false
+plat_dyn = true
