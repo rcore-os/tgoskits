@@ -10,7 +10,7 @@ use ax_kspin::SpinNoIrq;
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
 /// The global allocator instance (stub).
-#[cfg_attr(all(target_os = "none", not(test)), global_allocator)]
+#[cfg_attr(all(any(target_os = "none", arceos_std), not(test)), global_allocator)]
 static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();
 
 /// Placeholder byte allocator type when no backend is enabled.
