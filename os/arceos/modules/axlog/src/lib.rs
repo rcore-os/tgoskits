@@ -138,6 +138,91 @@ impl Write for Logger {
     }
 }
 
+const LOG_BUFFER_SIZE: usize = 2048;
+const LOG_TRUNCATED: &str = "\u{1B}[m<log truncated>";
+const LOG_TRUNCATED_WITH_NEWLINE: &str = "\u{1B}[m<log truncated>\n";
+
+struct LogBuffer<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+    truncated: bool,
+    ends_with_newline: bool,
+}
+
+impl<const N: usize> LogBuffer<N> {
+    const fn new() -> Self {
+        Self {
+            buf: [0; N],
+            len: 0,
+            truncated: false,
+            ends_with_newline: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        // SAFETY: LogBuffer only appends complete UTF-8 strings or prefixes
+        // ending at UTF-8 character boundaries.
+        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
+    }
+
+    fn append_truncation_marker(&mut self) {
+        if !self.truncated {
+            return;
+        }
+
+        let marker = if self.ends_with_newline {
+            LOG_TRUNCATED_WITH_NEWLINE.as_bytes()
+        } else {
+            LOG_TRUNCATED.as_bytes()
+        };
+        if N < marker.len() {
+            self.len = 0;
+            return;
+        }
+
+        if self.len + marker.len() > N {
+            let mut keep = self.len.min(N - marker.len());
+            while !self.is_char_boundary(keep) {
+                keep -= 1;
+            }
+            self.len = keep;
+        }
+
+        self.buf[self.len..self.len + marker.len()].copy_from_slice(marker);
+        self.len += marker.len();
+    }
+
+    fn is_char_boundary(&self, index: usize) -> bool {
+        index == 0 || index == self.len || (self.buf[index] & 0b1100_0000) != 0b1000_0000
+    }
+}
+
+impl<const N: usize> Write for LogBuffer<N> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if !s.is_empty() {
+            self.ends_with_newline = s.ends_with('\n');
+        }
+
+        let available = N.saturating_sub(self.len);
+        if s.len() <= available {
+            self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
+            self.len += s.len();
+            return Ok(());
+        }
+
+        self.truncated = true;
+        let end = s
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|&index| index <= available)
+            .last()
+            .unwrap_or(0);
+        self.buf[self.len..self.len + end].copy_from_slice(&s.as_bytes()[..end]);
+        self.len += end;
+        Ok(())
+    }
+}
+
 impl Log for Logger {
     #[inline]
     fn enabled(&self, _metadata: &Metadata) -> bool {
@@ -232,8 +317,12 @@ pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
         return Logger.write_fmt(args);
     }
 
+    let mut buf = LogBuffer::<LOG_BUFFER_SIZE>::new();
+    buf.write_fmt(args)?;
+    buf.append_truncation_marker();
+
     let _guard = LOCK.lock();
-    Logger.write_fmt(args)
+    Logger.write_str(buf.as_str())
 }
 
 #[doc(hidden)]
@@ -262,4 +351,27 @@ pub fn set_max_level(level: &str) {
         .ok()
         .unwrap_or(LevelFilter::Off);
     log::set_max_level(lf);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_buffer_truncates_at_utf8_boundary() {
+        let mut buf = LogBuffer::<22>::new();
+        write!(buf, "ab你好xxxxxxxxxxxxxxxx\n").unwrap();
+        buf.append_truncation_marker();
+
+        assert_eq!(buf.as_str(), "ab\u{1B}[m<log truncated>\n");
+    }
+
+    #[test]
+    fn log_buffer_keeps_untruncated_message() {
+        let mut buf = LogBuffer::<32>::new();
+        write!(buf, "short").unwrap();
+        buf.append_truncation_marker();
+
+        assert_eq!(buf.as_str(), "short");
+    }
 }
