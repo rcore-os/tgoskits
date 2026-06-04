@@ -1749,7 +1749,11 @@ unsafe fn futex_wait(addr: *mut u32, expected: u32, timeout: *const libc::timesp
                 .or_insert_with(|| Arc::new(ax_api::task::AxWaitQueueHandle::new()))
                 .clone()
         };
-        let timed_out = ax_api::task::ax_wait_queue_wait(&wq, unsafe { futex_timeout(timeout) });
+        let timed_out = ax_api::task::ax_wait_queue_wait_until(
+            &wq,
+            || unsafe { addr.read_volatile() } != expected,
+            unsafe { futex_timeout(timeout) },
+        );
         if timed_out {
             fail(LinuxError::ETIMEDOUT)
         } else {
