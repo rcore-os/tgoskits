@@ -300,7 +300,14 @@ impl DirNode {
         gid: u32,
     ) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
-        self.create_locked(name, node_type, permission, uid, gid, &mut self.cache.lock())
+        self.create_locked(
+            name,
+            node_type,
+            permission,
+            uid,
+            gid,
+            &mut self.cache.lock(),
+        )
     }
 
     fn lock_both_cache<'a>(
