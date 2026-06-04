@@ -704,4 +704,147 @@ mod tests {
         assert_eq!(stats.total_entries, 2);
         assert_eq!(stats.max_entries, 2);
     }
+
+    /// Regression test for the stale-victim race (TOCTOU on LRU eviction).
+    ///
+    /// Scenario:
+    /// 1. Cache full (max_entries=1) with block_A (gen=0, dirty).
+    /// 2. Thread 1 calls `get_or_load(block_B)` → snapshots (A, gen=0, dirty_data)
+    ///    → drops the spinlock → enters I/O (blocked at barrier).
+    /// 3. Main thread calls `cache.get_mut(block_A)` → bumps gen to 1.
+    /// 4. Thread 1 resumes → re-locks → gen mismatch (0 ≠ 1) → skips eviction.
+    ///
+    /// Assertions:
+    /// - block_A is still cached (NOT evicted — new state preserved).
+    /// - block_A's generation is 1 (the concurrent access was recorded).
+    /// - block_B was loaded into cache.
+    /// - No stale dirty data was written for block_A (dirty_to_write is None).
+    #[test]
+    fn stale_victim_gen_mismatch_prevents_eviction() {
+        use std::sync::{Arc, Barrier};
+
+        const BLK_A: AbsoluteBN = AbsoluteBN::new(10);
+        const BLK_B: AbsoluteBN = AbsoluteBN::new(20);
+
+        let cache = Arc::new(DataBlockCache::new(1, BLOCK_SIZE));
+
+        // ── Barrier-synchronised BlockDevice ──────────────────────────────
+        // The device blocks inside `read_blocks` so the test can interleave a
+        // cache access between Phase 1 (snapshot) and Phase 3 (re-lock) of
+        // `get_or_load`.
+        let inner_dev = TestBlockDevice::new(1024);
+        let enter_io = Arc::new(Barrier::new(2)); // "I'm in I/O, lock is dropped"
+        let leave_io = Arc::new(Barrier::new(2)); // "I'm done, main may continue"
+
+        struct SyncDevice<D> {
+            inner: D,
+            enter: Arc<Barrier>,
+            leave: Arc<Barrier>,
+        }
+
+        impl<D: BlockDevice> BlockDevice for SyncDevice<D> {
+            fn read(
+                &mut self,
+                buffer: &mut [u8],
+                block_id: AbsoluteBN,
+                count: u32,
+            ) -> Ext4Result<()> {
+                self.enter.wait(); // signal: cache lock is dropped, race window open
+                self.inner.read(buffer, block_id, count)?;
+                self.leave.wait(); // wait for main thread to finish its access
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                buffer: &[u8],
+                block_id: AbsoluteBN,
+                count: u32,
+            ) -> Ext4Result<()> {
+                self.inner.write(buffer, block_id, count)
+            }
+
+            fn open(&mut self) -> Ext4Result<()> {
+                self.inner.open()
+            }
+
+            fn close(&mut self) -> Ext4Result<()> {
+                self.inner.close()
+            }
+
+            fn total_blocks(&self) -> u64 {
+                self.inner.total_blocks()
+            }
+
+            fn block_size(&self) -> u32 {
+                self.inner.block_size()
+            }
+
+            fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+                self.inner.current_time()
+            }
+        }
+
+        let sync_dev = SyncDevice {
+            inner: inner_dev,
+            enter: enter_io.clone(),
+            leave: leave_io.clone(),
+        };
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, sync_dev, false);
+
+        // Step 1: fill the cache with block_A (dirty, generation 0).
+        cache
+            .create_new(&mut jbd2_dev, BLK_A)
+            .expect("create block A");
+        assert!(cache.get(BLK_A).is_some(), "block_A must be in cache");
+        assert_eq!(cache.get(BLK_A).unwrap().generation, 0);
+
+        // Step 2: spawn a thread that calls get_or_load(block_B).
+        // Inside get_or_load the device will block at enter_io after the LRU
+        // snapshot is taken but before the spinlock is reacquired.
+        let cache2 = cache.clone();
+        let handle = std::thread::spawn(move || {
+            cache2.get_or_load(&mut jbd2_dev, BLK_B)
+        });
+
+        // Step 3: wait for Thread 1 to enter I/O (lock dropped).
+        enter_io.wait();
+
+        // Step 4: concurrently access block_A, bumping its generation.
+        let cached_a = cache
+            .get_mut(BLK_A)
+            .expect("block_A should still be accessible");
+        assert_eq!(
+            cached_a.generation, 1,
+            "generation bumped from 0 to 1 by concurrent access"
+        );
+
+        // Step 5: let Thread 1 continue (re-lock, gen check, insert).
+        leave_io.wait();
+
+        // Step 6: collect Thread 1's result.
+        let result = handle.join().expect("Thread 1 panicked");
+        assert!(result.is_ok(), "get_or_load(block_B) must succeed");
+
+        // ── Assertions ───────────────────────────────────────────────────
+        // block_A must still be present — generation mismatch prevented eviction.
+        let a = cache
+            .get(BLK_A)
+            .expect("block_A must NOT be evicted (gen mismatch prevented removal)");
+        assert_eq!(
+            a.generation, 1,
+            "block_A generation should be 1 (bumped by concurrent get_mut)"
+        );
+
+        // block_B was loaded.
+        assert!(
+            cache.get(BLK_B).is_some(),
+            "block_B must be loaded into cache"
+        );
+
+        // Both entries coexist (temporarily exceeding max_entries — harmless).
+        let stats = cache.stats();
+        assert_eq!(stats.total_entries, 2);
+        assert_eq!(stats.max_entries, 1);
+    }
 }
