@@ -34,6 +34,10 @@ int main(void)
         CHECK(ring->nr >= 4, "AIO ring exposes at least requested events");
         CHECK(ring->head == 0 && ring->tail == 0,
               "new AIO ring starts empty");
+        CHECK(ring->compat_features == 1,
+              "AIO ring exposes expected compatible features");
+        CHECK(ring->incompat_features == 0,
+              "AIO ring exposes no incompatible features");
         CHECK(ring->header_length == sizeof(struct aio_ring),
               "AIO ring header length matches userspace layout");
     }
@@ -51,6 +55,26 @@ int main(void)
     CHECK_ERR(syscall(SYS_io_setup, 4, &ctx), EINVAL,
               "io_setup rejects nonzero user context slot");
     CHECK(ctx == 0x1234, "failed io_setup leaves nonzero context unchanged");
+
+    ctx = 0;
+    aio_context_t ctx2 = 0;
+    CHECK_RET(syscall(SYS_io_setup, 1, &ctx), 0,
+              "io_setup creates a small context");
+    CHECK_RET(syscall(SYS_io_setup, 8, &ctx2), 0,
+              "io_setup creates a second independent context");
+    CHECK(ctx != 0 && ctx2 != 0 && ctx != ctx2,
+          "io_setup returns distinct context handles");
+    if (ctx != 0) {
+        CHECK_RET(syscall(SYS_io_destroy, ctx), 0,
+                  "destroy first independent context");
+    }
+    if (ctx2 != 0) {
+        CHECK_RET(syscall(SYS_io_destroy, ctx2), 0,
+                  "destroy second independent context");
+    }
+
+    CHECK_ERR(syscall(SYS_io_setup, 4, (void *)(uintptr_t)1), EFAULT,
+              "io_setup rejects an invalid user context pointer");
 
     TEST_DONE();
 }

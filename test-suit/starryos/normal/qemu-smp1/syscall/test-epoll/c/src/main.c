@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <errno.h>
 #include <string.h>
@@ -36,6 +37,17 @@ int main(void)
         int epfd = epoll_create1(0);
         CHECK(epfd >= 0, "PART1: epoll_create1(0) 成功");
         if (epfd >= 0) close(epfd);
+
+#ifdef __x86_64__
+        epfd = epoll_create(16);
+        CHECK(epfd >= 0, "PART1: epoll_create(size>0) 成功");
+        if (epfd >= 0) close(epfd);
+
+        CHECK_ERR(epoll_create(0), EINVAL,
+                  "PART1: epoll_create(size=0) 返回 EINVAL");
+        CHECK_ERR(epoll_create(-1), EINVAL,
+                  "PART1: epoll_create(size<0) 返回 EINVAL");
+#endif
     }
 
     /* ================================================================
@@ -84,6 +96,10 @@ int main(void)
             CHECK(events[0].data.fd == fds[0],
                   "PART3: data.fd 与注册时一致");
         }
+
+        nready = syscall(SYS_epoll_pwait, epfd, events, 4, -2, NULL, 0);
+        CHECK_RET(nready, 1,
+                  "PART3: epoll_pwait timeout<-1 在已有事件时返回事件");
 
         char buf[16];
         read(fds[0], buf, 5);
@@ -351,6 +367,21 @@ int main(void)
             close(fds[0]);
             close(fds[1]);
         }
+
+        errno = 0;
+        CHECK(epoll_ctl(epfd, EPOLL_CTL_ADD, epfd, &ev) == -1 &&
+              errno == EINVAL,
+              "PART10: epoll_ctl 拒绝把 epoll fd 加入自身");
+
+        errno = 0;
+        CHECK(epoll_wait(epfd, events, 0, 0) == -1 &&
+              errno == EINVAL,
+              "PART10: epoll_wait maxevents=0 返回 EINVAL");
+
+        errno = 0;
+        CHECK(syscall(SYS_epoll_wait, epfd, NULL, 1, 0) == -1 &&
+              errno == EFAULT,
+              "PART10: epoll_wait NULL events 返回 EFAULT");
 
         close(epfd);
     }

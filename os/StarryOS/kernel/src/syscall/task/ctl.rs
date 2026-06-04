@@ -13,6 +13,49 @@ use crate::{
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
 const PERSONALITY_GET: u32 = 0xffff_ffff;
 const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
+const MPOL_DEFAULT: i32 = 0;
+const MPOL_PREFERRED: i32 = 1;
+const MPOL_BIND: i32 = 2;
+const MPOL_INTERLEAVE: i32 = 3;
+const MPOL_LOCAL: i32 = 4;
+const MPOL_PREFERRED_MANY: i32 = 5;
+const MPOL_WEIGHTED_INTERLEAVE: i32 = 6;
+const MPOL_F_NODE: usize = 1 << 0;
+const MPOL_F_ADDR: usize = 1 << 1;
+const MPOL_F_MEMS_ALLOWED: usize = 1 << 2;
+const MPOL_F_STATIC_NODES: i32 = 1 << 15;
+const MPOL_F_RELATIVE_NODES: i32 = 1 << 14;
+const MPOL_MODE_FLAGS: i32 = MPOL_F_STATIC_NODES | MPOL_F_RELATIVE_NODES;
+const MPOL_MF_STRICT: u32 = 1 << 0;
+const MPOL_MF_MOVE: u32 = 1 << 1;
+const MPOL_MF_MOVE_ALL: u32 = 1 << 2;
+const MPOL_MF_VALID: u32 = MPOL_MF_STRICT | MPOL_MF_MOVE | MPOL_MF_MOVE_ALL;
+
+/// Split a NUMA policy mode from its optional mode flags.
+fn parse_mempolicy_mode(mode: i32) -> AxResult<i32> {
+    if mode < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let policy = mode & !MPOL_MODE_FLAGS;
+    match policy {
+        MPOL_DEFAULT
+        | MPOL_PREFERRED
+        | MPOL_BIND
+        | MPOL_INTERLEAVE
+        | MPOL_LOCAL
+        | MPOL_PREFERRED_MANY
+        | MPOL_WEIGHTED_INTERLEAVE => Ok(policy),
+        _ => Err(AxError::InvalidInput),
+    }
+}
+
+/// Validate a user nodemask pointer when a policy consumes it.
+fn check_nodemask(nodemask: *const usize, maxnode: usize) -> AxResult<()> {
+    if !nodemask.is_null() && maxnode > 0 {
+        nodemask.vm_read()?;
+    }
+    Ok(())
+}
 
 /// Validate the cap header and return the target pid (0 means self).
 fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u32> {
@@ -119,45 +162,41 @@ pub fn sys_get_mempolicy(
     _addr: usize,
     flags: usize,
 ) -> AxResult<isize> {
-    // NUMA memory policy constants from <linux/mempolicy.h>
-    const MPOL_DEFAULT: i32 = 0;
-    const MPOL_F_NODE: usize = 1 << 0;
-    const MPOL_F_MEMS_ALLOWED: usize = 1 << 2;
-
     debug!(
         "sys_get_mempolicy <= policy: {:?}, nodemask: {:?}, maxnode: {}, flags: {:#x}",
         policy, nodemask, maxnode, flags
     );
 
-    // StarryOS is single-node (node 0), so all queries return node 0 or default policy.
+    if flags & !(MPOL_F_NODE | MPOL_F_ADDR | MPOL_F_MEMS_ALLOWED) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & MPOL_F_MEMS_ALLOWED != 0 && flags != MPOL_F_MEMS_ALLOWED {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & MPOL_F_NODE != 0 && flags & MPOL_F_ADDR == 0 {
+        return Err(AxError::InvalidInput);
+    }
 
-    // MPOL_F_MEMS_ALLOWED: return the set of nodes allowed by cpusets/mempolicy
+    // StarryOS models one NUMA node, so every query resolves to node 0.
     if flags & MPOL_F_MEMS_ALLOWED != 0 {
-        // Return node 0 is allowed
         if !nodemask.is_null() && maxnode > 0 {
-            // Set bit 0 in the nodemask (node 0 is available)
             nodemask.vm_write(1usize)?;
         }
         return Ok(0);
     }
 
-    // MPOL_F_NODE: return the node ID that addr belongs to
     if flags & MPOL_F_NODE != 0 {
-        // All addresses belong to node 0
         if !policy.is_null() {
             policy.vm_write(0i32)?;
         }
         return Ok(0);
     }
 
-    // Default: return the current memory policy
-    // For a single-node system, always MPOL_DEFAULT with node 0 allowed
     if !policy.is_null() {
         policy.vm_write(MPOL_DEFAULT)?;
     }
 
     if !nodemask.is_null() && maxnode > 0 {
-        // Set bit 0 in the nodemask (node 0 is available)
         nodemask.vm_write(1usize)?;
     }
 
@@ -174,11 +213,15 @@ pub fn sys_get_mempolicy(
 /// - maxnode: size of nodemask bitmap in bits
 ///
 /// Returns 0 on success.
-pub fn sys_set_mempolicy(mode: i32, _nodemask: *const usize, _maxnode: usize) -> AxResult<isize> {
+pub fn sys_set_mempolicy(mode: i32, nodemask: *const usize, maxnode: usize) -> AxResult<isize> {
     debug!("sys_set_mempolicy <= mode: {}", mode);
 
-    // Single-node system: accept any policy and ignore it
-    // All memory is on node 0, so policy has no effect
+    let policy = parse_mempolicy_mode(mode)?;
+    if policy != MPOL_DEFAULT {
+        check_nodemask(nodemask, maxnode)?;
+    }
+
+    // Single-node system: accept valid policies and ignore placement.
     Ok(0)
 }
 
@@ -196,17 +239,24 @@ pub fn sys_set_mempolicy(mode: i32, _nodemask: *const usize, _maxnode: usize) ->
 ///
 /// Returns 0 on success.
 pub fn sys_mbind(
-    _addr: usize,
-    _len: usize,
+    addr: usize,
+    len: usize,
     mode: i32,
-    _nodemask: *const usize,
-    _maxnode: usize,
-    _flags: u32,
+    nodemask: *const usize,
+    maxnode: usize,
+    flags: u32,
 ) -> AxResult<isize> {
     debug!("sys_mbind <= mode: {}", mode);
 
-    // Single-node system: accept any binding and ignore it
-    // All memory is already on node 0
+    let policy = parse_mempolicy_mode(mode)?;
+    if addr & 0xfff != 0 || len == 0 || flags & !MPOL_MF_VALID != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if policy != MPOL_DEFAULT {
+        check_nodemask(nodemask, maxnode)?;
+    }
+
+    // Single-node system: accept valid bindings and ignore placement.
     Ok(0)
 }
 
