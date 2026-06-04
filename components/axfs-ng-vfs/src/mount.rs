@@ -618,13 +618,15 @@ impl Location {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<Self> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry
             .as_dir()?
-            .create(name, node_type, permission)
+            .create(name, node_type, permission, uid, gid)
             .map(|entry| self.wrap(entry))
     }
 

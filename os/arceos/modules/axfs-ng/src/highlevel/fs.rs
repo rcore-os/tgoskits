@@ -394,18 +394,21 @@ impl FsContext {
     }
 
     /// Creates a new, empty directory at the provided path.
-    pub fn create_dir(&self, path: impl AsRef<Path>, mode: NodePermission) -> VfsResult<Location> {
+    /// Creates a new, empty directory at the provided path.
+    pub fn create_dir(
+        &self,
+        path: impl AsRef<Path>,
+        mode: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Location> {
         let path = path.as_ref();
-        // Empty path should return NotFound, not InvalidInput
         if path.as_str().is_empty() {
             return Err(VfsError::NotFound);
         }
         let (dir, name) = match self.resolve_nonexistent(path) {
             Ok(pair) => pair,
             Err(VfsError::InvalidInput) => {
-                // Path has no filename component (e.g. "/" or ".").
-                // Resolve it: if it exists and is a directory, return
-                // AlreadyExists (matching Linux EEXIST behaviour for mkdir("/")).
                 return match self.resolve(path) {
                     Ok(loc) if loc.node_type() == NodeType::Directory => {
                         Err(VfsError::AlreadyExists)
@@ -416,7 +419,7 @@ impl FsContext {
             }
             Err(e) => return Err(e),
         };
-        dir.create(name, NodeType::Directory, mode)
+        dir.create(name, NodeType::Directory, mode, uid, gid)
     }
 
     /// Creates a new hard link on the filesystem.
@@ -435,12 +438,14 @@ impl FsContext {
         &self,
         target: impl AsRef<str>,
         link_path: impl AsRef<Path>,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_nonexistent(link_path.as_ref())?;
         if dir.lookup_no_follow(name).is_ok() {
             return Err(VfsError::AlreadyExists);
         }
-        let symlink = dir.create(name, NodeType::Symlink, NodePermission::default())?;
+        let symlink = dir.create(name, NodeType::Symlink, NodePermission::default(), uid, gid)?;
         symlink.entry().as_file()?.set_symlink(target.as_ref())?;
         Ok(symlink)
     }

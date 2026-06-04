@@ -498,6 +498,8 @@ impl DirNodeOps for Inode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<DirEntry> {
         let Some(dir_path) = self.dir_path().ok() else {
             return Err(VfsError::InvalidInput);
@@ -514,10 +516,10 @@ impl DirNodeOps for Inode {
             }
 
             if node_type == NodeType::Directory {
-                rsext4::mkdir(dev, fs, &path).map_err(into_vfs_err)?;
+                rsext4::mkdir_with_owner(dev, fs, &path, uid, gid).map_err(into_vfs_err)?;
             } else {
                 let file_type = vfs_type_to_dir_entry(node_type).ok_or(VfsError::InvalidData)?;
-                rsext4::mkfile(dev, fs, &path, None, Some(file_type)).map_err(into_vfs_err)?;
+                rsext4::mkfile_with_owner(dev, fs, &path, None, Some(file_type), uid, gid).map_err(into_vfs_err)?;
             };
 
             let (ino, _inode) = rsext4::dir::get_inode_with_num(fs, dev, &path)
