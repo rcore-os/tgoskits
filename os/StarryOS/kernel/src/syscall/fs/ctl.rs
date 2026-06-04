@@ -17,8 +17,11 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TCGETS, TIOCGWINSZ},
 };
+
+// FS_IOC_FIEMAP from <linux/fs.h>
+const FS_IOC_FIEMAP: u32 = 0xC020660B;
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
@@ -39,8 +42,27 @@ fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
 pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
-    debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
+    debug!("sys_ioctl <= fd: {fd}, cmd: {cmd:#x}, arg: {arg}");
     let f = get_file_like(fd)?;
+
+    // Whitelist of known safe ioctls
+    const KNOWN_SAFE_IOCTLS: &[u32] = &[
+        FIONBIO,
+        FIOASYNC,
+        TIOCGWINSZ,
+        TCGETS,
+        BLKGETSIZE64,
+        BLKRAGET,
+        BLKSSZGET,
+        FS_IOC_FIEMAP,
+    ];
+
+    // Early reject unknown ioctls to prevent blocking
+    if !KNOWN_SAFE_IOCTLS.contains(&cmd) {
+        debug!("Rejecting unknown ioctl: {cmd:#x} for fd: {fd}");
+        return Err(AxError::NotATty);
+    }
+
     if cmd == FIONBIO {
         let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
@@ -55,12 +77,15 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == AxError::NotATty {
-                // Applications commonly probe non-terminal/blobk fds with
+                // Applications commonly probe non-terminal/block fds with
                 // these ioctls; suppress noise.
-                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
+                if matches!(
+                    cmd,
+                    TIOCGWINSZ | TCGETS | BLKGETSIZE64 | BLKRAGET | BLKSSZGET | FS_IOC_FIEMAP
+                ) {
                     return;
                 }
-                warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
+                warn!("Unsupported ioctl command: {cmd:#x} (decimal: {cmd}) for fd: {fd}");
             }
         })
 }
@@ -383,6 +408,14 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
         && let Some((path, is_dir)) = deleted
     {
         crate::file::inotify::notify_delete_path(&path, is_dir);
+    }
+    if let Err(err) = &result
+        && path.contains("#innodb_redo")
+    {
+        warn!(
+            "sys_unlinkat #innodb_redo failed: dirfd={dirfd}, path={path:?}, flags={flags}, \
+             err={err:?}"
+        );
     }
     result
 }
@@ -784,8 +817,16 @@ pub fn sys_renameat2(
         }
     }
 
-    old_dir.rename(&old_name, &new_dir, &new_name)?;
-    Ok(0)
+    let result = old_dir.rename(&old_name, &new_dir, &new_name).map(|_| 0);
+    if let Err(err) = &result
+        && (old_path.contains("#innodb_redo") || new_path.contains("#innodb_redo"))
+    {
+        warn!(
+            "sys_renameat2 #innodb_redo failed: old_path={old_path:?}, new_path={new_path:?}, \
+             flags={flags}, err={err:?}"
+        );
+    }
+    result
 }
 
 pub fn sys_sync() -> AxResult<isize> {

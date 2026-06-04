@@ -336,8 +336,15 @@ pub fn sys_openat(
             Err(err) => Err(err),
         })?;
 
-    let fd =
-        with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
+    let open_path = path.clone();
+    let result =
+        with_fs(dirfd, |fs| options.open(fs, open_path)).and_then(|it| add_to_fd(it, flags as _));
+    if let Err(err) = &result
+        && path.contains("#innodb_redo")
+    {
+        warn!("sys_openat #innodb_redo failed: path={path:?}, flags={flags:#o}, err={err:?}");
+    }
+    let fd = result?;
     if should_notify_create {
         let file = get_file_like(fd)?;
         crate::file::inotify::notify_create_path(file.path().as_ref(), false);

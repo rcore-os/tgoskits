@@ -1,9 +1,23 @@
 #include "test_framework.h"
 
+#include <stdint.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#define AIO_RING_MAGIC 0xa10a10a1u
+
 typedef unsigned long aio_context_t;
+
+struct aio_ring {
+    uint32_t id;
+    uint32_t nr;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t magic;
+    uint32_t compat_features;
+    uint32_t incompat_features;
+    uint32_t header_length;
+};
 
 int main(void)
 {
@@ -13,6 +27,16 @@ int main(void)
     CHECK_RET(syscall(SYS_io_setup, 4, &ctx), 0,
               "io_setup creates an AIO context");
     CHECK(ctx != 0, "io_setup stores a nonzero context id");
+    if (ctx != 0) {
+        struct aio_ring *ring = (struct aio_ring *)(uintptr_t)ctx;
+        CHECK(ring->magic == AIO_RING_MAGIC,
+              "io_setup context points to a readable AIO ring");
+        CHECK(ring->nr >= 4, "AIO ring exposes at least requested events");
+        CHECK(ring->head == 0 && ring->tail == 0,
+              "new AIO ring starts empty");
+        CHECK(ring->header_length == sizeof(struct aio_ring),
+              "AIO ring header length matches userspace layout");
+    }
     if (ctx != 0) {
         CHECK_RET(syscall(SYS_io_destroy, ctx), 0,
                   "destroy context created by io_setup");

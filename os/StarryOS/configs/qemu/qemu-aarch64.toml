@@ -1,6 +1,6 @@
 args = [
   "-m",
-  "512M",
+  "2048M",
   "-nographic",
   "-cpu",
   "cortex-a53",

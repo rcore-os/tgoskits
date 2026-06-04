@@ -5,8 +5,20 @@
 #include <unistd.h>
 
 #define IOCB_CMD_NOOP 6
+#define AIO_RING_MAGIC 0xa10a10a1u
 
 typedef unsigned long aio_context_t;
+
+struct aio_ring {
+    uint32_t id;
+    uint32_t nr;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t magic;
+    uint32_t compat_features;
+    uint32_t incompat_features;
+    uint32_t header_length;
+};
 
 struct io_event {
     uint64_t data;
@@ -39,6 +51,12 @@ int main(void)
               "create context for io_getevents");
 
     if (ctx != 0) {
+        struct aio_ring *ring = (struct aio_ring *)(uintptr_t)ctx;
+        CHECK(ring->magic == AIO_RING_MAGIC,
+              "io_getevents context points to a readable AIO ring");
+        CHECK(ring->head == 0 && ring->tail == 0,
+              "new AIO ring has no completions");
+
         struct io_event events[2];
         memset(events, 0, sizeof(events));
         CHECK_RET(syscall(SYS_io_getevents, ctx, 0, 1, events, NULL), 0,
@@ -55,7 +73,7 @@ int main(void)
         struct iocb *list[1] = {&cb};
 
         CHECK_RET(syscall(SYS_io_submit, ctx, 1, list), 1,
-                  "queue one noop completion");
+                  "queue one noop request");
         memset(events, 0, sizeof(events));
         CHECK_RET(syscall(SYS_io_getevents, ctx, 1, 1, events, NULL), 1,
                   "io_getevents returns queued completion");
@@ -64,6 +82,8 @@ int main(void)
               "io_getevents preserves iocb pointer");
         CHECK(events[0].res == 0 && events[0].res2 == 0,
               "io_getevents reports noop success");
+        CHECK(ring->head == ring->tail,
+              "io_getevents advances AIO ring head after draining");
         CHECK_RET(syscall(SYS_io_getevents, ctx, 0, 1, events, NULL), 0,
                   "io_getevents drains completions");
 

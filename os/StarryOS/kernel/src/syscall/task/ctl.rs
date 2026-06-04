@@ -99,14 +99,114 @@ pub fn sys_personality(persona: usize) -> AxResult<isize> {
     Ok(old as isize)
 }
 
+/// Get NUMA memory policy for a thread.
+///
+/// For single-node systems (which StarryOS currently models), all memory
+/// is on node 0 with default policy MPOL_DEFAULT.
+///
+/// Arguments:
+/// - policy: output pointer for policy mode (MPOL_DEFAULT, MPOL_BIND, etc.)
+/// - nodemask: output pointer for node mask bitmap
+/// - maxnode: size of nodemask bitmap in bits
+/// - addr: memory address to query (when MPOL_F_ADDR flag set)
+/// - flags: MPOL_F_NODE, MPOL_F_ADDR, MPOL_F_MEMS_ALLOWED
+///
+/// Returns 0 on success, or -errno on error.
 pub fn sys_get_mempolicy(
-    _policy: *mut i32,
-    _nodemask: *mut usize,
-    _maxnode: usize,
+    policy: *mut i32,
+    nodemask: *mut usize,
+    maxnode: usize,
     _addr: usize,
-    _flags: usize,
+    flags: usize,
 ) -> AxResult<isize> {
-    warn!("Dummy get_mempolicy called");
+    // NUMA memory policy constants from <linux/mempolicy.h>
+    const MPOL_DEFAULT: i32 = 0;
+    const MPOL_F_NODE: usize = 1 << 0;
+    const MPOL_F_MEMS_ALLOWED: usize = 1 << 2;
+
+    debug!(
+        "sys_get_mempolicy <= policy: {:?}, nodemask: {:?}, maxnode: {}, flags: {:#x}",
+        policy, nodemask, maxnode, flags
+    );
+
+    // StarryOS is single-node (node 0), so all queries return node 0 or default policy.
+
+    // MPOL_F_MEMS_ALLOWED: return the set of nodes allowed by cpusets/mempolicy
+    if flags & MPOL_F_MEMS_ALLOWED != 0 {
+        // Return node 0 is allowed
+        if !nodemask.is_null() && maxnode > 0 {
+            // Set bit 0 in the nodemask (node 0 is available)
+            nodemask.vm_write(1usize)?;
+        }
+        return Ok(0);
+    }
+
+    // MPOL_F_NODE: return the node ID that addr belongs to
+    if flags & MPOL_F_NODE != 0 {
+        // All addresses belong to node 0
+        if !policy.is_null() {
+            policy.vm_write(0i32)?;
+        }
+        return Ok(0);
+    }
+
+    // Default: return the current memory policy
+    // For a single-node system, always MPOL_DEFAULT with node 0 allowed
+    if !policy.is_null() {
+        policy.vm_write(MPOL_DEFAULT)?;
+    }
+
+    if !nodemask.is_null() && maxnode > 0 {
+        // Set bit 0 in the nodemask (node 0 is available)
+        nodemask.vm_write(1usize)?;
+    }
+
+    Ok(0)
+}
+
+/// Set NUMA memory policy for a thread.
+///
+/// For single-node systems, this is a no-op that always succeeds.
+///
+/// Arguments:
+/// - mode: policy mode (MPOL_DEFAULT, MPOL_BIND, MPOL_INTERLEAVE, etc.)
+/// - nodemask: node mask bitmap
+/// - maxnode: size of nodemask bitmap in bits
+///
+/// Returns 0 on success.
+pub fn sys_set_mempolicy(mode: i32, _nodemask: *const usize, _maxnode: usize) -> AxResult<isize> {
+    debug!("sys_set_mempolicy <= mode: {}", mode);
+
+    // Single-node system: accept any policy and ignore it
+    // All memory is on node 0, so policy has no effect
+    Ok(0)
+}
+
+/// Bind memory range to NUMA nodes.
+///
+/// For single-node systems, this is a no-op that always succeeds.
+///
+/// Arguments:
+/// - addr: start address of memory range
+/// - len: length of memory range
+/// - mode: policy mode
+/// - nodemask: node mask bitmap
+/// - maxnode: size of nodemask bitmap in bits
+/// - flags: MPOL_MF_STRICT, MPOL_MF_MOVE, MPOL_MF_MOVE_ALL
+///
+/// Returns 0 on success.
+pub fn sys_mbind(
+    _addr: usize,
+    _len: usize,
+    mode: i32,
+    _nodemask: *const usize,
+    _maxnode: usize,
+    _flags: u32,
+) -> AxResult<isize> {
+    debug!("sys_mbind <= mode: {}", mode);
+
+    // Single-node system: accept any binding and ignore it
+    // All memory is already on node 0
     Ok(0)
 }
 

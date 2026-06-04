@@ -1,6 +1,6 @@
 args = [
   "-m",
-  "512M",
+  "8192M",
   "-nographic",
   "-device",
   "virtio-blk-pci,drive=disk0",
