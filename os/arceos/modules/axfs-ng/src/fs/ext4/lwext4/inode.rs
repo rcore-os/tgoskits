@@ -208,6 +208,8 @@ impl DirNodeOps for Inode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         let inode_type = match node_type {
             NodeType::Fifo => InodeType::Fifo,
