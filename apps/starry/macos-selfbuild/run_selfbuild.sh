@@ -73,6 +73,12 @@ emit_export() {
 qemu="$(find_tool "${QEMU:-}" qemu-system-aarch64 /opt/homebrew/bin/qemu-system-aarch64)"
 debugfs="$(find_tool "${DEBUGFS:-}" debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 
+git_value() {
+    local fallback="$1"
+    shift
+    git -C "$repo_root" "$@" 2>/dev/null || printf '%s\n' "$fallback"
+}
+
 kernel="${KERNEL:-$repo_root/target/aarch64-unknown-none-softfloat/release/starryos.bin}"
 rootfs="${ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img}"
 smp="${SMP:-8}"
@@ -97,6 +103,14 @@ if [[ ! -f "$rootfs" ]]; then
     echo "rootfs not found: $rootfs" >&2
     exit 1
 fi
+
+actual_commit="$(git_value unknown rev-parse HEAD)"
+if [[ -n "${TGOSKITS_COMMIT:-}" && "$actual_commit" != "unknown" && "$TGOSKITS_COMMIT" != "$actual_commit" ]]; then
+    echo "TGOSKITS_COMMIT=$TGOSKITS_COMMIT does not match workspace HEAD $actual_commit" >&2
+    exit 1
+fi
+source_commit="${TGOSKITS_COMMIT:-$actual_commit}"
+source_ref="${TGOSKITS_REF:-$(git_value detached symbolic-ref --quiet --short HEAD)}"
 
 mkdir -p "$(dirname "$work_rootfs")" "$(dirname "$log")" "$work_dir"
 cp "$rootfs" "$work_rootfs"
@@ -123,6 +137,8 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
     emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
     emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
+    emit_export "TGOSKITS_COMMIT" "$source_commit"
+    emit_export "TGOSKITS_REF" "$source_ref"
     if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then
         emit_export "EXTRA_RUSTFLAGS" "$EXTRA_RUSTFLAGS"
     fi
@@ -150,6 +166,7 @@ echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
 echo "qemu=$qemu"
 echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs qemu_timeout_sec=$qemu_timeout_sec"
+echo "source_commit=$source_commit source_ref=$source_ref"
 : >"$log"
 
 "$qemu" \

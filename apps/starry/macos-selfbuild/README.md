@@ -65,8 +65,10 @@ apps/starry/macos-selfbuild/prepare_rootfs.sh \
   --output-rootfs tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 ```
 
-`prepare_rootfs.sh` writes `/opt/tgoskits-src.tar`. The guest script extracts
-that tarball when `/opt/tgoskits/Cargo.toml` is not present.
+`prepare_rootfs.sh` writes `/opt/tgoskits-src.tar` and
+`/opt/tgoskits-src.meta`. The guest script extracts that tarball when
+`/opt/tgoskits/Cargo.toml` is not present, prints the source metadata, and checks
+it against `TGOSKITS_COMMIT` when that variable is supplied.
 
 ## Run
 
@@ -181,12 +183,13 @@ The workflow proves that StarryOS can self-build under an SMP guest. It also
 separates the remaining performance work into filesystem, scheduler/wakeup,
 wait/pipe/process, and Cargo critical-path costs.
 
-## QEMU Template
+## App Flow And QEMU Template
+
+`prebuild.sh` makes `cargo xtask starry app qemu --app macos-selfbuild` usable
+by generating an overlay with `/opt/starry-macos-run.sh`,
+`/opt/starry-macos-selfbuild.sh`, `/opt/tgoskits-src.tar`, and
+`/opt/tgoskits-src.meta`.
 
 `qemu-aarch64-hvf.toml` mirrors the direct QEMU setup used by the host runner.
-The direct runner is preferred because it can inject scripts into a temporary
-rootfs copy and stop QEMU as soon as the PASS/FAIL marker appears.
-
-The template remains useful for manual `cargo xtask starry qemu` experiments
-after `/opt/starry-macos-selfbuild.sh` and `/opt/starry-macos-run.sh` have been
-installed into the rootfs.
+The direct runner remains preferred for long operator runs because it works on a
+temporary rootfs copy and stops QEMU as soon as the PASS/FAIL marker appears.

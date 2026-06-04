@@ -8,6 +8,7 @@ work_dir="${WORK_DIR:-/tmp/starryos-selfbuild-src}"
 target_dir="${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
 source_tar="${SOURCE_TAR:-/opt/tgoskits-src.tar}"
+source_meta="${SOURCE_META:-/opt/tgoskits-src.meta}"
 profile="${PROFILE:-release}"
 cargo_subcommand="${CARGO_SUBCOMMAND:-build}"
 build_target="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
@@ -42,6 +43,27 @@ if [ ! -f "${source_dir}/Cargo.toml" ] && [ -f "$source_tar" ]; then
     echo "===${marker}-SOURCE-TAR-EXTRACT-END dir=${source_dir}==="
 fi
 
+source_meta_path=""
+for candidate in "$source_meta" "${source_dir}/.tgoskits-source-meta"; do
+    if [ -f "$candidate" ]; then
+        source_meta_path="$candidate"
+        break
+    fi
+done
+
+if [ -n "$source_meta_path" ]; then
+    echo "===${marker}-SOURCE-META-BEGIN path=${source_meta_path}==="
+    cat "$source_meta_path"
+    echo "===${marker}-SOURCE-META-END==="
+    actual_commit="$(sed -n 's/^commit=//p' "$source_meta_path" | tail -1)"
+    if [ -n "${TGOSKITS_COMMIT:-}" ] && [ "$actual_commit" != "$TGOSKITS_COMMIT" ]; then
+        echo "===${marker}-SOURCE-META-MISMATCH expected=${TGOSKITS_COMMIT} actual=${actual_commit}==="
+        finish_guest 2
+    fi
+else
+    echo "===${marker}-SOURCE-META-MISSING==="
+fi
+
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rust-nightly/bin"
 export LD_LIBRARY_PATH="/usr/lib:/opt/rust-nightly/lib:${LD_LIBRARY_PATH:-}"
 export RUSTC="${RUSTC:-/opt/rustc-nightly-sysroot}"
@@ -62,7 +84,7 @@ if [ "$source_tmpfs" = "1" ]; then
     echo "===${marker}-SOURCE-COPY-BEGIN from=${source_dir} to=${work_dir}==="
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
-    for path in Cargo.toml Cargo.lock rust-toolchain.toml .cargo apps components drivers memory os platforms scripts test-suit tools vendor virtualization xtask; do
+    for path in Cargo.toml Cargo.lock rust-toolchain.toml .tgoskits-source-meta .cargo apps components drivers memory os platforms scripts test-suit tools vendor virtualization xtask; do
         if [ -e "${source_dir}/${path}" ]; then
             cp -a "${source_dir}/${path}" "${work_dir}/"
         fi
