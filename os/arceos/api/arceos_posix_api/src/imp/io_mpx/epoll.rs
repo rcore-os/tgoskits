@@ -32,6 +32,7 @@ struct WatchedEvent {
     file: Weak<dyn FileLike>,
     event: ctypes::epoll_event,
     last_ready: u32,
+    last_readiness_version: u64,
     disabled: bool,
 }
 
@@ -44,6 +45,7 @@ impl WatchedEvent {
             file: Arc::downgrade(&file),
             event,
             last_ready: 0,
+            last_readiness_version: 0,
             disabled: false,
         }
     }
@@ -52,6 +54,7 @@ impl WatchedEvent {
         self.file = Arc::downgrade(&file);
         self.event = event;
         self.last_ready = 0;
+        self.last_readiness_version = 0;
         self.disabled = false;
     }
 
@@ -67,9 +70,9 @@ impl WatchedEvent {
         self.event.events & ctypes::EPOLLONESHOT != 0
     }
 
-    fn current_ready(&self) -> u32 {
+    fn current_ready(&self) -> (u32, u64) {
         let Some(file) = self.file.upgrade() else {
-            return 0;
+            return (0, 0);
         };
         match file.poll() {
             Ok(state) => {
@@ -81,18 +84,22 @@ impl WatchedEvent {
                 if state.writable {
                     ready |= interest & EPOLL_WRITE_EVENTS;
                 }
-                ready
+                (ready, state.readiness_version)
             }
-            Err(_) => ctypes::EPOLLERR,
+            Err(_) => (ctypes::EPOLLERR, 0),
         }
     }
 
-    fn deliverable_events(&self, ready: u32) -> u32 {
+    fn deliverable_events(&self, ready: u32, readiness_version: u64) -> u32 {
         if self.disabled {
             return 0;
         }
         let events = if self.is_edge_triggered() {
-            ready & !self.last_ready
+            if readiness_version == self.last_readiness_version {
+                ready & !self.last_ready
+            } else {
+                ready
+            }
         } else {
             ready
         };
@@ -177,9 +184,10 @@ impl EpollInstance {
                 break;
             }
 
-            let ready = watch.current_ready();
-            let deliverable = watch.deliverable_events(ready);
+            let (ready, readiness_version) = watch.current_ready();
+            let deliverable = watch.deliverable_events(ready, readiness_version);
             watch.last_ready = ready;
+            watch.last_readiness_version = readiness_version;
             if deliverable == 0 {
                 continue;
             }
@@ -199,8 +207,8 @@ impl EpollInstance {
         let mut ready_list = self.events.lock();
         ready_list.retain(|_, watch| !watch.is_closed());
         ready_list.values().any(|watch| {
-            let ready = watch.current_ready();
-            watch.deliverable_events(ready) != 0
+            let (ready, readiness_version) = watch.current_ready();
+            watch.deliverable_events(ready, readiness_version) != 0
         })
     }
 }
@@ -232,6 +240,7 @@ impl FileLike for EpollInstance {
         Ok(ax_io::PollState {
             readable: self.has_ready_events(),
             writable: false,
+            readiness_version: 0,
         })
     }
 

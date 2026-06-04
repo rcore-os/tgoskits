@@ -22,6 +22,7 @@ pub struct PipeRingBuffer {
     head: usize,
     tail: usize,
     status: RingBufferStatus,
+    readiness_version: u64,
 }
 
 impl PipeRingBuffer {
@@ -31,6 +32,7 @@ impl PipeRingBuffer {
             head: 0,
             tail: 0,
             status: RingBufferStatus::Empty,
+            readiness_version: 0,
         }
     }
 
@@ -53,6 +55,10 @@ impl PipeRingBuffer {
         c
     }
 
+    pub fn notify_readiness_changed(&mut self) {
+        self.readiness_version = self.readiness_version.wrapping_add(1);
+    }
+
     /// Get the length of remaining data in the buffer
     pub const fn available_read(&self) -> usize {
         if matches!(self.status, RingBufferStatus::Empty) {
@@ -71,6 +77,10 @@ impl PipeRingBuffer {
         } else {
             RING_BUFFER_SIZE - self.available_read()
         }
+    }
+
+    pub const fn readiness_version(&self) -> u64 {
+        self.readiness_version
     }
 }
 
@@ -130,15 +140,18 @@ impl FileLike for Pipe {
             }
             for _ in 0..loop_read {
                 if read_size == max_len {
+                    ring_buffer.notify_readiness_changed();
                     return Ok(read_size);
                 }
                 buf[read_size] = ring_buffer.read_byte();
                 read_size += 1;
                 if read_size == max_len {
+                    ring_buffer.notify_readiness_changed();
                     return Ok(read_size);
                 }
             }
             if read_size > 0 {
+                ring_buffer.notify_readiness_changed();
                 return Ok(read_size);
             }
         }
@@ -164,11 +177,13 @@ impl FileLike for Pipe {
             }
             for _ in 0..loop_write {
                 if write_size == max_len {
+                    ring_buffer.notify_readiness_changed();
                     return Ok(write_size);
                 }
                 ring_buffer.write_byte(buf[write_size]);
                 write_size += 1;
                 if write_size == max_len {
+                    ring_buffer.notify_readiness_changed();
                     return Ok(write_size);
                 }
             }
@@ -197,6 +212,7 @@ impl FileLike for Pipe {
         Ok(PollState {
             readable: self.readable() && buf.available_read() > 0,
             writable: self.writable() && buf.available_write() > 0,
+            readiness_version: buf.readiness_version(),
         })
     }
 
