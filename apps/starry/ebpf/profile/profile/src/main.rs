@@ -1,38 +1,23 @@
-use std::{
-    process,
-    sync::atomic::{AtomicBool, Ordering},
-    thread,
-    time::Duration,
-};
+use std::{fs, thread, time::Duration};
 
 use aya::{maps::HashMap, programs::KProbe};
 
-/// Set from the SIGTERM/SIGINT handler so the main thread breaks out of its
-/// poll loop, dumps the histogram, and exits cleanly (which drops the loaded
-/// program and detaches the kprobe).
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_signal(_sig: i32) {
-    STOP.store(true, Ordering::SeqCst);
+// Resolve the (possibly mangled) kallsyms entry for the central syscall
+// dispatcher `handle_syscall`. The kernel's kprobe lookup matches the kallsyms
+// name exactly, so hand aya the real symbol string.
+fn resolve_handle_syscall() -> anyhow::Result<String> {
+    let table = fs::read_to_string("/proc/kallsyms")?;
+    for line in table.lines() {
+        if let Some(name) = line.split_whitespace().nth(2) {
+            if name.contains("handle_syscall") {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    anyhow::bail!("handle_syscall not found in /proc/kallsyms")
 }
 
 fn main() -> anyhow::Result<()> {
-    // Usage: profile <mangled_handle_syscall_symbol>
-    //
-    // The symbol is resolved by the kernel through /proc/kallsyms, so it must
-    // be the *mangled* name. Get it with:
-    //   SYM=$(grep -m1 handle_syscall /proc/kallsyms | awk '{print $3}')
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: profile <mangled_handle_syscall_symbol>");
-        eprintln!(
-            "  e.g. SYM=$(grep -m1 handle_syscall /proc/kallsyms | awk '{{print $3}}'); profile \
-             \"$SYM\""
-        );
-        process::exit(2);
-    }
-    let symbol = &args[1];
-
     // Bump RLIMIT_MEMLOCK so map allocation is not capped on kernels that
     // still use rlimit-based BPF memory accounting.
     let rlim = libc::rlimit {
@@ -42,40 +27,53 @@ fn main() -> anyhow::Result<()> {
     // SAFETY: a valid `rlimit` for a known resource id.
     unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
 
-    // Dump-and-exit on SIGTERM (test harness) / SIGINT (Ctrl-C).
-    // SAFETY: `on_signal` is async-signal-safe (a single atomic store).
-    unsafe {
-        libc::signal(libc::SIGTERM, on_signal as *const () as usize);
-        libc::signal(libc::SIGINT, on_signal as *const () as usize);
-    }
-
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/profile"
     )))?;
 
+    let symbol = resolve_handle_syscall()?;
     let program: &mut KProbe = ebpf
         .program_mut("profile")
         .expect("profile program missing")
         .try_into()?;
     program.load()?;
-    program.attach(symbol, 0)?;
-    // The test harness waits for this line before driving the workload.
-    println!("profile: attached kprobe to {symbol}");
+    program.attach(&symbol, 0)?;
+    println!("PROFILE: attached kprobe to {symbol}");
 
-    // Profile until signalled. No fixed deadline: the harness controls the
-    // window by sending SIGTERM after its workload finishes.
-    while !STOP.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(100));
+    // Drive a varied syscall workload so the histogram spans many distinct
+    // syscall numbers (not just one hot key).
+    let workload = thread::spawn(|| drive_workload(Duration::from_secs(6)));
+    workload.join().ok();
+    // Let the last probe hits settle into the map.
+    thread::sleep(Duration::from_millis(300));
+
+    dump_histogram(&ebpf)
+}
+
+/// Issue a mix of syscalls repeatedly so the profile is non-trivial.
+fn drive_workload(dur: Duration) {
+    let deadline = std::time::Instant::now() + dur;
+    while std::time::Instant::now() < deadline {
+        unsafe {
+            libc::syscall(libc::SYS_getpid);
+            libc::syscall(libc::SYS_getuid);
+            libc::syscall(libc::SYS_getgid);
+            libc::syscall(libc::SYS_gettid);
+            // sched_yield + nanosleep add scheduling-related syscalls.
+            libc::sched_yield();
+        }
+        let ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000,
+        };
+        unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
     }
-
-    dump_histogram(&ebpf)?;
-    Ok(())
 }
 
 /// Iterate the syscall histogram, rank it by hit count, and print a parseable
 /// report. The trailing `PROFILE_END` summary line carries the aggregates the
-/// verification script asserts on.
+/// assertion checks.
 fn dump_histogram(ebpf: &aya::Ebpf) -> anyhow::Result<()> {
     let hist: HashMap<_, u32, u64> =
         HashMap::try_from(ebpf.map("SYSCALL_HIST").expect("SYSCALL_HIST map missing"))?;
@@ -102,7 +100,18 @@ fn dump_histogram(ebpf: &aya::Ebpf) -> anyhow::Result<()> {
         "PROFILE_END total={total} distinct={distinct} top1_sysno={top1_sysno} \
          top1_count={top1_count} top1_pct={top1_pct:.1}"
     );
-    Ok(())
+
+    // Anti-fallback: a working handle_syscall kprobe + deref must produce a
+    // histogram with many samples spanning several small, real syscall numbers
+    // (the original bug recorded huge UserContext-pointer keys).
+    let all_small = rows.iter().all(|(sysno, _)| *sysno < 1024);
+    if total >= 50 && distinct >= 3 && all_small {
+        println!("PROFILE_PASS: total={total} distinct={distinct}");
+        Ok(())
+    } else {
+        println!("PROFILE_FAIL: total={total} distinct={distinct} all_small={all_small}");
+        std::process::exit(1);
+    }
 }
 
 fn pct_of(count: u64, total: u64) -> f64 {

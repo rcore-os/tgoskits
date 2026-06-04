@@ -1,4 +1,8 @@
-use std::{thread, time::Duration};
+use std::{
+    collections::BTreeSet,
+    thread,
+    time::{Duration, Instant},
+};
 
 use aya::{
     maps::{PerfEventArray, perf::PerfEvent},
@@ -40,16 +44,30 @@ fn main() -> anyhow::Result<()> {
         .try_into()?;
     program.load()?;
     program.attach("sched_switch")?;
-    eprintln!(
-        "sched_trace: attached sched_switch, draining {} cpu buffer(s)",
+    println!(
+        "SCHED_TRACE: attached sched_switch, draining {} cpu buffer(s)",
         buffers.len()
     );
 
-    // Drain loop. `println!` goes through Rust's line-buffered stdout, so each
-    // completed record is flushed on its trailing newline; a SIGTERM from the
-    // test harness cannot lose already-printed lines. The raw tracepoint
-    // unregisters itself when this process exits and the perf fds close.
-    loop {
+    // Drive scheduler activity: worker threads that alternately sleep and spin
+    // force context switches so `sched_switch` fires with several distinct
+    // next tids.
+    for i in 0..4 {
+        thread::spawn(move || {
+            loop {
+                // Mix of yielding and short sleeps to provoke switches.
+                thread::yield_now();
+                thread::sleep(Duration::from_millis(2 + i));
+            }
+        });
+    }
+
+    // Drain for a fixed window, then assert. The raw tracepoint unregisters
+    // itself when this process exits and the perf fds close.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut total: u64 = 0;
+    let mut next_tids: BTreeSet<u64> = BTreeSet::new();
+    while Instant::now() < deadline {
         let mut got_any = false;
         for buf in buffers.iter_mut() {
             if !buf.readable() {
@@ -58,10 +76,14 @@ fn main() -> anyhow::Result<()> {
             buf.for_each(|event| match event {
                 PerfEvent::Sample { head, tail } => {
                     if let Some(ev) = decode(head, tail) {
-                        println!(
-                            "prev={} next={} state={} ts={}",
-                            ev.prev_tid, ev.next_tid, ev.prev_state, ev.ts_ns
-                        );
+                        total += 1;
+                        next_tids.insert(ev.next_tid);
+                        if total <= 20 {
+                            println!(
+                                "prev={} next={} state={} ts={}",
+                                ev.prev_tid, ev.next_tid, ev.prev_state, ev.ts_ns
+                            );
+                        }
                         got_any = true;
                     }
                 }
@@ -73,6 +95,19 @@ fn main() -> anyhow::Result<()> {
         if !got_any {
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    let distinct = next_tids.len();
+    println!("SCHED_TRACE: total records = {total}, distinct next tids = {distinct}");
+
+    // Anti-fallback: a working sched_switch raw tracepoint + perf ringbuf must
+    // produce many records spanning more than one task (generous TCG slack).
+    if total >= 20 && distinct >= 2 {
+        println!("SCHED_TRACE_PASS: {total} records, {distinct} distinct next tids");
+        Ok(())
+    } else {
+        println!("SCHED_TRACE_FAIL: only {total} records, {distinct} distinct next tids");
+        std::process::exit(1);
     }
 }
 

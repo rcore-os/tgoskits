@@ -1,28 +1,30 @@
-use aya::programs::KProbe;
+use std::{fs, time::Duration};
+
+use aya::{maps::HashMap, programs::KProbe};
 #[rustfmt::skip]
 use log::{debug, warn};
-use tokio::signal;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args_num = std::env::args().len();
-    if args_num != 2 {
-        println!("Usage: kret {{mangled_func_name}}");
-        println!(
-            "You can get the mangled function name by running `cat /proc/kallsyms | grep -m 1 sys_getpid`"
-        );
-        return Ok(());
+// Resolve the (possibly mangled) kallsyms entry for `sys_getpid`. The kernel's
+// kprobe lookup matches the kallsyms name exactly, so hand aya the real symbol.
+fn resolve_sym(needle: &str) -> anyhow::Result<String> {
+    let table = fs::read_to_string("/proc/kallsyms")?;
+    for line in table.lines() {
+        if let Some(name) = line.split_whitespace().nth(2) {
+            if name.contains(needle) {
+                return Ok(name.to_string());
+            }
+        }
     }
-    let args: Vec<String> = std::env::args().collect();
-    let target_syscall_entry = &args[1];
+    anyhow::bail!("{needle} not found in /proc/kallsyms")
+}
 
+fn main() -> anyhow::Result<()> {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Warn)
         .format_timestamp(None)
         .init();
 
-    // Bump the memlock rlimit. This is needed for older kernels that don't use the
-    // new memcg based accounting, see https://lwn.net/Articles/837122/
+    // Bump the memlock rlimit, see https://lwn.net/Articles/837122/
     let rlim = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,
@@ -32,40 +34,41 @@ async fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
-    // This will include your eBPF object file as raw bytes at compile-time and load it at
-    // runtime. This approach is recommended for most real-world use cases. If you would
-    // like to specify the eBPF program at runtime rather than at compile-time, you can
-    // reach for `Bpf::load_file` instead.
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/kret"
     )))?;
-    match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(e) => {
-            // This can happen if you remove all log statements from your eBPF program.
-            warn!("failed to initialize eBPF logger: {e}");
-        }
-        Ok(logger) => {
-            let mut logger =
-                tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE)?;
-            tokio::task::spawn(async move {
-                loop {
-                    let mut guard = logger.readable_mut().await.unwrap();
-                    guard.get_inner_mut().flush();
-                    guard.clear_ready();
-                }
-            });
-        }
-    }
+
+    let target = resolve_sym("sys_getpid")?;
+    println!("KRET: kretprobe target symbol = {target}");
     let program: &mut KProbe = ebpf.program_mut("kret").unwrap().try_into()?;
     program.load()?;
-    // TODO: support mangled symbol name
-    program.attach(target_syscall_entry, 0)?;
+    // A kretprobe-typed program attaches as a return probe.
+    program.attach(&target, 0)?;
 
-    let ctrl_c = signal::ctrl_c();
-    println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
-    println!("Exiting...");
+    // Deterministic workload: a fixed number of getpid(2) calls, each of which
+    // returns through sys_getpid and must trip the kretprobe.
+    const N: u64 = 500;
+    println!("KRET: issuing {N} getpid() calls");
+    for _ in 0..N {
+        unsafe { libc::syscall(libc::SYS_getpid) };
+    }
+    std::thread::sleep(Duration::from_millis(500));
 
-    Ok(())
+    let map: HashMap<_, u32, u64> =
+        HashMap::try_from(ebpf.map("KRET_HITS").expect("KRET_HITS missing"))?;
+    let hits = map.get(&0u32, 0).unwrap_or(0);
+    println!("KRET: kretprobe fired {hits} times (drove {N} getpid calls)");
+
+    // Anti-fallback: require the return-probe count to clearly reflect the
+    // workload (generous TCG slack), not merely be non-zero.
+    let threshold = N / 5;
+    if hits >= threshold {
+        println!("KRET_PASS: kretprobe fired {hits} times (>= {threshold})");
+        Ok(())
+    } else {
+        warn!("kretprobe fired too few times: {hits} < {threshold}");
+        println!("KRET_FAIL: kretprobe fired {hits} times (< {threshold})");
+        std::process::exit(1);
+    }
 }

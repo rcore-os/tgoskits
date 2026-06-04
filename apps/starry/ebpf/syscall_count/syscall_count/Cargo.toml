@@ -10,18 +10,9 @@ syscall_count-common = { path = "../syscall_count-common", features = ["user"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
-aya-log = { workspace = true }
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
-tokio = { workspace = true, features = [
-    "macros",
-    "rt",
-    "rt-multi-thread",
-    "net",
-    "signal",
-    "time",
-] }
 
 [build-dependencies]
 anyhow = { workspace = true }

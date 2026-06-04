@@ -1,28 +1,40 @@
-use aya::programs::{UProbe, uprobe::UProbeScope};
+use std::time::Duration;
+
+use aya::{
+    maps::HashMap,
+    programs::{UProbe, uprobe::UProbeScope},
+};
 use clap::Parser;
 #[rustfmt::skip]
 use log::{debug, warn};
-use tokio::signal;
 
 #[derive(Debug, Parser)]
 struct Opt {
-    #[clap(short, long)]
-    pid: Option<i32>,
+    /// Path to the ELF that hosts `uprobe_test`. Defaults to this executable.
+    #[clap(long)]
+    target: Option<String>,
+
+    /// How long to drive the workload before reading the map back, in seconds.
+    #[clap(long, default_value_t = 8)]
+    secs: u64,
 }
 
+// The function the uprobe is attached to. `#[inline(never)]` + `#[no_mangle]`
+// keep it as a real, named symbol so aya can resolve its file offset.
 #[inline(never)]
 #[unsafe(no_mangle)]
 fn uprobe_test(a: u32, b: Option<u32>) -> u32 {
-    println!("In uprobe_test: a = {}, b = {:?}", a, b);
-    a + b.unwrap_or(0)
+    std::hint::black_box(a).wrapping_add(b.unwrap_or(0))
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let _opt = Opt::parse();
+// The argument the workload always passes; the loader asserts the HashMap key.
+const PROBE_ARG: u32 = 42;
+
+fn main() -> anyhow::Result<()> {
+    let opt = Opt::parse();
 
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Warn)
         .format_timestamp(None)
         .init();
 
@@ -37,63 +49,75 @@ async fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
-    // This will include your eBPF object file as raw bytes at compile-time and load it at
-    // runtime. This approach is recommended for most real-world use cases. If you would
-    // like to specify the eBPF program at runtime rather than at compile-time, you can
-    // reach for `Bpf::load_file` instead.
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/upb"
     )))?;
 
-    tokio::task::spawn(async move {
-        // let start = tokio::time::Instant::now();
-        loop {
-            // call the uprobe_test function to trigger the uprobe
-            uprobe_test(42, Some(58));
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            // let elapsed = start.elapsed().as_secs();
-            // println!("eBPF program has been running for {elapsed} seconds");
-        }
-    });
-
-    match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(e) => {
-            // This can happen if you remove all log statements from your eBPF program.
-            warn!("failed to initialize eBPF logger: {e}");
-        }
-        Ok(logger) => {
-            let mut logger =
-                tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE)?;
-            tokio::task::spawn(async move {
-                loop {
-                    let mut guard = logger.readable_mut().await.unwrap();
-                    guard.get_inner_mut().flush();
-                    guard.clear_ready();
-                }
-            });
-        }
-    }
-    // let Opt { pid } = opt;
     let program: &mut UProbe = ebpf.program_mut("upb").unwrap().try_into()?;
     program.load()?;
 
+    // The kernel resolves a uprobe by matching the perf-event's ELF path against
+    // a file-backed VMA in the target process, so the target must be the exact
+    // path this process was exec'd from. Default to the current executable.
+    let target = match opt.target {
+        Some(t) => t,
+        None => std::env::current_exe()?.to_string_lossy().into_owned(),
+    };
     let pid = std::process::id() as i32;
-    println!("Attaching to process with PID: {}", pid);
     println!(
-        "Attaching uprobe to function 'uprobe_test': {:#x} in current process",
+        "UPROBE: attaching to '{}' uprobe_test in pid {}",
+        target, pid
+    );
+    println!(
+        "UPROBE: uprobe_test symbol addr = {:#x}",
         uprobe_test as *const () as usize
     );
-    // program.attach("getaddrinfo", "libc", UProbeScope::CallingProcess)?;
-    // aya's UProbe::attach now takes a UProbeScope (pid + cookie collapsed into
-    // it). `CallingProcess` = this process (== the old `Some(pid)` with pid =
-    // std::process::id()).
-    program.attach("uprobe_test", "upb", UProbeScope::CallingProcess)?;
+    // Warm up: execute the probed function once so its text page is faulted in
+    // before arming. The kernel reads the original instruction bytes and plants
+    // the breakpoint through that page's physical frame, so it must be resident.
+    let _ = uprobe_test(PROBE_ARG, Some(58));
+    program.attach("uprobe_test", &target, UProbeScope::CallingProcess)?;
 
-    let ctrl_c = signal::ctrl_c();
-    println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
-    println!("Exiting...");
+    // Drive the workload: call uprobe_test in a tight-ish loop so the uprobe
+    // fires a deterministic number of times.
+    let deadline = std::time::Instant::now() + Duration::from_secs(opt.secs);
+    let mut calls: u64 = 0;
+    while std::time::Instant::now() < deadline {
+        uprobe_test(PROBE_ARG, Some(58));
+        calls += 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    println!("UPROBE: issued {} uprobe_test({}) calls", calls, PROBE_ARG);
 
-    Ok(())
+    // Read the HashMap back: the uprobe bumps UPROBE_HITS[arg] on every hit.
+    let hits: HashMap<_, u32, u64> =
+        HashMap::try_from(ebpf.map("UPROBE_HITS").expect("UPROBE_HITS map missing"))?;
+    let mut max_count: u64 = 0;
+    for entry in hits.iter() {
+        if let Ok((key, value)) = entry {
+            println!("UPROBE: hits for arg={} -> {}", key, value);
+            if key == PROBE_ARG {
+                max_count = value;
+            }
+        }
+    }
+
+    // Anti-fallback assertion: require the recorded count to clearly reflect the
+    // workload (generous TCG slack), not merely be non-zero.
+    let threshold = (calls / 2).max(10);
+    if max_count >= threshold {
+        println!(
+            "UPROBE_PASS: arg={} fired {} times (>= {})",
+            PROBE_ARG, max_count, threshold
+        );
+        Ok(())
+    } else {
+        warn!("uprobe did not fire enough: {max_count} < {threshold}");
+        println!(
+            "UPROBE_FAIL: arg={} fired {} times (< {})",
+            PROBE_ARG, max_count, threshold
+        );
+        std::process::exit(1);
+    }
 }
