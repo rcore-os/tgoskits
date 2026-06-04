@@ -560,6 +560,10 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     if !old.has_cap_setgid() {
         return Err(AxError::OperationNotPermitted);
     }
+    // Linux 3.19+: writing "deny" to /proc/self/setgroups prevents setgroups(2).
+    if thread.setgroups_deny() {
+        return Err(AxError::OperationNotPermitted);
+    }
     if size > NGROUPS_MAX {
         return Err(AxError::InvalidInput);
     }
