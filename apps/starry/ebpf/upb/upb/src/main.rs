@@ -1,4 +1,4 @@
-use aya::programs::UProbe;
+use aya::programs::{UProbe, uprobe::UProbeScope};
 use clap::Parser;
 #[rustfmt::skip]
 use log::{debug, warn};
@@ -84,8 +84,11 @@ async fn main() -> anyhow::Result<()> {
         "Attaching uprobe to function 'uprobe_test': {:#x} in current process",
         uprobe_test as *const () as usize
     );
-    // program.attach("getaddrinfo", "libc", pid, None /* cookie */)?;
-    program.attach("uprobe_test", "upb", Some(pid), None /* cookie */)?;
+    // program.attach("getaddrinfo", "libc", UProbeScope::CallingProcess)?;
+    // aya's UProbe::attach now takes a UProbeScope (pid + cookie collapsed into
+    // it). `CallingProcess` = this process (== the old `Some(pid)` with pid =
+    // std::process::id()).
+    program.attach("uprobe_test", "upb", UProbeScope::CallingProcess)?;
 
     let ctrl_c = signal::ctrl_c();
     println!("Waiting for Ctrl-C...");
