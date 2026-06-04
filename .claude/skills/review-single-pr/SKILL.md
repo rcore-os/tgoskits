@@ -58,6 +58,38 @@ gh api graphql \
 
 For failing, cancelled, missing, or suspicious GitHub Actions checks, follow `github:gh-fix-ci`: use the GitHub app/MCP for PR context and use `gh` for Actions check/log inspection because the connector does not expose that workflow end to end. Remote CI is evidence, not a substitute for local review and targeted validation.
 
+When a reviewer or page summary claims CI is "all skipped", or when the GitHub UI and API summaries appear inconsistent, verify the current PR head directly before drawing conclusions:
+
+1. Resolve the current PR head SHA (`headRefOid` / `head.sha`) and query checks for that exact SHA, not an older reviewed commit or a stale merge ref.
+2. Prefer GraphQL `statusCheckRollup` and check suites/check runs, because they report GitHub Actions check runs and their aggregate state:
+   ```graphql
+   query($owner:String!, $repo:String!, $sha:GitObjectID!) {
+     repository(owner:$owner, name:$repo) {
+       object(oid:$sha) { ... on Commit {
+         checkSuites(first:20) { nodes {
+           status conclusion
+           workflowRun { databaseId url workflow { name } }
+           checkRuns(first:100) { nodes { name status conclusion } }
+         } }
+         statusCheckRollup { state contexts(first:100) { nodes {
+           __typename
+           ... on CheckRun { name status conclusion detailsUrl }
+           ... on StatusContext { context state targetUrl }
+         } } }
+       } }
+     }
+   }
+   ```
+3. REST fallback: query Actions check runs and jobs by the same head SHA, then count conclusions instead of relying on a single UI label:
+   ```bash
+   gh api "repos/<owner>/<repo>/commits/<head-sha>/check-runs?per_page=100"
+   gh api "repos/<owner>/<repo>/actions/runs?head_sha=<head-sha>&per_page=100"
+   gh api "repos/<owner>/<repo>/actions/runs/<run-id>/jobs?per_page=100"
+   ```
+4. Do not use `GET /repos/<owner>/<repo>/commits/<sha>/status` by itself to decide Actions CI state. That endpoint reports classic commit statuses only; it may return `pending` with an empty `statuses` array even when GitHub Actions check runs and the workflow have already succeeded.
+5. Distinguish expected skipped matrix jobs from a truly skipped workflow. In this repository, mutually exclusive `run_host` / `run_container` jobs, branch-restricted publish jobs, or path-filtered jobs may be `skipped` while sibling jobs in the same workflow are `success`; that is not "all CI skipped". Summarize the evidence with counts such as `success=N, skipped=M, failure=0` and name the relevant successful or skipped checks.
+6. Treat skipped checks as suspicious only when the PR changed the surface that the skipped check is supposed to cover, when path filters skipped required coverage, or when every relevant check for the changed app/test/architecture was skipped. Otherwise, record them as expected CI matrix/path-filter behavior.
+
 Always inspect CI failures before submitting the review:
 
 1. Fetch check summaries and enough logs to classify each non-passing required check:
