@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 #[cfg(not(all(target_os = "uefi", feature = "board-asus-nuc15crh")))]
 compile_error!(
     "bootloader-http currently requires a UEFI target and --features board-asus-nuc15crh"
@@ -9,57 +11,136 @@ compile_error!(
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
 mod boards;
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+mod console;
+#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+mod entry;
+#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+mod http;
+#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
 mod uefi_boot;
 
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
 use uefi::{Status, prelude::*};
 
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+const MANIFEST_LIMIT: usize = 4096;
+#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+const BOOT_ROUND_RETRY_LIMIT: usize = 10;
+#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+const BOOT_ROUND_RETRY_STALL: core::time::Duration = core::time::Duration::from_secs(3);
+
+#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
 #[entry]
 fn efi_main() -> Status {
     uefi::helpers::init().expect("failed to initialize UEFI helpers");
-    uefi::println!("HTTP bootloader");
-    uefi::println!("board: {}", boards::active::BOARD_NAME);
-    uefi::println!("arch: {}", boards::active::ARCH_NAME);
-    uefi::println!("output: {}", boards::active::OUTPUT_FILE);
-    print_manifest_url();
-    smoke_manifest_parser();
+    for round in 1..=BOOT_ROUND_RETRY_LIMIT {
+        logln!("HTTP bootloader");
+        logln!("round: {round}/{BOOT_ROUND_RETRY_LIMIT}");
+        logln!("board: {}", boards::active::BOARD_NAME);
+        logln!("arch: {}", boards::active::ARCH_NAME);
+        logln!("output: {}", boards::active::OUTPUT_FILE);
+        if fetch_manifest() {
+            return Status::SUCCESS;
+        }
+        if round < BOOT_ROUND_RETRY_LIMIT {
+            logln!("boot_retry_wait: {} ms", BOOT_ROUND_RETRY_STALL.as_millis());
+            uefi::boot::stall(BOOT_ROUND_RETRY_STALL);
+        }
+    }
+    logln!("error: HTTP Boot retry limit reached");
     Status::SUCCESS
 }
 
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
-fn print_manifest_url() {
+fn fetch_manifest() -> bool {
     let mut manifest_url = [0u8; 1024];
     match uefi_boot::manifest_url_from_loaded_image(&mut manifest_url) {
-        Ok(url) => uefi::println!("manifest_url: {url}"),
-        Err(err) => uefi::println!("manifest_url_error: {err:?}"),
+        Ok(url) => {
+            logln!("manifest_url: {url}");
+            download_and_parse_manifest(url)
+        }
+        Err(err) => match boards::active::DEFAULT_MANIFEST_URL {
+            Some(url) => {
+                logln!("manifest_url_fallback: {url}");
+                download_and_parse_manifest(url)
+            }
+            None => {
+                logln!("manifest_url_error: {err:?}");
+                false
+            }
+        },
     }
 }
 
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
-fn smoke_manifest_parser() {
-    let manifest = br#"{
-        "kernel_url": "http://127.0.0.1/kernel.bin",
-        "kernel_size": 1,
-        "kernel_load_addr": "0x200000",
-        "entry_point": "0x200000",
-        "arch": "x86_64"
-    }"#;
-    match bootloader_common::parse_downloaded_manifest(manifest, 512) {
-        Ok(parsed) => uefi::println!(
-            "manifest: arch={} load={:#x} entry={:#x}",
-            parsed.arch,
-            parsed.kernel_load_addr,
-            parsed.entry_point
-        ),
-        Err(err) => uefi::println!("manifest_error: {err:?}"),
+fn download_and_parse_manifest(url: &str) -> bool {
+    let body = match http::download_body(url, MANIFEST_LIMIT) {
+        Ok(body) => body,
+        Err(err) => {
+            logln!(
+                "manifest_download_error: {err:?} after {} attempts",
+                http::retry_limit()
+            );
+            return false;
+        }
+    };
+
+    match bootloader_common::parse_downloaded_manifest(&body, MANIFEST_LIMIT) {
+        Ok(manifest) => {
+            if manifest.arch != boards::active::ARCH_NAME {
+                logln!(
+                    "manifest_arch_error: expected={} got={}",
+                    boards::active::ARCH_NAME,
+                    manifest.arch
+                );
+                return false;
+            }
+            logln!(
+                "manifest: arch={} load={:#x} entry={:#x} kernel_size={}",
+                manifest.arch,
+                manifest.kernel_load_addr,
+                manifest.entry_point,
+                manifest.kernel_size
+            );
+            logln!("kernel_url: {}", manifest.kernel_url);
+            match http::download_kernel(
+                manifest.kernel_url,
+                manifest.kernel_load_addr,
+                manifest.kernel_size,
+            ) {
+                Ok(kernel) => {
+                    logln!(
+                        "kernel_loaded: ptr={:p} pages={} size={}",
+                        kernel.ptr.as_ptr(),
+                        kernel.page_count,
+                        kernel.size
+                    );
+                    match entry::exit_boot_services_and_jump(manifest.entry_point) {
+                        Ok(()) => logln!("jump_error: entry returned unexpectedly"),
+                        Err(err) => logln!("jump_error: {err:?}"),
+                    }
+                    false
+                }
+                Err(err) => {
+                    logln!(
+                        "kernel_download_error: {err:?} after {} attempts",
+                        http::retry_limit()
+                    );
+                    false
+                }
+            }
+        }
+        Err(err) => {
+            logln!("manifest_parse_error: {err:?}");
+            false
+        }
     }
 }
 
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    uefi::println!("panic: {info}");
+    logln!("panic: {info}");
     loop {
         core::hint::spin_loop();
     }
