@@ -1,6 +1,6 @@
 # OScope-harness
 
-`OScope-harness` is a local StarryOS observability harness. It combines syscall behavior checks, qperf profiling, qperf A/B comparisons, a browser UI, and an MCP server for agent workflows.
+`OScope-harness` is a local StarryOS observability harness. It combines syscall behavior checks, qperf profiling, qperf A/B comparisons, a browser UI, and an MCP server for automation workflows.
 
 The harness is packaged under `apps/OScope-harness` and uses `apps/qperf` as the qperf tool package. It defaults to local execution with `--no-docker`; Docker remains a compatibility path only when explicitly requested.
 
