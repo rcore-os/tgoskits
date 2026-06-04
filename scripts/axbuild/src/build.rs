@@ -970,6 +970,7 @@ fake_dir={}
 target_name={}
 lld_args=("-m" "{}")
 link_search_dirs=()
+archive_args=()
 entry_symbol={}
 link_mode_args={}
 dynamic_platform={}
@@ -977,6 +978,27 @@ dynamic_platform={}
 add_link_search_dir() {{
     local dir="$1"
     [[ -n "$dir" ]] && link_search_dirs+=("$dir")
+}}
+
+append_lld_arg() {{
+    local arg="$1"
+    case "$arg" in
+        *.a|*.rlib)
+            archive_args+=("$arg")
+            ;;
+        *)
+            flush_archive_group
+            lld_args+=("$arg")
+            ;;
+    esac
+}}
+
+flush_archive_group() {{
+    if (( ${{#archive_args[@]}} == 0 )); then
+        return
+    fi
+    lld_args+=("--start-group" "${{archive_args[@]}}" "--end-group")
+    archive_args=()
 }}
 
 find_linker_script() {{
@@ -993,7 +1015,7 @@ add_arg() {{
     local arg="$1"
     if [[ "${{expect_link_search_dir:-0}}" == "1" ]]; then
         add_link_search_dir "$arg"
-        lld_args+=("$arg")
+        append_lld_arg "$arg"
         expect_link_search_dir=0
         return
     fi
@@ -1008,13 +1030,13 @@ add_arg() {{
             return
             ;;
         -L)
-            lld_args+=("$arg")
+            append_lld_arg "$arg"
             expect_link_search_dir=1
             return
             ;;
         -L*)
             add_link_search_dir "${{arg#-L}}"
-            lld_args+=("$arg")
+            append_lld_arg "$arg"
             return
             ;;
         -flavor)
@@ -1025,7 +1047,7 @@ add_arg() {{
             return
             ;;
         -lc)
-            lld_args+=("$fake_dir/libc.a")
+            append_lld_arg "$fake_dir/libc.a"
             return
             ;;
         -lgcc_s|-lgcc)
@@ -1033,33 +1055,34 @@ add_arg() {{
             ;;
         -lunwind)
             if [[ -f "$fake_dir/libunwind.a" ]]; then
-                lld_args+=("$fake_dir/libunwind.a")
+                append_lld_arg "$fake_dir/libunwind.a"
             fi
             return
             ;;
         -static-pie)
             if [[ "$dynamic_platform" == "1" ]]; then
-                lld_args+=("-pie")
+                append_lld_arg "-pie"
             else
-                lld_args+=("-static" "-no-pie")
+                append_lld_arg "-static"
+                append_lld_arg "-no-pie"
             fi
             return
             ;;
         -static)
             if [[ "$dynamic_platform" == "0" ]]; then
-                lld_args+=("-static")
+                append_lld_arg "-static"
             fi
             return
             ;;
         -pie)
             if [[ "$dynamic_platform" == "1" ]]; then
-                lld_args+=("-pie")
+                append_lld_arg "-pie"
             fi
             return
             ;;
         -no-pie)
             if [[ "$dynamic_platform" == "0" ]]; then
-                lld_args+=("-no-pie")
+                append_lld_arg "-no-pie"
             fi
             return
             ;;
@@ -1079,7 +1102,7 @@ add_arg() {{
             return
             ;;
     esac
-    lld_args+=("$arg")
+    append_lld_arg "$arg"
 }}
 
 for arg in "$@"; do
@@ -1092,6 +1115,7 @@ if [[ -z "$linker_script" ]]; then
     exit 1
 fi
 
+flush_archive_group
 lld_args+=("-L$fake_dir" "${{link_mode_args[@]}}" "--gc-sections" "-znorelro" "-znostart-stop-gc" "-T$linker_script" "-u" "$entry_symbol")
 exec rust-lld -flavor gnu "${{lld_args[@]}}"
 "#,
@@ -2776,7 +2800,12 @@ AX_IP = "10.0.2.15"
 
         assert!(wrapper.contains("rust-lld"));
         assert!(wrapper.contains("link_search_dirs=()"));
+        assert!(wrapper.contains("archive_args=()"));
         assert!(wrapper.contains("add_link_search_dir"));
+        assert!(wrapper.contains("append_lld_arg"));
+        assert!(wrapper.contains("flush_archive_group"));
+        assert!(wrapper.contains("--start-group"));
+        assert!(wrapper.contains("--end-group"));
         assert!(wrapper.contains("find_linker_script"));
         assert!(wrapper.contains("failed to find linker.x in current linker search dirs"));
         assert!(wrapper.contains("entry_symbol='_start'"));

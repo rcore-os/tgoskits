@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #![no_std]
-#![cfg(all(target_arch = "x86_64", target_os = "none"))]
+#![cfg(all(target_arch = "x86_64", any(target_os = "none", arceos_std)))]
 #![allow(missing_abi)]
 #![feature(used_with_arg)]
 
