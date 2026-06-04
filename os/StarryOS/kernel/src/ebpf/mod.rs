@@ -54,7 +54,15 @@ pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyIni
 /// `kbpf-basic`. Must be called before `sys_bpf(BPF_PROG_LOAD)` so loaded
 /// programs can resolve the helper ids referenced in their instructions.
 pub fn init_ebpf() {
-    let set = kbpf_basic::helper::init_helper_functions::<EbpfKernelAuxiliary>();
+    let mut set = kbpf_basic::helper::init_helper_functions::<EbpfKernelAuxiliary>();
+    // aya emits `bpf_probe_read_kernel` (helper id 113) for reads of kernel
+    // context memory — e.g. `TracePointContext::read_at`, which a cooked
+    // tracepoint program uses to pull fields out of its sample buffer.
+    // kbpf-basic only registers the legacy `bpf_probe_read` (id 4), whose raw
+    // reader is address-space-agnostic in this VM, so alias 113 onto it.
+    if let Some(&probe_read) = set.get(&4) {
+        set.entry(113).or_insert(probe_read);
+    }
     BPF_HELPER_FUN_SET.init_once(set);
 }
 

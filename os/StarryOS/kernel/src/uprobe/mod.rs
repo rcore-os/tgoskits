@@ -48,9 +48,15 @@ pub fn unregister_uprobe(uprobe: Arc<KernelUprobe>) {
 
 /// Dispatch a breakpoint exception to the current process' uprobe manager.
 /// Returns `Some(())` if a uprobe handled it.
+///
+/// Runs from exception context (IRQs disabled), so the per-process manager — a
+/// sleeping mutex (see [`crate::task::ProcessData::uprobe_manager`]) — is taken
+/// with `try_lock()`, which is a single CAS and safe here. At fire time the
+/// manager is uncontended (arming happens in syscall context on the same task),
+/// so the lock is always acquired; a contended miss just reports "unhandled".
 pub fn break_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<()> {
     let curr = current();
-    let mut manager = curr.as_thread().proc_data.uprobe_manager.lock();
+    let mut manager = curr.as_thread().proc_data.uprobe_manager.try_lock()?;
     let mut pt_regs = trapframe_to_ptregs(tf);
     let res = kprobe::uprobe_handler_from_break(&mut manager, &mut pt_regs);
     ptregs_write_back(&pt_regs, tf);
@@ -62,7 +68,9 @@ pub fn break_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<
 #[cfg(target_arch = "x86_64")]
 pub fn debug_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<()> {
     let curr = current();
-    let mut manager = curr.as_thread().proc_data.uprobe_manager.lock();
+    // `try_lock()` for the same reason as `break_uprobe_handler`: exception
+    // context, sleeping mutex.
+    let mut manager = curr.as_thread().proc_data.uprobe_manager.try_lock()?;
     let mut pt_regs = trapframe_to_ptregs(tf);
     let res = kprobe::uprobe_handler_from_debug(&mut manager, &mut pt_regs);
     ptregs_write_back(&pt_regs, tf);

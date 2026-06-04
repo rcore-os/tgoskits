@@ -395,9 +395,21 @@ struct EventSourceDeviceDir {
     ty: u32,
 }
 
+impl EventSourceDeviceDir {
+    /// kprobe (6) / uprobe (7) PMUs support a return-probe variant selected via
+    /// the `retprobe` config bit; tracepoint (2) does not.
+    fn supports_retprobe(&self) -> bool {
+        self.ty == 6 || self.ty == 7
+    }
+}
+
 impl SimpleDirOps for EventSourceDeviceDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["type"].into_iter().map(Cow::Borrowed))
+        if self.supports_retprobe() {
+            Box::new(["type", "format"].into_iter().map(Cow::Borrowed))
+        } else {
+            Box::new(["type"].into_iter().map(Cow::Borrowed))
+        }
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -407,6 +419,35 @@ impl SimpleDirOps for EventSourceDeviceDir {
                 let body = format!("{}\n", self.ty);
                 Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
             }
+            // `/sys/bus/event_source/devices/<k|u>probe/format/` — aya reads
+            // `format/retprobe` to learn which `config` bit selects the
+            // return-probe variant before `perf_event_open` for a kretprobe /
+            // uretprobe.
+            "format" if self.supports_retprobe() => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(EventSourceFormatDir { fs }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+struct EventSourceFormatDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for EventSourceFormatDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["retprobe"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        match name {
+            // `config:0` = the retprobe flag lives in bit 0 of `config`, which
+            // is exactly what `perf_event_open_kprobe` decodes (config 1 =
+            // kretprobe). Matches the format string the real kernel exposes.
+            "retprobe" => Ok(SimpleFile::new_regular(fs, || Ok("config:0\n".to_owned())).into()),
             _ => Err(VfsError::NotFound),
         }
     }

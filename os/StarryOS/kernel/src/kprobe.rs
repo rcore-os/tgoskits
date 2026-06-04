@@ -49,13 +49,39 @@ pub struct KernelKprobeOps;
 
 impl KprobeAuxiliaryOps for KernelKprobeOps {
     fn copy_memory(src: *const u8, dst: *mut u8, len: usize, user_pid: Option<i32>) {
-        if let Some(_pid) = user_pid {
-            unsafe {
-                let buf =
-                    core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len);
-                if let Err(e) = starry_vm::vm_read_slice(src, buf) {
-                    warn!("kprobe copy_memory: vm_read_slice failed: {:?}", e);
+        if let Some(pid) = user_pid {
+            // Uprobe arm/disarm reads the target process' original text bytes
+            // while the per-process kprobe manager spin-lock is held (IRQs
+            // disabled), so the faultable user-access path (`vm_read_slice`,
+            // which asserts IRQs enabled) cannot be used. Read through the
+            // *kernel* direct-map alias of the target page's physical frame
+            // instead — the same aliasing `set_writeable_for_address` uses to
+            // write. The text page is already resident (the loader executes the
+            // probed function before arming).
+            let Ok(task) = crate::task::get_task(pid as _) else {
+                warn!("kprobe copy_memory: target task {pid} gone");
+                return;
+            };
+            let aspace = task.as_thread().proc_data.aspace();
+            let mm = aspace.lock();
+            let pt = mm.page_table();
+            let mut copied = 0;
+            while copied < len {
+                let vaddr = VirtAddr::from(src as usize + copied);
+                let Ok((paddr, ..)) = pt.query(vaddr) else {
+                    warn!(
+                        "kprobe copy_memory: user addr {:#x} not mapped",
+                        vaddr.as_usize()
+                    );
+                    return;
+                };
+                let page_off = vaddr.as_usize() & (PAGE_SIZE_4K - 1);
+                let chunk = core::cmp::min(len - copied, PAGE_SIZE_4K - page_off);
+                let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(kvaddr.as_ptr(), dst.add(copied), chunk);
                 }
+                copied += chunk;
             }
         } else {
             unsafe {

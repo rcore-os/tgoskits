@@ -513,11 +513,14 @@ pub struct ProcessData {
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// Per-process uprobe manager. Uprobes plant an `int3` in *this* process'
     /// user text, so (unlike the global kprobe manager) the registry is
-    /// per-address-space. Locked with a no-IRQ spinlock because the breakpoint
-    /// handler walks it from exception context.
-    pub uprobe_manager: SpinNoIrq<crate::kprobe::KprobeManager>,
+    /// per-address-space. A *sleeping* mutex, because arming/disarming
+    /// manipulates the user address space (page-table query, faulting reads,
+    /// mapping the out-of-line single-step page) which requires sleeping locks;
+    /// the exception-context breakpoint/debug handlers acquire it with
+    /// `try_lock()` (a single CAS, safe in atomic context) instead.
+    pub uprobe_manager: Mutex<crate::kprobe::KprobeManager>,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
-    pub uprobe_point_list: SpinNoIrq<crate::kprobe::KprobePointList>,
+    pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The resource scope
     pub scope: RwLock<Scope>,
     /// The namespace proxy — aggregates all namespace types for this process.
@@ -686,8 +689,8 @@ impl ProcessData {
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
-            uprobe_manager: SpinNoIrq::new(crate::kprobe::KprobeManager::default()),
-            uprobe_point_list: SpinNoIrq::new(crate::kprobe::KprobePointList::new()),
+            uprobe_manager: Mutex::new(crate::kprobe::KprobeManager::default()),
+            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
