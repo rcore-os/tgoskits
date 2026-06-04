@@ -7,6 +7,12 @@ CLAW_SRC="$CACHE_DIR/repo"
 TARGET="x86_64-unknown-linux-musl"
 CLAW_BIN="$CACHE_DIR/claw"
 
+# Derive paths: STARRY_* env vars are set by newer xtask versions;
+# fall back to default workspace layout for older xtask.
+WORKSPACE="${STARRY_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+ROOTFS="${STARRY_OUTPUT_ROOTFS:-${WORKSPACE}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img}"
+OVERLAY="${STARRY_OVERLAY_DIR:-${WORKSPACE}/tmp/axbuild/starry-app/claw-code/overlay}"
+
 echo "=== 1. Build claw from source ==="
 if [ -f "$CLAW_BIN" ]; then
     echo "claw binary cached at $CLAW_BIN"
@@ -27,11 +33,12 @@ else
     echo "claw binary built: $CLAW_BIN"
 fi
 
-echo "=== 2. Inject claw into rootfs ==="
-debugfs -w "$STARRY_OUTPUT_ROOTFS" -R "rm /usr/bin/claw" 2>/dev/null || true
-debugfs -w "$STARRY_OUTPUT_ROOTFS" -R "write $CLAW_BIN /usr/bin/claw"
-debugfs -w "$STARRY_OUTPUT_ROOTFS" -R "sif /usr/bin/claw mode 0100755"
+echo "=== 2. Inject claw into rootfs ($ROOTFS) ==="
+debugfs -w "$ROOTFS" -R "rm /usr/bin/claw" 2>/dev/null || true
+debugfs -w "$ROOTFS" -R "write $CLAW_BIN /usr/bin/claw"
+debugfs -w "$ROOTFS" -R "sif /usr/bin/claw mode 0100755"
 echo "Injected claw into rootfs"
 
 # Place a marker so the overlay is never empty (app framework requires it).
-touch "${STARRY_OVERLAY_DIR}/.claw-injected"
+mkdir -p "$OVERLAY"
+touch "${OVERLAY}/.claw-injected"
