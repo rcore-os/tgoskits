@@ -176,9 +176,9 @@ fn collect_overlay_debugfs_commands(
                 .with_context(|| format!("failed to read symlink {}", entry.path().display()))?;
             commands.push(format!("rm /{}", relative_path.display()));
             commands.push(format!(
-                "symlink {} /{}",
-                target.display(),
-                relative_path.display()
+                "symlink /{} {}",
+                relative_path.display(),
+                target.display()
             ));
             continue;
         }
@@ -301,5 +301,22 @@ mod tests {
         assert!(commands.contains(&"mkdir /usr/bin".to_string()));
         assert!(commands.contains(&format!("write {} /usr/bin/test-bin", binary.display())));
         assert!(commands.contains(&"sif /usr/bin/test-bin mode 0100755".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn overlay_debugfs_symlink_commands_use_link_path_before_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let overlay_dir = root.path().join("overlay");
+        fs::create_dir_all(overlay_dir.join("usr/bin")).unwrap();
+        symlink("/lib/libfoo.so", overlay_dir.join("usr/bin/link1")).unwrap();
+
+        let mut commands = Vec::new();
+        collect_overlay_debugfs_commands(&overlay_dir, Path::new(""), &mut commands).unwrap();
+
+        assert!(commands.contains(&"rm /usr/bin/link1".to_string()));
+        assert!(commands.contains(&"symlink /usr/bin/link1 /lib/libfoo.so".to_string()));
     }
 }
