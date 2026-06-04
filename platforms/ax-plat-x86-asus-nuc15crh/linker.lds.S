@@ -1,69 +1,77 @@
 OUTPUT_ARCH(%ARCH%)
 
 BASE_ADDRESS = %KERNEL_BASE%;
-AX_LINKER_LOAD_OFFSET = 0;
+PHYS_BASE = %KERNEL_BASE_PADDR%;
+LOAD_OFFSET = BASE_ADDRESS - PHYS_BASE;
+AX_LINKER_LOAD_OFFSET = LOAD_OFFSET;
 SMP = %SMP%;
 
 ENTRY(_start)
+PHDRS
+{
+    kernel PT_LOAD FLAGS(7);
+    percpu PT_LOAD FLAGS(6);
+}
+
 SECTIONS
 {
     . = BASE_ADDRESS;
     _skernel = .;
 
-    .text : ALIGN(4K) {
+    .text : AT(ADDR(.text) - LOAD_OFFSET) ALIGN(4K) {
         _stext = .;
         *(.text.boot)
         *(.text .text.*)
         . = ALIGN(4K);
         _etext = .;
-    }
+    } :kernel
 
-    .rodata : ALIGN(4K) {
+    .rodata : AT(ADDR(.rodata) - LOAD_OFFSET) ALIGN(4K) {
         _srodata = .;
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         *(.sdata2 .sdata2.*)
         . = ALIGN(4K);
         _erodata = .;
-    }
+    } :kernel
 
-    .data : ALIGN(4K) {
+    .data : AT(ADDR(.data) - LOAD_OFFSET) ALIGN(4K) {
         _sdata = .;
         *(.data.boot_page_table)
         . = ALIGN(4K);
         *(.data .data.*)
         *(.sdata .sdata.*)
         *(.got .got.*)
-    }
+    } :kernel
 
-    .tdata : ALIGN(0x10) {
+    .tdata : AT(ADDR(.tdata) - LOAD_OFFSET) ALIGN(0x10) {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
-    }
+    } :kernel
 
-    .tbss : ALIGN(0x10) {
+    .tbss : AT(ADDR(.tbss) - LOAD_OFFSET) ALIGN(0x10) {
         _stbss = .;
         *(.tbss .tbss.*)
         *(.tcommon)
         _etbss = .;
-    }
+    } :kernel
 
     . = ALIGN(4K);
     _percpu_start = .;
     _percpu_end = _percpu_start + SIZEOF(.percpu);
-    .percpu 0x0 : AT(_percpu_start) {
+    .percpu 0x0 : AT(_percpu_start - LOAD_OFFSET) {
         _percpu_load_start = .;
         *(.percpu .percpu.*)
         _percpu_load_end = .;
         . = _percpu_load_start + ALIGN(64) * SMP;
-    }
+    } :percpu
     . = _percpu_end;
 
     . = ALIGN(4K);
     _edata = .;
 
-    .bss : ALIGN(4K) {
+    .bss : AT(ADDR(.bss) - LOAD_OFFSET) ALIGN(4K) {
         boot_stack = .;
         *(.bss.stack)
         . = ALIGN(4K);
@@ -75,7 +83,7 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4K);
         _ebss = .;
-    }
+    } :kernel
 
     _ekernel = .;
 

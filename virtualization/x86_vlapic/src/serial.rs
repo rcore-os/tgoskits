@@ -25,6 +25,7 @@ const IIR_RX_AVAILABLE: u8 = 0x04;
 const IIR_FIFO_16550A: u8 = 0xc0;
 
 const LCR_DLAB: u8 = 1 << 7;
+const MCR_LOOPBACK: u8 = 1 << 4;
 
 const LSR_DATA_READY: u8 = 1 << 0;
 const LSR_THR_EMPTY: u8 = 1 << 5;
@@ -191,6 +192,7 @@ impl BaseDeviceOps<PortRange> for EmulatedSerialPort {
         let value = val as u8;
         match offset {
             REG_RBR_THR_DLL if state.dlab() => state.dll = value,
+            REG_RBR_THR_DLL if state.mcr & MCR_LOOPBACK != 0 => state.push_rx(value),
             REG_RBR_THR_DLL => host::write_bytes(&[value]),
             REG_IER_DLM if state.dlab() => state.dlm = value,
             REG_IER_DLM => state.ier = value & 0x0f,

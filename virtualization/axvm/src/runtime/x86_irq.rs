@@ -169,7 +169,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     if registered != 0 {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     }
-    info!(
+    debug!(
         "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
         IOAPIC_VECTOR_BASE,
         IOAPIC_VECTOR_END - 1,
