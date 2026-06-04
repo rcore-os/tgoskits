@@ -190,27 +190,27 @@ impl InodeCache {
 
             drop(inner);
 
-            // Phase 2: do I/O without holding the spinlock so other cores can
-            // make progress on cache hits.
-            if let Some((_lru_key, _, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
-                Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
-            }
-
+            // Phase 2: load the requested inode from disk (no dirty writeback
+            // yet — the victim snapshot may be stale).
             let inode = self.load_inode(block_dev, block_num, offset)?;
 
-            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            // Phase 3: reacquire the lock. Validate the victim generation.
+            // If valid, remove it and schedule dirty writeback for Phase 4.
+            // If stale, discard the snapshot without writing anything.
             inner = self.inner.lock();
 
-            // Only evict the LRU victim if no other thread accessed or
-            // modified it while we held no lock (generation unchanged).
-            if let Some((lru_key, lru_gen, _)) = evict_info
-                && inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|cached| cached.generation == lru_gen)
-            {
-                inner.cache.remove(&lru_key);
-            }
+            let dirty_to_write = match evict_info {
+                Some((lru_key, lru_gen, dirty_opt))
+                    if inner
+                        .cache
+                        .get(&lru_key)
+                        .is_some_and(|cached| cached.generation == lru_gen) =>
+                {
+                    inner.cache.remove(&lru_key);
+                    dirty_opt
+                }
+                _ => None,
+            };
 
             // Use or_insert_with to avoid TOCTOU: another thread may have
             // inserted the same key while we had no lock.
@@ -218,6 +218,16 @@ impl InodeCache {
                 .cache
                 .entry(inode_num)
                 .or_insert_with(|| CachedInode::new(inode, inode_num, block_num, offset));
+
+            drop(inner);
+
+            // Phase 4: write the victim's dirty data to disk AFTER the
+            // generation check passed (outside the spinlock).
+            if let Some((lru_bn, lru_off, ref lru_data)) = dirty_to_write {
+                Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
+            }
+
+            inner = self.inner.lock();
         }
 
         // Refresh the LRU timestamp on every access.
@@ -256,26 +266,27 @@ impl InodeCache {
 
             drop(inner);
 
-            // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, _, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
-                Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
-            }
-
+            // Phase 2: load the requested inode from disk (no dirty writeback
+            // yet — the victim snapshot may be stale).
             let inode = self.load_inode(block_dev, block_num, offset)?;
 
-            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            // Phase 3: reacquire the lock. Validate the victim generation.
+            // If valid, remove it and schedule dirty writeback for Phase 4.
+            // If stale, discard the snapshot without writing anything.
             inner = self.inner.lock();
 
-            // Only evict the LRU victim if no other thread accessed or
-            // modified it while we held no lock (generation unchanged).
-            if let Some((lru_key, lru_gen, _)) = evict_info
-                && inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|cached| cached.generation == lru_gen)
-            {
-                inner.cache.remove(&lru_key);
-            }
+            let dirty_to_write = match evict_info {
+                Some((lru_key, lru_gen, dirty_opt))
+                    if inner
+                        .cache
+                        .get(&lru_key)
+                        .is_some_and(|cached| cached.generation == lru_gen) =>
+                {
+                    inner.cache.remove(&lru_key);
+                    dirty_opt
+                }
+                _ => None,
+            };
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
@@ -283,6 +294,16 @@ impl InodeCache {
                 .cache
                 .entry(inode_num)
                 .or_insert_with(|| CachedInode::new(inode, inode_num, block_num, offset));
+
+            drop(inner);
+
+            // Phase 4: write the victim's dirty data to disk AFTER the
+            // generation check passed (outside the spinlock).
+            if let Some((lru_bn, lru_off, ref lru_data)) = dirty_to_write {
+                Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
+            }
+
+            inner = self.inner.lock();
         }
 
         // Refresh the LRU timestamp before returning the mutable handle.

@@ -111,31 +111,43 @@ impl DataBlockCache {
 
             drop(inner);
 
-            // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, _, Some(ref lru_data))) = evict_info {
-                Self::write_block_static(block_dev, _lru_key, lru_data, self.block_size)?;
-            }
-
+            // Phase 2: load the requested block from disk (no dirty writeback
+            // yet — the victim snapshot may be stale).
             let data = self.load_block(block_dev, block_num)?;
 
-            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            // Phase 3: reacquire the lock. Validate the victim generation.
+            // If valid, remove it and schedule dirty writeback for Phase 4.
+            // If stale, discard the snapshot without writing anything.
             inner = self.inner.lock();
 
-            // Only evict the LRU victim if no other thread accessed or
-            // modified it while we held no lock (generation unchanged).
-            if let Some((lru_key, lru_gen, _)) = evict_info
-                && inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|cached| cached.generation == lru_gen)
-            {
-                inner.cache.remove(&lru_key);
-            }
+            let dirty_to_write = match evict_info {
+                Some((lru_key, lru_gen, dirty_opt))
+                    if inner
+                        .cache
+                        .get(&lru_key)
+                        .is_some_and(|cached| cached.generation == lru_gen) =>
+                {
+                    inner.cache.remove(&lru_key);
+                    dirty_opt.map(|data| (lru_key, data))
+                }
+                _ => None,
+            };
 
             inner
                 .cache
                 .entry(block_num)
                 .or_insert_with(|| CachedBlock::new(data, block_num));
+
+            drop(inner);
+
+            // Phase 4: write the victim's dirty data to disk AFTER the
+            // generation check passed (outside the spinlock).
+            if let Some((lru_key, ref lru_data)) = dirty_to_write {
+                Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
+            }
+
+            // Reacquire for the LRU refresh below.
+            inner = self.inner.lock();
         }
 
         // Refresh the LRU timestamp and bump the generation.
@@ -171,26 +183,27 @@ impl DataBlockCache {
 
             drop(inner);
 
-            // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, _, Some(ref lru_data))) = evict_info {
-                Self::write_block_static(block_dev, _lru_key, lru_data, self.block_size)?;
-            }
-
+            // Phase 2: load the requested block from disk (no dirty writeback
+            // yet — the victim snapshot may be stale).
             let data = self.load_block(block_dev, block_num)?;
 
-            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            // Phase 3: reacquire the lock. Validate the victim generation.
+            // If valid, remove it and schedule dirty writeback for Phase 4.
+            // If stale, discard the snapshot without writing anything.
             inner = self.inner.lock();
 
-            // Only evict the LRU victim if no other thread accessed or
-            // modified it while we held no lock (generation unchanged).
-            if let Some((lru_key, lru_gen, _)) = evict_info
-                && inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|cached| cached.generation == lru_gen)
-            {
-                inner.cache.remove(&lru_key);
-            }
+            let dirty_to_write = match evict_info {
+                Some((lru_key, lru_gen, dirty_opt))
+                    if inner
+                        .cache
+                        .get(&lru_key)
+                        .is_some_and(|cached| cached.generation == lru_gen) =>
+                {
+                    inner.cache.remove(&lru_key);
+                    dirty_opt.map(|data| (lru_key, data))
+                }
+                _ => None,
+            };
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
@@ -198,6 +211,16 @@ impl DataBlockCache {
                 .cache
                 .entry(block_num)
                 .or_insert_with(|| CachedBlock::new(data, block_num));
+
+            drop(inner);
+
+            // Phase 4: write the victim's dirty data to disk AFTER the
+            // generation check passed (outside the spinlock).
+            if let Some((lru_key, ref lru_data)) = dirty_to_write {
+                Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
+            }
+
+            inner = self.inner.lock();
         }
 
         let new_counter = inner.access_counter + 1;
@@ -247,12 +270,11 @@ impl DataBlockCache {
 
         drop(inner);
 
-        // Phase 2: do I/O without holding the spinlock.
+        // Phase 2: write dirty data for unconditional same-block eviction.
+        // The LRU victim's dirty data is NOT written here — it must pass
+        // the generation check first (see Phase 4).
         if let Some(ref data) = evict_existing {
             Self::write_block_static(block_dev, block_num, data, self.block_size)?;
-        }
-        if let Some((lru_key, _, Some(ref lru_data))) = evict_lru_info {
-            Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
         }
 
         // Phase 3: reacquire the lock and apply evictions + insertion.
@@ -263,16 +285,20 @@ impl DataBlockCache {
         if evict_existing.is_some() {
             inner.cache.remove(&block_num);
         }
-        // Only evict the LRU victim if no other thread accessed or
-        // modified it while we held no lock (generation unchanged).
-        if let Some((lru_key, lru_gen, _)) = evict_lru_info
-            && inner
-                .cache
-                .get(&lru_key)
-                .is_some_and(|cached| cached.generation == lru_gen)
-        {
-            inner.cache.remove(&lru_key);
-        }
+        // Validate LRU victim generation; if valid, remove and schedule
+        // dirty writeback. If stale, discard the snapshot silently.
+        let lru_dirty_to_write = match evict_lru_info {
+            Some((lru_key, lru_gen, dirty_opt))
+                if inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|cached| cached.generation == lru_gen) =>
+            {
+                inner.cache.remove(&lru_key);
+                dirty_opt.map(|data| (lru_key, data))
+            }
+            _ => None,
+        };
 
         let data = alloc::vec![0u8; inner.block_size];
         let mut cached = CachedBlock::new(data, block_num);
@@ -283,11 +309,20 @@ impl DataBlockCache {
         cached.last_access = new_counter;
 
         inner.cache.insert(block_num, cached);
-        inner
+        let result = inner
             .cache
             .get(&block_num)
             .cloned()
-            .ok_or(Ext4Error::corrupted())
+            .ok_or(Ext4Error::corrupted());
+
+        drop(inner);
+
+        // Phase 4: write LRU victim's dirty data AFTER generation check.
+        if let Some((lru_key, ref lru_data)) = lru_dirty_to_write {
+            Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
+        }
+
+        result
     }
 
     /// Marks a cached data block dirty.

@@ -135,32 +135,43 @@ impl BitmapCache {
 
             drop(inner);
 
-            // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, _, Some((lru_bn, ref lru_data)))) = evict_info {
-                Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
-            }
-
+            // Phase 2: load the requested bitmap from disk (no dirty writeback
+            // yet — the victim snapshot may be stale).
             let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
             block_dev.read_blocks(&mut buf, block_num, 1)?;
 
-            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            // Phase 3: reacquire the lock. Validate the victim generation.
+            // If valid, remove it and schedule dirty writeback for Phase 4.
+            // If stale, discard the snapshot without writing anything.
             inner = self.inner.lock();
 
-            // Only evict the LRU victim if no other thread accessed or
-            // modified it while we held no lock (generation unchanged).
-            if let Some((lru_key, lru_gen, _)) = evict_info
-                && inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|bitmap| bitmap.generation == lru_gen)
-            {
-                inner.cache.remove(&lru_key);
-            }
+            let dirty_to_write = match evict_info {
+                Some((lru_key, lru_gen, dirty_opt))
+                    if inner
+                        .cache
+                        .get(&lru_key)
+                        .is_some_and(|bitmap| bitmap.generation == lru_gen) =>
+                {
+                    inner.cache.remove(&lru_key);
+                    dirty_opt
+                }
+                _ => None,
+            };
 
             inner
                 .cache
                 .entry(key)
                 .or_insert_with(|| CachedBitmap::new(buf, block_num));
+
+            drop(inner);
+
+            // Phase 4: write the victim's dirty data to disk AFTER the
+            // generation check passed (outside the spinlock).
+            if let Some((lru_bn, ref lru_data)) = dirty_to_write {
+                Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
+            }
+
+            inner = self.inner.lock();
         }
 
         let new_counter = inner.access_counter + 1;
@@ -192,27 +203,28 @@ impl BitmapCache {
 
             drop(inner);
 
-            // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, _, Some((lru_bn, ref lru_data)))) = evict_info {
-                Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
-            }
-
+            // Phase 2: load the requested bitmap from disk (no dirty writeback
+            // yet — the victim snapshot may be stale).
             let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
             block_dev.read_blocks(&mut buf, block_num, 1)?;
 
-            // Phase 3: reacquire the lock and apply the eviction + insertion.
+            // Phase 3: reacquire the lock. Validate the victim generation.
+            // If valid, remove it and schedule dirty writeback for Phase 4.
+            // If stale, discard the snapshot without writing anything.
             inner = self.inner.lock();
 
-            // Only evict the LRU victim if no other thread accessed or
-            // modified it while we held no lock (generation unchanged).
-            if let Some((lru_key, lru_gen, _)) = evict_info
-                && inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|bitmap| bitmap.generation == lru_gen)
-            {
-                inner.cache.remove(&lru_key);
-            }
+            let dirty_to_write = match evict_info {
+                Some((lru_key, lru_gen, dirty_opt))
+                    if inner
+                        .cache
+                        .get(&lru_key)
+                        .is_some_and(|bitmap| bitmap.generation == lru_gen) =>
+                {
+                    inner.cache.remove(&lru_key);
+                    dirty_opt
+                }
+                _ => None,
+            };
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
@@ -220,6 +232,16 @@ impl BitmapCache {
                 .cache
                 .entry(key)
                 .or_insert_with(|| CachedBitmap::new(buf, block_num));
+
+            drop(inner);
+
+            // Phase 4: write the victim's dirty data to disk AFTER the
+            // generation check passed (outside the spinlock).
+            if let Some((lru_bn, ref lru_data)) = dirty_to_write {
+                Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
+            }
+
+            inner = self.inner.lock();
         }
 
         let new_counter = inner.access_counter + 1;
