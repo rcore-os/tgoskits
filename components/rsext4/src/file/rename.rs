@@ -300,7 +300,9 @@ pub fn mv<B: BlockDevice>(
                      first_blk={first_blk}: {e:?} — directory has stale parent pointer"
                 );
             }
-            let _ = fs.touch_inode_ctime_for_link_change(block_dev, src_ino);
+            if let Err(e) = fs.touch_inode_ctime_for_link_change(block_dev, src_ino) {
+                warn!("mv touch_inode_ctime failed for ino={src_ino}: {e:?}");
+            }
         }
     }
 
