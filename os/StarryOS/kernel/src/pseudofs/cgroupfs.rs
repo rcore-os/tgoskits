@@ -98,11 +98,17 @@ impl SimpleDirOps for CgroupDirOps {
                                             if !procs.contains(&pid) {
                                                 procs.push(pid);
                                             }
-                                            n.pids.current.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                                            n.pids.current.fetch_add(
+                                                1,
+                                                core::sync::atomic::Ordering::Relaxed,
+                                            );
                                             // Update process's cgroup reference
                                             *pd.cgroup.write() = n.clone();
                                             // Sync cpu.weight to scheduler task
-                                            let weight = n.cpu.weight.load(core::sync::atomic::Ordering::Relaxed);
+                                            let weight = n
+                                                .cpu
+                                                .weight
+                                                .load(core::sync::atomic::Ordering::Relaxed);
                                             if let Ok(task) = crate::task::get_task(pid as _) {
                                                 task.set_cgroup_weight(weight as isize);
                                             }
@@ -199,22 +205,43 @@ impl SimpleDirOps for CgroupDirOps {
                             let parts: Vec<&str> = s.split_whitespace().collect();
                             if !parts.is_empty() {
                                 if parts[0] == "max" {
-                                    n.cpu.cfs_quota.store(-1, core::sync::atomic::Ordering::Relaxed);
-                                    n.cpu.bandwidth.quota.store(-1, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu
+                                        .cfs_quota
+                                        .store(-1, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu
+                                        .bandwidth
+                                        .quota
+                                        .store(-1, core::sync::atomic::Ordering::Relaxed);
                                 } else if let Ok(quota) = parts[0].parse::<i64>() {
-                                    n.cpu.cfs_quota.store(quota, core::sync::atomic::Ordering::Relaxed);
-                                    n.cpu.bandwidth.quota.store(quota, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu
+                                        .cfs_quota
+                                        .store(quota, core::sync::atomic::Ordering::Relaxed);
+                                    n.cpu
+                                        .bandwidth
+                                        .quota
+                                        .store(quota, core::sync::atomic::Ordering::Relaxed);
                                 }
                             }
                             if parts.len() > 1
                                 && let Ok(period) = parts[1].parse::<i64>()
                             {
-                                n.cpu.cfs_period.store(period, core::sync::atomic::Ordering::Relaxed);
-                                n.cpu.bandwidth.period.store(period, core::sync::atomic::Ordering::Relaxed);
+                                n.cpu
+                                    .cfs_period
+                                    .store(period, core::sync::atomic::Ordering::Relaxed);
+                                n.cpu
+                                    .bandwidth
+                                    .period
+                                    .store(period, core::sync::atomic::Ordering::Relaxed);
                             }
                             // Reset consumed on quota/period change
-                            n.cpu.bandwidth.consumed.store(0, core::sync::atomic::Ordering::Relaxed);
-                            n.cpu.bandwidth.period_start.store(0, core::sync::atomic::Ordering::Relaxed);
+                            n.cpu
+                                .bandwidth
+                                .consumed
+                                .store(0, core::sync::atomic::Ordering::Relaxed);
+                            n.cpu
+                                .bandwidth
+                                .period_start
+                                .store(0, core::sync::atomic::Ordering::Relaxed);
                             Ok(None)
                         }
                     }),
@@ -227,12 +254,17 @@ impl SimpleDirOps for CgroupDirOps {
                     let bw = &n.cpu.bandwidth;
                     let nr_periods = bw.nr_periods.load(core::sync::atomic::Ordering::Relaxed);
                     let nr_throttled = bw.nr_throttled.load(core::sync::atomic::Ordering::Relaxed);
-                    let throttled_usec = bw.throttled_usec.load(core::sync::atomic::Ordering::Relaxed);
-                    Ok(format!("nr_periods {}\nnr_throttled {}\nthrottled_usec {}\n",
-                               nr_periods, nr_throttled, throttled_usec).into_bytes())
+                    let throttled_usec = bw
+                        .throttled_usec
+                        .load(core::sync::atomic::Ordering::Relaxed);
+                    Ok(format!(
+                        "nr_periods {}\nnr_throttled {}\nthrottled_usec {}\n",
+                        nr_periods, nr_throttled, throttled_usec
+                    )
+                    .into_bytes())
                 })
                 .into()
-            },
+            }
             _ => {
                 let children = self.node.children.lock();
                 if let Some(child) = children.get(name) {

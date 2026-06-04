@@ -4,6 +4,7 @@
 //! CFS bandwidth control via per-period quota tracking.
 
 use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+
 use crate::task::AsThread;
 
 /// Per-cgroup cpu.max bandwidth state.
@@ -52,7 +53,9 @@ impl CpuState {
 /// Called on every scheduler timer tick to consume quota and throttle.
 pub fn bandwidth_tick() {
     let curr = ax_task::current();
-    let Some(thread) = curr.try_as_thread() else { return; };
+    let Some(thread) = curr.try_as_thread() else {
+        return;
+    };
     let proc_data = thread.proc_data.clone();
     let cgroup = proc_data.cgroup.read().clone();
     let bw = &cgroup.cpu.bandwidth;
@@ -91,7 +94,8 @@ pub fn bandwidth_tick() {
     if consumed >= quota {
         ax_task::set_current_throttled(true);
         bw.nr_throttled.fetch_add(1, Ordering::Relaxed);
-        bw.throttled_usec.fetch_add(tick_usec_u64, Ordering::Relaxed);
+        bw.throttled_usec
+            .fetch_add(tick_usec_u64, Ordering::Relaxed);
     }
 }
 
