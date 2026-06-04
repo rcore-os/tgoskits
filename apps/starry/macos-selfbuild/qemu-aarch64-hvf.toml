@@ -1,5 +1,7 @@
-# Apple Silicon macOS only. For the complete flow prefer run_selfbuild.sh,
-# which injects the guest scripts into a temporary rootfs copy before boot.
+# Apple Silicon macOS only. When launched through `cargo xtask starry app qemu`,
+# prebuild.sh injects the guest scripts and source tarball into the configured
+# rootfs overlay before boot. For long operator runs, run_selfbuild.sh remains
+# useful because it works on a temporary rootfs copy and stops QEMU on markers.
 args = [
     "-snapshot",
     "-nographic",

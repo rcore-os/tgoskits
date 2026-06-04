@@ -73,6 +73,40 @@ fi
 mkdir -p "$(dirname "$output_rootfs")" "$repo_root/target/starry-macos-selfbuild"
 cp "$base_rootfs" "$output_rootfs"
 
+git_value() {
+    local fallback="$1"
+    shift
+    git -C "$source_dir" "$@" 2>/dev/null || printf '%s\n' "$fallback"
+}
+
+actual_commit="$(git_value unknown rev-parse HEAD)"
+if [[ -n "${TGOSKITS_COMMIT:-}" && "$actual_commit" != "unknown" && "$TGOSKITS_COMMIT" != "$actual_commit" ]]; then
+    echo "TGOSKITS_COMMIT=$TGOSKITS_COMMIT does not match source HEAD $actual_commit" >&2
+    exit 1
+fi
+
+source_commit="${TGOSKITS_COMMIT:-$actual_commit}"
+source_ref="${TGOSKITS_REF:-$(git_value detached symbolic-ref --quiet --short HEAD)}"
+dirty="unknown"
+if git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [[ -n "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]]; then
+        dirty="true"
+    else
+        dirty="false"
+    fi
+fi
+
+meta_file="$repo_root/target/starry-macos-selfbuild/tgoskits-src.meta"
+cat >"$meta_file" <<EOF
+commit=$source_commit
+ref=$source_ref
+dirty=$dirty
+generated_by=apps/starry/macos-selfbuild/prepare_rootfs.sh
+EOF
+
+meta_in_tar="$repo_root/target/starry-macos-selfbuild/.tgoskits-source-meta"
+cp "$meta_file" "$meta_in_tar"
+
 src_tar="$repo_root/target/starry-macos-selfbuild/tgoskits-src.tar"
 tar -C "$source_dir" \
     --exclude .git \
@@ -82,18 +116,24 @@ tar -C "$source_dir" \
     --exclude .idea \
     --exclude .vscode \
     -cf "$src_tar" .
+tar -C "$repo_root/target/starry-macos-selfbuild" -rf "$src_tar" .tgoskits-source-meta
 
 debugfs_cmd="$repo_root/target/starry-macos-selfbuild/debugfs-prepare-rootfs.cmd"
 cat >"$debugfs_cmd" <<EOF
 mkdir /opt
 rm /opt/tgoskits-src.tar
+rm /opt/tgoskits-src.meta
 write $src_tar /opt/tgoskits-src.tar
+write $meta_file /opt/tgoskits-src.meta
 EOF
 
 "$debugfs" -w -f "$debugfs_cmd" "$output_rootfs" >/dev/null
 
 echo "rootfs=$output_rootfs"
 echo "source_tar=/opt/tgoskits-src.tar"
+echo "source_commit=$source_commit"
+echo "source_ref=$source_ref"
+echo "source_dirty=$dirty"
 "$script_dir/check_rootfs.sh" "$output_rootfs" || {
     echo "warning: rootfs source was injected, but guest toolchain checks failed" >&2
     echo "install or inject Cargo/Rust wrappers before running self-build" >&2
