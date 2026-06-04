@@ -49,8 +49,16 @@ find_tool() {
 
 shell_quote() {
     local value="$1"
+    local i char
     printf "'"
-    printf '%s' "$value" | sed "s/'/'\\\\''/g"
+    for ((i = 0; i < ${#value}; i++)); do
+        char="${value:i:1}"
+        if [[ "$char" == "'" ]]; then
+            printf '%s' "'\\''"
+        else
+            printf '%s' "$char"
+        fi
+    done
     printf "'"
 }
 
@@ -186,7 +194,7 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
         break
     fi
 
-    if LC_ALL=C grep -a -E -i -q '(panic|trap|fatal|segmentation fault)' "$log"; then
+    if LC_ALL=C grep -a -E -i -q '(panic|panicked at|unhandled trap|trap frame|fatal|segmentation fault)' "$log"; then
         echo "===HOST-QEMU-STOP reason=failure-pattern pid=$qemu_pid===" >>"$log"
         kill "$qemu_pid" 2>/dev/null || true
         wait "$qemu_pid" 2>/dev/null
