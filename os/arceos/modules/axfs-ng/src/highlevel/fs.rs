@@ -195,9 +195,14 @@ impl FsContext {
 
     /// Rebind this context to a freshly cloned mount namespace.
     pub fn unshare_mount_namespace(&mut self) -> VfsResult<()> {
+        let new_ns = self.mnt_ns.clone_namespace();
+        self.set_mount_namespace(new_ns)
+    }
+
+    /// Rebind this context to an existing mount namespace.
+    pub fn set_mount_namespace(&mut self, new_ns: Arc<MountNamespace>) -> VfsResult<()> {
         let root_path = self.root_dir.absolute_path()?;
         let current_path = self.current_dir.absolute_path()?;
-        let new_ns = self.mnt_ns.clone_namespace();
         let new_root_loc = new_ns.root_mount().root_location();
         let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
         let root_dir = resolver.resolve(root_path)?;

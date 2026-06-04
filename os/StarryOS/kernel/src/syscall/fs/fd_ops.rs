@@ -206,19 +206,24 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         Err(_) => return Some(Err(AxError::NotFound)),
     };
 
-    let nsproxy = proc_data.nsproxy.lock();
-
     let nsfd: NsFd = match ns_type_str {
-        "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
-        "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
-        "mnt" => NsFd::Mnt(nsproxy.mnt_ns.clone()),
-        "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
-        "net" => NsFd::Net(nsproxy.net_ns.clone()),
-        "user" => NsFd::User(nsproxy.user_ns.clone()),
+        "uts" => NsFd::Uts(proc_data.nsproxy.lock().uts_ns.clone()),
+        "ipc" => NsFd::Ipc(proc_data.nsproxy.lock().ipc_ns.clone()),
+        "mnt" => {
+            let ns = proc_data.nsproxy.lock().mnt_ns.clone();
+            let fs_ns = {
+                let scope = proc_data.scope.read();
+                let fs_context = FS_CONTEXT.scope(&scope).clone();
+                drop(scope);
+                fs_context.lock().mount_namespace().clone()
+            };
+            NsFd::Mnt { ns, fs_ns }
+        }
+        "pid" => NsFd::Pid(proc_data.nsproxy.lock().pid_ns.clone()),
+        "net" => NsFd::Net(proc_data.nsproxy.lock().net_ns.clone()),
+        "user" => NsFd::User(proc_data.nsproxy.lock().user_ns.clone()),
         _ => return Some(Err(AxError::NotFound)),
     };
-
-    drop(nsproxy);
 
     let fd = nsfd.add_to_fd_table(flags & O_CLOEXEC != 0);
     Some(fd)

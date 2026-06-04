@@ -125,7 +125,11 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
     match nsfd {
         NsFd::Uts(ns) => nsproxy.set_ns_uts(ns.clone()),
         NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
-        NsFd::Mnt(ns) => nsproxy.set_ns_mnt(ns.clone()),
+        NsFd::Mnt { ns, fs_ns } => {
+            drop(nsproxy);
+            FS_CONTEXT.lock().set_mount_namespace(fs_ns.clone())?;
+            proc_data.nsproxy.lock().set_ns_mnt(ns.clone());
+        }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
         NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
         NsFd::User(ns) => {
@@ -166,7 +170,15 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
 
     let target_proc = pidfd.process_data()?;
-    let target_nsproxy = target_proc.nsproxy.lock();
+    let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
+        let scope = target_proc.scope.read();
+        let fs_context = FS_CONTEXT.scope(&scope).clone();
+        drop(scope);
+        Some(fs_context.lock().mount_namespace().clone())
+    } else {
+        None
+    };
+    let target_nsproxy = target_proc.nsproxy.lock().clone_all();
 
     let curr = current();
     let thread = curr.as_thread();
@@ -192,22 +204,27 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let mut nsproxy = proc_data.nsproxy.lock();
 
     if nstype & CLONE_NEWUTS != 0 {
-        nsproxy.set_ns_uts(target_nsproxy.uts_ns.clone());
+        nsproxy.set_ns_uts(target_nsproxy.uts_ns);
     }
     if nstype & CLONE_NEWIPC != 0 {
-        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns.clone());
+        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns);
     }
     if nstype & CLONE_NEWNS != 0 {
-        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns.clone());
+        drop(nsproxy);
+        FS_CONTEXT
+            .lock()
+            .set_mount_namespace(target_mnt_fs_ns.expect("target mount namespace captured"))?;
+        nsproxy = proc_data.nsproxy.lock();
+        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns);
     }
     if nstype & CLONE_NEWPID != 0 {
-        nsproxy.set_ns_pid(target_nsproxy.pid_ns.clone());
+        nsproxy.set_ns_pid(target_nsproxy.pid_ns);
     }
     if nstype & CLONE_NEWNET != 0 {
-        nsproxy.set_ns_net(target_nsproxy.net_ns.clone());
+        nsproxy.set_ns_net(target_nsproxy.net_ns);
     }
     if nstype & CLONE_NEWUSER != 0 {
-        nsproxy.set_ns_user(target_nsproxy.user_ns.clone());
+        nsproxy.set_ns_user(target_nsproxy.user_ns);
     }
 
     debug!(

@@ -476,8 +476,6 @@ impl Location {
 
     pub fn node_type(&self) -> NodeType;
 
-    pub fn is_root_of_mount(&self) -> bool;
-
     pub fn read_link(&self) -> VfsResult<String>;
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
@@ -506,6 +504,10 @@ impl Location {
 
     pub fn entry(&self) -> &DirEntry {
         &self.entry
+    }
+
+    pub fn is_root_of_mount(&self) -> bool {
+        self.entry.ptr_eq(&self.mountpoint.root)
     }
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
@@ -541,7 +543,7 @@ impl Location {
     }
 
     pub fn is_root(&self) -> bool {
-        self.mountpoint.is_root() && self.entry.is_root_of_mount()
+        self.mountpoint.is_root() && self.is_root_of_mount()
     }
 
     pub fn check_is_dir(&self) -> VfsResult<()> {

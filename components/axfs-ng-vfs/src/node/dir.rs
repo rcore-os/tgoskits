@@ -8,8 +8,7 @@ use hashbrown::HashMap;
 
 use super::DirEntry;
 use crate::{
-    MetadataUpdate, Mountpoint, Mutex, MutexGuard, NodeOps, NodePermission, NodeType, VfsError,
-    VfsResult,
+    Mountpoint, Mutex, MutexGuard, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
     path::{DOT, DOTDOT, MAX_NAME_LEN, verify_entry_name},
 };
 
