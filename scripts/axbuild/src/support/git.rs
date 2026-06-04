@@ -287,12 +287,27 @@ where
             }
         };
 
+    let changed_packages = filter_current_workspace_packages(workspace_packages, changed_packages);
     let affected = affected_workspace_packages(metadata, workspace_packages, &changed_packages);
 
     Ok(IncrementalPackageSelection::Packages {
         changed: changed_packages.into_iter().collect(),
         affected: affected.into_iter().collect(),
     })
+}
+
+fn filter_current_workspace_packages(
+    workspace_packages: &[Package],
+    packages: BTreeSet<String>,
+) -> BTreeSet<String> {
+    let current_packages = workspace_packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .collect::<BTreeSet<_>>();
+    packages
+        .into_iter()
+        .filter(|package| current_packages.contains(package.as_str()))
+        .collect()
 }
 
 enum ChangedPackages {
@@ -1158,6 +1173,29 @@ mod tests {
             ],
             Some(RootManifestChange::LocalWorkspaceDependencies(
                 BTreeSet::from(["beta".to_string()]),
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages {
+                changed: vec!["beta".into()],
+                affected: vec!["beta".into(), "gamma".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn root_cargo_toml_workspace_dependency_change_skips_removed_packages() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [PathBuf::from("Cargo.toml")],
+            Some(RootManifestChange::LocalWorkspaceDependencies(
+                BTreeSet::from(["beta".to_string(), "removed".to_string()]),
             )),
         )
         .unwrap();
