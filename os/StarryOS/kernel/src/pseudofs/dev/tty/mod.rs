@@ -5,7 +5,12 @@ mod pty;
 mod terminal;
 
 use alloc::sync::{Arc, Weak};
-use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
+use core::{
+    any::Any,
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Context,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
@@ -42,6 +47,7 @@ pub struct Tty<R, W> {
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
     is_ptm: bool,
+    open_count: AtomicUsize,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -55,6 +61,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             ldisc,
             writer,
             is_ptm,
+            open_count: AtomicUsize::new(0),
         })
     }
 }
@@ -82,6 +89,11 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
+    fn open(&self, _exclusive: bool) -> axfs_ng_vfs::VfsResult<()> {
+        self.open_count.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
         if self.is_ptm || self.terminal.job_control.current_in_foreground() {
             self.ldisc.lock().read(buf)
@@ -203,6 +215,22 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             _ => return Err(AxError::NotATty),
         }
         Ok(0)
+    }
+
+    fn close(&self, _exclusive: bool) {
+        // A pty endpoint may be opened more than once (or reopened through
+        // /dev/pts/N). Closing one File must not look like peer hangup while
+        // another open file still keeps the same endpoint alive; Nix hits this
+        // around its build hook and builder stdio setup.
+        if self
+            .open_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok_and(|old| old == 1)
+        {
+            self.writer.close();
+        }
     }
 
     fn as_pollable(&self) -> Option<&dyn Pollable> {

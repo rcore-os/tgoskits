@@ -429,7 +429,7 @@ struct ElfCacheEntry {
 
 impl ElfCacheEntry {
     fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc);
+        let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;

@@ -254,9 +254,9 @@ impl OpenOptions {
                 || self.direct
                 || loc.flags().contains(NodeFlags::NON_CACHEABLE);
             let backend = if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
-                FileBackend::new_cached(loc)
+                FileBackend::new_cached(loc)?
             } else {
-                FileBackend::new_direct(loc)
+                FileBackend::new_direct(loc)?
             };
             OpenResult::File(File::new(backend, flags))
         })
@@ -626,6 +626,7 @@ fn register_cached_file(file: &Arc<CachedFileShared>) {
 /// A file handle with an LRU page cache for buffered I/O.
 pub struct CachedFile {
     inner: Location,
+    file: FileNode,
     shared: Arc<CachedFileShared>,
     in_memory: bool,
     /// Only one thread can append to the file at a time, while multiple writers
@@ -637,6 +638,7 @@ impl Clone for CachedFile {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            file: self.file.clone(),
             shared: self.shared.clone(),
             in_memory: self.in_memory,
             append_lock: RwLock::new(()),
@@ -660,7 +662,8 @@ impl FileUserData {
 
 impl CachedFile {
     /// Returns an existing cached file for `location`, or creates a new one.
-    pub fn get_or_create(location: Location) -> Self {
+    pub fn get_or_create(location: Location) -> VfsResult<Self> {
+        let file = location.entry().as_file()?.clone();
         let in_memory = location.filesystem().name() == "tmpfs";
 
         let mut guard = location.user_data();
@@ -687,12 +690,13 @@ impl CachedFile {
             register_cached_file(&shared);
         }
 
-        Self {
+        Ok(Self {
             inner: location,
+            file,
             shared,
             in_memory,
             append_lock: RwLock::new(()),
-        }
+        })
     }
 
     /// Returns `true` if both handles refer to the same shared state.
@@ -798,19 +802,18 @@ impl CachedFile {
         f: impl FnOnce(&mut PageCache, Option<(u32, PageCache)>) -> VfsResult<R>,
     ) -> VfsResult<R> {
         let mut guard = self.shared.page_cache.lock();
-        let (page, evicted) = self.page_or_insert(self.inner.entry().as_file()?, &mut guard, pn)?;
+        let (page, evicted) = self.page_or_insert(&self.file, &mut guard, pn)?;
         f(page, evicted)
     }
 
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
-        let len = self.inner.len()?;
+        let len = self.file.len()?;
         let end = offset.saturating_add(dst.remaining_mut() as u64).min(len);
         if end <= offset {
             return Ok(0);
         }
 
-        let file = self.inner.entry().as_file()?;
         let mut scratch = PageCache::new()?;
         let mut read = 0;
         let mut current = offset;
@@ -822,7 +825,7 @@ impl CachedFile {
 
             {
                 let mut guard = self.shared.page_cache.lock();
-                let page = self.page_or_insert(file, &mut guard, pn)?.0;
+                let page = self.page_or_insert(&self.file, &mut guard, pn)?.0;
                 scratch.data()[..chunk_len]
                     .copy_from_slice(&page.data()[page_offset..page_offset + chunk_len]);
             }
@@ -836,10 +839,9 @@ impl CachedFile {
     }
 
     fn write_at_locked(&self, mut buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
-        if end > file.len()? {
-            file.set_len(end)?;
+        if end > self.file.len()? {
+            self.file.set_len(end)?;
         }
 
         let mut scratch = PageCache::new()?;
@@ -858,7 +860,7 @@ impl CachedFile {
 
             {
                 let mut guard = self.shared.page_cache.lock();
-                let page = self.page_or_insert(file, &mut guard, pn)?.0;
+                let page = self.page_or_insert(&self.file, &mut guard, pn)?.0;
                 page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
                 if !self.in_memory {
                     page.dirty = true;
@@ -881,17 +883,15 @@ impl CachedFile {
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
         let _guard = self.append_lock.write();
-        let file = self.inner.entry().as_file()?;
-        let len = file.len()?;
+        let len = self.file.len()?;
         self.write_at_locked(buf, len)
             .map(|written| (written, len + written as u64))
     }
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
-        let file = self.inner.entry().as_file()?;
-        let old_len = file.len()?;
-        file.set_len(len)?;
+        let old_len = self.file.len()?;
+        self.file.set_len(len)?;
 
         let old_last_page = (old_len / PAGE_SIZE as u64) as u32;
         let new_last_page = (len / PAGE_SIZE as u64) as u32;
@@ -919,7 +919,7 @@ impl CachedFile {
                 {
                     // Don't write back pages since they're discarded
                     page.dirty = false;
-                    self.evict_cache(file, pn, &mut page)?;
+                    self.evict_cache(&self.file, pn, &mut page)?;
                 }
             }
         }
@@ -930,8 +930,7 @@ impl CachedFile {
         if self.in_memory {
             return Ok(alloc::vec::Vec::new());
         }
-        let file = self.inner.entry().as_file()?;
-        let file_len = file.len()?;
+        let file_len = self.file.len()?;
 
         let dirty_keys: alloc::vec::Vec<u32> = {
             let guard = self.shared.page_cache.lock();
@@ -957,13 +956,13 @@ impl CachedFile {
                 let page_start = *pn as u64 * PAGE_SIZE as u64;
                 let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
                 if len > 0 {
-                    file.write_at(&page.data()[..len], page_start)?;
+                    self.file.write_at(&page.data()[..len], page_start)?;
                 }
             }
             drop(guard);
         }
 
-        file.sync(false)?;
+        self.file.sync(false)?;
         Ok(dirty_keys)
     }
 
@@ -971,8 +970,7 @@ impl CachedFile {
         if self.in_memory {
             return Ok(());
         }
-        let file = self.inner.entry().as_file()?;
-        let file_len = file.len()?;
+        let file_len = self.file.len()?;
 
         for pn in pns {
             let mut guard = self.shared.page_cache.lock();
@@ -982,13 +980,13 @@ impl CachedFile {
                 let page_start = *pn as u64 * PAGE_SIZE as u64;
                 let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
                 if len > 0 {
-                    file.write_at(&page.data()[..len], page_start)?;
+                    self.file.write_at(&page.data()[..len], page_start)?;
                 }
             }
             drop(guard);
         }
 
-        file.sync(false)?;
+        self.file.sync(false)?;
         Ok(())
     }
 
@@ -1020,12 +1018,11 @@ impl CachedFile {
         if self.in_memory {
             return Ok(());
         }
-        let file = self.inner.entry().as_file()?;
         let mut guard = self.shared.page_cache.lock();
         while let Some((pn, mut page)) = guard.pop_lru() {
-            self.evict_cache(file, pn, &mut page)?;
+            self.evict_cache(&self.file, pn, &mut page)?;
         }
-        file.sync(data_only)?;
+        self.file.sync(data_only)?;
         Ok(())
     }
 
@@ -1054,27 +1051,32 @@ pub enum FileBackend {
     /// File I/O goes through the page cache.
     Cached(CachedFile),
     /// File I/O bypasses the page cache and hits the VFS directly.
-    Direct(Location),
+    Direct { location: Location, file: FileNode },
 }
 
 impl FileBackend {
-    pub(crate) fn new_direct(location: Location) -> Self {
-        Self::Direct(location)
+    pub fn new_direct(location: Location) -> VfsResult<Self> {
+        // Open file descriptions must keep the inode alive even after the
+        // directory entry is unlinked. Nix writes its temproot file after
+        // unlinking the path, so direct I/O must use this saved FileNode
+        // instead of resolving the Location's entry on every write.
+        let file = location.entry().as_file()?.clone();
+        Ok(Self::Direct { location, file })
     }
 
-    pub(crate) fn new_cached(location: Location) -> Self {
-        Self::Cached(CachedFile::get_or_create(location))
+    pub(crate) fn new_cached(location: Location) -> VfsResult<Self> {
+        Ok(Self::Cached(CachedFile::get_or_create(location)?))
     }
 
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
-            Self::Direct(loc) => {
+            Self::Direct { file, .. } => {
                 let mut total = 0;
                 while !dst.is_full() {
                     let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
-                        loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
+                        file.read_at(buf, offset).inspect(|read| {
                             offset += *read as u64;
                         })
                     })) {
@@ -1096,7 +1098,7 @@ impl FileBackend {
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
-            Self::Direct(loc) => {
+            Self::Direct { file, .. } => {
                 let mut total = 0;
                 let mut buf = [0; ax_io::DEFAULT_BUF_SIZE];
                 while !src.is_empty() {
@@ -1107,11 +1109,7 @@ impl FileBackend {
                     }
                     let mut chunk_written = 0;
                     while chunk_written < read {
-                        let written = match loc
-                            .entry()
-                            .as_file()?
-                            .write_at(&buf[chunk_written..read], offset)
-                        {
+                        let written = match file.write_at(&buf[chunk_written..read], offset) {
                             Ok(written) => written,
                             Err(VfsError::WouldBlock) if total > 0 => return Ok(total),
                             Err(err) => return Err(err),
@@ -1133,13 +1131,13 @@ impl FileBackend {
     pub fn append(&self, mut src: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
         match self {
             Self::Cached(cached) => cached.append(src),
-            Self::Direct(loc) => {
+            Self::Direct { file, .. } => {
                 let mut total = 0;
-                let mut end = loc.entry().as_file()?.len()?;
+                let mut end = file.len()?;
                 while src.remaining() > 0 {
                     let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
                     let written = match src.write_to(&mut ax_io::write_fn(|buf| {
-                        loc.entry().as_file()?.append(buf).map(|(n, offset)| {
+                        file.append(buf).map(|(n, offset)| {
                             end = offset;
                             n
                         })
@@ -1165,7 +1163,7 @@ impl FileBackend {
     pub fn location(&self) -> &Location {
         match self {
             Self::Cached(cached) => cached.location(),
-            Self::Direct(loc) => loc,
+            Self::Direct { location, .. } => location,
         }
     }
 
@@ -1173,7 +1171,7 @@ impl FileBackend {
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.sync(data_only),
-            Self::Direct(loc) => loc.entry().as_file()?.sync(data_only),
+            Self::Direct { file, .. } => file.sync(data_only),
         }
     }
 
@@ -1181,7 +1179,7 @@ impl FileBackend {
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.set_len(len),
-            Self::Direct(loc) => loc.entry().as_file()?.set_len(len),
+            Self::Direct { file, .. } => file.set_len(len),
         }
     }
 }

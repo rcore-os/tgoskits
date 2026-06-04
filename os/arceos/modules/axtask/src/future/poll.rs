@@ -3,6 +3,8 @@ use core::{future::poll_fn, task::Poll};
 use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 
+use crate::{WaitChannel, WaitChannelGuard};
+
 /// A helper to wrap a synchronous non-blocking I/O function into an
 /// asynchronous function.
 ///
@@ -18,8 +20,21 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
     pollable: &P,
     events: IoEvents,
     non_blocking: bool,
+    f: F,
+) -> AxResult<T> {
+    poll_io_with_wchan(pollable, events, non_blocking, WaitChannel::PollWait, f).await
+}
+
+/// Like [`poll_io`], but records the supplied wait-channel label while the
+/// future is actually pending for readiness.
+pub async fn poll_io_with_wchan<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pollable: &P,
+    events: IoEvents,
+    non_blocking: bool,
+    channel: WaitChannel,
     mut f: F,
 ) -> AxResult<T> {
+    let mut wchan_guard = None;
     super::interruptible(poll_fn(move |cx| match f() {
         Ok(value) => Poll::Ready(Ok(value)),
         Err(AxError::WouldBlock) => {
@@ -35,7 +50,10 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
             }
             match f() {
                 Ok(value) => Poll::Ready(Ok(value)),
-                Err(AxError::WouldBlock) => Poll::Pending,
+                Err(AxError::WouldBlock) => {
+                    wchan_guard.get_or_insert_with(|| WaitChannelGuard::set(channel));
+                    Poll::Pending
+                }
                 Err(e) => Poll::Ready(Err(e)),
             }
         }

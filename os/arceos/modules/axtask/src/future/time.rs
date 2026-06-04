@@ -10,6 +10,8 @@ use ax_errno::AxError;
 use ax_hal::time::{TimeValue, wall_time};
 use futures_util::{FutureExt, select_biased};
 
+use crate::{WaitChannel, WaitChannelGuard};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
     deadline: TimeValue,
@@ -94,19 +96,33 @@ fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
 
 /// Future returned by `sleep` and `sleep_until`.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct TimerFuture(TimerKey);
+pub struct TimerFuture {
+    key: TimerKey,
+    channel: Option<WaitChannel>,
+    wchan_guard: Option<WaitChannelGuard>,
+}
 
 impl Future for TimerFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        with_current(|r| r.poll(&self.0, cx))
+        let this = self.get_mut();
+        match with_current(|r| r.poll(&this.key, cx)) {
+            Poll::Ready(()) => Poll::Ready(()),
+            Poll::Pending => {
+                if let Some(channel) = this.channel {
+                    this.wchan_guard
+                        .get_or_insert_with(|| WaitChannelGuard::set(channel));
+                }
+                Poll::Pending
+            }
+        }
     }
 }
 
 impl Drop for TimerFuture {
     fn drop(&mut self) {
-        with_current(|r| r.cancel(&self.0));
+        with_current(|r| r.cancel(&self.key));
     }
 }
 
@@ -117,9 +133,28 @@ pub async fn sleep(duration: Duration) {
 
 /// Waits until `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
+    sleep_until_with_wchan(deadline, WaitChannel::ScheduleTimeout).await
+}
+
+/// Waits until `deadline` is reached, reporting the supplied wait-channel
+/// label only while the timer future is actually pending.
+pub async fn sleep_until_with_wchan(deadline: TimeValue, channel: WaitChannel) {
+    sleep_until_with_optional_wchan(deadline, Some(channel)).await
+}
+
+async fn sleep_until_without_wchan(deadline: TimeValue) {
+    sleep_until_with_optional_wchan(deadline, None).await
+}
+
+async fn sleep_until_with_optional_wchan(deadline: TimeValue, channel: Option<WaitChannel>) {
     let key = with_current(|r| r.add(deadline));
     if let Some(key) = key {
-        TimerFuture(key).await;
+        TimerFuture {
+            key,
+            channel,
+            wchan_guard: None,
+        }
+        .await;
     }
 }
 
@@ -161,7 +196,7 @@ pub async fn timeout_at<F: IntoFuture>(
     if let Some(deadline) = deadline {
         select_biased! {
             res = f.into_future().fuse() => Ok(res),
-            _ = sleep_until(deadline).fuse() => Err(Elapsed(())),
+            _ = sleep_until_without_wchan(deadline).fuse() => Err(Elapsed(())),
         }
     } else {
         Ok(f.await)

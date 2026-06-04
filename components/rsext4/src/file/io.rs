@@ -17,7 +17,7 @@ pub fn truncate<B: BlockDevice>(
     truncate_inode(device, fs, inode_num, truncate_size)
 }
 
-fn truncate_inode<B: BlockDevice>(
+pub fn truncate_inode<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,

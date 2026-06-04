@@ -224,7 +224,9 @@ impl Pollable for Pipe {
         let buf = self.shared.buffer.lock();
         if self.read_side {
             let closed = self.closed();
-            events.set(IoEvents::IN, buf.occupied_len() > 0);
+            // Treat EOF as readable in Starry's poll model: read() would
+            // return 0 immediately, and some callers only inspect IN.
+            events.set(IoEvents::IN, buf.occupied_len() > 0 || closed);
             events.set(IoEvents::HUP, closed);
         } else {
             events.set(IoEvents::ERR, self.closed());

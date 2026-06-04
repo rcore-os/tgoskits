@@ -507,6 +507,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // this, a child fork → F_SETLK → exit would permanently pin the
         // record in FCNTL_LOCKS and block all later acquirers.
         crate::syscall::release_pid_locks(process.pid());
+        crate::syscall::release_pid_flock_locks(process.pid());
 
         // Snapshot children BEFORE process.exit() reparents them to init
         // via mem::take. Otherwise process.children() returns an empty

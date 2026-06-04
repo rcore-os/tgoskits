@@ -1,9 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::{
-    current,
+    WaitChannel, current,
     future::{block_on, interruptible},
 };
 use bitflags::bitflags;
@@ -17,6 +16,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::task::{
     AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
     get_zombie_cred, processes, remove_process, traced_zombies_for, unregister_zombie,
+    wait_on_pollset_with_wchan,
 };
 
 const PTRACE_O_TRACESYSGOOD: usize = 1;
@@ -231,21 +231,11 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
     };
 
-    block_on(interruptible(poll_fn(|cx| {
-        match check_children().transpose() {
-            Some(res) => Poll::Ready(res),
-            None => {
-                proc_data.child_exit_event.register(cx.waker());
-                // A child may exit between the check above and waker
-                // registration. Recheck after registering so that wakeup is
-                // not lost in that race window.
-                match check_children().transpose() {
-                    Some(res) => Poll::Ready(res),
-                    None => Poll::Pending,
-                }
-            }
-        }
-    })))?
+    block_on(interruptible(wait_on_pollset_with_wchan(
+        &proc_data.child_exit_event,
+        WaitChannel::DoWait,
+        || check_children().transpose(),
+    )))?
 }
 
 pub fn sys_waitid(
@@ -365,16 +355,9 @@ pub fn sys_waitid(
         }
     };
 
-    block_on(interruptible(poll_fn(|cx| {
-        match check_children().transpose() {
-            Some(res) => Poll::Ready(res),
-            None => {
-                proc_data.child_exit_event.register(cx.waker());
-                match check_children().transpose() {
-                    Some(res) => Poll::Ready(res),
-                    None => Poll::Pending,
-                }
-            }
-        }
-    })))?
+    block_on(interruptible(wait_on_pollset_with_wchan(
+        &proc_data.child_exit_event,
+        WaitChannel::DoWait,
+        || check_children().transpose(),
+    )))?
 }

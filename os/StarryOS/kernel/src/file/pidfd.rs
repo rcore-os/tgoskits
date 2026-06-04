@@ -89,14 +89,17 @@ impl FileLike for PidFd {
 impl Pollable for PidFd {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        events.set(
-            IoEvents::IN,
-            self.proc_data.strong_count() > 0
-                && self
-                    .thread_exit
-                    .as_ref()
-                    .is_none_or(|it| !it.load(Ordering::Acquire)),
-        );
+        // Linux pidfd becomes readable only after the referenced task exits.
+        // Reporting IN while it is still alive makes event loops spin or wait
+        // on the wrong readiness edge.
+        let exited = if let Some(thread_exit) = &self.thread_exit {
+            thread_exit.load(Ordering::Acquire)
+        } else {
+            self.proc_data
+                .upgrade()
+                .is_none_or(|proc_data| proc_data.proc.is_zombie())
+        };
+        events.set(IoEvents::IN, exited);
         events
     }
 

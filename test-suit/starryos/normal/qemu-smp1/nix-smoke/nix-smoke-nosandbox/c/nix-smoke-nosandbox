@@ -1,22 +1,6 @@
-args = [
-    "-machine",
-    "q35",
-    "-nographic",
-    "-m",
-    "512M",
-    "-device",
-    "virtio-blk-pci,drive=disk0",
-    "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
-    "-device",
-    "virtio-net-pci,netdev=net0",
-    "-netdev",
-    "user,id=net0",
-]
-uefi = false
-to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = '''
+#!/bin/sh
+set -eu
+
 fail() {
     echo "NIX_NOSANDBOX_ERROR: $1"
     echo 'NIX_NOSANDBOX_TEST_FAILED'
@@ -26,38 +10,47 @@ fail() {
 echo 'NIX_NOSANDBOX_PHASE_ROOTFS_BEGIN'
 mkdir -p /nix /etc/nix /tmp/nix-smoke-nosandbox || fail 'failed to create Nix smoke directories'
 
-echo 'NIX_NOSANDBOX_PHASE_INSTALL_BEGIN'
-if command -v nix >/dev/null 2>&1; then
-    echo 'NIX_NOSANDBOX_INFO: nix already available'
-else
-    apk update || fail 'apk update failed before Nix install'
-    apk add nix || fail 'apk add nix failed'
-fi
-echo 'NIX_NOSANDBOX_PHASE_INSTALL_DONE'
+echo 'NIX_NOSANDBOX_PHASE_PREBUILT_NIX_BEGIN'
+command -v nix >/dev/null 2>&1 || fail 'prebuilt Nix is missing from case rootfs'
+echo 'NIX_NOSANDBOX_PHASE_PREBUILT_NIX_DONE'
 
 echo 'NIX_NOSANDBOX_PHASE_NIX_BEGIN'
 nix --version || fail 'nix --version failed'
 echo 'NIX_NOSANDBOX_PHASE_NIX_DONE'
 
 echo 'NIX_NOSANDBOX_PHASE_BUILD_BEGIN'
+rm -f ./result
 cat > /tmp/nix-smoke-nosandbox/default.nix <<'EOF'
 derivation {
   name = "nix-smoke-nosandbox";
   system = builtins.currentSystem;
   builder = "/bin/sh";
-  args = [ "-c" "echo NIX_LOCAL_BUILD_NOSANDBOX_OK > $out" ];
+  args = [ "-c" "mkdir -p /tmp/nix-smoke-nosandbox; echo BUILDER_STARTED > /tmp/nix-smoke-nosandbox/builder.log; echo OUT=$out >> /tmp/nix-smoke-nosandbox/builder.log; echo NIX_LOCAL_BUILD_NOSANDBOX_OK > $out" ];
 }
 EOF
 echo 'NIX_NOSANDBOX_INFO: tiny local unsandboxed nix-build timeout is 120s'
+set +e
 if command -v timeout >/dev/null 2>&1; then
-    timeout 120 nix-build --no-substitute --option sandbox false /tmp/nix-smoke-nosandbox/default.nix >/tmp/nix-smoke-nosandbox/build.log 2>&1
+    timeout 120 nix-build --no-substitute --option build-users-group '' --option sandbox false /tmp/nix-smoke-nosandbox/default.nix >/tmp/nix-smoke-nosandbox/build.log 2>&1
     build_rc=$?
 else
-    nix-build --no-substitute --option sandbox false /tmp/nix-smoke-nosandbox/default.nix >/tmp/nix-smoke-nosandbox/build.log 2>&1
+    nix-build --no-substitute --option build-users-group '' --option sandbox false /tmp/nix-smoke-nosandbox/default.nix >/tmp/nix-smoke-nosandbox/build.log 2>&1
     build_rc=$?
 fi
+set -e
 if [ "$build_rc" -ne 0 ]; then
+    echo 'NIX_NOSANDBOX_DIAG_BUILDER_LOG_BEGIN'
+    cat /tmp/nix-smoke-nosandbox/builder.log 2>/dev/null || echo 'NIX_DIAG_NO_BUILDER_LOG'
+    echo 'NIX_NOSANDBOX_DIAG_BUILDER_LOG_END'
+    echo 'NIX_NOSANDBOX_DIAG_BUILD_LOG_BEGIN'
     cat /tmp/nix-smoke-nosandbox/build.log
+    echo 'NIX_NOSANDBOX_DIAG_BUILD_LOG_END'
+    echo 'NIX_NOSANDBOX_DIAG_PS_BEGIN'
+    ps
+    echo 'NIX_NOSANDBOX_DIAG_PS_END'
+    echo 'NIX_NOSANDBOX_DIAG_FIND_BEGIN'
+    find /nix/store -maxdepth 1 -name '*nix-smoke*' -exec ls -la {} \;
+    echo 'NIX_NOSANDBOX_DIAG_FIND_END'
     echo "NIX_NOSANDBOX_BUILD_EXIT=$build_rc"
     if grep -q 'interrupted by the user' /tmp/nix-smoke-nosandbox/build.log; then
         fail 'tiny local unsandboxed nix-build was interrupted after waiting for store lock'
@@ -69,12 +62,3 @@ cat ./result || fail 'nix-build result symlink could not be read'
 grep -q 'NIX_LOCAL_BUILD_NOSANDBOX_OK' ./result || fail 'tiny local unsandboxed nix-build output marker missing'
 echo 'NIX_NOSANDBOX_PHASE_BUILD_DONE'
 echo 'NIX_NOSANDBOX_TEST_PASSED'
-exit 0
-'''
-success_regex = ["(?m)^NIX_NOSANDBOX_TEST_PASSED\\s*$"]
-fail_regex = [
-    '(?i)\bpanic(?:ked)?\b',
-    '(?i)\bfatal\b',
-    "(?m)^NIX_NOSANDBOX_TEST_FAILED\\s*$",
-]
-timeout = 900

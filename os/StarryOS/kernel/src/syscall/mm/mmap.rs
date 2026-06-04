@@ -340,7 +340,7 @@ pub fn sys_mmap(
                                     true,
                                 )
                             }
-                            FileBackend::Direct(loc) => {
+                            FileBackend::Direct { location: loc, .. } => {
                                 let device = loc
                                     .entry()
                                     .downcast::<Device>()

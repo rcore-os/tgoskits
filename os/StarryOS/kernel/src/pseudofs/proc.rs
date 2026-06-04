@@ -753,6 +753,7 @@ impl SimpleDirOps for ThreadDir {
                 "stat",
                 "statm",
                 "status",
+                "wchan",
                 "oom_score_adj",
                 "task",
                 "maps",
@@ -806,6 +807,15 @@ impl SimpleDirOps for ThreadDir {
                     } else {
                         Ok(task_status(&task))
                     }
+                })
+                .into()
+            }
+            "wchan" => {
+                let task = self.task.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let label = task.wchan().map_or("", |wc| wc.label());
+                    Ok(format!("{label}\n").into_bytes())
                 })
                 .into()
             }

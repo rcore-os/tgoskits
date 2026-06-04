@@ -176,7 +176,13 @@ impl Pollable for Signalfd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Register on the current thread's signalfd_waker so that
+            // signal delivery (send_signal_thread_inner) can wake epoll
+            // pollers when a new signal arrives — even a blocked one.
+            current()
+                .as_thread()
+                .signalfd_waker
+                .register(context.waker());
         }
     }
 }

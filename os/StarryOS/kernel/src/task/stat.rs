@@ -93,6 +93,8 @@ impl TaskStat {
         let cutime = (cutime_tv.as_millis() / 10) as u64;
         let cstime = (cstime_tv.as_millis() / 10) as u64;
 
+        let wchan = task.wchan().map_or(0, |wc| wc.id() as u64);
+
         Ok(Self {
             pid,
             comm: comm.to_owned(),
@@ -104,6 +106,7 @@ impl TaskStat {
             stime,
             cutime,
             cstime,
+            wchan,
             num_threads: proc.threads().len() as u32,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
             processor: task.cpu_id(),

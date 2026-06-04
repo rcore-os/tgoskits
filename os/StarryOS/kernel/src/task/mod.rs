@@ -13,13 +13,15 @@ mod user;
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::{
     cell::RefCell,
+    future::poll_fn,
     ops::Deref,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+    task::Poll,
 };
 
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner};
+use ax_task::{TaskExt, TaskInner, WaitChannel, WaitChannelGuard};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
@@ -128,6 +130,10 @@ pub struct Thread {
     /// Ready to exit
     pub exit: Arc<AtomicBool>,
 
+    /// Woken when a signal arrives at this thread, so signalfd/epoll pollers
+    /// can observe newly-pending signals even when the signal is blocked.
+    pub signalfd_waker: PollSet,
+
     /// Indicates whether the thread is currently accessing user memory.
     accessing_user_memory: AtomicBool,
 
@@ -198,6 +204,7 @@ impl Thread {
             no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
 
+            signalfd_waker: PollSet::new(),
             fault_dump_signo: AtomicU8::new(0),
             kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
         })
@@ -440,6 +447,34 @@ impl VforkDone {
     pub fn new(poll: Arc<PollSet>) -> Self {
         Self { done: false, poll }
     }
+}
+
+/// Waits on a [`PollSet`] after a caller-supplied condition reports no
+/// immediate result, recording `channel` only while the future is pending.
+///
+/// The condition is checked before and after waker registration, so callers
+/// avoid lost wakeups without owning the wait-channel lifecycle themselves.
+pub async fn wait_on_pollset_with_wchan<T>(
+    poll: &PollSet,
+    channel: WaitChannel,
+    mut check: impl FnMut() -> Option<T>,
+) -> T {
+    let mut wchan_guard = None;
+    poll_fn(move |cx| {
+        if let Some(value) = check() {
+            return Poll::Ready(value);
+        }
+
+        poll.register(cx.waker());
+
+        if let Some(value) = check() {
+            Poll::Ready(value)
+        } else {
+            wchan_guard.get_or_insert_with(|| WaitChannelGuard::set(channel));
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 /// A pending job-control status change awaiting report to the parent's

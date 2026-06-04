@@ -19,7 +19,7 @@ use ax_errno::AxResult;
 use ax_memory_addr::VirtAddr;
 use ax_sync::Mutex;
 use ax_task::{
-    current,
+    WaitChannel, WaitChannelGuard, current,
     future::{self, block_on, interruptible},
 };
 use hashbrown::HashMap;
@@ -86,10 +86,12 @@ impl WaiterState {
 
 struct WaitIfFuture<'a, F> {
     queue: &'a WaitQueue,
+    channel: WaitChannel,
     bitset: u32,
     cleanup: Option<FutexWaitCleanup>,
     condition: Option<F>,
     state: Option<Arc<WaiterState>>,
+    wchan_guard: Option<WaitChannelGuard>,
 }
 
 impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
@@ -111,6 +113,7 @@ impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
                 state: state.clone(),
             });
             this.state = Some(state);
+            this.wchan_guard = Some(WaitChannelGuard::set(this.channel));
             return Poll::Pending;
         }
 
@@ -129,6 +132,9 @@ impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
                 .find(|waiter| Arc::ptr_eq(&waiter.state, state))
             {
                 waiter.waker = cx.waker().clone();
+            }
+            if this.wchan_guard.is_none() {
+                this.wchan_guard = Some(WaitChannelGuard::set(this.channel));
             }
             Poll::Pending
         }
@@ -169,7 +175,19 @@ impl WaitQueue {
         timeout: Option<Duration>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
-        self.wait_if_with_cleanup(bitset, timeout, None, condition)
+        self.wait_if_with_wchan(WaitChannel::FutexWait, bitset, timeout, condition)
+    }
+
+    /// Waits if the given condition is met, reporting the supplied
+    /// wait-channel label while the waiter is actually pending.
+    pub fn wait_if_with_wchan(
+        &self,
+        channel: WaitChannel,
+        bitset: u32,
+        timeout: Option<Duration>,
+        condition: impl FnOnce() -> bool + Unpin,
+    ) -> AxResult<bool> {
+        self.wait_if_with_cleanup_and_wchan(channel, bitset, timeout, None, condition)
     }
 
     /// Waits with explicit futex-table cleanup metadata.
@@ -183,14 +201,34 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
+        self.wait_if_with_cleanup_and_wchan(
+            WaitChannel::FutexWait,
+            bitset,
+            timeout,
+            cleanup,
+            condition,
+        )
+    }
+
+    /// Waits with explicit cleanup metadata and wait-channel label.
+    pub fn wait_if_with_cleanup_and_wchan(
+        &self,
+        channel: WaitChannel,
+        bitset: u32,
+        timeout: Option<Duration>,
+        cleanup: Option<FutexWaitCleanup>,
+        condition: impl FnOnce() -> bool + Unpin,
+    ) -> AxResult<bool> {
         block_on(interruptible(future::timeout(
             timeout,
             WaitIfFuture {
                 queue: self,
+                channel,
                 bitset,
                 cleanup,
                 condition: Some(condition),
                 state: None,
+                wchan_guard: None,
             },
         )))??
     }

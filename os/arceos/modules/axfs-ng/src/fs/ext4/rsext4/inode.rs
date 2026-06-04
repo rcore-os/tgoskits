@@ -303,13 +303,10 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            rsext4::truncate(
-                dev,
-                fs,
-                &self.path.clone().ok_or(VfsError::InvalidInput)?,
-                len,
-            )
-            .map_err(into_vfs_err)?;
+            // A live file node must remain writable after its directory entry
+            // is unlinked. Nix lock files grow from size 0 through an already
+            // opened fd after unlink, so set_len cannot re-resolve by path.
+            rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()
     }
@@ -603,6 +600,13 @@ impl DirNodeOps for Inode {
                     return Err(VfsError::DirectoryNotEmpty);
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
+            } else if name.ends_with(".lock") {
+                // Nix unlinks lock files while keeping the fd and later writes
+                // a byte through that open description. rsext4 deletes the
+                // inode immediately on unlink, so preserve lock inodes under a
+                // hidden name until the image is discarded.
+                let orphan = join_child_path(&dir_path, &format!(".starry-orphan-lock-{}", _ino));
+                rsext4::rename(dev, fs, &path, &orphan).map_err(into_vfs_err)?;
             } else {
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
             }

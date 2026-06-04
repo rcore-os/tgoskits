@@ -1,4 +1,4 @@
-use alloc::{format, string::ToString, sync::Arc};
+use alloc::{format, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     mem,
@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -116,13 +116,6 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         OpenResult::File(mut file) => {
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
-                // Block device exclusive open (O_EXCL without O_CREAT).
-                if let Ok(meta) = device.metadata()
-                    && meta.node_type == NodeType::BlockDevice
-                    && flags & O_EXCL != 0
-                {
-                    device.inner().open(true)?;
-                }
                 let inner = device.inner().as_any();
                 #[cfg(feature = "plat-dyn")]
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
@@ -143,7 +136,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
                     );
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
-                    file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
+                    file = ax_fs::File::new(FileBackend::new_direct(loc)?, file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
                     let term = current()
                         .as_thread()
@@ -161,8 +154,15 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         panic!("unknown terminal type")
                     };
                     let loc = FS_CONTEXT.lock().resolve(&path)?;
-                    file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
+                    file = ax_fs::File::new(FileBackend::new_direct(loc)?, file.flags());
                 }
+            }
+            if let Ok(device) = file.location().entry().downcast::<Device>() {
+                // Call open() on the final device after /dev/ptmx and /dev/tty
+                // rewrites. Character devices such as ptys need this to pair
+                // close notification with the last open file, while block
+                // devices still use the same hook for O_EXCL exclusion.
+                device.inner().open(flags & O_EXCL != 0)?;
             }
             Arc::new(File::new(file, flags))
         }
@@ -385,6 +385,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
     let mut fd_table = FD_TABLE.write();
+    let mut closing = Vec::new();
     if let Some(max_index) = fd_table.ids().next_back() {
         for fd in first..=last.min(max_index as i32) {
             if cloexec {
@@ -392,9 +393,13 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
                     f.cloexec = true;
                 }
             } else if let Some(f) = fd_table.remove(fd as _) {
-                crate::file::release_locks_on_close(f);
+                closing.push(f);
             }
         }
+    }
+    drop(fd_table);
+    for f in closing {
+        crate::file::release_locks_on_close(f);
     }
 
     Ok(0)
@@ -461,12 +466,14 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
         .ok_or(AxError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
-    if let Some(prev) = fd_table.remove(new_fd as _) {
-        crate::file::release_locks_on_close(prev);
-    }
+    let prev = fd_table.remove(new_fd as _);
     fd_table
         .add_at(new_fd as _, f)
         .map_err(|_| AxError::BadFileDescriptor)?;
+    drop(fd_table);
+    if let Some(prev) = prev {
+        crate::file::release_locks_on_close(prev);
+    }
 
     Ok(new_fd as _)
 }
