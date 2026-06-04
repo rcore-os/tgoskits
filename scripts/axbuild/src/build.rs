@@ -603,17 +603,56 @@ fn std_c_toolchain_env(target_name: &str, tool_prefix: &str) -> HashMap<String, 
     let target_env = target_name.replace('-', "_");
     let cc = format!("{tool_prefix}-cc");
     let ar = format!("{tool_prefix}-ar");
+    let c_flags = std_c_target_flags(target_name).join(" ");
     env.insert(format!("CC_{target_env}"), cc.clone());
     env.insert(format!("AR_{target_env}"), ar);
+    if !c_flags.is_empty() {
+        env.insert(format!("CFLAGS_{target_env}"), c_flags.clone());
+        env.insert(format!("CXXFLAGS_{target_env}"), c_flags.clone());
+    }
 
     if let Some(sysroot) = musl_toolchain_sysroot(&cc) {
+        let mut bindgen_args = vec![
+            format!("--target={tool_prefix}"),
+            format!("--sysroot={sysroot}"),
+        ];
+        bindgen_args.extend(
+            std_c_target_flags(target_name)
+                .into_iter()
+                .map(str::to_string),
+        );
         env.insert(
             format!("BINDGEN_EXTRA_CLANG_ARGS_{target_env}"),
-            format!("--target={tool_prefix} --sysroot={sysroot}"),
+            bindgen_args.join(" "),
         );
     }
 
     env
+}
+
+fn std_c_target_flags(target_name: &str) -> Vec<&'static str> {
+    if target_name.starts_with("x86_64-") {
+        vec![
+            "-mno-mmx",
+            "-mno-sse",
+            "-mno-sse2",
+            "-mno-sse3",
+            "-mno-ssse3",
+            "-mno-sse4.1",
+            "-mno-sse4.2",
+            "-mno-avx",
+            "-mno-avx2",
+            "-msoft-float",
+        ]
+    } else if target_name.starts_with("aarch64-") {
+        vec!["-mgeneral-regs-only"]
+    } else if target_name.starts_with("riscv64") {
+        vec!["-march=rv64gc", "-mabi=lp64d", "-mcmodel=medany"]
+    } else if target_name.starts_with("loongarch64-") {
+        vec!["-mabi=lp64s", "-msoft-float"]
+    } else {
+        Vec::new()
+    }
 }
 
 fn musl_toolchain_sysroot(cc: &str) -> Option<String> {
@@ -2462,6 +2501,8 @@ AX_IP = "10.0.2.15"
         {
             assert!(bindgen_args.contains("--target=riscv64-linux-musl"));
             assert!(bindgen_args.contains("--sysroot="));
+            assert!(bindgen_args.contains("-march=rv64gc"));
+            assert!(bindgen_args.contains("-mabi=lp64d"));
         }
     }
 
@@ -2477,7 +2518,36 @@ AX_IP = "10.0.2.15"
             env.get("AR_riscv64gc_unknown_linux_musl"),
             Some(&"definitely-missing-musl-ar".to_string())
         );
+        assert_eq!(
+            env.get("CFLAGS_riscv64gc_unknown_linux_musl"),
+            Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany".to_string())
+        );
+        assert_eq!(
+            env.get("CXXFLAGS_riscv64gc_unknown_linux_musl"),
+            Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany".to_string())
+        );
         assert!(!env.contains_key("BINDGEN_EXTRA_CLANG_ARGS_riscv64gc_unknown_linux_musl"));
+    }
+
+    #[test]
+    fn std_c_toolchain_env_exports_loongarch_softfloat_abi_flags() {
+        let env = std_c_toolchain_env("loongarch64-unknown-linux-musl", "loongarch64-linux-musl");
+
+        assert_eq!(
+            env.get("CFLAGS_loongarch64_unknown_linux_musl"),
+            Some(&"-mabi=lp64s -msoft-float".to_string())
+        );
+        assert_eq!(
+            env.get("CXXFLAGS_loongarch64_unknown_linux_musl"),
+            Some(&"-mabi=lp64s -msoft-float".to_string())
+        );
+        if let Some(bindgen_args) =
+            env.get("BINDGEN_EXTRA_CLANG_ARGS_loongarch64_unknown_linux_musl")
+        {
+            assert!(bindgen_args.contains("--target=loongarch64-linux-musl"));
+            assert!(bindgen_args.contains("-mabi=lp64s"));
+            assert!(bindgen_args.contains("-msoft-float"));
+        }
     }
 
     #[test]
