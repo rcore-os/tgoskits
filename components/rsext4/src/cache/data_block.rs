@@ -755,12 +755,7 @@ mod tests {
                 Ok(())
             }
 
-            fn write(
-                &mut self,
-                buffer: &[u8],
-                block_id: AbsoluteBN,
-                count: u32,
-            ) -> Ext4Result<()> {
+            fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
                 self.inner.write(buffer, block_id, count)
             }
 
@@ -803,9 +798,7 @@ mod tests {
         // Inside get_or_load the device will block at enter_io after the LRU
         // snapshot is taken but before the spinlock is reacquired.
         let cache2 = cache.clone();
-        let handle = std::thread::spawn(move || {
-            cache2.get_or_load(&mut jbd2_dev, BLK_B)
-        });
+        let handle = std::thread::spawn(move || cache2.get_or_load(&mut jbd2_dev, BLK_B));
 
         // Step 3: wait for Thread 1 to enter I/O (lock dropped).
         enter_io.wait();
