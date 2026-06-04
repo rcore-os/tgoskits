@@ -8,7 +8,6 @@ const RISCV_LINUX_IMAGE_VERSION: usize = 0x0000_0002;
 const RISCV_LINUX_IMAGE_MAGIC: usize = 0x0056_4353_4952;
 const RISCV_LINUX_IMAGE_MAGIC2: usize = 0x0543_5352;
 
-#[cfg(not(arceos_std))]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".head.text")]
@@ -43,45 +42,6 @@ pub unsafe extern "C" fn _head() -> ! {
         version = const RISCV_LINUX_IMAGE_VERSION,
         magic = const RISCV_LINUX_IMAGE_MAGIC,
         magic2 = const RISCV_LINUX_IMAGE_MAGIC2,
-    )
-}
-
-#[cfg(arceos_std)]
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".head.text")]
-pub unsafe extern "C" fn _head() -> ! {
-    naked_asm!(
-        ".option push",
-        ".option norvc",
-        // code0/code1
-        "j 1f",
-        "nop",
-        ".option pop",
-        // text_offset
-        ".quad {text_offset}",
-        // image_size
-        ".quad __kernel_load_end - _head",
-        // flags
-        ".quad {flags}",
-        // version + reserved
-        ".word {version}",
-        ".word 0",
-        // reserved
-        ".quad 0",
-        // magic + magic2 + reserved
-        ".quad {magic}",
-        ".word {magic2}",
-        ".word 0",
-        "1:",
-        "lla t0, {kernel_entry}",
-        "jr t0",
-        text_offset = const RISCV_LINUX_IMAGE_TEXT_OFFSET,
-        flags = const RISCV_LINUX_IMAGE_FLAGS,
-        version = const RISCV_LINUX_IMAGE_VERSION,
-        magic = const RISCV_LINUX_IMAGE_MAGIC,
-        magic2 = const RISCV_LINUX_IMAGE_MAGIC2,
-        kernel_entry = sym kernel_entry,
     )
 }
 
