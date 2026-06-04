@@ -51,7 +51,8 @@ sched-cfs = ["multitask", "preempt"]
 sched-fifo = ["multitask"]
 sched-rr = ["multitask", "preempt"]
 
-test = ["ax-percpu?/sp-naive"]
+host-test = ["ax-kspin?/host-test", "ax-percpu?/sp-naive"]
+test = ["host-test"]
 
 [dependencies]
 ax-alloc = {workspace = true, optional = true}
@@ -82,6 +83,3 @@ spin = {workspace = true, optional = true}
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

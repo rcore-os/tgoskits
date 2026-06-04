@@ -80,6 +80,7 @@ SECTIONS
         _etdata = .;
     } :text :tls
 
+    . = ALIGN(8);
     _edata = .;
     __kernel_load_end = .;
     __bss_start = .;
