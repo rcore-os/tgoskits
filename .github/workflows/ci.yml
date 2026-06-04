@@ -256,13 +256,7 @@ jobs:
       runs_on: >-
         ${{
           matrix.self_hosted_owner != ''
-          && (
-            github.repository_owner != matrix.self_hosted_owner
-            || (
-              github.event_name == 'pull_request'
-              && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
-            )
-          )
+          && github.repository_owner != matrix.self_hosted_owner
           && '["ubuntu-latest"]'
           || matrix.runs_on
         }}
@@ -271,13 +265,7 @@ jobs:
           matrix.use_container
           || (
             matrix.self_hosted_owner != ''
-            && (
-              github.repository_owner != matrix.self_hosted_owner
-              || (
-                github.event_name == 'pull_request'
-                && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
-              )
-            )
+            && github.repository_owner != matrix.self_hosted_owner
           )
         }}
       command: ${{ matrix.command }}
@@ -638,13 +626,7 @@ jobs:
       runs_on: >-
         ${{
           matrix.self_hosted_owner != ''
-          && (
-            github.repository_owner != matrix.self_hosted_owner
-            || (
-              github.event_name == 'pull_request'
-              && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
-            )
-          )
+          && github.repository_owner != matrix.self_hosted_owner
           && '["ubuntu-latest"]'
           || matrix.runs_on
         }}
@@ -653,13 +635,7 @@ jobs:
           matrix.use_container
           || (
             matrix.self_hosted_owner != ''
-            && (
-              github.repository_owner != matrix.self_hosted_owner
-              || (
-                github.event_name == 'pull_request'
-                && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
-              )
-            )
+            && github.repository_owner != matrix.self_hosted_owner
           )
         }}
       command: ${{ matrix.command }}
