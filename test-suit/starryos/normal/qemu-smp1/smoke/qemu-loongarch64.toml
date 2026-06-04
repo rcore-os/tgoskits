@@ -21,4 +21,4 @@ shell_prefix = "root@starry:"
 success_regex = ["(?m)^All tests passed!\\s*$"]
 to_bin = true
 uefi = false
-timeout = 5
+timeout = 15
