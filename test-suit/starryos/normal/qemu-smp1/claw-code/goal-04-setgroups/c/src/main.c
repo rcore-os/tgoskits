@@ -44,7 +44,7 @@ int main(void) {
     {
         int fd = open("/proc/self/setgroups", O_WRONLY);
         if (fd >= 0) {
-            const char *val = "deny";
+            const char *val = "deny\n";  // include newline to replace full content
             ssize_t n = write(fd, val, strlen(val));
             CHECK(n > 0, "write \"deny\" to setgroups should succeed");
             close(fd);
@@ -85,7 +85,7 @@ int main(void) {
     {
         int fd = open("/proc/self/setgroups", O_WRONLY);
         if (fd >= 0) {
-            const char *val = "allow";
+            const char *val = "allow\n";  // include newline to replace full content
             ssize_t n = write(fd, val, strlen(val));
             CHECK(n > 0, "write \"allow\" to setgroups should succeed");
             close(fd);
