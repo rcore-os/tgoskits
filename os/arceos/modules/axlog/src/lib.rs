@@ -142,11 +142,16 @@ const LOG_BUFFER_SIZE: usize = 2048;
 const LOG_TRUNCATED: &str = "\u{1B}[m<log truncated>";
 const LOG_TRUNCATED_WITH_NEWLINE: &str = "\u{1B}[m<log truncated>\n";
 
+#[derive(Clone, Copy)]
+enum TruncationMarker {
+    WithoutNewline,
+    WithNewline,
+}
+
 struct LogBuffer<const N: usize> {
     buf: [u8; N],
     len: usize,
     truncated: bool,
-    ends_with_newline: bool,
 }
 
 impl<const N: usize> LogBuffer<N> {
@@ -155,7 +160,6 @@ impl<const N: usize> LogBuffer<N> {
             buf: [0; N],
             len: 0,
             truncated: false,
-            ends_with_newline: false,
         }
     }
 
@@ -165,15 +169,14 @@ impl<const N: usize> LogBuffer<N> {
         unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
     }
 
-    fn append_truncation_marker(&mut self) {
+    fn append_truncation_marker(&mut self, marker: TruncationMarker) {
         if !self.truncated {
             return;
         }
 
-        let marker = if self.ends_with_newline {
-            LOG_TRUNCATED_WITH_NEWLINE.as_bytes()
-        } else {
-            LOG_TRUNCATED.as_bytes()
+        let marker = match marker {
+            TruncationMarker::WithoutNewline => LOG_TRUNCATED.as_bytes(),
+            TruncationMarker::WithNewline => LOG_TRUNCATED_WITH_NEWLINE.as_bytes(),
         };
         if N < marker.len() {
             self.len = 0;
@@ -199,10 +202,6 @@ impl<const N: usize> LogBuffer<N> {
 
 impl<const N: usize> Write for LogBuffer<N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        if !s.is_empty() {
-            self.ends_with_newline = s.ends_with('\n');
-        }
-
         let available = N.saturating_sub(self.len);
         if s.len() <= available {
             self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
@@ -247,7 +246,7 @@ impl Log for Logger {
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "std")] {
-                __print_impl(with_color!(
+                print_log_fmt(with_color!(
                     ColorCode::White,
                     "[{time} {path}:{line}] {args}\n",
                     time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.6f"),
@@ -262,7 +261,7 @@ impl Log for Logger {
                 if let Some(cpu_id) = cpu_id {
                     if let Some(tid) = tid {
                         // show CPU ID and task ID
-                        __print_impl(with_color!(
+                        print_log_fmt(with_color!(
                             ColorCode::White,
                             "[{:>3}.{:06} {cpu_id}:{tid} {path}:{line}] {args}\n",
                             now.as_secs(),
@@ -275,7 +274,7 @@ impl Log for Logger {
                         ));
                     } else {
                         // show CPU ID only
-                        __print_impl(with_color!(
+                        print_log_fmt(with_color!(
                             ColorCode::White,
                             "[{:>3}.{:06} {cpu_id} {path}:{line}] {args}\n",
                             now.as_secs(),
@@ -288,7 +287,7 @@ impl Log for Logger {
                     }
                 } else {
                     // neither CPU ID nor task ID is shown
-                    __print_impl(with_color!(
+                    print_log_fmt(with_color!(
                         ColorCode::White,
                         "[{:>3}.{:06} {path}:{line}] {args}\n",
                         now.as_secs(),
@@ -305,8 +304,7 @@ impl Log for Logger {
     fn flush(&self) {}
 }
 
-/// Prints the formatted string to the console.
-pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
+fn print_buffered(args: fmt::Arguments, marker: TruncationMarker) -> fmt::Result {
     use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
@@ -319,10 +317,21 @@ pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
 
     let mut buf = LogBuffer::<LOG_BUFFER_SIZE>::new();
     buf.write_fmt(args)?;
-    buf.append_truncation_marker();
+    buf.append_truncation_marker(marker);
 
     let _guard = LOCK.lock();
     Logger.write_str(buf.as_str())
+}
+
+// Log records always include a trailing newline, even when ANSI reset bytes are
+// formatted after it. Keep that newline after replacing truncated content.
+fn print_log_fmt(args: fmt::Arguments) {
+    print_buffered(args, TruncationMarker::WithNewline).unwrap();
+}
+
+/// Prints the formatted string to the console.
+pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
+    print_buffered(args, TruncationMarker::WithoutNewline)
 }
 
 #[doc(hidden)]
@@ -361,7 +370,7 @@ mod tests {
     fn log_buffer_truncates_at_utf8_boundary() {
         let mut buf = LogBuffer::<22>::new();
         write!(buf, "ab你好xxxxxxxxxxxxxxxx\n").unwrap();
-        buf.append_truncation_marker();
+        buf.append_truncation_marker(TruncationMarker::WithNewline);
 
         assert_eq!(buf.as_str(), "ab\u{1B}[m<log truncated>\n");
     }
@@ -370,8 +379,17 @@ mod tests {
     fn log_buffer_keeps_untruncated_message() {
         let mut buf = LogBuffer::<32>::new();
         write!(buf, "short").unwrap();
-        buf.append_truncation_marker();
+        buf.append_truncation_marker(TruncationMarker::WithoutNewline);
 
         assert_eq!(buf.as_str(), "short");
+    }
+
+    #[test]
+    fn log_buffer_can_append_marker_without_newline() {
+        let mut buf = LogBuffer::<21>::new();
+        write!(buf, "ab你好xxxxxxxxxxxxxxxx").unwrap();
+        buf.append_truncation_marker(TruncationMarker::WithoutNewline);
+
+        assert_eq!(buf.as_str(), "ab\u{1B}[m<log truncated>");
     }
 }
