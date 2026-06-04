@@ -1,6 +1,6 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, validate Starry app-support test placement, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
 ---
 
 # Review Single PR
@@ -215,6 +215,8 @@ For PRs that add StarryOS app support, separate operator-facing app scenarios fr
 - If the PR adds or changes an app-oriented Starry QEMU case under either `apps/starry` or `test-suit/starryos`, run the actual documented app command or exact `cargo xtask starry test qemu ... -c <case>` path in QEMU for at least the changed/claimed architecture. For multi-arch `qemu-*.toml` additions, run the architecture most likely to fail from CI or PR history; if any newly added required architecture is already failing in CI, reproduce or classify that architecture before approval.
 - Do not approve when the app/test cannot be run as described by the PR, when its success depends on an unavailable or unstable external service without a controlled fallback, or when the command only passes on a narrower target than the PR claims. Report the exact command, architecture, guest-visible failure marker, and whether the failure matches remote CI.
 
+Apply the same runtime-validation expectation to ArceOS apps and app-facing tools. A PR that adds or changes an ArceOS app, `apps/**` demo, QEMU wrapper, rootfs/app preparation tool, symbolizer/log parser, packaging helper, or other tool that claims to make a StarryOS/ArceOS app usable must be reviewed as an executable workflow, not as a syntax-only or docs-only change.
+
 Do not approve changes that are only shaped to satisfy the added tests, such as hard-coded special cases, skipped behavior, fake state updates, no-op compatibility shims, or logic that does not implement the intended subsystem semantics. Treat this as blocking even when local tests and CI pass.
 
 Do not accept "success path" tests that silently skip on unexpected failure, such as returning early when `brk`, `sbrk`, I/O, or socket setup returns `ENOMEM`/`EAGAIN`, unless the test prints an explicit skip marker and the review explains why the environment legitimately cannot require success. Bugfix reproduction tests should fail loudly when the fixed behavior is absent.
@@ -313,6 +315,25 @@ cargo tree -p starry-kernel | sed -n '/kbpf-basic v0.5.7/,+12p'
 
 The expected result for that example is that local workspace crates still use local `components/axerrno`, while `kbpf-basic` resolves its own crates.io `ax-errno` and local Starry eBPF/perf code performs explicit error conversion at the boundary.
 
+For app/tool workflows that CI does not execute exactly, manual runtime validation is a hard gate. This applies when the PR adds or changes:
+
+- StarryOS user-space app support, `apps/starry/**` scenarios, Starry rootfs/app preparation, or Starry QEMU run docs/scripts;
+- ArceOS apps, `apps/**` demos, `test-suit/arceos/**` app configs, or ArceOS QEMU run docs/scripts;
+- tools or wrappers that prepare, launch, inspect, symbolize, package, or otherwise operate on a StarryOS or ArceOS app workflow;
+- README/PR-body runbooks that claim the app/tool is usable while the current CI matrix does not run that exact command and success condition.
+
+Do not approve based only on `cargo fmt`, clippy, shellcheck, `--help`, script readability, TOML parsing, case listing, build success, or another reviewer saying an older head passed. Those checks are useful supplements, but they do not prove the app or tool works.
+
+Required manual flow:
+
+1. Read the PR body, README, scripts, and config files to find the exact documented workflow and expected success marker.
+2. Do the documented preparation first, such as `cargo xtask starry rootfs --arch <arch>`, managed rootfs download/patching, app asset generation, tool build steps, or log/artifact capture.
+3. Run the current PR head through the actual runtime command, such as `cargo xtask starry app qemu ...`, `cargo xtask starry test qemu ...`, `cargo xtask arceos test qemu ...`, or the documented wrapper script that reaches QEMU.
+4. Verify guest-visible behavior and the tool's real output: success markers, app command output, generated logs, symbolized blocks, packaged artifacts, or other documented postconditions. A command that exits 0 but skips the app behavior is not sufficient.
+5. For multi-architecture support, run the newly added or most failure-prone architecture, prioritizing any architecture skipped or failing in CI. If the PR claims all-arch support and CI covers only part of it, local validation must cover at least one CI-missing or highest-risk architecture.
+6. If the workflow cannot be run because required documentation, rootfs preparation, assets, or tool outputs are missing or wrong, submit `REQUEST_CHANGES`; that is a PR problem, not an environment limitation.
+7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a normal regression test, or explicit user acceptance before approval.
+
 For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. Running the containing grouped case is the preferred check, for example `cargo xtask starry test qemu --arch x86_64 -c syscall`. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, unreliable `success_regex`/`fail_regex`, or tests that accept both broken and fixed behavior as blocking.
 
 For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
@@ -352,6 +373,8 @@ Treat these as blocking unless clearly non-blocking:
 - targeted tests, formatting, clippy, or PR-related CI fail;
 - a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
 - a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
+- a PR adds or changes CI-missing StarryOS user-space support, an ArceOS app, or an app-facing tool/wrapper, but the documented preparation plus QEMU/runtime workflow was not run on the current head;
+- an app/tool workflow's documentation is incomplete or wrong enough that the reviewer cannot prepare the environment, launch QEMU, or verify the documented postcondition;
 - new tests are not discovered by the project test runner or do not exercise the fixed ABI surface;
 - a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
@@ -411,6 +434,7 @@ Review body must explain in Chinese:
 - what the PR changed;
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
+- for CI-missing app/tool workflows, the documented preparation performed, the exact QEMU/runtime command run, the architecture, and the guest-visible or tool-output postcondition that proved usability;
 - when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
 - CI status, including any unrelated failing checks, the evidence for unrelatedness, the linked tracking issue, and whether that issue was updated or created during review;
 - duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
