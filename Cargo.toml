@@ -83,6 +83,7 @@ members = [
 
     "os/StarryOS/axnsproxy",
     "os/StarryOS/kernel",
+    "os/StarryOS/modules/hello",
     "os/StarryOS/starryos",
     "os/arceos/api/*",
     "os/arceos/examples/helloworld",

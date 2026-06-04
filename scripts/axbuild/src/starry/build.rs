@@ -134,6 +134,11 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         cargo.features.push("plat-dyn".to_string());
     }
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
+    // In loadable-kernel-module mode, disable LTO so the kernel retains every
+    // symbol a `.ko` relocates against (the matching `static`/`large` codegen
+    // is added by `toolchain_rustflags`). No-op otherwise. Applied here so every
+    // kernel-build path (`build`/`qemu`/`test`) is consistent.
+    crate::build::apply_kmod_build_mode(&mut cargo);
     Ok(cargo)
 }
 

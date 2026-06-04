@@ -1,0 +1,29 @@
+# Dedicated build wrapper for the loadable-kernel-module (`.ko`) smoke test.
+#
+# `STARRY_KMOD = "y"` builds this kernel in loadable-module mode: LTO disabled
+# (so every `core` / `alloc` / `starry_kernel` symbol a `.ko` relocates against
+# survives standalone into `.kallsyms` instead of being inlined/DCE'd away) plus
+# `static`/`large` codegen. The `.ko` images (`cargo xtask starry kmod build`,
+# run from the kmod-modules CMakeLists) are co-built with the same flags and the
+# same feature closure, so their symbol StableCrateId hashes match this kernel
+# exactly and `finit_module(2)` resolves them at load time.
+#
+# This lives in its own build wrapper (not `qemu-smp1`) so only this one case
+# pays the kmod-mode codegen/size cost; every other normal case keeps the
+# default LTO production kernel. Features mirror `configs/board/qemu-x86_64.toml`
+# (the build the recipe was verified against) so `starry_kernel` resolves to the
+# identical feature set the module co-build pins.
+target = "x86_64-unknown-none"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2", STARRY_KMOD = "y" }
+log = "Warn"
+features = [
+  "ax-hal/x86-pc",
+  "qemu",
+  "ax-driver/plat-static",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+]
+plat_dyn = false

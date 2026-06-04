@@ -39,7 +39,69 @@ fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
         flags.push("-Cforce-frame-pointers=yes".to_string());
     }
 
+    // Loadable-kernel-module mode (`STARRY_KMOD=y`): build the kernel with the
+    // exact codegen a `.ko` requires, so a separately-built module shares the
+    // kernel's crate-disambiguator hashes and resolves against `.kallsyms`.
+    //   * `relocation-model=static` — the `kmod_loader` relocator handles plain
+    //     absolute/PC-relative relocs but NOT GOT entries (`R_X86_64_GOTPCREL`),
+    //     which `pic` would emit.
+    //   * `code-model=large` — module/kernel symbols live at high `0xffff_8000…`
+    //     addresses; `large` emits 64-bit-absolute `R_X86_64_64` that reach them
+    //     (vs `code-model=kernel`'s 32-bit relocs, which overflow there).
+    // The caller must also disable LTO for this build (e.g.
+    // `CARGO_PROFILE_RELEASE_LTO=false`) so the kernel retains every `core` /
+    // `alloc` / `kbpf_basic` symbol standalone in `.kallsyms` rather than
+    // inlining them away. Rustflags are folded into the crate hash, so the
+    // module MUST be built with these same flags (see `starry::kmod`).
+    if kmod_build_mode_with_env(env) {
+        flags.push("-Crelocation-model=static".to_string());
+        flags.push("-Ccode-model=large".to_string());
+    }
+
     flags
+}
+
+/// Whether the loadable-kernel-module build mode (`STARRY_KMOD=y`) is requested.
+///
+/// In this mode the kernel is built so a separately-compiled `.ko` can fully
+/// relocate against it: `-C relocation-model=static -C code-model=large` (see
+/// [`toolchain_rustflags`]) plus LTO disabled (see [`apply_kmod_build_mode`]) so
+/// every `core` / `alloc` / `kbpf_basic` symbol the module references is
+/// retained standalone in `.kallsyms` instead of being inlined away. The module
+/// build (`cargo xtask starry kmod build`) uses the *same* flags so its crate
+/// hashes match the running kernel.
+pub(crate) fn kmod_build_mode() -> bool {
+    std::env::var("STARRY_KMOD").is_ok_and(|v| starry_kmod_truthy(&v))
+}
+
+/// Like [`kmod_build_mode`], but also honours a `STARRY_KMOD` entry in a build
+/// config's `[env]` table. This lets a single test build wrapper (e.g. the
+/// `kmod-modules` case) opt its kernel into loadable-module codegen without the
+/// whole `cargo xtask` process exporting `STARRY_KMOD` — which would (wrongly)
+/// rebuild *every* other test case's kernel with `large`/no-LTO too.
+pub(crate) fn kmod_build_mode_with_env(env: &HashMap<String, String>) -> bool {
+    kmod_build_mode()
+        || env
+            .get("STARRY_KMOD")
+            .is_some_and(|v| starry_kmod_truthy(v))
+}
+
+/// Truthy spelling of a `STARRY_KMOD` value, shared by the process-env and
+/// build-config-env entry points so both honour exactly the same values.
+fn starry_kmod_truthy(value: &str) -> bool {
+    matches!(value, "1" | "y" | "yes" | "true")
+}
+
+/// Apply loadable-kernel-module codegen to a prepared kernel [`Cargo`] config:
+/// disable release LTO (via the `CARGO_PROFILE_RELEASE_LTO` env cargo honours)
+/// so symbols survive into `.kallsyms`. No-op unless [`kmod_build_mode_with_env`]
+/// (the build config's own `[env]` is already folded into `cargo.env` by now).
+pub(crate) fn apply_kmod_build_mode(cargo: &mut Cargo) {
+    if kmod_build_mode_with_env(&cargo.env) {
+        cargo
+            .env
+            .insert("CARGO_PROFILE_RELEASE_LTO".to_string(), "false".to_string());
+    }
 }
 
 /// Whether the build config enables target backtrace support (frame pointers / unwind).
@@ -1540,6 +1602,25 @@ mod tests {
                 "-Cforce-frame-pointers=yes".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn build_config_env_opts_kernel_into_kmod_codegen() {
+        // A `STARRY_KMOD = "y"` entry in a build config's `[env]` must enable
+        // the loadable-module codegen flags even when the process env is unset,
+        // so a single test build wrapper (kmod-modules) can request the kmod
+        // kernel without forcing it on every other case.
+        let env = HashMap::from([("STARRY_KMOD".to_string(), "y".to_string())]);
+        assert!(kmod_build_mode_with_env(&env));
+        let flags = toolchain_rustflags(&env);
+        assert!(flags.iter().any(|f| f == "-Crelocation-model=static"));
+        assert!(flags.iter().any(|f| f == "-Ccode-model=large"));
+
+        // Absent / falsey values leave the production (LTO) codegen untouched.
+        assert!(!kmod_build_mode_with_env(&HashMap::new()));
+        let off = HashMap::from([("STARRY_KMOD".to_string(), "0".to_string())]);
+        assert!(!kmod_build_mode_with_env(&off));
+        assert!(toolchain_rustflags(&off).is_empty());
     }
 
     #[test]
