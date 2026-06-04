@@ -19,4 +19,5 @@ board-asus-nuc15crh = []
 bootloader-common = { workspace = true }
 
 [target.'cfg(target_os = "uefi")'.dependencies]
-uefi = { workspace = true }
+uefi = { workspace = true, features = ["alloc", "global_allocator"] }
+uefi-raw = { workspace = true }

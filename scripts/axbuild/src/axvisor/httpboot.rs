@@ -192,6 +192,8 @@ async fn check(axvisor: &mut Axvisor, args: ArgsCheck) -> anyhow::Result<()> {
 }
 
 async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()> {
+    ensure_explicit_publish_inputs(&args)?;
+
     let publish_config = PublishConfig::load(
         args.httpboot_config.as_deref(),
         axvisor.app.workspace_root(),
@@ -285,6 +287,26 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
     let release_result = session_guard.release().await;
     run_result?;
     release_result?;
+    Ok(())
+}
+
+fn ensure_explicit_publish_inputs(args: &ArgsPublish) -> anyhow::Result<()> {
+    if args.elf.is_some() {
+        return Ok(());
+    }
+    if args.build.config.is_none() {
+        bail!(
+            "HTTP Boot publish requires an explicit `--config` when building Axvisor; if this \
+             command was split across lines, make sure the line-continuation backslash is the \
+             last character on the line"
+        );
+    }
+    if args.build.vmconfigs.is_empty() {
+        bail!(
+            "HTTP Boot publish requires explicit `--vmconfigs` when building Axvisor; refusing to \
+             publish the default/static VM config"
+        );
+    }
     Ok(())
 }
 
@@ -873,7 +895,13 @@ impl SessionHeartbeat {
 
 #[cfg(test)]
 mod tests {
-    use super::{PublishConfig, PublishConfigFile, build_base_url, render_init_config};
+    use std::fs;
+
+    use super::{
+        ArgsPublish, PublishConfig, PublishConfigFile, build_base_url,
+        ensure_explicit_publish_inputs, render_init_config,
+    };
+    use crate::axvisor::ArgsBuild;
 
     #[test]
     fn init_config_is_minimal() {
@@ -914,6 +942,157 @@ mod tests {
         assert_eq!(config.board_type.as_deref(), Some("x86-httpboot"));
         assert!(config.power_cycle);
         assert!(config.open_console);
+    }
+
+    #[test]
+    fn publish_build_inputs_require_explicit_config_when_building() {
+        let args = ArgsPublish {
+            build: ArgsBuild {
+                config: None,
+                arch: None,
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: vec!["tmp/vm1.toml".into()],
+            },
+            httpboot_config: None,
+            elf: None,
+            kernel_bin: None,
+            board_type: None,
+            server: None,
+            port: None,
+            remote_name: None,
+            kernel_load_addr: None,
+            entry_point: None,
+            keep_session: false,
+        };
+
+        let err = ensure_explicit_publish_inputs(&args).unwrap_err();
+        assert!(err.to_string().contains("requires an explicit `--config`"));
+    }
+
+    #[test]
+    fn publish_build_inputs_require_explicit_vmconfigs_when_building() {
+        let args = ArgsPublish {
+            build: ArgsBuild {
+                config: Some("board.toml".into()),
+                arch: None,
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: Vec::new(),
+            },
+            httpboot_config: None,
+            elf: None,
+            kernel_bin: None,
+            board_type: None,
+            server: None,
+            port: None,
+            remote_name: None,
+            kernel_load_addr: None,
+            entry_point: None,
+            keep_session: false,
+        };
+
+        let err = ensure_explicit_publish_inputs(&args).unwrap_err();
+        assert!(err.to_string().contains("requires explicit `--vmconfigs`"));
+    }
+
+    #[test]
+    fn publish_build_inputs_accept_explicit_build_inputs() {
+        let args = ArgsPublish {
+            build: ArgsBuild {
+                config: Some("board.toml".into()),
+                arch: None,
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: vec!["tmp/vm1.toml".into()],
+            },
+            httpboot_config: None,
+            elf: None,
+            kernel_bin: None,
+            board_type: None,
+            server: None,
+            port: None,
+            remote_name: None,
+            kernel_load_addr: None,
+            entry_point: None,
+            keep_session: false,
+        };
+
+        ensure_explicit_publish_inputs(&args).unwrap();
+    }
+
+    #[test]
+    fn publish_build_inputs_accept_existing_elf() {
+        let args = ArgsPublish {
+            build: ArgsBuild {
+                config: None,
+                arch: None,
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: Vec::new(),
+            },
+            httpboot_config: None,
+            elf: Some("target/axvisor".into()),
+            kernel_bin: None,
+            board_type: None,
+            server: None,
+            port: None,
+            remote_name: None,
+            kernel_load_addr: None,
+            entry_point: None,
+            keep_session: false,
+        };
+
+        ensure_explicit_publish_inputs(&args).unwrap();
+    }
+
+    #[test]
+    fn publish_config_uses_global_server_defaults_without_httpboot_config() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        let config = PublishConfig::with_server_defaults(
+            None,
+            workspace.path(),
+            "10.3.10.229".to_string(),
+            2999,
+        )
+        .unwrap();
+
+        assert_eq!(config.server, "10.3.10.229");
+        assert_eq!(config.port, 2999);
+    }
+
+    #[test]
+    fn publish_config_file_overrides_global_server_defaults() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config_path = workspace.path().join(".httpboot.toml");
+        fs::write(
+            &config_path,
+            r#"
+            server = "10.0.0.2"
+            port = 9000
+            "#,
+        )
+        .unwrap();
+
+        let config = PublishConfig::with_server_defaults(
+            None,
+            workspace.path(),
+            "10.3.10.229".to_string(),
+            2999,
+        )
+        .unwrap();
+
+        assert_eq!(config.server, "10.0.0.2");
+        assert_eq!(config.port, 9000);
     }
 
     #[test]

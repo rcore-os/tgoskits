@@ -1879,6 +1879,7 @@ version = "0.5.11"
 dependencies = [
  "bootloader-common",
  "uefi",
+ "uefi-raw",
 ]
 
 [[package]]
