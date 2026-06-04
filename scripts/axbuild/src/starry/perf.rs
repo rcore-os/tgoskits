@@ -26,6 +26,8 @@ use crate::{
 
 const QPERF_QUEUE_SIZE: usize = 4096;
 const DEFAULT_STARRY_SHELL_PREFIX: &str = "root@starry:";
+const HARNESS_KIT_REPO: &str = "https://github.com/cg24-THU/tgoskit-harness_kit.git";
+const HARNESS_KIT_COMMIT: &str = "b4fdf12c8479353d80e3d23960e653819db2a20d";
 
 #[derive(Deserialize, Serialize)]
 struct PerfQemuConfig {
@@ -862,9 +864,7 @@ fn prepare_outputs(
 }
 
 fn build_qperf_tools(root: &Path, analyzer_flamegraph: bool) -> anyhow::Result<QperfTools> {
-    let qperf_root = qperf_source_root(root).ok_or_else(|| {
-        anyhow::anyhow!("qperf sources not found; expected apps/qperf or tools/qperf to be present")
-    })?;
+    let qperf_root = qperf_source_root(root)?;
     let manifest = qperf_root.join("Cargo.toml");
     let analyzer_manifest = qperf_root.join("analyzer/Cargo.toml");
     let target_dir = qperf_root.join("target");
@@ -915,10 +915,142 @@ fn build_qperf_tools(root: &Path, analyzer_flamegraph: bool) -> anyhow::Result<Q
     Ok(tools)
 }
 
-fn qperf_source_root(root: &Path) -> Option<PathBuf> {
-    [root.join("apps/qperf"), root.join("tools/qperf")]
+fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
+    if let Some(path) = [root.join("apps/qperf")]
         .into_iter()
         .find(|path| path.join("Cargo.toml").exists())
+    {
+        return Ok(path);
+    }
+
+    let checkout = ensure_harness_kit_checkout(root)?;
+    let fixed_qperf = checkout.join("tools/qperf");
+    if fixed_qperf.join("Cargo.toml").exists() {
+        return Ok(fixed_qperf);
+    }
+
+    [root.join("tools/qperf")]
+        .into_iter()
+        .find(|path| path.join("Cargo.toml").exists())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "qperf sources not found; expected apps/qperf, fixed harness kit tools/qperf, or \
+                 tools/qperf to be present"
+            )
+        })
+}
+
+fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {
+    let checkout = env::var_os("TGOSKIT_HARNESS_KIT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            root.join("target/tgoskit-harness-kit")
+                .join(HARNESS_KIT_COMMIT)
+        });
+    if checkout.join(".git").is_dir() {
+        let actual = git_stdout(Some(&checkout), &["rev-parse", "HEAD"])?;
+        if actual == HARNESS_KIT_COMMIT {
+            return Ok(checkout);
+        }
+        git_status(
+            Some(&checkout),
+            &["fetch", "--depth", "1", "origin", HARNESS_KIT_COMMIT],
+        )?;
+        git_status(
+            Some(&checkout),
+            &["checkout", "--detach", HARNESS_KIT_COMMIT],
+        )?;
+        git_status(Some(&checkout), &["reset", "--hard", HARNESS_KIT_COMMIT])?;
+        return Ok(checkout);
+    }
+
+    let parent = checkout.parent().ok_or_else(|| {
+        anyhow::anyhow!("invalid harness kit checkout path {}", checkout.display())
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let tmp_name = format!(
+        "{}.tmp-{}",
+        checkout
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("harness-kit"),
+        std::process::id()
+    );
+    let tmp_checkout = checkout.with_file_name(tmp_name);
+    if tmp_checkout.exists() {
+        fs::remove_dir_all(&tmp_checkout)
+            .with_context(|| format!("failed to remove {}", tmp_checkout.display()))?;
+    }
+
+    let clone_result = (|| -> anyhow::Result<()> {
+        git_status(None, &["init", "-q", path_str(&tmp_checkout)?])?;
+        git_status(
+            Some(&tmp_checkout),
+            &["remote", "add", "origin", HARNESS_KIT_REPO],
+        )?;
+        git_status(
+            Some(&tmp_checkout),
+            &["fetch", "--depth", "1", "origin", HARNESS_KIT_COMMIT],
+        )?;
+        git_status(Some(&tmp_checkout), &["checkout", "--detach", "FETCH_HEAD"])?;
+        let actual = git_stdout(Some(&tmp_checkout), &["rev-parse", "HEAD"])?;
+        if actual != HARNESS_KIT_COMMIT {
+            bail!("fetched harness kit {actual}, expected {HARNESS_KIT_COMMIT}");
+        }
+        Ok(())
+    })();
+
+    if clone_result.is_err() {
+        let _ = fs::remove_dir_all(&tmp_checkout);
+    }
+    clone_result?;
+    if checkout.exists() {
+        fs::remove_dir_all(&checkout)
+            .with_context(|| format!("failed to remove {}", checkout.display()))?;
+    }
+    fs::rename(&tmp_checkout, &checkout).with_context(|| {
+        format!(
+            "failed to move {} to {}",
+            tmp_checkout.display(),
+            checkout.display()
+        )
+    })?;
+    Ok(checkout)
+}
+
+fn git_status(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    if let Some(cwd) = cwd {
+        command.arg("-C").arg(cwd);
+    }
+    let status = command
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !status.success() {
+        bail!("git {} failed with {status}", args.join(" "));
+    }
+    Ok(())
+}
+
+fn git_stdout(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<String> {
+    let mut command = Command::new("git");
+    if let Some(cwd) = cwd {
+        command.arg("-C").arg(cwd);
+    }
+    let output = command
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!("git {} failed with {}", args.join(" "), output.status);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn path_str(path: &Path) -> anyhow::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
 }
 
 fn write_qemu_config(
@@ -1777,17 +1909,16 @@ fn run_report_postprocess(
     arch: &str,
     returncode: i32,
 ) -> anyhow::Result<PathBuf> {
-    let Some(harness) =
-        workspace_harness_path(&outputs.work_dir).or_else(|| workspace_harness_path(root))
-    else {
-        bail!(
-            "qperf report postprocess script not found while searching from {} and {}; expected \
-             apps/OScope-harness/harness.py or tools/starry-syscall-harness/harness.py. \
-             report.json/report.md/hotspots were not generated",
-            outputs.work_dir.display(),
-            root.display()
-        );
-    };
+    let harness =
+        match workspace_harness_path(&outputs.work_dir).or_else(|| workspace_harness_path(root)) {
+            Some(harness) => harness,
+            None => {
+                let checkout = ensure_harness_kit_checkout(root)?;
+                let harness = checkout.join("tools/starry-syscall-harness/harness.py");
+                ensure_file(&harness, "fixed harness kit postprocess script")?;
+                harness
+            }
+        };
     let python = env::var_os("STARRY_SYSCALL_HARNESS_PYTHON")
         .or_else(|| env::var_os("PYTHON"))
         .unwrap_or_else(|| OsString::from("python3"));
@@ -1796,7 +1927,7 @@ fn run_report_postprocess(
         .arg(&harness)
         .arg("perf-postprocess")
         .arg("--repo-root")
-        .arg(workspace_root_from_harness(&harness))
+        .arg(root)
         .arg("--arch")
         .arg(arch)
         .arg("--work-dir")
@@ -1919,15 +2050,6 @@ fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
         current = path.parent();
     }
     None
-}
-
-fn workspace_root_from_harness(harness: &Path) -> PathBuf {
-    harness
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn try_generate_flamegraph(folded: &Path, svg: &Path) -> anyhow::Result<bool> {
