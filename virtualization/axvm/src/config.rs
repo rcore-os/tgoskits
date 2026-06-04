@@ -32,6 +32,12 @@ pub struct AxVCpuConfig {
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
     pub ap_entry: GuestPhysAddr,
+    /// LoongArch Linux EFI-style boot arguments (a0, a1, a2).
+    #[cfg(target_arch = "loongarch64")]
+    pub boot_args: [usize; 3],
+    /// LoongArch Linux boot stack top.
+    #[cfg(target_arch = "loongarch64")]
+    pub boot_stack_top: usize,
 }
 
 /// Ramdisk image information.

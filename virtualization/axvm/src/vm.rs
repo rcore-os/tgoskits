@@ -267,6 +267,8 @@ impl AxVM {
             let arch_config = AxVCpuCreateConfig {
                 cpu_id: vcpu_id,
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
+                boot_args: inner_mut.config.cpu_config.boot_args,
+                boot_stack_top: inner_mut.config.cpu_config.boot_stack_top,
             };
 
             // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether

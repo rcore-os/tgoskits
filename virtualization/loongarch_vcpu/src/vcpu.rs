@@ -17,8 +17,9 @@ use crate::{
     registers::{
         CSR_PGDH, CSR_PGDL, CSR_PWCH, CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_TIMER, csr_read,
         csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
-        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwip, gstat_set_gid,
-        gstat_set_pgm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled, set_ecfg_vs,
+        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough,
+        gstat_set_gid, gstat_set_pvm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled,
+        set_ecfg_vs,
     },
 };
 
@@ -104,6 +105,8 @@ const GUEST_BOOT_DMW: usize =
 pub struct LoongArchVCpuCreateConfig {
     pub cpu_id: usize,
     pub dtb_addr: usize,
+    pub boot_args: [usize; 3],
+    pub boot_stack_top: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -118,8 +121,17 @@ impl AxArchVCpu for LoongArchVCpu {
 
     fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
         let mut ctx = LoongArchContextFrame::default();
-        ctx.set_argument(config.cpu_id);
-        ctx.set_a1(config.dtb_addr);
+        if config.boot_args != [0; 3] {
+            ctx.set_argument(config.boot_args[0]);
+            ctx.set_a1(config.boot_args[1]);
+            ctx.set_a2(config.boot_args[2]);
+            if config.boot_stack_top != 0 {
+                ctx.set_gpr(3, config.boot_stack_top);
+            }
+        } else {
+            ctx.set_argument(config.cpu_id);
+            ctx.set_a1(config.dtb_addr);
+        }
 
         Ok(Self {
             ctx,
@@ -342,7 +354,7 @@ impl LoongArchVCpu {
     unsafe fn enable_guest_mode(&self) {
         let guest_id = self.vm_id + 1;
         gstat_set_gid(guest_id);
-        gstat_set_pgm(true);
+        gstat_set_pvm(true);
         gtlbc_set_use_tgid(true);
         gtlbc_set_tgid(guest_id);
         gcfg_set_matc(0x1);
@@ -353,7 +365,7 @@ impl LoongArchVCpu {
         gcfg_set_tohu(false);
         gcfg_set_toci(0x2);
         gcfg_set_gpm_num(0);
-        gintc_set_hwip(0xff);
+        gintc_set_hwi_passthrough(0xff);
         set_ecfg_line_enabled(INT_TIMER, false);
         prmd::set_pie(true);
     }

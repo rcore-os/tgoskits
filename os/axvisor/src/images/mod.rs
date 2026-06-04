@@ -25,6 +25,10 @@ use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
 use crate::config::{get_vm_dtb_arc, vmcfg};
 
 mod linux;
+#[cfg(target_arch = "loongarch64")]
+mod loongarch_elf;
+#[cfg(target_arch = "loongarch64")]
+mod loongarch_linux;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 #[cfg(target_arch = "x86_64")]
@@ -160,7 +164,7 @@ impl ImageLoader {
             );
         }
 
-        load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
+        self.load_kernel_from_memory(vm_imags.kernel)?;
 
         // Load Ramdisk image and record its size before regenerating the DTB.
         if let Some(buffer) = vm_imags.ramdisk {
@@ -207,6 +211,9 @@ impl ImageLoader {
                 info!("dtb_load_gpa not provided");
             }
         }
+
+        #[cfg(target_arch = "loongarch64")]
+        loongarch_linux::setup_bootinfo(self.vm.clone(), &self.config)?;
 
         self.load_boot_image_from_memory(vm_imags.bios)?;
 
@@ -310,6 +317,29 @@ impl ImageLoader {
         }
 
         Ok(())
+    }
+
+    fn load_kernel_from_memory(&self, kernel: &[u8]) -> AxResult {
+        #[cfg(target_arch = "loongarch64")]
+        if let Some(info) = loongarch_elf::try_load(kernel, self.vm.clone())? {
+            self.vm.with_config(|config| {
+                config.cpu_config.bsp_entry = info.entry;
+                config.cpu_config.ap_entry = info.entry;
+            });
+            info!(
+                "LoongArch ELF kernel entry set to {:#x}",
+                info.entry.as_usize()
+            );
+            return Ok(());
+        }
+
+        load_vm_image_from_memory(kernel, self.kernel_load_gpa, self.vm.clone())
+    }
+
+    #[cfg(all(feature = "fs", target_arch = "loongarch64"))]
+    fn load_kernel_from_filesystem(&self, kernel_path: &str) -> AxResult {
+        let kernel = fs::read_full_image(kernel_path)?;
+        self.load_kernel_from_memory(&kernel)
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -619,6 +649,29 @@ pub fn load_vm_image_from_memory(
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
+pub fn zero_vm_memory(load_addr: GuestPhysAddr, size: usize, vm: AxVMRef) -> AxResult {
+    let image_load_regions = vm.get_image_load_region(load_addr, size)?;
+    let mut zeroed_size = 0;
+
+    for region in image_load_regions {
+        unsafe {
+            core::ptr::write_bytes(region.as_mut_ptr(), 0, region.len());
+        }
+        axvm::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
+        zeroed_size += region.len();
+    }
+
+    if zeroed_size == size {
+        Ok(())
+    } else {
+        ax_err!(
+            InvalidData,
+            format!("VM memory was only partially zeroed: {zeroed_size}/{size} bytes")
+        )
+    }
+}
+
 #[cfg(feature = "fs")]
 pub mod fs {
     use alloc::vec::Vec;
@@ -652,6 +705,9 @@ pub mod fs {
             }
         }
         // Load kernel image.
+        #[cfg(target_arch = "loongarch64")]
+        loader.load_kernel_from_filesystem(&loader.config.kernel.kernel_path)?;
+        #[cfg(not(target_arch = "loongarch64"))]
         load_vm_image(
             &loader.config.kernel.kernel_path,
             loader.kernel_load_gpa,
@@ -721,6 +777,9 @@ pub mod fs {
                 load_vm_image_from_memory(_dtb_slice, dtb_load_gpa, loader.vm.clone())?;
             }
         }
+
+        #[cfg(target_arch = "loongarch64")]
+        loongarch_linux::setup_bootinfo(loader.vm.clone(), &loader.config)?;
 
         Ok(())
     }

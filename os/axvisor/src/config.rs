@@ -221,6 +221,10 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         cpu_config: AxVCpuConfig {
             bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
             ap_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
+            #[cfg(target_arch = "loongarch64")]
+            boot_args: [0; 3],
+            #[cfg(target_arch = "loongarch64")]
+            boot_stack_top: 0,
         },
         image_config: VMImageConfig {
             kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
