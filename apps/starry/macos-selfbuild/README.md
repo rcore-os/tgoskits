@@ -5,8 +5,9 @@ with QEMU/HVF and building StarryOS again inside the StarryOS guest.
 
 It is an operator-facing app scenario, not a CI test. Rootfs images, kernels,
 logs, and build outputs are local artifacts and are intentionally not committed.
-The repository side is the reproducible runner and checklist; the large rootfs
-with guest Rust/Cargo must be supplied as an external artifact.
+The repository side is the reproducible runner and checklist. The large rootfs
+with guest Rust/Cargo is generated locally by `build_rootfs.sh` or supplied as
+an external artifact.
 
 ## What This Demonstrates
 
@@ -35,7 +36,7 @@ The runner also needs:
 - an AArch64 StarryOS kernel binary, normally
   `target/aarch64-unknown-none-softfloat/release/starryos.bin`;
 - a prepared ext4 rootfs image that contains guest Cargo/Rust and the TGOSKits
-  source tree under `/opt/tgoskits`.
+  source tree or source tarball.
 
 The rootfs should contain at least:
 
@@ -44,6 +45,7 @@ The rootfs should contain at least:
 /opt/rustc-nightly-sysroot
 /opt/rustdoc-nightly-sysroot
 /opt/tgoskits/Cargo.toml or /opt/tgoskits-src.tar
+/root/.cargo/registry or /opt/tgoskits/vendor
 ```
 
 This app uses two rootfs stages:
@@ -53,17 +55,57 @@ tmp/axbuild/rootfs/rootfs-aarch64-hvf-toolchain.img
 tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 ```
 
-The `rootfs-aarch64-hvf-toolchain.img` file is the external base artifact. It
-is a bootable AArch64 StarryOS rootfs that already contains the guest Rust/Cargo
-toolchain listed above. The scripts here do not run `apk`, `rustup`, or a
-toolchain installer inside a plain Alpine image. If starting from a plain
-AArch64 Alpine rootfs, install or copy the guest Cargo binary and matching
-`rustc`/`rustdoc` sysroot wrappers first, then save that image as
-`rootfs-aarch64-hvf-toolchain.img`.
+The `rootfs-aarch64-hvf-toolchain.img` file is the toolchain base artifact. It
+is derived from the managed AArch64 Alpine rootfs and contains the guest
+Rust/Cargo payload plus an offline Cargo registry. The helper below builds this
+image with Docker and injects the payload with `debugfs`.
 
 The `rootfs-aarch64-hvf-selfbuild.img` file is derived from the base artifact by
 copying it and injecting the current TGOSKits source tree. That generated image
 is the one passed to the self-build runner.
+
+Build the full rootfs set from a fresh clone:
+
+```bash
+brew install qemu e2fsprogs
+
+# Docker Desktop must be running and able to run linux/arm64 containers.
+apps/starry/macos-selfbuild/build_rootfs.sh
+```
+
+The helper performs the following steps:
+
+```text
+cargo xtask starry rootfs --arch aarch64
+  -> tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+
+Docker linux/arm64 Alpine payload
+  -> /usr/bin/cargo, /usr/bin/rustc, /usr/lib/rustlib, build tools,
+     /root/.cargo/registry, /opt/rustc-nightly-sysroot,
+     /opt/rustdoc-nightly-sysroot
+
+debugfs payload injection
+  -> tmp/axbuild/rootfs/rootfs-aarch64-hvf-toolchain.img
+
+prepare_rootfs.sh source injection
+  -> tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+```
+
+For the exact toolchain used by a measured run, pass the prepared AArch64 Rust
+sysroot directory:
+
+```bash
+apps/starry/macos-selfbuild/build_rootfs.sh \
+  --rust-nightly-dir /path/to/rust-nightly-aarch64-sysroot
+```
+
+If the toolchain rootfs is already available, only refresh the source payload:
+
+```bash
+apps/starry/macos-selfbuild/prepare_rootfs.sh \
+  --base-rootfs tmp/axbuild/rootfs/rootfs-aarch64-hvf-toolchain.img \
+  --output-rootfs tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+```
 
 The run script copies the input rootfs before booting. Keep at least one extra
 rootfs image worth of free disk space under `target/starry-macos-selfbuild/`.
@@ -75,8 +117,8 @@ apps/starry/macos-selfbuild/check_rootfs.sh \
   tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 ```
 
-If the base rootfs already contains the guest Rust/Cargo toolchain, inject the
-current TGOSKits source tree with:
+If the base rootfs already contains the guest Rust/Cargo toolchain and offline
+Cargo dependencies, inject the current TGOSKits source tree with:
 
 ```bash
 apps/starry/macos-selfbuild/prepare_rootfs.sh \

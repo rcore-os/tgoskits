@@ -63,6 +63,23 @@ if [[ "$source_ok" = "0" ]]; then
     missing=1
 fi
 
+deps_ok=0
+if "$debugfs" -R "stat /opt/tgoskits/vendor" "$rootfs" >/dev/null 2>&1; then
+    echo "OK /opt/tgoskits/vendor"
+    deps_ok=1
+elif "$debugfs" -R "stat /root/.cargo/registry/index" "$rootfs" >/dev/null 2>&1 \
+    && "$debugfs" -R "stat /root/.cargo/registry/cache" "$rootfs" >/dev/null 2>&1; then
+    echo "OK /root/.cargo/registry/index"
+    echo "OK /root/.cargo/registry/cache"
+    deps_ok=1
+else
+    echo "MISSING offline Cargo dependencies (/opt/tgoskits/vendor or /root/.cargo/registry)"
+fi
+
+if [[ "$deps_ok" = "0" ]]; then
+    missing=1
+fi
+
 if [[ "$missing" = "0" ]]; then
     echo "STARRY_MACOS_SELFBUILD_ROOTFS_OK"
 else
