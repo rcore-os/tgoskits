@@ -24,12 +24,18 @@
   "panic-strategy": "abort",
   "pre-link-args": {
     "gnu-lld": [
+      "-static",
       "-no-pie",
+      "--gc-sections",
+      "-znorelro",
       "-znostart-stop-gc",
-      "-Tlinker.x"
+      "-Tlinker.x",
+      "-u",
+      "_start"
     ]
   },
   "relocation-model": "static",
+  "relro-level": "off",
   "supported-sanitizers": [
     "shadow-call-stack",
     "kernel-address"

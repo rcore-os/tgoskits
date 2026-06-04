@@ -5,6 +5,7 @@
   "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
   "default-uwtable": true,
   "disable-redzone": true,
+  "eh-frame-header": false,
   "env": "musl",
   "features": "+v8a,+strict-align,-neon",
   "has-thread-local": true,
@@ -22,12 +23,18 @@
   "panic-strategy": "abort",
   "pre-link-args": {
     "gnu-lld": [
+      "-static",
       "-no-pie",
+      "--gc-sections",
+      "-znorelro",
       "-znostart-stop-gc",
-      "-Tlinker.x"
+      "-Tlinker.x",
+      "-u",
+      "_start"
     ]
   },
   "relocation-model": "static",
+  "relro-level": "off",
   "rustc-abi": "softfloat",
   "stack-probes": {
     "kind": "inline"

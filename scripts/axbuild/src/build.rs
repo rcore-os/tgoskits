@@ -955,12 +955,6 @@ fn std_linker_wrapper_script(
     plat_dyn: bool,
 ) -> anyhow::Result<String> {
     let machine = lld_machine_for_std_target(target)?;
-    let entry_symbol = if plat_dyn { "_head" } else { "_start" };
-    let link_mode_args = if plat_dyn {
-        r#"("-pie")"#
-    } else {
-        r#"("-static" "-no-pie")"#
-    };
     let dynamic_platform = if plat_dyn { "1" } else { "0" };
     Ok(format!(
         r#"#!/usr/bin/env bash
@@ -971,8 +965,6 @@ target_name={}
 lld_args=("-m" "{}")
 link_search_dirs=()
 archive_args=()
-entry_symbol={}
-link_mode_args={}
 dynamic_platform={}
 
 add_link_search_dir() {{
@@ -1089,7 +1081,7 @@ add_arg() {{
         -nostartfiles|-nodefaultlibs|-nostdlib|-m*)
             return
             ;;
-        --eh-frame-hdr|-z|relro|now|noexecstack)
+        --eh-frame-hdr|-z|relro|norelro|now|noexecstack)
             return
             ;;
         -Wl,*)
@@ -1116,14 +1108,12 @@ if [[ -z "$linker_script" ]]; then
 fi
 
 flush_archive_group
-lld_args+=("-L$fake_dir" "${{link_mode_args[@]}}" "--gc-sections" "-znorelro" "-znostart-stop-gc" "-T$linker_script" "-u" "$entry_symbol")
+lld_args+=("-L$fake_dir" "-T$linker_script")
 exec rust-lld -flavor gnu "${{lld_args[@]}}"
 "#,
         shell_single_quote(&fake_lib_dir.display().to_string()),
         shell_single_quote(target),
         machine,
-        shell_single_quote(entry_symbol),
-        link_mode_args,
         dynamic_platform,
     ))
 }
@@ -2076,6 +2066,15 @@ mod tests {
         workspace_metadata().unwrap()
     }
 
+    fn gnu_lld_pre_link_args(spec: &serde_json::Value) -> Vec<&str> {
+        spec["pre-link-args"]["gnu-lld"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect()
+    }
+
     fn temp_workspace(
         package_name: &str,
         dependency_block: &str,
@@ -2575,7 +2574,7 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn std_target_specs_keep_none_kernel_fields_with_minimal_std_identity() {
+    fn std_target_specs_keep_none_kernel_fields_with_std_link_policy() {
         for (bare_target, std_target, plat_dyn) in [
             ("x86_64-unknown-none", "x86_64-unknown-linux-musl", false),
             (
@@ -2636,6 +2635,8 @@ AX_IP = "10.0.2.15"
                     .is_some_and(|description| description.contains("musl identity"))
             );
             assert_eq!(std_spec["llvm-target"], base_spec["llvm-target"]);
+            assert_eq!(std_spec["eh-frame-header"], false);
+            assert_eq!(std_spec["relro-level"], "off");
 
             std_spec.as_object_mut().unwrap().remove("os");
             std_spec.as_object_mut().unwrap().remove("env");
@@ -2644,6 +2645,20 @@ AX_IP = "10.0.2.15"
             std_spec.as_object_mut().unwrap().remove("tls-model");
             std_spec["metadata"]["description"] = base_spec["metadata"]["description"].clone();
             std_spec["metadata"]["std"] = base_spec["metadata"]["std"].clone();
+            std_spec["pre-link-args"] = base_spec["pre-link-args"].clone();
+            {
+                let std_spec = std_spec.as_object_mut().unwrap();
+                if let Some(eh_frame_header) = base_spec.get("eh-frame-header") {
+                    std_spec.insert("eh-frame-header".to_string(), eh_frame_header.clone());
+                } else {
+                    std_spec.remove("eh-frame-header");
+                }
+                if let Some(relro_level) = base_spec.get("relro-level") {
+                    std_spec.insert("relro-level".to_string(), relro_level.clone());
+                } else {
+                    std_spec.remove("relro-level");
+                }
+            }
 
             assert_eq!(
                 std_spec, base_spec,
@@ -2687,6 +2702,45 @@ AX_IP = "10.0.2.15"
             assert!(spec.get("crt-static-respected").is_none());
             assert!(spec.get("supported-split-debuginfo").is_none());
             assert!(spec.get("supports-xray").is_none());
+        }
+    }
+
+    #[test]
+    fn std_target_specs_embed_final_link_policy() {
+        let cases = [
+            ("x86_64-unknown-linux-musl", false, "_start", "-no-pie"),
+            ("aarch64-unknown-linux-musl", false, "_start", "-no-pie"),
+            ("aarch64-unknown-linux-musl", true, "_head", "-pie"),
+            ("riscv64gc-unknown-linux-musl", false, "_start", "-no-pie"),
+            ("riscv64gc-unknown-linux-musl", true, "_head", "-pie"),
+            ("loongarch64-unknown-linux-musl", false, "_start", "-no-pie"),
+        ];
+
+        for (target, plat_dyn, entry, mode_arg) in cases {
+            let path = crate::context::workspace_root_path()
+                .unwrap()
+                .join(std_target_json_path(target, plat_dyn));
+            let spec: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            let link_args = gnu_lld_pre_link_args(&spec);
+
+            assert!(link_args.contains(&mode_arg));
+            assert!(link_args.contains(&"--gc-sections"));
+            assert!(link_args.contains(&"-znorelro"));
+            assert!(link_args.contains(&"-znostart-stop-gc"));
+            assert!(link_args.contains(&"-Tlinker.x"));
+            assert!(link_args.contains(&"-u"));
+            assert!(link_args.contains(&entry));
+            assert_eq!(spec["eh-frame-header"], false);
+            assert_eq!(spec["relro-level"], "off");
+
+            if plat_dyn {
+                assert!(!link_args.contains(&"-static"));
+                assert!(!link_args.contains(&"-no-pie"));
+            } else {
+                assert!(link_args.contains(&"-static"));
+                assert!(!link_args.contains(&"-pie"));
+            }
         }
     }
 
@@ -2808,8 +2862,8 @@ AX_IP = "10.0.2.15"
         assert!(wrapper.contains("--end-group"));
         assert!(wrapper.contains("find_linker_script"));
         assert!(wrapper.contains("failed to find linker.x in current linker search dirs"));
-        assert!(wrapper.contains("entry_symbol='_start'"));
-        assert!(wrapper.contains("link_mode_args=(\"-static\" \"-no-pie\")"));
+        assert!(!wrapper.contains("entry_symbol="));
+        assert!(!wrapper.contains("link_mode_args="));
         assert!(wrapper.contains("dynamic_platform=0"));
         assert!(wrapper.contains("crtbegin"));
         assert!(wrapper.contains("static-pie"));
@@ -2818,13 +2872,15 @@ AX_IP = "10.0.2.15"
         assert!(wrapper.contains("--eh-frame-hdr"));
         assert!(wrapper.contains("relro"));
         assert!(wrapper.contains("noexecstack"));
-        assert!(wrapper.contains("-znorelro"));
+        assert!(!wrapper.contains("-znorelro"));
+        assert!(!wrapper.contains("--gc-sections"));
+        assert!(!wrapper.contains("-znostart-stop-gc"));
         assert!(wrapper.contains("libc.a"));
         assert!(wrapper.contains("libunwind.a"));
         assert!(wrapper.contains("-lgcc_s|-lgcc"));
         assert!(!wrapper.contains("--whole-archive"));
-        assert!(wrapper.contains("-u"));
-        assert!(wrapper.contains("_start"));
+        assert!(!wrapper.contains("\"-u\""));
+        assert!(!wrapper.contains("_start"));
     }
 
     #[test]
@@ -2836,9 +2892,10 @@ AX_IP = "10.0.2.15"
 
         assert!(wrapper.contains("find_linker_script"));
         assert!(!wrapper.contains("latest_build_output_script axplat.x"));
-        assert!(wrapper.contains("entry_symbol='_head'"));
-        assert!(wrapper.contains("link_mode_args=(\"-pie\")"));
+        assert!(!wrapper.contains("entry_symbol="));
+        assert!(!wrapper.contains("link_mode_args="));
         assert!(wrapper.contains("dynamic_platform=1"));
+        assert!(!wrapper.contains("_head"));
     }
 
     #[test]

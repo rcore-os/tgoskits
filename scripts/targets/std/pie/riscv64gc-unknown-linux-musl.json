@@ -25,11 +25,16 @@
   "pre-link-args": {
     "gnu-lld": [
       "-pie",
+      "--gc-sections",
+      "-znorelro",
       "-znostart-stop-gc",
-      "-Tlinker.x"
+      "-Tlinker.x",
+      "-u",
+      "_head"
     ]
   },
   "relocation-model": "pic",
+  "relro-level": "off",
   "static-position-independent-executables": true,
   "supported-sanitizers": [
     "shadow-call-stack",
