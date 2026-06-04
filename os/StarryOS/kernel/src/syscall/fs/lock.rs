@@ -682,8 +682,7 @@ fn try_flock_once(
     // its own entry stale, to avoid a racy process freeing another
     // process's still-valid lock.
     let pid = current_pid();
-    entries.retain(|e| !(e.owner_pid == pid && e.weak.strong_count() <= 1));
-
+    entries.retain(|e| !(e.owner_pid == pid && e.weak.strong_count() < 1));
     let outcome = match kind {
         None => {
             // LOCK_UN: drop any entry held by this OFD.
