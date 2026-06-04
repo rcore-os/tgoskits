@@ -97,6 +97,8 @@ find_tool() {
 debugfs="$(find_tool DEBUGFS debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 e2fsck="$(find_tool E2FSCK e2fsck /opt/homebrew/opt/e2fsprogs/sbin/e2fsck)"
 resize2fs="$(find_tool RESIZE2FS resize2fs /opt/homebrew/opt/e2fsprogs/sbin/resize2fs)"
+e2fsprogs_bin="$(dirname "$debugfs")"
+export PATH="$e2fsprogs_bin:$PATH"
 
 for cmd in docker cargo tar find; do
     command -v "$cmd" >/dev/null 2>&1 || {
@@ -130,6 +132,7 @@ fi
 work_dir="$repo_root/target/starry-macos-selfbuild/rootfs-build"
 overlay_dir="$work_dir/overlay"
 debugfs_cmd="$work_dir/debugfs-build-rootfs.cmd"
+debugfs_log="$work_dir/debugfs-build-rootfs.log"
 mkdir -p "$work_dir" "$(dirname "$toolchain_rootfs")" "$(dirname "$selfbuild_rootfs")"
 rm -rf "$overlay_dir"
 mkdir -p "$overlay_dir"
@@ -225,7 +228,10 @@ while IFS= read -r path; do
     printf 'symlink %s %s\n' "$guest_path" "$target" >>"$debugfs_cmd"
 done < <(find "$overlay_dir" -type l | sort)
 
-"$debugfs" -w -f "$debugfs_cmd" "$toolchain_rootfs" >/dev/null
+if ! "$debugfs" -w -f "$debugfs_cmd" "$toolchain_rootfs" >"$debugfs_log" 2>&1; then
+    cat "$debugfs_log" >&2
+    exit 1
+fi
 
 echo "injecting TGOSKits source into self-build rootfs..."
 "$script_dir/prepare_rootfs.sh" \
