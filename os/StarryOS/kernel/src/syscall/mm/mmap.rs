@@ -168,7 +168,19 @@ pub fn sys_mmap(
     };
 
     let aligned = addr.align_down(page_size);
-    let end = (addr + length).align_up(page_size);
+    // Guard against `addr + length` (and the page-size round-up that `align_up`
+    // performs internally as `raw_end + page_size - 1`) wrapping past the address
+    // space for pathological requests (e.g. MAP_FIXED with a near-max addr and a
+    // huge length). Linux rejects these with EINVAL up front. `checked_add`
+    // catches the first overflow; the `end < raw_end` check catches the case where
+    // `addr + length` itself didn't overflow but rounding up to the page boundary
+    // did — otherwise the wrapped value would flow into the length computation and
+    // the (non-FIXED) hint search below.
+    let raw_end = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end = raw_end.align_up(page_size);
+    if end < raw_end {
+        return Err(AxError::InvalidInput);
+    }
     let mut length = end - aligned;
 
     let file = if anonymous {
