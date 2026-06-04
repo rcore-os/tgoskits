@@ -7,7 +7,7 @@
 当前 LoongArch Linux quick-start 只支持 virtio-blk rootfs。VM 配置使用：
 
 ```toml
-dtb_path = "/guest/linux/linux-loongarch64-qemu-rootfs-smp1.dtb"
+dtb_path = "/guest/linux/linux-rootfs-smp1.dtb"
 cmdline = "root=/dev/vda rootfstype=ext4 rootwait rw init=/init console=ttyS0 ..."
 ```
 
@@ -57,7 +57,7 @@ initramfs 曾用于早期 bring-up，用来绕开：
 - 外部设备中断注入 guest；
 - guest idle 后等待设备中断唤醒。
 
-现在 quick-start 已经切换到 rootfs，`--linux` 和 `--linux-rootfs` 都使用 `linux-loongarch64-qemu-rootfs-smp1.toml`。仓库里的通用 ramdisk/initrd 加载逻辑仍可被其他配置使用，但 LoongArch QEMU quick-start 不再维护 initramfs 作为启动模式。
+现在 quick-start 已经切换到 rootfs，`--linux` 和 `--linux-rootfs` 都使用 `configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml`。仓库里的通用 ramdisk/initrd 加载逻辑仍可被其他架构或其他配置使用，但 LoongArch QEMU quick-start 不再维护 initramfs 作为启动模式。
 
 QEMU runtime 配置中挂载：
 

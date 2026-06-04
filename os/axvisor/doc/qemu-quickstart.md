@@ -193,6 +193,8 @@ For the Linux guest flow with a virtio-blk rootfs, run:
 ./scripts/quick-start.sh qemu-loongarch64 run --linux
 ```
 
+The tracked VM template for this flow is `configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml`; quick-start copies it to `tmp/configs/linux-rootfs-smp1.toml` and patches the temporary image paths.
+
 > **Note**: Stock `qemu-system-loongarch64` usually does not expose LoongArch virtualization extensions. Run `./scripts/setup_qemu_lvz.sh` once, or set `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` to a validated virtualization-capable binary.
 
 ## 5. What Does setup_qemu.sh Do?

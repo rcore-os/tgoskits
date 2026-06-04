@@ -145,7 +145,7 @@ Examples:
     $0 qemu-loongarch64 start --axvisor             # One-step: prepare + launch AxVisor shell
     $0 qemu-loongarch64 start --linux               # One-step: launch Linux with virtio-blk rootfs
     $0 qemu-loongarch64 start --linux-rootfs        # Same as above
-    $0 qemu-loongarch64 start                       # Same as above (default axvisor)
+    $0 qemu-loongarch64 start                       # Same as --axvisor (default)
 
     # QEMU x86_64
     $0 qemu-x86_64 start --nimbos                   # One-step: prepare + launch NimbOS
@@ -321,11 +321,11 @@ setup_qemu_loongarch64() {
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
-    run_cmd cp configs/board/qemu-loongarch64-guest-rootfs.toml tmp/configs/
+    run_cmd cp configs/board/qemu-loongarch64-linux.toml tmp/configs/
 
     info "Preparing Linux guest rootfs config file..."
-    run_cmd cp configs/vms/linux-loongarch64-qemu-rootfs-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/linux-loongarch64-qemu-rootfs-smp1.dts tmp/configs/
+    run_cmd cp configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/qemu/loongarch64/linux-rootfs-smp1.dts tmp/configs/
 
     local guest_dir="${AXVISOR_LOONGARCH64_GUEST_DIR:-$(cd ../../.. && pwd)/axvisor-guest/IMAGES/qemu/loongarch64/linux}"
     if [ -f "$guest_dir/qemu-loongarch64" ]; then
@@ -340,15 +340,15 @@ setup_qemu_loongarch64() {
     fi
 
     if ! command -v dtc &> /dev/null; then
-        error "dtc is required to build linux-loongarch64-qemu-rootfs-smp1.dtb"
+        error "dtc is required to build linux-rootfs-smp1.dtb"
         exit 1
     fi
-    run_cmd dtc -I dts -O dtb -o tmp/configs/linux-loongarch64-qemu-rootfs-smp1.dtb tmp/configs/linux-loongarch64-qemu-rootfs-smp1.dts
-    run_cmd cp tmp/configs/linux-loongarch64-qemu-rootfs-smp1.dtb tmp/images/qemu_loongarch64_linux/
+    run_cmd dtc -I dts -O dtb -o tmp/configs/linux-rootfs-smp1.dtb tmp/configs/linux-rootfs-smp1.dts
+    run_cmd cp tmp/configs/linux-rootfs-smp1.dtb tmp/images/qemu_loongarch64_linux/
 
-    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_loongarch64_linux/qemu-loongarch64"|g' tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml
-    run_cmd sed -i 's|^dtb_path = .*|dtb_path = "linux-loongarch64-qemu-rootfs-smp1.dtb"|g' tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml
+    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/linux-rootfs-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_loongarch64_linux/qemu-loongarch64"|g' tmp/configs/linux-rootfs-smp1.toml
+    run_cmd sed -i 's|^dtb_path = .*|dtb_path = "linux-rootfs-smp1.dtb"|g' tmp/configs/linux-rootfs-smp1.toml
 
     info "Preparing QEMU config file..."
     run_cmd cp configs/qemu/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
@@ -455,9 +455,9 @@ run_qemu_loongarch64_linux() {
     run_cmd sed -i 's|virtio-blk-pci,drive=disk0|virtio-blk-pci,drive=disk0,disable-modern=on|g' tmp/configs/qemu-loongarch64-runtime.toml
 
     run_axvisor_qemu_with_loongarch64_qemu \
-        --config "$(pwd)/tmp/configs/qemu-loongarch64-guest-rootfs.toml" \
+        --config "$(pwd)/tmp/configs/qemu-loongarch64-linux.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-loongarch64-runtime.toml" \
-        --vmconfigs "$(pwd)/tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml"
+        --vmconfigs "$(pwd)/tmp/configs/linux-rootfs-smp1.toml"
 }
 
 run_qemu_loongarch64_linux_rootfs() {

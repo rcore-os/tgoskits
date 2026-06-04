@@ -151,6 +151,8 @@ Linux guest 启动使用 virtio-blk rootfs：
 ./scripts/quick-start.sh qemu-loongarch64 run --linux
 ```
 
+该流程使用的仓库内 VM 模板是 `configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml`；quick-start 会复制到 `tmp/configs/linux-rootfs-smp1.toml`，再只修改临时配置中的镜像路径。
+
 > **注意**：标准版 `qemu-system-loongarch64` 通常不会暴露 LoongArch 虚拟化扩展。请先运行一次 `./scripts/setup_qemu_lvz.sh`，或者通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` 指向一个已经确认支持虚拟化扩展的二进制。
 
 ## 5. setup_qemu.sh 做了什么

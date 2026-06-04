@@ -23,10 +23,12 @@ VM TOML
 
 关键代码位置：
 
-- `os/axvisor/src/vmm/images/mod.rs`
-- `components/loongarch_vcpu/src/vcpu.rs`
-- `components/axvm/src/config.rs`
-- `components/axvm/src/vm.rs`
+- `os/axvisor/src/images/mod.rs`
+- `os/axvisor/src/images/loongarch_elf.rs`
+- `os/axvisor/src/images/loongarch_linux.rs`
+- `virtualization/loongarch_vcpu/src/vcpu.rs`
+- `virtualization/axvm/src/config.rs`
+- `virtualization/axvm/src/vm.rs`
 
 ## Kernel 格式
 
