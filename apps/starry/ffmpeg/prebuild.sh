@@ -149,44 +149,49 @@ generate_test_media() {
     local test_media_dir="$overlay_dir/usr/share/ffmpeg-test-media"
     mkdir -p "$test_media_dir"
 
-    if command -v ffmpeg >/dev/null 2>&1; then
-        # Generate a 2-second test video (raw video, no audio) - MP4 container
-        ffmpeg -y -f lavfi -i "color=c=red:s=160x120:d=2" \
-            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-            "$test_media_dir/test_160x120.mp4" 2>/dev/null || true
-
-        # Generate a 2-second test video with audio
-        ffmpeg -y -f lavfi -i "color=c=blue:s=160x120:d=2" \
-            -f lavfi -i "sine=frequency=440:duration=2" \
-            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-            -c:a aac -b:a 64k \
-            "$test_media_dir/test_av.mp4" 2>/dev/null || true
-
-        # Generate a 2-second test audio (WAV format)
-        ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
-            -c:a pcm_s16le \
-            "$test_media_dir/test_audio.wav" 2>/dev/null || true
-
-        # Generate a 2-second test audio (MP3 format)
-        ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
-            -c:a libmp3lame -b:a 128k \
-            "$test_media_dir/test_audio.mp3" 2>/dev/null || true
-
-        # Generate a 2-second test video in MKV container
-        ffmpeg -y -f lavfi -i "color=c=green:s=160x120:d=2" \
-            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-            "$test_media_dir/test_160x120.mkv" 2>/dev/null || true
-
-        # Generate a 2-second test video in AVI container
-        ffmpeg -y -f lavfi -i "color=c=yellow:s=160x120:d=2" \
-            -c:v mpeg4 -q:v 10 \
-            "$test_media_dir/test_160x120.avi" 2>/dev/null || true
-
-        echo "Generated test media files in $test_media_dir"
-    else
-        echo "WARNING: ffmpeg not found on host, test media files will not be pre-generated"
-        echo "         Tests will use synthetic data generated inside QEMU"
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        echo "error: ffmpeg not found on host — cannot generate test media" >&2
+        echo "       Install ffmpeg (apt-get install ffmpeg) and re-run" >&2
+        exit 1
     fi
+
+    # Required: MP4 video (used by codec + network tests)
+    ffmpeg -y -f lavfi -i "color=c=red:s=160x120:d=2" \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+        "$test_media_dir/test_160x120.mp4" 2>/dev/null \
+        || { echo "error: failed to generate test_160x120.mp4" >&2; exit 1; }
+
+    # Required: MP3 audio (used by codec + network tests)
+    ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
+        -c:a libmp3lame -b:a 128k \
+        "$test_media_dir/test_audio.mp3" 2>/dev/null \
+        || { echo "error: failed to generate test_audio.mp3" >&2; exit 1; }
+
+    # Required: MKV container (used by codec tests)
+    ffmpeg -y -f lavfi -i "color=c=green:s=160x120:d=2" \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+        "$test_media_dir/test_160x120.mkv" 2>/dev/null \
+        || { echo "error: failed to generate test_160x120.mkv" >&2; exit 1; }
+
+    # Required: AVI container (used by codec tests)
+    ffmpeg -y -f lavfi -i "color=c=yellow:s=160x120:d=2" \
+        -c:v mpeg4 -q:v 10 \
+        "$test_media_dir/test_160x120.avi" 2>/dev/null \
+        || { echo "error: failed to generate test_160x120.avi" >&2; exit 1; }
+
+    # Optional: A/V muxed (used by basic tests, has fallback)
+    ffmpeg -y -f lavfi -i "color=c=blue:s=160x120:d=2" \
+        -f lavfi -i "sine=frequency=440:duration=2" \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+        -c:a aac -b:a 64k \
+        "$test_media_dir/test_av.mp4" 2>/dev/null || true
+
+    # Optional: WAV audio (used by basic tests, has fallback)
+    ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
+        -c:a pcm_s16le \
+        "$test_media_dir/test_audio.wav" 2>/dev/null || true
+
+    echo "Generated test media files in $test_media_dir"
 }
 
 populate_overlay() {
