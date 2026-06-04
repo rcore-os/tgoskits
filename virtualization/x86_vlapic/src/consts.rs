@@ -218,7 +218,7 @@ pub const LAPIC_TRIG_LEVEL: bool = true;
 pub const LAPIC_TRIG_EDGE: bool = false;
 
 pub mod xapic {
-    use axaddrspace::GuestPhysAddr;
+    use axvm_types::GuestPhysAddr;
 
     use super::ApicRegOffset;
 
@@ -233,7 +233,7 @@ pub mod xapic {
 }
 
 pub mod x2apic {
-    use axaddrspace::device::SysRegAddr;
+    use axdevice_base::SysRegAddr;
 
     use super::ApicRegOffset;
 

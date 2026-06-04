@@ -3,6 +3,7 @@
 
 mod context_frame;
 mod exception;
+pub mod host;
 mod pcpu;
 mod registers;
 mod vcpu;

@@ -38,8 +38,6 @@ tock-registers = "0.10"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 ax-errno = { workspace = true }
-ax-page-table-entry = { workspace = true }
 ax-memory-addr = { workspace = true }
-axaddrspace = { workspace = true }
 axvcpu = { workspace = true }
-axvisor_api = { workspace = true }
+axvm-types = { workspace = true }

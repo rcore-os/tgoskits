@@ -15,12 +15,8 @@
 use core::ptr::NonNull;
 
 use ax_errno::{AxError, AxResult, ax_err_type};
-use axaddrspace::{HostPhysAddr, device::AccessWidth};
-use axvisor_api::{
-    memory::PhysFrame,
-    vmm,
-    vmm::{VCpuId, VMId},
-};
+use axdevice_base::AccessWidth;
+use axvm_types::{HostPhysAddr, VCpuId, VMId};
 use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -30,6 +26,7 @@ use crate::{
         APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
         RESET_SPURIOUS_INTERRUPT_VECTOR, xapic::DEFAULT_APIC_BASE,
     },
+    host::{self, PhysFrame},
     regs::{
         APIC_BASE, ApicBaseRegisterMsr,
         DESTINATION_FORMAT::{self, Model::Value as APICDestinationFormat},
@@ -312,7 +309,7 @@ impl VirtualApicRegs {
 
         if is_broadcast {
             // Broadcast in both logical and physical modes.
-            dmask = vmm::current_vm_active_vcpus() as u64;
+            dmask = host::current_vm_active_vcpus() as u64;
         } else if is_phys {
             // Physical mode: "dest" is local APIC ID.
             // Todo: distinguish between APIC ID and vCPU ID.
@@ -325,8 +322,8 @@ impl VirtualApicRegs {
             // Logical mode: "dest" is message destination addr
             // to be compared with the logical APIC ID in LDR.
 
-            let vcpu_mask = vmm::active_vcpus(vmm::current_vm_id()).unwrap();
-            for i in 0..vmm::current_vm_vcpu_num() {
+            let vcpu_mask = host::active_vcpus(host::current_vm_id()).unwrap();
+            for i in 0..host::current_vm_vcpu_num() {
                 if vcpu_mask & (1 << i) != 0 {
                     if !self.is_dest_field_matched(dest)? {
                         continue;
@@ -356,10 +353,10 @@ impl VirtualApicRegs {
                 dmask.set_bit(self.vapic_id as usize, true);
             }
             APICDestination::AllIncludingSelf => {
-                dmask = vmm::current_vm_active_vcpus() as u64;
+                dmask = host::current_vm_active_vcpus() as u64;
             }
             APICDestination::AllExcludingSelf => {
-                dmask = vmm::current_vm_active_vcpus() as u64;
+                dmask = host::current_vm_active_vcpus() as u64;
                 dmask &= !(1 << self.vapic_id);
             }
         }
@@ -384,7 +381,7 @@ impl VirtualApicRegs {
         }
 
         debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
-        vmm::inject_interrupt(vmm::current_vm_id(), vcpu_id as usize, vector as u8);
+        let _ = host::inject_interrupt(host::current_vm_id(), vcpu_id as usize, vector as u8);
     }
 
     /// Record interrupt acceptance in the virtual APIC page.
@@ -546,7 +543,7 @@ impl VirtualApicRegs {
             let dmask = self.calculate_dest(shorthand, is_broadcast, dest, is_phys, false)?;
 
             // TODO: we need to get the specific vcpu number somehow.
-            for i in 0..vmm::current_vm_vcpu_num() as u32 {
+            for i in 0..host::current_vm_vcpu_num() as u32 {
                 if dmask & (1 << i) != 0 {
                     match mode {
                         APICDeliveryMode::Fixed => {

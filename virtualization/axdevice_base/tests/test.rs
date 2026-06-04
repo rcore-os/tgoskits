@@ -17,8 +17,8 @@ extern crate alloc;
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use ax_errno::AxResult;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType, map_device_of_type};
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, map_device_of_type};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
 const DEVICE_A_TEST_METHOD_ANSWER: usize = 42;
 
