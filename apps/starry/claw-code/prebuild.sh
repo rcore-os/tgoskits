@@ -7,11 +7,7 @@ CLAW_SRC="$CACHE_DIR/repo"
 TARGET="x86_64-unknown-linux-musl"
 CLAW_BIN="$CACHE_DIR/claw"
 
-echo "=== 1. Copy base rootfs ==="
-cp "$STARRY_BASE_ROOTFS" "$STARRY_OUTPUT_ROOTFS"
-echo "Copied: $STARRY_OUTPUT_ROOTFS"
-
-echo "=== 2. Build claw from source ==="
+echo "=== 1. Build claw from source ==="
 if [ -f "$CLAW_BIN" ]; then
     echo "claw binary cached at $CLAW_BIN"
 else
@@ -31,7 +27,7 @@ else
     echo "claw binary built: $CLAW_BIN"
 fi
 
-echo "=== 3. Inject claw into rootfs ==="
+echo "=== 2. Inject claw into rootfs ==="
 debugfs -w "$STARRY_OUTPUT_ROOTFS" -R "rm /usr/bin/claw" 2>/dev/null || true
 debugfs -w "$STARRY_OUTPUT_ROOTFS" -R "write $CLAW_BIN /usr/bin/claw"
 debugfs -w "$STARRY_OUTPUT_ROOTFS" -R "sif /usr/bin/claw mode 0100755"
