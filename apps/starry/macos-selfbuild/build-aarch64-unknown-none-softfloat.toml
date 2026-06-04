@@ -1,6 +1,18 @@
 target = "aarch64-unknown-none-softfloat"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 log = "Warn"
-features = ["qemu", "gic-v3", "cntv-timer", "smp"]
+features = [
+  "cntv-timer",
+  "ax-feat/display",
+  "ax-feat/rtc",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+  "smp",
+]
 max_cpu_num = 8
 plat_dyn = true

@@ -174,6 +174,38 @@ exec /usr/bin/rustdoc --sysroot /usr "$@"
 WRAP
         chmod +x /payload/opt/rustc-nightly-sysroot /payload/opt/rustdoc-nightly-sysroot
 
+        cat >/payload/usr/bin/aarch64-linux-musl-gcc <<'"'"'WRAP'"'"'
+#!/bin/sh
+if [ "${1:-}" = "-print-sysroot" ]; then
+    printf '%s\n' /usr
+    exit 0
+fi
+
+args=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --target=aarch64-unknown-none|--target=aarch64-unknown-none-softfloat)
+            shift
+            ;;
+        --target)
+            if [ "${2:-}" = "aarch64-unknown-none" ] || [ "${2:-}" = "aarch64-unknown-none-softfloat" ]; then
+                shift 2
+            else
+                args="$args $1"
+                shift
+            fi
+            ;;
+        *)
+            args="$args $1"
+            shift
+            ;;
+    esac
+done
+
+exec /usr/bin/gcc $args
+WRAP
+        chmod +x /payload/usr/bin/aarch64-linux-musl-gcc
+
         cat >/payload/root/.cargo/config.toml <<'"'"'CARGO_CFG'"'"'
 [net]
 git-fetch-with-cli = true

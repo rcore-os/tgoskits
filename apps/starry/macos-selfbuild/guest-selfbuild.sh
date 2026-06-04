@@ -15,7 +15,7 @@ build_target="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
 build_package="${BUILD_PACKAGE:-starryos}"
 build_bin="${BUILD_BIN:-starryos}"
 build_std="${BUILD_STD:-core,alloc,compiler_builtins}"
-features="${FEATURES:-qemu,gic-v3,cntv-timer,smp}"
+features="${FEATURES:-plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
 no_default_features="${NO_DEFAULT_FEATURES:-0}"
 
 finish_guest() {
