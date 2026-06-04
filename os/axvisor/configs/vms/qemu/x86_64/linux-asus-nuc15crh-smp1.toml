@@ -16,14 +16,15 @@ phys_cpu_sets = [1]
 # Vm kernel configs
 #
 [kernel]
-# The entry point of the Linux direct-boot stub.
+# The entry point of the kernel image.
+# Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
 # The location of image: "memory" | "fs".
 # The ASUS NUC15CRH HTTP Boot flow embeds the Linux guest images into AxVisor.
 image_location = "memory"
-# The file path of the Linux bzImage.
+# The file path of the kernel image.
 kernel_path = "/path/to/kernel"
-# The load address of the Linux protected-mode payload.
+# The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
@@ -73,5 +74,5 @@ passthrough_addresses = [
   [0xfe00_0000, 0x00c0_0000],
 ]
 
-# Devices that are not desired to be passed through to the guest.
+# Devices that are not desired to be passed through to the guest
 excluded_devices = []

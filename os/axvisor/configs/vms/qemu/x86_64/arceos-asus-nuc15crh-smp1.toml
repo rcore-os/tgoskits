@@ -27,6 +27,8 @@ kernel_path = "/path/to/ax-helloworld-x86_64.bin"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = true
+# Legacy x86 boot flow uses axvm-bios and multiboot info patching.
+boot_protocol = "multiboot"
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
@@ -60,3 +62,6 @@ passthrough_devices = [
     0x1,
   ],
 ]
+
+# Devices that are not desired to be passed through to the guest
+excluded_devices = []
