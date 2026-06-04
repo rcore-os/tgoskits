@@ -14,8 +14,8 @@ use crate::{
 };
 
 /// Snapshot type for lock-free LRU eviction.
-/// `(lru_key, optional dirty data: (block_num, data))`
-type BitmapLruSnapshot = Option<(CacheKey, Option<(AbsoluteBN, Vec<u8>)>)>;
+/// `(lru_key, generation, optional dirty data: (block_num, data))`
+type BitmapLruSnapshot = Option<(CacheKey, u64, Option<(AbsoluteBN, Vec<u8>)>)>;
 
 /// Type of bitmap stored in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,6 +60,9 @@ pub struct CachedBitmap {
     pub block_num: AbsoluteBN,
     /// Access timestamp for LRU eviction.
     pub last_access: u64,
+    /// Generation counter — bumped on every access, used to validate
+    /// stale LRU snapshots before eviction.
+    pub generation: u64,
 }
 
 impl CachedBitmap {
@@ -69,6 +72,7 @@ impl CachedBitmap {
             dirty: false,
             block_num,
             last_access: 0,
+            generation: 0,
         }
     }
 
@@ -132,7 +136,7 @@ impl BitmapCache {
             drop(inner);
 
             // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, Some((lru_bn, ref lru_data)))) = evict_info {
+            if let Some((_lru_key, _, Some((lru_bn, ref lru_data)))) = evict_info {
                 Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
             }
 
@@ -142,7 +146,14 @@ impl BitmapCache {
             // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
 
-            if let Some((lru_key, _)) = evict_info {
+            // Only evict the LRU victim if no other thread accessed or
+            // modified it while we held no lock (generation unchanged).
+            if let Some((lru_key, lru_gen, _)) = evict_info
+                && inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|bitmap| bitmap.generation == lru_gen)
+            {
                 inner.cache.remove(&lru_key);
             }
 
@@ -156,6 +167,7 @@ impl BitmapCache {
         inner.access_counter = new_counter;
         if let Some(bitmap) = inner.cache.get_mut(&key) {
             bitmap.last_access = new_counter;
+            bitmap.generation += 1;
         }
 
         inner.cache.get(&key).cloned().ok_or(Ext4Error::corrupted())
@@ -181,7 +193,7 @@ impl BitmapCache {
             drop(inner);
 
             // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, Some((lru_bn, ref lru_data)))) = evict_info {
+            if let Some((_lru_key, _, Some((lru_bn, ref lru_data)))) = evict_info {
                 Self::write_bitmap_static(block_dev, lru_bn, lru_data)?;
             }
 
@@ -191,7 +203,14 @@ impl BitmapCache {
             // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
 
-            if let Some((lru_key, _)) = evict_info {
+            // Only evict the LRU victim if no other thread accessed or
+            // modified it while we held no lock (generation unchanged).
+            if let Some((lru_key, lru_gen, _)) = evict_info
+                && inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|bitmap| bitmap.generation == lru_gen)
+            {
                 inner.cache.remove(&lru_key);
             }
 
@@ -207,6 +226,7 @@ impl BitmapCache {
         inner.access_counter = new_counter;
         if let Some(bitmap) = inner.cache.get_mut(&key) {
             bitmap.last_access = new_counter;
+            bitmap.generation += 1;
         }
         Ok(())
     }
@@ -223,14 +243,17 @@ impl BitmapCache {
         inner.access_counter = new_counter;
         inner.cache.get_mut(key).map(|bitmap| {
             bitmap.last_access = new_counter;
+            bitmap.generation += 1;
             bitmap.clone()
         })
     }
 
     /// Marks a cached bitmap dirty.
     pub fn mark_dirty(&self, key: &CacheKey) {
-        if let Some(bitmap) = self.inner.lock().cache.get_mut(key) {
+        let mut inner = self.inner.lock();
+        if let Some(bitmap) = inner.cache.get_mut(key) {
             bitmap.mark_dirty();
+            bitmap.generation += 1;
         }
     }
 
@@ -257,6 +280,7 @@ impl BitmapCache {
 
         f(&mut bitmap.data);
         bitmap.mark_dirty();
+        bitmap.generation += 1;
 
         if !USE_MULTILEVEL_CACHE {
             let data = bitmap.data.clone();
@@ -266,6 +290,7 @@ impl BitmapCache {
             inner = self.inner.lock();
             if let Some(bitmap) = inner.cache.get_mut(&key) {
                 bitmap.dirty = false;
+                bitmap.generation += 1;
             }
         }
 
@@ -343,15 +368,18 @@ pub struct CacheStats {
 impl BitmapCacheInner {
     /// Snapshots the LRU bitmap for lock-free eviction.
     ///
-    /// Returns `Some(lru_key, Some(data))` when dirty, `Some(lru_key, None)` when
-    /// clean, `None` when the cache is empty.  The caller must do the I/O
-    /// *without* holding the spinlock, then re-lock and remove `lru_key`.
+    /// Returns `(lru_key, generation, dirty_info)` where `generation` is the
+    /// entry's generation at snapshot time.  The caller must do the I/O
+    /// *without* holding the spinlock, then re-lock, verify the entry's
+    /// generation still matches, and only then remove it.
     fn snapshot_lru(&self) -> BitmapLruSnapshot {
         let lru_key = self
             .cache
             .iter()
             .min_by_key(|(_, bitmap)| bitmap.last_access)
             .map(|(key, _)| *key)?;
+
+        let lru_gen = self.cache.get(&lru_key).map(|bitmap| bitmap.generation)?;
 
         let dirty_info = self.cache.get(&lru_key).and_then(|bitmap| {
             if bitmap.dirty {
@@ -361,7 +389,7 @@ impl BitmapCacheInner {
             }
         });
 
-        Some((lru_key, dirty_info))
+        Some((lru_key, lru_gen, dirty_info))
     }
 
     fn do_evict<B: BlockDevice>(

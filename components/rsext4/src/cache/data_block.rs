@@ -19,6 +19,9 @@ pub struct CachedBlock {
     pub block_num: AbsoluteBN,
     /// Access timestamp used for LRU eviction.
     pub last_access: u64,
+    /// Generation counter — bumped on every access, used to validate
+    /// stale LRU snapshots before eviction.
+    pub generation: u64,
 }
 
 impl CachedBlock {
@@ -28,6 +31,7 @@ impl CachedBlock {
             dirty: false,
             block_num,
             last_access: 0,
+            generation: 0,
         }
     }
 
@@ -108,7 +112,7 @@ impl DataBlockCache {
             drop(inner);
 
             // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, Some(ref lru_data))) = evict_info {
+            if let Some((_lru_key, _, Some(ref lru_data))) = evict_info {
                 Self::write_block_static(block_dev, _lru_key, lru_data, self.block_size)?;
             }
 
@@ -117,7 +121,14 @@ impl DataBlockCache {
             // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
 
-            if let Some((lru_key, _)) = evict_info {
+            // Only evict the LRU victim if no other thread accessed or
+            // modified it while we held no lock (generation unchanged).
+            if let Some((lru_key, lru_gen, _)) = evict_info
+                && inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|cached| cached.generation == lru_gen)
+            {
                 inner.cache.remove(&lru_key);
             }
 
@@ -127,11 +138,12 @@ impl DataBlockCache {
                 .or_insert_with(|| CachedBlock::new(data, block_num));
         }
 
-        // Refresh the LRU timestamp.
+        // Refresh the LRU timestamp and bump the generation.
         let new_counter = inner.access_counter + 1;
         inner.access_counter = new_counter;
         if let Some(cached) = inner.cache.get_mut(&block_num) {
             cached.last_access = new_counter;
+            cached.generation += 1;
         }
 
         inner
@@ -160,7 +172,7 @@ impl DataBlockCache {
             drop(inner);
 
             // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, Some(ref lru_data))) = evict_info {
+            if let Some((_lru_key, _, Some(ref lru_data))) = evict_info {
                 Self::write_block_static(block_dev, _lru_key, lru_data, self.block_size)?;
             }
 
@@ -169,7 +181,14 @@ impl DataBlockCache {
             // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
 
-            if let Some((lru_key, _)) = evict_info {
+            // Only evict the LRU victim if no other thread accessed or
+            // modified it while we held no lock (generation unchanged).
+            if let Some((lru_key, lru_gen, _)) = evict_info
+                && inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|cached| cached.generation == lru_gen)
+            {
                 inner.cache.remove(&lru_key);
             }
 
@@ -185,6 +204,7 @@ impl DataBlockCache {
         inner.access_counter = new_counter;
         if let Some(cached) = inner.cache.get_mut(&block_num) {
             cached.last_access = new_counter;
+            cached.generation += 1;
         }
         Ok(())
     }
@@ -201,6 +221,7 @@ impl DataBlockCache {
         inner.access_counter = new_counter;
         inner.cache.get_mut(&block_num).map(|cached| {
             cached.last_access = new_counter;
+            cached.generation += 1;
             cached.clone()
         })
     }
@@ -230,17 +251,26 @@ impl DataBlockCache {
         if let Some(ref data) = evict_existing {
             Self::write_block_static(block_dev, block_num, data, self.block_size)?;
         }
-        if let Some((lru_key, Some(ref lru_data))) = evict_lru_info {
+        if let Some((lru_key, _, Some(ref lru_data))) = evict_lru_info {
             Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
         }
 
         // Phase 3: reacquire the lock and apply evictions + insertion.
         inner = self.inner.lock();
 
+        // Evict the pre-existing incarnation of the same block number
+        // unconditionally — it is being replaced.
         if evict_existing.is_some() {
             inner.cache.remove(&block_num);
         }
-        if let Some((lru_key, _)) = evict_lru_info {
+        // Only evict the LRU victim if no other thread accessed or
+        // modified it while we held no lock (generation unchanged).
+        if let Some((lru_key, lru_gen, _)) = evict_lru_info
+            && inner
+                .cache
+                .get(&lru_key)
+                .is_some_and(|cached| cached.generation == lru_gen)
+        {
             inner.cache.remove(&lru_key);
         }
 
@@ -265,6 +295,7 @@ impl DataBlockCache {
         let mut inner = self.inner.lock();
         if let Some(cached) = inner.cache.get_mut(&block_num) {
             cached.mark_dirty();
+            cached.generation += 1;
         }
     }
 
@@ -288,6 +319,7 @@ impl DataBlockCache {
             .ok_or(Ext4Error::corrupted())?;
         f(&mut cached.data);
         cached.mark_dirty();
+        cached.generation += 1;
 
         if !USE_MULTILEVEL_CACHE {
             let data = cached.data.clone();
@@ -298,6 +330,7 @@ impl DataBlockCache {
             inner = self.inner.lock();
             if let Some(cached) = inner.cache.get_mut(&block_num) {
                 cached.dirty = false;
+                cached.generation += 1;
             }
         }
         Ok(())
@@ -394,15 +427,21 @@ pub struct DataBlockCacheStats {
 impl DataBlockCacheInner {
     /// Snapshots the LRU data block for lock-free eviction.
     ///
-    /// Returns `Some(lru_key, Some(data))` when dirty, `Some(lru_key, None)` when
-    /// clean, `None` when the cache is empty.  The caller must do the I/O
-    /// *without* holding the spinlock, then re-lock and remove `lru_key`.
-    fn snapshot_lru(&self) -> Option<(AbsoluteBN, Option<Vec<u8>>)> {
+    /// Returns `Some((lru_key, generation, dirty_data))` where `generation` is
+    /// the entry's generation at snapshot time.  The caller must do the I/O
+    /// *without* holding the spinlock, then re-lock, verify that the entry's
+    /// generation still matches, and only then remove it.
+    /// A generation mismatch means another thread accessed or modified the
+    /// victim while we held no lock — in that case the victim must NOT be
+    /// removed (temporarily exceeding `max_entries` is harmless).
+    fn snapshot_lru(&self) -> Option<(AbsoluteBN, u64, Option<Vec<u8>>)> {
         let lru_key = self
             .cache
             .iter()
             .min_by_key(|(_, cached)| cached.last_access)
             .map(|(key, _)| *key)?;
+
+        let lru_gen = self.cache.get(&lru_key).map(|cached| cached.generation)?;
 
         let dirty_data = self.cache.get(&lru_key).and_then(|cached| {
             if cached.dirty {
@@ -412,7 +451,7 @@ impl DataBlockCacheInner {
             }
         });
 
-        Some((lru_key, dirty_data))
+        Some((lru_key, lru_gen, dirty_data))
     }
 
     /// Snapshots a single block for lock-free eviction.

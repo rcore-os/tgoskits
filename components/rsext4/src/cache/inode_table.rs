@@ -14,8 +14,8 @@ use crate::{
 };
 
 /// Snapshot type for lock-free LRU eviction.
-/// `(lru_key, optional dirty data: (block_num, offset, data))`
-type InodeLruSnapshot = Option<(InodeNumber, Option<(AbsoluteBN, usize, Vec<u8>)>)>;
+/// `(lru_key, generation, optional dirty data: (block_num, offset, data))`
+type InodeLruSnapshot = Option<(InodeNumber, u64, Option<(AbsoluteBN, usize, Vec<u8>)>)>;
 
 /// Cache key for one global inode number.
 pub type InodeCacheKey = InodeNumber;
@@ -35,6 +35,9 @@ pub struct CachedInode {
     pub inode_num: InodeNumber,
     /// Access timestamp used for LRU eviction.
     pub last_access: u64,
+    /// Generation counter — bumped on every access, used to validate
+    /// stale LRU snapshots before eviction.
+    pub generation: u64,
 }
 
 impl CachedInode {
@@ -51,6 +54,7 @@ impl CachedInode {
             offset_in_block: offset,
             inode_num,
             last_access: 0,
+            generation: 0,
         }
     }
 
@@ -188,7 +192,7 @@ impl InodeCache {
 
             // Phase 2: do I/O without holding the spinlock so other cores can
             // make progress on cache hits.
-            if let Some((_lru_key, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
+            if let Some((_lru_key, _, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
                 Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
             }
 
@@ -197,7 +201,14 @@ impl InodeCache {
             // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
 
-            if let Some((lru_key, _)) = evict_info {
+            // Only evict the LRU victim if no other thread accessed or
+            // modified it while we held no lock (generation unchanged).
+            if let Some((lru_key, lru_gen, _)) = evict_info
+                && inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|cached| cached.generation == lru_gen)
+            {
                 inner.cache.remove(&lru_key);
             }
 
@@ -214,6 +225,7 @@ impl InodeCache {
         inner.access_counter = new_counter;
         if let Some(cached) = inner.cache.get_mut(&inode_num) {
             cached.last_access = new_counter;
+            cached.generation += 1;
         }
 
         inner
@@ -245,7 +257,7 @@ impl InodeCache {
             drop(inner);
 
             // Phase 2: do I/O without holding the spinlock.
-            if let Some((_lru_key, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
+            if let Some((_lru_key, _, Some((lru_bn, lru_off, ref lru_data)))) = evict_info {
                 Self::write_inode_bytes_static(block_dev, lru_bn, lru_off, lru_data)?;
             }
 
@@ -254,7 +266,14 @@ impl InodeCache {
             // Phase 3: reacquire the lock and apply the eviction + insertion.
             inner = self.inner.lock();
 
-            if let Some((lru_key, _)) = evict_info {
+            // Only evict the LRU victim if no other thread accessed or
+            // modified it while we held no lock (generation unchanged).
+            if let Some((lru_key, lru_gen, _)) = evict_info
+                && inner
+                    .cache
+                    .get(&lru_key)
+                    .is_some_and(|cached| cached.generation == lru_gen)
+            {
                 inner.cache.remove(&lru_key);
             }
 
@@ -271,6 +290,7 @@ impl InodeCache {
         inner.access_counter = new_counter;
         if let Some(cached) = inner.cache.get_mut(&inode_num) {
             cached.last_access = new_counter;
+            cached.generation += 1;
         }
 
         Ok(())
@@ -289,6 +309,7 @@ impl InodeCache {
         // Counter updated outside the get_mut borrow scope to avoid conflicts.
         inner.cache.get_mut(&inode_num).map(|cached| {
             cached.last_access = new_counter;
+            cached.generation += 1;
             cached.clone()
         })
     }
@@ -298,6 +319,7 @@ impl InodeCache {
         let mut inner = self.inner.lock();
         if let Some(cached) = inner.cache.get_mut(&inode_num) {
             cached.mark_dirty();
+            cached.generation += 1;
         }
     }
 
@@ -326,6 +348,7 @@ impl InodeCache {
             .ok_or(Ext4Error::corrupted())?;
         f(&mut cached.inode);
         cached.mark_dirty();
+        cached.generation += 1;
 
         if !USE_MULTILEVEL_CACHE {
             // Drop lock during synchronous I/O
@@ -340,6 +363,7 @@ impl InodeCache {
             inner = self.inner.lock();
             if let Some(cached) = inner.cache.get_mut(&inode_num) {
                 cached.dirty = false;
+                cached.generation += 1;
             }
         }
         Ok(())
@@ -432,16 +456,18 @@ pub struct InodeCacheStats {
 impl InodeCacheInner {
     /// Snapshots the LRU entry for lock-free eviction.
     ///
-    /// Returns `(lru_key, dirty_write_info)` where `dirty_write_info` is
-    /// `Some((block_num, offset, data))` when the entry is dirty and must be
-    /// flushed to disk before eviction.  The caller must do the I/O
-    /// *without* holding the spinlock, then re-lock and remove `lru_key`.
+    /// Returns `(lru_key, generation, dirty_write_info)` where `generation`
+    /// is the entry's generation at snapshot time.  The caller must do the
+    /// I/O *without* holding the spinlock, then re-lock, verify the entry's
+    /// generation still matches, and only then remove it.
     fn snapshot_lru(&self) -> InodeLruSnapshot {
         let lru_key = self
             .cache
             .iter()
             .min_by_key(|(_, cached)| cached.last_access)
             .map(|(key, _)| *key)?;
+
+        let lru_gen = self.cache.get(&lru_key).map(|cached| cached.generation)?;
 
         let dirty_info = self.cache.get(&lru_key).and_then(|cached| {
             if cached.dirty {
@@ -453,7 +479,7 @@ impl InodeCacheInner {
             }
         });
 
-        Some((lru_key, dirty_info))
+        Some((lru_key, lru_gen, dirty_info))
     }
 
     fn do_evict<B: BlockDevice>(
