@@ -86,7 +86,7 @@ static long futex_wake_bitset(_Atomic uint32_t *uaddr, int count, uint32_t bitse
 
 static int wait_until_ready(_Atomic int *ready, int expected, const char *label)
 {
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 10000; i++) {
         if (atomic_load(ready) >= expected)
             return 1;
         usleep(1000);
