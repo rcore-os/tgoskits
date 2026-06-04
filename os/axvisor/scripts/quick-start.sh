@@ -323,21 +323,14 @@ setup_qemu_loongarch64() {
     run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
     run_cmd cp configs/board/qemu-loongarch64-guest-rootfs.toml tmp/configs/
 
-    info "Preparing Linux guest config file..."
-    run_cmd cp configs/vms/linux-loongarch64-qemu-smp1.toml tmp/configs/
+    info "Preparing Linux guest rootfs config file..."
     run_cmd cp configs/vms/linux-loongarch64-qemu-rootfs-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/linux-loongarch64-qemu-smp1.dts tmp/configs/
     run_cmd cp configs/vms/linux-loongarch64-qemu-rootfs-smp1.dts tmp/configs/
 
     local guest_dir="${AXVISOR_LOONGARCH64_GUEST_DIR:-$(cd ../../.. && pwd)/axvisor-guest/IMAGES/qemu/loongarch64/linux}"
     if [ -f "$guest_dir/qemu-loongarch64" ]; then
         info "Using LoongArch Linux guest artifacts from: $guest_dir"
         run_cmd cp "$guest_dir/qemu-loongarch64" tmp/images/qemu_loongarch64_linux/
-        if [ -f "$guest_dir/initramfs.cpio.gz" ]; then
-            run_cmd cp "$guest_dir/initramfs.cpio.gz" tmp/images/qemu_loongarch64_linux/
-        else
-            warn "LoongArch Linux initramfs not found in: $guest_dir"
-        fi
         if [ -f "$guest_dir/rootfs.img" ]; then
             run_cmd cp "$guest_dir/rootfs.img" tmp/images/qemu_loongarch64_linux/
         fi
@@ -347,18 +340,12 @@ setup_qemu_loongarch64() {
     fi
 
     if ! command -v dtc &> /dev/null; then
-        error "dtc is required to build linux-loongarch64-qemu-smp1.dtb"
+        error "dtc is required to build linux-loongarch64-qemu-rootfs-smp1.dtb"
         exit 1
     fi
-    run_cmd dtc -I dts -O dtb -o tmp/configs/linux-loongarch64-qemu-smp1.dtb tmp/configs/linux-loongarch64-qemu-smp1.dts
     run_cmd dtc -I dts -O dtb -o tmp/configs/linux-loongarch64-qemu-rootfs-smp1.dtb tmp/configs/linux-loongarch64-qemu-rootfs-smp1.dts
-    run_cmd cp tmp/configs/linux-loongarch64-qemu-smp1.dtb tmp/images/qemu_loongarch64_linux/
     run_cmd cp tmp/configs/linux-loongarch64-qemu-rootfs-smp1.dtb tmp/images/qemu_loongarch64_linux/
 
-    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/linux-loongarch64-qemu-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_loongarch64_linux/qemu-loongarch64"|g' tmp/configs/linux-loongarch64-qemu-smp1.toml
-    run_cmd sed -i 's|^dtb_path = .*|dtb_path = "linux-loongarch64-qemu-smp1.dtb"|g' tmp/configs/linux-loongarch64-qemu-smp1.toml
-    run_cmd sed -i 's|^ramdisk_path = .*|ramdisk_path = "../images/qemu_loongarch64_linux/initramfs.cpio.gz"|g' tmp/configs/linux-loongarch64-qemu-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_loongarch64_linux/qemu-loongarch64"|g' tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml
     run_cmd sed -i 's|^dtb_path = .*|dtb_path = "linux-loongarch64-qemu-rootfs-smp1.dtb"|g' tmp/configs/linux-loongarch64-qemu-rootfs-smp1.toml

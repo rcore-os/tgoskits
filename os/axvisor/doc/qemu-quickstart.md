@@ -187,7 +187,7 @@ This command launches AxVisor directly and enters the built-in shell instead of 
 
 Success indicator: `Welcome to AxVisor Shell!` appears in the output.
 
-For the Linux guest flow, run:
+For the Linux guest flow with a virtio-blk rootfs, run:
 
 ```bash
 ./scripts/quick-start.sh qemu-loongarch64 run --linux

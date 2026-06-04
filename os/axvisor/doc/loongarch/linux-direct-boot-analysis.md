@@ -1,6 +1,6 @@
 # LoongArch Linux Direct Boot
 
-本文只记录 LoongArch Linux direct boot 问题：Axvisor 不经过 guest UEFI/bootloader，直接把 Linux kernel、cmdline、DTB/initrd 信息放到 guest 可见的位置，然后跳到 Linux entry。
+本文只记录 LoongArch Linux direct boot 问题：Axvisor 不经过 guest UEFI/bootloader，直接把 Linux kernel、cmdline、DTB 等启动信息放到 guest 可见的位置，然后跳到 Linux entry。
 
 ## 这个文件是什么
 
@@ -15,7 +15,7 @@
 ```text
 VM TOML
   -> ImageLoader 加载 LoongArch ELF kernel
-  -> 加载 DTB 和 initramfs
+  -> 加载 DTB
   -> setup_bootinfo 构造 LoongArch Linux bootinfo
   -> 设置 guest boot_args
   -> vCPU 进入 Linux entry
@@ -70,7 +70,7 @@ config.cpu_config.boot_args = [1, CMDLINE_GPA, SYSTAB_GPA];
 - EFI system table；
 - EFI config table；
 - EFI memory map；
-- initrd table；
+- optional initrd table；
 - optional DTB pointer。
 
 ## Cmdline 原则
@@ -82,7 +82,7 @@ config.cpu_config.boot_args = [1, CMDLINE_GPA, SYSTAB_GPA];
 - `kernel.cmdline` 缺失时直接报错；
 - 缺少 `console=` 只 warning；
 - 缺少 `init=` / `rdinit=` 只 warning；
-- rootfs 方式由配置决定。
+- quick-start 当前只维护 `root=/dev/vda` 的 virtio-blk rootfs 方式。
 
 这样可以确保使用者能从配置文件明确知道 guest 是如何启动的。
 

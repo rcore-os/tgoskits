@@ -145,7 +145,7 @@ cargo xtask qemu \
 
 启动成功标志：输出中出现 `Welcome to AxVisor Shell!`
 
-Linux guest 启动使用：
+Linux guest 启动使用 virtio-blk rootfs：
 
 ```bash
 ./scripts/quick-start.sh qemu-loongarch64 run --linux
