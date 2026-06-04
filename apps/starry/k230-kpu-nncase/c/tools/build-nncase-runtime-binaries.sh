@@ -21,7 +21,11 @@ if ! STORAGE_ROOT=$(find_storage_root "$WORKTREE_ROOT"); then
     echo "build-nncase-runtime-binaries: see docs/k230-kpu-nncase-runtime.md for asset preparation" >&2
     exit 1
 fi
-REL_WORKTREE=${WORKTREE_ROOT#"$STORAGE_ROOT"/}
+if [ "$WORKTREE_ROOT" = "$STORAGE_ROOT" ]; then
+    REL_WORKTREE=
+else
+    REL_WORKTREE=${WORKTREE_ROOT#"$STORAGE_ROOT"/}
+fi
 IMAGE=${K230_SDK_DOCKER_IMAGE:-ghcr.io/kendryte/k230_sdk:latest}
 STARRY_DEV_IMAGE=${STARRY_DEV_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}
 SYSROOT_VOLUME=${K230_LINUX_MUSL_SYSROOT_VOLUME:-tgoskits-riscv64-linux-musl-cross}

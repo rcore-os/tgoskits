@@ -52,7 +52,7 @@ Then run:
 
 ```sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+  cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
 Expected success markers:

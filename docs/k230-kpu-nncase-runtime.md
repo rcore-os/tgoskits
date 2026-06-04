@@ -188,7 +188,7 @@ The app can also be run through the Starry app runner:
 
 ```sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+  cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
 The legacy test-suite teacher script path remains as a wrapper for existing

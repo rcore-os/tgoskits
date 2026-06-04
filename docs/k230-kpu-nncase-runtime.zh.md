@@ -183,7 +183,7 @@ bash apps/starry/k230-kpu-nncase/demo-teacher.sh
 
 ```sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+  cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
 旧的 test-suit 教师脚本路径保留为 wrapper，已有笔记仍然可用：

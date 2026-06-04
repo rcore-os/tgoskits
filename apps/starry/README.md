@@ -65,7 +65,7 @@ the StarryOS guest NNCase runtime demo binaries, `yolov8n_320.kmodel`, and
 ```bash
 bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry app run -t k230-kpu-nncase --arch riscv64
+  cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
 See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
