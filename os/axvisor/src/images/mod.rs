@@ -462,13 +462,13 @@ impl ImageLoader {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn install_x86_linux_boot_entry(&self, _layout: &x86_linux::X86LinuxLoadLayout) {
+    fn install_x86_linux_boot_entry(&self, layout: &x86_linux::X86LinuxLoadLayout) {
         let entry = GuestPhysAddr::from(x86_linux_boot::DEFAULT_LINUX_BOOT_LOAD_GPA);
         self.vm.with_config(|config| {
             config.cpu_config.bsp_entry = entry;
             config.cpu_config.ap_entry = entry;
         });
-        info!(
+        debug!(
             "x86 Linux direct boot entry for VM[{}]: stub={:#x}, boot_params={:#x}, \
              kernel_entry={:#x}, initrd={:?}",
             self.config.base.id,
