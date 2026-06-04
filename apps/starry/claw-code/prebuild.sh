@@ -7,11 +7,9 @@ CLAW_SRC="$CACHE_DIR/repo"
 TARGET="x86_64-unknown-linux-musl"
 CLAW_BIN="$CACHE_DIR/claw"
 
-# Derive paths: STARRY_* env vars are set by newer xtask versions;
-# fall back to default workspace layout for older xtask.
 WORKSPACE="${STARRY_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
-ROOTFS="${STARRY_OUTPUT_ROOTFS:-${WORKSPACE}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img}"
-OVERLAY="${STARRY_OVERLAY_DIR:-${WORKSPACE}/tmp/axbuild/starry-app/claw-code/overlay}"
+ROOTFS_DIR="$WORKSPACE/tmp/axbuild/rootfs"
+OVERLAY="${STARRY_OVERLAY_DIR:-$WORKSPACE/tmp/axbuild/starry-app/claw-code/overlay}"
 
 echo "=== 1. Build claw from source ==="
 if [ -f "$CLAW_BIN" ]; then
@@ -33,10 +31,20 @@ else
     echo "claw binary built: $CLAW_BIN"
 fi
 
-echo "=== 2. Inject claw into rootfs ($ROOTFS) ==="
-debugfs -w "$ROOTFS" -R "rm /usr/bin/claw" 2>/dev/null || true
-debugfs -w "$ROOTFS" -R "write $CLAW_BIN /usr/bin/claw"
-debugfs -w "$ROOTFS" -R "sif /usr/bin/claw mode 0100755"
+echo "=== 2. Inject claw into rootfs ==="
+# Inject into all possible rootfs images so both older and newer xtask flows work.
+inject_claw() {
+    local img="$1"
+    if [ -f "$img" ]; then
+        echo "  injecting into $img ..."
+        debugfs -w "$img" -R "rm /usr/bin/claw" 2>/dev/null || true
+        debugfs -w "$img" -R "write $CLAW_BIN /usr/bin/claw"
+        debugfs -w "$img" -R "sif /usr/bin/claw mode 0100755"
+    fi
+}
+inject_claw "$ROOTFS_DIR/rootfs-x86_64-alpine.img"
+inject_claw "$ROOTFS_DIR/rootfs-x86_64-claw-code.img"
+
 echo "Injected claw into rootfs"
 
 # Place a marker so the overlay is never empty (app framework requires it).
