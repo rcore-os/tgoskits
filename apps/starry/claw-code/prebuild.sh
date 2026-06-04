@@ -31,19 +31,25 @@ else
     echo "claw binary built: $CLAW_BIN"
 fi
 
-echo "=== 2. Inject claw into rootfs ==="
-# Inject into all possible rootfs images so both older and newer xtask flows work.
+echo "=== 2. Prepare rootfs ==="
+# The app framework may have created rootfs-x86_64-claw-code.img via fs::copy,
+# which can leave a stale lock preventing QEMU from opening it.  Delete the
+# target first, then copy the base alpine image afresh.
+ALPINE_IMG="$ROOTFS_DIR/rootfs-x86_64-alpine.img"
+CLAW_IMG="$ROOTFS_DIR/rootfs-x86_64-claw-code.img"
+rm -f "$CLAW_IMG"
+cp "$ALPINE_IMG" "$CLAW_IMG"
+
+echo "=== 3. Inject claw into rootfs ==="
 inject_claw() {
     local img="$1"
-    if [ -f "$img" ]; then
-        echo "  injecting into $img ..."
-        debugfs -w "$img" -R "rm /usr/bin/claw" 2>/dev/null || true
-        debugfs -w "$img" -R "write $CLAW_BIN /usr/bin/claw"
-        debugfs -w "$img" -R "sif /usr/bin/claw mode 0100755"
-    fi
+    echo "  injecting into $img ..."
+    debugfs -w "$img" -R "rm /usr/bin/claw" 2>/dev/null || true
+    debugfs -w "$img" -R "write $CLAW_BIN /usr/bin/claw"
+    debugfs -w "$img" -R "sif /usr/bin/claw mode 0100755"
 }
-inject_claw "$ROOTFS_DIR/rootfs-x86_64-alpine.img"
-inject_claw "$ROOTFS_DIR/rootfs-x86_64-claw-code.img"
+inject_claw "$ALPINE_IMG"
+inject_claw "$CLAW_IMG"
 
 echo "Injected claw into rootfs"
 
