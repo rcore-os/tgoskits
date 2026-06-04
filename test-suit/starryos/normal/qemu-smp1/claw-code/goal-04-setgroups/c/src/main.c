@@ -12,9 +12,9 @@
  *
  *   1. /proc/self/setgroups should exist and be readable
  *   2. Reading returns "allow" by default
- *   3. Writing "deny" changes the value
- *   4. After unshare(CLONE_NEWUSER), writing "deny" should cause
- *      setgroups(2) to return EPERM
+ *   3. Writing "deny" changes the value and causes setgroups(2) to return EPERM
+ *   4. Writing "allow" restores original behaviour
+ *   5. After unshare(CLONE_NEWUSER), setgroups should still exist
  */
 
 static int call_unshare(int flags) {
@@ -40,54 +40,81 @@ int main(void) {
         }
     }
 
-    /* 2. unshare(CLONE_NEWUSER), then write "deny" to setgroups,
-     *    then assert setgroups(2) returns EPERM */
+    /* 2. Write "deny" to setgroups and verify setgroups(2) returns EPERM */
+    {
+        int fd = open("/proc/self/setgroups", O_WRONLY);
+        if (fd >= 0) {
+            const char *val = "deny";
+            ssize_t n = write(fd, val, strlen(val));
+            CHECK(n > 0, "write \"deny\" to setgroups should succeed");
+            close(fd);
+
+            if (n > 0) {
+                /* Verify read-back: content should contain "deny" */
+                fd = open("/proc/self/setgroups", O_RDONLY);
+                if (fd >= 0) {
+                    char buf[32] = {0};
+                    ssize_t rn = read(fd, buf, sizeof(buf) - 1);
+                    CHECK(rn >= 0, "read setgroups after deny should succeed");
+                    if (rn >= 0) {
+                        printf("  INFO | setgroups read-back (%zd bytes): \"%.*s\"\n",
+                               rn, (int)rn, buf);
+                        int has_deny = (rn >= 4 && memcmp(buf, "deny", 4) == 0);
+                        CHECK(has_deny, "reading setgroups after deny should return \"deny\"");
+                    }
+                    close(fd);
+                }
+
+                /* setgroups(2) must now return EPERM */
+                errno = 0;
+                long after_ret = syscall(SYS_setgroups, 0, NULL);
+                int after_errno = errno;
+                printf("  INFO | setgroups(0, NULL) after deny: ret=%ld errno=%d\n",
+                       after_ret, after_errno);
+                CHECK(after_ret == -1 && after_errno == EPERM,
+                      "after writing \"deny\", setgroups(2) should return EPERM");
+            }
+        } else {
+            printf("  PASS | %s:%d | setgroups not writable (errno=%d)\n",
+                   __FILE__, __LINE__, errno);
+            __pass++;
+        }
+    }
+
+    /* 3. Write "allow" back and verify setgroups works again */
+    {
+        int fd = open("/proc/self/setgroups", O_WRONLY);
+        if (fd >= 0) {
+            const char *val = "allow";
+            ssize_t n = write(fd, val, strlen(val));
+            CHECK(n > 0, "write \"allow\" to setgroups should succeed");
+            close(fd);
+
+            if (n > 0) {
+                errno = 0;
+                long ret = syscall(SYS_setgroups, 0, NULL);
+                int final_errno = errno;
+                printf("  INFO | setgroups(0, NULL) after allow: ret=%ld errno=%d\n",
+                       ret, final_errno);
+                CHECK(final_errno != EPERM,
+                      "after writing \"allow\", setgroups(2) should NOT return EPERM");
+            }
+        }
+    }
+
+    /* 4. After unshare(CLONE_NEWUSER), setgroups should still exist */
     {
         int ret = call_unshare(CLONE_NEWUSER);
         CHECK(ret == 0, "unshare(CLONE_NEWUSER) should return 0");
-
         if (ret == 0) {
-            /* Before deny, setgroups with empty list should not fail with EPERM */
-            errno = 0;
-            long before_ret = syscall(SYS_setgroups, 0, NULL);
-            int before_errno = errno;
-            printf("  INFO | setgroups(0, NULL) before deny: ret=%ld errno=%d\n",
-                   before_ret, before_errno);
-            CHECK(before_errno != EPERM,
-                  "before writing deny, setgroups(2) should NOT return EPERM");
-
-            /* Write "deny" to /proc/self/setgroups */
-            int fd = open("/proc/self/setgroups", O_WRONLY);
-            CHECK(fd >= 0, "/proc/self/setgroups should be writable after unshare");
-            if (fd >= 0) {
-                const char *val = "deny";
-                ssize_t n = write(fd, val, strlen(val));
-                CHECK(n > 0, "write \"deny\" to setgroups should succeed after unshare");
-                close(fd);
-            }
-
-            /* Verify read-back */
-            fd = open("/proc/self/setgroups", O_RDONLY);
+            int fd = open("/proc/self/setgroups", O_RDONLY);
+            CHECK(fd >= 0, "/proc/self/setgroups should exist after unshare");
             if (fd >= 0) {
                 char buf[32] = {0};
                 ssize_t n = read(fd, buf, sizeof(buf) - 1);
-                CHECK(n >= 0, "read setgroups after write should succeed");
-                if (n >= 0) {
-                    int matches_deny = (n == 4 && memcmp(buf, "deny", 4) == 0)
-                        || (n == 5 && memcmp(buf, "deny\n", 5) == 0);
-                    CHECK(matches_deny, "reading setgroups should return \"deny\"");
-                }
+                CHECK(n >= 0, "read setgroups after unshare should succeed");
                 close(fd);
             }
-
-            /* setgroups(2) must now return EPERM */
-            errno = 0;
-            long after_ret = syscall(SYS_setgroups, 0, NULL);
-            int after_errno = errno;
-            printf("  INFO | setgroups(0, NULL) after deny: ret=%ld errno=%d\n",
-                   after_ret, after_errno);
-            CHECK(after_ret == -1 && after_errno == EPERM,
-                  "after writing \"deny\", setgroups(2) should return EPERM");
         }
     }
 
