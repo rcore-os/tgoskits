@@ -64,8 +64,11 @@ pub fn bandwidth_tick() {
 
     let tick_usec: i64 = 1_000;
     let tick_usec_u64: u64 = tick_usec as u64;
-    let consumed = bw.consumed.fetch_add(tick_usec, Ordering::Relaxed) + tick_usec;
 
+    // Check period FIRST — if the period advanced, reset consumed
+    // and start a fresh period.  This must happen before consuming
+    // quota so that the quota check sees accumulated time within
+    // a single period.
     let now_us = now_usec();
     let period_start = bw.period_start.load(Ordering::Relaxed);
     if period_start == 0 {
@@ -82,13 +85,13 @@ pub fn bandwidth_tick() {
         return;
     }
 
+    // Consume quota AFTER period check
+    let consumed = bw.consumed.fetch_add(tick_usec, Ordering::Relaxed) + tick_usec;
+
     if consumed >= quota {
         ax_task::set_current_throttled(true);
         bw.nr_throttled.fetch_add(1, Ordering::Relaxed);
         bw.throttled_usec.fetch_add(tick_usec_u64, Ordering::Relaxed);
-        // Force the current task off the CPU so the scheduler picks
-        // the idle task (or another non-throttled task).
-        ax_task::yield_now();
     }
 }
 
