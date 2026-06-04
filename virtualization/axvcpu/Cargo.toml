@@ -17,3 +17,6 @@ ax-percpu = { workspace = true }
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 ax-kspin = { workspace = true }
+
+[dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }

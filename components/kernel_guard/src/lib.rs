@@ -24,6 +24,8 @@
 //!   need to implement the [`KernelGuardIf`] trait in other crates. Otherwise
 //!   the preemption enable/disable operations will be no-ops. This feature is
 //!   disabled by default.
+//! - `host-test`: Avoid privileged IRQ instructions for host unit tests. This
+//!   feature is disabled by default.
 //!
 //! # Examples
 //!
