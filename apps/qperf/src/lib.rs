@@ -1,2 +1,0 @@
-mod profiler;
-mod reg;
