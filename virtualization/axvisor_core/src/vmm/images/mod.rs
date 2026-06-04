@@ -222,7 +222,7 @@ impl ImageLoader {
         kernel: &[u8],
         ramdisk: Option<&[u8]>,
     ) -> AxResult {
-        self.adjust_x86_linux_dma_identity_layout()?;
+        self.relocate_x86_linux_direct_boot_layout(&header, kernel, ramdisk.map(|r| r.len()))?;
         let payload = x86_linux_payload(&header, kernel)?;
         let initrd = if let Some(ramdisk) = ramdisk {
             Some(x86_linux::X86LinuxRange::new(
@@ -380,18 +380,64 @@ impl ImageLoader {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn adjust_x86_linux_dma_identity_layout(&mut self) -> AxResult {
+    fn relocate_x86_linux_direct_boot_layout(
+        &mut self,
+        header: &x86_linux::X86LinuxHeader,
+        kernel: &[u8],
+        ramdisk_size: Option<usize>,
+    ) -> AxResult {
         if !self.main_memory.is_identical() {
             return Ok(());
         }
 
+        let max_load_end = (header.initrd_addr_max as usize).saturating_add(1);
         let memory_base = self.main_memory.gpa.as_usize();
-        let configured_kernel = self.config.kernel.kernel_load_addr;
-        let configured_ramdisk = self.config.kernel.ramdisk_load_addr;
+        let Some(kernel_load_gpa) = memory_base.checked_add(self.config.kernel.kernel_load_addr)
+        else {
+            return Ok(());
+        };
+        let payload_size = x86_linux_payload(header, kernel)?.len();
+        let Some(kernel_end) = kernel_load_gpa.checked_add(payload_size) else {
+            return Ok(());
+        };
+        if kernel_end > max_load_end {
+            info!(
+                "Keeping x86 Linux direct boot low-GPA layout for VM[{}]: relocated kernel end \
+                 {:#x} exceeds initrd_addr_max {:#x}",
+                self.vm.id(),
+                kernel_end,
+                header.initrd_addr_max
+            );
+            return Ok(());
+        }
 
-        self.kernel_load_gpa = GuestPhysAddr::from(memory_base + configured_kernel);
-        if let Some(ramdisk_load_addr) = configured_ramdisk {
-            self.ramdisk_load_gpa = Some(GuestPhysAddr::from(memory_base + ramdisk_load_addr));
+        let relocated_ramdisk = if let (Some(ramdisk_load_addr), Some(ramdisk_size)) =
+            (self.config.kernel.ramdisk_load_addr, ramdisk_size)
+        {
+            let Some(ramdisk_load_gpa) = memory_base.checked_add(ramdisk_load_addr) else {
+                return Ok(());
+            };
+            let Some(ramdisk_end) = ramdisk_load_gpa.checked_add(ramdisk_size) else {
+                return Ok(());
+            };
+            if ramdisk_end > max_load_end {
+                info!(
+                    "Keeping x86 Linux direct boot low-GPA layout for VM[{}]: relocated initrd \
+                     end {:#x} exceeds initrd_addr_max {:#x}",
+                    self.vm.id(),
+                    ramdisk_end,
+                    header.initrd_addr_max
+                );
+                return Ok(());
+            }
+            Some(GuestPhysAddr::from(ramdisk_load_gpa))
+        } else {
+            None
+        };
+
+        self.kernel_load_gpa = GuestPhysAddr::from(kernel_load_gpa);
+        if let Some(load_gpa) = relocated_ramdisk {
+            self.ramdisk_load_gpa = Some(load_gpa);
         }
 
         self.vm.with_config(|config| {
@@ -404,7 +450,7 @@ impl ImageLoader {
         });
 
         info!(
-            "Adjusted x86 Linux identity DMA layout for VM[{}]: memory_base={:#x}, \
+            "Relocated x86 Linux direct boot layout for VM[{}]: memory_base={:#x}, \
              kernel_load_gpa={:#x}, ramdisk_load_gpa={:?}",
             self.vm.id(),
             memory_base,
@@ -505,8 +551,10 @@ impl ImageLoader {
         }
 
         for memory in &self.config.kernel.memory_regions {
-            if memory.map_type == VmMemMappingType::MapAlloc {
+            if memory.map_type == VmMemMappingType::MapAlloc && !self.main_memory.is_identical() {
                 builder.add_ram_range(x86_linux::X86LinuxRange::new(memory.gpa, memory.size));
+            } else if memory.map_type == VmMemMappingType::MapAlloc {
+                add_x86_identity_boot_scratch_ranges(&mut builder, memory);
             }
         }
 
@@ -551,6 +599,42 @@ impl ImageLoader {
             load_gpa.as_usize()
         );
         fs::load_vm_image(ramdisk_path, load_gpa, self.vm.clone())
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn add_x86_identity_boot_scratch_ranges(
+    builder: &mut x86_boot_params::BootParamsBuilder<'_>,
+    memory: &axvm::config::VmMemConfig,
+) {
+    const CONVENTIONAL_MEMORY_END: usize = 0xa0000;
+
+    let memory_start = memory.gpa;
+    let Some(memory_end) = memory.gpa.checked_add(memory.size) else {
+        builder.add_reserved_range(x86_linux::X86LinuxRange::new(memory.gpa, memory.size));
+        return;
+    };
+
+    let conventional_start = memory_start;
+    let conventional_end = memory_end.min(CONVENTIONAL_MEMORY_END);
+    if conventional_start < conventional_end {
+        // Linux still needs conventional memory below 640 KiB for the real-mode
+        // trampoline. The rest of the low boot scratch remains reserved below.
+        builder.add_ram_range(x86_linux::X86LinuxRange::new(
+            conventional_start,
+            conventional_end - conventional_start,
+        ));
+    }
+
+    if memory_start < CONVENTIONAL_MEMORY_END {
+        if CONVENTIONAL_MEMORY_END < memory_end {
+            builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                CONVENTIONAL_MEMORY_END,
+                memory_end - CONVENTIONAL_MEMORY_END,
+            ));
+        }
+    } else {
+        builder.add_reserved_range(x86_linux::X86LinuxRange::new(memory.gpa, memory.size));
     }
 }
 
@@ -746,10 +830,14 @@ pub mod fs {
             header: x86_linux::X86LinuxHeader,
             kernel: &[u8],
         ) -> AxResult {
-            self.adjust_x86_linux_dma_identity_layout()?;
+            let ramdisk_size = if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
+                Some(open_image_file(ramdisk_path)?.1)
+            } else {
+                None
+            };
+            self.relocate_x86_linux_direct_boot_layout(&header, kernel, ramdisk_size)?;
             let payload = x86_linux_payload(&header, kernel)?;
-            let initrd = if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
-                let (_, ramdisk_size) = open_image_file(ramdisk_path)?;
+            let initrd = if let Some(ramdisk_size) = ramdisk_size {
                 Some(x86_linux::X86LinuxRange::new(
                     self.ramdisk_load_gpa()?.as_usize(),
                     ramdisk_size,
