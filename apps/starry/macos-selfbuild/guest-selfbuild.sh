@@ -62,7 +62,7 @@ if [ "$source_tmpfs" = "1" ]; then
     echo "===${marker}-SOURCE-COPY-BEGIN from=${source_dir} to=${work_dir}==="
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
-    for path in Cargo.toml Cargo.lock rust-toolchain.toml .cargo apps components drivers os platform scripts test-suit tools vendor xtask; do
+    for path in Cargo.toml Cargo.lock rust-toolchain.toml .cargo apps components drivers memory os platforms scripts test-suit tools vendor virtualization xtask; do
         if [ -e "${source_dir}/${path}" ]; then
             cp -a "${source_dir}/${path}" "${work_dir}/"
         fi

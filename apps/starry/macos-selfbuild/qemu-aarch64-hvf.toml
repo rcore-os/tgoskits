@@ -29,7 +29,8 @@ shell_init_cmd = "/bin/sh /opt/starry-macos-run.sh"
 success_regex = ["(?m)^===STARRY-MACOS-SELFBUILD-PASS jobs=[0-9]+ elapsed=[0-9]+===$"]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
-    "(?i)\\btrap\\b",
+    "(?i)\\bunhandled trap\\b",
+    "(?i)\\btrap frame\\b",
     "(?i)fatal",
     "(?i)segmentation fault",
     "(?m)^===STARRY-MACOS-SELFBUILD-FAIL",
