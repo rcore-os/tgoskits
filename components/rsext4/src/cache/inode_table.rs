@@ -437,7 +437,13 @@ impl InodeCache {
     ) -> Ext4Result<()> {
         let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
-        buf[offset..offset + data.len()].copy_from_slice(data);
+        let end = offset
+            .checked_add(data.len())
+            .ok_or(Ext4Error::corrupted())?;
+        if end > buf.len() {
+            return Err(Ext4Error::corrupted());
+        }
+        buf[offset..end].copy_from_slice(data);
         block_dev.write_blocks(&buf, block_num, 1, true)?; // is_metadata: inode table blocks are filesystem metadata
         Ok(())
     }

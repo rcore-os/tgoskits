@@ -407,7 +407,8 @@ impl DataBlockCache {
     ) -> Ext4Result<()> {
         let mut buf = alloc::vec![0u8; block_size];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
-        buf[..data.len()].copy_from_slice(data);
+        let len = core::cmp::min(data.len(), block_size);
+        buf[..len].copy_from_slice(&data[..len]);
         block_dev.write_blocks(&buf, block_num, 1, false)?;
         Ok(())
     }
