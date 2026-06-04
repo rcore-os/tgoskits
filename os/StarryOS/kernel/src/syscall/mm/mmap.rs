@@ -176,7 +176,9 @@ pub fn sys_mmap(
     } else {
         Some(get_file_like(fd)?)
     };
-    let mut device_mmap_top = file.as_ref().map(|fl| fl.device_mmap(offset as u64));
+    let mut device_mmap_top = file
+        .as_ref()
+        .map(|fl| fl.device_mmap(offset as u64, length as u64));
 
     // Validate file_mmap permissions and memfd seals before any destructive
     // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old

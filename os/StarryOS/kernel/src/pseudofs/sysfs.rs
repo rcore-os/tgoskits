@@ -304,9 +304,9 @@ struct BusDir {
 impl SimpleDirOps for BusDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         #[cfg(feature = "plat-dyn")]
-        let names: &'static [&'static str] = &["platform", "usb"];
+        let names: &'static [&'static str] = &["platform", "usb", "event_source"];
         #[cfg(not(feature = "plat-dyn"))]
-        let names: &'static [&'static str] = &["platform"];
+        let names: &'static [&'static str] = &["platform", "event_source"];
         Box::new(names.iter().copied().map(Cow::Borrowed))
     }
 
@@ -316,6 +316,9 @@ impl SimpleDirOps for BusDir {
             "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir)),
             #[cfg(feature = "plat-dyn")]
             "usb" => SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+            "event_source" => {
+                SimpleDir::new_maker(fs.clone(), Arc::new(EventSourceBusDir { fs: fs.clone() }))
+            }
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -330,6 +333,82 @@ impl SimpleDirOps for PlatformBusClassDir {
 
     fn lookup_child(&self, _name: &str) -> VfsResult<NodeOpsMux> {
         Err(VfsError::NotFound)
+    }
+}
+
+// /sys/bus/event_source/devices/<source>/type — aya reads this to learn the
+// dynamic perf_event_type for each event source (kprobe / uprobe / tracepoint).
+// Values match `kbpf_basic::perf::PerfTypeId` so the user-supplied number
+// dispatches cleanly in `perf_event_open`.
+const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
+    ("kprobe", 6),     // PerfTypeId::PERF_TYPE_KPROBE
+    ("uprobe", 7),     // PerfTypeId::PERF_TYPE_UPROBE
+    ("tracepoint", 2), // PERF_TYPE_TRACEPOINT
+];
+
+struct EventSourceBusDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for EventSourceBusDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["devices"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(NodeOpsMux::Dir(match name {
+            "devices" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(EventSourceDevicesDir { fs: fs.clone() }),
+            ),
+            _ => return Err(VfsError::NotFound),
+        }))
+    }
+}
+
+struct EventSourceDevicesDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for EventSourceDevicesDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(PERF_EVENT_SOURCES.iter().map(|(n, _)| Cow::Borrowed(*n)))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let ty = PERF_EVENT_SOURCES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, t)| *t)
+            .ok_or(VfsError::NotFound)?;
+        Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+            fs.clone(),
+            Arc::new(EventSourceDeviceDir { fs: fs.clone(), ty }),
+        )))
+    }
+}
+
+struct EventSourceDeviceDir {
+    fs: Arc<SimpleFs>,
+    ty: u32,
+}
+
+impl SimpleDirOps for EventSourceDeviceDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["type"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        match name {
+            "type" => {
+                let body = format!("{}\n", self.ty);
+                Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
+            }
+            _ => Err(VfsError::NotFound),
+        }
     }
 }
 

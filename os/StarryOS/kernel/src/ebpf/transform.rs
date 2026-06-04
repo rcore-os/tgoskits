@@ -158,6 +158,18 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         func(unified)
     }
 
+    // `#[inline(never)]` here (and on the other leaf `KernelAuxiliaryOps`
+    // callbacks below) is load-bearing for the loadable-module path: a
+    // `kebpf.ko` carries its own copy of the stateless `kbpf-basic` map/prog
+    // logic but must call back into *this* kernel's address-space / fd-table /
+    // frame-allocator glue. The module relocates against these methods by their
+    // exact mangled name through `.kallsyms`, so they must survive as standalone
+    // symbols. Without `inline(never)` the optimizer folds them into the
+    // built-in `sys_bpf` call sites and they vanish from the symbol table (the
+    // kallsyms filter keeps even *local* `t` symbols, so non-`pub` is fine —
+    // only inlining, not visibility, removes them). See
+    // `docs/ebpf-followup/syscall-registration.md`.
+    #[inline(never)]
     fn get_unified_map_ptr_from_fd(map_fd: u32) -> kbpf_basic::BpfResult<*const u8> {
         let file = get_file_like(map_fd as _).map_err(|_| BpfError::ENOENT)?;
         let bpf_map = file
@@ -167,6 +179,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         Ok(Arc::into_raw(bpf_map) as *const u8)
     }
 
+    #[inline(never)]
     fn translate_instruction(
         instruction: Vec<u8>,
     ) -> kbpf_basic::BpfResult<Vec<impl kbpf_basic::preprocessor::EbpfInst>> {
@@ -175,6 +188,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         Ok(translated)
     }
 
+    #[inline(never)]
     fn copy_from_user(src: *const u8, size: usize, dst: &mut [u8]) -> kbpf_basic::BpfResult<()> {
         let n = VmBytes::new(src, size)
             .read(dst)
@@ -186,6 +200,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         }
     }
 
+    #[inline(never)]
     fn copy_to_user(dest: *mut u8, size: usize, src: &[u8]) -> kbpf_basic::BpfResult<()> {
         let n = VmBytesMut::new(dest, size)
             .write(src)
@@ -210,6 +225,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         crate::perf::perf_event_output(ctx, fd as usize, flags, data).map_err(|_| BpfError::EINVAL)
     }
 
+    #[inline(never)]
     fn string_from_user_cstr(ptr: *const u8) -> kbpf_basic::BpfResult<String> {
         vm_load_string(ptr as *const _).map_err(|_| BpfError::EFAULT)
     }
@@ -223,6 +239,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         Ok(monotonic_time_nanos())
     }
 
+    #[inline(never)]
     fn alloc_page() -> kbpf_basic::BpfResult<usize> {
         // Reuse the address-space backend's frame allocator
         // (`mm::aspace::backend::alloc_frame`) so eBPF page allocation goes
@@ -232,10 +249,12 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
             .map_err(|_| BpfError::ENOMEM)
     }
 
+    #[inline(never)]
     fn free_page(phys_addr: usize) {
         crate::mm::dealloc_frame(PhysAddr::from_usize(phys_addr), PageSize::Size4K);
     }
 
+    #[inline(never)]
     fn vmap(phys_addrs: &[usize]) -> kbpf_basic::BpfResult<usize> {
         let len = phys_addrs.len() * PageSize::Size4K as usize;
         let kspace = ax_mm::kernel_aspace();
@@ -263,6 +282,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         Ok(res_virt)
     }
 
+    #[inline(never)]
     fn unmap(virt_addr: usize) {
         let kspace = ax_mm::kernel_aspace();
         let mut guard = kspace.lock();
