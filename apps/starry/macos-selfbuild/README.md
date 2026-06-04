@@ -46,6 +46,25 @@ The rootfs should contain at least:
 /opt/tgoskits/Cargo.toml or /opt/tgoskits-src.tar
 ```
 
+This app uses two rootfs stages:
+
+```text
+tmp/axbuild/rootfs/rootfs-aarch64-hvf-toolchain.img
+tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+```
+
+The `rootfs-aarch64-hvf-toolchain.img` file is the external base artifact. It
+is a bootable AArch64 StarryOS rootfs that already contains the guest Rust/Cargo
+toolchain listed above. The scripts here do not run `apk`, `rustup`, or a
+toolchain installer inside a plain Alpine image. If starting from a plain
+AArch64 Alpine rootfs, install or copy the guest Cargo binary and matching
+`rustc`/`rustdoc` sysroot wrappers first, then save that image as
+`rootfs-aarch64-hvf-toolchain.img`.
+
+The `rootfs-aarch64-hvf-selfbuild.img` file is derived from the base artifact by
+copying it and injecting the current TGOSKits source tree. That generated image
+is the one passed to the self-build runner.
+
 The run script copies the input rootfs before booting. Keep at least one extra
 rootfs image worth of free disk space under `target/starry-macos-selfbuild/`.
 
