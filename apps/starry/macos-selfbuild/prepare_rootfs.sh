@@ -119,6 +119,7 @@ tar -C "$source_dir" \
 tar -C "$repo_root/target/starry-macos-selfbuild" -rf "$src_tar" .tgoskits-source-meta
 
 debugfs_cmd="$repo_root/target/starry-macos-selfbuild/debugfs-prepare-rootfs.cmd"
+debugfs_log="$repo_root/target/starry-macos-selfbuild/debugfs-prepare-rootfs.log"
 cat >"$debugfs_cmd" <<EOF
 mkdir /opt
 rm /opt/tgoskits-src.tar
@@ -127,7 +128,10 @@ write $src_tar /opt/tgoskits-src.tar
 write $meta_file /opt/tgoskits-src.meta
 EOF
 
-"$debugfs" -w -f "$debugfs_cmd" "$output_rootfs" >/dev/null
+if ! "$debugfs" -w -f "$debugfs_cmd" "$output_rootfs" >"$debugfs_log" 2>&1; then
+    cat "$debugfs_log" >&2
+    exit 1
+fi
 
 echo "rootfs=$output_rootfs"
 echo "source_tar=/opt/tgoskits-src.tar"
