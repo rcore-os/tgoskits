@@ -264,8 +264,14 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         window: &qemu_run.window,
     })?;
     write_flamegraph_html(&outputs, args.flamegraph_kind, flamegraph_generated)?;
-    run_report_postprocess(&outputs, &args, &arch, exit_status_code(&qemu_run.status))?;
-    print_report(&outputs, &args);
+    let report_harness = run_report_postprocess(
+        starry.app.workspace_root(),
+        &outputs,
+        &args,
+        &arch,
+        exit_status_code(&qemu_run.status),
+    )?;
+    print_report(&outputs, &args, &report_harness);
     Ok(())
 }
 
@@ -1765,21 +1771,23 @@ fn write_flamegraph_html(
 }
 
 fn run_report_postprocess(
+    root: &Path,
     outputs: &PerfOutputs,
     args: &ArgsPerf,
     arch: &str,
     returncode: i32,
-) -> anyhow::Result<()> {
-    let harness = workspace_harness_path(&outputs.work_dir)
-        .unwrap_or_else(|| PathBuf::from("apps/OScope-harness/harness.py"));
-    if !harness.exists() {
-        eprintln!(
-            "qperf: harness postprocess script not found at {}; report.json/report.md not \
-             generated",
-            harness.display()
+) -> anyhow::Result<PathBuf> {
+    let Some(harness) =
+        workspace_harness_path(&outputs.work_dir).or_else(|| workspace_harness_path(root))
+    else {
+        bail!(
+            "qperf report postprocess script not found while searching from {} and {}; expected \
+             apps/OScope-harness/harness.py or tools/starry-syscall-harness/harness.py. \
+             report.json/report.md/hotspots were not generated",
+            outputs.work_dir.display(),
+            root.display()
         );
-        return Ok(());
-    }
+    };
     let python = env::var_os("STARRY_SYSCALL_HARNESS_PYTHON")
         .or_else(|| env::var_os("PYTHON"))
         .unwrap_or_else(|| OsString::from("python3"));
@@ -1875,6 +1883,24 @@ fn run_report_postprocess(
         .context("failed to run qperf report postprocess")?;
     if !status.success() {
         bail!("qperf report postprocess failed with {status}");
+    }
+    ensure_report_outputs(outputs)?;
+    Ok(harness)
+}
+
+fn ensure_report_outputs(outputs: &PerfOutputs) -> anyhow::Result<()> {
+    for path in [
+        &outputs.report_json,
+        &outputs.report_md,
+        &outputs.hotspots_csv,
+        &outputs.hotspot_categories_csv,
+    ] {
+        if !file_nonempty(path) {
+            bail!(
+                "qperf report postprocess did not generate expected artifact: {}",
+                path.display()
+            );
+        }
     }
     Ok(())
 }
@@ -2124,7 +2150,7 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_report(outputs: &PerfOutputs, args: &ArgsPerf) {
+fn print_report(outputs: &PerfOutputs, args: &ArgsPerf, report_harness: &Path) {
     println!("qperf report generated:");
     println!("  report: {}", outputs.report_md.display());
     println!("  flamegraph: {}", outputs.flamegraph.display());
@@ -2174,9 +2200,11 @@ fn print_report(outputs: &PerfOutputs, args: &ArgsPerf) {
         println!("  window: {}", outputs.window.display());
     }
     println!("  summary: {}", outputs.summary.display());
+    println!("  report harness: {}", report_harness.display());
     println!(
-        "  compare hint: cargo starry perf-compare is not a cargo subcommand; use python3 \
-         apps/OScope-harness/harness.py perf-compare --baseline {} --candidate <other-report.json>",
+        "  compare hint: cargo starry perf-compare is not a cargo subcommand; use python3 {} \
+         perf-compare --baseline {} --candidate <other-report.json>",
+        report_harness.display(),
         outputs.report_json.display()
     );
 }
