@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- publish the corrected feature metadata for host filesystem and platform-dynamic support
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.9...axvm-v0.5.10) - 2026-06-03
 
 ### Added
