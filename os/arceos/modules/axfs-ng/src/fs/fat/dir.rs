@@ -152,6 +152,8 @@ impl DirNodeOps for FatDirNode {
         name: &str,
         node_type: NodeType,
         _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         let mut fs = self.fs.lock();
         let dir = self.inner.borrow(&fs);
