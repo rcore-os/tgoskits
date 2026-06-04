@@ -191,6 +191,22 @@ static void expect_write_errno(const char *path, const char *data,
     CHECK(written == -1 && saved_errno == expected_errno, msg);
 }
 
+static void expect_write_ok(const char *path, const char *data, const char *msg)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    errno = 0;
+    ssize_t written = write(fd, data, strlen(data));
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    CHECK(written == (ssize_t)strlen(data), msg);
+}
+
 static void expect_link_errno(const char *old_path, const char *new_path,
                               int expected_errno, const char *msg)
 {
@@ -285,6 +301,31 @@ int main(void)
     expect_path_missing(CGROUP2_PATH "/a/b", "removed nested cgroup is missing");
     expect_rmdir_ok(CGROUP2_PATH "/a", "rmdir empty child cgroup succeeds");
     expect_path_missing(CGROUP2_PATH "/a", "removed child cgroup is missing");
+
+    expect_mkdir_ok(CGROUP2_PATH "/mig", "mkdir cgroup for procs migration");
+    char pidbuf[32];
+    snprintf(pidbuf, sizeof(pidbuf), "%d\n", (int)getpid());
+    expect_write_ok(CGROUP2_PATH "/mig/cgroup.procs", pidbuf,
+                    "write self pid into child cgroup.procs succeeds");
+    nread = read_text_file(CGROUP2_PATH "/mig/cgroup.procs", buf, sizeof(buf));
+    CHECK(nread >= 0 && buffer_contains_pid(buf, getpid()),
+          "child cgroup.procs contains migrated process");
+    nread = read_text_file(CGROUP2_PATH "/cgroup.procs", buf, sizeof(buf));
+    CHECK(nread >= 0 && !buffer_contains_pid(buf, getpid()),
+          "root cgroup.procs no longer contains migrated process");
+    expect_rmdir_errno(CGROUP2_PATH "/mig", EBUSY,
+                       "rmdir cgroup with member process fails with EBUSY");
+    expect_write_errno(CGROUP2_PATH "/mig/cgroup.procs", "not-a-number",
+                       EINVAL, "writing non-numeric pid fails with EINVAL");
+    expect_write_ok(CGROUP2_PATH "/cgroup.procs", pidbuf,
+                    "write self pid back into root cgroup.procs succeeds");
+    nread = read_text_file(CGROUP2_PATH "/cgroup.procs", buf, sizeof(buf));
+    CHECK(nread >= 0 && buffer_contains_pid(buf, getpid()),
+          "root cgroup.procs contains process after migrate back");
+    expect_empty_file(CGROUP2_PATH "/mig/cgroup.procs",
+                      "child cgroup.procs empty after migrate back");
+    expect_rmdir_ok(CGROUP2_PATH "/mig", "rmdir cgroup succeeds after members leave");
+    expect_path_missing(CGROUP2_PATH "/mig", "removed migration cgroup is missing");
 
     expect_mkdir_ok(CGROUP2_PATH "/cwd-cache", "mkdir cgroup for cwd cache regression");
     expect_chdir_ok(CGROUP2_PATH "/cwd-cache", "chdir into cgroup for cwd cache regression");

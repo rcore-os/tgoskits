@@ -8,6 +8,7 @@ use core::fmt::Write;
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq;
 use spin::LazyLock;
+use starry_process::Pid;
 
 pub type CgroupId = u64;
 
@@ -23,7 +24,6 @@ struct CgroupNode {
     name: String,
     parent: Option<CgroupId>,
     children: BTreeMap<String, CgroupId>,
-    live_processes: usize,
 }
 
 impl CgroupNode {
@@ -33,7 +33,6 @@ impl CgroupNode {
             name: String::new(),
             parent: None,
             children: BTreeMap::new(),
-            live_processes: 0,
         }
     }
 
@@ -43,7 +42,6 @@ impl CgroupNode {
             name: name.to_string(),
             parent: Some(parent),
             children: BTreeMap::new(),
-            live_processes: 0,
         }
     }
 }
@@ -132,12 +130,19 @@ pub fn remove_child(parent: CgroupId, name: &str) -> AxResult<()> {
             .copied()
             .ok_or(AxError::NotFound)?
     };
-    let child = tree.nodes.get(&child_id).ok_or(AxError::NotFound)?;
-    debug_assert_eq!(child.id, child_id);
-    if !child.children.is_empty() {
-        return Err(AxError::DirectoryNotEmpty);
+    {
+        let child = tree.nodes.get(&child_id).ok_or(AxError::NotFound)?;
+        debug_assert_eq!(child.id, child_id);
+        if !child.children.is_empty() {
+            return Err(AxError::DirectoryNotEmpty);
+        }
     }
-    if child.live_processes != 0 {
+    // A cgroup with live member processes is busy. Membership is derived by
+    // scanning live processes for this id.
+    if crate::task::processes()
+        .iter()
+        .any(|proc_data| proc_data.cgroup_id() == child_id)
+    {
         return Err(AxError::ResourceBusy);
     }
 
@@ -180,12 +185,10 @@ pub fn path(id: CgroupId) -> AxResult<String> {
 
 pub fn procs_text(id: CgroupId) -> AxResult<String> {
     ensure_node_exists(id)?;
-    if id != ROOT_ID {
-        return Ok(String::new());
-    }
 
     let mut pids: Vec<_> = crate::task::processes()
         .into_iter()
+        .filter(|proc_data| proc_data.cgroup_id() == id)
         .map(|proc_data| proc_data.proc.pid())
         .collect();
     pids.sort_unstable();
@@ -207,9 +210,18 @@ pub fn subtree_control_text(id: CgroupId) -> AxResult<&'static str> {
     Ok("")
 }
 
-pub fn write_procs(id: CgroupId, _data: &[u8]) -> AxResult<()> {
+pub fn write_procs(id: CgroupId, data: &[u8]) -> AxResult<()> {
     ensure_node_exists(id)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
+
+    let text = core::str::from_utf8(data).map_err(|_| AxError::InvalidInput)?;
+    let pid: i32 = text.trim().parse().map_err(|_| AxError::InvalidInput)?;
+    if pid < 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let proc_data = crate::task::get_process_data(pid as Pid)?;
+    proc_data.set_cgroup_id(id);
+    Ok(())
 }
 
 pub fn write_subtree_control(id: CgroupId, _data: &[u8]) -> AxResult<()> {

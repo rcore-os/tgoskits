@@ -240,6 +240,8 @@ impl CloneArgs {
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
             proc_data.set_thp_disable(old_proc_data.thp_disable());
+            // A forked child is born into its parent's cgroup until migrated.
+            proc_data.set_cgroup_id(old_proc_data.cgroup_id());
 
             // Inherit the parent's namespace proxy, then unshare
             // each namespace for which a CLONE_NEW* flag is set.

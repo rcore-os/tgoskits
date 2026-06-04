@@ -14,7 +14,7 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::{
     cell::RefCell,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
@@ -515,6 +515,9 @@ pub struct ProcessData {
     pub scope: RwLock<Scope>,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
+    /// The cgroup v2 (`cgroup::CgroupId`) this process belongs to. Membership
+    /// is derived by scanning live processes for this id.
+    cgroup: AtomicU64,
     /// The user heap top
     heap_top: AtomicUsize,
 
@@ -698,6 +701,7 @@ impl ProcessData {
             futex_table: Arc::new(FutexTable::new()),
 
             nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
+            cgroup: AtomicU64::new(crate::cgroup::root_id()),
 
             vfork_done: SpinNoIrq::new(None),
 
@@ -774,6 +778,16 @@ impl ProcessData {
         }
         let aspace = self.aspace.lock().clone();
         crate::mm::release_process_slot(&aspace);
+    }
+
+    /// Get the id of the cgroup v2 this process currently belongs to.
+    pub fn cgroup_id(&self) -> u64 {
+        self.cgroup.load(Ordering::Acquire)
+    }
+
+    /// Move this process into the cgroup identified by `id`.
+    pub fn set_cgroup_id(&self, id: u64) {
+        self.cgroup.store(id, Ordering::Release);
     }
 
     /// Get the top address of the user heap.
