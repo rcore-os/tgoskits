@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The configuration structure for the VM.
-//! The `AxVMCrateConfig` is generated from toml file, and then converted to `AxVMConfig` for the VM creation.
+//! Runtime configuration structures for an AxVM instance.
 
 use alloc::{string::String, vec::Vec};
 
-use axaddrspace::GuestPhysAddr;
-pub use axvmconfig::{
-    AxVMCrateConfig, EmulatedDeviceConfig, PassThroughAddressConfig, PassThroughDeviceConfig,
+pub use axvm_types::{
+    EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig, PassThroughDeviceConfig,
     VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
@@ -27,22 +25,9 @@ use crate::VMMemoryRegion;
 
 const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
 
-/// Default BIOS load GPA for x86_64 built-in BIOS.
-#[cfg(target_arch = "x86_64")]
-const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
-
-// /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
-// ///
-// /// The concrete type of configuration is defined in `AxArchVCpuImpl`.
-// #[derive(Clone, Copy, Debug, Default)]
-// pub struct AxArchVCpuConfig<H: AxVMHal> {
-//     pub create_config: <AxArchVCpuImpl<H> as AxArchVCpu>::CreateConfig,
-//     pub setup_config: <AxArchVCpuImpl<H> as AxArchVCpu>::SetupConfig,
-// }
 /// A part of `AxVMConfig`, which represents a `VCpu`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxVCpuConfig {
-    // pub arch_config: AxArchVCpuConfig,
     /// The entry address in GPA for the Bootstrap Processor (BSP).
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
@@ -73,7 +58,7 @@ pub struct VMImageConfig {
     pub ramdisk: Option<RamdiskInfo>,
 }
 
-/// A part of `AxVMCrateConfig`, which represents a `VM`.
+/// Runtime configuration for one VM.
 #[derive(Debug, Default)]
 pub struct AxVMConfig {
     id: usize,
@@ -94,60 +79,20 @@ pub struct AxVMConfig {
     interrupt_mode: VMInterruptMode,
 }
 
-impl From<AxVMCrateConfig> for AxVMConfig {
-    fn from(cfg: AxVMCrateConfig) -> Self {
-        let bios_load_gpa = configured_bios_load_gpa(&cfg);
-        Self {
-            id: cfg.base.id,
-            name: cfg.base.name,
-            vm_type: VMType::from(cfg.base.vm_type),
-            phys_cpu_ls: PhysCpuList {
-                cpu_num: cfg.base.cpu_num,
-                phys_cpu_ids: cfg.base.phys_cpu_ids,
-                phys_cpu_sets: cfg.base.phys_cpu_sets,
-            },
-            cpu_config: AxVCpuConfig {
-                bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
-                ap_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
-            },
-            image_config: VMImageConfig {
-                kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
-                loaded_from_filesystem: cfg.kernel.image_location.as_deref() == Some("fs"),
-                bios_load_gpa,
-                dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
-                ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
-                    load_gpa: GuestPhysAddr::from(addr),
-                    size: None,
-                }),
-            },
-            // memory_regions: cfg.kernel.memory_regions,
-            emu_devices: cfg.devices.emu_devices,
-            pass_through_devices: cfg.devices.passthrough_devices,
-            excluded_devices: cfg.devices.excluded_devices,
-            pass_through_addresses: cfg.devices.passthrough_addresses,
-            spi_list: Vec::new(),
-            interrupt_mode: cfg.devices.interrupt_mode,
-        }
-    }
-}
-
-fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
-    if !cfg.kernel.enable_bios {
-        return None;
-    }
-
-    if let Some(addr) = cfg.kernel.bios_load_addr {
-        return Some(GuestPhysAddr::from(addr));
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    if cfg.kernel.boot_firmware_path().is_none()
-        && cfg.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
-    {
-        return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
-    }
-
-    None
+/// Parameters used to build an [`AxVMConfig`].
+#[derive(Debug, Default)]
+pub struct AxVMConfigParams {
+    pub id: usize,
+    pub name: String,
+    pub vm_type: VMType,
+    pub phys_cpu_ls: PhysCpuList,
+    pub cpu_config: AxVCpuConfig,
+    pub image_config: VMImageConfig,
+    pub emu_devices: Vec<EmulatedDeviceConfig>,
+    pub pass_through_devices: Vec<PassThroughDeviceConfig>,
+    pub excluded_devices: Vec<Vec<String>>,
+    pub pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pub interrupt_mode: VMInterruptMode,
 }
 
 pub fn adjusted_kernel_load_gpa(
@@ -167,6 +112,23 @@ pub fn adjusted_kernel_load_gpa(
 }
 
 impl AxVMConfig {
+    pub fn new(params: AxVMConfigParams) -> Self {
+        Self {
+            id: params.id,
+            name: params.name,
+            vm_type: params.vm_type,
+            phys_cpu_ls: params.phys_cpu_ls,
+            cpu_config: params.cpu_config,
+            image_config: params.image_config,
+            emu_devices: params.emu_devices,
+            pass_through_devices: params.pass_through_devices,
+            excluded_devices: params.excluded_devices,
+            pass_through_addresses: params.pass_through_addresses,
+            spi_list: Vec::new(),
+            interrupt_mode: params.interrupt_mode,
+        }
+    }
+
     /// Returns VM id.
     pub fn id(&self) -> usize {
         self.id
@@ -304,6 +266,19 @@ pub struct PhysCpuList {
 }
 
 impl PhysCpuList {
+    /// Creates a physical CPU list.
+    pub fn new(
+        cpu_num: usize,
+        phys_cpu_ids: Option<Vec<usize>>,
+        phys_cpu_sets: Option<Vec<usize>>,
+    ) -> Self {
+        Self {
+            cpu_num,
+            phys_cpu_ids,
+            phys_cpu_sets,
+        }
+    }
+
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
     /// If the pCpu affinity is None, it means the vCpu will be allocated to any available pCpu randomly.
     /// if the pCPU id is not provided, the vCpu's physical id will be set as vCpu id.
@@ -383,88 +358,5 @@ impl PhysCpuList {
     /// Sets the CPU IDs exposed to the guest.
     pub fn set_guest_phys_cpu_ids(&mut self, phys_cpu_ids: Vec<usize>) {
         self.phys_cpu_ids = Some(phys_cpu_ids);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn config_with_entry(entry_point: usize) -> AxVMCrateConfig {
-        let mut cfg = AxVMCrateConfig::default();
-        cfg.kernel.entry_point = entry_point;
-        cfg.kernel.kernel_load_addr = 0x20_0000;
-        cfg
-    }
-
-    #[test]
-    fn entry_point_does_not_enable_bios_implicitly() {
-        let cfg = config_with_entry(0x8000);
-
-        let vm_config = AxVMConfig::from(cfg);
-
-        assert!(vm_config.image_config.bios_load_gpa.is_none());
-    }
-
-    #[test]
-    fn explicit_bios_load_addr_enables_bios_gpa() {
-        let mut cfg = config_with_entry(0x8000);
-        cfg.kernel.enable_bios = true;
-        cfg.kernel.bios_load_addr = Some(0x8000);
-
-        let vm_config = AxVMConfig::from(cfg);
-
-        assert_eq!(
-            vm_config
-                .image_config
-                .bios_load_gpa
-                .map(|addr| addr.as_usize()),
-            Some(0x8000)
-        );
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    fn uefi_boot_does_not_use_builtin_x86_bios_addr() {
-        let mut cfg = config_with_entry(0xffff_fff0);
-        cfg.kernel.enable_bios = true;
-        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
-
-        let vm_config = AxVMConfig::from(cfg);
-
-        assert!(vm_config.image_config.bios_load_gpa.is_none());
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    fn uefi_boot_uses_explicit_firmware_path_and_load_addr() {
-        let mut cfg = config_with_entry(0xffff_fff0);
-        cfg.kernel.enable_bios = true;
-        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
-        cfg.kernel.uefi_firmware_path = Some(String::from("OVMF_CODE.fd"));
-        cfg.kernel.bios_load_addr = Some(0xffc0_0000);
-
-        let vm_config = AxVMConfig::from(cfg);
-
-        assert_eq!(
-            vm_config
-                .image_config
-                .bios_load_gpa
-                .map(|addr| addr.as_usize()),
-            Some(0xffc0_0000)
-        );
-    }
-
-    #[test]
-    fn uefi_boot_requires_a_firmware_path_or_legacy_fallback() {
-        let mut cfg = config_with_entry(0xffff_fff0);
-        cfg.kernel.enable_bios = true;
-        cfg.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
-        cfg.kernel.bios_load_addr = Some(0xffc0_0000);
-
-        assert!(cfg.kernel.validate_boot_config().is_err());
-
-        cfg.kernel.uefi_firmware_path = Some(String::from("OVMF_CODE.fd"));
-        assert!(cfg.kernel.validate_boot_config().is_ok());
     }
 }

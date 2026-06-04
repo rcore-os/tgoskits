@@ -12,13 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::{
-    GuestPhysAddr, MappingFlags,
-    device::{AccessWidth, Port, SysRegAddr},
-};
+use ax_page_table_entry::MappingFlags;
+use axdevice_base::{AccessWidth, Port, SysRegAddr};
+use axvm_types::GuestPhysAddr;
 
 #[allow(unused_imports)] // used in doc
 use super::AxArchVCpu;
+
+/// Information about nested page faults.
+#[derive(Debug)]
+pub struct NestedPageFaultInfo {
+    /// Access type that caused the nested page fault.
+    pub access_flags: MappingFlags,
+    /// Guest physical address that caused the nested page fault.
+    pub fault_guest_paddr: GuestPhysAddr,
+}
 
 /// Reasons for VM-Exits returned by [AxArchVCpu::run].
 ///

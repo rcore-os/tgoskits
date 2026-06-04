@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::GuestPhysAddr;
+use axvcpu::GuestPhysAddr;
 
 #[derive(Debug, Default, Clone)]
 #[repr(C)]

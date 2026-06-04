@@ -1169,19 +1169,6 @@ fn require_default_platform_package(metadata: &Metadata, arch: &str) -> anyhow::
         .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
 }
 
-fn explicit_myplat_platform_package(
-    package: &str,
-    arch: &str,
-    metadata: &Metadata,
-) -> Option<String> {
-    match (package, arch) {
-        ("axvisor", "x86_64") => {
-            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
-        }
-        _ => None,
-    }
-}
-
 fn resolve_platform_package(
     package: &str,
     target: &str,
@@ -1216,28 +1203,18 @@ fn resolve_platform_package(
         .collect();
 
     if let Some(platform) =
-        explicit_platform_package_from_features(package_info, &explicit_platform_features)
+        explicit_platform_package_from_features(package_info, &explicit_platform_features, metadata)
     {
         return Ok(platform);
     }
 
-    if has_myplat_feature(features) {
-        if let Some(dep_name) = explicit_myplat_platform_package(package, arch, metadata)
-            && package_info
-                .dependencies
-                .iter()
-                .any(|dep| dep.name == dep_name)
-        {
-            return Ok(dep_name);
-        }
-
-        if let Some(dep) = package_info
+    if has_myplat_feature(features)
+        && let Some(dep) = package_info
             .dependencies
             .iter()
             .find(|dep| myplat_dependency_matches_arch(&dep.name, arch))
-        {
-            return Ok(dep.name.clone());
-        }
+    {
+        return Ok(dep.name.clone());
     }
 
     require_default_platform_package(metadata, arch)
@@ -1260,19 +1237,25 @@ fn target_arch_name(target: &str) -> anyhow::Result<&'static str> {
 fn explicit_platform_package_from_features(
     package_info: &Package,
     explicit_features: &[&str],
+    metadata: &Metadata,
 ) -> Option<String> {
-    package_info
-        .dependencies
+    explicit_features
         .iter()
-        .find(|dep| {
-            dependency_is_platform(&dep.name)
-                && explicit_features.iter().any(|feature| {
-                    *feature == dep.name
-                        || *feature == linker_platform_name(&dep.name)
-                        || feature_enables_dependency(package_info, feature, &dep.name)
+        .find_map(|feature| platform_package_by_name_with_workspace_fallback(metadata, feature))
+        .or_else(|| {
+            package_info
+                .dependencies
+                .iter()
+                .find(|dep| {
+                    dependency_is_platform(&dep.name)
+                        && explicit_features.iter().any(|feature| {
+                            *feature == dep.name
+                                || *feature == linker_platform_name(&dep.name)
+                                || feature_enables_dependency(package_info, feature, &dep.name)
+                        })
                 })
+                .map(|dep| dep.name.clone())
         })
-        .map(|dep| dep.name.clone())
 }
 
 fn dependency_is_platform(dep_name: &str) -> bool {

@@ -14,7 +14,7 @@
 
 use alloc::vec::Vec;
 
-use axvmconfig::EmulatedDeviceConfig;
+use axvm_types::EmulatedDeviceConfig;
 
 /// The vector of DeviceConfig
 pub struct AxVmDeviceConfig {

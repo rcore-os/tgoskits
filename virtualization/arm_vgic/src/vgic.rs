@@ -14,9 +14,8 @@
 
 use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq as Mutex;
-use axvisor_api::vmm::current_vcpu_id;
 
-use crate::{interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
+use crate::{host, interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
 
 /// Virtual Generic Interrupt Controller.
 ///
@@ -84,7 +83,7 @@ impl Vgic {
 
     /// Handles 32-bit write access to VGIC registers.
     pub fn handle_write32(&self, addr: usize, value: usize) {
-        let _vcpu_id = current_vcpu_id();
+        let _vcpu_id = host::current_vcpu_id();
         if let Some(reg) = GicRegister::from_addr(addr as u32) {
             match reg {
                 GicRegister::GicdCtlr => self.vgicd.lock().vgicd_ctrlr_write(value),

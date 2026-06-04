@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.7.1...usb-if-v0.7.2) - 2026-06-03
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.7.0...usb-if-v0.7.1) - 2026-05-18
 
 ### Other

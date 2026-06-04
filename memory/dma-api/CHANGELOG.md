@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.7.3...dma-api-v0.8.0) - 2026-06-03
+
+### Added
+
+- *(dma-api)* add high-level dma sync helpers ([#1028](https://github.com/rcore-os/tgoskits/pull/1028))
+
+### Other
+
+- Refactor code structure for improved readability and maintainability ([#982](https://github.com/rcore-os/tgoskits/pull/982))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.7.2...dma-api-v0.7.3) - 2026-05-18
 
 ### Added
