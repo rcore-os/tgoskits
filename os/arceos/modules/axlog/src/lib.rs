@@ -139,14 +139,7 @@ impl Write for Logger {
 }
 
 const LOG_BUFFER_SIZE: usize = 2048;
-const LOG_TRUNCATED: &str = "\u{1B}[m<log truncated>";
 const LOG_TRUNCATED_WITH_NEWLINE: &str = "\u{1B}[m<log truncated>\n";
-
-#[derive(Clone, Copy)]
-enum TruncationMarker {
-    WithoutNewline,
-    WithNewline,
-}
 
 struct LogBuffer<const N: usize> {
     buf: [u8; N],
@@ -169,15 +162,12 @@ impl<const N: usize> LogBuffer<N> {
         unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
     }
 
-    fn append_truncation_marker(&mut self, marker: TruncationMarker) {
+    fn append_truncation_marker(&mut self) {
         if !self.truncated {
             return;
         }
 
-        let marker = match marker {
-            TruncationMarker::WithoutNewline => LOG_TRUNCATED.as_bytes(),
-            TruncationMarker::WithNewline => LOG_TRUNCATED_WITH_NEWLINE.as_bytes(),
-        };
+        let marker = LOG_TRUNCATED_WITH_NEWLINE.as_bytes();
         if N < marker.len() {
             self.len = 0;
             return;
@@ -304,7 +294,7 @@ impl Log for Logger {
     fn flush(&self) {}
 }
 
-fn print_buffered(args: fmt::Arguments, marker: TruncationMarker) -> fmt::Result {
+fn write_fmt_locked(args: fmt::Arguments) -> fmt::Result {
     use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
@@ -315,23 +305,32 @@ fn print_buffered(args: fmt::Arguments, marker: TruncationMarker) -> fmt::Result
         return Logger.write_fmt(args);
     }
 
-    let mut buf = LogBuffer::<LOG_BUFFER_SIZE>::new();
-    buf.write_fmt(args)?;
-    buf.append_truncation_marker(marker);
-
     let _guard = LOCK.lock();
-    Logger.write_str(buf.as_str())
+    Logger.write_fmt(args)
 }
 
-// Log records always include a trailing newline, even when ANSI reset bytes are
-// formatted after it. Keep that newline after replacing truncated content.
 fn print_log_fmt(args: fmt::Arguments) {
-    print_buffered(args, TruncationMarker::WithNewline).unwrap();
+    if axpanic::oops_in_progress() {
+        Logger.write_fmt(args).unwrap();
+        return;
+    }
+
+    // Log records are internal tracing messages with a clear record boundary, so
+    // they may be truncated to keep Display formatting outside the print lock.
+    // They always include a trailing newline, even when ANSI reset bytes are
+    // formatted after it. Keep that newline after replacing truncated content.
+    let mut buf = LogBuffer::<LOG_BUFFER_SIZE>::new();
+    buf.write_fmt(args).unwrap();
+    buf.append_truncation_marker();
+    write_fmt_locked(format_args!("{}", buf.as_str())).unwrap();
 }
 
 /// Prints the formatted string to the console.
 pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
-    print_buffered(args, TruncationMarker::WithoutNewline)
+    // Direct console output preserves the caller's original bytes and length.
+    // This keeps ax_print!/ax_println! and axstd println! behavior unchanged;
+    // callers that format under this lock must still avoid recursive printing.
+    write_fmt_locked(args)
 }
 
 #[doc(hidden)]
@@ -370,7 +369,7 @@ mod tests {
     fn log_buffer_truncates_at_utf8_boundary() {
         let mut buf = LogBuffer::<22>::new();
         write!(buf, "ab你好xxxxxxxxxxxxxxxx\n").unwrap();
-        buf.append_truncation_marker(TruncationMarker::WithNewline);
+        buf.append_truncation_marker();
 
         assert_eq!(buf.as_str(), "ab\u{1B}[m<log truncated>\n");
     }
@@ -379,17 +378,8 @@ mod tests {
     fn log_buffer_keeps_untruncated_message() {
         let mut buf = LogBuffer::<32>::new();
         write!(buf, "short").unwrap();
-        buf.append_truncation_marker(TruncationMarker::WithoutNewline);
+        buf.append_truncation_marker();
 
         assert_eq!(buf.as_str(), "short");
-    }
-
-    #[test]
-    fn log_buffer_can_append_marker_without_newline() {
-        let mut buf = LogBuffer::<21>::new();
-        write!(buf, "ab你好xxxxxxxxxxxxxxxx").unwrap();
-        buf.append_truncation_marker(TruncationMarker::WithoutNewline);
-
-        assert_eq!(buf.as_str(), "ab\u{1B}[m<log truncated>");
     }
 }
