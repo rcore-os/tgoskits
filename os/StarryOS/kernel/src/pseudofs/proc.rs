@@ -950,7 +950,7 @@ impl SimpleDirOps for ThreadDir {
                             // getuid/getgid/getres* return the mapped UID
                             // instead of 65534 (nobody).
                             let proc_data = &thr.proc_data;
-                            let mut nsproxy = proc_data.nsproxy.lock();
+                            let nsproxy = proc_data.nsproxy.lock();
                             nsproxy.user_ns.lock().is_root = true;
                         }
                         Ok(None)
@@ -995,7 +995,7 @@ impl SimpleDirOps for ThreadDir {
                             Thread::set_cred(thr, cred);
                             thr.set_gid_map_written(true);
                             let proc_data = &thr.proc_data;
-                            let mut nsproxy = proc_data.nsproxy.lock();
+                            let nsproxy = proc_data.nsproxy.lock();
                             nsproxy.user_ns.lock().is_root = true;
                         }
                         Ok(None)
