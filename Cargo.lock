@@ -1318,6 +1318,7 @@ dependencies = [
  "anyhow",
  "ax-config-gen",
  "axvmconfig",
+ "bootloader-common",
  "cargo_metadata",
  "chrono",
  "clap",
@@ -1862,6 +1863,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "bootloader-common"
+version = "0.5.11"
+dependencies = [
+ "anyhow",
+ "object 0.38.1",
+]
+
+[[package]]
+name = "bootloader-http"
+version = "0.5.11"
+dependencies = [
+ "bootloader-common",
+ "uefi",
 ]
 
 [[package]]
