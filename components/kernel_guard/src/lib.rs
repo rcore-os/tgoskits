@@ -86,35 +86,19 @@ pub trait BaseGuard {
 /// A no-op guard that does nothing around the critical section.
 pub struct NoOp;
 
-cfg_if::cfg_if! {
-    // For user-mode std apps, we use the alias of [`NoOp`] for all guards,
-    // since we can not disable IRQs or preemption in user-mode.
-    if #[cfg(any(target_os = "none", arceos_std, doc))] {
-        /// A guard that disables/enables local IRQs around the critical section.
-        pub struct IrqSave(usize);
+/// A guard that disables/enables local IRQs around the critical section.
+pub struct IrqSave(usize);
 
-        /// A guard that disables/enables kernel preemption around the critical
-        /// section.
-        pub struct NoPreempt;
+/// A guard that disables/enables kernel preemption around the critical section.
+pub struct NoPreempt;
 
-        /// A guard that disables/enables both kernel preemption and local IRQs
-        /// around the critical section.
-        ///
-        /// When entering the critical section, it disables kernel preemption
-        /// first, followed by local IRQs. When leaving the critical section, it
-        /// re-enables local IRQs first, followed by kernel preemption.
-        pub struct NoPreemptIrqSave(usize);
-    } else {
-        /// Alias of [`NoOp`].
-        pub type IrqSave = NoOp;
-
-        /// Alias of [`NoOp`].
-        pub type NoPreempt = NoOp;
-
-        /// Alias of [`NoOp`].
-        pub type NoPreemptIrqSave = NoOp;
-    }
-}
+/// A guard that disables/enables both kernel preemption and local IRQs around
+/// the critical section.
+///
+/// When entering the critical section, it disables kernel preemption first,
+/// followed by local IRQs. When leaving the critical section, it re-enables
+/// local IRQs first, followed by kernel preemption.
+pub struct NoPreemptIrqSave(usize);
 
 impl BaseGuard for NoOp {
     type State = ();
@@ -139,7 +123,6 @@ impl Drop for NoOp {
     fn drop(&mut self) {}
 }
 
-#[cfg(any(target_os = "none", arceos_std, doc))]
 mod imp {
     use super::*;
 

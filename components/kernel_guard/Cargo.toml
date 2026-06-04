@@ -16,6 +16,3 @@ default = []
 [dependencies]
 cfg-if = "1.0"
 ax-crate-interface = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }
