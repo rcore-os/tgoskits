@@ -6,10 +6,14 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(page_size_16k)");
     println!("cargo::rustc-check-cfg=cfg(uspace)");
     println!("cargo::rustc-check-cfg=cfg(hv)");
+    println!("cargo::rustc-check-cfg=cfg(arceos_std)");
 
     let target = std::env::var("TARGET").unwrap();
+    let arceos_std = std::env::var_os("CARGO_CFG_ARCEOS_STD").is_some();
 
-    if target.contains("windows") || target.contains("linux") || target.contains("darwin") {
+    if !arceos_std
+        && (target.contains("windows") || target.contains("linux") || target.contains("darwin"))
+    {
         return;
     }
 

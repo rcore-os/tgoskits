@@ -124,7 +124,6 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     device.inner().open(true)?;
                 }
                 let inner = device.inner().as_any();
-                #[cfg(feature = "plat-dyn")]
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
                     if flags & O_NONBLOCK != 0 {

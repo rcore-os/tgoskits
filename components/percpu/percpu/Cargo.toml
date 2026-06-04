@@ -39,3 +39,6 @@ x86 = "0.52"
 
 [target.'cfg(not(target_os = "none"))'.dependencies]
 spin = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

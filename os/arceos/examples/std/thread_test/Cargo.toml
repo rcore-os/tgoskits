@@ -5,5 +5,12 @@ edition.workspace = true
 authors = ["eternalcomet <mydragonos@outlook.com>"]
 publish = false
 
-[target.'cfg(target_os = "hermit")'.dependencies]
-arceos-rust = { workspace = true, default-features = true, features = ["multitask", "log-level-off", "irq"] }
+[features]
+default = []
+arceos = ["dep:ax-std", "ax-std/multitask", "ax-std/irq"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true }
+
+[package.metadata.axstd]
+features = ["log-level-off"]

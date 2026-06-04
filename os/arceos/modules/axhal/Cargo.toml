@@ -92,15 +92,13 @@ log.workspace = true
 ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }
 ax-percpu = { workspace = true, features = ["non-zero-vma"] }
+axplat-dyn = { workspace = true, default-features = false, optional = true }
 rdrive.workspace = true
 spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-plat-x86-pc = { workspace = true, optional = true }
 ax-plat-x86-qemu-q35 = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "none")'.dependencies]
-axplat-dyn = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-plat-riscv64-sg2002 = { workspace = true, optional = true }
@@ -112,3 +110,6 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 [build-dependencies]
 ax-config.workspace = true
 toml.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

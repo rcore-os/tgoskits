@@ -1,4 +1,4 @@
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", arceos_std))]
 include!(concat!(env!("OUT_DIR"), "/defines.rs"));
 
 #[cfg(page_size_4k)]

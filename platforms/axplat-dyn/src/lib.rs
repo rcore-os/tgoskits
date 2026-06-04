@@ -1,5 +1,5 @@
 #![no_std]
-#![cfg(not(any(windows, unix)))]
+#![cfg(any(not(any(windows, unix)), arceos_std))]
 
 extern crate alloc;
 extern crate ax_driver as _;

@@ -33,13 +33,6 @@ int pthread_cancel(pthread_t t)
 }
 
 // TODO
-int pthread_mutex_trylock(pthread_mutex_t *m)
-{
-    unimplemented();
-    return 0;
-}
-
-// TODO
 int pthread_setname_np(pthread_t thread, const char *name)
 {
     unimplemented();

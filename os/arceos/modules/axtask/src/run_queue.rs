@@ -56,13 +56,13 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::M
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", arceos_std))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
     TaskStack::borrowed(stack_ptr, stack_size, TASK_STACK_ALIGN)
 }
 
-#[cfg(not(target_os = "none"))]
+#[cfg(not(any(target_os = "none", arceos_std)))]
 fn main_task_stack() -> TaskStack {
     TaskStack::alloc(ax_config::TASK_STACK_SIZE)
 }
@@ -668,7 +668,7 @@ impl AxRunQueue {
 
     fn switch_to(&mut self, prev_task: CurrentTask, next_task: AxTaskRef) {
         // Make sure that IRQs are disabled by kernel guard or other means.
-        #[cfg(all(target_os = "none", feature = "irq"))] // Note: irq is faked under unit tests.
+        #[cfg(all(any(target_os = "none", arceos_std), feature = "irq"))] // Note: irq is faked under unit tests.
         assert!(
             !ax_hal::asm::irqs_enabled(),
             "IRQs must be disabled during scheduling"

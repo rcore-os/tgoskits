@@ -2,7 +2,7 @@
 include!(concat!(env!("OUT_DIR"), "/selected_platform.rs"));
 
 #[cfg(all(
-    target_os = "none",
+    any(target_os = "none", arceos_std),
     not(test),
     not(feature = "myplat"),
     not(feature = "defplat"),
@@ -16,7 +16,7 @@ mod dummy;
 
 #[cfg(all(
     not(test),
-    not(target_os = "none"),
+    not(any(target_os = "none", arceos_std)),
     not(feature = "defplat"),
     not(ax_hal_any_platform_feature)
 ))]

@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(arceos_std)");
     println!("cargo:rustc-check-cfg=cfg(tlsf)");
     println!("cargo:rustc-check-cfg=cfg(buddy_slab)");
 

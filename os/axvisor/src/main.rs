@@ -21,9 +21,9 @@
 //! The implementation is intentionally small so that the boot order is visible
 //! from a single file.
 
-#![no_std]
-#![no_main]
-#![cfg(target_os = "none")]
+#![cfg(any(target_os = "none", arceos_std))]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 
 #[macro_use]
 extern crate log;
@@ -31,6 +31,9 @@ extern crate log;
 #[macro_use]
 extern crate alloc;
 
+#[cfg(arceos_std)]
+use ax_std as _;
+#[cfg(target_os = "none")]
 extern crate ax_std as std;
 
 mod config;
@@ -84,7 +87,7 @@ fn print_logo() {
 /// 2. Check and enable hardware virtualization on every CPU.
 /// 3. Build and start configured guest VMs.
 /// 4. Enter the management shell after the default guests have exited.
-#[unsafe(no_mangle)]
+#[cfg_attr(target_os = "none", unsafe(no_mangle))]
 fn main() {
     print_logo();
 

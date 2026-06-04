@@ -894,7 +894,7 @@ impl Starry {
         }
 
         let keep_qemu_log = crate::backtrace::keep_qemu_log_from_env();
-        let elf = crate::backtrace::arceos_rust_elf_path(
+        let elf = crate::backtrace::arceos_std_elf_path(
             self.app.workspace_root(),
             &request.target,
             crate::context::STARRY_PACKAGE,
@@ -2746,7 +2746,7 @@ mod tests {
             Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
         assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
-        assert!(cargo.features.contains(&"ax-feat/smp".to_string()));
+        assert!(cargo.features.contains(&"ax-std/smp".to_string()));
     }
 
     #[test]
@@ -2791,7 +2791,7 @@ mod tests {
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
         );
     }
 

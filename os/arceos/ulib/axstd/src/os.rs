@@ -15,3 +15,6 @@ pub mod arceos {
     #[doc(no_inline)]
     pub use ax_api::modules;
 }
+
+#[cfg(arceos_std)]
+pub mod libc_compat;

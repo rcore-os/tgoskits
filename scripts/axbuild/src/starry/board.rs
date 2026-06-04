@@ -45,7 +45,9 @@ pub(crate) fn board_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<StarryBoardFile> {
-    toml::from_str::<StarryBoardFile>(&fs::read_to_string(path)?)
+    let contents = fs::read_to_string(path)?;
+    crate::build::reject_removed_std_field(path, &contents)?;
+    toml::from_str::<StarryBoardFile>(&contents)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("failed to parse Starry board config {}", path.display()))
 }

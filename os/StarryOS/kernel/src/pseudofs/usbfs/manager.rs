@@ -387,64 +387,63 @@ impl UsbFsManager {
         self.usb_activity.event.listen()
     }
 
+    pub(super) fn has_hosts(&self) -> bool {
+        !self.state.lock().hosts.is_empty()
+    }
+
     pub(super) fn refresh_dirty_hosts(&self) {
-        #[cfg(not(target_os = "none"))]
-        return;
-        #[cfg(target_os = "none")]
-        {
-            let pending_hosts = {
-                let mut state = self.state.lock();
-                let open_hosts = state
-                    .devices
-                    .values()
-                    .filter(|record| record.open_count > 0)
-                    .map(|record| record.host_device_id)
-                    .collect::<Vec<_>>();
-                let mut pending = Vec::new();
-                for host in &mut state.hosts {
-                    let irq_dirty = host.irq_num.map(irq::take_dirty).unwrap_or(false);
-                    if open_hosts.contains(&host.device_id) {
-                        host.needs_probe |= irq_dirty;
-                        continue;
-                    }
-                    if host.needs_probe || irq_dirty {
-                        host.needs_probe = false;
-                        pending.push((host.device_id, host.bus_num));
-                    }
+        let pending_hosts = {
+            let mut state = self.state.lock();
+            let open_hosts = state
+                .devices
+                .values()
+                .filter(|record| record.open_count > 0)
+                .map(|record| record.host_device_id)
+                .collect::<Vec<_>>();
+            let mut pending = Vec::new();
+            for host in &mut state.hosts {
+                let irq_dirty = host.irq_num.map(irq::take_dirty).unwrap_or(false);
+                if open_hosts.contains(&host.device_id) {
+                    host.needs_probe |= irq_dirty;
+                    continue;
                 }
-                pending
+                if host.needs_probe || irq_dirty {
+                    host.needs_probe = false;
+                    pending.push((host.device_id, host.bus_num));
+                }
+            }
+            pending
+        };
+
+        for (device_id, bus_num) in pending_hosts {
+            let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
+                Ok(host) => host,
+                Err(err) => {
+                    warn!(
+                        "usbfs: failed to reacquire USB host {:?}: {err:?}",
+                        device_id
+                    );
+                    continue;
+                }
             };
 
-            for (device_id, bus_num) in pending_hosts {
-                let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
-                    Ok(host) => host,
-                    Err(err) => {
-                        warn!(
-                            "usbfs: failed to reacquire USB host {:?}: {err:?}",
-                            device_id
-                        );
-                        continue;
-                    }
-                };
+            let mut guard = match host.lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    warn!("usbfs: failed to lock USB host {:?}: {err:?}", device_id);
+                    continue;
+                }
+            };
 
-                let mut guard = match host.lock() {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        warn!("usbfs: failed to lock USB host {:?}: {err:?}", device_id);
-                        continue;
-                    }
-                };
-
-                let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
-                    Ok(devices) => devices,
-                    Err(err) => {
-                        warn!("usbfs: refresh probe failed on bus {bus_num}: {err:?}");
-                        continue;
-                    }
-                };
-                drop(guard);
-                self.apply_probe_results(device_id, bus_num, devices);
-            }
+            let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+                Ok(devices) => devices,
+                Err(err) => {
+                    warn!("usbfs: refresh probe failed on bus {bus_num}: {err:?}");
+                    continue;
+                }
+            };
+            drop(guard);
+            self.apply_probe_results(device_id, bus_num, devices);
         }
     }
 
@@ -699,7 +698,6 @@ impl UsbFsManager {
         }
     }
 
-    #[cfg(target_os = "none")]
     fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
@@ -715,13 +713,6 @@ impl UsbFsManager {
         })
     }
 
-    #[cfg(not(target_os = "none"))]
-    fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
-        let _ = (host_device_id, info);
-        Err(AxError::Unsupported)
-    }
-
-    #[cfg(target_os = "none")]
     fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
@@ -731,12 +722,6 @@ impl UsbFsManager {
         drop(guard);
         self.apply_probe_results(host_device_id, bus_num, devices);
         Ok(())
-    }
-
-    #[cfg(not(target_os = "none"))]
-    fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
-        let _ = (host_device_id, bus_num);
-        Err(AxError::Unsupported)
     }
 
     fn snapshot_by_id(&self, stable_id: UsbStableId) -> AxResult<UsbDeviceSnapshot> {
@@ -1155,93 +1140,84 @@ pub(super) async fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
 }
 
 pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
-    #[cfg(not(target_os = "none"))]
-    {
-        let _ = manager;
-        0
-    }
-    #[cfg(target_os = "none")]
-    {
-        let hosts = {
-            let state = manager.state.lock();
-            state
-                .hosts
-                .iter()
-                .map(|host| (host.device_id, host.bus_num, host.irq_num))
-                .collect::<Vec<_>>()
-        };
+    let hosts = {
+        let state = manager.state.lock();
+        state
+            .hosts
+            .iter()
+            .map(|host| (host.device_id, host.bus_num, host.irq_num))
+            .collect::<Vec<_>>()
+    };
 
-        let mut initialized = 0usize;
-        let mut failed_device_ids = Vec::new();
+    let mut initialized = 0usize;
+    let mut failed_device_ids = Vec::new();
 
-        for (device_id, bus_num, irq_num) in hosts {
-            let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
-                Ok(host) => host,
-                Err(err) => {
-                    warn!(
-                        "usbfs: failed to reacquire USB host {:?} for init: {err:?}",
-                        device_id
-                    );
-                    failed_device_ids.push((device_id, irq_num));
-                    continue;
-                }
-            };
-
-            let mut guard = match host.lock() {
-                Ok(guard) => guard,
-                Err(err) => {
-                    warn!(
-                        "usbfs: failed to lock USB host {:?} for init: {err:?}",
-                        device_id
-                    );
-                    failed_device_ids.push((device_id, irq_num));
-                    continue;
-                }
-            };
-
-            info!("usbfs: initializing host on bus {}", bus_num);
-            if let Err(err) = ax_task::future::block_on(guard.host_mut().init()) {
-                warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
+    for (device_id, bus_num, irq_num) in hosts {
+        let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
+            Ok(host) => host,
+            Err(err) => {
+                warn!(
+                    "usbfs: failed to reacquire USB host {:?} for init: {err:?}",
+                    device_id
+                );
                 failed_device_ids.push((device_id, irq_num));
                 continue;
             }
+        };
 
-            let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
-                Ok(devices) => devices,
-                Err(err) => {
-                    warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
-                    failed_device_ids.push((device_id, irq_num));
-                    continue;
-                }
-            };
-
-            info!("usbfs: host on bus {} initialized", bus_num);
-            initialized += 1;
-
-            if let Some(irq_num) = irq_num {
-                irq::bootstrap_irq(irq_num);
+        let mut guard = match host.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                warn!(
+                    "usbfs: failed to lock USB host {:?} for init: {err:?}",
+                    device_id
+                );
+                failed_device_ids.push((device_id, irq_num));
+                continue;
             }
-            manager.apply_probe_results(device_id, bus_num, devices);
+        };
+
+        info!("usbfs: initializing host on bus {}", bus_num);
+        if let Err(err) = ax_task::future::block_on(guard.host_mut().init()) {
+            warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
+            failed_device_ids.push((device_id, irq_num));
+            continue;
         }
 
-        if !failed_device_ids.is_empty() {
-            let mut state = manager.state.lock();
-            state.hosts.retain(|host| {
-                !failed_device_ids
-                    .iter()
-                    .any(|(failed_device_id, _)| *failed_device_id == host.device_id)
-            });
-        }
-
-        for (_, irq_num) in failed_device_ids {
-            if let Some(irq_num) = irq_num {
-                irq::free_irq(irq_num);
+        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+            Ok(devices) => devices,
+            Err(err) => {
+                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
+                failed_device_ids.push((device_id, irq_num));
+                continue;
             }
-        }
+        };
 
-        info!("usbfs: {} host(s) ready", initialized);
-        initialized
+        info!("usbfs: host on bus {} initialized", bus_num);
+        initialized += 1;
+        if let Some(irq_num) = irq_num {
+            irq::bootstrap_irq(irq_num);
+        }
+        manager.apply_probe_results(device_id, bus_num, devices);
     }
+
+    if !failed_device_ids.is_empty() {
+        let mut state = manager.state.lock();
+        state.hosts.retain(|host| {
+            !failed_device_ids
+                .iter()
+                .any(|(failed_device_id, _)| *failed_device_id == host.device_id)
+        });
+    }
+
+    for (_, irq_num) in failed_device_ids {
+        if let Some(irq_num) = irq_num {
+            irq::free_irq(irq_num);
+        }
+    }
+
+    info!("usbfs: {} host(s) ready", initialized);
+    initialized
 }
 
 fn map_transfer_error(err: TransferError) -> AxError {
@@ -1313,54 +1289,47 @@ fn recipient_from_raw(raw: u8) -> Recipient {
 }
 
 pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
-    #[cfg(not(target_os = "none"))]
-    {
-        (Vec::new(), Vec::new())
-    }
-    #[cfg(target_os = "none")]
-    {
-        let hosts = rdrive::get_list::<ax_driver::usb::PlatformUsbHost>();
-        let mut initialized_hosts = Vec::new();
-        let mut irq_slots = Vec::new();
+    let hosts = rdrive::get_list::<ax_driver::usb::PlatformUsbHost>();
+    let mut initialized_hosts = Vec::new();
+    let mut irq_slots = Vec::new();
 
-        for (index, host) in hosts.into_iter().enumerate() {
-            let device_id = host.descriptor().device_id();
-            let bus_num = (index + 1) as u8;
-            info!("usbfs: preparing host {:?} as bus {}", device_id, bus_num);
+    for (index, host) in hosts.into_iter().enumerate() {
+        let device_id = host.descriptor().device_id();
+        let bus_num = (index + 1) as u8;
+        info!("usbfs: preparing host {:?} as bus {}", device_id, bus_num);
 
-            let mut guard = match host.lock() {
-                Ok(guard) => guard,
-                Err(err) => {
-                    warn!("usbfs: failed to lock USB host {device_id:?}: {err:?}");
-                    continue;
-                }
-            };
-
-            let irq_num = guard.irq_num();
-            info!("usbfs: creating event handler for bus {}", bus_num);
-            let event_handler: EventHandler = guard.host_mut().create_event_handler();
-            drop(guard);
-
-            if let Some(irq_num) = irq_num {
-                irq_slots.push(PendingUsbIrqSlot {
-                    irq_num,
-                    device_id,
-                    bus_num,
-                    handler: event_handler,
-                });
+        let mut guard = match host.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                warn!("usbfs: failed to lock USB host {device_id:?}: {err:?}");
+                continue;
             }
+        };
 
-            initialized_hosts.push(UsbHostState {
+        let irq_num = guard.irq_num();
+        info!("usbfs: creating event handler for bus {}", bus_num);
+        let event_handler: EventHandler = guard.host_mut().create_event_handler();
+        drop(guard);
+
+        if let Some(irq_num) = irq_num {
+            irq_slots.push(PendingUsbIrqSlot {
+                irq_num,
                 device_id,
                 bus_num,
-                irq_num,
-                needs_probe: true,
-                next_device_num: 1,
-                stable_id_to_device_num: BTreeMap::new(),
+                handler: event_handler,
             });
         }
 
-        info!("usbfs: discovered {} USB host(s)", initialized_hosts.len());
-        (initialized_hosts, irq_slots)
+        initialized_hosts.push(UsbHostState {
+            device_id,
+            bus_num,
+            irq_num,
+            needs_probe: true,
+            next_device_num: 1,
+            stable_id_to_device_num: BTreeMap::new(),
+        });
     }
+
+    info!("usbfs: discovered {} USB host(s)", initialized_hosts.len());
+    (initialized_hosts, irq_slots)
 }

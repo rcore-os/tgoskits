@@ -1,130 +1,98 @@
 # ArceOS Rust std support
 
-`arceos-rust` lets Rust applications use `std` on bare metal (Hermit target) with ArceOS as runtime/kernel support.
+ArceOS std applications are built with Cargo's std-aware build mode. The app
+uses Rust's upstream `std` for a built-in `*-unknown-linux-musl` target, while
+the application enables its `arceos` feature to depend on `ax-std` directly, so
+`app + ax-std + axruntime` are compiled in one Cargo dependency graph. The fake
+`libc.a` only satisfies the fixed library name requested by the compiler; the
+real libc/syscall compatibility symbols come from `ax-std`.
 
-Examples are under `examples/std`.
+This path does not require changes to `rust-lang/rust`, and it does not use a
+Hermit target.
 
 ## Run the std examples
 
-### Disk image preparation
+Examples are under `examples/std`.
 
-Examples expect `disk.img` in `examples/std` directory. Both ext4 and FAT32 filesystems are supported.
+Use `axbuild`/`xtask` instead of running Cargo in the example directory
+directly. `axbuild` maps the ArceOS bare-metal target to the matching built-in
+linux-musl target, creates empty fake `libc.a`/`libunwind.a` placeholders,
+injects `--cfg arceos_std`, and installs the linker wrapper.
 
-Recommended commands:
+Example:
+
+```bash
+cargo xtask arceos test qemu \
+  --target x86_64-unknown-none \
+  --test-group rust \
+  --test-case helloworld
+```
+
+The std build path uses:
+
+- `-Z build-std=std,panic_abort`
+- `-Z build-std-features=`
+- `panic = "abort"`
+- `--cfg arceos_std`
+- empty fake `libc.a`
+- empty fake `libunwind.a`
+
+## Select ArceOS features
+
+An app declares the ArceOS-side features it needs behind its app-local
+`arceos` feature. Without this feature, the same app remains an ordinary Rust
+`std` app and does not depend on `ax-std`.
+
+```toml
+[features]
+default = []
+arceos = ["dep:ax-std", "ax-std/fs", "ax-std/net", "ax-std/multitask", "ax-std/irq"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true }
+```
+
+Keep logging and normal Cargo features for app-local choices. For example:
+
+```toml
+[features]
+default = []
+dns = []
+
+[package.metadata.axstd]
+features = ["log-level-debug"]
+```
+
+`axbuild` automatically enables `arceos` for ArceOS std builds when the app
+declares it. It combines app features and `package.metadata.axstd.features`,
+maps ArceOS backend features to `ax-std/*`, and adds the platform feature for
+the selected ArceOS target before linking the app.
+
+## Runtime cfg
+
+Use `cfg(arceos_std)` for ArceOS std-specific behavior:
+
+```rust
+#[cfg(arceos_std)]
+const API_BASE: &str = "http://10.0.2.2:8080/v1";
+```
+
+Do not add an external runtime shim dependency, and do not gate ArceOS std
+behavior on a synthetic target OS name.
+
+## Disk image preparation
+
+Examples that need a filesystem expect `disk.img` in the example/test working
+directory. Both ext4 and FAT32 filesystems are supported.
 
 ```bash
 dd if=/dev/zero of=disk.img bs=1M count=64
-# or truncate:
-# truncate -s 64M disk.img
 mkfs.ext4 -F disk.img
-# or FAT32:
-# mkfs.vfat -F 32 disk.img
 ```
 
-### Run examples with cargo
-
-Run from each example directory, for example:
+or:
 
 ```bash
-cd examples/std/helloworld
-cargo run --target riscv64gc-unknown-hermit
+truncate -s 64M disk.img
+mkfs.vfat -F 32 disk.img
 ```
-
-Supported targets used by examples:
-
-- `x86_64-unknown-hermit`
-- `riscv64gc-unknown-hermit`
-- `aarch64-unknown-hermit`
-- `loongarch64-unknown-hermit` uses a custom target JSON (`--target ../loongarch64-unknown-hermit.json -Zjson-target-spec`), see below
-
-`examples/std/*/.cargo/config.toml` already provides:
-
-- linker args (`-no-pie`, `-Tlinker.x`)
-- per-arch QEMU runner
-- `build-std` settings for build standard library
-
-## Port an existing Rust project
-
-### 1) Add dependency
-
-```toml
-[target.'cfg(target_os = "hermit")'.dependencies]
-arceos-rust = { workspace = true, default-features = true, features = ["log-level-off"] }
-```
-
-Then enable features based on your app:
-
-- `fs` for file system
-- `net` for networking
-- `multitask`/`irq` if needed
-
-For other available features, see document for `arceos-rust`.
-
-### 2) Import runtime shim in `main.rs`
-
-```rust
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
-```
-
-### 3) Add `.cargo/config.toml`
-
-Use template:
-
-```bash
-mkdir -p .cargo
-cp <ArceOS project dir>/examples/std/config.template.toml .cargo/config.toml
-```
-
-Then adjust runner args for your enabled features (network/disk), as described in template comments.
-
-### 4) Build and run
-
-```bash
-cargo run --target <arch>-unknown-hermit
-```
-
-`<arch` can be `x86_64`, `riscv64gc`, `aarch64`, or `loongarch64` (with JSON target).
-
-## Customize runner via `config.template.toml`
-
-Template path:
-
-- `examples/std/config.template.toml`
-
-How to use:
-
-1. Copy it to your project as `.cargo/config.toml`.
-2. Keep the target section you need.
-3. Edit the `runner` array to enable optional QEMU args.
-
-Typical edits:
-
-- Enable network:
-  - `"-device", "virtio-net-pci,netdev=net0"`
-  - `"-netdev", "user,id=net0"`
-- Enable server port forward (example 5555):
-  - `"-netdev", "user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555"`
-- Enable disk:
-  - `"-device", "virtio-blk-pci,drive=disk0"`
-  - `"-drive", "id=disk0,if=none,format=raw,file=./disk.img"`
-
-Default feature behavior is PCI bus, so template defaults to `virtio-*-pci`.
-
-## LoongArch custom target
-
-`loongarch64-unknown-hermit` is not a built-in Rust target. Use the JSON target spec shipped in `examples/std`.
-
-Copy target spec to your project root (or reference it by path):
-
-```bash
-cp examples/std/loongarch64-unknown-hermit.json <your-project>/
-```
-
-Run with JSON target:
-
-```bash
-cargo run --target ./loongarch64-unknown-hermit.json -Zjson-target-spec
-```
-
-If you keep `target.loongarch64-unknown-hermit` in `.cargo/config.toml`, it applies only when target triple name matches exactly. For JSON-path target usage, use `target."cfg(...)"`/manual command line, or keep a dedicated local config for LoongArch.

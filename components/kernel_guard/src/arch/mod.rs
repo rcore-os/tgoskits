@@ -1,4 +1,7 @@
-#![cfg_attr(not(target_os = "none"), allow(dead_code, unused_imports))]
+#![cfg_attr(
+    not(any(target_os = "none", arceos_std)),
+    allow(dead_code, unused_imports)
+)]
 
 cfg_if::cfg_if! {
     if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {

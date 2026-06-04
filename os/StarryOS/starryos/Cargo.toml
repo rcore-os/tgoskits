@@ -57,12 +57,13 @@ path = "xtask/main.rs"
 
 [dependencies]
 ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
+ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
-[target.'cfg(any(windows,unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow = "1.0"
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }
@@ -71,3 +72,6 @@ tokio = { version = "1.0", features = ["full"] }
 [package.metadata.vendor-filter]
 all-features = true
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

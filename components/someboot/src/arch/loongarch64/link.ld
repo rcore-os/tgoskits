@@ -13,6 +13,7 @@ OUTPUT_ARCH(loongarch)
 ENTRY(kernel_entry)
 PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
+	tls PT_TLS FLAGS(4);	/* R__ */
 	note PT_NOTE FLAGS(4);	/* R__ */
 }
 
@@ -92,7 +93,7 @@ SECTIONS
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
-    }
+    } :text :tls
 
     .tbss : {
         _stbss = .;
@@ -100,7 +101,7 @@ SECTIONS
         *(.init.bss)
         *(.tcommon)
         _etbss = .;
-    }
+    } :text :tls
  
     .sbss :  { 
         *(.dynsbss) *(.sbss) *(.scommon) 
@@ -158,4 +159,3 @@ SECTIONS
         *(.eh_frame)
     }
 }
-

@@ -78,6 +78,7 @@ pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorBoardFile> {
             path.display()
         )
     })?;
+    crate::build::reject_removed_std_field(path, &content)?;
     toml::from_str(&content).map_err(|e| {
         anyhow!(
             "failed to parse Axvisor board config {}: {e}",
@@ -455,6 +456,7 @@ pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Optio
             path.display()
         )
     })?;
+    crate::build::reject_removed_std_field(path, &content)?;
 
     if let Ok(board_file) = toml::from_str::<AxvisorBoardFile>(&content) {
         return Ok(Some(board_file.target));
@@ -526,6 +528,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             request.build_info_path.display()
         )
     })?;
+    crate::build::reject_removed_std_field(&request.build_info_path, &content)?;
 
     if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
         let mut loaded = board_config.into_loaded();
@@ -734,7 +737,7 @@ plat_dyn = true
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
         );
         assert_eq!(
             cargo.env.get("AX_ARCH").map(String::as_str),
@@ -781,6 +784,30 @@ vm_configs = []
         assert_eq!(
             load_target_from_build_config(&path).unwrap(),
             Some("aarch64-unknown-none-softfloat".to_string())
+        );
+    }
+
+    #[test]
+    fn load_target_from_build_config_rejects_removed_std_field() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("qemu-aarch64.toml");
+        fs::write(
+            &path,
+            r#"
+std = true
+env = {}
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+"#,
+        )
+        .unwrap();
+
+        let err = load_target_from_build_config(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("uses removed `std` field"),
+            "{err:#}"
         );
     }
 
@@ -1050,7 +1077,7 @@ plat_dyn = false
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/no-pie/loongarch64-unknown-none-softfloat.json")
+                .ends_with("scripts/targets/std/loongarch64-unknown-linux-musl.json")
         );
     }
 }

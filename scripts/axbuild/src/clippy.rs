@@ -15,8 +15,10 @@ use crate::support::process::run_cargo_status_with_env;
 const DEFAULT_FEATURE: &str = "default";
 const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
 const AXCONFIG_FILE: &str = "axconfig.toml";
-const ARCEOS_RUST_PACKAGE: &str = "arceos-rust";
-const ARCEOS_RUST_CLIPPY_TARGET: &str = "x86_64-unknown-none";
+const AXSTD_STD_PACKAGE: &str = "ax-std";
+const AXSTD_STD_DEFAULT_FEATURE: &str = "default";
+const AXSTD_STD_CLIPPY_FEATURES: &str = "x86-pc,fs,multitask,irq,net";
+const AXSTD_STD_CLIPPY_TARGET: &str = "x86_64-unknown-none";
 const DOCS_RS_METADATA: &str = "docs.rs";
 const DOCS_METADATA: &str = "docs";
 const RS_METADATA: &str = "rs";
@@ -387,6 +389,18 @@ impl ClippyCheck {
         if matches!(self.deps_mode, ClippyDepsMode::NoDeps) {
             args.insert(1, "--no-deps".into());
         }
+        if self.package == AXSTD_STD_PACKAGE
+            && matches!(&self.kind, ClippyCheckKind::Feature(feature) if feature == AXSTD_STD_DEFAULT_FEATURE)
+        {
+            args = vec![
+                "clippy".into(),
+                "-p".into(),
+                self.package.clone(),
+                "--no-default-features".into(),
+                "--features".into(),
+                AXSTD_STD_CLIPPY_FEATURES.into(),
+            ];
+        }
         if let Some(target) = &self.target {
             args.extend(["--target".into(), target.clone()]);
         }
@@ -476,20 +490,16 @@ fn skip_unsupported_packages(packages: Vec<SelectedClippyPackage>) -> Vec<Select
         .collect()
 }
 
-fn clippy_env(package: &Package, metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
-    if package.name == ARCEOS_RUST_PACKAGE {
-        return arceos_rust_clippy_env(metadata);
-    }
-
+fn clippy_env(package: &Package) -> Vec<(String, String)> {
     let Some(manifest_dir) = package.manifest_path.parent() else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let axconfig = manifest_dir.join(AXCONFIG_FILE);
     if !axconfig.exists() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
-    Ok(vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())])
+    vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())]
 }
 
 fn package_axconfig_path(package: &Package) -> Option<PathBuf> {
@@ -567,11 +577,29 @@ fn with_axconfig_env_override(
     env
 }
 
-fn arceos_rust_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
+fn axstd_std_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     let mut envs = HashMap::new();
-    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, false, metadata)
-        .context("failed to prepare arceos-rust clippy config")?;
+    crate::build::prepare_std_build_env(&mut envs, AXSTD_STD_CLIPPY_TARGET, false, metadata)
+        .context("failed to prepare ax-std std clippy config")?;
+    envs.insert(
+        "RUSTFLAGS".to_string(),
+        "--cfg arceos_std --check-cfg=cfg(arceos_std)".to_string(),
+    );
     Ok(envs.into_iter().collect())
+}
+
+fn feature_clippy_env(
+    package: &Package,
+    feature: &str,
+    base_env: Vec<(String, String)>,
+    axconfig_override: Option<&ClippyAxconfigOverride>,
+    metadata: &Metadata,
+) -> anyhow::Result<Vec<(String, String)>> {
+    if package.name == AXSTD_STD_PACKAGE && feature == AXSTD_STD_DEFAULT_FEATURE {
+        return axstd_std_clippy_env(metadata);
+    }
+
+    Ok(with_axconfig_env_override(base_env, axconfig_override))
 }
 
 fn expand_clippy_checks(
@@ -583,20 +611,22 @@ fn expand_clippy_checks(
 
     for selected in packages {
         let package = &selected.package;
-        let features: BTreeSet<_> = package
+        let mut features: BTreeSet<_> = package
             .features
             .keys()
             .filter(|feature| feature.as_str() != DEFAULT_FEATURE)
             .cloned()
             .collect();
+        if package.name == AXSTD_STD_PACKAGE {
+            features.insert(AXSTD_STD_DEFAULT_FEATURE.to_string());
+        }
         let targets = docs_rs_targets(package);
         let target_iter = if targets.is_empty() {
             vec![None]
         } else {
             targets.into_iter().map(Some).collect()
         };
-        let env = clippy_env(package, metadata)
-            .with_context(|| format!("failed to prepare clippy env for `{}`", package.name))?;
+        let env = clippy_env(package);
         let axconfig_overrides = feature_axconfig_overrides(package);
 
         for target in target_iter {
@@ -619,12 +649,25 @@ fn expand_clippy_checks(
                         &workspace_root,
                     )
                 });
+                let feature_env = feature_clippy_env(
+                    package,
+                    feature,
+                    env.clone(),
+                    axconfig_override.as_ref(),
+                    metadata,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to prepare clippy env for `{}` feature `{feature}`",
+                        package.name
+                    )
+                })?;
                 checks.push(ClippyCheck {
                     package: package.name.to_string(),
                     kind: ClippyCheckKind::Feature(feature.clone()),
                     deps_mode: selected.deps_mode.clone(),
                     target: target.clone(),
-                    env: with_axconfig_env_override(env.clone(), axconfig_override.as_ref()),
+                    env: feature_env,
                     axconfig_override,
                 });
             }
@@ -1851,16 +1894,14 @@ mod tests {
     }
 
     #[test]
-    fn arceos_rust_config_is_passed_as_clippy_env() {
-        const ARCEOS_RUST_CONFIG_ENV: &str = "ARCEOS_RUST_CONFIG";
-
+    fn axstd_default_config_is_passed_as_clippy_env() {
         let metadata = crate::build::workspace_metadata().unwrap();
         let package = metadata
             .packages
             .iter()
-            .find(|package| package.name == ARCEOS_RUST_PACKAGE)
+            .find(|package| package.name == AXSTD_STD_PACKAGE)
             .cloned()
-            .expect("arceos-rust package should be in workspace metadata");
+            .expect("ax-std package should be in workspace metadata");
 
         let checks = expand_clippy_checks(
             &[SelectedClippyPackage {
@@ -1872,14 +1913,45 @@ mod tests {
         .unwrap();
 
         assert!(
-            checks[0].env.iter().any(|(key, value)| {
-                key == ARCEOS_RUST_CONFIG_ENV
-                    && value.ends_with(
-                        "tmp/axbuild/axconfig/arceos-rust/x86_64-unknown-none/.axconfig.toml",
-                    )
-            }),
-            "expected {ARCEOS_RUST_CONFIG_ENV} in {:?}",
+            checks[0].env.is_empty(),
+            "base ax-std clippy check should not use arceos_std env: {:?}",
             checks[0].env
+        );
+
+        let std_check = checks
+            .iter()
+            .find(|check| {
+                matches!(
+                    &check.kind,
+                    ClippyCheckKind::Feature(feature) if feature == AXSTD_STD_DEFAULT_FEATURE
+                )
+            })
+            .expect("ax-std default clippy check should exist");
+
+        assert!(
+            std_check.env.iter().any(|(key, value)| {
+                key == AX_CONFIG_PATH_ENV
+                    && value
+                        .ends_with("tmp/axbuild/axconfig/ax-std/x86_64-unknown-none/.axconfig.toml")
+            }),
+            "expected {AX_CONFIG_PATH_ENV} in {:?}",
+            std_check.env
+        );
+        assert!(
+            std_check
+                .env
+                .iter()
+                .any(|(key, value)| key == "RUSTFLAGS" && value.contains("arceos_std")),
+            "expected arceos_std rustflags in {:?}",
+            std_check.env
+        );
+        assert!(
+            std_check
+                .cargo_args()
+                .windows(2)
+                .any(|window| window == ["--features", AXSTD_STD_CLIPPY_FEATURES]),
+            "expected expanded ax-std std features in {:?}",
+            std_check.cargo_args()
         );
     }
 

@@ -82,3 +82,6 @@ spin = {workspace = true, optional = true}
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

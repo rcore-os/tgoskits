@@ -37,7 +37,7 @@ pub(crate) fn build_c_app(
     request: &ResolvedBuildRequest,
     input: &ArceosCBuildInput,
 ) -> anyhow::Result<ArceosCBuildOutput> {
-    let mut cargo = build::load_cargo_config(request)?;
+    let mut cargo = build::load_bare_cargo_config(request)?;
     cargo.package = AX_LIBC_PACKAGE.to_string();
     cargo.target = request.target.clone();
     cargo.to_bin = false;

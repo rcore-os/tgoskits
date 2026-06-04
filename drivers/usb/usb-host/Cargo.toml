@@ -12,7 +12,8 @@ version = "0.9.4"
 [features]
 aggressive_usb_reset = []
 default = ["aggressive_usb_reset"]
-libusb = ["libusb1-sys"]
+libusb = ["umod"]
+umod = ["libusb1-sys"]
 
 [dependencies]
 bitflags = "2.8"
@@ -36,6 +37,4 @@ tock-registers.workspace = true
 trait-ffi = "0.2.4"
 usb-if = {workspace = true}
 xhci = "0.9"
-
-[target.'cfg(not(target_os = "none"))'.dependencies]
 libusb1-sys = {version = "0.7", optional = true}

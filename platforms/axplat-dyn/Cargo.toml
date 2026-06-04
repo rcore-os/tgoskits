@@ -41,3 +41,6 @@ platform = "dyn"
 arch = "aarch64"
 crate = "axplat_dyn"
 dynamic = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

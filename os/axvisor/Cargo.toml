@@ -54,7 +54,7 @@ serial = []
 [dependencies]
 spin = { workspace = true }
 
-[target.'cfg(not(any(windows, unix)))'.dependencies]
+[target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
@@ -75,7 +75,7 @@ ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
 
 # xtask dependencies (only used on host platforms)
-[target.'cfg(any(windows, unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow.workspace = true
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }
@@ -88,3 +88,6 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
 toml = "0.9"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

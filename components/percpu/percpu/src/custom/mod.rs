@@ -200,11 +200,11 @@ fn percpu_link_start() -> usize {
 /// Returns the number of areas initialized. If this function has been called
 /// before, it does nothing and returns 0.
 pub fn init() -> usize {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(arceos_std)))]
     {
         _linux::init(4)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(not(target_os = "linux"), arceos_std))]
     {
         0
     }
@@ -237,7 +237,7 @@ pub fn percpu_area_size() -> usize {
     _percpu_load_end as *const () as usize - percpu_link_start()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(arceos_std)))]
 mod _linux {
     use std::sync::Mutex;
 

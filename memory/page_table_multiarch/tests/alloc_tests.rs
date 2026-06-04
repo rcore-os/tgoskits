@@ -139,6 +139,34 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
     Ok(())
 }
 
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64", docsrs))]
+fn run_aligned_root_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>()
+-> PagingResult<()> {
+    ALLOCATED.with_borrow_mut(|it| {
+        it.clear();
+    });
+    ALIGN.with_borrow_mut(|it| {
+        it.clear();
+    });
+
+    let table =
+        PageTable64::<M, PTE, TrackPagingHandler<M>>::try_new_with_root(4, 4096 * 4).unwrap();
+    assert_eq!(table.root_paddr().as_usize() % (4096 * 4), 0);
+    assert_eq!(
+        ALIGN.with_borrow(|it| it.get(&table.root_paddr().as_usize()).copied()),
+        Some(4096 * 4)
+    );
+
+    drop(table);
+    assert_eq!(
+        ALLOCATED.with_borrow(|it| it.len()),
+        0,
+        "Some frames were not deallocated"
+    );
+
+    Ok(())
+}
+
 #[cfg(target_pointer_width = "32")]
 fn run_test_for_32bit<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> PagingResult<()>
 {
@@ -217,6 +245,20 @@ fn test_dealloc_riscv() -> PagingResult<()> {
         ax_page_table_entry::riscv::Rv64PTE,
     >()?;
     run_test_for::<
+        ax_page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
+        ax_page_table_entry::riscv::Rv64PTE,
+    >()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64", docsrs))]
+fn test_aligned_root_riscv() -> PagingResult<()> {
+    run_aligned_root_test_for::<
+        ax_page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
+        ax_page_table_entry::riscv::Rv64PTE,
+    >()?;
+    run_aligned_root_test_for::<
         ax_page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
         ax_page_table_entry::riscv::Rv64PTE,
     >()?;

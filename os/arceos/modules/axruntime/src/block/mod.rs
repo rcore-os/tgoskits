@@ -1,4 +1,7 @@
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 use alloc::vec::Vec;
 #[cfg(all(
     feature = "irq",
@@ -6,17 +9,26 @@ use alloc::vec::Vec;
         all(
             feature = "fs",
             not(feature = "fs-ng"),
-            any(not(feature = "plat-dyn"), target_os = "none")
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
         ),
-        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+        all(
+            feature = "fs-ng",
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+        )
     )
 ))]
 use core::ptr::NonNull;
 
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 mod root;
 #[cfg(any(
-    all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")),
+    all(
+        feature = "fs-ng",
+        any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+    ),
     test
 ))]
 pub(crate) mod volume;
@@ -27,9 +39,12 @@ pub(crate) mod volume;
         all(
             feature = "fs",
             not(feature = "fs-ng"),
-            any(not(feature = "plat-dyn"), target_os = "none")
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
         ),
-        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+        all(
+            feature = "fs-ng",
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+        )
     )
 ))]
 struct BlockIrqState {
@@ -43,9 +58,12 @@ struct BlockIrqState {
         all(
             feature = "fs",
             not(feature = "fs-ng"),
-            any(not(feature = "plat-dyn"), target_os = "none")
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
         ),
-        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+        all(
+            feature = "fs-ng",
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+        )
     )
 ))]
 pub(crate) struct BlockIrqRegistration {
@@ -58,9 +76,12 @@ pub(crate) struct BlockIrqRegistration {
         all(
             feature = "fs",
             not(feature = "fs-ng"),
-            any(not(feature = "plat-dyn"), target_os = "none")
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
         ),
-        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+        all(
+            feature = "fs-ng",
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+        )
     )
 ))]
 pub(crate) type BlockIrqRegistration = ();
@@ -71,9 +92,12 @@ pub(crate) type BlockIrqRegistration = ();
         all(
             feature = "fs",
             not(feature = "fs-ng"),
-            any(not(feature = "plat-dyn"), target_os = "none")
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
         ),
-        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+        all(
+            feature = "fs-ng",
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+        )
     )
 ))]
 unsafe fn handle_block_irq(
@@ -91,9 +115,12 @@ unsafe fn handle_block_irq(
         all(
             feature = "fs",
             not(feature = "fs-ng"),
-            any(not(feature = "plat-dyn"), target_os = "none")
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
         ),
-        all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+        all(
+            feature = "fs-ng",
+            any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+        )
     )
 ))]
 impl Drop for BlockIrqState {
@@ -106,13 +133,19 @@ impl Drop for BlockIrqState {
     }
 }
 
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 struct FsNgBlockDevice {
     _irq: Option<BlockIrqRegistration>,
     block: ax_driver::block::Block,
 }
 
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 impl FsNgBlockDevice {
     fn new(mut block: ax_driver::block::Block) -> Self {
         let irq = register_irq_handler(&mut block);
@@ -120,7 +153,10 @@ impl FsNgBlockDevice {
     }
 }
 
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 impl ax_fs_ng::FsBlockDevice for FsNgBlockDevice {
     fn name(&self) -> &str {
         self.block.name()
@@ -151,9 +187,12 @@ impl ax_fs_ng::FsBlockDevice for FsNgBlockDevice {
     all(
         feature = "fs",
         not(feature = "fs-ng"),
-        any(not(feature = "plat-dyn"), target_os = "none")
+        any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
     ),
-    all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none"))
+    all(
+        feature = "fs-ng",
+        any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+    )
 ))]
 pub(crate) fn register_irq_handler(
     block: &mut ax_driver::block::Block,
@@ -190,10 +229,10 @@ pub(crate) fn register_irq_handler(
 
 #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_fs_ng(bootargs: Option<&str>) {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     init_fs_ng_from_blocks(take_block_devices(), bootargs);
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     let _ = bootargs;
 }
 
@@ -202,12 +241,18 @@ pub(crate) fn init_static_fs_ng() {
     init_fs_ng_from_blocks(take_block_devices(), None);
 }
 
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 fn take_block_devices() -> Vec<ax_driver::block::Block> {
     ax_driver::block::take_block_devices()
 }
 
-#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs-ng",
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
+))]
 fn init_fs_ng_from_blocks(blocks: Vec<ax_driver::block::Block>, bootargs: Option<&str>) {
     let block_devs = blocks.into_iter().map(|dev| {
         alloc::boxed::Box::new(FsNgBlockDevice::new(dev))

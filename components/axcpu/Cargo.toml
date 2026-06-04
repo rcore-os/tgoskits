@@ -56,6 +56,9 @@ ax-page-table-multiarch = { workspace = true }
 [lints.clippy]
 new_without_default = "allow"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }
+
 [package.metadata.docs.rs]
 all-features = true
 targets = [

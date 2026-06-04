@@ -123,6 +123,24 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
     )
 }
 
+pub(crate) fn load_bare_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+    let metadata =
+        build::cached_workspace_metadata().context("failed to load workspace metadata")?;
+    let makefile_features = build::makefile_features_from_env();
+    let build_info = load_build_info_with_makefile_features_and_metadata(
+        request,
+        &makefile_features,
+        Some(metadata),
+    )?;
+
+    build_info.into_bare_cargo_config_with_metadata(
+        &request.package,
+        &request.target,
+        request.plat_dyn,
+        metadata,
+    )
+}
+
 pub(crate) fn default_build_info_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
     Ok(build::default_build_info_path_in_workspace(
         &crate::context::workspace_root_path()?,
@@ -243,7 +261,7 @@ mod tests {
     fn preparing_non_dynamic_aarch64_without_custom_platform_fails() {
         let metadata = repo_metadata();
         let result = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
-            .into_prepared_base_cargo_config_with_metadata(
+            .into_bare_cargo_config_with_metadata(
                 "ax-helloworld",
                 "aarch64-unknown-none-softfloat",
                 Some(false),
@@ -259,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn max_cpu_num_adds_axfeat_smp_feature() {
+    fn max_cpu_num_adds_smp_feature_for_std_build() {
         let metadata = repo_metadata();
         let mut build_info = ArceosBuildInfo {
             features: vec!["ax-feat/net".to_string()],
@@ -274,7 +292,7 @@ mod tests {
             &metadata,
         );
 
-        assert!(build_info.features.contains(&"ax-feat/smp".to_string()));
+        assert!(build_info.features.contains(&"ax-std/smp".to_string()));
     }
 
     #[test]
@@ -380,7 +398,7 @@ BACKTRACE = "y"
         )
         .unwrap();
         let request = request(
-            "ax-backtrace",
+            "arceos-backtrace",
             "aarch64-unknown-none-softfloat",
             None,
             path.clone(),
@@ -404,7 +422,7 @@ BACKTRACE = "y"
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
         );
         assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
     }
@@ -474,13 +492,12 @@ AX_IP = "10.0.2.15"
         assert!(
             !cargo
                 .features
-                .iter()
-                .any(|feature| feature.starts_with("ax-hal/riscv64-"))
+                .contains(&"ax-std/riscv64-qemu-virt".to_string())
         );
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json")
+                .ends_with("scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json")
         );
     }
 
@@ -497,7 +514,7 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn apply_makefile_features_uses_axfeat_prefix_for_axfeat_packages() {
+    fn apply_makefile_features_uses_ax_std_prefix_for_unified_std_build() {
         let metadata = repo_metadata();
         let mut build_info = ArceosBuildInfo {
             features: Vec::new(),
@@ -511,8 +528,56 @@ AX_IP = "10.0.2.15"
             &metadata,
         );
 
-        assert!(build_info.features.contains(&"ax-feat/lockdep".to_string()));
-        assert!(!build_info.features.contains(&"ax-std/lockdep".to_string()));
+        assert!(build_info.features.contains(&"lockdep".to_string()));
+        assert!(!build_info.features.contains(&"ax-feat/lockdep".to_string()));
+    }
+
+    #[test]
+    fn prepared_cargo_config_uses_unified_std_target() {
+        let metadata = repo_metadata();
+        let cargo = ArceosBuildInfo {
+            features: vec!["lockdep".to_string()],
+            ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+        }
+        .into_prepared_base_cargo_config_with_metadata(
+            "ax-helloworld",
+            "aarch64-unknown-none-softfloat",
+            None,
+            &metadata,
+        )
+        .unwrap();
+
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
+        );
+        assert!(cargo.features.contains(&"ax-std/lockdep".to_string()));
+    }
+
+    #[test]
+    fn bare_cargo_config_remains_available_for_c_builds() {
+        let metadata = repo_metadata();
+        let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
+            .into_bare_cargo_config_with_metadata(
+                "ax-helloworld",
+                "x86_64-unknown-none",
+                Some(false),
+                &metadata,
+            )
+            .unwrap();
+
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/no-pie/x86_64-unknown-none.json")
+        );
+        assert!(
+            cargo
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
     }
 
     #[test]

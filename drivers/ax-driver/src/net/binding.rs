@@ -49,7 +49,7 @@ pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
         || {
             #[cfg(all(
                 plat_dyn,
-                target_os = "none",
+                any(target_os = "none", arceos_std),
                 any(
                     feature = "intel-net",
                     feature = "ixgbe",
@@ -76,7 +76,7 @@ pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
         || {
             #[cfg(all(
                 plat_dyn,
-                target_os = "none",
+                any(target_os = "none", arceos_std),
                 any(
                     feature = "intel-net",
                     feature = "ixgbe",

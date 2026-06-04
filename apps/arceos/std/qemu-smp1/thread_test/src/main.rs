@@ -1,4 +1,4 @@
-#[cfg(not(all(target_os = "hermit", target_arch = "riscv64")))]
+#[cfg(not(all(feature = "arceos", target_arch = "riscv64")))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     sync::{Arc, Barrier, Mutex, mpsc},
@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
 fn main() {
     println!("=== Rust 线程功能测试程序 ===\n");
@@ -31,9 +31,9 @@ fn main() {
     test_barrier_synchronization();
 
     // 7. 线程恐慌处理
-    #[cfg(not(target_os = "hermit"))]
+    #[cfg(not(feature = "arceos"))]
     test_thread_panic();
-    #[cfg(target_os = "hermit")]
+    #[cfg(feature = "arceos")]
     println!("7. 线程异常处理:\nUnikernel 环境跳过会终止程序的异常捕获测试。\n");
 
     println!("\n=== 所有测试完成 ===");
@@ -164,13 +164,13 @@ fn test_mutex_shared_data() {
 }
 
 // 5. 原子操作
-#[cfg(all(target_os = "hermit", target_arch = "riscv64"))]
+#[cfg(all(feature = "arceos", target_arch = "riscv64"))]
 fn test_atomic_operations() {
     println!("5. 原子操作测试:");
     println!("riscv64 Hermit 环境跳过高并发原子操作测试。\n");
 }
 
-#[cfg(not(all(target_os = "hermit", target_arch = "riscv64")))]
+#[cfg(not(all(feature = "arceos", target_arch = "riscv64")))]
 fn test_atomic_operations() {
     println!("5. 原子操作测试:");
 
@@ -225,7 +225,7 @@ fn test_barrier_synchronization() {
 }
 
 // 7. 线程恐慌处理
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 fn test_thread_panic() {
     println!("7. 线程恐慌处理:");
     println!("Unikernel环境下使用panic_abort模式，不支持恐慌捕获，因此会导致程序终止。");

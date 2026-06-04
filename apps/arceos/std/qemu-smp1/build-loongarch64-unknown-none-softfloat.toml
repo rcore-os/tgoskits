@@ -1,4 +1,3 @@
-std = true
 features = [
   "ax-hal/loongarch64-qemu-virt",
 ]

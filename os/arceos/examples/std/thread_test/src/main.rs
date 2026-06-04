@@ -8,8 +8,8 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
 fn main() {
     println!("=== Rust 线程功能测试程序 ===\n");
@@ -33,7 +33,10 @@ fn main() {
     test_barrier_synchronization();
 
     // 7. 线程恐慌处理
+    #[cfg(not(feature = "arceos"))]
     test_thread_panic();
+    #[cfg(feature = "arceos")]
+    println!("跳过线程恐慌处理测试（panic_abort 模式）\n");
 
     println!("\n=== 所有测试完成 ===");
 }
@@ -215,6 +218,7 @@ fn test_barrier_synchronization() {
 }
 
 // 7. 线程恐慌处理
+#[cfg(not(feature = "arceos"))]
 fn test_thread_panic() {
     println!("7. 线程恐慌处理:");
     println!("Unikernel环境下使用panic_abort模式，不支持恐慌捕获，因此会导致程序终止。");

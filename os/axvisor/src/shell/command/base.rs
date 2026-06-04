@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, FileType};
 #[cfg(feature = "fs")]
 use std::io::{self, Read, Write};
+#[cfg(feature = "fs")]
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::println;
 use std::string::{String, ToString};
 
@@ -80,11 +82,12 @@ fn do_ls(cmd: &ParsedCommand) {
         let mut entries = fs::read_dir(name)?
             .filter_map(|e| e.ok())
             .map(|e| e.file_name())
-            .filter(|name| show_all || !name.starts_with('.'))
+            .filter(|name| show_all || !name.to_string_lossy().starts_with('.'))
             .collect::<Vec<_>>();
         entries.sort();
 
         for entry in entries {
+            let entry = entry.to_string_lossy();
             let path = format!("{name}/{entry}");
             if let Err(e) = show_entry_info(&path, &entry, show_long) {
                 print_err!("ls", path, e);
@@ -231,7 +234,7 @@ fn do_rm(cmd: &ParsedCommand) {
             } else if rm_dir {
                 fs::remove_dir(path)
             } else {
-                Err(io::Error::Unsupported)
+                Err(io::Error::from(io::ErrorKind::Unsupported))
             }
         } else {
             fs::remove_file(path)
@@ -256,8 +259,9 @@ fn remove_dir_recursive(path: &str, _force: bool) -> io::Result<()> {
     // Remove all child items
     for entry_result in entries {
         let entry = entry_result?;
-        let entry_path = format!("{}/{}", path, entry.file_name());
-        let metadata = entry.file_type();
+        let entry_name = entry.file_name();
+        let entry_path = format!("{}/{}", path, entry_name.to_string_lossy());
+        let metadata = entry.file_type()?;
 
         if metadata.is_dir() {
             // Recursively delete subdirectory
@@ -295,7 +299,7 @@ fn do_pwd(cmd: &ParsedCommand) {
     let _logical = cmd.flags.contains("logical");
 
     match std::env::current_dir() {
-        Ok(pwd) => println!("{}", pwd),
+        Ok(pwd) => println!("{}", pwd.display()),
         Err(e) => {
             print_err!("pwd", e);
         }
@@ -516,7 +520,7 @@ fn do_cp(cmd: &ParsedCommand) {
         if recursive {
             copy_dir_recursive(source, dest)
         } else {
-            Err(io::Error::Unsupported)
+            Err(io::Error::from(io::ErrorKind::Unsupported))
         }
     } else {
         copy_file(source, dest)
@@ -556,10 +560,11 @@ fn copy_dir_recursive(src: &str, dst: &str) -> io::Result<()> {
     for entry_result in entries {
         let entry = entry_result?;
         let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
         let src_path = format!("{src}/{file_name}");
         let dst_path = format!("{dst}/{file_name}");
 
-        let metadata = entry.file_type();
+        let metadata = entry.file_type()?;
         if metadata.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {

@@ -11,7 +11,7 @@ pub(crate) fn probe_all_devices() {
 #[cfg(all(feature = "fs", not(feature = "fs-ng"), feature = "plat-dyn"))]
 pub(crate) fn take_dyn_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     {
         if !rdrive::is_initialized() {
             return alloc::vec::Vec::new();
@@ -26,7 +26,7 @@ pub(crate) fn take_dyn_fs_block_devices()
             .collect()
     }
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     alloc::vec::Vec::new()
 }
 
@@ -45,7 +45,7 @@ pub(crate) fn take_static_fs_block_devices()
 
 #[cfg(all(feature = "display", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_display() {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     {
         if !rdrive::is_initialized() {
             ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
@@ -62,7 +62,7 @@ pub(crate) fn init_dyn_display() {
         ax_display::init_display(devices);
     }
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
 }
 
@@ -81,7 +81,7 @@ pub(crate) fn init_static_display() {
 
 #[cfg(all(feature = "input", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_input() {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     {
         if !rdrive::is_initialized() {
             ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
@@ -94,7 +94,7 @@ pub(crate) fn init_dyn_input() {
         ax_input::init_input(devices);
     }
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
 }
 
@@ -155,7 +155,7 @@ pub(crate) fn take_static_net_ng_drivers()
 
 #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_vsock() {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     {
         if !rdrive::is_initialized() {
             ax_net_ng::init_vsock(alloc::vec::Vec::new());
@@ -166,7 +166,7 @@ pub(crate) fn init_dyn_vsock() {
         ax_net_ng::init_vsock(devices);
     }
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     ax_net_ng::init_vsock(alloc::vec::Vec::new());
 }
 
@@ -179,7 +179,7 @@ pub(crate) fn init_static_vsock() {
 
 #[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
 fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     {
         if !rdrive::is_initialized() {
             return alloc::vec::Vec::new();
@@ -197,13 +197,13 @@ fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::Ether
         devices
     }
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     alloc::vec::Vec::new()
 }
 
 #[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
 fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", arceos_std))]
     {
         if !rdrive::is_initialized() {
             return alloc::vec::Vec::new();
@@ -221,14 +221,14 @@ fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng:
         devices
     }
 
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", arceos_std)))]
     alloc::vec::Vec::new()
 }
 
 #[cfg(all(
     feature = "fs",
     not(feature = "fs-ng"),
-    any(not(feature = "plat-dyn"), target_os = "none")
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
 ))]
 struct FsBlockDevice {
     _irq: Option<crate::block::BlockIrqRegistration>,
@@ -238,7 +238,7 @@ struct FsBlockDevice {
 #[cfg(all(
     feature = "fs",
     not(feature = "fs-ng"),
-    any(not(feature = "plat-dyn"), target_os = "none")
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
 ))]
 impl FsBlockDevice {
     fn new(mut block: ax_driver::block::Block) -> Self {
@@ -250,7 +250,7 @@ impl FsBlockDevice {
 #[cfg(all(
     feature = "fs",
     not(feature = "fs-ng"),
-    any(not(feature = "plat-dyn"), target_os = "none")
+    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
 ))]
 impl ax_fs::FsBlockDevice for FsBlockDevice {
     fn name(&self) -> &str {

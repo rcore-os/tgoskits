@@ -13,8 +13,8 @@ OUTPUT_ARCH(aarch64)
 ENTRY(_head)
 PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
-	note PT_NOTE FLAGS(4);	/* R__ */
 	tls PT_TLS FLAGS(4);	/* R__ */
+	note PT_NOTE FLAGS(4);	/* R__ */
 }
 
 SECTIONS
@@ -48,6 +48,8 @@ SECTIONS
         *(.init.data)
         *(.sdata .sdata.*)
         *(.got .got.*)
+        *(.got.plt .got.plt.*)
+        *(.igot .igot.*)
 
         . = ALIGN(64);
         __percpu_start = .;
@@ -59,19 +61,28 @@ SECTIONS
         *(.rela .rela*)
         __rela_dyn_end = .;
     }
+
+    .init_array : ALIGN(8) {
+        __init_array_start = .;
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+        KEEP(*(.init_array))
+        __init_array_end = .;
+    }
   
     .sdata : ALIGN(8) {
         *(.sdata)
         . = ALIGN(PAGE_SIZE);
     }
-    _edata = .;
-    __kernel_load_end = .;
 
     .tdata : {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
     } :text :tls
+
+    _edata = .;
+    __kernel_load_end = .;
+    __bss_start = .;
 
     .tbss : {
         _stbss = .;
@@ -82,7 +93,6 @@ SECTIONS
     } :text :tls
  
     . = ALIGN(8);
-    __bss_start = .; 
     .sbss :  { 
         *(.dynsbss) *(.sbss) *(.scommon) 
     } :text
@@ -136,6 +146,6 @@ SECTIONS
         *(.dynamic .dynsym .dynstr .hash .gnu.hash)
         *(.gnu.attributes)
         *(.options)
-        *(.eh_frame)
+        *(.eh_frame .eh_frame_hdr)
     }
 }
