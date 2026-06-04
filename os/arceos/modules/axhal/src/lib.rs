@@ -50,6 +50,35 @@ pub mod tls;
 #[cfg(feature = "irq")]
 pub mod irq;
 
+#[cfg(all(
+    target_arch = "loongarch64",
+    feature = "irq",
+    ax_hal_any_platform_feature
+))]
+pub mod loongarch64_hv_irq {
+    pub fn register_virtual_irq_injector(injector: fn(usize, usize, usize)) {
+        ax_plat::irq::register_loongarch_virtual_irq_injector(injector);
+    }
+
+    pub fn enable_external_irq_line() {
+        crate::irq::set_enable(ax_config::devices::EIOINTC_IRQ, true);
+    }
+
+    pub fn register_guest_irq_route(
+        physical_irq: usize,
+        vm_id: usize,
+        vcpu_id: usize,
+        guest_vector: usize,
+    ) {
+        ax_plat::irq::register_loongarch_guest_irq_route(
+            physical_irq,
+            vm_id,
+            vcpu_id,
+            guest_vector,
+        );
+    }
+}
+
 #[cfg(feature = "paging")]
 pub mod paging;
 

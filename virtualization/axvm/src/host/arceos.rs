@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 use alloc::boxed::Box;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -84,11 +88,16 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
+    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64) {
         modules::ax_hal::time::set_oneshot_timer(deadline_ns);
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     fn register_timer(
         &self,
         deadline_ns: u64,
@@ -97,7 +106,7 @@ impl HostTime for ArceOsHost {
         crate::timer::register_timer(deadline_ns, callback)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     fn cancel_timer(&self, token: Self::CancelToken) {
         crate::timer::cancel_timer(token);
     }

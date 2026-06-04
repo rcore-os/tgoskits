@@ -15,17 +15,18 @@ use crate::{
     context_frame::LoongArchContextFrame,
     host,
     registers::{
-        CSR_PGDH, CSR_PGDL, CSR_PWCH, CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_TIMER, csr_read,
-        csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
-        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough,
-        gstat_set_gid, gstat_set_pvm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled,
-        set_ecfg_vs,
+        CSR_ASID, CSR_CRMD, CSR_KSAVE_KSP, CSR_PGDH, CSR_PGDL, CSR_PRMD, CSR_PWCH, CSR_PWCL,
+        CSR_STLBPS, CSR_TLBRENTRY, INT_HWI0, INT_HWI7, INT_IPI, INT_TIMER, csr_read, csr_write,
+        gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu, gcfg_set_top,
+        gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough, gstat_set_gid,
+        gstat_set_pvm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled, set_ecfg_vs,
     },
 };
 
 #[cfg(target_arch = "loongarch64")]
 unsafe extern "C" {
     fn _run_guest(ctx: *mut LoongArchContextFrame) -> !;
+    fn _guest_tlb_refill_vector();
     static _exception_vectors: u8;
 }
 
@@ -50,6 +51,7 @@ pub struct LoongArchVCpu {
     vm_id: VMId,
     vcpu_id: VCpuId,
     cpu_id: usize,
+    guest_timer_token: Option<usize>,
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -72,18 +74,22 @@ static HOST_STAGE2_STLBPS: usize = 0;
 static HOST_STAGE2_TLBRENTRY: usize = 0;
 #[cfg(target_arch = "loongarch64")]
 #[ax_percpu::def_percpu]
+static HOST_STAGE2_ASID: usize = 0;
+#[cfg(target_arch = "loongarch64")]
+#[ax_percpu::def_percpu]
+static HOST_CRMD: usize = 0;
+#[cfg(target_arch = "loongarch64")]
+#[ax_percpu::def_percpu]
+static HOST_PRMD: usize = 0;
+#[cfg(target_arch = "loongarch64")]
+#[ax_percpu::def_percpu]
+static HOST_KSAVE_KSP: usize = 0;
+#[cfg(target_arch = "loongarch64")]
+#[ax_percpu::def_percpu]
 static HOST_GUEST_EXIT_EENTRY: usize = 0;
 #[cfg(target_arch = "loongarch64")]
 #[ax_percpu::def_percpu]
 static HOST_ECFG_VS: usize = 0;
-
-/// Host CSR number for TCFG (Timer Configuration).
-#[cfg(target_arch = "loongarch64")]
-const CSR_HOST_TCFG: u16 = 0x41;
-
-/// TCFG.EN bit: timer enable.
-#[cfg(target_arch = "loongarch64")]
-const TCFG_EN: usize = 0x1;
 
 #[cfg(target_arch = "loongarch64")]
 const GUEST_RESET_CRMD_DIRECT: usize = 1 << 3;
@@ -100,6 +106,12 @@ const GUEST_BOOT_VSEG: usize = 0x9000;
 #[cfg(target_arch = "loongarch64")]
 const GUEST_BOOT_DMW: usize =
     (GUEST_BOOT_VSEG << GUEST_DMW_DA_BITS) | GUEST_DMW_PLV0 | GUEST_DMW_MAT_CC;
+#[cfg(target_arch = "loongarch64")]
+const STAGE2_ASID: usize = 1;
+#[cfg(target_arch = "loongarch64")]
+const CSR_CRMD_IE: usize = 1 << 2;
+#[cfg(target_arch = "loongarch64")]
+const LOCAL_INTERRUPT_MASK: usize = (1 << (INT_IPI + 1)) - 1;
 
 #[derive(Clone, Debug, Default)]
 pub struct LoongArchVCpuCreateConfig {
@@ -140,11 +152,13 @@ impl AxArchVCpu for LoongArchVCpu {
             vm_id: _vm_id,
             vcpu_id: _vcpu_id,
             cpu_id: config.cpu_id,
+            guest_timer_token: None,
         })
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
         self.ctx.sepc = entry.as_usize();
+        self.ctx.gcsr_era = entry.as_usize();
         Ok(())
     }
 
@@ -161,13 +175,9 @@ impl AxArchVCpu for LoongArchVCpu {
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         #[cfg(target_arch = "loongarch64")]
         {
-            // Before entering the guest, program the host hardware timer with the
-            // guest's requested TCFG value.  In LVZ the guest's timer CSR writes go
-            // to GCSR TCFG transparently (no GSPR trap), so the only place we can
-            // observe the guest's timer configuration is in ctx.gcsr_tcfg, which is
-            // updated by SAVE_GUEST_REGS on each VM exit.
-            self.sync_guest_timer_to_host();
-
+            unsafe {
+                self.enable_guest_mode();
+            }
             log::debug!("LoongArch guest entry context:\n{}", self.ctx);
             let exit_reason = unsafe {
                 save_host_sp();
@@ -216,7 +226,13 @@ impl AxArchVCpu for LoongArchVCpu {
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {
-        crate::registers::inject_interrupt(vector);
+        if (INT_HWI0..=INT_HWI7).contains(&vector) {
+            crate::registers::inject_interrupt(vector);
+        } else if vector <= INT_IPI {
+            self.ctx.gcsr_estat |= 1usize << vector;
+        } else {
+            log::warn!("Ignoring unsupported LoongArch interrupt vector {vector}");
+        }
         Ok(())
     }
 
@@ -226,8 +242,44 @@ impl AxArchVCpu for LoongArchVCpu {
 }
 
 impl LoongArchVCpu {
+    #[cfg(target_arch = "loongarch64")]
+    pub fn has_enabled_pending_interrupt(&self) -> bool {
+        self.ctx.gcsr_eentry != 0
+            && self.ctx.gcsr_crmd & CSR_CRMD_IE != 0
+            && self.ctx.gcsr_estat & self.ctx.gcsr_ectl & LOCAL_INTERRUPT_MASK != 0
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    pub fn idle_wait_timeout(&self) -> core::time::Duration {
+        const TIMER_ENABLE: usize = 1 << 0;
+        const TIMER_INIT_MASK: usize = !0x3;
+        const MIN_WAIT: core::time::Duration = core::time::Duration::from_micros(50);
+        const MAX_WAIT: core::time::Duration = core::time::Duration::from_millis(10);
+
+        if self.ctx.gcsr_ectl & (1usize << INT_TIMER) == 0 || self.ctx.gcsr_tcfg & TIMER_ENABLE == 0
+        {
+            return MAX_WAIT;
+        }
+
+        let ticks = if self.ctx.gcsr_tval == 0 {
+            self.ctx.gcsr_tcfg & TIMER_INIT_MASK
+        } else {
+            self.ctx.gcsr_tval
+        };
+        if ticks == 0 {
+            return MIN_WAIT;
+        }
+
+        let nanos = host::ticks_to_nanos(ticks as u64);
+        core::time::Duration::from_nanos(nanos).clamp(MIN_WAIT, MAX_WAIT)
+    }
+
     fn init_hv(&mut self, config: LoongArchVCpuSetupConfig) {
         self.init_vm_context(config);
+        #[cfg(target_arch = "loongarch64")]
+        unsafe {
+            gintc_set_hwi_passthrough(0xff);
+        }
     }
 
     fn init_vm_context(&mut self, config: LoongArchVCpuSetupConfig) {
@@ -241,38 +293,7 @@ impl LoongArchVCpu {
         self.ctx.gcsr_asid = self.vcpu_id;
         self.ctx.gcsr_cpuid = self.cpu_id;
 
-        if config.passthrough_timer {
-            self.ctx.gcsr_tcfg = 0x1;
-        }
-    }
-
-    /// Program the host hardware timer to match the guest's requested timer
-    /// configuration. In LVZ, guest timer CSR writes (TCFG/TVAL/TICLR) are
-    /// transparent (GCSR-swappable) and do NOT trap, so the guest's virtual
-    /// timer state is only observable via `ctx.gcsr_tcfg` which is updated by
-    /// SAVE_GUEST_REGS on each VM exit.
-    ///
-    /// By programming the host timer to match, the hardware timer fires at the
-    /// guest's requested time, causing an IRQ VM exit. The IRQ handler then
-    /// injects the timer interrupt into the guest via `gcsr_estat`.
-    ///
-    /// **Limitation**: This direct passthrough is only correct in the 1:1 vCPU
-    /// model where each vCPU exclusively owns a physical CPU. In SMP or
-    /// shared-CPU scenarios, a software-emulated timer (maintaining per-guest
-    /// virtual TCFG/TVAL) will be needed.
-    #[cfg(target_arch = "loongarch64")]
-    fn sync_guest_timer_to_host(&self) {
-        let guest_tcfg = self.ctx.gcsr_tcfg;
-        // Only program the host timer when the guest has set a non-zero
-        // init value.  With init_val=0 the timer fires immediately on
-        // every VM entry, preventing the guest from making progress.
-        let init_val = guest_tcfg >> 2;
-        if guest_tcfg & TCFG_EN != 0 && init_val != 0 {
-            log::debug!("Sync guest timer to host: gcsr_tcfg={:#x}", guest_tcfg);
-            unsafe {
-                csr_write::<CSR_HOST_TCFG>(guest_tcfg);
-            }
-        }
+        let _ = config.passthrough_timer;
     }
 
     /// Set guest architectural boot state: CRMD (DA mode), PRMD (PIE), EUEN, DMW0-3.
@@ -312,6 +333,9 @@ impl LoongArchVCpu {
     /// Save host translation CSRs to per-CPU storage before switching to stage2.
     #[cfg(target_arch = "loongarch64")]
     unsafe fn save_host_translation_state(&self) {
+        HOST_CRMD.write_current_raw(csr_read::<CSR_CRMD>());
+        HOST_PRMD.write_current_raw(csr_read::<CSR_PRMD>());
+        HOST_KSAVE_KSP.write_current_raw(csr_read::<CSR_KSAVE_KSP>());
         HOST_GUEST_EXIT_EENTRY.write_current_raw(csr_read::<{ crate::registers::CSR_EENTRY }>());
         HOST_ECFG_VS.write_current_raw(get_ecfg_vs());
         HOST_STAGE2_PGDL.write_current_raw(csr_read::<CSR_PGDL>());
@@ -320,6 +344,7 @@ impl LoongArchVCpu {
         HOST_STAGE2_PWCH.write_current_raw(csr_read::<CSR_PWCH>());
         HOST_STAGE2_STLBPS.write_current_raw(csr_read::<CSR_STLBPS>());
         HOST_STAGE2_TLBRENTRY.write_current_raw(csr_read::<CSR_TLBRENTRY>());
+        HOST_STAGE2_ASID.write_current_raw(csr_read::<CSR_ASID>());
     }
 
     /// Program stage2 page-walk CSRs from the VM's stage2 root.
@@ -331,16 +356,14 @@ impl LoongArchVCpu {
         csr_write::<CSR_STLBPS>(12);
         csr_write::<CSR_PGDL>(root);
         csr_write::<CSR_PGDH>(root);
+        csr_write::<CSR_ASID>(STAGE2_ASID);
     }
 
     /// Install host exit vector table (CSR.EENTRY) and TLB refill handler
     /// (CSR.TLBRENTRY), then flush stale TLB entries.
     #[cfg(target_arch = "loongarch64")]
     unsafe fn install_host_exit_vectors(&self) {
-        unsafe extern "C" {
-            fn handle_tlb_refill();
-        }
-        let tlbrentry_vaddr = VirtAddr::from_ptr_of(handle_tlb_refill as *const ());
+        let tlbrentry_vaddr = VirtAddr::from_ptr_of(_guest_tlb_refill_vector as *const ());
         let tlbrentry_paddr = host::virt_to_phys(tlbrentry_vaddr).as_usize();
         let guest_exit_eentry = core::ptr::addr_of!(_exception_vectors) as usize;
 
@@ -352,7 +375,7 @@ impl LoongArchVCpu {
     /// Enable LVZ guest-mode hardware: GID, TGID, PGM, GCFG, GINTC, PRMD.PIE.
     #[cfg(target_arch = "loongarch64")]
     unsafe fn enable_guest_mode(&self) {
-        let guest_id = self.vm_id + 1;
+        let guest_id = 0;
         gstat_set_gid(guest_id);
         gstat_set_pvm(true);
         gtlbc_set_use_tgid(true);
@@ -365,8 +388,6 @@ impl LoongArchVCpu {
         gcfg_set_tohu(false);
         gcfg_set_toci(0x2);
         gcfg_set_gpm_num(0);
-        gintc_set_hwi_passthrough(0xff);
-        set_ecfg_line_enabled(INT_TIMER, false);
         prmd::set_pie(true);
     }
 
@@ -381,6 +402,10 @@ impl LoongArchVCpu {
         csr_write::<CSR_PWCH>(HOST_STAGE2_PWCH.read_current_raw());
         csr_write::<CSR_STLBPS>(HOST_STAGE2_STLBPS.read_current_raw());
         csr_write::<CSR_TLBRENTRY>(HOST_STAGE2_TLBRENTRY.read_current_raw());
+        csr_write::<CSR_ASID>(HOST_STAGE2_ASID.read_current_raw());
+        csr_write::<CSR_KSAVE_KSP>(HOST_KSAVE_KSP.read_current_raw());
+        csr_write::<CSR_PRMD>(HOST_PRMD.read_current_raw());
+        csr_write::<CSR_CRMD>(HOST_CRMD.read_current_raw());
         core::arch::asm!("invtlb 0x0, $r0, $r0");
     }
 
@@ -422,7 +447,12 @@ impl LoongArchVCpu {
     #[cfg(target_arch = "loongarch64")]
     fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<AxVCpuExitReason> {
         match exit_reason {
-            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
+            TrapKind::Synchronous => handle_exception_sync(
+                &mut self.ctx,
+                self.vm_id,
+                self.vcpu_id,
+                &mut self.guest_timer_token,
+            ),
             TrapKind::Irq => handle_exception_irq(&mut self.ctx),
         }
     }

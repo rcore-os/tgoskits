@@ -83,6 +83,22 @@ pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> Ax
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
+/// Inject a virtual interrupt into a VM's vCPU.
+#[cfg(target_arch = "loongarch64")]
+pub fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
+    use crate::AsVCpuTask;
+
+    let current = crate::host::task::current_task();
+    if let Some(task) = current.try_as_vcpu_task()
+        && task.vm().id() == vm_id
+        && task.vcpu.id() == vcpu_id
+    {
+        return task.vcpu.inject_interrupt(vector);
+    }
+
+    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
+}
+
 /// Return the current VM ID from the vCPU currently executing on this CPU.
 pub fn current_vm_id() -> Option<VMId> {
     get_current_vcpu::<AxArchVCpuImpl>().map(|vcpu| vcpu.vm_id())

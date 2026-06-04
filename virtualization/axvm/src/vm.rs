@@ -27,7 +27,7 @@ use axdevice::{
 use axdevice_base::AccessWidth;
 #[cfg(target_arch = "aarch64")]
 use axdevice_base::DeviceRegistry as _;
-use axvcpu::{AxVCpu, AxVCpuExitReason};
+use axvcpu::{AxVCpu, AxVCpuExitReason, VCpuState};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
 use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
@@ -611,13 +611,23 @@ impl AxVM {
     /// ## Returns
     /// * `AxVCpuExitReason` - the exit reason of the vCPU, wrapped in an `AxResult`.
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
+        let vm_id = self.id();
         let vcpu = self
             .vcpu(vcpu_id)
             .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
 
-        vcpu.bind()?;
+        match vcpu.state() {
+            VCpuState::Free => vcpu.bind()?,
+            VCpuState::Ready => {}
+            state => {
+                return ax_err!(
+                    BadState,
+                    format!("VCpu state is not Free or Ready, but {state:?}")
+                );
+            }
+        }
 
-        let exit_reason = vcpu.with_current_cpu_set(|| -> AxResult<AxVCpuExitReason> {
+        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<AxVCpuExitReason> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
 
@@ -680,10 +690,23 @@ impl AxVM {
                     exit_reason => break Ok(exit_reason),
                 }
             }
-        })?;
+        });
 
-        vcpu.unbind()?;
-        Ok(exit_reason)
+        let unbind_result = vcpu.unbind();
+        match run_result {
+            Ok(exit_reason) => {
+                unbind_result?;
+                Ok(exit_reason)
+            }
+            Err(err) => {
+                if let Err(unbind_err) = unbind_result {
+                    warn!(
+                        "VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_err:?}"
+                    );
+                }
+                Err(err)
+            }
+        }
     }
 
     fn handle_nested_page_fault(&self, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {

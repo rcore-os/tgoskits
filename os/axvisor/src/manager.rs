@@ -22,6 +22,13 @@ pub struct AxvmManager {
 impl AxvmManager {
     /// Initialize the AxVM runtime services.
     pub fn new() -> AxResult<Self> {
+        #[cfg(target_arch = "loongarch64")]
+        {
+            ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::register_virtual_irq_injector(
+                inject_loongarch_platform_irq,
+            );
+            ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::enable_external_irq_line();
+        }
         Ok(Self {
             runtime: AxvmRuntime::new()?,
         })
@@ -30,6 +37,8 @@ impl AxvmManager {
     /// Load and initialize the default VM set.
     pub fn init_default_vms(&self) {
         crate::config::init_guest_vms();
+        #[cfg(target_arch = "loongarch64")]
+        init_loongarch_passthrough_irq_routes();
         self.runtime.init_vms();
         self.release_host_filesystem_for_guest_passthrough();
     }
@@ -208,5 +217,50 @@ impl AxvmManager {
     pub fn read_file(file_name: &str) -> AxResult<Vec<u8>> {
         let size = Self::file_size(file_name)?;
         Self::read_file_exact(file_name, size)
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn inject_loongarch_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize) {
+    if let Err(err) = axvm::inject_vm_vcpu_interrupt(vm_id, vcpu_id, vector) {
+        warn!(
+            "failed to inject LoongArch platform IRQ {vector:#x} for VM[{vm_id}] VCpu[{vcpu_id}]: \
+             {err:?}"
+        );
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn init_loongarch_passthrough_irq_routes() {
+    let mut matched = 0usize;
+    for vm in axvm::get_vm_list() {
+        let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());
+        if !passthrough {
+            continue;
+        }
+
+        matched += 1;
+        let vcpu_id = 0usize;
+        let routes = crate::fdt::get_loongarch_guest_irq_routes(vm.id());
+        if routes.is_empty() {
+            warn!(
+                "VM[{}] has passthrough devices but no LoongArch guest IRQ route parsed from DTB",
+                vm.id()
+            );
+            continue;
+        }
+
+        for route in routes {
+            ax_std::os::arceos::modules::ax_hal::loongarch64_hv_irq::register_guest_irq_route(
+                route.physical_irq,
+                vm.id(),
+                vcpu_id,
+                route.guest_vector,
+            );
+        }
+    }
+
+    if matched > 1 {
+        warn!("LoongArch passthrough IRQ routing matched {matched} VMs; check per-IRQ ownership");
     }
 }

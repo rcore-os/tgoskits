@@ -46,6 +46,7 @@ hv = [
     "ax-cpu/arm-el2",
     "ax-cpu/exception-table",
     "ax-percpu/arm-el2",
+    "ax-plat-loongarch64-qemu-virt?/hypervisor",
     "axplat-dyn?/hv",
 ]
 axvisor-linker = []

@@ -556,6 +556,26 @@ fn vcpu_run() {
                     #[cfg(not(target_arch = "x86_64"))]
                     wait(&vm_vcpus)
                 }
+                AxVCpuExitReason::Idle => {
+                    trace!("VM[{vm_id}] run VCpu[{vcpu_id}] Idle");
+                    #[cfg(target_arch = "loongarch64")]
+                    {
+                        crate::check_timer_events();
+                        if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
+                            continue;
+                        }
+                        let idle_timeout = vcpu.get_arch_vcpu().idle_wait_timeout();
+                        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(true);
+                        ax_std::os::arceos::modules::ax_hal::asm::enable_irqs();
+                        ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
+                        ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
+                        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
+                    }
+                    #[cfg(not(target_arch = "loongarch64"))]
+                    {
+                        crate::check_timer_events();
+                    }
+                }
                 AxVCpuExitReason::Nothing => {}
                 AxVCpuExitReason::CpuDown { _state } => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");

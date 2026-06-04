@@ -269,3 +269,41 @@ pub trait IrqIf {
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
     fn send_ipi(irq_num: usize, target: IpiTarget);
 }
+
+/// LoongArch hypervisor IRQ routing extension.
+#[cfg(target_arch = "loongarch64")]
+#[def_plat_interface]
+pub trait LoongArchHvIrqIf {
+    /// Registers the virtual interrupt injector used by hypervisor builds.
+    fn register_virtual_irq_injector(injector: fn(usize, usize, usize));
+
+    /// Routes one physical EIOINTC/PCH-PIC IRQ to a guest CPU interrupt vector.
+    fn register_guest_irq_route(
+        physical_irq: usize,
+        vm_id: usize,
+        vcpu_id: usize,
+        guest_vector: usize,
+    );
+}
+
+/// Registers the virtual interrupt injector used by LoongArch hypervisor builds.
+#[cfg(target_arch = "loongarch64")]
+pub fn register_loongarch_virtual_irq_injector(injector: fn(usize, usize, usize)) {
+    crate::__priv::call_interface!(LoongArchHvIrqIf::register_virtual_irq_injector(injector));
+}
+
+/// Routes one physical EIOINTC/PCH-PIC IRQ to a LoongArch guest CPU interrupt vector.
+#[cfg(target_arch = "loongarch64")]
+pub fn register_loongarch_guest_irq_route(
+    physical_irq: usize,
+    vm_id: usize,
+    vcpu_id: usize,
+    guest_vector: usize,
+) {
+    crate::__priv::call_interface!(LoongArchHvIrqIf::register_guest_irq_route(
+        physical_irq,
+        vm_id,
+        vcpu_id,
+        guest_vector
+    ));
+}

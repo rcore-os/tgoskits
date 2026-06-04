@@ -64,16 +64,6 @@ pub fn enable_irq(irq: usize) {
     }
 }
 
-#[cfg(feature = "hypervisor")]
-pub fn debug_snapshot(irq: usize) -> (u64, u64, u64) {
-    let (offset, _) = split_bit(irq);
-    (
-        iocsr_read_d(EIOINTC_REG_ENABLE + offset),
-        iocsr_read_d(EIOINTC_REG_BOUNCE + offset),
-        iocsr_read_d(EIOINTC_REG_ISR + offset),
-    )
-}
-
 pub fn disable_irq(irq: usize) {
     let (offset, bit) = split_bit(irq);
     let addr = EIOINTC_REG_ENABLE + offset;

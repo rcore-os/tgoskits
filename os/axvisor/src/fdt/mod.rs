@@ -42,10 +42,22 @@ use crate::config::{get_vm_dtb_arc, vmcfg};
 
 // DTB cache for generated device trees
 static GENERATED_DTB_CACHE: LazyInit<Mutex<BTreeMap<usize, Vec<u8>>>> = LazyInit::new();
+#[cfg(target_arch = "loongarch64")]
+static LOONGARCH_GUEST_IRQ_ROUTES: LazyInit<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
+    LazyInit::new();
+
+#[cfg(target_arch = "loongarch64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LoongArchGuestIrqRoute {
+    pub physical_irq: usize,
+    pub guest_vector: usize,
+}
 
 /// Initialize the DTB cache
 pub fn init_dtb_cache() {
     GENERATED_DTB_CACHE.init_once(Mutex::new(BTreeMap::new()));
+    #[cfg(target_arch = "loongarch64")]
+    LOONGARCH_GUEST_IRQ_ROUTES.init_once(Mutex::new(BTreeMap::new()));
 }
 
 /// Get reference to the DTB cache
@@ -60,6 +72,24 @@ pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateCon
     // Store data in global cache
     let mut cache_lock = dtb_cache().lock();
     cache_lock.insert(crate_config.base.id, dtb_data);
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub fn store_loongarch_guest_irq_routes(vm_id: usize, routes: Vec<LoongArchGuestIrqRoute>) {
+    let mut cache_lock = LOONGARCH_GUEST_IRQ_ROUTES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock();
+    cache_lock.insert(vm_id, routes);
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub fn get_loongarch_guest_irq_routes(vm_id: usize) -> Vec<LoongArchGuestIrqRoute> {
+    LOONGARCH_GUEST_IRQ_ROUTES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .get(&vm_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Handle all FDT-related operations for guest architectures that boot with DTB.
@@ -110,6 +140,8 @@ pub fn handle_fdt_operations(
         let dtb = dtb_arc.as_ref();
         parse_reserved_memory_regions(vm_create_config, dtb)?;
         parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
+        #[cfg(target_arch = "loongarch64")]
+        parse_loongarch_guest_irq_routes(vm_config, dtb)?;
         #[cfg(target_arch = "aarch64")]
         parse_vm_interrupt(vm_config, dtb)?;
     } else {
