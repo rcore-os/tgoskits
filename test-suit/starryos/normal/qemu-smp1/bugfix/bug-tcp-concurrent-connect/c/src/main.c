@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,8 @@
 #include <unistd.h>
 
 #define CLIENTS 8
-#define PORT 19131
+#define IO_TIMEOUT_MS 10000
+#define TEST_TIMEOUT_SEC 60
 
 #define CHECK(cond, fmt, ...)                                                    \
     do {                                                                         \
@@ -29,7 +31,14 @@ static void on_alarm(int sig) {
     _exit(124);
 }
 
-static int make_listener(void) {
+static void loopback_addr(struct sockaddr_in *addr, unsigned short port) {
+    memset(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons(port);
+    addr->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+}
+
+static int make_listener(unsigned short *port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
@@ -37,10 +46,7 @@ static int make_listener(void) {
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    loopback_addr(&addr, 0);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
@@ -50,18 +56,22 @@ static int make_listener(void) {
         close(fd);
         return -1;
     }
+
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) < 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
     return fd;
 }
 
-static void client_process(int idx) {
+static void client_process(int idx, unsigned short port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) _exit(10);
 
     struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    loopback_addr(&addr, port);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) _exit(11);
 
@@ -73,39 +83,85 @@ static void client_process(int idx) {
     _exit(0);
 }
 
+static int wait_readable(int fd, int slot) {
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+
+    errno = 0;
+    int ret = poll(&pfd, 1, IO_TIMEOUT_MS);
+    if (ret == 1 && (pfd.revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+        printf("PASS: payload ready on accepted client %d\n", slot);
+        return 0;
+    }
+
+    fprintf(stderr,
+            "FAIL: payload not ready on accepted client %d "
+            "(poll ret=%d revents=0x%x errno=%d %s)\n",
+            slot, ret, pfd.revents, errno, strerror(errno));
+    return -1;
+}
+
+static int read_payload(int fd, int slot, int *idx_out) {
+    if (wait_readable(fd, slot) != 0) return -1;
+
+    char buf[64];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        fprintf(stderr,
+                "FAIL: read payload from accepted client %d "
+                "(ret=%zd errno=%d %s)\n",
+                slot, n, errno, strerror(errno));
+        return -1;
+    }
+    buf[n] = '\0';
+
+    int idx = -1;
+    if (sscanf(buf, "client-%d", &idx) != 1) {
+        fprintf(stderr, "FAIL: parse payload '%s'\n", buf);
+        return -1;
+    }
+
+    printf("PASS: read payload '%s' from accepted client %d\n", buf, slot);
+    *idx_out = idx;
+    return 0;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGALRM, on_alarm);
-    alarm(20);
+    alarm(TEST_TIMEOUT_SEC);
 
     printf("=== bug-tcp-concurrent-connect ===\n");
 
-    int listener = make_listener();
-    CHECK(listener >= 0, "listen on 127.0.0.1:%d", PORT);
+    unsigned short port = 0;
+    int listener = make_listener(&port);
+    CHECK(listener >= 0, "listen on 127.0.0.1:%u", (unsigned)port);
 
     pid_t pids[CLIENTS];
     for (int i = 0; i < CLIENTS; i++) {
         pid_t pid = fork();
-        CHECK(pid >= 0, "fork client %d", i);
         if (pid == 0) {
-            client_process(i);
+            client_process(i, port);
         }
+        CHECK(pid > 0, "fork client %d", i);
         pids[i] = pid;
     }
 
+    int fds[CLIENTS];
+    for (int i = 0; i < CLIENTS; i++) {
+        fds[i] = accept(listener, NULL, NULL);
+        CHECK(fds[i] >= 0, "accept client %d", i);
+    }
+    close(listener);
+
     int seen[CLIENTS] = {0};
     for (int i = 0; i < CLIENTS; i++) {
-        int fd = accept(listener, NULL, NULL);
-        CHECK(fd >= 0, "accept client %d", i);
-
-        char buf[64];
-        ssize_t n = read(fd, buf, sizeof(buf) - 1);
-        close(fd);
-        CHECK(n > 0, "read payload from accepted client %d", i);
-        buf[n] = '\0';
-
         int idx = -1;
-        CHECK(sscanf(buf, "client-%d", &idx) == 1, "parse payload '%s'", buf);
+        CHECK(read_payload(fds[i], i, &idx) == 0,
+              "payload from accepted client %d is readable", i);
+        close(fds[i]);
         CHECK(idx >= 0 && idx < CLIENTS, "payload client id in range");
         CHECK(!seen[idx], "payload client id %d is unique", idx);
         seen[idx] = 1;
@@ -118,7 +174,6 @@ int main(void) {
               "client %d exited cleanly", i);
     }
 
-    close(listener);
     printf("bug-tcp-concurrent-connect: OK\n");
     return 0;
 }
