@@ -1178,8 +1178,69 @@ impl SvmVcpu {
 
     fn read_guest_u8(&self, gva: GuestVirtAddr) -> AxResult<u8> {
         let gpa = self.translate_guest_linear(gva)?;
-        let hva = memory::phys_to_virt(PhysAddr::from(gpa.as_usize()));
+        let hpa = self.translate_guest_phys(gpa)?;
+        let hva = memory::phys_to_virt(PhysAddr::from(hpa.as_usize()));
         Ok(unsafe { core::ptr::read_volatile(hva.as_ptr()) })
+    }
+
+    fn read_guest_phys_u64(&self, gpa: usize) -> AxResult<u64> {
+        let hpa = self.translate_guest_phys(GuestPhysAddr::from(gpa))?;
+        let hva = memory::phys_to_virt(PhysAddr::from(hpa.as_usize()));
+        Ok(unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) })
+    }
+
+    fn translate_guest_phys(&self, gpa: GuestPhysAddr) -> AxResult<HostPhysAddr> {
+        // The SVM MMIO decoder reads guest instructions and guest page tables
+        // while nested paging is enabled. Guest RAM may be MAP_ALLOC, so GPA
+        // is not necessarily the host physical address that backs the byte.
+        const PRESENT: u64 = 1 << 0;
+        const HUGE_PAGE: u64 = 1 << 7;
+        const ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
+        const PAGE_4K_MASK: usize = 0xfff;
+        const PAGE_2M_MASK: usize = 0x1f_ffff;
+        const PAGE_1G_MASK: usize = 0x3fff_ffff;
+
+        let mut table = self
+            .npt_root
+            .ok_or_else(|| ax_err_type!(InvalidInput, "SVM NPT root is not set"))?
+            .as_usize();
+        let addr = gpa.as_usize();
+        let indexes = [
+            (addr >> 39) & 0x1ff,
+            (addr >> 30) & 0x1ff,
+            (addr >> 21) & 0x1ff,
+            (addr >> 12) & 0x1ff,
+        ];
+
+        for (level, index) in indexes.into_iter().enumerate() {
+            let entry = read_host_phys_u64(table + index * size_of::<u64>());
+            if entry & PRESENT == 0 {
+                return ax_err!(
+                    InvalidInput,
+                    format_args!(
+                        "SVM NPT entry is not present at level {level}, gpa={:#x}",
+                        addr
+                    )
+                );
+            }
+
+            let paddr = (entry & ADDR_MASK) as usize;
+            match level {
+                1 if entry & HUGE_PAGE != 0 => {
+                    return Ok(HostPhysAddr::from(paddr + (addr & PAGE_1G_MASK)));
+                }
+                2 if entry & HUGE_PAGE != 0 => {
+                    return Ok(HostPhysAddr::from(paddr + (addr & PAGE_2M_MASK)));
+                }
+                3 => return Ok(HostPhysAddr::from(paddr + (addr & PAGE_4K_MASK))),
+                _ => table = paddr,
+            }
+        }
+
+        ax_err!(
+            InvalidInput,
+            "failed to translate SVM guest physical address"
+        )
     }
 
     fn translate_guest_linear(&self, gva: GuestVirtAddr) -> AxResult<GuestPhysAddr> {
@@ -1231,7 +1292,7 @@ impl SvmVcpu {
         ];
 
         for (level, index) in indexes.into_iter().enumerate() {
-            let entry = read_guest_phys_u64(table as usize + index * size_of::<u64>());
+            let entry = self.read_guest_phys_u64(table as usize + index * size_of::<u64>())?;
             if entry & PRESENT == 0 {
                 return ax_err!(
                     InvalidInput,
@@ -1522,7 +1583,7 @@ impl AxArchVCpu for SvmVcpu {
     }
 }
 
-fn read_guest_phys_u64(gpa: usize) -> u64 {
-    let hva = memory::phys_to_virt(PhysAddr::from(gpa));
+fn read_host_phys_u64(hpa: usize) -> u64 {
+    let hva = memory::phys_to_virt(PhysAddr::from(hpa));
     unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) }
 }
