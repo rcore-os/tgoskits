@@ -68,6 +68,8 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/r
 export LD_LIBRARY_PATH="/usr/lib:/opt/rust-nightly/lib:${LD_LIBRARY_PATH:-}"
 export RUSTC="${RUSTC:-/opt/rustc-nightly-sysroot}"
 export RUSTDOC="${RUSTDOC:-/opt/rustdoc-nightly-sysroot}"
+export HOME="${HOME:-/root}"
+export CARGO_HOME="${CARGO_HOME:-/root/.cargo}"
 export RUSTC_BOOTSTRAP="${RUSTC_BOOTSTRAP:-1}"
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 export CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
@@ -113,6 +115,7 @@ echo "features=${features}"
 echo "source_dir=${source_dir}"
 echo "target_dir=${target_dir}"
 echo "work_dir=$(pwd)"
+echo "cargo_home=${CARGO_HOME}"
 echo "rustflags=${RUSTFLAGS}"
 "$RUSTC" --version || true
 /usr/bin/cargo --version || true
