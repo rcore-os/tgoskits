@@ -25,7 +25,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use axaddrspace::{GuestPhysAddr, HostVirtAddr};
+use axvm_types::{GuestPhysAddr, HostVirtAddr};
 
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("features `vmx` and `svm` are mutually exclusive");

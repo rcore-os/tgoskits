@@ -1046,6 +1046,7 @@ dependencies = [
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-sg2002",
  "ax-plat-riscv64-visionfive2",
+ "ax-plat-x86-asus-nuc15crh",
  "ax-plat-x86-pc",
  "ax-plat-x86-qemu-q35",
  "axplat-dyn",
@@ -1401,6 +1402,31 @@ dependencies = [
  "riscv_goldfish",
  "sbi-rt",
  "uart_16550 0.4.0",
+]
+
+[[package]]
+name = "ax-plat-x86-asus-nuc15crh"
+version = "0.4.9"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-driver",
+ "ax-int-ratio",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-percpu",
+ "ax-plat",
+ "axklib",
+ "bitflags 2.11.1",
+ "heapless 0.9.3",
+ "log",
+ "multiboot",
+ "raw-cpuid 11.6.0",
+ "uart_16550 0.4.0",
+ "x2apic",
+ "x86",
+ "x86_64",
+ "x86_rtc",
 ]
 
 [[package]]

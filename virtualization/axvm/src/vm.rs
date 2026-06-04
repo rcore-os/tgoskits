@@ -27,6 +27,8 @@ use axvcpu::{AxVCpu, AxVCpuExitReason, MmioRmwOp};
 use axvm_types::EmulatedDeviceType;
 use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use spin::Once;
+#[cfg(target_arch = "x86_64")]
+use x86_vcpu::X86GuestMemoryRegion;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
 
@@ -410,6 +412,15 @@ impl AxVM {
                     .emu_devices()
                     .iter()
                     .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
+                guest_memory_regions: inner_mut
+                    .memory_regions
+                    .iter()
+                    .map(|region| X86GuestMemoryRegion {
+                        gpa: region.gpa,
+                        hva: region.hva,
+                        size: region.size(),
+                    })
+                    .collect(),
             };
 
             let entry = if vcpu.id() == 0 {
@@ -609,8 +620,11 @@ impl AxVM {
                         let value = match op {
                             MmioRmwOp::Or => current | data as usize,
                         };
-                        self.get_devices()
-                            .handle_mmio_write(addr, width, value & width_mask(width))?;
+                        self.get_devices().handle_mmio_write(
+                            addr,
+                            width,
+                            value & width_mask(width),
+                        )?;
                     }
                     AxVCpuExitReason::IoRead { port, width } => {
                         let val = self.get_devices().handle_port_read(port, width)?;
