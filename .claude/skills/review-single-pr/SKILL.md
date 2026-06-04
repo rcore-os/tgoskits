@@ -100,15 +100,26 @@ Always inspect CI failures before submitting the review:
 2. Decide whether each CI failure is caused by this PR's changed surface, a likely unrelated pre-existing/infrastructure failure, or unclear.
 3. Treat CI as PR-related when the failing job exercises files, crates, cases, commands, platforms, or behavior changed by the PR; when the failure reproduces locally on the PR head but not on base; or when the new/modified tests, configs, or workflow steps cause the failure, hang, skip, or timeout.
 4. Treat CI as unrelated only when there is concrete evidence: the failure is outside the changed surface, known flaky/infrastructure behavior, already fails on base, or is tracked by an existing issue. Do not mark a failure unrelated merely because local focused validation passed.
-5. For unrelated CI failures, state that in the review body with the failing check name, observed failure, and why it is unrelated to this PR. Search for an existing issue before finishing:
+5. For unrelated CI failures, state that in the review body with the failing check name, observed failure, and why it is unrelated to this PR. Search for an existing issue before finishing. Use multiple searches keyed by the workflow/job name, distinctive error text, runner/platform, affected case, or failing command; do not rely on only one broad query:
    ```bash
-   gh issue list --repo <owner>/<repo> --state open --search '<job name or distinctive error>'
+   gh issue list --repo <owner>/<repo> --state open --search '<workflow or job name>'
+   gh issue list --repo <owner>/<repo> --state open --search '<distinctive error excerpt>'
+   gh issue list --repo <owner>/<repo> --state open --search '<runner platform, case, or command>'
+   ```
+   Inspect plausible matches before deciding whether they are suitable:
+   ```bash
+   gh issue view <issue-number> --repo <owner>/<repo> --comments
+   ```
+   A suitable issue tracks the same workflow/job, same distinctive failure mode, or same infrastructure/component breakage. If a suitable open issue exists, update it before finishing: add a neutral comment with the current PR number/URL, head SHA, check/run URL, failing job and step, representative log excerpt, why the failure appears unrelated to this PR, and any reproduction, rerun, or base-branch evidence. If the issue title/body is stale or too vague and repository permissions allow, update the title/body while preserving previous context; otherwise use a new issue comment.
+   ```bash
+   gh issue comment <issue-number> --repo <owner>/<repo> --body-file issue-update.md
+   gh issue edit <issue-number> --repo <owner>/<repo> --title '<updated neutral title>' --body-file issue.md
    ```
    If no suitable open issue exists, create one with a neutral title and body describing the CI job, PR where it was observed, representative log excerpt, why it appears unrelated, and any reproduction or rerun evidence:
    ```bash
    gh issue create --repo <owner>/<repo> --title '<neutral CI issue title>' --body-file issue.md
    ```
-   Link the existing or newly-created issue in the review body. Do not create duplicate issues.
+   Link the existing, updated, or newly-created issue in the review body. Do not create duplicate issues.
 6. For PR-related CI failures, submit `REQUEST_CHANGES`. The review body and any inline comment must explain the failing check, the concrete failure mode, why it belongs to this PR, and the expected fix direction.
 7. When causality is unclear after reasonable log inspection, do not approve on CI alone. Either request changes with the concrete uncertainty and next debugging direction, or mark the review blocked/no-submit if the user asked for investigation only.
 
@@ -329,7 +340,7 @@ Use GitHub check status as required evidence, but not as the only review input:
 gh pr checks <pr> --watch=false
 ```
 
-Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link an existing or newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
+Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link the existing issue that was updated or the newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
 When GitHub log download fails or returns an empty log, do not infer the check passed or was irrelevant. Use `gh pr checks <pr> --repo <owner>/<repo> --watch=false` and `gh run view <run-id> --json headSha,jobs` to confirm the current head, failing job names, conclusions, and failing steps. If the failing job matches a newly added or changed app/test architecture, treat it as PR-related unless concrete evidence proves otherwise.
 
@@ -401,7 +412,7 @@ Review body must explain in Chinese:
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
 - when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
-- CI status, including any unrelated failing checks, the evidence for unrelatedness, and the linked tracking issue;
+- CI status, including any unrelated failing checks, the evidence for unrelatedness, the linked tracking issue, and whether that issue was updated or created during review;
 - duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
 - conflict handling status when applicable: conflicted files, resolution logic, validation after repair, and whether a repair commit was pushed or the work was intentionally kept as a dry run;
 - for PR-related CI failures, the failing check, failure mode, and expected fix direction;
