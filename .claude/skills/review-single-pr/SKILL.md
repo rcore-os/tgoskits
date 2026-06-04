@@ -5,6 +5,14 @@ description: Review one specified GitHub pull request in this tgoskits repositor
 
 # Review Single PR
 
+## Normative Use
+
+This skill is a normative review specification, not a suggestion list. When it triggers, read the entire `SKILL.md` before deciding the review outcome, then follow every applicable requirement unless a higher-priority system or developer instruction conflicts.
+
+Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
+
+When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
+
 ## Goal
 
 Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from the project reviewer direction table when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
