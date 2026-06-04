@@ -23,13 +23,17 @@ performance work observable in minutes instead of hours.
 ## Host Prerequisites
 
 ```bash
-brew install qemu e2fsprogs
+brew install qemu e2fsprogs zig llvm
 ```
 
 The scripts expect these host tools:
 
 - `qemu-system-aarch64`;
 - `debugfs` from Homebrew `e2fsprogs`.
+- `zig` or an `aarch64-linux-musl-gcc` cross compiler for building the seed
+  kernel on macOS.
+- `llvm-nm` and `llvm-objdump`; Homebrew `llvm` is used by `build_kernel.sh`
+  when Rust binutils shims are present but incomplete.
 
 The runner also needs:
 
@@ -42,6 +46,7 @@ The rootfs should contain at least:
 
 ```text
 /usr/bin/cargo
+/usr/bin/aarch64-linux-musl-gcc
 /opt/rustc-nightly-sysroot
 /opt/rustdoc-nightly-sysroot
 /opt/tgoskits/Cargo.toml or /opt/tgoskits-src.tar
@@ -67,7 +72,7 @@ is the one passed to the self-build runner.
 Build the full rootfs set from a fresh clone:
 
 ```bash
-brew install qemu e2fsprogs
+brew install qemu e2fsprogs zig llvm
 
 # Docker Desktop must be running and able to run linux/arm64 containers.
 apps/starry/macos-selfbuild/build_rootfs.sh
@@ -133,7 +138,13 @@ it against `TGOSKITS_COMMIT` when that variable is supplied.
 
 ## Run
 
-Build or provide the AArch64 StarryOS kernel first, then run:
+Build or provide the AArch64 StarryOS kernel first:
+
+```bash
+apps/starry/macos-selfbuild/build_kernel.sh
+```
+
+Then run:
 
 ```bash
 KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
@@ -144,6 +155,34 @@ SOURCE_TMPFS=1 \
 QEMU_TIMEOUT_SEC=7200 \
 apps/starry/macos-selfbuild/run_selfbuild.sh
 ```
+
+For a quick rootfs/kernel boot smoke test, stop after StarryOS reaches the
+guest shell:
+
+```bash
+KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
+ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
+BOOT_ONLY=1 \
+QEMU_TIMEOUT_SEC=120 \
+apps/starry/macos-selfbuild/run_selfbuild.sh
+```
+
+If a local QEMU/HVF build aborts before the shell, the same rootfs and kernel can
+be checked with TCG:
+
+```bash
+KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
+ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
+BOOT_ONLY=1 \
+QEMU_ACCEL='tcg,thread=multi' \
+QEMU_CPU=cortex-a53 \
+SMP=1 \
+QEMU_TIMEOUT_SEC=120 \
+apps/starry/macos-selfbuild/run_selfbuild.sh
+```
+
+`BOOT_ONLY=1` only verifies that the generated rootfs and seed kernel boot to a
+StarryOS shell; leave it unset for the full guest Cargo build.
 
 The host runner copies the input rootfs into
 `target/starry-macos-selfbuild/rootfs/`, injects the guest self-build scripts,
@@ -176,10 +215,14 @@ and the host side stops QEMU after seeing:
 | `JOBS` | `SMP` | Guest `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS`. |
 | `SOURCE_TMPFS` | `1` | Copy `/opt/tgoskits` into `/tmp` before building to reduce ext4 output pressure. |
 | `QEMU_TIMEOUT_SEC` | `7200` | Host-side timeout for a stuck boot or build. Use `0` to disable it. |
+| `QEMU_ACCEL` | `hvf` | QEMU accelerator string. Use `tcg,thread=multi` for a slow functional boot fallback. |
+| `QEMU_MACHINE` | `virt,gic-version=3` | QEMU machine string. |
+| `QEMU_CPU` | `host` | QEMU CPU model. Use `cortex-a53` with the TCG fallback. |
+| `BOOT_ONLY` | `0` | Stop after the guest shell prompt is observed instead of starting Cargo. |
 | `BUILD_TARGET` | `aarch64-unknown-none-softfloat` | Guest Cargo target. |
 | `BUILD_PACKAGE` | `starryos` | Cargo package to build. |
 | `BUILD_BIN` | `starryos` | Cargo binary to build. |
-| `FEATURES` | `qemu,gic-v3,cntv-timer,smp` | StarryOS features for the guest build. |
+| `FEATURES` | `plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock` | StarryOS features for the guest build. |
 | `EXTRA_RUSTFLAGS` | empty | Extra guest Rust flags for local tuning experiments. |
 
 To reproduce the fastest local profile, keep the same rootfs/kernel setup and
@@ -191,7 +234,7 @@ ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
 SMP=8 \
 JOBS=8 \
 SOURCE_TMPFS=1 \
-FEATURES='ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,ax-feat/bus-pci,gic-v3,cntv-timer,smp' \
+FEATURES='plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock' \
 CARGO_PROFILE_RELEASE_LTO=false \
 CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
 CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \

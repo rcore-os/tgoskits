@@ -19,6 +19,35 @@ The committed app does not include the large rootfs, toolchain, kernel image, or
 local logs. A reproducible run starts from a prepared rootfs that passes
 `check_rootfs.sh`.
 
+## Current Validation After Dev Sync
+
+The reproducibility path was rechecked from a separate local rootfs environment:
+
+```text
+prepare_rootfs.sh from rootfs-aarch64-hvf-toolchain.img
+  -> STARRY_MACOS_SELFBUILD_ROOTFS_OK
+
+build_kernel.sh
+  -> target/aarch64-unknown-none-softfloat/release/starryos.bin
+
+BOOT_ONLY=1 QEMU_ACCEL='tcg,thread=multi' QEMU_CPU=cortex-a53 SMP=1
+  -> StarryOS shell prompt observed, runner exits with rc=0
+```
+
+On the same local host, QEMU 11.0.1 with HVF currently aborts before the guest
+shell:
+
+```text
+Assertion failed: (isv), function hvf_handle_exception, file hvf.c
+===HOST-QEMU-STOP reason=qemu-exit ... rc=134===
+```
+
+That failure happens with both `SMP=8` and `SMP=1`, so it is not a rootfs
+construction failure and not only an SMP scheduling issue. The runner keeps HVF
+as the default fast path, but exposes `QEMU_ACCEL`, `QEMU_MACHINE`, `QEMU_CPU`,
+and `BOOT_ONLY` so the rootfs/kernel setup can be reproduced separately from a
+local QEMU/HVF decoder crash.
+
 ## Build Command Shape
 
 Inside the StarryOS guest, the app runs:
@@ -30,7 +59,7 @@ cargo build \
   --target aarch64-unknown-none-softfloat \
   -Z build-std=core,alloc,compiler_builtins \
   --target-dir /tmp/starryos-selfbuild-target \
-  --features qemu,gic-v3,cntv-timer,smp \
+  --features plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock \
   --release
 ```
 
@@ -66,7 +95,7 @@ be recorded beside the number.
 The fastest local row used this explicit feature set:
 
 ```text
-FEATURES=ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,ax-feat/bus-pci,gic-v3,cntv-timer,smp
+FEATURES=plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock
 ```
 
 Use explicit end-to-end ratios when reporting the full guest cargo build. The

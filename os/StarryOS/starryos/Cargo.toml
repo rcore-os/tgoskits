@@ -43,6 +43,7 @@ k230 = [
   "ax-driver/serial",
 ]
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
+cntv-timer = ["ax-feat/cntv-timer", "axplat-dyn?/cntv-timer", "ax-hal/cntv-timer"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 vf2 = ["ax-hal/riscv64-visionfive2"]

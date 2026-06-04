@@ -37,7 +37,7 @@ fn probe(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
 
     let irq = {
         #[cfg(not(feature = "hv"))]
-        let irq_idx = 1;
+        let irq_idx = if cfg!(feature = "cntv-timer") { 2 } else { 1 };
         #[cfg(feature = "hv")]
         let irq_idx = 3;
         &interrupts[irq_idx].specifier

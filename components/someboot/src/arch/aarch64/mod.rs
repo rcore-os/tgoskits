@@ -93,7 +93,11 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_tick() -> usize {
-        CNTPCT_EL0.get() as _
+        if cfg!(feature = "cntv-timer") {
+            CNTVCT_EL0.get() as _
+        } else {
+            CNTPCT_EL0.get() as _
+        }
     }
 
     fn shutdown() -> ! {

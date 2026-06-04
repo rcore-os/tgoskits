@@ -40,7 +40,11 @@ if [[ -z "$debugfs" ]]; then
 fi
 
 missing=0
-for guest_path in "/usr/bin/cargo" "/opt/rustc-nightly-sysroot" "/opt/rustdoc-nightly-sysroot"; do
+for guest_path in \
+    "/usr/bin/cargo" \
+    "/usr/bin/aarch64-linux-musl-gcc" \
+    "/opt/rustc-nightly-sysroot" \
+    "/opt/rustdoc-nightly-sysroot"; do
     if "$debugfs" -R "stat $guest_path" "$rootfs" >/dev/null 2>&1; then
         echo "OK $guest_path"
     else

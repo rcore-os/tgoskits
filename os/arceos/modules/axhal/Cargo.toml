@@ -45,6 +45,7 @@ rtc = [
     "ax-plat-x86-qemu-q35?/rtc",
     "axplat-dyn?/rtc",
 ]
+cntv-timer = ["axplat-dyn?/cntv-timer"]
 paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",

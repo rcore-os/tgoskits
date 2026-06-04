@@ -13,6 +13,8 @@ Usage:
 
 Common knobs:
   SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
+  BOOT_ONLY=1
   EXTRA_RUSTFLAGS='<extra guest rustflags>'
 USAGE
 }
@@ -84,6 +86,10 @@ rootfs="${ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
 smp="${SMP:-8}"
 jobs="${JOBS:-$smp}"
 mem="${MEM:-4096M}"
+qemu_accel="${QEMU_ACCEL:-hvf}"
+qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
+qemu_cpu="${QEMU_CPU:-host}"
+boot_only="${BOOT_ONLY:-0}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
 qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-7200}"
 stamp="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
@@ -127,7 +133,7 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "BUILD_PACKAGE" "${BUILD_PACKAGE:-starryos}"
     emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
     emit_export "BUILD_STD" "${BUILD_STD:-core,alloc,compiler_builtins}"
-    emit_export "FEATURES" "${FEATURES:-qemu,gic-v3,cntv-timer,smp}"
+    emit_export "FEATURES" "${FEATURES:-plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
     emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-0}"
     emit_export "CARGO_SUBCOMMAND" "${CARGO_SUBCOMMAND:-build}"
     emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
@@ -165,16 +171,17 @@ echo "log=$log"
 echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
 echo "qemu=$qemu"
-echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs qemu_timeout_sec=$qemu_timeout_sec"
+echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu"
+echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_timeout_sec=$qemu_timeout_sec"
 echo "source_commit=$source_commit source_ref=$source_ref"
 : >"$log"
 
 "$qemu" \
     -snapshot \
     -nographic \
-    -accel hvf \
-    -machine virt,gic-version=3 \
-    -cpu host \
+    -accel "$qemu_accel" \
+    -machine "$qemu_machine" \
+    -cpu "$qemu_cpu" \
     -m "$mem" \
     -smp "$smp" \
     -device virtio-blk-pci,drive=disk0 \
@@ -195,9 +202,17 @@ start_ts="$(date +%s)"
 set +e
 while kill -0 "$qemu_pid" 2>/dev/null; do
     if [[ "$sent_cmd" = "0" ]] && LC_ALL=C grep -a -q "root@starry:" "$log"; then
-        printf '/bin/sh /opt/starry-macos-run.sh\n' >&3
-        echo "===HOST-SENT-SELFBUILD-COMMAND===" >>"$log"
-        sent_cmd=1
+        if [[ "$boot_only" = "1" ]]; then
+            echo "===HOST-QEMU-STOP reason=boot-only-shell pid=$qemu_pid===" >>"$log"
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null
+            host_rc=0
+            break
+        else
+            printf '/bin/sh /opt/starry-macos-run.sh\n' >&3
+            echo "===HOST-SENT-SELFBUILD-COMMAND===" >>"$log"
+            sent_cmd=1
+        fi
     fi
 
     if LC_ALL=C grep -a -q "===STARRY-MACOS-SELFBUILD-RUN-END rc=" "$log"; then
@@ -232,6 +247,13 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
 
     sleep 2
 done
+
+if ! kill -0 "$qemu_pid" 2>/dev/null && ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP" "$log"; then
+    wait "$qemu_pid" 2>/dev/null
+    qemu_rc="$?"
+    echo "===HOST-QEMU-STOP reason=qemu-exit pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+    host_rc="$qemu_rc"
+fi
 
 if kill -0 "$qemu_pid" 2>/dev/null; then
     kill "$qemu_pid" 2>/dev/null || true

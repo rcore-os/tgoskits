@@ -208,21 +208,41 @@ pub fn setup_sctlr() {
 }
 
 pub fn systick_enable() {
-    CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+    if cfg!(feature = "cntv-timer") {
+        CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
+    } else {
+        CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+    }
 }
 
 pub fn systick_irq_disable() {
-    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
+    if cfg!(feature = "cntv-timer") {
+        CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::SET);
+    } else {
+        CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
+    }
 }
 
 pub fn systick_irq_enable() {
-    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
+    if cfg!(feature = "cntv-timer") {
+        CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::CLEAR);
+    } else {
+        CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
+    }
 }
 
 pub fn systick_irq_is_enabled() -> bool {
-    !CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
+    if cfg!(feature = "cntv-timer") {
+        !CNTV_CTL_EL0.is_set(CNTV_CTL_EL0::IMASK)
+    } else {
+        !CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
+    }
 }
 
 pub fn systick_set_interval(ticks: usize) {
-    CNTP_TVAL_EL0.set(ticks as u64);
+    if cfg!(feature = "cntv-timer") {
+        CNTV_TVAL_EL0.set(ticks as u64);
+    } else {
+        CNTP_TVAL_EL0.set(ticks as u64);
+    }
 }
