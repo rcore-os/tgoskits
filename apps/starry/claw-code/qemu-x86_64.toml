@@ -12,6 +12,7 @@ args = [
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-claw-code.img",
   "-device", "virtio-net-pci,netdev=net0",
   "-netdev", "user,id=net0",
+  "-snapshot",
 ]
 
 shell_init_cmd = """
