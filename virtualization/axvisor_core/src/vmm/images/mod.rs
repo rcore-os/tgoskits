@@ -14,7 +14,6 @@
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
-use axvisor_api::arch::CacheOp;
 #[cfg(target_arch = "x86_64")]
 use axvm::config::VMBootProtocol;
 #[cfg(target_arch = "x86_64")]
@@ -22,6 +21,8 @@ use axvm::config::VmMemMappingType;
 use axvm::{VMMemoryRegion, config::AxVMCrateConfig};
 use byte_unit::Byte;
 
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+use crate::arch;
 use crate::vmm::{
     VMRef,
     config::{get_vm_dtb_arc, vmcfg},
@@ -587,11 +588,8 @@ pub fn load_vm_image_from_memory(
             );
         }
 
-        axvisor_api::arch::dcache_range(
-            CacheOp::Clean,
-            (region.as_ptr() as usize).into(),
-            bytes_to_write,
-        );
+        #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+        arch::clean_dcache_range((region.as_ptr() as usize).into(), bytes_to_write);
 
         // Update the position of the buffer.
         buffer_pos += bytes_to_write;
@@ -796,11 +794,8 @@ pub mod fs {
                 )
             })?;
 
-            axvisor_api::arch::dcache_range(
-                CacheOp::Clean,
-                (buffer.as_ptr() as usize).into(),
-                buffer.len(),
-            );
+            #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+            arch::clean_dcache_range((buffer.as_ptr() as usize).into(), buffer.len());
         }
 
         Ok(())

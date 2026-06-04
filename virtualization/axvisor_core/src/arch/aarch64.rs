@@ -13,6 +13,15 @@
 // limitations under the License.
 
 use aarch64_cpu_ext::registers::*;
+use ax_memory_addr::VirtAddr;
+
+pub(crate) fn clean_dcache_range(addr: VirtAddr, size: usize) {
+    aarch64_cpu_ext::cache::dcache_range(
+        aarch64_cpu_ext::cache::CacheOp::Clean,
+        addr.as_usize(),
+        size,
+    );
+}
 
 pub fn hardware_check() {
     let pa_bits = match ID_AA64MMFR0_EL1.read_as_enum(ID_AA64MMFR0_EL1::PARange) {

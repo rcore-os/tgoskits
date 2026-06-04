@@ -15,7 +15,6 @@
 use log::{debug, warn};
 
 mod api;
-pub mod cache;
 
 fn inject_interrupt(irq: usize) {
     debug!("Injecting virtual interrupt: {irq}");

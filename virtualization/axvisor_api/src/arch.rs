@@ -45,15 +45,7 @@
 //! }
 //! ```
 
-use super::memory::{PhysAddr, VirtAddr};
-
-/// Cache maintenance operations required by the hypervisor core.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CacheOp {
-    Clean,
-    Invalidate,
-    CleanAndInvalidate,
-}
+use super::memory::PhysAddr;
 
 /// The API trait for architecture-specific functionalities.
 ///
@@ -62,10 +54,12 @@ pub enum CacheOp {
 /// host system or HAL layer.
 #[crate::api_def]
 pub trait ArchIf {
-    /// Perform a data-cache maintenance operation on the specified address range.
-    fn dcache_range(op: CacheOp, addr: VirtAddr, size: usize);
-
     /// Returns the physical address of the host-provided FDT blob, if any.
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
     fn host_fdt_paddr() -> Option<PhysAddr>;
 
     /// Get the host TSC frequency in MHz.

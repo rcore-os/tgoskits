@@ -15,6 +15,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use ax_kspin::SpinNoIrq as Mutex;
+use ax_memory_addr::VirtAddr;
+
+const CACHE_LINE_SIZE: usize = 64;
+const DCACHE_WB: u8 = 0x19;
 
 const CSR_GSTAT: u16 = 0x50;
 const CSR_GINTC: u16 = 0x52;
@@ -35,6 +39,28 @@ const INT_HWI7: usize = 9;
 const INT_IPI: usize = 12;
 
 static INJECT_INT_LOCK: Mutex<()> = Mutex::new(());
+
+unsafe fn cache_range<const OP: u8>(addr: VirtAddr, size: usize) {
+    let start = addr.as_usize() & !(CACHE_LINE_SIZE - 1);
+    let end = addr.as_usize() + size;
+    let mut current = start;
+
+    while current < end {
+        core::arch::asm!("cacop {0}, {1}, 0", const OP, in(reg) current);
+        current += CACHE_LINE_SIZE;
+    }
+}
+
+pub(crate) fn clean_dcache_range(addr: VirtAddr, size: usize) {
+    if size == 0 {
+        return;
+    }
+
+    unsafe {
+        cache_range::<DCACHE_WB>(addr, size);
+        core::arch::asm!("dbar 0");
+    }
+}
 
 #[inline(always)]
 unsafe fn csr_read<const CSR_NUM: u16>() -> usize {

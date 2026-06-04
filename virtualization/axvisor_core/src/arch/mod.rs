@@ -24,6 +24,15 @@ pub mod riscv64;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+pub(crate) fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
+    #[cfg(target_arch = "aarch64")]
+    aarch64::clean_dcache_range(addr, size);
+
+    #[cfg(target_arch = "loongarch64")]
+    loongarch64::clean_dcache_range(addr, size);
+}
+
 pub fn hardware_check() {
     #[cfg(target_arch = "aarch64")]
     aarch64::hardware_check();
