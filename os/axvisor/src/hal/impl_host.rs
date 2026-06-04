@@ -1,7 +1,3 @@
-use std::os::arceos;
-
-#[cfg(feature = "fs")]
-use ax_errno::AxResult;
 use axvisor_api::host::HostIf;
 
 struct HostImpl;
@@ -14,11 +10,6 @@ impl HostIf for HostImpl {
 
     fn init_percpu() {
         // ArceOS initializes host per-CPU runtime state before AxVisor starts.
-    }
-
-    #[cfg(feature = "fs")]
-    fn release_host_filesystems() -> AxResult {
-        arceos::modules::ax_fs::shutdown_filesystems()
     }
 
     #[cfg(feature = "shell")]

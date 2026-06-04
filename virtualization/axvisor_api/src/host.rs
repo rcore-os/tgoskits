@@ -71,11 +71,6 @@ pub trait HostIf {
     /// enables virtualization on it.
     fn init_percpu();
 
-    /// Release host filesystem resources before handing storage resources to
-    /// guests.
-    #[cfg(feature = "fs")]
-    fn release_host_filesystems() -> ax_errno::AxResult;
-
     /// Terminates the current host runtime with `exit_code`.
     #[cfg(feature = "shell")]
     fn exit(exit_code: i32) -> !;

@@ -67,25 +67,6 @@ pub fn init() {
     for vm in vm_list::get_vm_list() {
         vcpus::setup_vm_primary_vcpu(vm);
     }
-
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-    release_host_filesystem_for_guest_passthrough().expect(
-        "Failed to release host filesystem before guest passthrough devices take ownership",
-    );
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn release_host_filesystem_for_guest_passthrough() -> AxResult {
-    let has_conflicting_guest_ownership = vm_list::get_vm_list()
-        .into_iter()
-        .any(|vm| vm.has_host_fs_passthrough_conflict());
-    if !has_conflicting_guest_ownership {
-        return Ok(());
-    }
-
-    axvisor_api::host::release_host_filesystems()?;
-    info!("Host filesystem cleanly unmounted before guest passthrough devices start");
-    Ok(())
 }
 
 /// Start the VMM.
