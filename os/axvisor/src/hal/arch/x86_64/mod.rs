@@ -13,5 +13,3 @@
 // limitations under the License.
 
 mod api;
-
-pub fn prepare_virtualization() {}

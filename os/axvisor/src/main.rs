@@ -36,5 +36,8 @@ mod hal;
 /// core boot flow.
 #[unsafe(no_mangle)]
 fn main() {
+    #[cfg(target_arch = "riscv64")]
+    hal::arch::prepare_virtualization();
+
     axvisor_core::boot::run();
 }

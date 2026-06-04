@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
+use alloc::format;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use axvisor_api::host;
+use axvisor_api::{
+    host,
+    task::{self, TaskOptions},
+};
 use axvm::AxVMPerCpu;
 
 use crate::vmm;
@@ -44,6 +47,8 @@ d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
 "#,
 ];
 
+const CPU_INIT_TASK_STACK_SIZE: usize = 0x40000; // 256 KiB
+
 #[ax_percpu::def_percpu]
 static mut AXVM_PER_CPU: AxVMPerCpu = AxVMPerCpu::new_uninit();
 
@@ -54,7 +59,6 @@ pub fn run() {
     info!("Starting virtualization...");
     info!("Hardware support: {:?}", axvm::has_hardware_support());
     ensure_hardware_support();
-    host::prepare_virtualization();
     enable_virtualization_on_all_cores();
 
     vmm::init();
@@ -102,9 +106,14 @@ fn enable_virtualization_on_all_cores() {
     let cpu_count = host::get_host_cpu_num();
 
     for cpu_id in 0..cpu_count {
-        host::spawn_cpu_init_task(
-            cpu_id,
-            Box::new(move || {
+        task::spawn_task(
+            TaskOptions {
+                name: format!("axvisor-init-cpu-{cpu_id}"),
+                stack_size: CPU_INIT_TASK_STACK_SIZE,
+                cpu_set: Some(1usize << cpu_id),
+            },
+            move || {
+                host::init_percpu();
                 info!("Core {cpu_id} is initializing hardware virtualization support...");
                 info!("Enabling hardware virtualization support on core {cpu_id}");
 
@@ -125,7 +134,7 @@ fn enable_virtualization_on_all_cores() {
                 info!("Hardware virtualization support enabled on core {cpu_id}");
 
                 let _ = CORES.fetch_add(1, Ordering::Release);
-            }),
+            },
         );
     }
 

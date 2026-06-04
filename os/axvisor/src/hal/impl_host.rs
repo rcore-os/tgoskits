@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use std::os::arceos;
 
 #[cfg(feature = "fs")]
@@ -9,26 +8,12 @@ struct HostImpl;
 
 #[axvisor_api::api_impl]
 impl HostIf for HostImpl {
-    fn prepare_virtualization() {
-        crate::hal::arch::prepare_virtualization();
-    }
-
     fn get_host_cpu_num() -> usize {
         ax_hal::cpu_num()
     }
 
-    fn spawn_cpu_init_task(cpu_id: usize, task: Box<dyn FnOnce() + Send + 'static>) {
-        use std::thread;
-
-        use arceos::api::task::{AxCpuMask, ax_set_current_affinity};
-
-        thread::spawn(move || {
-            assert!(
-                ax_set_current_affinity(AxCpuMask::one_shot(cpu_id)).is_ok(),
-                "Initialize CPU affinity failed!"
-            );
-            task();
-        });
+    fn init_percpu() {
+        // ArceOS initializes host per-CPU runtime state before AxVisor starts.
     }
 
     #[cfg(feature = "fs")]

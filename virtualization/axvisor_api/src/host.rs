@@ -43,20 +43,12 @@
 //! }
 //! ```
 
-extern crate alloc;
-
-use alloc::boxed::Box;
-
 /// The API trait for host system functionalities.
 ///
 /// This trait defines the interface for querying host system information.
 /// Implementations should be provided by the host system or HAL layer.
 #[crate::api_def]
 pub trait HostIf {
-    /// Perform host-specific one-time preparation before virtualization is
-    /// enabled on all CPUs.
-    fn prepare_virtualization();
-
     /// Get the total number of CPUs (logical processors) in the host system.
     ///
     /// This function returns the number of CPUs available to the hypervisor,
@@ -75,11 +67,9 @@ pub trait HostIf {
     /// ```
     fn get_host_cpu_num() -> usize;
 
-    /// Spawn a host task bound to `cpu_id` and execute the provided closure on it.
-    ///
-    /// Host runtimes without affinity support may treat this as a best-effort
-    /// placement request.
-    fn spawn_cpu_init_task(cpu_id: usize, task: Box<dyn FnOnce() + Send + 'static>);
+    /// Performs host runtime initialization for the current CPU before AxVisor
+    /// enables virtualization on it.
+    fn init_percpu();
 
     /// Release host filesystem resources before handing storage resources to
     /// guests.

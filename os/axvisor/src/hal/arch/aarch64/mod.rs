@@ -119,5 +119,3 @@ fn inject_interrupt_gic_v3(vector: usize) {
 
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
 }
-
-pub fn prepare_virtualization() {}
