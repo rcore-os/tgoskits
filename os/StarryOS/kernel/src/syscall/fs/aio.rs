@@ -194,6 +194,7 @@ struct AioContext {
 }
 
 impl AioContext {
+    // Build a process-owned AIO context around a mapped user ring.
     fn new(
         id: AioContextId,
         owner: Pid,
@@ -226,6 +227,7 @@ impl AioContext {
         }
     }
 
+    // Return usable completion slots, leaving one slot empty to distinguish full.
     fn capacity(&self) -> usize {
         self.ring_events.saturating_sub(1) as usize
     }
@@ -235,22 +237,27 @@ static NEXT_AIO_CONTEXT_ID: AtomicUsize = AtomicUsize::new(1);
 static NEXT_AIO_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::new(BTreeMap::new());
 
+// Return the process id that owns newly created or looked-up contexts.
 fn current_pid() -> Pid {
     ax_task::current().as_thread().proc_data.proc.pid()
 }
 
+// Use Linux EINVAL for all invalid AIO context handles.
 fn invalid_context() -> AxError {
     AxError::from(LinuxError::EINVAL)
 }
 
+// Return the byte size of the userspace AIO ring header.
 fn aio_ring_header_size() -> usize {
     size_of::<AioRing>()
 }
 
+// Return the byte size of one userspace completion event.
 fn aio_event_size() -> usize {
     size_of::<IoEvent>()
 }
 
+// Compute a page-aligned ring layout for the requested event count.
 fn aio_ring_layout(nr_events: u32) -> AxResult<(usize, u32)> {
     let requested = usize::try_from(nr_events).map_err(|_| AxError::InvalidInput)?;
     let wanted_events = requested
@@ -270,6 +277,7 @@ fn aio_ring_layout(nr_events: u32) -> AxResult<(usize, u32)> {
     Ok((ring_size, ring_events))
 }
 
+// Reserve and map the userspace ring buffer in the process address space.
 fn allocate_aio_ring(aspace: &mut AddrSpace, ring_size: usize) -> AxResult<VirtAddr> {
     let ring_vaddr = aspace
         .find_free_area(
@@ -286,6 +294,7 @@ fn allocate_aio_ring(aspace: &mut AddrSpace, ring_size: usize) -> AxResult<VirtA
     Ok(ring_vaddr)
 }
 
+// Create the initial Linux-compatible ring header.
 fn initial_ring(ctx_id: AioContextId, ring_events: u32) -> AxResult<AioRing> {
     Ok(AioRing {
         id: u32::try_from(ctx_id).map_err(|_| AxError::NoMemory)?,
@@ -299,22 +308,27 @@ fn initial_ring(ctx_id: AioContextId, ring_events: u32) -> AxResult<AioRing> {
     })
 }
 
+// Interpret the public context id as the userspace ring address.
 fn ring_ptr(ctx: AioContextId) -> *mut AioRing {
     ctx as *mut AioRing
 }
 
+// Compute the address of a completion event inside the mapped ring.
 fn ring_event_addr(context: &AioContext, index: u32) -> VirtAddr {
     context.ring_vaddr + aio_ring_header_size() + index as usize * aio_event_size()
 }
 
+// View a plain value as bytes for address-space writes.
 fn typed_as_bytes<T>(value: &T) -> &[u8] {
     unsafe { slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
+// View uninitialized storage as bytes for address-space reads.
 fn typed_as_bytes_mut<T>(value: &mut MaybeUninit<T>) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>()) }
 }
 
+// Read the ring header through the caller's user pointer.
 fn read_ring_user(ctx: AioContextId) -> AxResult<AioRing> {
     let ring = ring_ptr(ctx)
         .cast_const()
@@ -323,6 +337,7 @@ fn read_ring_user(ctx: AioContextId) -> AxResult<AioRing> {
     Ok(unsafe { ring.assume_init() })
 }
 
+// Read the ring header from its owning address space.
 fn read_ring_context(context: &AioContext) -> AxResult<AioRing> {
     let mut ring = MaybeUninit::<AioRing>::uninit();
     context
@@ -332,6 +347,7 @@ fn read_ring_context(context: &AioContext) -> AxResult<AioRing> {
     Ok(unsafe { ring.assume_init() })
 }
 
+// Store a new ring head after userspace events are drained.
 fn write_ring_head_context(context: &AioContext, head: u32) -> AxResult<()> {
     context.aspace.lock().write(
         context.ring_vaddr + offset_of!(AioRing, head),
@@ -339,6 +355,7 @@ fn write_ring_head_context(context: &AioContext, head: u32) -> AxResult<()> {
     )
 }
 
+// Store a new ring tail after the kernel enqueues a completion.
 fn write_ring_tail_context(context: &AioContext, tail: u32) -> AxResult<()> {
     context.aspace.lock().write(
         context.ring_vaddr + offset_of!(AioRing, tail),
@@ -346,6 +363,7 @@ fn write_ring_tail_context(context: &AioContext, tail: u32) -> AxResult<()> {
     )
 }
 
+// Read one completion event from the ring.
 fn read_event_context(context: &AioContext, index: u32) -> AxResult<IoEvent> {
     let mut event = MaybeUninit::<IoEvent>::uninit();
     context.aspace.lock().read(
@@ -355,6 +373,7 @@ fn read_event_context(context: &AioContext, index: u32) -> AxResult<IoEvent> {
     Ok(unsafe { event.assume_init() })
 }
 
+// Write one completion event into the ring.
 fn write_event_context(context: &AioContext, index: u32, event: &IoEvent) -> AxResult<()> {
     context
         .aspace
@@ -362,6 +381,7 @@ fn write_event_context(context: &AioContext, index: u32, event: &IoEvent) -> AxR
         .write(ring_event_addr(context, index), typed_as_bytes(event))
 }
 
+// Validate a userspace context handle and return its kernel object.
 fn lookup_context(ctx: AioContextId) -> AxResult<Arc<AioContext>> {
     let owner = current_pid();
     let ring = read_ring_user(ctx)?;
@@ -379,6 +399,7 @@ fn lookup_context(ctx: AioContextId) -> AxResult<Arc<AioContext>> {
     }
 }
 
+// Convert a syscall-style result into an io_event result field.
 fn result_to_event_res(result: AxResult<isize>) -> i64 {
     match result {
         Ok(n) => n as i64,
@@ -386,10 +407,12 @@ fn result_to_event_res(result: AxResult<isize>) -> i64 {
     }
 }
 
+// Convert a user u64 length to this kernel's pointer-sized length.
 fn u64_to_usize(value: u64) -> AxResult<usize> {
     usize::try_from(value).map_err(|_| AxError::InvalidInput)
 }
 
+// Convert an iocb offset into a non-negative file offset.
 fn u64_to_offset(value: i64) -> AxResult<u64> {
     if value < 0 {
         Err(AxError::InvalidInput)
@@ -398,6 +421,7 @@ fn u64_to_offset(value: i64) -> AxResult<u64> {
     }
 }
 
+// Fault in and validate a user memory range before worker access.
 fn prepare_user_region(
     aspace: &Arc<Mutex<AddrSpace>>,
     start: VirtAddr,
@@ -420,6 +444,7 @@ fn prepare_user_region(
     guard.populate_area(page_start, page_end - page_start, flags)
 }
 
+// Copy a linear user buffer into owned kernel memory.
 fn read_user_region(
     aspace: &Arc<Mutex<AddrSpace>>,
     start: VirtAddr,
@@ -437,6 +462,7 @@ fn read_user_region(
     Ok(data)
 }
 
+// Build a one-segment user buffer descriptor.
 fn user_buffer_from_linear(
     aspace: &Arc<Mutex<AddrSpace>>,
     ptr: u64,
@@ -455,6 +481,7 @@ fn user_buffer_from_linear(
     })
 }
 
+// Read an iovec array and normalize zero-length entries away.
 fn read_iov(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<UserSegment>> {
     if iovcnt > 1024 {
         return Err(AxError::InvalidInput);
@@ -476,6 +503,7 @@ fn read_iov(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<UserSegment>> {
     Ok(segments)
 }
 
+// Build a multi-segment user buffer from an iovec array.
 fn user_buffer_from_iov(
     aspace: &Arc<Mutex<AddrSpace>>,
     iov: *const IoVec,
@@ -497,6 +525,7 @@ fn user_buffer_from_iov(
     })
 }
 
+// Copy all user segments into a contiguous kernel buffer.
 fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> AxResult<Vec<u8>> {
     let mut data = vec![0; buf.len];
     let mut offset = 0usize;
@@ -511,6 +540,7 @@ fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> AxRes
     Ok(data)
 }
 
+// Copy a kernel buffer back into user segments.
 fn write_user_segments(
     aspace: &Arc<Mutex<AddrSpace>>,
     buf: &UserBuffer,
@@ -532,6 +562,7 @@ fn write_user_segments(
     Ok(())
 }
 
+// Resolve an fd that can be used by asynchronous writes.
 fn write_target_from_fd(fd: c_int) -> AxResult<AioWriteTarget> {
     if let Ok(memfd) = Memfd::from_fd(fd) {
         Ok(AioWriteTarget::Memfd(memfd))
@@ -550,6 +581,7 @@ fn write_target_from_fd(fd: c_int) -> AxResult<AioWriteTarget> {
     }
 }
 
+// Resolve an fd that can be used by asynchronous reads.
 fn read_file_from_fd(fd: c_int) -> AxResult<Arc<File>> {
     File::from_fd(fd).map_err(|e| {
         if e == AxError::BadFileDescriptor || e == AxError::IsADirectory {
@@ -560,6 +592,7 @@ fn read_file_from_fd(fd: c_int) -> AxResult<Arc<File>> {
     })
 }
 
+// Resolve an fd that can handle fsync or fdatasync.
 fn sync_target_from_fd(fd: c_int) -> AxResult<AioSyncTarget> {
     let file = get_file_like(fd)?;
     if let Ok(memfd) = file.clone().downcast_arc::<Memfd>() {
@@ -573,6 +606,7 @@ fn sync_target_from_fd(fd: c_int) -> AxResult<AioSyncTarget> {
     }
 }
 
+// Resolve the optional eventfd notification target from an iocb.
 fn resolve_resfd(cb: &Iocb) -> AxResult<Option<Arc<dyn FileLike>>> {
     if (cb.flags & IOCB_FLAG_RESFD) == 0 {
         Ok(None)
@@ -581,6 +615,7 @@ fn resolve_resfd(cb: &Iocb) -> AxResult<Option<Arc<dyn FileLike>>> {
     }
 }
 
+// Validate iocb fields shared by all supported operations.
 fn validate_iocb_common(cb: &Iocb) -> AxResult<()> {
     if cb.reserved2 != 0 {
         return Err(AxError::InvalidInput);
@@ -591,6 +626,7 @@ fn validate_iocb_common(cb: &Iocb) -> AxResult<()> {
     Ok(())
 }
 
+// Translate a userspace iocb into an owned request for worker execution.
 fn prepare_request(
     context: &Arc<AioContext>,
     cb: &Iocb,
@@ -599,6 +635,7 @@ fn prepare_request(
     validate_iocb_common(cb)?;
     let resfd = resolve_resfd(cb)?;
     let fd = cb.fildes as c_int;
+    // Snapshot or pin all user data before handing the request to a worker.
     let op = match cb.lio_opcode {
         IOCB_CMD_PREAD => {
             if cb.rw_flags != 0 {
@@ -695,12 +732,14 @@ fn prepare_request(
     }))
 }
 
+// Signal an eventfd completion counter when IOCB_FLAG_RESFD is set.
 fn notify_resfd(resfd: &Arc<dyn FileLike>) -> AxResult<()> {
     let data = 1u64.to_ne_bytes();
     resfd.write(&mut data.as_slice())?;
     Ok(())
 }
 
+// Execute a positioned read and copy the bytes into the original user buffer.
 fn execute_read(
     context: &AioContext,
     file: &Arc<File>,
@@ -713,6 +752,7 @@ fn execute_read(
     Ok(read as isize)
 }
 
+// Execute a positioned write to a regular file or memfd.
 fn execute_write(target: &AioWriteTarget, offset: u64, data: &[u8]) -> AxResult<isize> {
     match target {
         AioWriteTarget::File(file) => {
@@ -723,6 +763,7 @@ fn execute_write(target: &AioWriteTarget, offset: u64, data: &[u8]) -> AxResult<
     }
 }
 
+// Execute fsync or fdatasync against a supported target.
 fn execute_fsync(target: &AioSyncTarget, data_only: bool) -> AxResult<isize> {
     match target {
         AioSyncTarget::File(file) => file.inner().sync(data_only)?,
@@ -732,6 +773,7 @@ fn execute_fsync(target: &AioSyncTarget, data_only: bool) -> AxResult<isize> {
     Ok(0)
 }
 
+// Return ready poll events, including Linux always-reported error bits.
 fn ready_poll_events(file: &Arc<dyn FileLike>, interested: IoEvents) -> Option<isize> {
     let mut ready = file.poll();
     if ready.contains(IoEvents::IN) {
@@ -746,12 +788,14 @@ fn ready_poll_events(file: &Arc<dyn FileLike>, interested: IoEvents) -> Option<i
     (!ready.is_empty()).then_some(ready.bits() as isize)
 }
 
+// Wait until a poll request becomes ready or the context is destroyed.
 fn poll_result(
     context: &AioContext,
     file: &Arc<dyn FileLike>,
     interested: IoEvents,
 ) -> AxResult<isize> {
     block_on(interruptible(poll_fn(|cx| {
+        // Check before registration so already-ready fds complete immediately.
         if context.destroying.load(Ordering::Acquire) {
             return core::task::Poll::Ready(Err(AxError::Interrupted));
         }
@@ -760,6 +804,7 @@ fn poll_result(
         }
         file.register(cx, interested);
         context.completion_wakers.register(cx.waker());
+        // Re-check after registration to avoid losing a destroy or readiness wake.
         if context.destroying.load(Ordering::Acquire) {
             return core::task::Poll::Ready(Err(AxError::Interrupted));
         }
@@ -771,6 +816,7 @@ fn poll_result(
     .map_err(AxError::from)?
 }
 
+// Dispatch one prepared request to the matching operation implementation.
 fn execute_request(context: &AioContext, request: &AioRequest) -> AxResult<isize> {
     debug!(
         "execute_request: request_id={}, cb_ptr={:#x}",
@@ -813,6 +859,7 @@ fn execute_request(context: &AioContext, request: &AioRequest) -> AxResult<isize
     result
 }
 
+// Build the userspace completion event for a finished request.
 fn completion_event(request: &AioRequest, result: AxResult<isize>) -> IoEvent {
     if let Some(resfd) = &request.resfd {
         let _ = notify_resfd(resfd);
@@ -825,6 +872,7 @@ fn completion_event(request: &AioRequest, result: AxResult<isize>) -> IoEvent {
     }
 }
 
+// Count events currently visible in the circular ring.
 fn ring_ready_count(ring_events: u32, head: u32, tail: u32) -> usize {
     if ring_events == 0 {
         return 0;
@@ -836,6 +884,7 @@ fn ring_ready_count(ring_events: u32, head: u32, tail: u32) -> usize {
     }
 }
 
+// Read and validate the user-visible ring head.
 fn checked_ring_head(context: &AioContext) -> AxResult<u32> {
     let ring = read_ring_context(context)?;
     if ring.magic != AIO_RING_MAGIC || ring.nr != context.ring_events || ring.nr < 2 {
@@ -844,6 +893,7 @@ fn checked_ring_head(context: &AioContext) -> AxResult<u32> {
     Ok(ring.head % context.ring_events)
 }
 
+// Recompute the cached ready count from ring head and tail.
 fn refresh_ready_count(context: &AioContext) -> AxResult<usize> {
     let _ring = context.ring_lock.lock();
     let head = checked_ring_head(context)?;
@@ -853,6 +903,7 @@ fn refresh_ready_count(context: &AioContext) -> AxResult<usize> {
     Ok(ready)
 }
 
+// Append one completion into the ring and wake waiters.
 fn enqueue_completion(context: &AioContext, event: IoEvent) -> AxResult<()> {
     let _ring = context.ring_lock.lock();
     let head = checked_ring_head(context)?;
@@ -866,6 +917,7 @@ fn enqueue_completion(context: &AioContext, event: IoEvent) -> AxResult<()> {
         return Err(AxError::WouldBlock);
     }
 
+    // Event data must be visible before publishing the new tail.
     write_event_context(context, tail, &event)?;
     write_ring_tail_context(context, next_tail)?;
     context
@@ -879,6 +931,7 @@ fn enqueue_completion(context: &AioContext, event: IoEvent) -> AxResult<()> {
     Ok(())
 }
 
+// Remove a finished request from accounting and notify blocked paths.
 fn finish_request(context: &AioContext, request: &AioRequest, event: IoEvent) {
     debug!(
         "finish_request: request_id={}, res={}",
@@ -909,6 +962,7 @@ fn finish_request(context: &AioContext, request: &AioRequest, event: IoEvent) {
     context.completion_wakers.wake();
 }
 
+// Pop the next queued request and mark it as running.
 fn next_work(context: &Arc<AioContext>) -> Option<Arc<AioRequest>> {
     let mut inner = context.inner.lock();
     let request = inner.queue.pop_front()?;
@@ -921,10 +975,12 @@ fn next_work(context: &Arc<AioContext>) -> Option<Arc<AioRequest>> {
     }
 }
 
+// Worker loop that executes queued requests for one AIO context.
 fn aio_worker(context: Arc<AioContext>) {
     debug!("aio_worker: started");
     loop {
         let request = loop {
+            // Prefer existing queued work; otherwise block until work or destroy.
             if let Some(request) = next_work(&context) {
                 debug!("aio_worker: got work, request_id={}", request.id);
                 break request;
@@ -940,6 +996,7 @@ fn aio_worker(context: Arc<AioContext>) {
             });
         };
 
+        // All completions pass through finish_request for accounting and wakeups.
         debug!("aio_worker: executing request_id={}", request.id);
         let result = execute_request(&context, &request);
         let event = completion_event(&request, result);
@@ -948,10 +1005,12 @@ fn aio_worker(context: Arc<AioContext>) {
     }
 }
 
+// Bound worker fan-out by both ring capacity and a fixed kernel limit.
 fn max_worker_count(context: &AioContext) -> usize {
     context.capacity().min(AIO_MAX_WORKERS).max(1)
 }
 
+// Queue a request and start a worker if this context can use another one.
 fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> AxResult<()> {
     refresh_ready_count(context)?;
     let spawn_worker = {
@@ -959,6 +1018,7 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> AxRes
         if context.destroying.load(Ordering::Acquire) {
             return Err(invalid_context());
         }
+        // Ring capacity covers both ready completions and in-flight work.
         let used = inner
             .inflight
             .checked_add(context.ready_count.load(Ordering::Acquire))
@@ -996,11 +1056,13 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> AxRes
     Ok(())
 }
 
+// Wait for at least one completion or for the optional deadline to expire.
 fn wait_for_completion(
     context: &AioContext,
     deadline: Option<core::time::Duration>,
 ) -> AxResult<bool> {
     let wait = poll_fn(|cx| {
+        // Register then re-check to avoid a completion wake racing this waiter.
         if context.ready_count.load(Ordering::Acquire) != 0
             || context.destroying.load(Ordering::Acquire)
         {
@@ -1024,6 +1086,7 @@ fn wait_for_completion(
     }
 }
 
+// Wait until io_destroy sees every running request finish.
 fn wait_for_inflight_drain(context: &AioContext) {
     block_on(poll_fn(|cx| {
         let inflight = context.inner.lock().inflight;
@@ -1033,6 +1096,7 @@ fn wait_for_inflight_drain(context: &AioContext) {
 
         debug!("sys_io_destroy: still waiting, inflight={}", inflight);
         context.completion_wakers.register(cx.waker());
+        // Re-check after registration so the final completion cannot be missed.
         if context.inner.lock().inflight == 0 {
             core::task::Poll::Ready(())
         } else {
@@ -1041,6 +1105,7 @@ fn wait_for_inflight_drain(context: &AioContext) {
     }))
 }
 
+// Read an optional relative timeout from userspace.
 fn read_timeout(timeout: *const timespec) -> AxResult<Option<core::time::Duration>> {
     if timeout.is_null() {
         return Ok(None);
@@ -1049,6 +1114,7 @@ fn read_timeout(timeout: *const timespec) -> AxResult<Option<core::time::Duratio
     Ok(Some(timeout))
 }
 
+// Drain completion events from the ring into the userspace output array.
 fn copy_completed_events(
     context: &AioContext,
     max: usize,
@@ -1063,6 +1129,7 @@ fn copy_completed_events(
 
     while copied < max && head != tail {
         let event = read_event_context(context, head)?;
+        // If a later copy fails, keep the events already delivered visible.
         if let Err(err) = events
             .wrapping_add(completed_offset + copied)
             .vm_write(event)
@@ -1083,6 +1150,7 @@ fn copy_completed_events(
         head = if head + 1 >= ring_events { 0 } else { head + 1 };
     }
 
+    // Publish the new head only after successful user copies.
     if copied > 0 {
         write_ring_head_context(context, head)?;
     }
@@ -1092,6 +1160,7 @@ fn copy_completed_events(
     Ok(copied)
 }
 
+// Shared implementation for io_getevents and io_pgetevents.
 fn do_io_getevents(
     context: Arc<AioContext>,
     min_nr: isize,
@@ -1112,6 +1181,7 @@ fn do_io_getevents(
     let mut completed = 0usize;
 
     loop {
+        // First drain everything already ready before sleeping.
         let copied = copy_completed_events(&context, nr - completed, events, completed)?;
         completed += copied;
         if completed >= min_nr || completed == nr || min_nr == 0 {
@@ -1121,6 +1191,7 @@ fn do_io_getevents(
             return Ok(completed as isize);
         }
 
+        // Sleep only when min_nr still requires more events.
         match wait_for_completion(&context, deadline) {
             Ok(true) => {}
             Ok(false) => return Ok(completed as isize),
@@ -1130,6 +1201,7 @@ fn do_io_getevents(
     }
 }
 
+// Create an AIO context and expose its ring address to userspace.
 pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> {
     debug!(
         "sys_io_setup called: nr_events={}, ctxp={:p}",
@@ -1146,6 +1218,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> 
     if ctx_id == 0 || u32::try_from(ctx_id).is_err() {
         return Err(AxError::NoMemory);
     }
+    // Allocate the user ring before publishing the context globally.
     let (ring_size, ring_events) = aio_ring_layout(nr_events)?;
     let curr = ax_task::current();
     let aspace = curr.as_thread().proc_data.aspace();
@@ -1166,6 +1239,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> 
     ));
     AIO_CONTEXTS.write().insert(ctx_id, context);
 
+    // If writing ctxp fails, roll back both the global entry and mapping.
     let ctx_value = ring_vaddr.as_usize();
     if let Err(err) = ctxp.vm_write(ctx_value) {
         AIO_CONTEXTS.write().remove(&ctx_id);
@@ -1179,6 +1253,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> 
     Ok(0)
 }
 
+// Destroy an AIO context after cancelling queued work and draining workers.
 pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
     debug!("sys_io_destroy called: ctx={:#x}", ctx);
     let context = lookup_context(ctx)?;
@@ -1186,6 +1261,7 @@ pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
     context.destroying.store(true, Ordering::Release);
 
     {
+        // Drop queued requests; running requests are allowed to complete.
         let mut inner = context.inner.lock();
         let queued = inner.queue.len();
         inner.queue.clear();
@@ -1201,6 +1277,7 @@ pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
     context.work_wq.notify_all(true);
     context.completion_wakers.wake();
 
+    // Wait outside the inner lock so workers can finish_request.
     warn!("sys_io_destroy: waiting for inflight to drain");
     wait_for_inflight_drain(&context);
     warn!("sys_io_destroy: all inflight drained");
@@ -1213,6 +1290,7 @@ pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
     Ok(0)
 }
 
+// Submit a batch of iocbs to the target AIO context.
 pub fn sys_io_submit(ctx: AioContextId, nr: isize, iocbpp: *const *const Iocb) -> AxResult<isize> {
     debug!("sys_io_submit <= ctx: {ctx:#x}, nr: {nr}, iocbpp: {iocbpp:p}");
     if nr < 0 {
@@ -1229,6 +1307,7 @@ pub fn sys_io_submit(ctx: AioContextId, nr: isize, iocbpp: *const *const Iocb) -
 
     let mut submitted = 0isize;
     for i in 0..nr as usize {
+        // Linux returns a partial count once at least one request was queued.
         let cb_ptr = match iocbpp.wrapping_add(i).vm_read() {
             Ok(ptr) => ptr,
             Err(_) if submitted > 0 => return Ok(submitted),
@@ -1261,6 +1340,7 @@ pub fn sys_io_submit(ctx: AioContextId, nr: isize, iocbpp: *const *const Iocb) -
     Ok(submitted)
 }
 
+// Retrieve completed events from an AIO context.
 pub fn sys_io_getevents(
     ctx: AioContextId,
     min_nr: isize,
@@ -1275,6 +1355,7 @@ pub fn sys_io_getevents(
     Ok(result)
 }
 
+// Retrieve events while temporarily applying a signal mask.
 pub fn sys_io_pgetevents(
     ctx: AioContextId,
     min_nr: isize,
@@ -1294,6 +1375,7 @@ pub fn sys_io_pgetevents(
             .assume_init()
     };
     check_sigset_size(sigset.sigsetsize)?;
+    // A null sigmask means pgetevents behaves like getevents.
     let blocked = if sigset.sigmask.is_null() {
         None
     } else {
@@ -1304,6 +1386,7 @@ pub fn sys_io_pgetevents(
     })
 }
 
+// Cancel a queued request that has not started running.
 pub fn sys_io_cancel(
     ctx: AioContextId,
     iocb: *const Iocb,
@@ -1315,6 +1398,7 @@ pub fn sys_io_cancel(
 
     let event = {
         let mut inner = context.inner.lock();
+        // Linux AIO can only cancel requests still waiting in the queue here.
         let Some((&request_id, pending)) = inner
             .pending
             .iter()

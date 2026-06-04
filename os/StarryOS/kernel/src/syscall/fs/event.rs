@@ -17,8 +17,9 @@ bitflags! {
     }
 }
 
+// Create an eventfd and install it into the current file descriptor table.
 pub fn sys_eventfd2(initval: u32, flags: u32) -> AxResult<isize> {
-    warn!(
+    debug!(
         "sys_eventfd2 called: initval={}, flags={:#x}",
         initval, flags
     );
@@ -29,6 +30,6 @@ pub fn sys_eventfd2(initval: u32, flags: u32) -> AxResult<isize> {
     event_fd.set_nonblocking(flags.contains(EventFdFlags::NONBLOCK))?;
     let fd =
         add_file_like(event_fd as _, flags.contains(EventFdFlags::CLOEXEC)).map(|fd| fd as _)?;
-    warn!("sys_eventfd2: success, fd={}", fd);
+    debug!("sys_eventfd2: success, fd={}", fd);
     Ok(fd)
 }

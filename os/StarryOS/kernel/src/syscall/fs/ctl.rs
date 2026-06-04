@@ -407,15 +407,8 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
     if result.is_ok()
         && let Some((path, is_dir)) = deleted
     {
+        // Notify watchers only after the filesystem deletion has succeeded.
         crate::file::inotify::notify_delete_path(&path, is_dir);
-    }
-    if let Err(err) = &result
-        && path.contains("#innodb_redo")
-    {
-        warn!(
-            "sys_unlinkat #innodb_redo failed: dirfd={dirfd}, path={path:?}, flags={flags}, \
-             err={err:?}"
-        );
     }
     result
 }
@@ -784,6 +777,7 @@ pub fn sys_renameat(
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
+// Rename a path, currently supporting Linux RENAME_NOREPLACE.
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: *const c_char,
@@ -817,16 +811,9 @@ pub fn sys_renameat2(
         }
     }
 
-    let result = old_dir.rename(&old_name, &new_dir, &new_name).map(|_| 0);
-    if let Err(err) = &result
-        && (old_path.contains("#innodb_redo") || new_path.contains("#innodb_redo"))
-    {
-        warn!(
-            "sys_renameat2 #innodb_redo failed: old_path={old_path:?}, new_path={new_path:?}, \
-             flags={flags}, err={err:?}"
-        );
-    }
-    result
+    // Propagate the filesystem errno directly to match renameat2 callers.
+    old_dir.rename(&old_name, &new_dir, &new_name)?;
+    Ok(0)
 }
 
 pub fn sys_sync() -> AxResult<isize> {
