@@ -1,0 +1,22 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+name = "bootloader-http"
+publish = false
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "bootloader-http"
+path = "src/main.rs"
+
+[features]
+default = []
+board-asus-nuc15crh = []
+
+[dependencies]
+bootloader-common = { workspace = true }
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true }
