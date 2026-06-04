@@ -107,7 +107,10 @@ static void test_edge_triggered_epoll(int epfd, int read_fd, int write_fd)
     expect_one_event(epfd, EPOLLIN, read_fd);
     expect_no_event(epfd);
 
-    assert(read(read_fd, buf, 3) == 3);
+    assert(read(read_fd, buf, 1) == 1);
+    expect_no_event(epfd);
+
+    assert(read(read_fd, buf, 2) == 2);
 
     /* No empty epoll_wait here: draining the pipe must still allow the next
        write to produce a fresh edge-triggered event. */

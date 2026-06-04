@@ -22,7 +22,8 @@ pub struct PipeRingBuffer {
     head: usize,
     tail: usize,
     status: RingBufferStatus,
-    readiness_version: u64,
+    read_readiness_version: u64,
+    write_readiness_version: u64,
 }
 
 impl PipeRingBuffer {
@@ -32,31 +33,49 @@ impl PipeRingBuffer {
             head: 0,
             tail: 0,
             status: RingBufferStatus::Empty,
-            readiness_version: 0,
+            read_readiness_version: 0,
+            write_readiness_version: 0,
         }
     }
 
     pub fn write_byte(&mut self, byte: u8) {
+        let old_status = self.status;
         self.status = RingBufferStatus::Normal;
         self.arr[self.tail] = byte;
         self.tail = (self.tail + 1) % RING_BUFFER_SIZE;
         if self.tail == self.head {
             self.status = RingBufferStatus::Full;
         }
+        self.refresh_readiness_versions(old_status);
     }
 
     pub fn read_byte(&mut self) -> u8 {
+        let old_status = self.status;
         self.status = RingBufferStatus::Normal;
         let c = self.arr[self.head];
         self.head = (self.head + 1) % RING_BUFFER_SIZE;
         if self.head == self.tail {
             self.status = RingBufferStatus::Empty;
         }
+        self.refresh_readiness_versions(old_status);
         c
     }
 
-    pub fn notify_readiness_changed(&mut self) {
-        self.readiness_version = self.readiness_version.wrapping_add(1);
+    fn refresh_readiness_versions(&mut self, old_status: RingBufferStatus) {
+        if Self::is_readable(old_status) != Self::is_readable(self.status) {
+            self.read_readiness_version = self.read_readiness_version.wrapping_add(1);
+        }
+        if Self::is_writable(old_status) != Self::is_writable(self.status) {
+            self.write_readiness_version = self.write_readiness_version.wrapping_add(1);
+        }
+    }
+
+    const fn is_readable(status: RingBufferStatus) -> bool {
+        !matches!(status, RingBufferStatus::Empty)
+    }
+
+    const fn is_writable(status: RingBufferStatus) -> bool {
+        !matches!(status, RingBufferStatus::Full)
     }
 
     /// Get the length of remaining data in the buffer
@@ -79,8 +98,12 @@ impl PipeRingBuffer {
         }
     }
 
-    pub const fn readiness_version(&self) -> u64 {
-        self.readiness_version
+    pub const fn readiness_version(&self, readable_end: bool) -> u64 {
+        if readable_end {
+            self.read_readiness_version
+        } else {
+            self.write_readiness_version
+        }
     }
 }
 
@@ -140,18 +163,15 @@ impl FileLike for Pipe {
             }
             for _ in 0..loop_read {
                 if read_size == max_len {
-                    ring_buffer.notify_readiness_changed();
                     return Ok(read_size);
                 }
                 buf[read_size] = ring_buffer.read_byte();
                 read_size += 1;
                 if read_size == max_len {
-                    ring_buffer.notify_readiness_changed();
                     return Ok(read_size);
                 }
             }
             if read_size > 0 {
-                ring_buffer.notify_readiness_changed();
                 return Ok(read_size);
             }
         }
@@ -177,13 +197,11 @@ impl FileLike for Pipe {
             }
             for _ in 0..loop_write {
                 if write_size == max_len {
-                    ring_buffer.notify_readiness_changed();
                     return Ok(write_size);
                 }
                 ring_buffer.write_byte(buf[write_size]);
                 write_size += 1;
                 if write_size == max_len {
-                    ring_buffer.notify_readiness_changed();
                     return Ok(write_size);
                 }
             }
@@ -212,7 +230,7 @@ impl FileLike for Pipe {
         Ok(PollState {
             readable: self.readable() && buf.available_read() > 0,
             writable: self.writable() && buf.available_write() > 0,
-            readiness_version: buf.readiness_version(),
+            readiness_version: buf.readiness_version(self.readable()),
         })
     }
 
