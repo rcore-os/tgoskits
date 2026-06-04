@@ -118,14 +118,21 @@ fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bo
     old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
 }
 
-fn user_ns_is_root() -> bool {
+fn user_ns_overflow_uid() -> u32 {
     let curr = current();
     let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
-    nsproxy.user_ns.lock().is_root
+    let ns = nsproxy.user_ns.lock();
+    if ns.is_root || ns.uid_mapped {
+        return 0;
+    }
+    65534
 }
 
-fn user_ns_overflow_uid() -> u32 {
-    if user_ns_is_root() {
+fn user_ns_overflow_gid() -> u32 {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    let ns = nsproxy.user_ns.lock();
+    if ns.is_root || ns.gid_mapped {
         return 0;
     }
     65534
@@ -150,7 +157,7 @@ pub fn sys_geteuid() -> AxResult<isize> {
 }
 
 pub fn sys_getgid() -> AxResult<isize> {
-    let overflow = user_ns_overflow_uid();
+    let overflow = user_ns_overflow_gid();
     if overflow != 0 {
         return Ok(overflow as isize);
     }
@@ -159,7 +166,7 @@ pub fn sys_getgid() -> AxResult<isize> {
 }
 
 pub fn sys_getegid() -> AxResult<isize> {
-    let overflow = user_ns_overflow_uid();
+    let overflow = user_ns_overflow_gid();
     if overflow != 0 {
         return Ok(overflow as isize);
     }
@@ -183,7 +190,7 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult
 }
 
 pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult<isize> {
-    let overflow = user_ns_overflow_uid();
+    let overflow = user_ns_overflow_gid();
     if overflow != 0 {
         rgid.vm_write(overflow)?;
         egid.vm_write(overflow)?;
