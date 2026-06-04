@@ -9,7 +9,7 @@ const fn align_up_64(val: usize) -> usize {
     (val + SIZE_64BIT - 1) & !(SIZE_64BIT - 1)
 }
 
-#[cfg(not(any(target_os = "none", arceos_std)))]
+#[cfg(feature = "host-test")]
 static PERCPU_AREA_BASE: spin::once::Once<usize> = spin::once::Once::new();
 
 unsafe extern "C" {
@@ -44,10 +44,10 @@ pub fn percpu_area_size() -> usize {
 /// if `cpu_id` is 0, it returns the base address of all per-CPU data areas.
 pub fn percpu_area_base(cpu_id: usize) -> usize {
     cfg_if::cfg_if! {
-        if #[cfg(any(target_os = "none", arceos_std))] {
-            let base = _percpu_start as *const () as usize;
-        } else {
+        if #[cfg(feature = "host-test")] {
             let base = *PERCPU_AREA_BASE.get().unwrap();
+        } else {
+            let base = _percpu_start as *const () as usize;
         }
     }
     base + cpu_id * align_up_64(percpu_area_size())
@@ -85,7 +85,7 @@ pub fn init() -> usize {
         )
     }
 
-    #[cfg(all(target_os = "linux", not(arceos_std)))]
+    #[cfg(feature = "host-test")]
     {
         // we not load the ax-percpu section in ELF, allocate them here.
         let total_size = _percpu_end as *const () as usize - _percpu_start as *const () as usize;
@@ -98,7 +98,7 @@ pub fn init() -> usize {
     let num = percpu_area_num();
     for i in 1..num {
         let secondary_base = percpu_area_base(i);
-        #[cfg(any(target_os = "none", arceos_std))]
+        #[cfg(not(feature = "host-test"))]
         assert!(secondary_base + size <= _percpu_end as *const () as usize);
         // copy per-cpu data of the primary CPU to other CPUs.
         unsafe {
@@ -116,14 +116,10 @@ pub fn read_percpu_reg() -> usize {
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
-                tp = if cfg!(arceos_std) {
-                    x86::msr::rdmsr(x86::msr::IA32_GS_BASE) as usize
-                } else if cfg!(target_os = "linux") {
+                tp = if cfg!(feature = "host-test") {
                     SELF_PTR.read_current_raw()
-                } else if cfg!(any(target_os = "none", arceos_std)) {
-                    x86::msr::rdmsr(x86::msr::IA32_GS_BASE) as usize
                 } else {
-                    unimplemented!()
+                    x86::msr::rdmsr(x86::msr::IA32_GS_BASE) as usize
                 };
             } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
                 core::arch::asm!("mv {}, gp", out(reg) tp)
@@ -166,9 +162,7 @@ pub unsafe fn write_percpu_reg(tp: usize) {
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
-                if cfg!(arceos_std) {
-                    x86::msr::wrmsr(x86::msr::IA32_GS_BASE, tp as u64);
-                } else if cfg!(target_os = "linux") {
+                if cfg!(feature = "host-test") {
                     const ARCH_SET_GS: u32 = 0x1001;
                     const SYS_ARCH_PRCTL: u32 = 158;
                     core::arch::asm!(
@@ -177,10 +171,8 @@ pub unsafe fn write_percpu_reg(tp: usize) {
                         in("edi") ARCH_SET_GS,
                         in("rsi") tp,
                     );
-                } else if cfg!(any(target_os = "none", arceos_std)) {
-                    x86::msr::wrmsr(x86::msr::IA32_GS_BASE, tp as u64);
                 } else {
-                    unimplemented!()
+                    x86::msr::wrmsr(x86::msr::IA32_GS_BASE, tp as u64);
                 }
                 SELF_PTR.write_current_raw(tp);
             } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {

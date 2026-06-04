@@ -1,7 +1,7 @@
 use std::path::Path;
 
 fn main() {
-    if cfg!(target_os = "linux") && cfg!(not(feature = "sp-naive")) {
+    if cfg!(feature = "host-test") && cfg!(not(feature = "sp-naive")) {
         let ld = if cfg!(feature = "custom-base") {
             "test_percpu_custom.x"
         } else {
