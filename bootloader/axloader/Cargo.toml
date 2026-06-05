@@ -10,11 +10,14 @@ version.workspace = true
 [[bin]]
 name = "axloader"
 path = "src/main.rs"
-required-features = ["board-asus-nuc15crh"]
+required-features = ["loader-bin"]
 
 [features]
 default = []
-board-asus-nuc15crh = []
+loader-bin = []
+arch-x86_64 = []
+arch-loongarch64 = []
+board-asus-nuc15crh = ["arch-x86_64", "loader-bin"]
 
 [dependencies]
 httpboot-protocol = { git = "https://github.com/Josen-B/ostool.git", branch = "httpboot", default-features = false }

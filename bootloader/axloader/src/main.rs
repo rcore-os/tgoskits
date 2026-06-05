@@ -3,31 +3,31 @@
 
 extern crate alloc;
 
-#[cfg(not(all(target_os = "uefi", feature = "board-asus-nuc15crh")))]
-compile_error!("axloader currently requires a UEFI target and --features board-asus-nuc15crh");
+#[cfg(not(target_os = "uefi"))]
+compile_error!("axloader board builds require a *-unknown-uefi target and one board-* feature");
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 mod boards;
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 mod console;
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 mod entry;
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 mod http;
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 mod uefi_boot;
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 use uefi::{Status, prelude::*};
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 const MANIFEST_LIMIT: usize = 4096;
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 const BOOT_ROUND_RETRY_LIMIT: usize = 10;
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 const BOOT_ROUND_RETRY_STALL: core::time::Duration = core::time::Duration::from_secs(3);
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 #[entry]
 fn efi_main() -> Status {
     uefi::helpers::init().expect("failed to initialize UEFI helpers");
@@ -49,7 +49,7 @@ fn efi_main() -> Status {
     Status::SUCCESS
 }
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 fn fetch_manifest() -> bool {
     let mut manifest_url = [0u8; 1024];
     match uefi_boot::manifest_url_from_loaded_image(&mut manifest_url) {
@@ -70,7 +70,7 @@ fn fetch_manifest() -> bool {
     }
 }
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 fn download_and_parse_manifest(url: &str) -> bool {
     let body = match http::download_body(url, MANIFEST_LIMIT) {
         Ok(body) => body,
@@ -135,7 +135,7 @@ fn download_and_parse_manifest(url: &str) -> bool {
     }
 }
 
-#[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
+#[cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     logln!("panic: {info}");
