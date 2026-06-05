@@ -543,15 +543,25 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn base_cargo_config_defaults_to_bin_false_for_x86_64_targets() {
+    fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
+        let metadata = repo_metadata();
         let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
-            .into_base_cargo_config_with_log(
-                "ax-helloworld".to_string(),
-                "x86_64-unknown-none".to_string(),
-                vec![],
-            );
+            .into_prepared_base_cargo_config_with_metadata(
+                "ax-helloworld",
+                "x86_64-unknown-none",
+                None,
+                &metadata,
+            )
+            .unwrap();
 
-        assert!(!cargo.to_bin);
+        assert!(cargo.to_bin);
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/pie/x86_64-unknown-none.json")
+        );
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
     }
 
     #[test]
@@ -571,7 +581,7 @@ AX_IP = "10.0.2.15"
             true,
             None
         ));
-        assert!(!build::resolve_effective_plat_dyn(
+        assert!(build::resolve_effective_plat_dyn(
             "x86_64-unknown-none",
             true,
             Some(true)
