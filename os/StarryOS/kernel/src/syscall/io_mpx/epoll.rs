@@ -109,6 +109,15 @@ pub fn sys_epoll_create1(flags: u32) -> AxResult<isize> {
         .map(|fd| fd as isize)
 }
 
+/// Implements legacy `epoll_create`, validating size before creating an epoll fd without flags.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_epoll_create(size: i32) -> AxResult<isize> {
+    if size <= 0 {
+        return Err(AxError::InvalidInput);
+    }
+    sys_epoll_create1(0)
+}
+
 pub fn sys_epoll_ctl(
     epfd: i32,
     op: u32,
@@ -117,6 +126,10 @@ pub fn sys_epoll_ctl(
 ) -> AxResult<isize> {
     let epoll = Epoll::from_fd(epfd)?;
     debug!("sys_epoll_ctl <= epfd: {epfd}, op: {op}, fd: {fd}");
+
+    if epfd == fd {
+        return Err(AxError::InvalidInput);
+    }
 
     let parse_event = || -> AxResult<(u32, EpollEvent, EpollFlags)> {
         let event = read_epoll_event(event)?;
@@ -214,12 +227,23 @@ pub fn sys_epoll_pwait(
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> AxResult<isize> {
-    let timeout = match timeout {
-        -1 => None,
-        t if t >= 0 => Some(Duration::from_millis(t as u64)),
-        _ => return Err(AxError::InvalidInput),
+    let timeout = if timeout < 0 {
+        None
+    } else {
+        Some(Duration::from_millis(timeout as u64))
     };
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+}
+
+/// Implements legacy `epoll_wait` as an x86_64 wrapper around `epoll_pwait`.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_epoll_wait(
+    epfd: i32,
+    events: UserPtr<epoll_event>,
+    maxevents: i32,
+    timeout: i32,
+) -> AxResult<isize> {
+    sys_epoll_pwait(epfd, events, maxevents, timeout, 0usize.into(), 0)
 }
 
 pub fn sys_epoll_pwait2(

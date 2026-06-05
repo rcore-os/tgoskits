@@ -4,6 +4,16 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#ifndef FALLOC_FL_KEEP_SIZE
+#define FALLOC_FL_KEEP_SIZE 0x01
+#endif
+#ifndef FALLOC_FL_PUNCH_HOLE
+#define FALLOC_FL_PUNCH_HOLE 0x02
+#endif
+#ifndef FALLOC_FL_ZERO_RANGE
+#define FALLOC_FL_ZERO_RANGE 0x10
+#endif
+
 /*
  * fallocate 对比测试:
  *   Linux 作为正确基线，验证 StarryOS 的 errno 优先级和 fd 类型语义。
@@ -302,6 +312,11 @@ int main(void)
             check_ret_or_err(ret, 1, ok, __FILE__, __LINE__,
                              "FALLOC_FL_KEEP_SIZE: 期望 0 或 EOPNOTSUPP");
         }
+        if (ret == 0) {
+            struct stat st;
+            CHECK_RET(fstat(fd, &st), 0, "KEEP_SIZE 后 fstat 成功");
+            CHECK(st.st_size == 0, "KEEP_SIZE 不扩展文件大小");
+        }
 
         close(fd);
         unlink(tmpl);
@@ -329,7 +344,36 @@ int main(void)
     }
 
     /* ================================================================
-     * 18. mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE
+     * 18. mode = FALLOC_FL_ZERO_RANGE
+     *     支持时应把已有范围清零，并按需要扩展文件。
+     * ================================================================ */
+    {
+        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        int fd = mkstemp(tmpl);
+        CHECK(fd >= 0, "mkstemp 应成功");
+
+        CHECK_RET(write(fd, "abcdefghij", 10), 10, "写入 10 字节");
+
+        errno = 0;
+        long ret = (long)call_fallocate(fd, FALLOC_FL_ZERO_RANGE, 2, 4);
+        {
+            const int ok[] = { EOPNOTSUPP };
+            check_ret_or_err(ret, 1, ok, __FILE__, __LINE__,
+                             "FALLOC_FL_ZERO_RANGE: 期望 0 或 EOPNOTSUPP");
+        }
+        if (ret == 0) {
+            char buf[11] = {0};
+            CHECK_RET(pread(fd, buf, 10, 0), 10, "ZERO_RANGE 后读回完整内容");
+            CHECK(memcmp(buf, "ab\0\0\0\0ghij", 10) == 0,
+                  "ZERO_RANGE 把指定范围清零");
+        }
+
+        close(fd);
+        unlink(tmpl);
+    }
+
+    /* ================================================================
+     * 19. mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE
      *     Linux: 返回 0 (tmpfs/ext4 支持) 或 EOPNOTSUPP (不支持)
      * ================================================================ */
     {
@@ -348,13 +392,25 @@ int main(void)
             check_ret_or_err(ret, 1, ok, __FILE__, __LINE__,
                              "FALLOC_FL_PUNCH_HOLE|KEEP_SIZE: 期望 0 或 EOPNOTSUPP");
         }
+        if (ret == 0) {
+            char buf[11] = {0};
+            const char expected[10] = {
+                0, 0, 0, 0, 0, '6', '7', '8', '9', '0',
+            };
+            struct stat st;
+            CHECK_RET(fstat(fd, &st), 0, "PUNCH_HOLE 后 fstat 成功");
+            CHECK(st.st_size == 10, "PUNCH_HOLE|KEEP_SIZE 不改变文件大小");
+            CHECK_RET(pread(fd, buf, 10, 0), 10, "PUNCH_HOLE 后读回完整内容");
+            CHECK(memcmp(buf, expected, sizeof(expected)) == 0,
+                  "PUNCH_HOLE 把洞范围读为零");
+        }
 
         close(fd);
         unlink(tmpl);
     }
 
     /* ================================================================
-     * 19. 超大 offset (2^60) — Linux 返回 EFBIG
+     * 20. 超大 offset (2^60) — Linux 返回 EFBIG
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";

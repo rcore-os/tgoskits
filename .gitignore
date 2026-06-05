@@ -63,11 +63,3 @@ os/StarryOS-REF
 .Ds_Store
 starry-*.log
 loongarch64-axvisor-guest-tests.md
-
-# Local investigation notes and transient files
-silicalet/
-.ci-cache/
-*.log
-*.swp
-.DS_Store
-.env*
