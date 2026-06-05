@@ -1,7 +1,7 @@
 //! User address space management.
 
-use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
-use core::{ffi::CStr, iter};
+use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
+use core::{ffi::CStr, iter, mem::size_of};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FS_CONTEXT, FileBackend};
@@ -12,11 +12,10 @@ use ax_runtime::hal::{
 };
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
-use kernel_elf_parser::{
-    AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser, app_stack_region,
-};
+use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
+use zerocopy::IntoBytes;
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
@@ -26,7 +25,7 @@ use crate::{
 #[cfg(target_arch = "riscv64")]
 const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
     | (1 << (b'M' - b'A'))
-    | (1 << (b'A' - b'A'))
+    | (1 << 0)
     | (1 << (b'F' - b'A'))
     | (1 << (b'D' - b'A'))
     | (1 << (b'C' - b'A'));
@@ -89,6 +88,69 @@ fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
         mapping_flags |= MappingFlags::EXECUTE;
     }
     mapping_flags
+}
+
+fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usize) -> Vec<u8> {
+    let mut data = VecDeque::new();
+    let mut push = |src: &[u8]| -> usize {
+        data.extend(src.iter().copied());
+        data.rotate_right(src.len());
+        sp - data.len()
+    };
+
+    let random_str_pos = push(b"0123456789abcdef");
+    let envs_slice: Vec<_> = envs
+        .iter()
+        .map(|env| {
+            push(b"\0");
+            push(env.as_bytes())
+        })
+        .collect();
+    let argv_slice: Vec<_> = args
+        .iter()
+        .map(|arg| {
+            push(b"\0");
+            push(arg.as_bytes())
+        })
+        .collect();
+    let padding_null = "\0".repeat(size_of::<usize>());
+    let sp = push(padding_null.as_bytes());
+
+    push(&b"\0".repeat(sp % 16));
+
+    if (envs.len() + args.len() + 3) & 1 != 0 {
+        push(padding_null.as_bytes());
+    }
+
+    let has_random = auxv.iter().any(|entry| entry.get_type() == AuxType::RANDOM);
+    let has_execfn = auxv.iter().any(|entry| entry.get_type() == AuxType::EXECFN);
+
+    // `push` prepends bytes to the stack image. Push the terminator first so
+    // user memory presents auxv as: supplied entries, AT_RANDOM, AT_EXECFN,
+    // AT_NULL. Without AT_NULL, musl keeps parsing argv/env padding as auxv
+    // and can falsely enable AT_SECURE.
+    push(AuxEntry::new(AuxType::NULL, 0).as_bytes());
+    if !has_execfn {
+        push(AuxEntry::new(AuxType::EXECFN, argv_slice[0]).as_bytes());
+    }
+    if !has_random {
+        push(AuxEntry::new(AuxType::RANDOM, random_str_pos).as_bytes());
+    }
+    push(auxv.as_bytes());
+
+    push(padding_null.as_bytes());
+    push(envs_slice.as_bytes());
+    push(padding_null.as_bytes());
+    push(argv_slice.as_bytes());
+    let sp = push(args.len().as_bytes());
+
+    assert!(sp % 16 == 0);
+
+    let mut result = Vec::with_capacity(data.len());
+    let (first, second) = data.as_slices();
+    result.extend_from_slice(first);
+    result.extend_from_slice(second);
+    result
 }
 
 /// Map the elf file to the user address space.
@@ -605,7 +667,11 @@ impl ElfLoader {
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
             .collect::<Vec<_>>();
         auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
-        auxv.push(AuxEntry::new(AuxType::NULL, 0));
+        auxv.push(AuxEntry::new(AuxType::UID, 0));
+        auxv.push(AuxEntry::new(AuxType::EUID, 0));
+        auxv.push(AuxEntry::new(AuxType::GID, 0));
+        auxv.push(AuxEntry::new(AuxType::EGID, 0));
+        auxv.push(AuxEntry::new(AuxType::SECURE, 0));
 
         debug!(
             "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
