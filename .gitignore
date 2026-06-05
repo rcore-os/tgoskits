@@ -64,6 +64,3 @@ os/StarryOS-REF
 starry-*.log
 loongarch64-axvisor-guest-tests.md
 
-# MySQL and test artifacts
-mysql.tar.xz
-test-mysql-aio.sh
