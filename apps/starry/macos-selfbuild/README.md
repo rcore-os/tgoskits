@@ -4,9 +4,10 @@ This case is an Apple Silicon macOS reproduction workflow. The host runs QEMU
 with HVF, boots an AArch64 StarryOS SMP guest, and runs guest `cargo build` to
 build StarryOS again inside StarryOS.
 
-The normal reproduction path does not build the rootfs locally and does not use
-Docker. Use the prebuilt self-build rootfs artifact supplied with the PR or
-release notes, then run the macOS/HVF runner below.
+The normal reproduction path builds the rootfs locally on macOS and does not use
+Docker. `build_rootfs.sh` creates the AArch64 Alpine guest rootfs, installs the
+pinned guest Rust/Cargo toolchain, prefetches the offline Cargo cache, and
+injects the current TGOSKits source tree.
 
 ## What This Demonstrates
 
@@ -33,9 +34,9 @@ The scripts use:
 - `zig` or an `aarch64-linux-musl-gcc` cross compiler for the seed kernel;
 - `llvm-nm` and `llvm-objdump`, with Homebrew `llvm` used as fallback.
 
-The self-build rootfs artifact must contain the guest Rust/Cargo toolchain,
-offline Cargo dependencies, and either a TGOSKits source tree or source tarball.
-`check_rootfs.sh` verifies the minimum paths.
+The generated self-build rootfs contains the guest Rust/Cargo toolchain,
+offline Cargo dependencies, and a TGOSKits source tarball. `check_rootfs.sh`
+verifies the minimum paths.
 
 ## Reproduce From a Fresh Clone
 
@@ -47,8 +48,30 @@ cd tgoskits
 git checkout app/starry-macos-selfbuild
 ```
 
-Place the prebuilt self-build rootfs at the standard path. Use either a local
-downloaded file:
+Build the self-build rootfs on macOS:
+
+```bash
+RUST_DIST_SERVER=https://rsproxy.cn \
+STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/ \
+apps/starry/macos-selfbuild/build_rootfs.sh
+```
+
+`RUST_DIST_SERVER` and `STARRY_CARGO_REGISTRY_INDEX` are optional. Omit them to
+use the official Rust and crates.io endpoints, or set them to closer mirrors
+when `static.rust-lang.org` or `index.crates.io` is slow. The script downloads
+Alpine AArch64 APKs and Rust nightly components, then runs `cargo fetch` on the
+host to populate the guest offline cache. The `cargo fetch` phase may print only
+`Updating crates.io index` for several minutes while the sparse registry cache
+is being populated.
+
+The expected output ends with:
+
+```text
+STARRY_MACOS_SELFBUILD_ROOTFS_OK
+```
+
+If a prebuilt rootfs artifact is supplied, it can still be placed at the
+standard path instead of rebuilding locally. Use either a local downloaded file:
 
 ```bash
 apps/starry/macos-selfbuild/fetch_rootfs.sh \
@@ -60,12 +83,6 @@ or a direct artifact URL:
 ```bash
 ROOTFS_URL='https://.../rootfs-aarch64-hvf-selfbuild.img' \
 apps/starry/macos-selfbuild/fetch_rootfs.sh
-```
-
-The expected output ends with:
-
-```text
-STARRY_MACOS_SELFBUILD_ROOTFS_OK
 ```
 
 Build the seed StarryOS kernel on macOS:
@@ -82,7 +99,7 @@ ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
 SMP=8 \
 JOBS=8 \
 RAYON_NUM_THREADS=1 \
-RUSTC_THREADS=1 \
+RUSTC_THREADS=2 \
 SOURCE_TMPFS=1 \
 QEMU_TIMEOUT_SEC=10800 \
 apps/starry/macos-selfbuild/run_selfbuild.sh
@@ -123,7 +140,7 @@ apps/starry/macos-selfbuild/run_selfbuild.sh
 
 ## Rootfs Contract
 
-The prebuilt rootfs is intentionally kept outside git because it is large. It
+The generated rootfs is intentionally kept outside git because it is large. It
 must contain:
 
 ```text
@@ -166,7 +183,7 @@ apps/starry/macos-selfbuild/prepare_rootfs.sh \
 | `SMP` | `8` | QEMU vCPU count, passed to `-smp`. |
 | `JOBS` | `SMP` | Guest Cargo job count. |
 | `RAYON_NUM_THREADS` | `1` | Rayon worker limit for guest build scripts. |
-| `RUSTC_THREADS` | `1` | Passed as guest `-Zthreads=<N>`. |
+| `RUSTC_THREADS` | `2` | Passed as guest `-Zthreads=<N>`; local best used `2`. |
 | `SOURCE_TMPFS` | `1` | Copy source into `/tmp` before building. |
 | `QEMU_TIMEOUT_SEC` | `7200` | Host timeout; use `0` to disable. |
 | `QEMU_ACCEL` | `hvf` | QEMU accelerator string. |
@@ -176,20 +193,24 @@ apps/starry/macos-selfbuild/prepare_rootfs.sh \
 | `BUILD_TARGET` | `aarch64-unknown-none-softfloat` | Guest Cargo target. |
 | `BUILD_PACKAGE` | `starryos` | Cargo package to build. |
 | `BUILD_BIN` | `starryos` | Cargo binary to build. |
-| `FEATURES` | `plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock` | StarryOS features for the guest build. |
+| `FEATURES` | `ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp` | Feature-slim StarryOS build used by the fast reproducible self-build. |
 | `EXTRA_RUSTFLAGS` | empty | Extra guest Rust flags for local experiments. |
 
-## Maintainer Rootfs Rebuild
-
-This section is for maintainers who need to recreate the large rootfs artifact.
-It is not part of the normal reproduction checklist.
+## Rootfs Rebuild Details
 
 ```bash
 apps/starry/macos-selfbuild/build_rootfs.sh
 ```
 
-That helper creates an AArch64 Alpine payload, installs the pinned guest Rust
-toolchain and offline Cargo cache, and injects it with `debugfs`. After the
-image passes `check_rootfs.sh`, publish the resulting
-`tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img` as an external artifact
-for reviewers to use with `fetch_rootfs.sh`.
+That helper creates an AArch64 Alpine payload natively on macOS, installs the
+pinned guest Rust toolchain and offline Cargo cache, and injects it with
+`debugfs`. It writes:
+
+```text
+tmp/axbuild/rootfs/rootfs-aarch64-hvf-toolchain.img
+tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img
+```
+
+The script still accepts `--payload` or `ROOTFS_PAYLOAD_URL` for an externally
+prepared payload tarball. `--build-payload-with-docker` is kept only as an
+explicit maintainer fallback and is not used by the macOS reproduction path.

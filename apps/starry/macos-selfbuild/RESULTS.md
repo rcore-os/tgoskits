@@ -10,14 +10,16 @@ host OS: macOS on Apple Silicon
 guest ISA: AArch64
 accelerator: QEMU HVF
 kernel: StarryOS AArch64 SMP
-rootfs: prebuilt self-build ext4 artifact
+rootfs: macOS-native generated self-build ext4 image
 QEMU disk mode: -snapshot
 success marker: STARRY-MACOS-SELFBUILD-PASS
 ```
 
-The git repository contains the runner, checks, and source-level fixes. The
-large rootfs artifact is external and should be supplied to reviewers directly.
-Reviewers should not need Docker to reproduce the macOS/HVF run.
+The git repository contains the runner, checks, source-level fixes, and the
+macOS-native rootfs construction script. The generated rootfs is still kept out
+of git because it is large, but reviewers should not need Docker or a prebuilt
+artifact to reproduce the macOS/HVF run. A prebuilt rootfs can be supplied only
+as a faster optional path.
 
 ## Guest Build Shape
 
@@ -30,7 +32,7 @@ cargo build \
   --target aarch64-unknown-none-softfloat \
   -Z build-std=core,alloc,compiler_builtins \
   --target-dir /tmp/starryos-selfbuild-target \
-  --features plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock \
+  --features ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp \
   --release
 ```
 
@@ -39,6 +41,7 @@ with:
 ```text
 CARGO_BUILD_JOBS=<JOBS>
 RAYON_NUM_THREADS=1
+RUSTC_THREADS=2
 CARGO_INCREMENTAL=0
 CARGO_NET_OFFLINE=true
 RUSTC_BOOTSTRAP=1
@@ -65,7 +68,7 @@ machine.
 | `SMP=8`, `JOBS=8`, tmp source and target | `642s` | copies source and target output to `/tmp` |
 | `SMP=8`, `JOBS=8`, tmp source/target, no LTO | `515s` | `CARGO_PROFILE_RELEASE_LTO=false` |
 | `SMP=8`, `JOBS=8`, tmp source/target, no LTO, opt0, CGU256 | `427s` | reduces serial optimized codegen cost |
-| `SMP=8`, `JOBS=8`, tuned feature set, no LTO, opt0, CGU256 | `331s` | best local full self-build |
+| `SMP=8`, `JOBS=8`, tuned feature set, no LTO, opt0, CGU256, `RUSTC_THREADS=2` | `331s` | best local full self-build |
 | host macOS reference | `134s` | host-side lower bound, not inside StarryOS |
 
 Useful ratios:

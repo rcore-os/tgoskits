@@ -4,7 +4,7 @@ set -eu
 marker="${MARKER:-STARRY-MACOS-SELFBUILD}"
 jobs="${JOBS:-8}"
 rayon_threads="${RAYON_NUM_THREADS:-1}"
-rustc_threads="${RUSTC_THREADS:-1}"
+rustc_threads="${RUSTC_THREADS:-2}"
 cargo_bin="${CARGO_BIN:-/usr/bin/cargo}"
 source_dir="${SOURCE_DIR:-/opt/tgoskits}"
 work_dir="${WORK_DIR:-/tmp/starryos-selfbuild-src}"
@@ -18,7 +18,7 @@ build_target="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
 build_package="${BUILD_PACKAGE:-starryos}"
 build_bin="${BUILD_BIN:-starryos}"
 build_std="${BUILD_STD:-core,alloc,compiler_builtins}"
-features="${FEATURES:-plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
+features="${FEATURES:-ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp}"
 no_default_features="${NO_DEFAULT_FEATURES:-0}"
 
 finish_guest() {
