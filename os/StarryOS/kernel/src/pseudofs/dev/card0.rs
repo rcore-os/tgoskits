@@ -70,10 +70,10 @@ use super::drm::{
     DRM_MODE_PROP_IMMUTABLE, DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY,
     DRM_PROP_NAME_LEN, DrmAuth, DrmEvent, DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
     DrmModeCreateBlob, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob,
-    DrmModeDestroyDumb, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder,
-    DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
-    DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion,
-    DrmUnique, DrmVersion, DrmWaitVblank,
+    DrmModeDestroyDumb, DrmModeDirtyFB, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector,
+    DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb,
+    DrmModeModeInfo, DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap,
+    DrmSetVersion, DrmUnique, DrmVersion, DrmWaitVblank,
 };
 use crate::pseudofs::{DeviceMmap, DeviceOps};
 
@@ -490,7 +490,7 @@ impl DeviceOps for Card0 {
 
             DRM_IOCTL_GET_MAGIC => handle_get_magic(arg),
             DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(arg),
-            DRM_IOCTL_MODE_DIRTYFB => handle_dirty_fb(arg),
+            DRM_IOCTL_MODE_DIRTYFB => self.handle_dirty_fb(arg),
             DRM_IOCTL_PRIME_HANDLE_TO_FD => handle_prime_handle_to_fd(arg),
             DRM_IOCTL_PRIME_FD_TO_HANDLE => handle_prime_fd_to_handle(arg),
 
@@ -736,10 +736,6 @@ fn handle_get_magic(arg: usize) -> VfsResult<usize> {
 }
 
 fn handle_auth_magic(_arg: usize) -> VfsResult<usize> {
-    Ok(0)
-}
-
-fn handle_dirty_fb(_arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
@@ -1221,6 +1217,16 @@ fn range_u32(name: &'static str, atomic: u32) -> PropMeta {
 }
 
 impl Card0 {
+    fn handle_dirty_fb(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *const DrmModeDirtyFB;
+        let dirty: DrmModeDirtyFB = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        if !self.fbs.lock().contains_key(&dirty.fb_id) {
+            return Err(VfsError::InvalidInput);
+        }
+        self.present_fb(dirty.fb_id);
+        Ok(0)
+    }
+
     fn handle_page_flip(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeCrtcPageFlip;
         let f: DrmModeCrtcPageFlip = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
