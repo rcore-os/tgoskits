@@ -206,6 +206,9 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 - 改进 CI 策略，保留默认关闭的同时增加按需 lockdep 回归矩阵或夜间检测。
 - 优化违例诊断输出，关联任务、CPU、锁类型和历史依赖路径，提升复杂 ABBA 问题的可读性。
 
+外部 `spin` 迁移后留下的锁类型、锁范围和原子上下文 follow-up 统一记录在
+[`锁使用问题跟踪`](./lock-usage-followups.md)。
+
 ## CI 默认启用边界
 
 除 `lockdep` 外，这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep` 与 task stack canary 在默认 CI 的 `multitask` 构建中启用。
