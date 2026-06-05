@@ -21,7 +21,6 @@ use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_sync::spin::SpinNoIrq;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
@@ -46,35 +45,8 @@ use crate::{
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 const PROCFS_INIT_PID: Pid = 1;
-const PTRACE_DEBUG_LOG_MAX_LINES: usize = 256;
-static PTRACE_DEBUG_LOG: SpinNoIrq<Vec<String>> = SpinNoIrq::new(Vec::new());
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
-
-pub(crate) fn append_ptrace_debug_log(line: String) {
-    let mut lines = PTRACE_DEBUG_LOG.lock();
-    if lines.len() >= PTRACE_DEBUG_LOG_MAX_LINES {
-        lines.remove(0);
-    }
-    lines.push(line);
-}
-
-pub(crate) fn clear_ptrace_debug_log() {
-    PTRACE_DEBUG_LOG.lock().clear();
-}
-
-fn render_ptrace_debug_log() -> Vec<u8> {
-    let lines = PTRACE_DEBUG_LOG.lock();
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    let mut out = String::new();
-    for line in lines.iter() {
-        out.push_str(line);
-        out.push('\n');
-    }
-    out.into_bytes()
-}
 
 fn read_kallsyms() -> KallsymsMapped<'static> {
     unsafe extern "C" {
@@ -580,30 +552,6 @@ struct ProcMemFile {
 struct ProcMemSegment {
     start: VirtAddr,
     size: usize,
-    flags: MappingFlags,
-    mapping: String,
-}
-
-fn proc_mem_mapping_label(path: &str) -> String {
-    if path.is_empty() {
-        "[anonymous]".to_string()
-    } else {
-        path.to_string()
-    }
-}
-
-fn proc_mem_preview_hex(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return "-".to_string();
-    }
-    let mut out = String::with_capacity(bytes.len() * 3 - 1);
-    for (idx, byte) in bytes.iter().enumerate() {
-        if idx != 0 {
-            out.push(' ');
-        }
-        let _ = write!(&mut out, "{byte:02x}");
-    }
-    out
 }
 
 impl ProcMemFile {
@@ -628,7 +576,7 @@ impl ProcMemFile {
 
         let mut covered = start;
         let mut segments = alloc::vec::Vec::new();
-        for (frag_start, frag_size, flags, backend) in frags {
+        for (frag_start, frag_size, _flags, _backend) in frags {
             if frag_start != covered {
                 break;
             }
@@ -638,15 +586,9 @@ impl ProcMemFile {
             aspace
                 .populate_area(page_start, page_end - page_start, access_flags)
                 .map_err(|_| VfsError::NoMemory)?;
-            let mapping = backend
-                .file_info()
-                .map(|info| proc_mem_mapping_label(&info.path))
-                .unwrap_or_else(|_| "[unknown]".to_string());
             segments.push(ProcMemSegment {
                 start: frag_start,
                 size: frag_size,
-                flags,
-                mapping,
             });
             covered = frag_end;
             if covered >= end {
@@ -691,49 +633,12 @@ impl DirectRwFsFileOps for ProcMemFile {
         let (task, segments) = self.access(offset, buf.len(), MappingFlags::WRITE)?;
         let aspace_arc = task.as_thread().proc_data.aspace();
         let aspace = aspace_arc.lock();
-        let pid = task.as_thread().proc_data.proc.pid();
         let mut written = 0usize;
         for seg in segments {
             let to_write = seg.size.min(buf.len() - written);
-            let preview_len = to_write.min(16);
-            let mut old = [0u8; 16];
-            aspace
-                .read(seg.start, &mut old[..preview_len])
-                .map_err(|_| VfsError::NoMemory)?;
             aspace
                 .write(seg.start, &buf[written..written + to_write])
                 .map_err(|_| VfsError::NoMemory)?;
-            let mut new = [0u8; 16];
-            aspace
-                .read(seg.start, &mut new[..preview_len])
-                .map_err(|_| VfsError::NoMemory)?;
-            let perms = format!(
-                "{}{}{}",
-                if seg.flags.contains(MappingFlags::READ) {
-                    'r'
-                } else {
-                    '-'
-                },
-                if seg.flags.contains(MappingFlags::WRITE) {
-                    'w'
-                } else {
-                    '-'
-                },
-                if seg.flags.contains(MappingFlags::EXECUTE) {
-                    'x'
-                } else {
-                    '-'
-                },
-            );
-            append_ptrace_debug_log(format!(
-                "/proc/{pid}/mem write: offset={:#x} len={} perms={} mapping={} old=[{}] new=[{}]",
-                seg.start.as_usize(),
-                to_write,
-                perms,
-                seg.mapping,
-                proc_mem_preview_hex(&old[..preview_len]),
-                proc_mem_preview_hex(&new[..preview_len]),
-            ));
             written += to_write;
             if written >= buf.len() {
                 break;
@@ -1108,19 +1013,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "cpuinfo",
         SimpleFile::new_regular(fs.clone(), || Ok(render_cpuinfo())),
-    );
-    root.add(
-        "ptrace_debug_log",
-        SimpleFile::new_regular(
-            fs.clone(),
-            RwFile::new(move |req| match req {
-                SimpleFileOperation::Read => Ok(Some(render_ptrace_debug_log())),
-                SimpleFileOperation::Write(_data) => {
-                    clear_ptrace_debug_log();
-                    Ok(None)
-                }
-            }),
-        ),
     );
     root.add(
         "uptime",

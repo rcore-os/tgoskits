@@ -22,7 +22,6 @@ use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
 
-pub(crate) use self::proc::append_ptrace_debug_log;
 pub use self::{device::*, dir::*, file::*, fs::*};
 
 /// A callback that builds a `Arc<dyn DirNodeOps>` for a given
