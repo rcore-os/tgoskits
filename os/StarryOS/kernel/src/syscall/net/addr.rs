@@ -103,7 +103,11 @@ pub fn read_netlink_addr(
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
 ) -> AxResult<sockaddr_nl> {
-    if addrlen != size_of::<sockaddr_nl>() as socklen_t {
+    // Linux `netlink_bind`/`netlink_connect` reject only `addrlen < sizeof(sockaddr_nl)`;
+    // a larger length is accepted and the trailing bytes ignored. Callers commonly zero a
+    // `sockaddr_storage` and pass its full size, so requiring an exact match wrongly
+    // returned EINVAL for legitimate binds/connects. Read just the leading sockaddr_nl.
+    if (addrlen as usize) < size_of::<sockaddr_nl>() {
         return Err(AxError::InvalidInput);
     }
     let addr_nl = addr.cast::<sockaddr_nl>().get_as_ref()?;
