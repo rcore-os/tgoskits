@@ -89,6 +89,10 @@ static int wait_readable(int fd, int slot) {
     pfd.fd = fd;
     pfd.events = POLLIN;
 
+    /*
+     * The connection has already been accepted here. A timeout points at the
+     * payload readiness path rather than listen/accept queue handling.
+     */
     errno = 0;
     int ret = poll(&pfd, 1, IO_TIMEOUT_MS);
     if (ret == 1 && (pfd.revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
