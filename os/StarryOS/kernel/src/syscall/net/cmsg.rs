@@ -8,6 +8,20 @@ use crate::{
     mm::{UserConstPtr, UserPtr},
 };
 
+fn cmsg_align(len: usize) -> usize {
+    let align = size_of::<usize>();
+    (len + align - 1) & !(align - 1)
+}
+
+fn cmsg_align_down(len: usize) -> usize {
+    let align = size_of::<usize>();
+    len & !(align - 1)
+}
+
+pub fn cmsg_space(len: usize) -> Option<usize> {
+    size_of::<cmsghdr>().checked_add(len).map(cmsg_align)
+}
+
 pub enum CMsg {
     Rights { fds: Vec<Arc<dyn FileLike>> },
 }
@@ -65,7 +79,10 @@ impl<'a> CMsgBuilder<'a> {
         ty: u32,
         body: impl FnOnce(&mut [u8]) -> AxResult<usize>,
     ) -> AxResult<bool> {
-        let Some(body_capacity) = (self.capacity - *self.len).checked_sub(size_of::<cmsghdr>())
+        let Some(body_capacity) = self
+            .capacity
+            .checked_sub(*self.len)
+            .and_then(|remaining| cmsg_align_down(remaining).checked_sub(size_of::<cmsghdr>()))
         else {
             return Ok(false);
         };
@@ -78,10 +95,13 @@ impl<'a> CMsgBuilder<'a> {
             .get_as_mut_slice(body_capacity)?;
         let body_len = body(data)?;
 
-        let cmsg_len = size_of::<cmsghdr>() + body_len;
+        let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
+            return Err(AxError::InvalidInput);
+        };
         hdr.cmsg_len = cmsg_len;
-        self.hdr = UserPtr::from(hdr as *const _ as usize + cmsg_len);
-        *self.len += cmsg_len;
+        let cmsg_space = cmsg_align(cmsg_len);
+        self.hdr = UserPtr::from(hdr as *const _ as usize + cmsg_space);
+        *self.len += cmsg_space;
         Ok(true)
     }
 }
