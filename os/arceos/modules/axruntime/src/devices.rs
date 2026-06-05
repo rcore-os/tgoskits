@@ -11,23 +11,17 @@ pub(crate) fn probe_all_devices() {
 #[cfg(all(feature = "fs", not(feature = "fs-ng"), feature = "plat-dyn"))]
 pub(crate) fn take_dyn_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    #[cfg(any(target_os = "none", arceos_std))]
-    {
-        if !rdrive::is_initialized() {
-            return alloc::vec::Vec::new();
-        }
-        let devices = ax_driver::block::take_block_devices();
-        devices
-            .into_iter()
-            .map(|dev| {
-                alloc::boxed::Box::new(FsBlockDevice::new(dev))
-                    as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
-            })
-            .collect()
+    if !rdrive::is_initialized() {
+        return alloc::vec::Vec::new();
     }
-
-    #[cfg(not(any(target_os = "none", arceos_std)))]
-    alloc::vec::Vec::new()
+    let devices = ax_driver::block::take_block_devices();
+    devices
+        .into_iter()
+        .map(|dev| {
+            alloc::boxed::Box::new(FsBlockDevice::new(dev))
+                as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>
+        })
+        .collect()
 }
 
 #[cfg(all(feature = "fs", not(feature = "fs-ng"), not(feature = "plat-dyn")))]
@@ -45,25 +39,19 @@ pub(crate) fn take_static_fs_block_devices()
 
 #[cfg(all(feature = "display", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_display() {
-    #[cfg(any(target_os = "none", arceos_std))]
-    {
-        if !rdrive::is_initialized() {
-            ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
-            return;
-        }
-        let devices = ax_driver::display::take_display_devices()
-            .unwrap_or_else(|err| panic!("failed to open display devices: {err:?}"))
-            .into_iter()
-            .map(|dev| {
-                let display = ax_display::rdif::RdifDisplayDevice::new(dev)
-                    .unwrap_or_else(|err| panic!("failed to adapt display device: {err:?}"));
-                ax_display::ErasedDisplayDevice::new(display)
-            });
-        ax_display::init_display(devices);
+    if !rdrive::is_initialized() {
+        ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
+        return;
     }
-
-    #[cfg(not(any(target_os = "none", arceos_std)))]
-    ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
+    let devices = ax_driver::display::take_display_devices()
+        .unwrap_or_else(|err| panic!("failed to open display devices: {err:?}"))
+        .into_iter()
+        .map(|dev| {
+            let display = ax_display::rdif::RdifDisplayDevice::new(dev)
+                .unwrap_or_else(|err| panic!("failed to adapt display device: {err:?}"));
+            ax_display::ErasedDisplayDevice::new(display)
+        });
+    ax_display::init_display(devices);
 }
 
 #[cfg(all(feature = "display", not(feature = "plat-dyn")))]
@@ -81,21 +69,15 @@ pub(crate) fn init_static_display() {
 
 #[cfg(all(feature = "input", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_input() {
-    #[cfg(any(target_os = "none", arceos_std))]
-    {
-        if !rdrive::is_initialized() {
-            ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
-            return;
-        }
-        let devices = ax_driver::input::take_input_devices()
-            .unwrap_or_else(|err| panic!("failed to open input devices: {err:?}"))
-            .into_iter()
-            .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
-        ax_input::init_input(devices);
+    if !rdrive::is_initialized() {
+        ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
+        return;
     }
-
-    #[cfg(not(any(target_os = "none", arceos_std)))]
-    ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
+    let devices = ax_driver::input::take_input_devices()
+        .unwrap_or_else(|err| panic!("failed to open input devices: {err:?}"))
+        .into_iter()
+        .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
+    ax_input::init_input(devices);
 }
 
 #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
@@ -155,19 +137,13 @@ pub(crate) fn take_static_net_ng_drivers()
 
 #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_vsock() {
-    #[cfg(any(target_os = "none", arceos_std))]
-    {
-        if !rdrive::is_initialized() {
-            ax_net_ng::init_vsock(alloc::vec::Vec::new());
-            return;
-        }
-        let devices = ax_driver::vsock::take_vsock_devices()
-            .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
-        ax_net_ng::init_vsock(devices);
+    if !rdrive::is_initialized() {
+        ax_net_ng::init_vsock(alloc::vec::Vec::new());
+        return;
     }
-
-    #[cfg(not(any(target_os = "none", arceos_std)))]
-    ax_net_ng::init_vsock(alloc::vec::Vec::new());
+    let devices = ax_driver::vsock::take_vsock_devices()
+        .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
+    ax_net_ng::init_vsock(devices);
 }
 
 #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
@@ -179,67 +155,46 @@ pub(crate) fn init_static_vsock() {
 
 #[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
 fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
-    #[cfg(any(target_os = "none", arceos_std))]
-    {
-        if !rdrive::is_initialized() {
-            return alloc::vec::Vec::new();
-        }
-        let mut devices = alloc::vec::Vec::new();
-        for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-            let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-                .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-            let driver = ax_net::RdNetDriver::new(name, net, irq_num)
-                .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
-            devices.push(
-                alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>
-            );
-        }
-        devices
+    if !rdrive::is_initialized() {
+        return alloc::vec::Vec::new();
     }
-
-    #[cfg(not(any(target_os = "none", arceos_std)))]
-    alloc::vec::Vec::new()
+    let mut devices = alloc::vec::Vec::new();
+    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
+        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
+            .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
+        let driver = ax_net::RdNetDriver::new(name, net, irq_num)
+            .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
+        devices
+            .push(alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>);
+    }
+    devices
 }
 
 #[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
 fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
-    #[cfg(any(target_os = "none", arceos_std))]
-    {
-        if !rdrive::is_initialized() {
-            return alloc::vec::Vec::new();
-        }
-        let mut devices = alloc::vec::Vec::new();
-        for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-            let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-                .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-            let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
-                .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
-            devices
-                .push(alloc::boxed::Box::new(driver)
-                    as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>);
-        }
-        devices
+    if !rdrive::is_initialized() {
+        return alloc::vec::Vec::new();
     }
-
-    #[cfg(not(any(target_os = "none", arceos_std)))]
-    alloc::vec::Vec::new()
+    let mut devices = alloc::vec::Vec::new();
+    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
+        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
+            .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
+        let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
+            .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
+        devices.push(
+            alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>
+        );
+    }
+    devices
 }
 
-#[cfg(all(
-    feature = "fs",
-    not(feature = "fs-ng"),
-    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
-))]
+#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
 struct FsBlockDevice {
     _irq: Option<crate::block::BlockIrqRegistration>,
     block: ax_driver::block::Block,
 }
 
-#[cfg(all(
-    feature = "fs",
-    not(feature = "fs-ng"),
-    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
-))]
+#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
 impl FsBlockDevice {
     fn new(mut block: ax_driver::block::Block) -> Self {
         let irq = crate::block::register_irq_handler(&mut block);
@@ -247,11 +202,7 @@ impl FsBlockDevice {
     }
 }
 
-#[cfg(all(
-    feature = "fs",
-    not(feature = "fs-ng"),
-    any(not(feature = "plat-dyn"), any(target_os = "none", arceos_std))
-))]
+#[cfg(all(feature = "fs", not(feature = "fs-ng")))]
 impl ax_fs::FsBlockDevice for FsBlockDevice {
     fn name(&self) -> &str {
         self.block.name()

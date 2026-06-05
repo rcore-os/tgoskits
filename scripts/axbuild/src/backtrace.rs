@@ -63,7 +63,7 @@ pub fn execute(command: Command) -> anyhow::Result<()> {
 const HOST_SYMBOLIZE_HEADER: &str = "=== host backtrace symbolize ===";
 
 /// Resolved ELF path for an ArceOS std test package built via the workspace `target/` dir.
-pub(crate) fn arceos_std_elf_path(
+pub(crate) fn std_test_elf_path(
     workspace_root: &Path,
     target: &str,
     package: &str,
@@ -1197,8 +1197,8 @@ BACKTRACE_END
     }
 
     #[test]
-    fn arceos_std_elf_path_uses_release_profile() {
-        let path = arceos_std_elf_path(
+    fn std_test_elf_path_uses_release_profile() {
+        let path = std_test_elf_path(
             Path::new("/ws"),
             "x86_64-unknown-none",
             "arceos-test-suit",

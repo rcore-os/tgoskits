@@ -16,5 +16,5 @@ pub mod arceos {
     pub use ax_api::modules;
 }
 
-#[cfg(arceos_std)]
+#[cfg(feature = "std-compat")]
 pub mod libc_compat;

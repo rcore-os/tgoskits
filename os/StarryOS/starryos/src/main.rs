@@ -6,7 +6,6 @@ extern crate alloc;
 
 use alloc::{borrow::ToOwned, vec::Vec};
 
-#[cfg(arceos_std)]
 use ax_std as _;
 
 pub const CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];

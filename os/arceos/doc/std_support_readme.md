@@ -17,7 +17,7 @@ Examples are under `examples/std`.
 Use `axbuild`/`xtask` instead of running Cargo in the example directory
 directly. `axbuild` maps the ArceOS bare-metal target to the matching built-in
 linux-musl target, creates empty fake `libc.a`/`libunwind.a` placeholders,
-injects `--cfg arceos_std`, and installs the linker wrapper.
+and installs the linker wrapper.
 
 Example:
 
@@ -33,7 +33,6 @@ The std build path uses:
 - `-Z build-std=std,panic_abort`
 - `-Z build-std-features=`
 - `panic = "abort"`
-- `--cfg arceos_std`
 - empty fake `libc.a`
 - empty fake `libunwind.a`
 
@@ -68,17 +67,17 @@ declares it. It combines app features and `package.metadata.axstd.features`,
 maps ArceOS backend features to `ax-std/*`, and adds the platform feature for
 the selected ArceOS target before linking the app.
 
-## Runtime cfg
+## Runtime compatibility
 
-Use `cfg(arceos_std)` for ArceOS std-specific behavior:
+Use a Cargo feature such as `arceos` for ArceOS std-specific behavior:
 
 ```rust
-#[cfg(arceos_std)]
+#[cfg(feature = "arceos")]
 const API_BASE: &str = "http://10.0.2.2:8080/v1";
 ```
 
 Do not add an external runtime shim dependency, and do not gate ArceOS std
-behavior on a synthetic target OS name.
+behavior on a synthetic target OS name or custom rustc cfg.
 
 ## Disk image preparation
 

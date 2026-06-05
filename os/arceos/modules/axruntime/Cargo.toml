@@ -12,6 +12,7 @@ default = []
 
 dma = ["paging"]
 ext-ld = []
+std-compat = []
 ipi = ["dep:ax-ipi"]
 irq = [
   "ax-hal/irq",
@@ -91,6 +92,3 @@ indoc = "2"
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

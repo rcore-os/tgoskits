@@ -894,7 +894,7 @@ impl Starry {
         }
 
         let keep_qemu_log = crate::backtrace::keep_qemu_log_from_env();
-        let elf = crate::backtrace::arceos_std_elf_path(
+        let elf = crate::backtrace::std_test_elf_path(
             self.app.workspace_root(),
             &request.target,
             crate::context::STARRY_PACKAGE,

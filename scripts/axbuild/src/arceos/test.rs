@@ -843,7 +843,7 @@ async fn run_rust_qemu_case(
         );
     }
 
-    let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
+    let elf = crate::backtrace::std_test_elf_path(&workspace, target, package, debug);
     let stream_session = if auto_symbolize {
         crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
     } else {

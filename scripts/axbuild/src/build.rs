@@ -764,6 +764,10 @@ fn pass_std_build_nested_features(
         }
     }
 
+    if axstd_feature_is_available("std-compat", axstd_features) {
+        cargo_features.push("ax-std/std-compat".to_string());
+    }
+
     cargo_features.sort();
     cargo_features.dedup();
 
@@ -832,12 +836,8 @@ fn std_link_mode_suffix(plat_dyn: bool) -> &'static str {
 }
 
 fn std_rustflags_toml(target: &str, plat_dyn: bool) -> String {
-    let flags = [
-        r#"    "--cfg", "arceos_std","#,
-        r#"    "--check-cfg=cfg(arceos_std)","#,
-    ];
     let _ = (target, plat_dyn);
-    flags.join("\n")
+    String::new()
 }
 
 fn std_fake_lib_dir(target: &str) -> anyhow::Result<PathBuf> {
@@ -2172,6 +2172,7 @@ mod tests {
                 "dns".to_string(),
                 "loongarch64-qemu-virt".to_string(),
                 "plat-dyn".to_string(),
+                "std-compat".to_string(),
                 "virtio-blk".to_string(),
                 "virtio-net".to_string(),
             ],
@@ -2183,6 +2184,7 @@ mod tests {
                 "ax-std/dns".to_string(),
                 "ax-std/loongarch64-qemu-virt".to_string(),
                 "ax-std/plat-dyn".to_string(),
+                "ax-std/std-compat".to_string(),
                 "ax-std/virtio-blk".to_string(),
                 "ax-std/virtio-net".to_string(),
                 "dns".to_string(),
@@ -2207,7 +2209,11 @@ mod tests {
             &mut envs,
             &mut info.features,
             &["dns".to_string()],
-            &["dns".to_string(), "loongarch64-qemu-virt".to_string()],
+            &[
+                "dns".to_string(),
+                "loongarch64-qemu-virt".to_string(),
+                "std-compat".to_string(),
+            ],
         );
 
         assert_eq!(
@@ -2215,6 +2221,7 @@ mod tests {
             vec![
                 "ax-std/dns".to_string(),
                 "ax-std/loongarch64-qemu-virt".to_string(),
+                "ax-std/std-compat".to_string(),
                 "dns".to_string()
             ]
         );
@@ -2258,6 +2265,7 @@ mod tests {
                 "arceos".to_string(),
                 "ax-std/dns".to_string(),
                 "ax-std/fs".to_string(),
+                "ax-std/std-compat".to_string(),
                 "ax-std/x86-pc".to_string(),
             ]
         );
@@ -2342,6 +2350,7 @@ AX_IP = "10.0.2.15"
                 "dns".to_string(),
                 "multitask".to_string(),
                 "net".to_string(),
+                "std-compat".to_string(),
                 "x86-pc".to_string(),
             ],
         );
@@ -2352,6 +2361,7 @@ AX_IP = "10.0.2.15"
                 "ax-std/dns".to_string(),
                 "ax-std/multitask".to_string(),
                 "ax-std/net".to_string(),
+                "ax-std/std-compat".to_string(),
                 "ax-std/x86-pc".to_string(),
             ]
         );
@@ -2412,6 +2422,7 @@ AX_IP = "10.0.2.15"
         );
         assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(cargo.features.contains(&"ax-std/smp".to_string()));
+        assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
         assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
         assert!(cargo.features.contains(&"ax-std/net".to_string()));
         assert!(cargo.to_bin);
@@ -2448,13 +2459,15 @@ AX_IP = "10.0.2.15"
         assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
         assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(cargo.features.contains(&"ax-std/smp".to_string()));
+        assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
         assert!(
             !cargo
                 .features
                 .contains(&"ax-std/aarch64-qemu-virt".to_string())
         );
         let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
-        assert!(config.contains("arceos_std"));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
     }
@@ -2745,7 +2758,7 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn std_cargo_config_uses_linux_musl_wrapper_and_arceos_std_cfg() {
+    fn std_cargo_config_uses_linux_musl_wrapper_without_custom_cfg() {
         let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
         let wrapper =
             std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
@@ -2755,8 +2768,8 @@ AX_IP = "10.0.2.15"
         assert!(config.contains("build-std = [\"std\", \"panic_abort\"]"));
         assert!(config.contains("build-std-features = []"));
         assert!(config.contains("[target.x86_64-unknown-linux-musl]"));
-        assert!(config.contains("arceos_std"));
-        assert!(config.contains("--check-cfg=cfg(arceos_std)"));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
         assert!(config.contains(&wrapper.display().to_string()));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
@@ -2772,7 +2785,8 @@ AX_IP = "10.0.2.15"
             std_cargo_config_path("loongarch64-unknown-linux-musl", &wrapper, false).unwrap();
         let config = fs::read_to_string(config).unwrap();
 
-        assert!(config.contains("arceos_std"));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
     }
@@ -2786,7 +2800,8 @@ AX_IP = "10.0.2.15"
             std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, false).unwrap();
 
         let config = fs::read_to_string(app_config).unwrap();
-        assert!(config.contains("arceos_std"));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
     }
@@ -2800,7 +2815,8 @@ AX_IP = "10.0.2.15"
             std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, true).unwrap();
 
         let config = fs::read_to_string(app_config).unwrap();
-        assert!(config.contains("arceos_std"));
+        assert!(!config.contains("--cfg"));
+        assert!(!config.contains("--check-cfg"));
         assert!(!config.contains("relocation-model"));
         assert!(!config.contains("code-model"));
     }
@@ -3114,12 +3130,20 @@ AX_IP = "10.0.2.15"
             &mut envs,
             &mut info.features,
             &[],
-            &["lockdep".to_string(), "smp".to_string()],
+            &[
+                "lockdep".to_string(),
+                "smp".to_string(),
+                "std-compat".to_string(),
+            ],
         );
 
         assert_eq!(
             info.features,
-            vec!["ax-std/lockdep".to_string(), "ax-std/smp".to_string()]
+            vec![
+                "ax-std/lockdep".to_string(),
+                "ax-std/smp".to_string(),
+                "ax-std/std-compat".to_string()
+            ]
         );
         assert!(envs.is_empty());
         assert!(!envs.values().any(|value| value.contains("arceos")));
@@ -3146,10 +3170,16 @@ AX_IP = "10.0.2.15"
             &mut envs,
             &mut info.features,
             &[],
-            &["lockdep".to_string()],
+            &["lockdep".to_string(), "std-compat".to_string()],
         );
 
-        assert_eq!(info.features, vec!["ax-std/lockdep".to_string()]);
+        assert_eq!(
+            info.features,
+            vec![
+                "ax-std/lockdep".to_string(),
+                "ax-std/std-compat".to_string()
+            ]
+        );
         assert!(envs.is_empty());
     }
 

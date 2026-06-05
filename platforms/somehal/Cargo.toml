@@ -44,6 +44,3 @@ sbi-rt = { workspace = true, features = ["legacy"] }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x2apic = "0.5"
 x86 = "0.52"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

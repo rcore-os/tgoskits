@@ -2,7 +2,6 @@
 #![no_main]
 #![allow(unused_features)]
 #![feature(used_with_arg)]
-#![cfg(any(not(any(windows, unix)), arceos_std))]
 
 #[macro_use]
 extern crate alloc;

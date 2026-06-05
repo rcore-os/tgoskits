@@ -21,7 +21,6 @@
 //! The implementation is intentionally small so that the boot order is visible
 //! from a single file.
 
-#![cfg(any(target_os = "none", arceos_std))]
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
@@ -31,7 +30,6 @@ extern crate log;
 #[macro_use]
 extern crate alloc;
 
-#[cfg(arceos_std)]
 use ax_std as _;
 #[cfg(target_os = "none")]
 extern crate ax_std as std;

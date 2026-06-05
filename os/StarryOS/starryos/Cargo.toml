@@ -72,6 +72,3 @@ tokio = { version = "1.0", features = ["full"] }
 [package.metadata.vendor-filter]
 all-features = true
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }
