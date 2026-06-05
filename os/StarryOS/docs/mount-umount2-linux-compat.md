@@ -332,7 +332,7 @@ pub struct Mountpoint {
 
 对应代码位置：
 
-- `components/axfs-ng-vfs/src/mount.rs`
+- `fs/axfs-ng-vfs/src/mount.rs`
 
 ### 为什么放在 `Mountpoint` 上
 

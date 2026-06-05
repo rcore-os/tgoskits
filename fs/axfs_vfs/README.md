@@ -1,12 +1,12 @@
-<h1 align="center">rsext4</h1>
+<h1 align="center">ax-fs-vfs</h1>
 
-<p align="center">A lightweight ext4 file system</p>
+<p align="center">Virtual filesystem interfaces used by ArceOS</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/rsext4.svg)](https://crates.io/crates/rsext4)
-[![Docs.rs](https://docs.rs/rsext4/badge.svg)](https://docs.rs/rsext4)
-[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![Crates.io](https://img.shields.io/crates/v/ax-fs-vfs.svg)](https://crates.io/crates/ax-fs-vfs)
+[![Docs.rs](https://docs.rs/ax-fs-vfs/badge.svg)](https://docs.rs/ax-fs-vfs)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 </div>
@@ -15,7 +15,10 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`rsext4` provides A lightweight ext4 file system. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`ax-fs-vfs` provides Virtual filesystem interfaces used by ArceOS. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-fs-vfs was derived from https://github.com/arceos-org/axfs_crates
 
 ## Quick Start
 
@@ -25,14 +28,14 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rsext4 = "0.3.0"
+ax-fs-vfs = "0.3.2"
 ```
 
 ### Run Check and Test
 
 ```bash
 # Enter the crate directory
-cd components/rsext4
+cd fs/axfs_vfs
 
 # Format code
 cargo fmt --all
@@ -52,10 +55,10 @@ cargo doc --no-deps
 ### Example
 
 ```rust
-use rsext4 as _;
+use ax_fs_vfs as _;
 
 fn main() {
-    // Integrate `rsext4` into your project here.
+    // Integrate `ax-fs-vfs` into your project here.
 }
 ```
 
@@ -67,7 +70,7 @@ Generate and view API documentation:
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/rsext4](https://docs.rs/rsext4)
+Online documentation: [docs.rs/ax-fs-vfs](https://docs.rs/ax-fs-vfs)
 
 # Contributing
 

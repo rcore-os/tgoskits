@@ -111,19 +111,19 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `axvisor_api_proc` | `0.5.0` | `virtualization/axvisor_api_proc` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `bitmap-allocator` | `0.4.1` | `memory/bitmap-allocator` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `riscv-h` | `0.4.0` | `virtualization/riscv-h` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `rsext4` | `0.3.0` | `components/rsext4` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `rsext4` | `0.3.0` | `fs/rsext4` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `smoltcp` | `0.14.0` | `components/starry-smoltcp` |
 | 1 | 堆叠层 | 组件层 | `ax-allocator` | `0.4.0` | `memory/axallocator` |
 | 1 | 堆叠层 | 组件层 | `ax-config-macros` | `0.4.1` | `components/axconfig-gen/axconfig-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-ctor-bare` | `0.4.1` | `components/ctor_bare/ctor_bare` |
-| 1 | 堆叠层 | 组件层 | `ax-fs-vfs` | `0.3.2` | `components/axfs_crates/axfs_vfs` |
+| 1 | 堆叠层 | 组件层 | `ax-fs-vfs` | `0.3.2` | `fs/axfs_vfs` |
 | 1 | 堆叠层 | 组件层 | `ax-io` | `0.5.0` | `components/axio` |
 | 1 | 堆叠层 | 组件层 | `ax-kernel-guard` | `0.3.3` | `components/kernel_guard` |
 | 1 | 堆叠层 | 组件层 | `ax-memory-set` | `0.6.1` | `memory/memory_set` |
 | 1 | 堆叠层 | 组件层 | `ax-page-table-entry` | `0.8.1` | `memory/page_table_entry` |
 | 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.0` | `components/axplat_crates/axplat-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-sched` | `0.5.1` | `components/axsched` |
-| 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `components/axfs-ng-vfs` |
+| 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `fs/axfs-ng-vfs` |
 | 1 | 堆叠层 | 组件层 | `axhvc` | `0.4.0` | `virtualization/axhvc` |
 | 1 | 堆叠层 | 组件层 | `axklib` | `0.5.0` | `components/axklib` |
 | 1 | 堆叠层 | 组件层 | `axvmconfig` | `0.4.2` | `virtualization/axvmconfig` |
@@ -134,8 +134,8 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `starry-vm` | `0.5.0` | `components/starry-vm` |
 | 2 | 堆叠层 | ArceOS 层 | `ax-config` | `0.5.0` | `os/arceos/modules/axconfig` |
 | 2 | 堆叠层 | 工具层 | `axbuild` | `0.4.0` | `scripts/axbuild` |
-| 2 | 堆叠层 | 组件层 | `ax-fs-devfs` | `0.3.2` | `components/axfs_crates/axfs_devfs` |
-| 2 | 堆叠层 | 组件层 | `ax-fs-ramfs` | `0.3.2` | `components/axfs_crates/axfs_ramfs` |
+| 2 | 堆叠层 | 组件层 | `ax-fs-devfs` | `0.3.2` | `fs/axfs_devfs` |
+| 2 | 堆叠层 | 组件层 | `ax-fs-ramfs` | `0.3.2` | `fs/axfs_ramfs` |
 | 2 | 堆叠层 | 组件层 | `ax-kspin` | `0.3.1` | `components/kspin` |
 | 2 | 堆叠层 | 组件层 | `ax-page-table-multiarch` | `0.8.1` | `memory/page_table_multiarch` |
 | 2 | 堆叠层 | 组件层 | `ax-percpu` | `0.4.3` | `components/percpu/percpu` |

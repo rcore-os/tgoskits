@@ -19,7 +19,6 @@ members = [
     "components/axbacktrace",
     "components/axcpu",
     "components/axerrno",
-    "components/axfs-ng-vfs",
     "components/axio",
     "components/axklib",
     "components/axpanic",
@@ -37,7 +36,6 @@ members = [
     "components/kspin",
     "components/linked_list_r4l",
     "components/lockdep",
-    "components/rsext4",
     "components/scope-local",
     "components/someboot",
     "components/somehal-macros",
@@ -47,9 +45,7 @@ members = [
     "components/timer_list",
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
-    "components/axfs_crates/axfs_devfs",
-    "components/axfs_crates/axfs_ramfs",
-    "components/axfs_crates/axfs_vfs",
+    "fs/*",
     "platforms/*",
     "components/crate_interface/crate_interface_lite",
     "components/crate_interface/test_crates/*",
@@ -184,10 +180,10 @@ virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.0", path = "components/axerrno" }
 ax-feat = { version = "0.5.17", path = "os/arceos/api/axfeat" }
 ax-fs = { version = "0.5.15", path = "os/arceos/modules/axfs" }
-ax-fs-devfs = { version = "0.3.12", path = "components/axfs_crates/axfs_devfs" }
+ax-fs-devfs = { version = "0.3.12", path = "fs/axfs_devfs" }
 ax-fs-ng = { version = "0.5.16", path = "os/arceos/modules/axfs-ng" }
-ax-fs-ramfs = { version = "0.3.13", path = "components/axfs_crates/axfs_ramfs" }
-ax-fs-vfs = { version = "0.3.11", path = "components/axfs_crates/axfs_vfs" }
+ax-fs-ramfs = { version = "0.3.13", path = "fs/axfs_ramfs" }
+ax-fs-vfs = { version = "0.3.11", path = "fs/axfs_vfs" }
 ax-hal = { version = "0.5.16", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
 irq-framework = { version = "0.1.0", path = "components/irq-framework" }
@@ -235,7 +231,7 @@ axbacktrace = { version = "0.4.1", path = "components/axbacktrace" }
 axbuild = { version = "0.4.9", path = "scripts/axbuild" }
 axdevice = { version = "0.4.11", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.4.13", path = "virtualization/axdevice_base" }
-axfs-ng-vfs = { version = "0.4.3", path = "components/axfs-ng-vfs" }
+axfs-ng-vfs = { version = "0.4.3", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.0", path = "components/axklib" }
 axplat-dyn = { version = "0.7.0", path = "platforms/axplat-dyn", default-features = false }
@@ -291,7 +287,7 @@ rockchip-soc = { version = "0.3.1", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.1.3", path = "drivers/tpu/sg2002-tpu" }
 rdrive = { version = "0.21.0", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
-rsext4 = { version = "0.5.0", path = "components/rsext4" }
+rsext4 = { version = "0.5.0", path = "fs/rsext4" }
 scope-local = { version = "0.3.8", path = "components/scope-local" }
 crab-usb = { version = "0.9.4", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }

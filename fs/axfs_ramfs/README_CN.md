@@ -1,11 +1,11 @@
-<h1 align="center">ax-fs-vfs</h1>
+<h1 align="center">ax-fs-ramfs</h1>
 
-<p align="center">Virtual filesystem interfaces used by ArceOS</p>
+<p align="center">RAM filesystem used by ArceOS</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/ax-fs-vfs.svg)](https://crates.io/crates/ax-fs-vfs)
-[![Docs.rs](https://docs.rs/ax-fs-vfs/badge.svg)](https://docs.rs/ax-fs-vfs)
+[![Crates.io](https://img.shields.io/crates/v/ax-fs-ramfs.svg)](https://crates.io/crates/ax-fs-ramfs)
+[![Docs.rs](https://docs.rs/ax-fs-ramfs/badge.svg)](https://docs.rs/ax-fs-ramfs)
 [![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,10 +15,10 @@
 
 # 介绍
 
-`ax-fs-vfs` 提供了 Virtual filesystem interfaces used by ArceOS。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`ax-fs-ramfs` 提供了 RAM filesystem used by ArceOS。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
 
 
-> ax-fs-vfs 派生自 https://github.com/arceos-org/axfs_crates
+> ax-fs-ramfs 派生自 https://github.com/arceos-org/axfs_crates
 
 ## 快速开始
 
@@ -28,14 +28,14 @@
 
 ```toml
 [dependencies]
-ax-fs-vfs = "0.3.2"
+ax-fs-ramfs = "0.3.2"
 ```
 
 ### 检查与测试
 
 ```bash
 # 进入 crate 目录
-cd components/axfs_crates/axfs_vfs
+cd fs/axfs_ramfs
 
 # 代码格式化
 cargo fmt --all
@@ -55,10 +55,10 @@ cargo doc --no-deps
 ### 示例
 
 ```rust
-use ax_fs_vfs as _;
+use ax_fs_ramfs as _;
 
 fn main() {
-    // 在这里将 `ax-fs-vfs` 集成到你的项目中。
+    // 在这里将 `ax-fs-ramfs` 集成到你的项目中。
 }
 ```
 
@@ -70,7 +70,7 @@ fn main() {
 cargo doc --no-deps --open
 ```
 
-在线文档：[docs.rs/ax-fs-vfs](https://docs.rs/ax-fs-vfs)
+在线文档：[docs.rs/ax-fs-ramfs](https://docs.rs/ax-fs-ramfs)
 
 # 贡献
 

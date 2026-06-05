@@ -1,12 +1,12 @@
-<h1 align="center">ax-fs-devfs</h1>
+<h1 align="center">rsext4</h1>
 
-<p align="center">Device filesystem used by ArceOS</p>
+<p align="center">A lightweight ext4 file system</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/ax-fs-devfs.svg)](https://crates.io/crates/ax-fs-devfs)
-[![Docs.rs](https://docs.rs/ax-fs-devfs/badge.svg)](https://docs.rs/ax-fs-devfs)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![Crates.io](https://img.shields.io/crates/v/rsext4.svg)](https://crates.io/crates/rsext4)
+[![Docs.rs](https://docs.rs/rsext4/badge.svg)](https://docs.rs/rsext4)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 </div>
@@ -15,10 +15,7 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`ax-fs-devfs` provides Device filesystem used by ArceOS. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
-
-
-> ax-fs-devfs was derived from https://github.com/arceos-org/axfs_crates
+`rsext4` provides A lightweight ext4 file system. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 ## Quick Start
 
@@ -28,14 +25,14 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ax-fs-devfs = "0.3.2"
+rsext4 = "0.3.0"
 ```
 
 ### Run Check and Test
 
 ```bash
 # Enter the crate directory
-cd components/axfs_crates/axfs_devfs
+cd fs/rsext4
 
 # Format code
 cargo fmt --all
@@ -55,10 +52,10 @@ cargo doc --no-deps
 ### Example
 
 ```rust
-use ax_fs_devfs as _;
+use rsext4 as _;
 
 fn main() {
-    // Integrate `ax-fs-devfs` into your project here.
+    // Integrate `rsext4` into your project here.
 }
 ```
 
@@ -70,7 +67,7 @@ Generate and view API documentation:
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/ax-fs-devfs](https://docs.rs/ax-fs-devfs)
+Online documentation: [docs.rs/rsext4](https://docs.rs/rsext4)
 
 # Contributing
 

@@ -1,12 +1,12 @@
-<h1 align="center">ax-fs-ramfs</h1>
+<h1 align="center">axfs-ng-vfs</h1>
 
-<p align="center">RAM filesystem used by ArceOS</p>
+<p align="center">Virtual filesystem layer for ArceOS</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/ax-fs-ramfs.svg)](https://crates.io/crates/ax-fs-ramfs)
-[![Docs.rs](https://docs.rs/ax-fs-ramfs/badge.svg)](https://docs.rs/ax-fs-ramfs)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![Crates.io](https://img.shields.io/crates/v/axfs-ng-vfs.svg)](https://crates.io/crates/axfs-ng-vfs)
+[![Docs.rs](https://docs.rs/axfs-ng-vfs/badge.svg)](https://docs.rs/axfs-ng-vfs)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 </div>
@@ -15,10 +15,7 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`ax-fs-ramfs` provides RAM filesystem used by ArceOS. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
-
-
-> ax-fs-ramfs was derived from https://github.com/arceos-org/axfs_crates
+`axfs-ng-vfs` provides Virtual filesystem layer for ArceOS. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 ## Quick Start
 
@@ -28,14 +25,14 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ax-fs-ramfs = "0.3.2"
+axfs-ng-vfs = "0.3.1"
 ```
 
 ### Run Check and Test
 
 ```bash
 # Enter the crate directory
-cd components/axfs_crates/axfs_ramfs
+cd fs/axfs-ng-vfs
 
 # Format code
 cargo fmt --all
@@ -55,10 +52,10 @@ cargo doc --no-deps
 ### Example
 
 ```rust
-use ax_fs_ramfs as _;
+use axfs_ng_vfs as _;
 
 fn main() {
-    // Integrate `ax-fs-ramfs` into your project here.
+    // Integrate `axfs-ng-vfs` into your project here.
 }
 ```
 
@@ -70,7 +67,7 @@ Generate and view API documentation:
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/ax-fs-ramfs](https://docs.rs/ax-fs-ramfs)
+Online documentation: [docs.rs/axfs-ng-vfs](https://docs.rs/axfs-ng-vfs)
 
 # Contributing
 

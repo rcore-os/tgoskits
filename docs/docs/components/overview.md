@@ -127,10 +127,10 @@ flowchart TB
 | `ax-errno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](crates/ax-errno) |
 | `ax-feat` | ArceOS 层 | `os/arceos/api/axfeat` | 16 | 7 | [查看](crates/ax-feat) |
 | `ax-fs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](crates/ax-fs) |
-| `ax-fs-devfs` | 组件层 | `components/axfs_crates/axfs_devfs` | 1 | 1 | [查看](crates/ax-fs-devfs) |
+| `ax-fs-devfs` | 组件层 | `fs/axfs_devfs` | 1 | 1 | [查看](crates/ax-fs-devfs) |
 | `ax-fs-ng` | ArceOS 层 | `os/arceos/modules/axfs-ng` | 10 | 4 | [查看](crates/ax-fs-ng) |
-| `ax-fs-ramfs` | 组件层 | `components/axfs_crates/axfs_ramfs` | 1 | 2 | [查看](crates/ax-fs-ramfs) |
-| `ax-fs-vfs` | 组件层 | `components/axfs_crates/axfs_vfs` | 1 | 4 | [查看](crates/ax-fs-vfs) |
+| `ax-fs-ramfs` | 组件层 | `fs/axfs_ramfs` | 1 | 2 | [查看](crates/ax-fs-ramfs) |
+| `ax-fs-vfs` | 组件层 | `fs/axfs_vfs` | 1 | 4 | [查看](crates/ax-fs-vfs) |
 | `ax-hal` | ArceOS 层 | `os/arceos/modules/axhal` | 13 | 15 | [查看](crates/ax-hal) |
 | `ax-handler-table` | 组件层 | `components/handler_table` | 0 | 1 | [查看](crates/ax-handler-table) |
 | `ax-helloworld` | ArceOS 层 | `os/arceos/examples/helloworld` | 1 | 0 | [查看](crates/ax-helloworld) |
@@ -172,7 +172,7 @@ flowchart TB
 | `axbuild` | 工具层 | `scripts/axbuild` | 1 | 3 | [查看](crates/axbuild) |
 | `axdevice` | 组件层 | `virtualization/axdevice` | 8 | 2 | [查看](crates/axdevice) |
 | `axdevice_base` | 组件层 | `virtualization/axdevice_base` | 3 | 8 | [查看](crates/axdevice-base) |
-| `axfs-ng-vfs` | 组件层 | `components/axfs-ng-vfs` | 2 | 3 | [查看](crates/axfs-ng-vfs) |
+| `axfs-ng-vfs` | 组件层 | `fs/axfs-ng-vfs` | 2 | 3 | [查看](crates/axfs-ng-vfs) |
 | `axhvc` | 组件层 | `virtualization/axhvc` | 1 | 1 | [查看](crates/axhvc) |
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
 | `axplat-dyn` | 平台层 | `platforms/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
@@ -198,7 +198,7 @@ flowchart TB
 | `ax-riscv-plic` | 组件层 | `drivers/intc/riscv_plic` | 0 | 1 | [查看](crates/ax-riscv-plic) |
 | `riscv_vcpu` | 组件层 | `virtualization/riscv_vcpu` | 8 | 2 | [查看](crates/riscv-vcpu) |
 | `riscv_vplic` | 组件层 | `virtualization/riscv_vplic` | 5 | 2 | [查看](crates/riscv-vplic) |
-| `rsext4` | 组件层 | `components/rsext4` | 0 | 1 | [查看](crates/rsext4) |
+| `rsext4` | 组件层 | `fs/rsext4` | 0 | 1 | [查看](crates/rsext4) |
 | `scope-local` | 组件层 | `components/scope-local` | 1 | 3 | [查看](crates/scope-local) |
 | `smoltcp` | 组件层 | `components/starry-smoltcp` | 0 | 3 | [查看](crates/smoltcp) |
 | `smoltcp-fuzz` | 组件层 | `components/starry-smoltcp/fuzz` | 1 | 0 | [查看](crates/smoltcp-fuzz) |

@@ -376,7 +376,7 @@ enabled.
 However, the VFS layer still imports the third-party `spin` crate directly:
 
 ```text
-components/axfs-ng-vfs/src/lib.rs:
+fs/axfs-ng-vfs/src/lib.rs:
   use spin::{Mutex, MutexGuard};
 ```
 
@@ -384,7 +384,7 @@ That dependency was already present when `axfs-ng-vfs` was imported as a
 subtree:
 
 ```text
-components/axfs-ng-vfs/Cargo.toml:
+fs/axfs-ng-vfs/Cargo.toml:
   spin = { version = "0.10", default-features = false, features = ["mutex"] }
 ```
 

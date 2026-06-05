@@ -1,6 +1,6 @@
 # `axfs_vfs`
 
-> 路径：`components/axfs_crates/axfs_vfs`
+> 路径：`fs/axfs_vfs`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.1.2`
