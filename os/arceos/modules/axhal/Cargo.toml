@@ -110,6 +110,3 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 [build-dependencies]
 ax-config.workspace = true
 toml.workspace = true
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(arceos_std)'] }

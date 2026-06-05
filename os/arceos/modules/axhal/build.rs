@@ -54,8 +54,6 @@ const DEFAULT_PLATFORMS: &[(&str, &str)] = &[
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
-    println!("cargo:rustc-check-cfg=cfg(arceos_std)");
-    println!("cargo:rustc-check-cfg=cfg(ax_hal_any_platform_feature)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed={}", feature_env("myplat"));
@@ -68,10 +66,8 @@ fn main() {
     }
 
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let bare_target = target_os == "none" || std::env::var_os("CARGO_CFG_ARCEOS_STD").is_some();
-    let selected_platform = check_platform_features(&arch, bare_target);
-    gen_selected_platform(&arch, bare_target, selected_platform).unwrap();
+    let selected_platform = check_platform_features(&arch);
+    gen_selected_platform(&arch, selected_platform).unwrap();
 
     let config = load_linker_config().unwrap();
 
@@ -87,16 +83,12 @@ fn main() {
     }
 }
 
-fn check_platform_features(arch: &str, bare_target: bool) -> Option<&'static PlatformFeature> {
+fn check_platform_features(arch: &str) -> Option<&'static PlatformFeature> {
     let has_myplat = feature_enabled("myplat");
     let enabled_platforms = PLATFORM_FEATURES
         .iter()
         .filter(|platform| feature_enabled(platform.feature))
         .collect::<Vec<_>>();
-
-    if has_myplat || !enabled_platforms.is_empty() {
-        println!("cargo:rustc-cfg=ax_hal_any_platform_feature");
-    }
 
     if has_myplat && !enabled_platforms.is_empty() {
         panic!("ax-hal/myplat must not be combined with a built-in ax-hal platform feature");
@@ -123,16 +115,14 @@ fn check_platform_features(arch: &str, bare_target: bool) -> Option<&'static Pla
         }
     }
 
-    if bare_target {
-        for platform in &enabled_platforms {
-            if let Some(target_arch) = platform.target_arch
-                && arch != target_arch
-            {
-                panic!(
-                    "ax-hal/{} requires target_arch = \"{}\"",
-                    platform.feature, target_arch
-                );
-            }
+    for platform in &enabled_platforms {
+        if let Some(target_arch) = platform.target_arch
+            && arch != target_arch
+        {
+            panic!(
+                "ax-hal/{} requires target_arch = \"{}\"",
+                platform.feature, target_arch
+            );
         }
     }
 
@@ -143,21 +133,17 @@ fn check_platform_features(arch: &str, bare_target: bool) -> Option<&'static Pla
     })
 }
 
-fn gen_selected_platform(
-    arch: &str,
-    bare_target: bool,
-    platform: Option<&PlatformFeature>,
-) -> Result<()> {
+fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Result<()> {
     let crate_name = if let Some(platform) = platform {
         if platform.feature == "plat-dyn" {
-            bare_target.then_some(platform.crate_name)
+            Some(platform.crate_name)
         } else {
             platform
                 .target_arch
                 .is_some_and(|target_arch| target_arch == arch)
                 .then_some(platform.crate_name)
         }
-    } else if bare_target && feature_enabled("defplat") && !feature_enabled("myplat") {
+    } else if feature_enabled("defplat") && !feature_enabled("myplat") {
         DEFAULT_PLATFORMS
             .iter()
             .find_map(|(target_arch, crate_name)| (*target_arch == arch).then_some(*crate_name))
