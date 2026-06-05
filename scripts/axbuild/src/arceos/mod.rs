@@ -236,15 +236,19 @@ impl ArceOS {
         request: &ResolvedBuildRequest,
         cargo: &Cargo,
     ) -> anyhow::Result<Option<ostool::run::qemu::QemuConfig>> {
-        match request.qemu_config.as_deref() {
+        let mut qemu = match request.qemu_config.as_deref() {
             Some(path) => self
                 .app
                 .tool_mut()
                 .read_qemu_config_from_path_for_cargo(cargo, path)
                 .await
-                .map(Some),
-            None => Ok(None),
+                .map(Some)?,
+            None => None,
+        };
+        if let Some(qemu) = qemu.as_mut() {
+            crate::test::qemu::apply_dynamic_x86_64_qemu_boot(qemu, cargo);
         }
+        Ok(qemu)
     }
 
     async fn load_uboot_config(

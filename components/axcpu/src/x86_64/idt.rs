@@ -13,7 +13,7 @@ pub(super) fn init() {
     IDT.call_once(|| {
         unsafe extern "C" {
             #[link_name = "trap_handler_table"]
-            static ENTRIES: [VirtAddr; NUM_INT];
+            static ENTRIES: [i32; NUM_INT];
         }
         let mut table = InterruptDescriptorTable::new();
         let entries = unsafe {
@@ -21,8 +21,11 @@ pub(super) fn init() {
                 &mut table,
             )
         };
-        for i in 0..NUM_INT {
-            let opt = unsafe { entries[i].set_handler_addr(ENTRIES[i]) };
+        let base = unsafe { ENTRIES.as_ptr() } as isize;
+        for (i, entry) in entries.iter_mut().enumerate() {
+            let offset = unsafe { *ENTRIES.as_ptr().add(i) } as isize;
+            let handler = VirtAddr::new((base + offset) as u64);
+            let opt = unsafe { entry.set_handler_addr(handler) };
             if i == 0x3 || i == 0x80 {
                 // enable user space breakpoints and legacy int 0x80 syscall
                 opt.set_privilege_level(x86_64::PrivilegeLevel::Ring3);
