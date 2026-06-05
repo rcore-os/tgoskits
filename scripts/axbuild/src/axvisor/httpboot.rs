@@ -10,6 +10,7 @@ use bootloader_common::{
     write_flat_binary_from_elf,
 };
 use clap::{Args as ClapArgs, Subcommand};
+use httpboot_protocol::HttpBootArtifactResponse;
 use ostool::board::{load_board_global_config_with_notice, terminal};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -358,29 +359,23 @@ async fn publish_artifacts_for_session(
 
     let kernel_bytes =
         fs::read(kernel_bin).with_context(|| format!("failed to read {}", kernel_bin.display()))?;
-    let kernel_size = kernel_bytes.len() as u64;
-    let kernel_file = client
-        .upload_http_boot_file(&session.session_id, &remote_name, kernel_bytes)
+    let artifact = client
+        .upload_http_boot_artifact(
+            &session.session_id,
+            &remote_name,
+            kernel_load_addr,
+            entry_point,
+            arch,
+            kernel_bytes,
+        )
         .await
-        .with_context(|| format!("failed to upload HTTP Boot file `{remote_name}`"))?;
-
-    let manifest = HttpBootManifest {
-        kernel_url: kernel_file.http_url.clone(),
-        kernel_size,
-        kernel_load_addr,
-        entry_point,
-        arch,
-    };
-    let manifest_file = client
-        .upload_http_boot_manifest(&session.session_id, &manifest)
-        .await
-        .context("failed to upload HTTP Boot manifest")?;
+        .with_context(|| format!("failed to upload HTTP Boot artifact `{remote_name}`"))?;
 
     println!("elf: {}", elf_path.display());
     println!("kernel_bin: {}", kernel_bin.display());
-    println!("kernel_size: {}", hex(kernel_size));
-    println!("kernel_url: {}", kernel_file.http_url);
-    println!("manifest_url: {}", manifest_file.http_url);
+    println!("kernel_size: {}", hex(artifact.kernel_size));
+    println!("kernel_url: {}", artifact.kernel_url);
+    println!("manifest_url: {}", artifact.manifest_url);
     println!(
         "session_release: {}",
         if keep_session { "kept" } else { "requested" }
@@ -680,36 +675,26 @@ impl HttpBootApiClient {
         self.decode_empty(response).await
     }
 
-    async fn upload_http_boot_file(
+    async fn upload_http_boot_artifact(
         &self,
         session_id: &str,
-        relative_path: &str,
+        remote_name: &str,
+        kernel_load_addr: String,
+        entry_point: String,
+        arch: String,
         bytes: Vec<u8>,
-    ) -> anyhow::Result<HttpBootFileResponse> {
+    ) -> anyhow::Result<HttpBootArtifactResponse> {
         self.decode_json(
             self.client
-                .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/files")))
-                .header("X-File-Path", relative_path)
+                .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/artifact")))
+                .header("X-HttpBoot-Remote-Name", remote_name)
+                .header("X-HttpBoot-Kernel-Load-Addr", kernel_load_addr)
+                .header("X-HttpBoot-Entry-Point", entry_point)
+                .header("X-HttpBoot-Arch", arch)
                 .body(bytes)
                 .send()
                 .await
-                .with_context(|| format!("failed to upload HTTP Boot file `{relative_path}`"))?,
-        )
-        .await
-    }
-
-    async fn upload_http_boot_manifest(
-        &self,
-        session_id: &str,
-        manifest: &HttpBootManifest,
-    ) -> anyhow::Result<HttpBootFileResponse> {
-        self.decode_json(
-            self.client
-                .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/manifest")))
-                .json(manifest)
-                .send()
-                .await
-                .context("failed to upload HTTP Boot manifest")?,
+                .with_context(|| format!("failed to upload HTTP Boot artifact `{remote_name}`"))?,
         )
         .await
     }
@@ -830,20 +815,6 @@ struct UefiHttpProfile {
     kernel_file: Option<String>,
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct HttpBootManifest {
-    kernel_url: String,
-    kernel_size: u64,
-    kernel_load_addr: String,
-    entry_point: String,
-    arch: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HttpBootFileResponse {
-    http_url: String,
 }
 
 #[derive(Debug, Deserialize)]

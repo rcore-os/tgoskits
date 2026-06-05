@@ -85,7 +85,7 @@ fn download_and_parse_manifest(url: &str) -> bool {
         }
     };
 
-    match bootloader_common::parse_downloaded_manifest(&body, MANIFEST_LIMIT) {
+    match httpboot_protocol::parse_downloaded_manifest(&body, MANIFEST_LIMIT) {
         Ok(manifest) => {
             if manifest.arch != boards::active::ARCH_NAME {
                 logln!(
