@@ -1,18 +1,22 @@
 args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
     "-nographic",
     "-m",
-    "512M",
+    "128M",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
 ]
 uefi = false
-to_bin = false
+to_bin = true
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = "printf 'start\\n' > /dev/memtrack && printf 'sample\\n' > /dev/memtrack && printf 'sample_hard\\n' > /dev/memtrack && printf 'symbolize\\n' > /dev/memtrack && printf 'end\\n' > /dev/memtrack && echo STARRY_MEMTRACK_BACKTRACE_OK"
 success_regex = [
@@ -25,4 +29,4 @@ host_symbolize_success_regex = [
     "(?ms)^=== host backtrace symbolize ===$.*^BACKTRACE_BLOCK\\s+\\d+\\s+kind=alloc\\b.*^BT\\s+0\\s+ip=0x[0-9a-fA-F]+\\s+fp=0x0\\s+starry_memtrack_symbolize_probe\\b",
 ]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 120
+timeout = 180
