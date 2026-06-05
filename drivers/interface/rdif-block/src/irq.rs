@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use crate::RequestId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrqSourceInfo {
     pub id: usize,
@@ -20,6 +22,10 @@ pub type IrqSourceList = Vec<IrqSourceInfo>;
 
 pub trait IrqHandler: Send + Sync + 'static {
     fn handle_irq(&self) -> Event;
+
+    fn on_drain_complete(&self) -> Event {
+        Event::none()
+    }
 }
 
 #[repr(transparent)]
@@ -60,22 +66,172 @@ impl IdList {
     }
 }
 
+pub const MAX_COMPLETION_HINTS: usize = 8;
+pub const MAX_BATCH_COMPLETION_IDS: usize = 16;
+
+#[derive(Debug, Clone, Copy)]
+pub enum CompletionHint {
+    Queue {
+        queue_id: usize,
+    },
+    Request {
+        queue_id: usize,
+        request_id: RequestId,
+    },
+    Batch {
+        queue_id: usize,
+        ids: CompletionIds,
+    },
+}
+
+impl CompletionHint {
+    pub const fn queue_id(self) -> usize {
+        match self {
+            Self::Queue { queue_id }
+            | Self::Request { queue_id, .. }
+            | Self::Batch { queue_id, .. } => queue_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompletionIds {
+    len: usize,
+    ids: [RequestId; MAX_BATCH_COMPLETION_IDS],
+}
+
+impl CompletionIds {
+    pub const fn new() -> Self {
+        Self {
+            len: 0,
+            ids: [RequestId::new(0); MAX_BATCH_COMPLETION_IDS],
+        }
+    }
+
+    pub fn push(&mut self, request_id: RequestId) -> bool {
+        if self.len == self.ids.len() {
+            return false;
+        }
+        self.ids[self.len] = request_id;
+        self.len += 1;
+        true
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = RequestId> + '_ {
+        self.ids[..self.len].iter().copied()
+    }
+}
+
+impl Default for CompletionIds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompletionList {
+    len: usize,
+    hints: [Option<CompletionHint>; MAX_COMPLETION_HINTS],
+}
+
+impl CompletionList {
+    pub const fn new() -> Self {
+        Self {
+            len: 0,
+            hints: [None; MAX_COMPLETION_HINTS],
+        }
+    }
+
+    pub fn push(&mut self, hint: CompletionHint) -> bool {
+        if self.len == self.hints.len() {
+            return false;
+        }
+        self.hints[self.len] = Some(hint);
+        self.len += 1;
+        true
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = CompletionHint> + '_ {
+        self.hints[..self.len]
+            .iter()
+            .filter_map(|hint| hint.as_ref().copied())
+    }
+}
+
+impl Default for CompletionList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Event {
     pub queues: IdList,
+    pub completions: CompletionList,
 }
 
 impl Event {
     pub const fn none() -> Self {
         Self {
             queues: IdList::none(),
+            completions: CompletionList::new(),
         }
     }
 
     pub const fn from_queue_bits(bits: u64) -> Self {
         Self {
             queues: IdList::from_bits(bits),
+            completions: CompletionList::new(),
         }
+    }
+
+    pub fn from_hint(hint: CompletionHint) -> Self {
+        let mut event = Self::none();
+        event.push_hint(hint);
+        event
+    }
+
+    pub fn push_queue(&mut self, queue_id: usize) {
+        self.queues.insert(queue_id);
+        let _ = self.completions.push(CompletionHint::Queue { queue_id });
+    }
+
+    pub fn push_request(&mut self, queue_id: usize, request_id: RequestId) {
+        if !self.completions.push(CompletionHint::Request {
+            queue_id,
+            request_id,
+        }) {
+            self.queues.insert(queue_id);
+        }
+    }
+
+    pub fn push_hint(&mut self, hint: CompletionHint) {
+        if let CompletionHint::Queue { queue_id } = hint {
+            self.queues.insert(queue_id);
+        }
+        if !self.completions.push(hint) {
+            self.queues.insert(hint.queue_id());
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queues.bits() == 0 && self.completions.is_empty()
     }
 }
 
@@ -91,5 +247,26 @@ mod tests {
 
         assert_eq!(source.id, 0);
         assert!(source.queues.contains(2));
+    }
+
+    #[test]
+    fn completion_hints_preserve_queue_level_compatibility() {
+        let mut event = Event::none();
+        event.push_queue(3);
+        event.push_request(3, RequestId::new(7));
+
+        assert!(event.queues.contains(3));
+        assert_eq!(event.completions.len(), 2);
+    }
+
+    #[test]
+    fn completion_hint_overflow_falls_back_to_queue_bit() {
+        let mut event = Event::none();
+        for id in 0..(MAX_COMPLETION_HINTS + 1) {
+            event.push_request(5, RequestId::new(id));
+        }
+
+        assert_eq!(event.completions.len(), MAX_COMPLETION_HINTS);
+        assert!(event.queues.contains(5));
     }
 }

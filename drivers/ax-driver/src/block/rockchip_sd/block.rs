@@ -50,6 +50,7 @@ impl rdif_block::Interface for SdBlockDevice {
         rdif_block::QueueLimits {
             dma_mask: u32::MAX as u64,
             dma_alignment: BLOCK_SIZE,
+            max_inflight: 1,
             max_blocks_per_request: u16::MAX as u32 + 1,
             max_segments: 1,
             max_segment_size: usize::MAX,
@@ -166,6 +167,7 @@ unsafe impl rdif_block::IQueue for SdBlockQueue {
             limits: rdif_block::QueueLimits {
                 dma_mask: self.dma.dma_mask(),
                 dma_alignment: BLOCK_SIZE,
+                max_inflight: 1,
                 max_blocks_per_request: u16::MAX as u32 + 1,
                 max_segments: 1,
                 max_segment_size: usize::MAX,

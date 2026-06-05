@@ -56,6 +56,17 @@ pub struct PlatformBlockDevice {
     info: BindingInfo,
 }
 
+/// A probed block device before `ax-driver` wraps it in the synchronous
+/// compatibility facade.
+///
+/// Runtime code that wants to build an async submit/poll block stack should use
+/// this form and create/poll `rdif_block::IQueue` objects directly.
+pub struct RawBlockDevice {
+    name: String,
+    irq_num: Option<usize>,
+    interface: Box<dyn Interface>,
+}
+
 const MAX_BLOCK_BUFFER_SIZE: usize = 16 * 1024;
 
 impl PlatformBlockDevice {
@@ -96,6 +107,10 @@ impl BlockIrqHandler {
         let event = self.handler.handle_irq();
         self.events.record(event);
         event
+    }
+
+    pub fn on_drain_complete(&self) -> rdif_block::Event {
+        self.handler.on_drain_complete()
     }
 }
 
@@ -260,6 +275,50 @@ impl Block {
     }
 }
 
+impl RawBlockDevice {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn irq_num(&self) -> Option<usize> {
+        self.irq_num
+    }
+
+    pub fn interface(&self) -> &dyn Interface {
+        &*self.interface
+    }
+
+    pub fn interface_mut(&mut self) -> &mut dyn Interface {
+        &mut *self.interface
+    }
+
+    pub fn into_interface(self) -> Box<dyn Interface> {
+        self.interface
+    }
+
+    pub fn enable_irq(&mut self) {
+        self.interface.enable_irq();
+    }
+
+    pub fn disable_irq(&mut self) {
+        self.interface.disable_irq();
+    }
+
+    #[cfg(feature = "irq")]
+    pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
+        let irq_num = self.irq_num?;
+        self.interface
+            .take_irq_handler(source_id)
+            .map(BlockIrqHandler::new)
+            .map(|handler| (irq_num, handler))
+    }
+
+    #[cfg(not(feature = "irq"))]
+    pub fn take_irq_handler(&mut self, _source_id: usize) -> Option<(usize, BlockIrqHandler)> {
+        None
+    }
+}
+
 impl BlockQueues {
     fn new(
         queue: Box<dyn IQueue>,
@@ -369,6 +428,22 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
     }
 }
 
+impl TryFrom<Device<PlatformBlockDevice>> for RawBlockDevice {
+    type Error = AxError;
+
+    fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
+        let mut dev = base.lock().map_err(|_| AxError::BadState)?;
+        let name = dev.name.clone();
+        let irq_num = dev.irq_num;
+        let interface = dev.interface.take().ok_or(AxError::BadState)?;
+        Ok(Self {
+            name,
+            irq_num,
+            interface,
+        })
+    }
+}
+
 pub trait PlatformDeviceBlock {
     fn register_block<T: Interface>(self, dev: T) -> Option<usize>;
     fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize>;
@@ -458,6 +533,19 @@ pub fn take_block_devices() -> Vec<Block> {
             Ok(block) => Some(block),
             Err(err) => {
                 warn!("failed to take block device: {err:?}");
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn take_raw_block_devices() -> Vec<RawBlockDevice> {
+    rdrive::get_list::<PlatformBlockDevice>()
+        .into_iter()
+        .filter_map(|dev| match RawBlockDevice::try_from(dev) {
+            Ok(block) => Some(block),
+            Err(err) => {
+                warn!("failed to take raw block device: {err:?}");
                 None
             }
         })
@@ -868,6 +956,7 @@ mod tests {
         let limits = QueueLimits {
             dma_mask: u64::MAX,
             dma_alignment: 4096,
+            max_inflight: 1,
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
@@ -916,6 +1005,7 @@ mod tests {
         let limits = QueueLimits {
             dma_mask: u64::MAX,
             dma_alignment: 4096,
+            max_inflight: 1,
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
@@ -976,6 +1066,7 @@ mod tests {
             limits: QueueLimits {
                 dma_mask: u64::MAX,
                 dma_alignment: 4096,
+                max_inflight: 1,
                 max_blocks_per_request: 4096,
                 max_segments: 1,
                 max_segment_size: 2 * 1024 * 1024,
@@ -1017,6 +1108,7 @@ mod tests {
             limits: QueueLimits {
                 dma_mask: u64::MAX,
                 dma_alignment: 4096,
+                max_inflight: 1,
                 max_blocks_per_request: u32::MAX,
                 max_segments: 1,
                 max_segment_size: usize::MAX,
@@ -1040,6 +1132,7 @@ mod tests {
         let limits = QueueLimits {
             dma_mask: u64::MAX,
             dma_alignment: 4096,
+            max_inflight: 1,
             max_blocks_per_request: 8,
             max_segments: 4,
             max_segment_size: 1024,

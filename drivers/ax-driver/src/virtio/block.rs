@@ -111,6 +111,7 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
         rdif_block::QueueLimits {
             dma_mask: u64::MAX,
             dma_alignment: 0x1000,
+            max_inflight: 1,
             max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
             max_segments: 1,
             max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,
@@ -173,6 +174,7 @@ unsafe impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
             limits: rdif_block::QueueLimits {
                 dma_mask: u64::MAX,
                 dma_alignment: 0x1000,
+                max_inflight: 1,
                 max_blocks_per_request: (VIRTIO_BLK_DMA_BUFFER_SIZE / SECTOR_SIZE) as u32,
                 max_segments: 1,
                 max_segment_size: VIRTIO_BLK_DMA_BUFFER_SIZE,

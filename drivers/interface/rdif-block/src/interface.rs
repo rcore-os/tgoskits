@@ -29,6 +29,10 @@ pub trait Interface: DriverGeneric {
     }
 }
 
+pub trait CompletionSink {
+    fn complete(&mut self, request: RequestId, result: Result<(), BlkError>);
+}
+
 /// A request queue for one block device hardware/software queue.
 ///
 /// # Safety
@@ -46,10 +50,38 @@ pub unsafe trait IQueue: Send + 'static {
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError>;
 
     fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
+
+    /// Poll a set of in-flight requests and report observed terminal results.
+    ///
+    /// Implementers must report per-request completion or failure through
+    /// `sink.complete`. The return value describes the batch query itself:
+    /// `Err` means this poll attempt did not reliably observe request states
+    /// and must not be interpreted as terminal status for any request that was
+    /// not reported to the sink.
+    ///
+    /// `BlkError::Retry` is submit-side backpressure only. `poll_request` and
+    /// `poll_completions` must not return `Retry`; pending requests are
+    /// represented by omitting them from the sink in this method.
+    fn poll_completions(
+        &mut self,
+        requests: &[RequestId],
+        sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        for &request in requests {
+            match self.poll_request(request) {
+                Ok(RequestStatus::Pending) => {}
+                Ok(RequestStatus::Complete) => sink.complete(request, Ok(())),
+                Err(err) => sink.complete(request, Err(err)),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::{DeviceInfo, Event, QueueLimits, RequestOp};
 
@@ -100,5 +132,71 @@ mod tests {
 
         let event = NoopIrq.handle_irq();
         assert!(event.queues.contains(1));
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        completions: Vec<(RequestId, Result<(), BlkError>)>,
+    }
+
+    impl CompletionSink for RecordingSink {
+        fn complete(&mut self, request_id: RequestId, result: Result<(), BlkError>) {
+            self.completions.push((request_id, result));
+        }
+    }
+
+    struct BatchQueue;
+
+    // SAFETY: This test queue never stores request segments and reports
+    // synthetic completion status from the requested ID only.
+    unsafe impl IQueue for BatchQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(8, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(0))
+        }
+
+        fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
+            match usize::from(request) {
+                1 => Ok(RequestStatus::Complete),
+                2 => Ok(RequestStatus::Pending),
+                3 => Err(BlkError::Io),
+                _ => Err(BlkError::InvalidRequest),
+            }
+        }
+    }
+
+    #[test]
+    fn default_batch_completion_polls_pending_ids_and_reports_terminal_results() {
+        let mut queue = BatchQueue;
+        let mut sink = RecordingSink::default();
+        let ids = [RequestId::new(1), RequestId::new(2), RequestId::new(3)];
+
+        queue.poll_completions(&ids, &mut sink).unwrap();
+
+        assert_eq!(
+            sink.completions,
+            [
+                (RequestId::new(1), Ok(())),
+                (RequestId::new(3), Err(BlkError::Io)),
+            ]
+        );
+    }
+
+    #[test]
+    fn simple_queue_limits_are_single_inflight() {
+        let limits = QueueLimits::simple(512, u64::MAX);
+
+        assert_eq!(limits.max_inflight, 1);
     }
 }
