@@ -1,6 +1,5 @@
 use alloc::{
     borrow::ToOwned,
-    collections::BTreeSet,
     format,
     string::{String, ToString},
     sync::Arc,
@@ -627,21 +626,13 @@ impl DirNodeOps for Inode {
             } else {
                 // Last (or only) link.  Mark the inode zero-link,
                 // remove the directory entry, and register pending-delete.
-                // (Re-derive fs/dev through raw pointers so we can still
-                // touch state.pending_unlink after split() borrows `state`.)
                 fs.modify_inode(dev, ino, |on_disk| {
                     on_disk.i_links_count = 0;
                 })
                 .map_err(into_vfs_err)?;
                 rsext4::remove_inodeentry_from_parentdir(fs, dev, &dir_path, name)
                     .map_err(into_vfs_err)?;
-                // SAFETY: fs and dev point to distinct fields; the pending
-                // set is a third field with no aliasing concerns.
-                unsafe {
-                    let pending: &mut BTreeSet<InodeNumber> =
-                        &mut *(&mut state.pending_unlink as *mut _);
-                    pending.insert(ino);
-                }
+                state.register_pending(ino);
             }
         }
         self.fs.sync_to_disk()
