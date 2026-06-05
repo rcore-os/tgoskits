@@ -50,9 +50,6 @@ members = [
     "components/timer_list",
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
-    "components/axfs_crates/axfs_devfs",
-    "components/axfs_crates/axfs_ramfs",
-    "components/axfs_crates/axfs_vfs",
     "platforms/*",
     "components/crate_interface/crate_interface_lite",
     "components/crate_interface/test_crates/*",
@@ -95,7 +92,6 @@ members = [
     "os/arceos/modules/axconfig",
     "os/arceos/modules/axdisplay",
     "os/arceos/modules/axdma",
-    "os/arceos/modules/axfs",
     "os/arceos/modules/axfs-ng",
     "os/arceos/modules/axhal",
     "os/arceos/modules/axinput",
@@ -152,11 +148,8 @@ ax-driver = { version = "0.8.0", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.0", path = "components/axerrno" }
 ax-feat = { version = "0.5.20", path = "os/arceos/api/axfeat" }
-ax-fs = { version = "0.5.18", path = "os/arceos/modules/axfs" }
-ax-fs-devfs = { version = "0.3.12", path = "components/axfs_crates/axfs_devfs" }
+ax-fs = { version = "0.5.19", path = "os/arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-fs-ng = { version = "0.5.19", path = "os/arceos/modules/axfs-ng" }
-ax-fs-ramfs = { version = "0.3.13", path = "components/axfs_crates/axfs_ramfs" }
-ax-fs-vfs = { version = "0.3.11", path = "components/axfs_crates/axfs_vfs" }
 ax-hal = { version = "0.5.19", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
 irq-framework = { version = "0.1.1", path = "components/irq-framework" }
