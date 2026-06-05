@@ -35,6 +35,10 @@ pub(crate) mod error;
 pub mod map;
 pub mod prog;
 pub mod transform;
+pub(crate) mod bpf_insn;
+pub mod ebpf_jit;
+
+pub(crate) type HelperFn = fn(u64, u64, u64, u64, u64) -> u64;
 
 pub use transform::EbpfKernelAuxiliary;
 
