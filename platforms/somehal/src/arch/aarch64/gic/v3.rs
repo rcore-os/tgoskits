@@ -2,12 +2,9 @@ use alloc::format;
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
 use arm_gic_driver::v3::*;
-use kernutil::StaticCell;
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 
 use crate::common::ioremap;
-
-static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 
 pub fn with_gic(f: impl FnOnce(&mut Gic)) {
     let mut gic = super::get_gicd().lock().unwrap();
@@ -49,11 +46,9 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into()) };
     gic.init();
-    let cpu = gic.cpu_interface();
-    CPU_IF.init(cpu);
     super::set_backend(super::GicBackend::V3);
 
-    init_cpu();
+    init_cpu_with_gic(&mut gic);
 
     dev.register(rdif_intc::Intc::new(gic));
 
@@ -97,7 +92,7 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
         }
         crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::All,
     };
-    CPU_IF.send_sgi(sgi, target);
+    send_sgi(sgi, target);
 }
 
 fn affinity_from_mpidr(mpidr: usize) -> Affinity {
@@ -110,13 +105,14 @@ fn affinity_from_mpidr(mpidr: usize) -> Affinity {
 }
 
 pub fn init_cpu() {
-    unsafe {
-        CPU_IF.update(|cpu| {
-            cpu.init_current_cpu().unwrap();
-            #[cfg(feature = "hv")]
-            cpu.set_eoi_mode(true);
-        });
-    }
+    with_gic(init_cpu_with_gic);
 
     debug!("GICCv3 initialized");
+}
+
+fn init_cpu_with_gic(gic: &mut Gic) {
+    let mut cpu = gic.cpu_interface();
+    cpu.init_current_cpu().unwrap();
+    #[cfg(feature = "hv")]
+    cpu.set_eoi_mode(true);
 }

@@ -338,6 +338,16 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
+    #[cfg(feature = "ipi")]
+    ax_ipi::mark_current_cpu_ready();
+
+    #[cfg(all(feature = "smp", feature = "ipi"))]
+    for cpu_id in 0..ax_hal::cpu_num() {
+        while !ax_ipi::is_cpu_ready(cpu_id) {
+            core::hint::spin_loop();
+        }
+    }
+
     ax_app_entry();
 
     #[cfg(feature = "multitask")]
@@ -402,9 +412,6 @@ fn init_interrupt() {
 
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();
-
-    #[cfg(feature = "ipi")]
-    ax_ipi::mark_current_cpu_ready();
 }
 
 #[cfg(feature = "irq")]
