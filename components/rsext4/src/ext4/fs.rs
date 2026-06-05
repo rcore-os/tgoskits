@@ -96,9 +96,9 @@ impl Ext4FileSystem {
         let bitmap_block = AbsoluteBN::new(desc.inode_bitmap());
         let cache_key = CacheKey::new_inode(group_idx);
 
-        let bitmap = match self
+        let mut bitmap = match self
             .bitmap_cache
-            .get_or_load_mut(device, cache_key, bitmap_block)
+            .get_or_load(device, cache_key, bitmap_block)
         {
             Ok(b) => b,
             Err(e) => {

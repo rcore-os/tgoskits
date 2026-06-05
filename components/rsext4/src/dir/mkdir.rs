@@ -100,11 +100,9 @@ fn mkdir_internal<B: BlockDevice>(
     let data_block = fs.alloc_block(device)?;
     let new_dir_gen = fs.get_inode_by_num(device, new_dir_ino)?.i_generation;
 
-    {
-        // Initialize `.` and `..`, leaving room for the checksum tail when enabled.
-        let cached = fs.datablock_cache.create_new(device, data_block)?;
-        let data = &mut cached.data;
-
+    // Initialize `.` and `..` through modify_new so mutations are persisted
+    // in the cache entry rather than on a detached clone.
+    fs.datablock_cache.modify_new(device, data_block, |data| {
         let dot_name = b".";
         let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
         let dot = Ext4DirEntry2::new(
@@ -146,7 +144,7 @@ fn mkdir_internal<B: BlockDevice>(
             );
             update_ext4_dirblock_csum32(&fs.superblock, new_dir_ino.raw(), new_dir_gen, data);
         }
-    }
+    })?;
 
     // Persist the child directory inode through the unified metadata path.
     let (group_idx, _idx) = fs.inode_allocator.global_to_group(new_dir_ino)?;

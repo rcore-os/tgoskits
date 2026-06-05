@@ -1,6 +1,6 @@
 //! Directory entry insertion helpers.
 
-use log::error;
+use log::{error, warn};
 
 use crate::{
     blockdev::*, bmalloc::InodeNumber, checksum::update_ext4_dirblock_csum32, config::*,
@@ -61,7 +61,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
             }
         };
 
-        let _ = fs.datablock_cache.modify(device, phys, |data| {
+        if let Err(e) = fs.datablock_cache.modify(device, phys, |data| {
             if inserted {
                 return;
             }
@@ -143,7 +143,12 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 }
                 offset = entry_end;
             }
-        });
+        }) {
+            warn!(
+                "insert_dir_entry: modify block {phys} for parent_ino={parent_ino_num} \
+                 name={child_name:?} failed: {e:?}, trying next block"
+            );
+        }
     }
 
     if inserted {

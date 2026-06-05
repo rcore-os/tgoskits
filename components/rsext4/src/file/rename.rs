@@ -244,11 +244,21 @@ pub fn mv<B: BlockDevice>(
         if old_pino != new_pino {
             if let Ok(old_parent_inode) = fs.get_inode_by_num(block_dev, old_pino) {
                 let new_links = old_parent_inode.i_links_count.saturating_sub(1);
-                let _ = fs.set_inode_links_count(block_dev, old_pino, new_links);
+                if let Err(e) = fs.set_inode_links_count(block_dev, old_pino, new_links) {
+                    warn!(
+                        "mv set_inode_links_count failed for old_parent={old_pino}: {e:?}, \
+                         continuing with rename"
+                    );
+                }
             }
             if let Ok(new_parent_inode) = fs.get_inode_by_num(block_dev, new_pino) {
                 let new_links = new_parent_inode.i_links_count.saturating_add(1);
-                let _ = fs.set_inode_links_count(block_dev, new_pino, new_links);
+                if let Err(e) = fs.set_inode_links_count(block_dev, new_pino, new_links) {
+                    warn!(
+                        "mv set_inode_links_count failed for new_parent={new_pino}: {e:?}, \
+                         continuing with rename"
+                    );
+                }
             }
 
             // Rewrite the `..` entry inside the moved directory's first block.
@@ -259,7 +269,7 @@ pub fn mv<B: BlockDevice>(
                     return Err(Ext4Error::corrupted());
                 }
             };
-            let _ = fs.datablock_cache.modify(block_dev, first_blk, |data| {
+            if let Err(e) = fs.datablock_cache.modify(block_dev, first_blk, |data| {
                 let block_bytes = BLOCK_SIZE;
                 if block_bytes < 24 {
                     return;
@@ -284,8 +294,15 @@ pub fn mv<B: BlockDevice>(
                     moved_inode.i_generation,
                     data,
                 );
-            });
-            let _ = fs.touch_inode_ctime_for_link_change(block_dev, src_ino);
+            }) {
+                error!(
+                    "mv rewrite '..' entry failed for moved dir ino={src_ino} \
+                     first_blk={first_blk}: {e:?} — directory has stale parent pointer"
+                );
+            }
+            if let Err(e) = fs.touch_inode_ctime_for_link_change(block_dev, src_ino) {
+                warn!("mv touch_inode_ctime failed for ino={src_ino}: {e:?}");
+            }
         }
     }
 

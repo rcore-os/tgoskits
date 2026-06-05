@@ -7066,9 +7066,9 @@ dependencies = [
 name = "rsext4"
 version = "0.5.0"
 dependencies = [
+ "ax-kspin",
  "bitflags 2.11.1",
  "log",
- "spin 0.12.0",
 ]
 
 [[package]]
