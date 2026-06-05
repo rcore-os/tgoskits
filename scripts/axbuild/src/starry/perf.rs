@@ -27,7 +27,7 @@ use crate::{
 const QPERF_QUEUE_SIZE: usize = 4096;
 const DEFAULT_STARRY_SHELL_PREFIX: &str = "root@starry:";
 const HARNESS_KIT_REPO: &str = "https://github.com/cg24-THU/tgoskit-harness_kit.git";
-const HARNESS_KIT_COMMIT: &str = "b4fdf12c8479353d80e3d23960e653819db2a20d";
+const HARNESS_KIT_COMMIT: &str = "762c22725024a065e85b26e0b01121eccea651c0";
 
 #[derive(Deserialize, Serialize)]
 struct PerfQemuConfig {
@@ -941,12 +941,14 @@ fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {
-    let checkout = env::var_os("TGOSKIT_HARNESS_KIT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            root.join("target/tgoskit-harness-kit")
-                .join(HARNESS_KIT_COMMIT)
-        });
+    if let Some(checkout) = env::var_os("TGOSKIT_HARNESS_KIT_DIR").map(PathBuf::from) {
+        validate_harness_kit_override(&checkout)?;
+        return Ok(checkout);
+    }
+
+    let checkout = root
+        .join("target/tgoskit-harness-kit")
+        .join(HARNESS_KIT_COMMIT);
     if checkout.join(".git").is_dir() {
         let actual = git_stdout(Some(&checkout), &["rev-parse", "HEAD"])?;
         if actual == HARNESS_KIT_COMMIT {
@@ -1016,6 +1018,43 @@ fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {
         )
     })?;
     Ok(checkout)
+}
+
+fn validate_harness_kit_override(checkout: &Path) -> anyhow::Result<()> {
+    ensure_file(
+        &checkout.join("tools/qperf/Cargo.toml"),
+        "TGOSKIT_HARNESS_KIT_DIR qperf manifest",
+    )?;
+    ensure_file(
+        &checkout.join("tools/qperf/analyzer/Cargo.toml"),
+        "TGOSKIT_HARNESS_KIT_DIR qperf analyzer manifest",
+    )?;
+    ensure_file(
+        &checkout.join("tools/starry-syscall-harness/harness.py"),
+        "TGOSKIT_HARNESS_KIT_DIR harness script",
+    )?;
+
+    if !checkout.join(".git").is_dir() {
+        bail!(
+            "TGOSKIT_HARNESS_KIT_DIR={} is not a git checkout; cannot verify pinned harness kit \
+             commit {}. Use a read-only git checkout at the pinned commit, or unset the variable \
+             to let xtask manage target/tgoskit-harness-kit",
+            checkout.display(),
+            HARNESS_KIT_COMMIT
+        );
+    }
+
+    let actual = git_stdout(Some(checkout), &["rev-parse", "HEAD"])?;
+    if actual != HARNESS_KIT_COMMIT {
+        bail!(
+            "TGOSKIT_HARNESS_KIT_DIR={} is at commit {}, expected {}; the override path is \
+             read-only and will not be fetched, reset, or replaced",
+            checkout.display(),
+            actual,
+            HARNESS_KIT_COMMIT
+        );
+    }
+    Ok(())
 }
 
 fn git_status(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
