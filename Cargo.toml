@@ -317,7 +317,7 @@ test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
 bootloader-common = { version = "0.5.11", path = "bootloader/common" }
-httpboot-protocol = { path = "../ostool/httpboot-protocol" }
+httpboot-protocol = { git = "https://github.com/Josen-B/ostool.git", branch = "httpboot" }
 x86_vcpu = { version = "0.5.11", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.12", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.7.3", path = "memory/page-table-generic" }
