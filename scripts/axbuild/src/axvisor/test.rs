@@ -452,12 +452,7 @@ impl Axvisor {
         let cargo = build::load_cargo_config(&request)?;
         let base_uboot = match request.uboot_config.as_deref() {
             Some(_) => self.load_uboot_config(&request, &cargo).await?,
-            None => Some(
-                self.app
-                    .tool_mut()
-                    .ensure_uboot_config_for_cargo(&cargo)
-                    .await?,
-            ),
+            None => Some(self.app.ensure_uboot_config_for_cargo(&cargo).await?),
         };
         let board_config = self
             .load_board_config(&cargo, Some(board_test_config.as_path()))
@@ -604,7 +599,6 @@ impl Axvisor {
             )?;
             let qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(&cargo, &case.case.qemu_config_path)
                 .await
                 .with_context(|| {
