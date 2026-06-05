@@ -2,16 +2,21 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::bpf_probe_read,
     macros::{kprobe, map},
     maps::HashMap,
     programs::ProbeContext,
 };
 
-// syscall_count: kprobe on the central dispatcher
-// `starry_kernel::syscall::handle_syscall(uctx: &mut UserContext)`, keeping a
-// per-syscall-number hit count in a plain BPF_MAP_TYPE_HASH (no perf ringbuf /
-// mmap dependency — the loader iterates it via bpf() map lookups).
+// syscall_count: kprobe on `starry_kernel::syscall::sysno(id: usize)`, the
+// `#[inline(never)]` helper `handle_syscall` calls once per syscall with the
+// raw syscall number as its first argument. Probing it — instead of
+// `handle_syscall`, whose arg0 is `&UserContext` — lets us read the syscall
+// number straight out of the probed first-argument register via `ctx.arg(0)`,
+// with no per-arch `TrapFrame` field offset. The kernel kprobe layer maps
+// `arg(0)` onto the correct register for each arch (rdi / x0 / a0), so the
+// same program is correct on x86_64/aarch64/riscv64/loongarch64. Counts go
+// into a plain BPF_MAP_TYPE_HASH (no perf ringbuf / mmap dependency — the
+// loader iterates it via bpf() map lookups).
 //
 // aya_log uses a perf-event ringbuf that StarryOS's BpfPerfEvent path does not
 // surface to userspace, so this program logs nothing and feeds counts purely
@@ -25,24 +30,19 @@ pub fn syscall_count(ctx: ProbeContext) -> u32 {
 }
 
 fn try_syscall_count(ctx: ProbeContext) -> Result<u32, u32> {
-    // arg0 of `handle_syscall` is the `&UserContext`, NOT the syscall number.
-    // The saved user `rax`/`a7` (the syscall number) is the first `TrapFrame`
-    // field, i.e. the first u64 of `UserContext`; dereference it with one
-    // bpf_probe_read. Reading arg0 directly (as an earlier version did) counts
-    // the *pointer value*, which is why it produced huge bogus keys.
-    let uctx = ctx.arg::<usize>(0).ok_or(1u32)? as *const u64;
-    // SAFETY: `uctx` is the live kernel-stack `UserContext` for the in-flight
-    // syscall; reading its first u64 stays within that frame.
-    let syscall_num = (unsafe { bpf_probe_read(uctx) }.map_err(|_| 1u32)?) as u32;
+    // arg0 of `sysno` is the raw syscall number (`id: usize`), read directly
+    // from the probed first-argument register — no dereference and no per-arch
+    // `TrapFrame` layout assumption.
+    let syscall_num = ctx.arg::<usize>(0).ok_or(1u32)? as u32;
 
     unsafe {
-        if let Some(v) = SYSCALL_LIST.get(&syscall_num) {
+        if let Some(v) = SYSCALL_LIST.get(syscall_num) {
             let new_v = *v + 1;
             SYSCALL_LIST
-                .insert(&syscall_num, &new_v, 0)
+                .insert(syscall_num, new_v, 0)
                 .map_err(|_| 1u32)?;
         } else {
-            SYSCALL_LIST.insert(&syscall_num, &1, 0).map_err(|_| 1u32)?;
+            SYSCALL_LIST.insert(syscall_num, 1, 0).map_err(|_| 1u32)?;
         }
     }
     Ok(0)

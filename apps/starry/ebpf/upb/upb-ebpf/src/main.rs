@@ -24,8 +24,8 @@ fn try_upb(ctx: ProbeContext) -> Result<u32, u32> {
     // First argument of the probed `uprobe_test(a: u32, ...)`.
     let arg: u32 = ctx.arg(0).ok_or(1u32)?;
     unsafe {
-        let new_v = UPROBE_HITS.get(&arg).map(|v| *v + 1).unwrap_or(1);
-        let _ = UPROBE_HITS.insert(&arg, &new_v, 0);
+        let new_v = UPROBE_HITS.get(arg).map(|v| *v + 1).unwrap_or(1);
+        let _ = UPROBE_HITS.insert(arg, new_v, 0);
     }
     Ok(0)
 }

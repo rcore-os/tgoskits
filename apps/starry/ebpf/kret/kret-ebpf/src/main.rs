@@ -18,8 +18,8 @@ const HIT_KEY: u32 = 0;
 
 #[kretprobe]
 pub fn kret(_ctx: RetProbeContext) -> u32 {
-    let new_v = unsafe { KRET_HITS.get(&HIT_KEY).map(|v| *v + 1).unwrap_or(1) };
-    let _ = KRET_HITS.insert(&HIT_KEY, &new_v, 0);
+    let new_v = unsafe { KRET_HITS.get(HIT_KEY).map(|v| *v + 1).unwrap_or(1) };
+    let _ = KRET_HITS.insert(HIT_KEY, new_v, 0);
     0
 }
 

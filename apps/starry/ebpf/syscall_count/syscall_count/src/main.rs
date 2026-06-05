@@ -4,20 +4,27 @@ use aya::{maps::HashMap, programs::KProbe};
 #[rustfmt::skip]
 use log::{debug, warn};
 
-// Resolve the (possibly mangled) kallsyms entry for the central syscall
-// dispatcher. The kernel's kprobe lookup matches the kallsyms name exactly, so
-// we must hand aya the real symbol string, not the source name.
-fn resolve_handle_syscall() -> anyhow::Result<String> {
+// Resolve the (possibly mangled) kallsyms entry for
+// `starry_kernel::syscall::sysno`, the `#[inline(never)]` helper whose first
+// argument is the raw syscall number. Probing it (rather than `handle_syscall`,
+// whose arg0 is `&UserContext`) lets the eBPF program read the number straight
+// off `arg(0)` on every arch. The mangled symbol contains both `syscall` (the
+// module) and `sysno`; requiring both excludes `handle_syscall` (no `sysno`)
+// and the `UserContext::sysno` accessor (no `syscall`). The kernel's kprobe
+// lookup matches the kallsyms name exactly, so we hand aya the real symbol
+// string, not the source name.
+fn resolve_sysno() -> anyhow::Result<String> {
     let table = fs::read_to_string("/proc/kallsyms")?;
     for line in table.lines() {
         // Format: "<addr> <type> <name>".
         if let Some(name) = line.split_whitespace().nth(2)
-            && name.contains("handle_syscall")
+            && name.contains("syscall")
+            && name.contains("sysno")
         {
             return Ok(name.to_string());
         }
     }
-    anyhow::bail!("handle_syscall not found in /proc/kallsyms")
+    anyhow::bail!("syscall::sysno not found in /proc/kallsyms")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         "/syscall_count"
     )))?;
 
-    let target = resolve_handle_syscall()?;
+    let target = resolve_sysno()?;
     println!("SYSCALL_COUNT: kprobe target symbol = {target}");
     let program: &mut KProbe = ebpf.program_mut("syscall_count").unwrap().try_into()?;
     program.load()?;
@@ -49,7 +56,7 @@ fn main() -> anyhow::Result<()> {
 
     // Deterministic workload: a fixed number of getpid(2) calls. Keyed by the
     // getpid syscall number, only these calls bump SYSCALL_LIST[SYS_getpid], so
-    // the count is assertable (a broken kprobe/deref/map path cannot pass).
+    // the count is assertable (a broken kprobe/arg-read/map path cannot pass).
     let sys_getpid = libc::SYS_getpid as u32;
     const N: u32 = 500;
     println!("SYSCALL_COUNT: issuing {N} getpid() calls (SYS_getpid={sys_getpid})");
@@ -73,9 +80,10 @@ fn main() -> anyhow::Result<()> {
         "SYSCALL_COUNT: distinct syscalls seen = {distinct}, getpid count = {getpid_count} (drove {N})"
     );
 
-    // Anti-fallback: the keys must be real, small syscall numbers (the original
-    // bug recorded the UserContext pointer, producing huge keys), and the
-    // getpid count must clearly reflect the workload. Allow generous TCG slack.
+    // Anti-fallback: the keys must be real, small syscall numbers (an earlier
+    // version that dereferenced `&UserContext` recorded the pointer's first
+    // word, producing bogus keys), and the getpid count must clearly reflect
+    // the workload. Allow generous TCG slack.
     if sys_getpid >= 1024 {
         // SYS_getpid should be a small number on every supported ABI.
         warn!("unexpected SYS_getpid value {sys_getpid}");

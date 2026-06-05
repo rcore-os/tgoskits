@@ -2,9 +2,10 @@
 # Build the `syscall_count` demo (aya loader + embedded eBPF bytecode) as a
 # static musl binary and install it into the StarryOS rootfs overlay.
 #
-# The loader attaches a kprobe to the central `handle_syscall` dispatcher,
-# drives a fixed number of getpid(2) calls, then reads the per-syscall hit
-# count back from a BPF HashMap and prints SYSCALL_COUNT_PASS / _FAIL.
+# The loader attaches a kprobe to `syscall::sysno` (whose first argument is the
+# raw syscall number, so the read is arch-independent), drives a fixed number of
+# getpid(2) calls, then reads the per-syscall hit count back from a BPF HashMap
+# and prints SYSCALL_COUNT_PASS / _FAIL.
 set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"

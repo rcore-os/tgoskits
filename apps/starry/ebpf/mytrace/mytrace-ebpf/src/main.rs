@@ -24,8 +24,8 @@ pub fn mytrace(ctx: TracePointContext) -> u32 {
     // common header + dfd:i32 + o_flags:u32). Reading it must not fault; the
     // value itself is not asserted, only that the probe fired (the count).
     let _path: u64 = unsafe { ctx.read_at(16).unwrap_or(0) };
-    let new_v = unsafe { OPENAT_HITS.get(&HIT_KEY).map(|v| *v + 1).unwrap_or(1) };
-    let _ = OPENAT_HITS.insert(&HIT_KEY, &new_v, 0);
+    let new_v = unsafe { OPENAT_HITS.get(HIT_KEY).map(|v| *v + 1).unwrap_or(1) };
+    let _ = OPENAT_HITS.insert(HIT_KEY, new_v, 0);
     0
 }
 

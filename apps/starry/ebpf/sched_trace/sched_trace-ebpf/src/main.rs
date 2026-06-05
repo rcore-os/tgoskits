@@ -32,7 +32,7 @@ pub fn sched_trace(ctx: RawTracePointContext) -> i32 {
         // SAFETY: `bpf_ktime_get_ns` is a side-effect-free helper.
         ts_ns: unsafe { bpf_ktime_get_ns() },
     };
-    EVENTS.output(&ctx, &event, 0);
+    EVENTS.output(&ctx, event, 0);
     0
 }
 
