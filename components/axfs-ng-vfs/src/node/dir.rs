@@ -31,7 +31,44 @@ impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
 }
 
 type DirChildren = HashMap<String, DirEntry>;
+const DIR_CACHE_NESTED_LOCK_SUBCLASS: u32 = 1;
 
+#[inline(always)]
+fn lock_dir_cache(cache: &Mutex<DirChildren>, subclass: u32) -> MutexGuard<'_, DirChildren> {
+    cache.lock_nested(subclass)
+}
+
+enum LockedDirCaches<'a> {
+    Same {
+        children: MutexGuard<'a, DirChildren>,
+    },
+    SrcThenDst {
+        // Struct fields are dropped in declaration order. Keep the later
+        // acquired lock first so lockdep sees LIFO release.
+        dst: MutexGuard<'a, DirChildren>,
+        src: MutexGuard<'a, DirChildren>,
+    },
+    DstThenSrc {
+        src: MutexGuard<'a, DirChildren>,
+        dst: MutexGuard<'a, DirChildren>,
+    },
+}
+
+impl LockedDirCaches<'_> {
+    fn src_mut(&mut self) -> &mut DirChildren {
+        match self {
+            Self::Same { children } => children.deref_mut(),
+            Self::SrcThenDst { src, .. } | Self::DstThenSrc { src, .. } => src.deref_mut(),
+        }
+    }
+
+    fn dst_mut(&mut self) -> &mut DirChildren {
+        match self {
+            Self::Same { children } => children.deref_mut(),
+            Self::SrcThenDst { dst, .. } | Self::DstThenSrc { dst, .. } => dst.deref_mut(),
+        }
+    }
+}
 pub trait DirNodeOps: NodeOps {
     /// Reads directory entries.
     ///
@@ -309,20 +346,24 @@ impl DirNode {
         )
     }
 
-    fn lock_both_cache<'a>(
-        &'a self,
-        other: &'a Self,
-    ) -> (
-        MutexGuard<'a, DirChildren>,
-        Option<MutexGuard<'a, DirChildren>>,
-    ) {
-        let src_children = self.cache.lock();
-        let dst_children = if core::ptr::eq(self, other) {
-            None
+    fn lock_both_cache<'a>(&'a self, other: &'a Self) -> LockedDirCaches<'a> {
+        if core::ptr::eq(self, other) {
+            return LockedDirCaches::Same {
+                children: self.cache.lock(),
+            };
+        }
+
+        let src_addr = &self.cache as *const _ as usize;
+        let dst_addr = &other.cache as *const _ as usize;
+        if src_addr < dst_addr {
+            let src = lock_dir_cache(&self.cache, 0);
+            let dst = lock_dir_cache(&other.cache, DIR_CACHE_NESTED_LOCK_SUBCLASS);
+            LockedDirCaches::SrcThenDst { dst, src }
         } else {
-            Some(other.cache.lock())
-        };
-        (src_children, dst_children)
+            let dst = lock_dir_cache(&other.cache, 0);
+            let src = lock_dir_cache(&self.cache, DIR_CACHE_NESTED_LOCK_SUBCLASS);
+            LockedDirCaches::DstThenSrc { src, dst }
+        }
     }
 
     /// Renames a directory entry.
@@ -330,15 +371,10 @@ impl DirNode {
         verify_entry_name(src_name)?;
         verify_entry_name(dst_name)?;
 
-        let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
+        let mut caches = self.lock_both_cache(dst_dir);
 
-        let src = self.lookup_locked(src_name, &mut src_children)?;
-        if let Ok(dst) = dst_dir.lookup_locked(
-            dst_name,
-            dst_children
-                .as_mut()
-                .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut),
-        ) {
+        let src = self.lookup_locked(src_name, caches.src_mut())?;
+        if let Ok(dst) = dst_dir.lookup_locked(dst_name, caches.dst_mut()) {
             if src.node_type() == NodeType::Directory {
                 if let Ok(dir) = dst.as_dir()
                     && dir.has_children()?
@@ -349,17 +385,13 @@ impl DirNode {
                 return Err(VfsError::IsADirectory);
             }
         }
-        drop(src_children);
-        drop(dst_children);
+        drop(caches);
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
             let (src_entry, prev_entry) = {
-                let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
-                let src_entry = src_children.remove(src_name);
-                let dst_children_ref = dst_children
-                    .as_mut()
-                    .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut);
-                let prev_entry = dst_children_ref.remove(dst_name);
+                let mut caches = self.lock_both_cache(dst_dir);
+                let src_entry = caches.src_mut().remove(src_name);
+                let prev_entry = caches.dst_mut().remove(dst_name);
                 (src_entry, prev_entry)
             };
 

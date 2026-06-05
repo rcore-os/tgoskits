@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub struct PidFd {
+    pid: Pid,
     proc_data: Weak<ProcessData>,
     exit_event: Arc<PollSet>,
     thread_exit: Option<Arc<AtomicBool>>,
@@ -27,6 +28,7 @@ pub struct PidFd {
 impl PidFd {
     pub fn new_process(proc_data: &Arc<ProcessData>) -> Self {
         Self {
+            pid: proc_data.proc.pid(),
             proc_data: Arc::downgrade(proc_data),
             exit_event: proc_data.exit_event.clone(),
             thread_exit: None,
@@ -38,6 +40,7 @@ impl PidFd {
 
     pub fn new_thread(thread: &Thread, tid: Pid) -> Self {
         Self {
+            pid: tid,
             proc_data: Arc::downgrade(&thread.proc_data),
             exit_event: thread.exit_event.clone(),
             thread_exit: Some(thread.exit.clone()),
@@ -49,6 +52,10 @@ impl PidFd {
 
     pub fn is_thread(&self) -> bool {
         self.tid.is_some()
+    }
+
+    pub fn pid(&self) -> Pid {
+        self.pid
     }
 
     pub fn tid(&self) -> Option<Pid> {

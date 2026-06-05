@@ -84,6 +84,19 @@ static long futex_wake_bitset(_Atomic uint32_t *uaddr, int count, uint32_t bitse
     return syscall(SYS_futex, uaddr, FUTEX_WAKE_BITSET, count, NULL, NULL, bitset);
 }
 
+static int wait_for_waiters(_Atomic int *ready, int expected, const char *label)
+{
+    for (int i = 0; i < 1000; i++) {
+        if (atomic_load(ready) >= expected)
+            return 1;
+        usleep(1000);
+    }
+
+    printf("  %s: only %d/%d waiters became ready\n",
+           label, atomic_load(ready), expected);
+    return 0;
+}
+
 /* ================================================================
  * Test 1 — Basic 1:1 wait/wake (50 rounds, long-lived waiter)
  * ================================================================ */
@@ -92,6 +105,7 @@ static long futex_wake_bitset(_Atomic uint32_t *uaddr, int count, uint32_t bitse
 
 static _Atomic uint32_t t1_futex;
 static _Atomic int t1_done;
+static _Atomic int t1_ready_round;
 
 static void *t1_waiter(void *arg)
 {
@@ -100,6 +114,7 @@ static void *t1_waiter(void *arg)
 
     for (int i = 0; i < T1_ROUNDS; i++) {
         atomic_store(&t1_futex, 0);
+        atomic_store(&t1_ready_round, i + 1);
         while (atomic_load(&t1_futex) == 0) {
             long r = futex_wait(&t1_futex, 0);
             if (r < 0 && errno != EAGAIN && errno != EINTR) {
@@ -118,6 +133,7 @@ static void test_basic_wait_wake(void)
 {
     atomic_store(&t1_futex, 1);
     atomic_store(&t1_done, 0);
+    atomic_store(&t1_ready_round, 0);
 
     pthread_t t;
     CHECK(pthread_create(&t, NULL, t1_waiter, NULL) == 0,
@@ -125,7 +141,8 @@ static void test_basic_wait_wake(void)
 
     int total_woken = 0;
     for (int i = 0; i < T1_ROUNDS; i++) {
-        usleep(1000);
+        while (atomic_load(&t1_ready_round) < i + 1 && !atomic_load(&t1_done))
+            usleep(100);
         atomic_store(&t1_futex, 1);
         long w = futex_wake(&t1_futex, 1);
         if (w > 0)
@@ -152,11 +169,12 @@ static void test_basic_wait_wake(void)
 #define T2_N 4
 
 static _Atomic uint32_t t2_futex;
+static _Atomic int t2_ready;
 
 static void *t2_waiter(void *arg)
 {
     (void)arg;
-    atomic_store(&t2_futex, 0);
+    atomic_fetch_add(&t2_ready, 1);
     while (atomic_load(&t2_futex) == 0) {
         long r = futex_wait(&t2_futex, 0);
         if (r < 0 && errno != EAGAIN && errno != EINTR)
@@ -171,7 +189,8 @@ static void test_multi_waiter(void)
     int all_ok = 1;
 
     for (int i = 0; i < T2_ROUNDS; i++) {
-        atomic_store(&t2_futex, 1);
+        atomic_store(&t2_futex, 0);
+        atomic_store(&t2_ready, 0);
 
         pthread_t ts[T2_N];
         int created = 0;
@@ -193,7 +212,10 @@ static void test_multi_waiter(void)
             break;
         }
 
-        /* Give all waiters time to block on the futex */
+        if (!wait_for_waiters(&t2_ready, T2_N, "T2"))
+            all_ok = 0;
+
+        /* Give all waiters time to block on the futex after reporting ready. */
         usleep(5000);
 
         atomic_store(&t2_futex, 1);
@@ -331,11 +353,12 @@ static void test_pthread_mutex(void)
 #define T5_N      8
 
 static _Atomic uint32_t t5_futex;
+static _Atomic int t5_ready;
 
 static void *t5_waiter(void *arg)
 {
     (void)arg;
-    atomic_store(&t5_futex, 0);
+    atomic_fetch_add(&t5_ready, 1);
     while (atomic_load(&t5_futex) == 0) {
         long r = futex_wait(&t5_futex, 0);
         if (r < 0 && errno != EAGAIN && errno != EINTR)
@@ -350,7 +373,8 @@ static void test_stress_contention(void)
     int all_ok = 1;
 
     for (int i = 0; i < T5_ROUNDS; i++) {
-        atomic_store(&t5_futex, 1);
+        atomic_store(&t5_futex, 0);
+        atomic_store(&t5_ready, 0);
 
         pthread_t ts[T5_N];
         int created = 0;
@@ -370,6 +394,9 @@ static void test_stress_contention(void)
             }
             break;
         }
+
+        if (!wait_for_waiters(&t5_ready, T5_N, "T5"))
+            all_ok = 0;
 
         usleep(5000);
 

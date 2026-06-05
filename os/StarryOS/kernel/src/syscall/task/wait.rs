@@ -7,7 +7,8 @@ use ax_task::{
 };
 use bitflags::bitflags;
 use linux_raw_sys::general::{
-    __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PID, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
+    __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG,
+    WNOWAIT, WUNTRACED,
 };
 use starry_process::{Pid, Process};
 use starry_signal::{SignalInfo, Signo};
@@ -17,6 +18,15 @@ use crate::task::{
     AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
     get_zombie_cred, processes, remove_process, traced_zombies_for, unregister_zombie,
     wait_on_pollset_with_wchan,
+    task::{,
+    file::{PidFd, get_file_like},
+};
+
+use core::{future::poll_fn, task::Poll};
+
+};
+};
+    task::{
 };
 
 const PTRACE_O_TRACESYSGOOD: usize = 1;
@@ -69,6 +79,15 @@ impl WaitTarget {
     }
 }
 
+fn waitid_pidfd_target(fd: i32) -> AxResult<WaitTarget> {
+    if fd < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let pidfd = get_file_like(fd)?
+        .downcast_arc::<PidFd>()
+        .map_err(|_| AxError::BadFileDescriptor)?;
+    Ok(WaitTarget::Pid(pidfd.pid()))
+}
 fn stopped_wait_signo(data: &ProcessData, signo: Signo) -> i32 {
     let event = data.ptrace_event().unwrap_or(0);
     let mut wait_signo = if event != 0 {
@@ -244,8 +263,6 @@ pub fn sys_waitid(
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
 ) -> AxResult<isize> {
-    use linux_raw_sys::general::P_PGID;
-
     let curr = current();
     let proc = &curr.as_thread().proc_data.proc;
 
@@ -269,6 +286,7 @@ pub fn sys_waitid(
             };
             WaitTarget::Pgid(pgid)
         }
+        P_PIDFD => waitid_pidfd_target(id)?,
         _ => return Err(AxError::InvalidInput),
     };
 

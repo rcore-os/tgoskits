@@ -24,14 +24,25 @@ impl Lockdep {
         lock: &BaseSpinLock<G, T>,
         is_try: bool,
     ) -> Self {
+        Self::prepare_nested(lock, is_try, ax_lockdep::DEFAULT_LOCK_SUBCLASS)
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    pub(crate) fn prepare_nested<G: BaseGuard, T: ?Sized>(
+        lock: &BaseSpinLock<G, T>,
+        is_try: bool,
+        subclass: ax_lockdep::LockSubclass,
+    ) -> Self {
         let addr = lock as *const _ as *const () as usize;
         let prepared = if tracks_task_locks::<G>() {
-            Some(ax_lockdep::prepare_acquire_with_snapshot(
+            Some(ax_lockdep::prepare_acquire_with_snapshot_nested(
                 lock.lockdep_map(),
                 "spin lock",
                 addr,
                 Location::caller(),
                 ax_lockdep::current_task_held_lock_snapshot(),
+                subclass,
             ))
         } else {
             None

@@ -38,7 +38,7 @@ env:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  queue: max
 
 jobs:
   detect_changes:
@@ -78,7 +78,6 @@ jobs:
               - "rust-toolchain.toml"
               - "components/**"
               - "drivers/**"
-              - "apps/**"
               - "os/**"
               - "platforms/**"
               - "virtualization/**"
@@ -308,21 +307,19 @@ jobs:
             limit_to_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch riscv64
-            cache_key: ""
+            cache_key: test-starry-riscv64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch aarch64
-            cache_key: ""
+            cache_key: test-starry-aarch64
             container_image: base
             apk_region: us
             limit_to_owner: ""
@@ -601,6 +598,8 @@ jobs:
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
   publish_base_container:
     name: Publish base container image
