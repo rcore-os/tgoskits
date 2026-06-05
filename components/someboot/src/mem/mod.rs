@@ -27,7 +27,9 @@ static mut KIMAGE_START: Option<PhysAddr> = None;
 /// Load address of the kernel end
 static mut KIMAGE_END: PhysAddr = PhysAddr::new(0);
 
-pub type MemoryMap = heapless::Vec<MemoryDescriptor, 128>;
+const MEMORY_MAP_CAPACITY: usize = 512;
+
+pub type MemoryMap = heapless::Vec<MemoryDescriptor, MEMORY_MAP_CAPACITY>;
 
 pub(crate) fn setup_entry(
     kernel_start: PhysAddr,

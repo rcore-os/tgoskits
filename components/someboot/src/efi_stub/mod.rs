@@ -2,6 +2,9 @@
 use core::arch::naked_asm;
 use core::{fmt::Write, ptr::null, sync::atomic::AtomicBool};
 
+pub use uefi::Status;
+#[cfg(target_arch = "loongarch64")]
+pub use uefi::runtime::ResetType;
 use uefi::{
     Result,
     boot::{self, MemoryDescriptor, MemoryType},
@@ -12,7 +15,6 @@ use uefi::{
     system::with_config_table,
     table::{self, cfg::ConfigTableEntry},
 };
-pub use uefi::{Status, runtime::ResetType};
 
 use crate::{
     ArchTrait,
@@ -191,10 +193,12 @@ fn find_acpi_rsdp() {
     })
 }
 
+#[cfg(target_arch = "loongarch64")]
 pub fn is_uefi_available() -> bool {
     uefi::table::system_table_raw().is_some()
 }
 
+#[cfg(target_arch = "loongarch64")]
 pub fn reset(reset_type: ResetType, status: Status, data: Option<&[u8]>) -> ! {
     info!("Resetting system via UEFI...");
     uefi::runtime::reset(reset_type, status, data)

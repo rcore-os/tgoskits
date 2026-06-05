@@ -1,7 +1,7 @@
 PECOFF_FILE_ALIGN = 0x200;
 
 PROVIDE(PAGE_SIZE = 0x1000);
-PROVIDE(STACK_SIZE = 0x4000);
+PROVIDE(STACK_SIZE = 0x40000);
 VM_LOAD_ADDRESS = ${kernel_load_vaddr};
 
 OUTPUT_ARCH(i386:x86-64)
@@ -9,6 +9,7 @@ ENTRY(_head)
 PHDRS {
     text PT_LOAD FLAGS(7);
     note PT_NOTE FLAGS(4);
+    tls PT_TLS FLAGS(4);
 }
 
 SECTIONS
@@ -41,6 +42,7 @@ SECTIONS
         *(.data .data.*)
         *(.init.data)
         *(.sdata .sdata.*)
+        *(.got .got.*)
 
         . = ALIGN(PAGE_SIZE);
         __percpu_start = .;
@@ -56,27 +58,27 @@ SECTIONS
         *(.sdata)
         . = ALIGN(PAGE_SIZE);
     }
+    .tdata : ALIGN(16) {
+        _stdata = .;
+        *(.tdata .tdata.*)
+        _etdata = .;
+    } :text :tls
+
     _edata = .;
     __kernel_load_end = .;
     __bss_start = .;
 
-    .tdata : {
-        _stdata = .;
-        *(.tdata .tdata.*)
-        _etdata = .;
-    }
-
-    .tbss : {
+    .tbss : ALIGN(16) {
         _stbss = .;
         *(.tbss .tbss.*)
         *(.init.bss)
         *(.tcommon)
         _etbss = .;
-    }
+    } :text :tls
 
     .sbss : {
         *(.dynsbss) *(.sbss) *(.scommon)
-    }
+    } :text
     .bss : {
         *(.dynbss)
         *(.bss .bss.*)
@@ -86,7 +88,7 @@ SECTIONS
         __cpu0_stack = .;
         . += STACK_SIZE;
         __cpu0_stack_top = .;
-    }
+    } :text
     . = ALIGN(PAGE_SIZE);
     __bss_stop = .;
     _end = .;
