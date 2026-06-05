@@ -35,7 +35,9 @@ pub(crate) mod error;
 pub mod map;
 pub mod prog;
 pub mod transform;
+#[allow(dead_code)] // wired in by follow-up PRs (ebpf-jit-2/3)
 pub(crate) mod bpf_insn;
+#[allow(dead_code)] // wired in by follow-up PRs (ebpf-jit-2/3)
 pub mod ebpf_jit;
 
 pub(crate) type HelperFn = fn(u64, u64, u64, u64, u64) -> u64;

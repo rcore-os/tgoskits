@@ -1,4 +1,5 @@
-use super::super::{bpf_insn::BpfInsn, HelperFn, JitBackend, JitBuffer};
+use super::super::{bpf_insn::BpfInsn, HelperFn};
+use super::{JitBackend, JitBuffer};
 
 pub(crate) struct X86_64Backend;
 
