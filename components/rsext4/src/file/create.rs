@@ -25,11 +25,24 @@ fn discard_unpublished_inode<B: BlockDevice>(
     }
 }
 
+/// Create a symbolic link (root-owned).
 pub fn create_symbol_link<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
     dst_path: &str,
+) -> Ext4Result<()> {
+    create_symbol_link_with_owner(device, fs, src_path, dst_path, 0, 0)
+}
+
+/// Create a symbolic link with explicit uid/gid ownership.
+pub fn create_symbol_link_with_owner<B: BlockDevice>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    src_path: &str,
+    dst_path: &str,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<()> {
     // Validate the source and destination before allocating the new symlink.
     let src_norm = split_paren_child_and_tranlatevalid(src_path);
@@ -142,6 +155,8 @@ pub fn create_symbol_link<B: BlockDevice>(
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
+    create_update.uid = Some(uid);
+    create_update.gid = Some(gid);
     if fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)
@@ -167,13 +182,26 @@ pub fn create_symbol_link<B: BlockDevice>(
     Ok(())
 }
 
-/// Create a file entry, creating missing parent directories on demand.
+/// Create a file entry, creating missing parent directories on demand (root-owned).
 pub fn mkfile<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
     initial_data: Option<&[u8]>,
     file_type: Option<u8>,
+) -> Ext4Result<Ext4Inode> {
+    mkfile_with_owner(device, fs, path, initial_data, file_type, 0, 0)
+}
+
+/// Create a file entry with explicit uid/gid ownership.
+pub fn mkfile_with_owner<B: BlockDevice>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    path: &str,
+    initial_data: Option<&[u8]>,
+    file_type: Option<u8>,
+    uid: u32,
+    gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     // Normalize first so all later path splitting uses one canonical form.
     let norm_path = split_paren_child_and_tranlatevalid(path);
@@ -203,7 +231,7 @@ pub fn mkfile<B: BlockDevice>(
     };
 
     // Create missing parent directories before allocating the file inode.
-    ensure_directory(device, fs, &parent)?;
+    ensure_directory(device, fs, &parent, uid, gid)?;
 
     // Reload the parent inode after directory creation so we use the final
     // parent metadata and inode number.
@@ -327,6 +355,8 @@ pub fn mkfile<B: BlockDevice>(
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(imode);
+    create_update.uid = Some(uid);
+    create_update.gid = Some(gid);
     if fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)

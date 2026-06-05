@@ -50,7 +50,7 @@ pub use imp::io_mpx::sys_poll;
 #[cfg(feature = "select")]
 pub use imp::io_mpx::sys_select;
 #[cfg(feature = "epoll")]
-pub use imp::io_mpx::{sys_epoll_create, sys_epoll_ctl, sys_epoll_wait};
+pub use imp::io_mpx::{sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_wait};
 #[cfg(feature = "net")]
 pub use imp::net::{
     sys_accept, sys_bind, sys_connect, sys_freeaddrinfo, sys_getaddrinfo, sys_getpeername,

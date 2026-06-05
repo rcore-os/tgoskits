@@ -33,4 +33,6 @@ pub struct PollState {
     pub readable: bool,
     /// Object can be writen now.
     pub writable: bool,
+    /// Monotonic token changed when the object's readiness may have changed.
+    pub readiness_version: u64,
 }

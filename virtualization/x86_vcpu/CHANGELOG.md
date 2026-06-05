@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- publish the host interface module used by `axvm`
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.9...x86_vcpu-v0.5.10) - 2026-06-03
 
 ### Added

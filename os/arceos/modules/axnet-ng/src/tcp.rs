@@ -801,11 +801,15 @@ mod tests {
     use super::*;
     use crate::{
         options::{Configurable, SetSocketOption},
-        test_support::{LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network},
+        test_support::{
+            LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network,
+            network_test_guard,
+        },
     };
 
     #[test]
     fn connect_uses_peer_route_for_device_mask() {
+        let _guard = network_test_guard();
         init_split_route_network();
 
         let socket = TcpSocket::new();

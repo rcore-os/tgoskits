@@ -14,6 +14,8 @@ use slab::Slab;
 
 use crate::pseudofs::dummy_stat_fs;
 
+const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
+
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(String);
 
@@ -82,6 +84,9 @@ impl MemoryFs {
             None,
             NodeType::Directory,
             NodePermission::from_bits_truncate(0o755),
+            0,
+            0,
+            0,
         );
         *handle.root.lock() = Some(DirEntry::new_dir(
             |this| DirNode::new(MemoryNode::new(handle.clone(), root_ino, Some(this))),
@@ -98,8 +103,14 @@ impl MemoryFs {
     ///
     /// The returned entry is not inserted into any directory, so it has no
     /// path-based lookup and is kept alive solely by the returned handle(s).
-    pub fn create_anonymous_file(self: &Arc<Self>, name: &str, perm: NodePermission) -> DirEntry {
-        let inode = Inode::new(self, None, NodeType::RegularFile, perm);
+    pub fn create_anonymous_file(
+        self: &Arc<Self>,
+        name: &str,
+        perm: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> DirEntry {
+        let inode = Inode::new(self, None, NodeType::RegularFile, perm, uid, gid, 0);
         DirEntry::new_file(
             FileNode::new(MemoryNode::new(self.clone(), inode, None)),
             NodeType::RegularFile,
@@ -173,6 +184,9 @@ impl Inode {
         parent: Option<u64>,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
+        dir_entries_subclass: u32,
     ) -> Arc<Inode> {
         let mut inodes = fs.inodes.lock();
         let entry = inodes.vacant_entry();
@@ -183,8 +197,8 @@ impl Inode {
             nlink: 0,
             mode: permission,
             node_type,
-            uid: 0,
-            gid: 0,
+            uid,
+            gid,
             size: 0,
             // Linux's tmpfs reports PAGE_SIZE so userspace sees a nonzero
             // st_blksize; several libcs rely on this being > 0.
@@ -207,7 +221,7 @@ impl Inode {
         entry.insert(result.clone());
         drop(inodes);
         if let NodeContent::Dir(dir) = &result.content {
-            let mut entries = dir.entries.lock();
+            let mut entries = dir.entries.lock_nested(dir_entries_subclass);
             entries.insert(".".into(), InodeRef::new(fs.clone(), ino));
             entries.insert(
                 "..".into(),
@@ -431,6 +445,8 @@ impl DirNodeOps for MemoryNode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<DirEntry> {
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
@@ -438,7 +454,15 @@ impl DirNodeOps for MemoryNode {
         if entries.contains_key(name) {
             return Err(VfsError::AlreadyExists);
         }
-        let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission);
+        let inode = Inode::new(
+            &self.fs,
+            Some(self.inode.ino),
+            node_type,
+            permission,
+            uid,
+            gid,
+            TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
+        );
         entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
         self.new_entry(name, node_type, inode)
     }
@@ -468,7 +492,7 @@ impl DirNodeOps for MemoryNode {
             };
             let inode = entry.get();
             if let NodeContent::Dir(DirContent { entries }) = &inode.content
-                && entries.lock().len() > 2
+                && entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2
             {
                 return Err(VfsError::DirectoryNotEmpty);
             }

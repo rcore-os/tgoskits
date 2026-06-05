@@ -9,7 +9,7 @@ use ax_runtime::hal::{
 use ax_sync::Mutex;
 use ax_task::current;
 use bytemuck::AnyBitPattern;
-use linux_raw_sys::{ctypes::c_ushort, general::*};
+use linux_raw_sys::general::*;
 use starry_process::Pid;
 use starry_vm::VmMutPtr;
 
@@ -54,8 +54,24 @@ pub struct ShmidDs {
     /// pid of last shmop
     shm_lpid: __kernel_pid_t,
     /// number of current attaches
-    shm_nattch: c_ushort,
+    ///
+    /// Linux `shmid64_ds` declares this as `__kernel_ulong_t` (8 bytes on every
+    /// 64-bit arch), NOT `unsigned short`. A narrow field here left the high
+    /// bytes of glibc's `shm_nattch` read uninitialized (garbage attach count).
+    shm_nattch: __kernel_ulong_t,
+    /// Trailing reserved field present in Linux `shmid64_ds` (`__unused4`).
+    __unused4: __kernel_ulong_t,
+    /// Trailing reserved field present in Linux `shmid64_ds` (`__unused5`).
+    __unused5: __kernel_ulong_t,
 }
+
+// `struct shmid64_ds` (asm-generic, shared by aarch64/riscv64/loongarch64 and
+// layout-identical on x86-64): `ipc64_perm` + segsz + 3×time + 2×pid + nattch +
+// 2× trailing reserved word. Guard against accidental re-narrowing or padding.
+const _: () = assert!(
+    core::mem::size_of::<ShmidDs>() == core::mem::size_of::<IpcPerm>() + 64,
+    "ShmidDs must match Linux shmid64_ds layout"
+);
 
 impl ShmidDs {
     fn new(
@@ -86,6 +102,8 @@ impl ShmidDs {
             shm_cpid: pid,
             shm_lpid: pid,
             shm_nattch: 0,
+            __unused4: 0,
+            __unused5: 0,
         }
     }
 }

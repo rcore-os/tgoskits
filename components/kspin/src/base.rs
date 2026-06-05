@@ -33,6 +33,16 @@ impl LockdepAcquire {
         Self
     }
 
+    #[inline(always)]
+    #[track_caller]
+    fn prepare_nested<G: BaseGuard, T: ?Sized>(
+        _lock: &BaseSpinLock<G, T>,
+        _is_try: bool,
+        _subclass: u32,
+    ) -> Self {
+        Self
+    }
+
     #[cfg(feature = "smp")]
     #[inline(always)]
     fn finish(&self, _acquired: bool) {}
@@ -189,8 +199,19 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn lock(&self) -> BaseSpinLockGuard<'_, G, T> {
+        self.lock_nested(0)
+    }
+
+    /// Locks the [`BaseSpinLock`] using a lockdep subclass.
+    ///
+    /// This is intended for structurally nested acquisitions of different
+    /// locks with the same class. Without the `lockdep` feature it behaves the
+    /// same as [`Self::lock`].
+    #[inline(always)]
+    #[track_caller]
+    pub fn lock_nested(&self, subclass: u32) -> BaseSpinLockGuard<'_, G, T> {
         let irq_state = G::acquire();
-        let lockdep = LockdepAcquire::prepare(self, false);
+        let lockdep = LockdepAcquire::prepare_nested(self, false, subclass);
         self.blocking_acquire(lockdep);
         BaseSpinLockGuard {
             _phantom: &PhantomData,
