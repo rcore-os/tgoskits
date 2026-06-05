@@ -1195,7 +1195,7 @@ fn do_io_getevents(
         match wait_for_completion(&context, deadline) {
             Ok(true) => {}
             Ok(false) => return Ok(completed as isize),
-            Err(err) if completed > 0 => return Ok(completed as isize),
+            Err(_) if completed > 0 => return Ok(completed as isize),
             Err(err) => return Err(err),
         }
     }
