@@ -166,13 +166,28 @@ fn discover_modules_inner(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> R
 /// crates to the running kernel's exact configuration.
 const KERNEL_PKG: &str = "starryos";
 
-/// Features the kernel resolves to for the x86-pc QEMU platform — the module is
-/// co-built with these so `cargo` unifies `starry_kernel` (and its dependency
-/// closure) to the identical feature set, hence identical crate hashes. `qemu`
+/// The `--features` the module is co-built with for kernel hash parity, derived
+/// the *same way the kernel build does* rather than hardcoded, so the two stay
+/// consistent by construction (see review feedback on hardcoding `x86-pc`).
+///
+/// `cargo` then unifies `starry_kernel` (and its dependency closure) to the
+/// identical feature set, hence identical crate hashes. The set is the kernel's
+/// default `ax-hal/<platform>` for the target arch (via the shared
+/// [`crate::build::default_ax_hal_platform_feature`], exactly what
+/// `cargo xtask starry build` resolves) plus the QEMU platform feature. `qemu`
 /// is qualified to `starryos/` so the module's own same-named feature is not
 /// also activated (which would add features to the shared closure and diverge
-/// the hash). Matches the resolved feature set of `cargo xtask starry build`.
-const KERNEL_KMOD_FEATURES: &str = "ax-hal/x86-pc,starryos/qemu";
+/// the hash).
+///
+/// This is also *why* the build is x86_64-only today (see the guard in
+/// [`build_one_module`]): the helper only yields a static platform for
+/// x86_64 (`ax-hal/x86-pc`); aarch64/riscv64 use the dynamic `plat-dyn`
+/// platform, for which there is no single platform feature to pin.
+fn kernel_kmod_features(target_triple: &str) -> Result<String> {
+    let platform = crate::build::default_ax_hal_platform_feature(target_triple, None)
+        .with_context(|| format!("derive kernel platform feature for {target_triple}"))?;
+    Ok(format!("{platform},{KERNEL_PKG}/qemu"))
+}
 
 fn build_one_module(
     workspace_root: &Path,
@@ -200,9 +215,19 @@ fn build_one_module(
     // dir with the *same* features/flags, so cargo reuses the kernel's crate
     // artifacts and the `.ko`'s symbol hashes match the running kernel exactly.
     if target_triple != "x86_64-unknown-none" {
+        // The runtime loader (`kmod-loader`) already relocates aarch64 / riscv64
+        // / loongarch64 / x86_64 modules; the limitation is on *this* build side.
+        // Hash parity is achieved by co-building the module under the kernel's
+        // resolved static-platform feature set (`kernel_kmod_features`) + the
+        // x86_64-tuned `static`/`large` codegen that yields loader-supported
+        // `R_X86_64_64` relocations. aarch64/riscv64 StarryOS-QEMU use the
+        // dynamic `plat-dyn` platform (no single platform feature to pin) and a
+        // different relocation model, so enabling them is a separate per-arch
+        // porting + QEMU-validation effort, not just dropping this guard.
         bail!(
             "loadable kmod build currently supports only `--arch x86_64` (kernel feature/codegen \
-             parity is wired for the x86-pc platform)"
+             parity is wired for the static x86-pc platform; other arches use the dynamic \
+             platform and need separate per-arch support)"
         );
     }
 
@@ -250,6 +275,7 @@ fn build_one_module(
         "-Ccode-model=large".to_string(),
     ];
     let module_pkg = manifest_package_name(&cargo_toml)?;
+    let kernel_features = kernel_kmod_features(target_triple)?;
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--release")
@@ -264,13 +290,11 @@ fn build_one_module(
             &module_rustflags,
         ))
         .arg("--features")
-        .arg(KERNEL_KMOD_FEATURES)
+        .arg(&kernel_features)
         // Match the `STARRY_KMOD` kernel build so the shared crates (and thus
         // their `StableCrateId` hashes) are identical and get reused: no LTO
-        // (retain symbols), and the platform/`qemu` features above. `qemu` is
-        // qualified to `starryos/` so the module's own same-named feature is not
-        // additionally activated (which would perturb the shared feature
-        // closure). See `build::kmod_build_mode`.
+        // (retain symbols), and the derived platform/`qemu` features above (see
+        // `kernel_kmod_features`). See `build::kmod_build_mode`.
         .env("CARGO_UNSTABLE_JSON_TARGET_SPEC", "true")
         .env("CARGO_PROFILE_RELEASE_LTO", "false");
     // The module rlib (what we actually need) and where co-building writes it.
@@ -363,10 +387,17 @@ fn manifest_package_name(cargo_toml: &Path) -> Result<String> {
             in_package = rest.trim_end_matches(']').trim() == "package";
             continue;
         }
-        if in_package && let Some(rest) = trimmed.strip_prefix("name") {
-            // `name = "hello"` → strip `=`, whitespace and quotes.
-            let val = rest.trim_start().trim_start_matches('=').trim();
-            return Ok(val.trim_matches('"').to_string());
+        // Match the `name` key exactly — the token after `name` must be `=`,
+        // so `namespace`, `name-mangling`, `name_foo`, … are not mistaken for
+        // it. Then take the quoted value between the first and last `"`, which
+        // also drops any trailing inline comment (`name = "x"  # ...`).
+        if in_package
+            && let Some(rest) = trimmed.strip_prefix("name")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+            && let (Some(open), Some(close)) = (value.find('"'), value.rfind('"'))
+            && open < close
+        {
+            return Ok(value[open + 1..close].to_string());
         }
     }
     bail!("no [package] name in {}", cargo_toml.display())

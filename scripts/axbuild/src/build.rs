@@ -16,13 +16,18 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+/// Whether a raw env value spells a "truthy" flag (`y`/`yes`/`1`/`true`/`on`,
+/// case-insensitive, surrounding whitespace ignored). Shared by every env-flag
+/// check so they all honour exactly the same spellings.
+fn env_value_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes" | "1" | "true" | "on"
+    )
+}
+
 fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
-    env.get(key).is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "y" | "yes" | "1" | "true" | "on"
-        )
-    })
+    env.get(key).is_some_and(|value| env_value_truthy(value))
 }
 
 fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
@@ -71,7 +76,7 @@ fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
 /// build (`cargo xtask starry kmod build`) uses the *same* flags so its crate
 /// hashes match the running kernel.
 pub(crate) fn kmod_build_mode() -> bool {
-    std::env::var("STARRY_KMOD").is_ok_and(|v| starry_kmod_truthy(&v))
+    std::env::var("STARRY_KMOD").is_ok_and(|v| env_value_truthy(&v))
 }
 
 /// Like [`kmod_build_mode`], but also honours a `STARRY_KMOD` entry in a build
@@ -80,16 +85,7 @@ pub(crate) fn kmod_build_mode() -> bool {
 /// whole `cargo xtask` process exporting `STARRY_KMOD` — which would (wrongly)
 /// rebuild *every* other test case's kernel with `large`/no-LTO too.
 pub(crate) fn kmod_build_mode_with_env(env: &HashMap<String, String>) -> bool {
-    kmod_build_mode()
-        || env
-            .get("STARRY_KMOD")
-            .is_some_and(|v| starry_kmod_truthy(v))
-}
-
-/// Truthy spelling of a `STARRY_KMOD` value, shared by the process-env and
-/// build-config-env entry points so both honour exactly the same values.
-fn starry_kmod_truthy(value: &str) -> bool {
-    matches!(value, "1" | "y" | "yes" | "true")
+    kmod_build_mode() || env.get("STARRY_KMOD").is_some_and(|v| env_value_truthy(v))
 }
 
 /// Apply loadable-kernel-module codegen to a prepared kernel [`Cargo`] config:
@@ -1091,7 +1087,7 @@ fn has_ax_hal_platform_feature(features: &[String], metadata: Option<&Metadata>)
         .any(|feature| ax_hal_platform_feature_name(feature, metadata).is_some())
 }
 
-fn default_ax_hal_platform_feature(
+pub(crate) fn default_ax_hal_platform_feature(
     target: &str,
     metadata: Option<&Metadata>,
 ) -> anyhow::Result<String> {
@@ -1615,6 +1611,18 @@ mod tests {
         let flags = toolchain_rustflags(&env);
         assert!(flags.iter().any(|f| f == "-Crelocation-model=static"));
         assert!(flags.iter().any(|f| f == "-Ccode-model=large"));
+
+        // `STARRY_KMOD` accepts exactly the same truthy spellings as every
+        // other env flag (`env_truthy`): case-insensitive, whitespace-trimmed,
+        // and including `on` — so a user who sets it per the existing
+        // convention is not silently ignored.
+        for truthy in ["on", "ON", "Y", "Yes", "TRUE", " 1 "] {
+            let env = HashMap::from([("STARRY_KMOD".to_string(), truthy.to_string())]);
+            assert!(
+                kmod_build_mode_with_env(&env),
+                "`STARRY_KMOD={truthy:?}` should enable kmod build mode"
+            );
+        }
 
         // Absent / falsey values leave the production (LTO) codegen untouched.
         assert!(!kmod_build_mode_with_env(&HashMap::new()));
