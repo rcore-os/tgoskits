@@ -573,26 +573,67 @@ fn prepare_cross_c_compiler_fallback(
 }
 
 fn cross_c_compiler_works(compiler: &str) -> bool {
-    let Ok(sysroot) = Command::new(compiler)
-        .arg("-print-sysroot")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    else {
-        return false;
-    };
-    if !sysroot.success() {
+    if !compiler_command_succeeds(compiler, &["-print-sysroot"]) {
         return false;
     }
 
+    compiler_command_succeeds(compiler, &["-E", "-x", "c", "-"])
+}
+
+fn compiler_command_succeeds(compiler: &str, args: &[&str]) -> bool {
     Command::new(compiler)
-        .args(["--target=riscv64", "-E", "-x", "c", "-"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cross_c_compiler_works;
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_c_compiler_probe_does_not_require_clang_target_arg() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let compiler = temp.path().join("riscv64-linux-musl-gcc");
+        fs::write(
+            &compiler,
+            r#"#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --target|--target=*)
+      exit 42
+      ;;
+  esac
+done
+
+if [ "$1" = "-print-sysroot" ]; then
+  printf '%s\n' /fake/sysroot
+  exit 0
+fi
+
+case " $* " in
+  *" -E -x c - "*)
+    cat >/dev/null
+    exit 0
+    ;;
+esac
+
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&compiler).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&compiler, permissions).unwrap();
+
+        assert!(cross_c_compiler_works(compiler.to_str().unwrap()));
+    }
 }
 
 fn zig_lib_dir(zig: &Path) -> anyhow::Result<PathBuf> {
