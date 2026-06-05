@@ -30,7 +30,7 @@ pub fn new_default(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResul
 ///
 /// Use this for loop devices and other block backends created outside the
 /// platform probe path.
-#[cfg(feature = "ext4")]
+#[cfg(all(feature = "ext4", feature = "vfs"))]
 pub fn new_from_dyn(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
     ext4::Ext4Filesystem::new_from_boxed(dev, region)
 }
