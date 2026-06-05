@@ -14,16 +14,24 @@ pub static ROOT_USER_NS: spin::LazyLock<Arc<SpinNoIrq<UserNamespace>>> =
 /// `owner_uid` is the effective UID of the process that created the
 /// namespace (0 for the root namespace).
 ///
-/// When `is_root` is false (child namespace without configured mappings),
-/// all UIDs/GIDs are reported as `nobody` (65534), matching Linux default
-/// behaviour for unconfigured user namespaces.
+/// When neither `uid_mapped` nor `gid_mapped` is true (child namespace
+/// without configured mappings), all UIDs/GIDs are reported as `nobody`
+/// (65534), matching Linux default behaviour for unconfigured user
+/// namespaces.  Writing uid_map sets `uid_mapped`, writing gid_map sets
+/// `gid_mapped`, so the two sides are independent — a half-configured
+/// namespace correctly returns 65534 for the unmapped side.
 pub struct UserNamespace {
     /// Effective UID of the namespace creator (0 for root namespace).
     pub owner_uid: u32,
-    /// Whether this is the initial root user namespace.  false for
-    /// namespaces created via unshare / clone(CLONE_NEWUSER) that
-    /// have not yet had uid_map / gid_map configured.
+    /// Whether this is the initial root user namespace or a child
+    /// namespace that had both uid_map and gid_map configured.  Kept
+    /// for compatibility; new code should use `uid_mapped` /
+    /// `gid_mapped` for per-side overflow control.
     pub is_root: bool,
+    /// Whether uid_map has been written — lifts UID-side overflow.
+    pub uid_mapped: bool,
+    /// Whether gid_map has been written — lifts GID-side overflow.
+    pub gid_mapped: bool,
 }
 
 impl UserNamespace {
@@ -31,6 +39,8 @@ impl UserNamespace {
         Self {
             owner_uid: 0,
             is_root: true,
+            uid_mapped: true,
+            gid_mapped: true,
         }
     }
 
@@ -38,6 +48,8 @@ impl UserNamespace {
         Self {
             owner_uid: self.owner_uid,
             is_root: false,
+            uid_mapped: false,
+            gid_mapped: false,
         }
     }
 }
