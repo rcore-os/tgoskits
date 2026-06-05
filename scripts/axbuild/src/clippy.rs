@@ -25,6 +25,7 @@ const RS_METADATA: &str = "rs";
 const TARGETS_METADATA: &str = "targets";
 const AXBUILD_METADATA: &str = "axbuild";
 const CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA: &str = "clippy-feature-axconfig-overrides";
+const AX_HAL_PACKAGE: &str = "ax-hal";
 
 const UNSUPPORTED_CLIPPY_PACKAGES: &[(&str, &str)] = &[
     (
@@ -47,6 +48,15 @@ const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
         "loongarch64-unknown-none",
         "loongarch64-unknown-none-softfloat",
     ),
+];
+
+const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
+    ("plat-dyn", &["aarch64", "loongarch64", "riscv64", "x86_64"]),
+    ("loongarch64-qemu-virt", &["loongarch64"]),
+    ("riscv64-sg2002", &["riscv64"]),
+    ("riscv64-visionfive2", &["riscv64"]),
+    ("x86-pc", &["x86_64"]),
+    ("x86-qemu-q35", &["x86_64"]),
 ];
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
@@ -467,6 +477,41 @@ fn normalize_clippy_target(target: &str) -> &str {
         .unwrap_or(target)
 }
 
+fn clippy_target_arch(target: &str) -> Option<&'static str> {
+    if target.starts_with("aarch64-") {
+        Some("aarch64")
+    } else if target.starts_with("loongarch64-") {
+        Some("loongarch64")
+    } else if target.starts_with("riscv64") {
+        Some("riscv64")
+    } else if target.starts_with("x86_64-") {
+        Some("x86_64")
+    } else {
+        None
+    }
+}
+
+fn feature_supported_on_clippy_target(
+    package: &Package,
+    feature: &str,
+    target: Option<&str>,
+) -> bool {
+    if package.name != AX_HAL_PACKAGE {
+        return true;
+    }
+    let Some(target_arches) = AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES.iter().find_map(
+        |(platform_feature, target_arches)| {
+            (*platform_feature == feature).then_some(*target_arches)
+        },
+    ) else {
+        return true;
+    };
+    let Some(target) = target else {
+        return false;
+    };
+    clippy_target_arch(target).is_some_and(|arch| target_arches.contains(&arch))
+}
+
 fn clippy_skip_reason(package: &Package) -> Option<&str> {
     UNSUPPORTED_CLIPPY_PACKAGES
         .iter()
@@ -640,6 +685,9 @@ fn expand_clippy_checks(
             });
 
             for feature in &features {
+                if !feature_supported_on_clippy_target(package, feature, target.as_deref()) {
+                    continue;
+                }
                 let axconfig_override = axconfig_overrides.get(feature).and_then(|overrides| {
                     clippy_axconfig_override(
                         package,
@@ -1688,6 +1736,66 @@ mod tests {
             checks[2].label(),
             "alpha (feature: b, target: riscv64gc-unknown-none-elf)"
         );
+    }
+
+    #[test]
+    fn ax_hal_platform_features_are_filtered_by_target_arch() {
+        let checks = expand(&[pkg(
+            "ax-hal",
+            "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
+            &[
+                ("irq", &[]),
+                ("loongarch64-qemu-virt", &[]),
+                ("x86-pc", &[]),
+            ],
+            Some(&["loongarch64-unknown-none", "x86_64-unknown-none"]),
+        )]);
+
+        let has_feature_on_target = |feature: &str, target: &str| {
+            checks.iter().any(|check| {
+                matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
+                    && check.target.as_deref() == Some(target)
+            })
+        };
+
+        assert!(has_feature_on_target(
+            "irq",
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(has_feature_on_target("irq", "x86_64-unknown-none"));
+        assert!(has_feature_on_target(
+            "loongarch64-qemu-virt",
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(!has_feature_on_target(
+            "loongarch64-qemu-virt",
+            "x86_64-unknown-none"
+        ));
+        assert!(has_feature_on_target("x86-pc", "x86_64-unknown-none"));
+        assert!(!has_feature_on_target(
+            "x86-pc",
+            "loongarch64-unknown-none-softfloat"
+        ));
+    }
+
+    #[test]
+    fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
+        let checks = expand(&[pkg(
+            "ax-hal",
+            "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
+            &[("irq", &[]), ("plat-dyn", &[]), ("x86-pc", &[])],
+            None,
+        )]);
+
+        assert!(checks.iter().any(|check| {
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "irq")
+        }));
+        assert!(!checks.iter().any(|check| {
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "plat-dyn")
+        }));
+        assert!(!checks.iter().any(|check| {
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "x86-pc")
+        }));
     }
 
     #[test]
