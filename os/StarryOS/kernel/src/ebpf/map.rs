@@ -43,12 +43,6 @@ impl BpfMap {
     }
 
     /// Lock and access the underlying `UnifiedMap`.
-    ///
-    /// `#[inline(never)]`: a loadable `kebpf.ko` reaches the map storage held
-    /// in *this* kernel's fd table through this accessor and relocates against
-    /// it by name via `.kallsyms`; keep it standalone (see the note in
-    /// `ebpf::transform`).
-    #[inline(never)]
     pub fn unified_map(&self) -> SpinNoPreemptGuard<'_, UnifiedMap> {
         self.unified_map.lock()
     }

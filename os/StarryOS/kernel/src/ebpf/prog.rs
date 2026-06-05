@@ -46,10 +46,6 @@ impl BpfProg {
 }
 
 impl Drop for BpfProg {
-    // `#[inline(never)]`: when a loadable `kebpf.ko` constructs a `BpfProg`, the
-    // resulting fd's drop glue calls this destructor by name through
-    // `.kallsyms`; keep it standalone (see `ebpf::transform`).
-    #[inline(never)]
     fn drop(&mut self) {
         // The preprocessor stashed `Arc<BpfMap>::into_raw` pointers in each
         // map-fd relocated operand so they outlive the load; reconstruct and

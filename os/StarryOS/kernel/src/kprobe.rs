@@ -21,6 +21,7 @@ use alloc::sync::Arc;
 
 use ax_kspin::RawSpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
     register_kprobe as kprobe_crate_register_kprobe,
@@ -58,10 +59,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             // instead — the same aliasing `set_writeable_for_address` uses to
             // write. The text page is already resident (the loader executes the
             // probed function before arming).
-            let Ok(task) = crate::task::get_task(pid as _) else {
-                warn!("kprobe copy_memory: target task {pid} gone");
-                return;
-            };
+            let task = crate::task::get_task(pid as _).expect("Failed to get task for uprobe");
             let aspace = task.as_thread().proc_data.aspace();
             let mm = aspace.lock();
             let pt = mm.page_table();
@@ -135,7 +133,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                     .protect(
                         aligned_addr,
                         aligned_length,
-                        original_flags | ax_runtime::hal::paging::MappingFlags::WRITE,
+                        original_flags | MappingFlags::WRITE,
                     )
                     .expect("kprobe: set_writeable: protect failed");
                 crate::mm::flush_tlb_range(aligned_addr, aligned_length);
@@ -163,9 +161,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .map_alloc(
                 vaddr,
                 PAGE_SIZE_4K,
-                ax_runtime::hal::paging::MappingFlags::READ
-                    | ax_runtime::hal::paging::MappingFlags::WRITE
-                    | ax_runtime::hal::paging::MappingFlags::EXECUTE,
+                MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
                 true,
             )
             .expect("kprobe: map_alloc for exec memory failed");
@@ -193,17 +189,11 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         let vaddr = mm
             .find_free_area(mm.base(), PAGE_SIZE_4K, range, PAGE_SIZE_4K)
             .expect("uprobe: no free user va for exec memory");
-        let backend = crate::mm::Backend::new_alloc(
-            vaddr,
-            ax_runtime::hal::paging::PageSize::Size4K,
-            "uprobe-ols",
-        );
+        let backend = crate::mm::Backend::new_alloc(vaddr, PageSize::Size4K, "uprobe-ols");
         mm.map(
             vaddr,
             PAGE_SIZE_4K,
-            ax_runtime::hal::paging::MappingFlags::READ
-                | ax_runtime::hal::paging::MappingFlags::EXECUTE
-                | ax_runtime::hal::paging::MappingFlags::USER,
+            MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
             true,
             backend,
         )

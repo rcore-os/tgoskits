@@ -25,17 +25,23 @@ pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
 }
 
-// `#[inline(never)]` keeps `handle_syscall` reachable as a real call target so
-// a kprobe planted at its symbol actually fires. It has a single call site
-// (`task::user`'s run loop), and in release builds LLVM otherwise inlines the
-// whole dispatcher there while still emitting the out-of-line symbol — the
-// `int3` lands on a copy that is never executed and the probe never triggers.
-// This mirrors the same fix applied to `sys_getpid`; it is what makes the
-// `profile` eBPF demo (kprobe syscall histogram) observe hits.
+// `#[inline(never)]` keeps `sysno` reachable as a real call target so a kprobe
+// planted at its symbol actually fires; its first-argument register also holds
+// the raw syscall id, letting a `profile`-style eBPF demo read the syscall
+// number directly off the probed register. In release builds LLVM would
+// otherwise inline it into `handle_syscall` and the planted `int3` would land
+// on a copy that never executes, so the probe would never trigger.
 #[inline(never)]
+pub fn sysno(id: usize) -> Option<Sysno> {
+    let Some(sysno) = Sysno::new(id) else {
+        warn!("Invalid syscall number: {}", id);
+        return None;
+    };
+    Some(sysno)
+}
+
 pub fn handle_syscall(uctx: &mut UserContext) {
-    let Some(sysno) = Sysno::new(uctx.sysno()) else {
-        warn!("Invalid syscall number: {}", uctx.sysno());
+    let Some(sysno) = sysno(uctx.sysno()) else {
         uctx.set_retval(-LinuxError::ENOSYS.code() as _);
         return;
     };

@@ -94,14 +94,7 @@ fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
 
 fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
     let mut meta = BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_ax_result()?;
-    // Mirror the loadable `kebpf.ko`'s prog-load path so these `kbpf-basic`
-    // monomorphizations (`BpfProgMeta: Debug`, `BpfProgVerifierInfo:
-    // From<&bpf_attr>`) are instantiated as standalone `.kallsyms` symbols the
-    // module can relocate against. (The module's relocations are resolved at
-    // load time, so they must exist even though the symbols are only referenced
-    // here for that purpose.)
     debug!("bpf prog load meta: {meta:#?}");
-    let _verifier_info = kbpf_basic::prog::BpfProgVerifierInfo::from(attr);
     let prog = load_prog(&mut meta).into_ax_result()?;
     // bpf prog fds are close-on-exec in Linux as well; see `handle_map_create`.
     let fd = add_file_like(Arc::new(prog), true)?;
