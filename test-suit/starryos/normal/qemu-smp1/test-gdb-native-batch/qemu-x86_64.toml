@@ -14,6 +14,8 @@ success_regex = ["GDB_NATIVE_BATCH_DONE"]
 fail_regex = [
     '(?i)\\bpanic(?:ked)?\\b',
     '(?m)FAIL',
+    '#GP',
+    'General protection',
     'Segmentation fault',
     'Out of memory',
     'gdb: not found',

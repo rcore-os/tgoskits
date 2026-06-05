@@ -570,7 +570,9 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
     let fp_data = ptrace_read_stopped_fp_x86_64(pid)?;
-    vm_write_slice(data as *mut u8, &fp_data)?;
+    let bytes =
+        unsafe { slice::from_raw_parts((&fp_data as *const ax_cpu::FxsaveArea).cast::<u8>(), 512) };
+    vm_write_slice(data as *mut u8, bytes)?;
     Ok(0)
 }
 
@@ -594,11 +596,11 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
     }
-    let mut fp_data: [u8; 512] = [0; 512];
+    let mut fp_data = MaybeUninit::<ax_cpu::FxsaveArea>::zeroed();
     let bytes =
         unsafe { slice::from_raw_parts_mut(fp_data.as_mut_ptr().cast::<MaybeUninit<u8>>(), 512) };
     starry_vm::vm_read_slice(data as *const u8, bytes)?;
-    ptrace_write_stopped_fp_x86_64(pid, fp_data)
+    ptrace_write_stopped_fp_x86_64(pid, unsafe { fp_data.assume_init() })
 }
 
 #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
@@ -953,7 +955,7 @@ fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> AxResult<isize>
 }
 
 #[cfg(target_arch = "x86_64")]
-fn ptrace_read_stopped_fp_x86_64(pid: usize) -> AxResult<[u8; 512]> {
+fn ptrace_read_stopped_fp_x86_64(pid: usize) -> AxResult<ax_cpu::FxsaveArea> {
     let tracee = ptrace_stopped_tracee(pid)?;
     tracee
         .ptrace_stop_fp_data()
@@ -961,7 +963,7 @@ fn ptrace_read_stopped_fp_x86_64(pid: usize) -> AxResult<[u8; 512]> {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn ptrace_write_stopped_fp_x86_64(pid: usize, data: [u8; 512]) -> AxResult<isize> {
+fn ptrace_write_stopped_fp_x86_64(pid: usize, data: ax_cpu::FxsaveArea) -> AxResult<isize> {
     let tracee = ptrace_stopped_tracee(pid)?;
     if !tracee.set_ptrace_stop_fp_data(data) {
         return Err(AxError::from(LinuxError::ESRCH));
@@ -979,7 +981,9 @@ fn ptrace_getregset_fpregset_x86_64(pid: usize, data: usize) -> AxResult<isize> 
     if iov.iov_len < 512 {
         return Err(AxError::InvalidInput);
     }
-    vm_write_slice(iov.iov_base, &fp_data)?;
+    let bytes =
+        unsafe { slice::from_raw_parts((&fp_data as *const ax_cpu::FxsaveArea).cast::<u8>(), 512) };
+    vm_write_slice(iov.iov_base, bytes)?;
     iov.iov_len = 512;
     (data as *mut IoVec).vm_write(iov)?;
     Ok(0)
@@ -994,11 +998,11 @@ fn ptrace_setregset_fpregset_x86_64(pid: usize, data: usize) -> AxResult<isize> 
     if iov.iov_len < 512 {
         return Err(AxError::InvalidInput);
     }
-    let mut fp_data: [u8; 512] = [0; 512];
+    let mut fp_data = MaybeUninit::<ax_cpu::FxsaveArea>::zeroed();
     let bytes =
         unsafe { slice::from_raw_parts_mut(fp_data.as_mut_ptr().cast::<MaybeUninit<u8>>(), 512) };
     starry_vm::vm_read_slice(iov.iov_base, bytes)?;
-    ptrace_write_stopped_fp_x86_64(pid, fp_data)
+    ptrace_write_stopped_fp_x86_64(pid, unsafe { fp_data.assume_init() })
 }
 
 fn ptrace_peekdata(pid: usize, addr: usize, data: usize) -> AxResult<isize> {

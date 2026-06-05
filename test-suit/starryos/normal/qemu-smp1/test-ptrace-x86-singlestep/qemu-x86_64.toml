@@ -10,5 +10,11 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-ptrace-x86-singlestep"
 success_regex = ["DONE: 1 pass, 0 fail"]
-fail_regex = ['(?i)\\bpanic(?:ked)?\\b', '(?m)FAIL']
+fail_regex = [
+    '(?i)\\bpanic(?:ked)?\\b',
+    '(?m)FAIL',
+    '#GP',
+    'General protection',
+    'Segmentation fault',
+]
 timeout = 120
