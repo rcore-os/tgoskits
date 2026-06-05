@@ -155,7 +155,7 @@ packages in a staging root during prebuild, injects runtime artifacts to the
 app overlay, then runs nginx smoke tests inside StarryOS.
 
 ```bash
-cargo xtask starry app run -t nginx --arch x86_64
+cargo xtask starry app qemu -t nginx --arch x86_64
 ```
 
 `apps/starry/nginx` maintains four directories: `smoke`, `phase`, `stress`, and

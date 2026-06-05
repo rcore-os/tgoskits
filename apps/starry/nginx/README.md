@@ -12,7 +12,7 @@ This app organizes nginx tests into four directories:
 Only smoke is connected:
 
 ```bash
-cargo xtask starry app run -t nginx --arch riscv64
+cargo xtask starry app qemu -t nginx --arch riscv64
 ```
 
 `qemu-*.toml` starts `/usr/bin/nginx-smoke-tests.sh` only.
@@ -34,23 +34,23 @@ Unified local CLI script:
 The app provides dedicated phase retest QEMU configs:
 
 ```bash
-cargo xtask starry app run -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1.toml
-cargo xtask starry app run -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1.toml
-cargo xtask starry app run -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase2.toml
-cargo xtask starry app run -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase2.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1.toml
+cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase2.toml
+cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase2.toml
 ```
 
 For lifecycle retest on 4 arches:
 
 ```bash
-cargo xtask starry app run -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1-2.toml
-cargo xtask starry app run -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1-2.toml
-cargo xtask starry app run -t nginx --arch aarch64 --qemu-config apps/starry/nginx/qemu-aarch64-phase1-2.toml
-cargo xtask starry app run -t nginx --arch loongarch64 --qemu-config apps/starry/nginx/qemu-loongarch64-phase1-2.toml
-cargo xtask starry app run -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1-3.toml
-cargo xtask starry app run -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1-3.toml
-cargo xtask starry app run -t nginx --arch aarch64 --qemu-config apps/starry/nginx/qemu-aarch64-phase1-3.toml
-cargo xtask starry app run -t nginx --arch loongarch64 --qemu-config apps/starry/nginx/qemu-loongarch64-phase1-3.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1-2.toml
+cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1-2.toml
+cargo xtask starry app qemu -t nginx --arch aarch64 --qemu-config apps/starry/nginx/qemu-aarch64-phase1-2.toml
+cargo xtask starry app qemu -t nginx --arch loongarch64 --qemu-config apps/starry/nginx/qemu-loongarch64-phase1-2.toml
+cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1-3.toml
+cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1-3.toml
+cargo xtask starry app qemu -t nginx --arch aarch64 --qemu-config apps/starry/nginx/qemu-aarch64-phase1-3.toml
+cargo xtask starry app qemu -t nginx --arch loongarch64 --qemu-config apps/starry/nginx/qemu-loongarch64-phase1-3.toml
 ```
 
 ## Build/Prepare Logic
