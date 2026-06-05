@@ -17,6 +17,7 @@ board-asus-nuc15crh = []
 
 [dependencies]
 bootloader-common = { workspace = true }
+httpboot-protocol = { path = "../../../ostool/httpboot-protocol", default-features = false }
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }
