@@ -224,6 +224,29 @@ pub fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
         .collect()
 }
 
+/// Detach every live tracee that still points at `tracer_pid`.
+///
+/// A ptrace relationship must not outlive the tracer. Otherwise a tracee can
+/// remain stuck in ptrace-stop with a dead tracer PID, or resume later with
+/// stale ptrace state still armed. Either outcome is unsafe during task-exit
+/// cleanup paths. Clearing the stop state wakes any tracee blocked in
+/// `ptrace_stop_current()` so it can continue without consulting the dead
+/// tracer again.
+pub fn detach_live_tracees_of(tracer_pid: Pid) {
+    for tracee in processes() {
+        if tracee.ptrace_tracer_pid() != Some(tracer_pid) {
+            continue;
+        }
+        tracee.clear_ptrace_stop();
+        tracee.clear_ptrace_traceme();
+        tracee.clear_ptrace_attached();
+        tracee.clear_ptrace_tracer_pid();
+        tracee.set_ptrace_singlestep(false);
+        tracee.set_ptrace_syscall_trace(false);
+        tracee.set_ptrace_options(0);
+    }
+}
+
 /// Finds the process with the given PID.
 ///
 /// A zombie process may no longer have live [`ProcessData`] after its last
@@ -542,6 +565,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // waiting on outstanding requests. Tear them down before releasing the
         // process address-space slot.
         crate::syscall::cleanup_aio_contexts_for_pid(process.pid());
+
+        // Drop ptrace relationships owned by this process before publishing the
+        // final zombie state. Tracees blocked in ptrace-stop must not retain a
+        // dead tracer PID or stale stop context once the tracer is gone.
+        detach_live_tracees_of(process.pid());
 
         // Close all file descriptors before marking the process as exited.
         // This ensures pipe write ends and other resources are properly released,
