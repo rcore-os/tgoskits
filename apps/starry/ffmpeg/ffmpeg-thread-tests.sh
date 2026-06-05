@@ -44,6 +44,10 @@ ensure_test_media() {
 
 ensure_test_media || fail "cannot generate test media"
 
+# ---- Verify required test media (hard fail if missing) ----
+[ -f "$TEST_MEDIA_DIR/test_audio.wav" ] || fail "required test media test_audio.wav missing"
+[ -f "$TEST_MEDIA_DIR/test_av.mp4" ]   || fail "required test media test_av.mp4 missing"
+
 # ---- Stage 1: Single-thread baseline (for comparison) ----
 echo "FFMPEG_THREAD_STAGE single-thread"
 ffmpeg -y -i "$TEST_MEDIA_DIR/test_160x120.mp4" \
@@ -96,31 +100,27 @@ ffmpeg -y -threads 2 -i "$TEST_MEDIA_DIR/test_160x120.mp4" \
 
 # ---- Stage 7: Audio encoding with threads ----
 echo "FFMPEG_THREAD_STAGE audio-threads"
-if [ -f "$TEST_MEDIA_DIR/test_audio.wav" ]; then
-    ffmpeg -y -i "$TEST_MEDIA_DIR/test_audio.wav" \
-        -threads 2 -c:a libmp3lame -b:a 128k \
-        /tmp/ffmpeg-thread-workdir/audio_2threads.mp3 2>/dev/null \
-        || fail "threaded audio encode failed"
-    [ -s /tmp/ffmpeg-thread-workdir/audio_2threads.mp3 ] || fail "threaded audio output is empty"
-fi
+ffmpeg -y -i "$TEST_MEDIA_DIR/test_audio.wav" \
+    -threads 2 -c:a libmp3lame -b:a 128k \
+    /tmp/ffmpeg-thread-workdir/audio_2threads.mp3 2>/dev/null \
+    || fail "threaded audio encode failed"
+[ -s /tmp/ffmpeg-thread-workdir/audio_2threads.mp3 ] || fail "threaded audio output is empty"
 
 # ---- Stage 8: A/V sync with multiple threads ----
 echo "FFMPEG_THREAD_STAGE av-sync-threads"
-if [ -f "$TEST_MEDIA_DIR/test_av.mp4" ]; then
-    ffmpeg -y -threads 4 -i "$TEST_MEDIA_DIR/test_av.mp4" \
-        -threads 4 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-        -c:a aac -b:a 64k \
-        /tmp/ffmpeg-thread-workdir/av_sync.mp4 2>/dev/null \
-        || fail "A/V sync with threads failed"
-    [ -s /tmp/ffmpeg-thread-workdir/av_sync.mp4 ] || fail "A/V sync output is empty"
-    # Verify both streams present
-    ffprobe -v quiet -show_entries stream=codec_type \
-        /tmp/ffmpeg-thread-workdir/av_sync.mp4 2>&1 | grep -q "video" \
-        || fail "video stream missing after threaded A/V encode"
-    ffprobe -v quiet -show_entries stream=codec_type \
-        /tmp/ffmpeg-thread-workdir/av_sync.mp4 2>&1 | grep -q "audio" \
-        || fail "audio stream missing after threaded A/V encode"
-fi
+ffmpeg -y -threads 4 -i "$TEST_MEDIA_DIR/test_av.mp4" \
+    -threads 4 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+    -c:a aac -b:a 64k \
+    /tmp/ffmpeg-thread-workdir/av_sync.mp4 2>/dev/null \
+    || fail "A/V sync with threads failed"
+[ -s /tmp/ffmpeg-thread-workdir/av_sync.mp4 ] || fail "A/V sync output is empty"
+# Verify both streams present
+ffprobe -v quiet -show_entries stream=codec_type \
+    /tmp/ffmpeg-thread-workdir/av_sync.mp4 2>&1 | grep -q "video" \
+    || fail "video stream missing after threaded A/V encode"
+ffprobe -v quiet -show_entries stream=codec_type \
+    /tmp/ffmpeg-thread-workdir/av_sync.mp4 2>&1 | grep -q "audio" \
+    || fail "audio stream missing after threaded A/V encode"
 
 # ---- Stage 9: Multi-threaded filtering (scale + crop chain) ----
 echo "FFMPEG_THREAD_STAGE threaded-filter"
@@ -157,13 +157,11 @@ ffmpeg -y -threads 4 -i "$TEST_MEDIA_DIR/test_160x120.mp4" \
 
 # ---- Stage 12: Threaded audio resampling + encoding ----
 echo "FFMPEG_THREAD_STAGE threaded-audio-resample"
-if [ -f "$TEST_MEDIA_DIR/test_audio.wav" ]; then
-    ffmpeg -y -i "$TEST_MEDIA_DIR/test_audio.wav" \
-        -threads 2 -ar 48000 -ac 2 -c:a libmp3lame -b:a 192k \
-        /tmp/ffmpeg-thread-workdir/audio_resampled.mp3 2>/dev/null \
-        || fail "threaded audio resample+encode failed"
-    [ -s /tmp/ffmpeg-thread-workdir/audio_resampled.mp3 ] || fail "threaded audio output is empty"
-fi
+ffmpeg -y -i "$TEST_MEDIA_DIR/test_audio.wav" \
+    -threads 2 -ar 48000 -ac 2 -c:a libmp3lame -b:a 192k \
+    /tmp/ffmpeg-thread-workdir/audio_resampled.mp3 2>/dev/null \
+    || fail "threaded audio resample+encode failed"
+[ -s /tmp/ffmpeg-thread-workdir/audio_resampled.mp3 ] || fail "threaded audio output is empty"
 
 test_done=1
 trap - EXIT

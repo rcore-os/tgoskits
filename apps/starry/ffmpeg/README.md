@@ -68,9 +68,10 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - -bsfs 位流过滤器列表
 - -buildconf 编译配置
 
-### 基础测试 (ffmpeg-basic-tests.sh)
+### 基础测试 (ffmpeg-basic-tests.sh) — 24 个阶段
+- 合成测试数据生成（无预置媒体时的回退）
 - ffprobe 媒体信息探测
-- 格式识别（MP4, WAV, MKV, AVI）
+- 格式识别（MP4, WAV）
 - 流信息提取（视频流、音频流）
 - MP4 重封装（MP4 -> MP4）
 - MP4 -> MKV 容器转换
@@ -83,8 +84,17 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - 元数据提取（JSON格式）
 - 时长裁剪
 - 文件拼接（concat demuxer）
+- 音频重采样（采样率转换）
+- 音频声道转换（单声道 -> 立体声）
+- 像素格式转换（yuv420p -> rgb24）
+- 图像序列输出（image2）
+- GIF 生成
+- 错误处理（损坏输入）
+- 多流映射（分离视频/音频流）
+- 复杂滤镜链（scale + eq）
+- 流复制 vs 转码一致性验证
 
-### 多线程测试 (ffmpeg-thread-tests.sh)
+### 多线程测试 (ffmpeg-thread-tests.sh) — 12 个阶段
 - 单线程基线编码
 - 双线程编码
 - 四线程编码
@@ -94,14 +104,16 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - 多线程音频编码
 - A/V同步 + 多线程
 - 多线程滤镜链（scale + crop）
+- 并发流水线（两个并行 ffmpeg 进程）
+- 多线程解码为原始帧
+- 多线程音频重采样 + 编码
 
-### 编解码器测试 (ffmpeg-codec-tests.sh)
+### 编解码器测试 (ffmpeg-codec-tests.sh) — 27 个阶段
 - H.264 (libx264) 编码/解码
 - MPEG-4 编码/解码
 - VP8 (libvpx) 编码/解码
 - VP9 (libvpx-vp9) 编码
 - MJPEG 编码/解码
-- H.265 (libx265) 编码/解码
 - Raw Video 编码
 - MP3 (libmp3lame) 编码/解码
 - AAC 编码/解码
@@ -112,6 +124,7 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - AVI 容器重封装
 - WebM 容器编码/重封装
 - 跨容器转码（MP4 -> WebM -> MKV）
+- H.265 (libx265) 编码/解码
 - 音频采样格式转换（s16 -> f32）
 - 音频码率阶梯（64/128/192/256k）
 - 音视频合流（video + audio mux）
@@ -157,6 +170,21 @@ apps/starry/ffmpeg/
 - ffmpeg（主程序）
 - ffmpeg-libs（运行时库）
 - python3（网络测试 HTTP 服务器）
+
+## 测试媒体
+
+`prebuild.sh` 会在构建时通过宿主机 ffmpeg 生成以下测试媒体文件，所有文件均为必需：
+
+| 文件 | 格式 | 用途 |
+|------|------|------|
+| `test_160x120.mp4` | H.264 MP4 | 基础、编解码、网络测试 |
+| `test_audio.mp3` | MP3 | 编解码、网络测试 |
+| `test_160x120.mkv` | H.264 MKV | 编解码测试 |
+| `test_160x120.avi` | MPEG-4 AVI | 编解码测试 |
+| `test_av.mp4` | H.264+AAC MP4 | 基础、多线程测试 |
+| `test_audio.wav` | PCM WAV | 基础、多线程测试 |
+
+如果任一媒体文件缺失，对应测试会立即 **FAIL**（而非静默 SKIP）。
 
 ## 排查建议
 

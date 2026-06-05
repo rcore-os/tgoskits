@@ -178,17 +178,19 @@ generate_test_media() {
         "$test_media_dir/test_160x120.avi" 2>/dev/null \
         || { echo "error: failed to generate test_160x120.avi" >&2; exit 1; }
 
-    # Optional: A/V muxed (used by basic tests, has fallback)
+    # Required: A/V muxed (used by basic + thread tests)
     ffmpeg -y -f lavfi -i "color=c=blue:s=160x120:d=2" \
         -f lavfi -i "sine=frequency=440:duration=2" \
         -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
         -c:a aac -b:a 64k \
-        "$test_media_dir/test_av.mp4" 2>/dev/null || true
+        "$test_media_dir/test_av.mp4" 2>/dev/null \
+        || { echo "error: failed to generate test_av.mp4" >&2; exit 1; }
 
-    # Optional: WAV audio (used by basic tests, has fallback)
+    # Required: WAV audio (used by basic + thread tests)
     ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
         -c:a pcm_s16le \
-        "$test_media_dir/test_audio.wav" 2>/dev/null || true
+        "$test_media_dir/test_audio.wav" 2>/dev/null \
+        || { echo "error: failed to generate test_audio.wav" >&2; exit 1; }
 
     echo "Generated test media files in $test_media_dir"
 }
