@@ -1,0 +1,42 @@
+name: CI Dedupe
+
+on:
+  pull_request_target:
+    branches:
+      - dev
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-dedupe-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  cancel_duplicate_push:
+    name: Cancel duplicate push CI
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted scripts
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: |
+            scripts/ci/github-actions-runs.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Cancel matching push CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: scripts/ci/github-actions-runs.sh cancel-duplicate-push-for-pr

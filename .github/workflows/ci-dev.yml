@@ -1,0 +1,30 @@
+name: CI Dev
+
+on:
+  push:
+    branches:
+      - dev
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "docs/**"
+      - "**/docs/**"
+      - "**/doc/**"
+
+concurrency:
+  group: ci-dev-push
+  queue: max
+
+jobs:
+  ci:
+    name: Run CI
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      container_target: both
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
