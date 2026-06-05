@@ -2,22 +2,26 @@
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-name = "bootloader-http"
+name = "axloader"
 publish = false
 repository.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "bootloader-http"
+name = "axloader"
 path = "src/main.rs"
+required-features = ["board-asus-nuc15crh"]
 
 [features]
 default = []
 board-asus-nuc15crh = []
 
 [dependencies]
-bootloader-common = { workspace = true }
 httpboot-protocol = { git = "https://github.com/Josen-B/ostool.git", branch = "httpboot", default-features = false }
+
+[target.'cfg(any(windows, unix))'.dependencies]
+anyhow = { workspace = true }
+object = "0.38"
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }

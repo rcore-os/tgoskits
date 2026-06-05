@@ -4,9 +4,7 @@
 extern crate alloc;
 
 #[cfg(not(all(target_os = "uefi", feature = "board-asus-nuc15crh")))]
-compile_error!(
-    "bootloader-http currently requires a UEFI target and --features board-asus-nuc15crh"
-);
+compile_error!("axloader currently requires a UEFI target and --features board-asus-nuc15crh");
 
 #[cfg(all(target_os = "uefi", feature = "board-asus-nuc15crh"))]
 mod boards;

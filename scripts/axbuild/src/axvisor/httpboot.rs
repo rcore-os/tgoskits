@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use bootloader_common::{
+use axloader::{
     ElfImageReport, hex, inspect_elf, known_target, validate_manifest_address,
     write_flat_binary_from_elf,
 };

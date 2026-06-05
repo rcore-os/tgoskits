@@ -36,7 +36,7 @@ serde_json = { version = "1" }
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
 tempfile = "3"
-bootloader-common = { workspace = true }
+axloader = { workspace = true }
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
 toml.workspace = true
 tracing = "0.1"
