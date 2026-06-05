@@ -22,7 +22,7 @@ crate-type = ["rlib", "staticlib"]
 default = ["alloc", "tls", "fd"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-std-compat = ["ax-runtime/std-compat"]
+std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
 smp = ["ax-feat/smp", "ax-kspin/smp", "ax-posix-api/smp"]

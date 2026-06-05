@@ -11,7 +11,10 @@ use rlsf::Tlsf;
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
 /// The global allocator instance for TLSF mode.
-#[cfg_attr(not(test), global_allocator)]
+#[cfg_attr(
+    all(any(target_os = "none", feature = "global-allocator"), not(test)),
+    global_allocator
+)]
 static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();
 
 const PAGE_SIZE: usize = 0x1000;

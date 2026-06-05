@@ -63,6 +63,7 @@ hv = [
 axvisor-linker = []
 
 # Custom or default platforms
+host-test = []
 myplat = []
 plat-dyn = ["axplat-dyn"]
 x86-pc = ["dep:ax-plat-x86-pc"]

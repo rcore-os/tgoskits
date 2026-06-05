@@ -56,4 +56,5 @@ features = [
 ]
 
 [dev-dependencies]
+ax-hal = { workspace = true, features = ["host-test"] }
 ax-kspin = { workspace = true, features = ["host-test"] }

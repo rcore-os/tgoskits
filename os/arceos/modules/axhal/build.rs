@@ -56,6 +56,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed={}", feature_env("host-test"));
     println!("cargo:rerun-if-env-changed={}", feature_env("myplat"));
     println!("cargo:rerun-if-env-changed={}", feature_env("defplat"));
     for platform in PLATFORM_FEATURES {
