@@ -94,12 +94,10 @@ fn main() -> anyhow::Result<()> {
     let hits: HashMap<_, u32, u64> =
         HashMap::try_from(ebpf.map("UPROBE_HITS").expect("UPROBE_HITS map missing"))?;
     let mut max_count: u64 = 0;
-    for entry in hits.iter() {
-        if let Ok((key, value)) = entry {
-            println!("UPROBE: hits for arg={} -> {}", key, value);
-            if key == PROBE_ARG {
-                max_count = value;
-            }
+    for (key, value) in hits.iter().flatten() {
+        println!("UPROBE: hits for arg={} -> {}", key, value);
+        if key == PROBE_ARG {
+            max_count = value;
         }
     }
 

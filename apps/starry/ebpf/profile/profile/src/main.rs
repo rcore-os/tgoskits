@@ -8,10 +8,10 @@ use aya::{maps::HashMap, programs::KProbe};
 fn resolve_handle_syscall() -> anyhow::Result<String> {
     let table = fs::read_to_string("/proc/kallsyms")?;
     for line in table.lines() {
-        if let Some(name) = line.split_whitespace().nth(2) {
-            if name.contains("handle_syscall") {
-                return Ok(name.to_string());
-            }
+        if let Some(name) = line.split_whitespace().nth(2)
+            && name.contains("handle_syscall")
+        {
+            return Ok(name.to_string());
         }
     }
     anyhow::bail!("handle_syscall not found in /proc/kallsyms")
@@ -80,11 +80,9 @@ fn dump_histogram(ebpf: &aya::Ebpf) -> anyhow::Result<()> {
 
     let mut rows: Vec<(u32, u64)> = Vec::new();
     let mut total: u64 = 0;
-    for item in hist.iter() {
-        if let Ok((sysno, count)) = item {
-            total += count;
-            rows.push((sysno, count));
-        }
+    for (sysno, count) in hist.iter().flatten() {
+        total += count;
+        rows.push((sysno, count));
     }
     rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 

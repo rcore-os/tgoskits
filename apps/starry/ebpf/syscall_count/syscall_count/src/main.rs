@@ -11,10 +11,10 @@ fn resolve_handle_syscall() -> anyhow::Result<String> {
     let table = fs::read_to_string("/proc/kallsyms")?;
     for line in table.lines() {
         // Format: "<addr> <type> <name>".
-        if let Some(name) = line.split_whitespace().nth(2) {
-            if name.contains("handle_syscall") {
-                return Ok(name.to_string());
-            }
+        if let Some(name) = line.split_whitespace().nth(2)
+            && name.contains("handle_syscall")
+        {
+            return Ok(name.to_string());
         }
     }
     anyhow::bail!("handle_syscall not found in /proc/kallsyms")
@@ -63,12 +63,10 @@ fn main() -> anyhow::Result<()> {
         HashMap::try_from(ebpf.map("SYSCALL_LIST").expect("SYSCALL_LIST missing"))?;
     let mut getpid_count: u32 = 0;
     let mut distinct = 0u32;
-    for entry in map.iter() {
-        if let Ok((sysno, count)) = entry {
-            distinct += 1;
-            if sysno == sys_getpid {
-                getpid_count = count;
-            }
+    for (sysno, count) in map.iter().flatten() {
+        distinct += 1;
+        if sysno == sys_getpid {
+            getpid_count = count;
         }
     }
     println!(

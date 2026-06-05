@@ -9,10 +9,10 @@ use log::{debug, warn};
 fn resolve_sym(needle: &str) -> anyhow::Result<String> {
     let table = fs::read_to_string("/proc/kallsyms")?;
     for line in table.lines() {
-        if let Some(name) = line.split_whitespace().nth(2) {
-            if name.contains(needle) {
-                return Ok(name.to_string());
-            }
+        if let Some(name) = line.split_whitespace().nth(2)
+            && name.contains(needle)
+        {
+            return Ok(name.to_string());
         }
     }
     anyhow::bail!("{needle} not found in /proc/kallsyms")
