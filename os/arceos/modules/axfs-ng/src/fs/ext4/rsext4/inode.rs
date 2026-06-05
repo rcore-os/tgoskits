@@ -277,9 +277,9 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            // Use inode-number-based write to avoid path re-resolution.
-            // Path-based write_file() fails with NotFound after rename/unlink,
-            // which causes dirty page loss when jcode atomically replaces files.
+            // Use inode-number-based write so open-unlinked regular files
+            // remain writable after their directory entry has been removed.
+            // Path-based write_file() fails with NotFound after unlink.
             rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()?;
@@ -303,9 +303,9 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            // A live file node must remain writable after its directory entry
-            // is unlinked. Nix lock files grow from size 0 through an already
-            // opened fd after unlink, so set_len cannot re-resolve by path.
+            // An open-unlinked regular file stays alive by inode number, not by
+            // a directory entry.  set_len must operate on the inode directly
+            // because path re-resolution would fail after unlink.
             rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()
@@ -603,15 +603,31 @@ impl DirNodeOps for Inode {
                     return Err(VfsError::DirectoryNotEmpty);
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
-            } else if name.ends_with(".lock") {
-                // Nix unlinks lock files while keeping the fd and later writes
-                // a byte through that open description. rsext4 deletes the
-                // inode immediately on unlink, so preserve lock inodes under a
-                // hidden name until the image is discarded.
-                let orphan = join_child_path(&dir_path, &format!(".starry-orphan-lock-{}", _ino));
-                rsext4::rename(dev, fs, &path, &orphan).map_err(into_vfs_err)?;
             } else {
+                // Linux-compatible unlink(2): remove the directory entry for
+                // every regular file regardless of its name. When this is the
+                // last link and the inode is still open, the inode must stay
+                // alive until the final close.
+                //
+                // rsext4::unlink decrements i_links_count and frees the inode
+                // when the count reaches zero.  Temporarily bump the link count
+                // so the inode survives and open file descriptors can still
+                // reach it by inode number.  After the directory entry is gone,
+                // set the count back to zero so fstat reports st_nlink == 0.
+                let was_last_link = inode.i_links_count == 1;
+                if was_last_link {
+                    fs.modify_inode(dev, _ino, |on_disk| {
+                        on_disk.i_links_count = 2;
+                    })
+                    .map_err(into_vfs_err)?;
+                }
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
+                if was_last_link {
+                    fs.modify_inode(dev, _ino, |on_disk| {
+                        on_disk.i_links_count = 0;
+                    })
+                    .map_err(into_vfs_err)?;
+                }
             }
         }
         self.fs.sync_to_disk()
