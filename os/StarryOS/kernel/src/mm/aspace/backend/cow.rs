@@ -132,8 +132,11 @@ impl CowBackend {
             let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
             assert!(start < self.size as _);
 
-            let file_read_offset =
-                file_start + vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
+            let file_read_offset = if vaddr >= *file_vaddr_base {
+                *file_start + (vaddr.as_usize() - file_vaddr_base.as_usize()) as u64
+            } else {
+                file_start.saturating_sub((file_vaddr_base.as_usize() - vaddr.as_usize()) as u64)
+            };
             let max_read = file_end
                 .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
                 .min((buf.len() - start) as u64) as usize;
@@ -245,11 +248,12 @@ impl CowBackend {
             let path = loc.absolute_path().map(|pb| pb.to_string())?;
             let inode = loc.inode();
             let dev = loc.metadata()?.device;
-            let offset = file_start
-                + self
-                    .start
-                    .as_usize()
-                    .saturating_sub(file_vaddr_base.as_usize()) as u64;
+            let offset = if self.start >= file_vaddr_base {
+                file_start + (self.start.as_usize() - file_vaddr_base.as_usize()) as u64
+            } else {
+                file_start
+                    .saturating_sub((file_vaddr_base.as_usize() - self.start.as_usize()) as u64)
+            };
             let offset = align_down_4k(offset as usize) as u64;
             return Ok(BackendFileInfo {
                 path,
