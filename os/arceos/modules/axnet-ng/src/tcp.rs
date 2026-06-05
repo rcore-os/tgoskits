@@ -24,7 +24,7 @@ use crate::{
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
-    options::{Configurable, GetSocketOption, SetSocketOption},
+    options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
     poll_interfaces,
     state::*,
 };
@@ -43,6 +43,10 @@ const TCP_USER_TIMEOUT_DEFAULT_MS: u32 = 0;
 const TCP_KEEPIDLE_MAX_SECS: u32 = 32767;
 const TCP_KEEPINTVL_MAX_SECS: u32 = 32767;
 const TCP_KEEPCNT_MAX: u32 = 127;
+const TCP_INFO_DEFAULT_MSS: u32 = 1460;
+const TCP_INFO_DEFAULT_PMTU: u32 = 1500;
+const TCP_INFO_INITIAL_RTO_MICROS: u32 = 1_000_000;
+const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 
 /// A TCP socket that provides POSIX-like APIs.
 pub struct TcpSocket {
@@ -139,6 +143,36 @@ impl TcpSocket {
 
     fn keep_alive_interval(&self) -> Duration {
         Duration::from_secs(self.keep_idle_secs.load(Ordering::Relaxed) as u64)
+    }
+
+    fn tcp_info_snapshot(&self) -> TcpInfo {
+        self.with_smol_socket(|socket| {
+            let send_queue = saturating_u32(socket.send_queue());
+            let snd_mss = TCP_INFO_DEFAULT_MSS;
+
+            let mut options = TcpInfoOptions::empty();
+            if socket.timestamp_enabled() {
+                options |= TcpInfoOptions::TIMESTAMPS;
+            }
+
+            TcpInfo {
+                state: tcp_state_info(socket.state()),
+                options,
+                rto_micros: socket
+                    .timeout()
+                    .map(duration_micros_u32)
+                    .unwrap_or(TCP_INFO_INITIAL_RTO_MICROS),
+                ato_micros: socket.ack_delay().map(duration_micros_u32).unwrap_or(0),
+                snd_mss,
+                rcv_mss: snd_mss,
+                notsent_bytes: send_queue,
+                pmtu: TCP_INFO_DEFAULT_PMTU,
+                advmss: snd_mss,
+                reordering: TCP_INFO_DEFAULT_REORDERING,
+                snd_wnd: 0,
+                ..Default::default()
+            }
+        })
     }
 
     fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
@@ -266,8 +300,8 @@ impl Configurable for TcpSocket {
             O::ReceiveBuffer(size) => {
                 **size = TCP_RX_BUF_LEN;
             }
-            O::TcpInfo(_) => {
-                // TODO(mivik): implement TCP_INFO
+            O::TcpInfo(info) => {
+                **info = self.tcp_info_snapshot();
             }
             _ => return Ok(false),
         }
@@ -629,6 +663,30 @@ impl Drop for TcpSocket {
     }
 }
 
+fn saturating_u32(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
+}
+
+fn duration_micros_u32(value: Duration) -> u32 {
+    value.total_micros().min(u32::MAX as u64) as u32
+}
+
+fn tcp_state_info(state: smol::State) -> TcpState {
+    match state {
+        smol::State::Closed => TcpState::Closed,
+        smol::State::Listen => TcpState::Listen,
+        smol::State::SynSent => TcpState::SynSent,
+        smol::State::SynReceived => TcpState::SynReceived,
+        smol::State::Established => TcpState::Established,
+        smol::State::FinWait1 => TcpState::FinWait1,
+        smol::State::FinWait2 => TcpState::FinWait2,
+        smol::State::CloseWait => TcpState::CloseWait,
+        smol::State::Closing => TcpState::Closing,
+        smol::State::LastAck => TcpState::LastAck,
+        smol::State::TimeWait => TcpState::TimeWait,
+    }
+}
+
 const fn empty_endpoint() -> IpListenEndpoint {
     IpListenEndpoint {
         addr: None,
@@ -800,12 +858,35 @@ mod tests {
 
     use super::*;
     use crate::{
-        options::{Configurable, SetSocketOption},
+        options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
         test_support::{
             LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network,
             network_test_guard,
         },
     };
+
+    #[test]
+    fn tcp_info_reports_default_socket_metrics() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = TcpSocket::new();
+        let mut info = TcpInfo::default();
+
+        socket
+            .get_option(GetSocketOption::TcpInfo(&mut info))
+            .unwrap();
+
+        assert_eq!(info.state, TcpState::Closed);
+        assert_eq!(info.snd_mss, TCP_INFO_DEFAULT_MSS);
+        assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
+        assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
+        assert_eq!(info.notsent_bytes, 0);
+        assert_eq!(info.snd_wnd, 0);
+        assert_eq!(info.snd_cwnd, 0);
+        assert_eq!(info.rcv_space, 0);
+        assert_eq!(info.rcv_wnd, 0);
+    }
 
     #[test]
     fn connect_uses_peer_route_for_device_mask() {
