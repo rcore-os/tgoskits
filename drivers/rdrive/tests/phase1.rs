@@ -54,7 +54,7 @@ fn fdt_phandle_lookup_is_none_without_fdt_source() {
 
 #[test]
 fn acpi_ioapic_routes_map_gsi_to_stable_vector() {
-    use rdrive::probe::acpi::{AcpiIoApic, AcpiRouting};
+    use rdrive::probe::acpi::{AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting};
 
     let mut routing = AcpiRouting::new();
     routing.add_io_apic(AcpiIoApic {
@@ -68,8 +68,11 @@ fn acpi_ioapic_routes_map_gsi_to_stable_vector() {
         .resolve_gsi(16)
         .expect("gsi 16 should be handled by the IOAPIC");
     assert_eq!(irq.gsi, 16);
-    assert_eq!(irq.io_apic_id, 0);
-    assert_eq!(irq.io_apic_input, 16);
+    assert_eq!(irq.controller_id, 0);
+    assert_eq!(irq.controller_address, 0xfec0_0000);
+    assert_eq!(irq.controller_input, 16);
     assert_eq!(irq.vector, 0x40);
+    assert_eq!(irq.trigger, AcpiIrqTrigger::Level);
+    assert_eq!(irq.polarity, AcpiIrqPolarity::ActiveLow);
     assert!(routing.resolve_gsi(24).is_none());
 }
