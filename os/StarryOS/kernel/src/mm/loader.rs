@@ -107,12 +107,33 @@ fn map_elf<'a>(
     let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
     let cache = entry.borrow_cache();
 
-    for ph in elf_parser
+    // PT_TLS init image may extend beyond the last PT_LOAD's file range.
+    // Compute the maximum file offset needed so the COW backend can serve
+    // TLS init-image page faults for the dynamic linker.
+    let tls_max_offset: u64 = elf_parser
+        .headers()
+        .ph
+        .iter()
+        .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Tls))
+        .map(|ph| {
+            info!(
+                "PT_TLS: vaddr={:#x} memsz={:#x} filesz={:#x} offset={:#x}",
+                ph.virtual_addr, ph.mem_size, ph.file_size, ph.offset
+            );
+            ph.offset + ph.file_size
+        })
+        .max()
+        .unwrap_or(0);
+
+    let load_segments: Vec<_> = elf_parser
         .headers()
         .ph
         .iter()
         .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
-    {
+        .collect();
+    let last_load_idx = load_segments.len().wrapping_sub(1);
+
+    for (i, ph) in load_segments.iter().enumerate() {
         let vaddr = ph.virtual_addr as usize + elf_parser.base();
         debug!(
             "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {}",
@@ -129,12 +150,17 @@ fn map_elf<'a>(
 
         // Note that `offset` might not be aligned to 4K here, and it's
         // backend's responsibility to properly handle it.
+        let file_end = if i == last_load_idx && tls_max_offset > ph.offset + ph.file_size {
+            tls_max_offset
+        } else {
+            ph.offset + ph.file_size
+        };
         let backend = Backend::new_cow(
             seg_start,
             PageSize::Size4K,
             FileBackend::Cached(cache.clone()),
             ph.offset,
-            Some(ph.offset + ph.file_size),
+            Some(file_end),
             false,
         );
         uspace.map(
