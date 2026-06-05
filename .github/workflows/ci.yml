@@ -38,7 +38,7 @@ env:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/dev') }}
+  queue: max
 
 jobs:
   detect_changes:
