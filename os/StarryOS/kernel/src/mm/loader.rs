@@ -608,6 +608,19 @@ impl ElfLoader {
         // requires to import). See `hwcap_value()` for the per-arch policy.
         auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
 
+        // Terminate the auxiliary vector with AT_NULL. The musl dynamic linker
+        // (ld-musl-*.so) scans auxv entries until it hits type == AT_NULL (0).
+        // Without this terminator the ldso reads past the auxv array into the
+        // argument/environment string area on the stack, interpreting arbitrary
+        // bytes as auxv entries. Whether that causes an observable crash depends
+        // on the exact stack layout: a layout where the garbage data happens to
+        // alias AT_PHDR or AT_ENTRY can redirect the ldso to wrong program
+        // headers or a wrong entry point, producing pc=0 SIGSEGV. The second
+        // exec in init.sh ("exec /bin/sh -l -i") has a different stack shape
+        // (inherited env vars) than the first exec, which is why the first
+        // boot stage can succeed while the interactive shell crashes.
+        auxv.push(AuxEntry::new(AuxType::NULL, 0));
+
         Ok(Ok((entry, auxv)))
     }
 }
