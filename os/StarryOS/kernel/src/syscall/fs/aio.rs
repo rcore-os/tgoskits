@@ -1007,7 +1007,7 @@ fn aio_worker(context: Arc<AioContext>) {
 
 // Bound worker fan-out by both ring capacity and a fixed kernel limit.
 fn max_worker_count(context: &AioContext) -> usize {
-    context.capacity().min(AIO_MAX_WORKERS).max(1)
+    context.capacity().clamp(1, AIO_MAX_WORKERS)
 }
 
 // Queue a request and start a worker if this context can use another one.

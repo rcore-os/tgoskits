@@ -379,9 +379,18 @@ int main(void)
               "PART10: epoll_wait maxevents=0 返回 EINVAL");
 
         errno = 0;
+#ifdef SYS_epoll_wait
         CHECK(syscall(SYS_epoll_wait, epfd, NULL, 1, 0) == -1 &&
               errno == EFAULT,
               "PART10: epoll_wait NULL events 返回 EFAULT");
+#elif defined(SYS_epoll_pwait)
+        CHECK(syscall(SYS_epoll_pwait, epfd, NULL, 1, 0, NULL, 0) == -1 &&
+              errno == EFAULT,
+              "PART10: epoll_wait NULL events 返回 EFAULT");
+#else
+        printf("  SKIP | %s:%d | PART10: raw epoll wait syscall is not defined\n",
+               __FILE__, __LINE__);
+#endif
 
         close(epfd);
     }

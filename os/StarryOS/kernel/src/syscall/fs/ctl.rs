@@ -17,7 +17,7 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TCGETS, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
@@ -57,7 +57,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             if *err == AxError::NotATty {
                 // Applications commonly probe non-terminal/blobk fds with
                 // these ioctls; suppress noise.
-                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
+                if matches!(
+                    cmd,
+                    TIOCGWINSZ | TCGETS | BLKGETSIZE64 | BLKRAGET | BLKSSZGET
+                ) {
                     return;
                 }
                 warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
