@@ -52,6 +52,9 @@ on:
         required: false
         type: number
         default: 360
+    secrets:
+      CLAW_API_KEY:
+        required: false
 jobs:
   run_host:
     if: >-
@@ -81,6 +84,7 @@ jobs:
       - name: Run command
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
         run: ${{ inputs.command }}
 
   run_container:
@@ -152,4 +156,5 @@ jobs:
       - name: Run command
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
         run: ${{ inputs.command }}

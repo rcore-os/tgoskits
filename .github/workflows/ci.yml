@@ -599,6 +599,8 @@ jobs:
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
   publish_base_container:
     name: Publish base container image
