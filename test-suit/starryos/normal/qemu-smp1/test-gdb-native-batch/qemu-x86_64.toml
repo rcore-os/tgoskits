@@ -17,6 +17,8 @@ fail_regex = [
     '#GP',
     'General protection',
     'Segmentation fault',
+    'Function not implemented',
+    "Couldn't get CS register",
     'Out of memory',
     'gdb: not found',
     'Python Exception',

@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{format, sync::Arc, vec, vec::Vec};
 use core::mem::{MaybeUninit, size_of};
 #[cfg(any(
     target_arch = "aarch64",
@@ -9,7 +9,7 @@ use core::mem::{MaybeUninit, size_of};
 use core::slice;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_memory_addr::{MemoryAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use starry_process::Pid;
@@ -24,14 +24,17 @@ use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec},
+    pseudofs::append_ptrace_debug_log,
     task::{AsThread, ProcessData, get_process_data, get_task},
 };
 
 const PTRACE_TRACEME: u32 = 0;
 const PTRACE_PEEKTEXT: u32 = 1;
 const PTRACE_PEEKDATA: u32 = 2;
+const PTRACE_PEEKUSER: u32 = 3;
 const PTRACE_POKETEXT: u32 = 4;
 const PTRACE_POKEDATA: u32 = 5;
+const PTRACE_POKEUSER: u32 = 6;
 const PTRACE_CONT: u32 = 7;
 const PTRACE_KILL: u32 = 8;
 const PTRACE_SINGLESTEP: u32 = 9;
@@ -222,7 +225,9 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
     match request {
         PTRACE_TRACEME => ptrace_traceme(),
         PTRACE_PEEKTEXT | PTRACE_PEEKDATA => ptrace_peekdata(pid, addr, data),
+        PTRACE_PEEKUSER => ptrace_peekuser(pid, addr, data),
         PTRACE_POKETEXT | PTRACE_POKEDATA => ptrace_pokedata(pid, addr, data),
+        PTRACE_POKEUSER => ptrace_pokeuser(pid, addr, data),
         PTRACE_CONT => ptrace_cont(pid, data),
         PTRACE_KILL => ptrace_kill(pid),
         PTRACE_SINGLESTEP => ptrace_singlestep(pid, data),
@@ -1005,6 +1010,208 @@ fn ptrace_setregset_fpregset_x86_64(pid: usize, data: usize) -> AxResult<isize> 
     ptrace_write_stopped_fp_x86_64(pid, unsafe { fp_data.assume_init() })
 }
 
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_DEBUGREG_OFFSET: usize = 912;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_DEBUGREG_COUNT: usize = 8;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_DEBUGREG_END: usize =
+    X86_64_USER_DEBUGREG_OFFSET + X86_64_USER_DEBUGREG_COUNT * size_of::<u64>();
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_AREA_SIZE: usize = X86_64_USER_DEBUGREG_END;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_FPVALID_OFFSET: usize = size_of::<X8664UserRegs>();
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_I387_OFFSET: usize = 224;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_TSIZE_OFFSET: usize = 736;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_DSIZE_OFFSET: usize = 744;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_SSIZE_OFFSET: usize = 752;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_START_CODE_OFFSET: usize = 760;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_START_STACK_OFFSET: usize = 768;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_SIGNAL_OFFSET: usize = 776;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_RESERVED_OFFSET: usize = 784;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_AR0_OFFSET: usize = 792;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_FPSTATE_OFFSET: usize = 800;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_MAGIC_OFFSET: usize = 808;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_COMM_OFFSET: usize = 816;
+#[cfg(target_arch = "x86_64")]
+const X86_64_USER_COMM_SIZE: usize = 32;
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_user_word_range_x86_64(offset: usize) -> AxResult<core::ops::Range<usize>> {
+    let word_size = size_of::<u64>();
+    let end = offset
+        .checked_add(word_size)
+        .ok_or_else(|| AxError::from(LinuxError::EIO))?;
+    if offset % word_size != 0 || end > X86_64_USER_AREA_SIZE {
+        return Err(AxError::from(LinuxError::EIO));
+    }
+    Ok(offset..end)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_peekuser(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
+    if data == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let range = ptrace_user_word_range_x86_64(addr)?;
+    let user = ptrace_read_stopped_user_area_x86_64(pid)?;
+    let value = u64::from_ne_bytes(user[range].try_into().unwrap()) as usize;
+    (data as *mut usize).vm_write(value)?;
+    Ok(0)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn ptrace_peekuser(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
+    let _ = (pid, addr, data);
+    Err(AxError::Unsupported)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_pokeuser(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
+    let range = ptrace_user_word_range_x86_64(addr)?;
+    if range.start >= X86_64_USER_DEBUGREG_OFFSET && range.end <= X86_64_USER_DEBUGREG_END {
+        // Accept writes to debug-register slots for GDB compatibility even
+        // though Starry does not program hardware breakpoints yet.
+        let _ = (pid, data);
+        return Ok(0);
+    }
+    if range.end > size_of::<X8664UserRegs>() {
+        return Err(AxError::from(LinuxError::EIO));
+    }
+    let mut regs = ptrace_read_stopped_user_regs_x86_64(pid)?;
+    let bytes = unsafe {
+        slice::from_raw_parts_mut(
+            (&mut regs as *mut X8664UserRegs).cast::<u8>(),
+            size_of::<X8664UserRegs>(),
+        )
+    };
+    bytes[range].copy_from_slice(&(data as u64).to_ne_bytes());
+    ptrace_write_stopped_user_regs_x86_64(pid, regs)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn ptrace_pokeuser(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
+    let _ = (pid, addr, data);
+    Err(AxError::Unsupported)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_read_stopped_user_area_x86_64(pid: usize) -> AxResult<[u8; X86_64_USER_AREA_SIZE]> {
+    let regs = ptrace_read_stopped_user_regs_x86_64(pid)?;
+    let tracee = ptrace_stopped_tracee(pid)?;
+    let mut user = [0u8; X86_64_USER_AREA_SIZE];
+    let regs_bytes = unsafe {
+        slice::from_raw_parts(
+            (&regs as *const X8664UserRegs).cast::<u8>(),
+            size_of::<X8664UserRegs>(),
+        )
+    };
+    user[..size_of::<X8664UserRegs>()].copy_from_slice(regs_bytes);
+
+    user[X86_64_USER_FPVALID_OFFSET..X86_64_USER_FPVALID_OFFSET + size_of::<u32>()]
+        .copy_from_slice(&1u32.to_ne_bytes());
+
+    let mut start_code = usize::MAX;
+    let mut end_code = 0usize;
+    let mut data_size = 0usize;
+    let mut stack_size = 0usize;
+    let mut start_stack = regs.rsp as usize;
+    let aspace = tracee.aspace();
+    let mm = aspace.lock();
+    for area in mm.areas() {
+        let flags = area.flags();
+        if flags.contains(MappingFlags::EXECUTE) {
+            start_code = start_code.min(area.start().as_usize());
+            end_code = end_code.max(area.end().as_usize());
+        } else if flags.contains(MappingFlags::WRITE) {
+            data_size = data_size.saturating_add(area.size());
+        }
+        if area
+            .backend()
+            .file_info()
+            .ok()
+            .is_some_and(|info| info.path == "[stack]")
+        {
+            stack_size = area.size();
+            start_stack = area.end().as_usize();
+        }
+    }
+    let text_size = if start_code == usize::MAX {
+        0
+    } else {
+        end_code.saturating_sub(start_code)
+    };
+
+    let write_u64 = |buf: &mut [u8; X86_64_USER_AREA_SIZE], offset: usize, value: u64| {
+        buf[offset..offset + size_of::<u64>()].copy_from_slice(&value.to_ne_bytes());
+    };
+    let write_i32 = |buf: &mut [u8; X86_64_USER_AREA_SIZE], offset: usize, value: i32| {
+        buf[offset..offset + size_of::<i32>()].copy_from_slice(&value.to_ne_bytes());
+    };
+
+    write_u64(
+        &mut user,
+        X86_64_USER_TSIZE_OFFSET,
+        (text_size / PAGE_SIZE_4K) as u64,
+    );
+    write_u64(
+        &mut user,
+        X86_64_USER_DSIZE_OFFSET,
+        (data_size / PAGE_SIZE_4K) as u64,
+    );
+    write_u64(
+        &mut user,
+        X86_64_USER_SSIZE_OFFSET,
+        (stack_size / PAGE_SIZE_4K) as u64,
+    );
+    write_u64(
+        &mut user,
+        X86_64_USER_START_CODE_OFFSET,
+        if start_code == usize::MAX {
+            0
+        } else {
+            start_code as u64
+        },
+    );
+    write_u64(
+        &mut user,
+        X86_64_USER_START_STACK_OFFSET,
+        start_stack as u64,
+    );
+    write_u64(&mut user, X86_64_USER_AR0_OFFSET, 0);
+    write_u64(
+        &mut user,
+        X86_64_USER_FPSTATE_OFFSET,
+        X86_64_USER_I387_OFFSET as u64,
+    );
+    write_u64(&mut user, X86_64_USER_MAGIC_OFFSET, 0);
+    write_i32(&mut user, X86_64_USER_RESERVED_OFFSET, 0);
+    write_u64(&mut user, X86_64_USER_SIGNAL_OFFSET, 0);
+
+    if let Some(tid) = tracee.proc.threads().into_iter().next()
+        && let Ok(task) = crate::task::get_task(tid)
+    {
+        let name = task.name();
+        let copy_len = name.len().min(X86_64_USER_COMM_SIZE.saturating_sub(1));
+        user[X86_64_USER_COMM_OFFSET..X86_64_USER_COMM_OFFSET + copy_len]
+            .copy_from_slice(&name.as_bytes()[..copy_len]);
+    }
+
+    Ok(user)
+}
+
 fn ptrace_peekdata(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
@@ -1023,7 +1230,17 @@ fn ptrace_pokedata(pid: usize, addr: usize, data: usize) -> AxResult<isize> {
 fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> AxResult<usize> {
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
-    ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::READ)?;
+    if let Err(err) =
+        ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::READ)
+    {
+        append_ptrace_debug_log(format!(
+            "ptrace read word failed: pid={} addr={addr:#x} len={} access={:?} err={err:?}",
+            tracee.proc.pid(),
+            size_of::<usize>(),
+            MappingFlags::READ,
+        ));
+        return Err(err);
+    }
     let mut bytes = [0u8; size_of::<usize>()];
     aspace.read(VirtAddr::from_usize(addr), &mut bytes)?;
     Ok(usize::from_ne_bytes(bytes))
@@ -1032,7 +1249,31 @@ fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> AxResult<usize> {
 fn ptrace_write_word(tracee: &ProcessData, addr: usize, data: usize) -> AxResult {
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
-    ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::WRITE)?;
+    if let Err(err) =
+        ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::WRITE)
+    {
+        append_ptrace_debug_log(format!(
+            "ptrace write word populate failed: pid={} addr={addr:#x} len={} access={:?} \
+             err={err:?}",
+            tracee.proc.pid(),
+            size_of::<usize>(),
+            MappingFlags::WRITE,
+        ));
+        return Err(err);
+    }
+    let mut old_bytes = [0u8; size_of::<usize>()];
+    if let Err(err) = aspace.read(VirtAddr::from_usize(addr), &mut old_bytes) {
+        append_ptrace_debug_log(format!(
+            "ptrace write word pre-read failed: pid={} addr={addr:#x} err={err:?}",
+            tracee.proc.pid(),
+        ));
+        return Err(err);
+    }
+    let old = usize::from_ne_bytes(old_bytes);
+    append_ptrace_debug_log(format!(
+        "ptrace write word: pid={} addr={addr:#x} old={old:#x} new={data:#x}",
+        tracee.proc.pid(),
+    ));
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
     ax_runtime::hal::cpu::asm::flush_icache_all();
     Ok(())
@@ -1048,7 +1289,19 @@ fn ptrace_populate_remote_range(
     let end = VirtAddr::from_usize(addr.checked_add(len).ok_or(AxError::BadAddress)?);
     let page_start = start.align_down_4k();
     let page_end = end.align_up_4k();
-    aspace.populate_area(page_start, page_end - page_start, access_flags)
+    if let Err(err) = aspace.populate_area(page_start, page_end - page_start, access_flags) {
+        append_ptrace_debug_log(format!(
+            "ptrace populate remote range failed: addr={addr:#x} len={len} start={:#x} end={:#x} \
+             page_start={:#x} page_end={:#x} access={:?} err={err:?}",
+            start.as_usize(),
+            end.as_usize(),
+            page_start.as_usize(),
+            page_end.as_usize(),
+            access_flags,
+        ));
+        return Err(err);
+    }
+    Ok(())
 }
 
 pub fn sys_process_vm_readv(

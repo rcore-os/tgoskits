@@ -6,5 +6,4 @@ run
 bt
 info registers
 continue
-echo GDB_NATIVE_BATCH_DONE\n
 quit

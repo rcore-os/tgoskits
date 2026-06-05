@@ -28,6 +28,8 @@ use crate::{
     task::{AsThread, rebind_task_tid, zap_thread},
 };
 
+const PTRACE_O_TRACEEXEC_FLAG: usize = 1 << 4;
+
 pub fn sys_execve(
     uctx: &mut UserContext,
     path: *const c_char,
@@ -395,7 +397,10 @@ fn do_execve(
     // explicitly preserved above.
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
 
-    if proc_data.is_ptrace_traceme() {
+    if proc_data.is_ptrace_attached()
+        || (proc_data.is_ptrace_traceme()
+            && proc_data.ptrace_options() & PTRACE_O_TRACEEXEC_FLAG != 0)
+    {
         proc_data.set_ptrace_exec_stop_pending();
     }
 
