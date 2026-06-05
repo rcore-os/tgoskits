@@ -1,7 +1,6 @@
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 use core::arch::asm;
-
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
