@@ -12,7 +12,8 @@ This test app exercises lock order inversion detection for ArceOS lockdep.
 - `mixed-two-task`: two-task spin->mutex then mutex->spin
 - `mixed-ms-single`: single-task mutex->spin then spin->mutex
 - `mixed-ms-two-task`: two-task mutex->spin then spin->mutex
-- `vfs-cache-single`: single-task `axfs-ng-vfs` dentry user-data/cache ABBA
+- `vfs-cache-single`: `axfs-ng-vfs` dentry user-data/cache regression case;
+  this case should complete normally even with `lockdep` enabled
 
 ## Test modes
 
@@ -42,6 +43,9 @@ Dedicated baseline configs remain available for explicit manual runs:
   without entering the panic handler.
 - If `lockdep` is enabled but no inversion is reported, the app panics with:
   `lockdep did not report an expected lock order inversion`
+- `vfs-cache-single` is the exception: it covers a previously fixed VFS cache
+  lock-scope issue and should end with `All tests passed!` with or without
+  `lockdep`.
 
 `cargo xtask arceos test qemu` uses `qemu-{arch}.toml`, whose success patterns
 accept either the baseline completion line or the lockdep inversion banner.
@@ -140,7 +144,7 @@ FEATURES=lockdep LOCKDEP_CASE=mixed-ms-two-task cargo xtask arceos qemu \
   --qemu-config test-suit/arceos/rust/task/lockdep/qemu-x86_64.toml
 ```
 
-Run the VFS cache visibility case with lockdep on x86_64:
+Run the VFS cache regression case with lockdep on x86_64:
 
 ```bash
 FEATURES=lockdep cargo xtask arceos qemu \

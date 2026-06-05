@@ -482,7 +482,7 @@ impl DirNodeOps for MemoryNode {
         self.new_entry(name, node_type, inode)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
+    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir = self.inode.as_dir()?;
 
         let (entry, inode) = {
@@ -491,10 +491,15 @@ impl DirNodeOps for MemoryNode {
                 return Err(VfsError::NotFound);
             };
             let inode = entry.get();
-            if let NodeContent::Dir(DirContent { entries }) = &inode.content
-                && entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2
-            {
-                return Err(VfsError::DirectoryNotEmpty);
+            match (&inode.content, is_dir) {
+                (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
+                (NodeContent::Dir(DirContent { entries }), true)
+                    if entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2 =>
+                {
+                    return Err(VfsError::DirectoryNotEmpty);
+                }
+                (NodeContent::File(_), true) => return Err(VfsError::NotADirectory),
+                _ => {}
             }
             let entry = entries.remove(name).ok_or(VfsError::NotFound)?;
             (entry, inode)
