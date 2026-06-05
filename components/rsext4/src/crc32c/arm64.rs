@@ -8,19 +8,23 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "aarch64")]
 static CRC32_HW_CHECKED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
-static mut CRC32_HW_SUPPORTED: bool = false;
+static CRC32_HW_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Returns whether the current CPU supports hardware CRC32C instructions.
 ///
 /// The result is computed once on first call and cached for all subsequent calls.
+///
+/// Safety: `CRC32_HW_CHECKED` (Acquire/Release) provides happens-before ordering;
+/// `CRC32_HW_SUPPORTED` uses Relaxed because it is always accessed after
+/// the Acquire load on `CRC32_HW_CHECKED` has observed the init-complete store.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_hardware_crc32_supported() -> bool {
     if CRC32_HW_CHECKED.load(Ordering::Acquire) {
-        return unsafe { CRC32_HW_SUPPORTED };
+        return CRC32_HW_SUPPORTED.load(Ordering::Relaxed);
     }
     let supported = has_hardware_crc32();
-    unsafe { CRC32_HW_SUPPORTED = supported };
+    CRC32_HW_SUPPORTED.store(supported, Ordering::Relaxed);
     CRC32_HW_CHECKED.store(true, Ordering::Release);
     supported
 }

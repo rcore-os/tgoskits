@@ -66,7 +66,7 @@ impl Ext4Filesystem {
     /// Uses `SpinNoIrq` rather than a blocking mutex because filesystem
     /// operations may be called from IRQ context (e.g., DHCP during network
     /// init), where sleeping is not allowed.  The rsext4 caches (inode,
-    /// data-block, bitmap) provide fine-grained `spin::Mutex` for SMP
+    /// data-block, bitmap) provide fine-grained `SpinNoPreempt` for SMP
     /// concurrency; this global lock protects metadata mutations (allocators,
     /// superblock, group descriptors, journal commits).
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
