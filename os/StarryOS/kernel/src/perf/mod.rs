@@ -1,13 +1,10 @@
 //! `perf_event_open(2)` runtime: dispatcher across kprobe / tracepoint /
 //! software-bpf / uprobe perf event types, the file-like `PerfEvent`
 //! wrapper, and the ringbuf output path used by the `bpf_perf_event_output`
-//! helper.
-//!
-//! Ported from `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/perf/`). Adapted
-//! to tgoskits' `ax_*` package naming and the in-tree FileLike trait (which
-//! does not expose the source's `custom_mmap()` hook — ringbuf mmap is
-//! handled inside the relevant `set_bpf_prog`/`enable` paths rather than
-//! through the fd layer for now; see TODO in `perf/bpf.rs`).
+//! helper. The `mmap(perf_fd, ...)` path is wired through
+//! `FileLike::device_mmap` → `PerfEventOps::device_mmap`, which allocates
+//! the backing pages and asks `kbpf_basic` to initialize the
+//! `perf_event_mmap_page` header.
 
 pub mod bpf;
 pub mod kprobe;
@@ -22,6 +19,7 @@ use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
+use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -34,6 +32,7 @@ use crate::{
     ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::VmBytes,
+    pseudofs::DeviceMmap,
 };
 
 /// Behaviour every perf event implements. Each variant in the dispatcher
@@ -53,6 +52,18 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
 
     /// Attach a BPF program to this event (`PERF_EVENT_IOC_SET_BPF`).
     fn set_bpf_prog(&mut self, _bpf_prog: Arc<dyn FileLike>) -> AxResult<()> {
+        Err(AxError::Unsupported)
+    }
+
+    /// Allocate the user-visible ringbuf and return its physical start
+    /// address (length is the user-supplied mmap length, page-aligned)
+    /// together with a retainer that owns the backing pages. The caller
+    /// threads the retainer into `DeviceMmap::Physical(.., Some(anchor))`
+    /// so the pages stay live for as long as the user mapping exists, even
+    /// after `close(perf_fd)`. Only `bpf::BpfPerfEventWrapper` overrides
+    /// this; the other variants (kprobe/tracepoint/raw-tp/uprobe wrappers)
+    /// reject `mmap(perf_fd)`.
+    fn device_mmap(&mut self, _len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         Err(AxError::Unsupported)
     }
 }
@@ -126,6 +137,24 @@ impl FileLike for PerfEvent {
             }
         }
         Ok(0)
+    }
+
+    fn device_mmap(&self, offset: u64, length: u64) -> AxResult<DeviceMmap> {
+        // libbpf calls mmap with offset == 0; non-zero offsets address into
+        // the ringbuf, which has no meaningful sub-region exposed as a fd
+        // offset (data_offset lives inside the header page).
+        if offset != 0 {
+            return Err(AxError::InvalidInput);
+        }
+        let len = length as usize;
+        let (paddr, anchor) = self.event.lock().device_mmap(len)?;
+        // Anchor the ringbuf pages to the VMA: the retainer keeps them alive
+        // until `munmap`/exit, so closing the perf fd can't free memory the
+        // user address space still maps. See `BpfPerfEventWrapper::pages`.
+        Ok(DeviceMmap::Physical(
+            PhysAddrRange::from_start_size(paddr, len),
+            Some(anchor),
+        ))
     }
 }
 

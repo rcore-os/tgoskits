@@ -68,6 +68,8 @@ cfg_if::cfg_if! {
         mod api;
         #[cfg(feature = "lockdep")]
         mod lockdep;
+        #[cfg(feature = "tracepoint-hooks")]
+        mod sched_tracepoint;
         mod wait_queue;
 
         #[cfg(feature = "irq")]
@@ -79,6 +81,8 @@ cfg_if::cfg_if! {
         #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
         pub use self::api::*;
         pub use self::api::{sleep, sleep_until, yield_now};
+        #[cfg(feature = "tracepoint-hooks")]
+        pub use self::sched_tracepoint::SchedTracepoint;
     } else {
         mod api_s;
         pub use self::api_s::{sleep, sleep_until, yield_now};

@@ -49,6 +49,7 @@ multitask = [
 ]
 lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
 task-ext = ["ax-task/task-ext"]
+tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-fifo = ["ax-task/sched-fifo"]
 sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]

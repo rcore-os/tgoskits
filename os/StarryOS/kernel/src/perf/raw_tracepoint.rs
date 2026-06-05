@@ -86,8 +86,12 @@ impl RawTracepointPerfEvent {
         });
 
         let func: RawTpCallback = Box::new(|args: &[u64], data: &(dyn Any + Send + Sync)| {
+            // `RawTraceEventFunc` keeps the payload as `Box<dyn Any + Send + Sync>`
+            // and hands the closure `&self.data`, so the concrete type observed
+            // here is the *box*, not `Ctx`. Downcast through the box first.
             let ctx = data
-                .downcast_ref::<Ctx>()
+                .downcast_ref::<Box<dyn Any + Send + Sync>>()
+                .and_then(|boxed| boxed.downcast_ref::<Ctx>())
                 .expect("raw_tracepoint Ctx mismatch");
             // SAFETY: raw tracepoint hands us the raw `&[u64]` arg
             // slice on the tracing fast path; the slice lives for the

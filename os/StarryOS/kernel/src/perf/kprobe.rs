@@ -23,17 +23,17 @@ use crate::{
         register_kretprobe, unregister_kprobe, unregister_kretprobe,
     },
     perf::{PerfEventOps, bpf::OwnedEbpfVm},
+    uprobe::{KernelUprobe, unregister_uprobe},
 };
 
-/// One of {kprobe, kretprobe}. Uprobe is *not* exposed through
-/// `ProbeTy` because tgoskits does not yet provide the uprobe manager
-/// infrastructure the source assumes (`ProcessData::uprobe_manager`,
-/// `ProcessData::uprobe_point_list`). The uprobe perf event variant
-/// returns `Unsupported` until that infrastructure lands.
+/// One of {kprobe, kretprobe, uprobe}. Kprobe/kretprobe live in the global
+/// kernel-text manager; uprobe lives in the firing process' per-process manager
+/// (`ProcessData::uprobe_manager`), but exposes the same probe API.
 #[derive(Debug)]
 pub enum ProbeTy {
     Kprobe(Arc<KernelKprobe>),
     Kretprobe(Arc<KernelKretprobe>),
+    Uprobe(Arc<KernelUprobe>),
 }
 
 /// Per-fd perf event wrapping a kprobe/kretprobe registration.
@@ -61,11 +61,13 @@ impl Drop for ProbePerfEvent {
             match self.probe {
                 ProbeTy::Kprobe(ref k) => k.unregister_event_callback(*cid),
                 ProbeTy::Kretprobe(ref k) => k.unregister_event_callback(*cid),
+                ProbeTy::Uprobe(ref u) => u.unregister_event_callback(*cid),
             }
         }
         match self.probe {
             ProbeTy::Kprobe(ref k) => unregister_kprobe(k.clone()),
             ProbeTy::Kretprobe(ref k) => unregister_kretprobe(k.clone()),
+            ProbeTy::Uprobe(ref u) => unregister_uprobe(u.clone()),
         }
     }
 }
@@ -87,6 +89,7 @@ impl PerfEventOps for ProbePerfEvent {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.enable(),
             ProbeTy::Kretprobe(ref k) => k.kprobe().enable(),
+            ProbeTy::Uprobe(ref u) => u.enable(),
         }
         Ok(())
     }
@@ -95,6 +98,7 @@ impl PerfEventOps for ProbePerfEvent {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.disable(),
             ProbeTy::Kretprobe(ref k) => k.kprobe().disable(),
+            ProbeTy::Uprobe(ref u) => u.disable(),
         }
         Ok(())
     }
@@ -120,6 +124,7 @@ impl PerfEventOps for ProbePerfEvent {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.register_event_callback(id, callback),
             ProbeTy::Kretprobe(ref k) => k.register_event_callback(id, callback),
+            ProbeTy::Uprobe(ref u) => u.register_event_callback(id, callback),
         }
         self.callback_list.push(id);
         Ok(())

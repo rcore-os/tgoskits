@@ -39,6 +39,12 @@ lockdep = [
 ]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
+# Cross-crate tracepoint hook for the scheduler context switch.
+# Enabling this exposes a `SchedTracepoint` interface (via `ax-crate-interface`)
+# that another crate (e.g. starry-kernel) must implement; otherwise the link
+# step will fail with an unresolved symbol. Pure ArceOS unikernels leave this
+# off and pay no cost.
+tracepoint-hooks = ["multitask"]
 uspace = ["ax-hal/uspace"]
 
 sched-cfs = ["multitask", "preempt"]
