@@ -462,24 +462,29 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     false
 }
 
-#[allow(dead_code)]
+#[cfg(not(target_arch = "loongarch64"))]
 #[inline(never)]
 fn kprobe_selftest_target() -> i32 {
     42
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 static SELFTEST_HIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(not(target_arch = "loongarch64"))]
 static SELFTEST_RET_HIT: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+#[cfg(not(target_arch = "loongarch64"))]
 fn selftest_pre_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
     SELFTEST_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 fn selftest_ret_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
     SELFTEST_RET_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 pub fn run_selftest() -> bool {
     SELFTEST_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
     SELFTEST_RET_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
