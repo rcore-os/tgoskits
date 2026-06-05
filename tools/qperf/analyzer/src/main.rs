@@ -10,6 +10,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use object::{Object, ObjectSymbol};
 use regex::Regex;
 
+const MAX_QPERF_RECORD_BYTES: usize = 256 * 1024;
+
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
@@ -373,7 +375,10 @@ fn read_qperf_records_v3(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
     let mut records = Vec::new();
     loop {
-        match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
+        match bincode::decode_from_std_read(
+            &mut input,
+            bincode::config::standard().with_limit::<MAX_QPERF_RECORD_BYTES>(),
+        ) {
             Ok(SampleRecord {
                 elapsed_ns,
                 pc,
@@ -410,7 +415,10 @@ fn read_qperf_records_v2(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
     let mut records = Vec::new();
     loop {
-        match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
+        match bincode::decode_from_std_read(
+            &mut input,
+            bincode::config::standard().with_limit::<MAX_QPERF_RECORD_BYTES>(),
+        ) {
             Ok(SampleRecordV2 { elapsed_ns, trace }) => records.push(DecodedRecord {
                 elapsed_ns: Some(elapsed_ns),
                 pc: trace.first().copied(),
@@ -439,20 +447,22 @@ fn read_qperf_records_v1(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
     let mut records = Vec::new();
     loop {
-        let trace: Vec<u64> =
-            match bincode::decode_from_std_read(&mut input, bincode::config::standard()) {
-                Ok(trace) => trace,
-                Err(err) => {
-                    if records.is_empty() {
-                        return Err(err).context("failed to decode first qperf v1 record");
-                    }
-                    eprintln!(
-                        "qperf-analyzer: stopped after {} v1 records: {err}",
-                        records.len()
-                    );
-                    break;
+        let trace: Vec<u64> = match bincode::decode_from_std_read(
+            &mut input,
+            bincode::config::standard().with_limit::<MAX_QPERF_RECORD_BYTES>(),
+        ) {
+            Ok(trace) => trace,
+            Err(err) => {
+                if records.is_empty() {
+                    return Err(err).context("failed to decode first qperf v1 record");
                 }
-            };
+                eprintln!(
+                    "qperf-analyzer: stopped after {} v1 records: {err}",
+                    records.len()
+                );
+                break;
+            }
+        };
         records.push(DecodedRecord {
             elapsed_ns: None,
             pc: trace.first().copied(),
@@ -869,5 +879,44 @@ fn truncate_str(value: &str, max_len: usize) -> &str {
         value
     } else {
         &value[value.len() - max_len..]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs, panic,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{ResolveStats, read_qperf_records};
+
+    #[test]
+    fn malformed_legacy_trace_length_returns_error_without_panic() {
+        let mut bytes = Vec::new();
+        bincode::encode_into_std_write(
+            u64::MAX,
+            &mut bytes,
+            bincode::config::standard().with_limit::<1024>(),
+        )
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "qperf-analyzer-malformed-{}-{nonce}.bin",
+            std::process::id()
+        ));
+        fs::write(&path, bytes).unwrap();
+
+        let result = panic::catch_unwind(|| {
+            let mut stats = ResolveStats::default();
+            read_qperf_records(&path, &mut stats)
+        });
+
+        let _ = fs::remove_file(path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_err());
     }
 }

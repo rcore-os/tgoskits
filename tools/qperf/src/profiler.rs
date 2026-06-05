@@ -23,6 +23,17 @@ use zerocopy::IntoBytes;
 
 use crate::reg::{AllRegs, Frame, Reg, Target};
 
+#[derive(bincode::Encode)]
+struct SampleRecord {
+    elapsed_ns: u64,
+    pc: u64,
+    sp: u64,
+    fp: u64,
+    cpu: u32,
+    callchain: u8,
+    trace: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SamplingMode {
     Tb,
@@ -48,8 +59,24 @@ enum CallchainMode {
 }
 
 impl CallchainMode {
+    fn as_raw(self) -> u8 {
+        match self {
+            Self::Leaf => 0,
+            Self::Fp => 1,
+        }
+    }
+
     fn needs_registers(self) -> bool {
         matches!(self, Self::Fp)
+    }
+}
+
+impl core::fmt::Display for CallchainMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Leaf => "leaf",
+            Self::Fp => "fp",
+        })
     }
 }
 
@@ -245,7 +272,7 @@ struct Stats {
 #[derive(Clone)]
 pub struct Profiler {
     target: Target,
-    tx: Sender<Vec<u64>>,
+    tx: Sender<SampleRecord>,
     intvl: Duration,
     max_depth: usize,
     mode: SamplingMode,
@@ -256,6 +283,7 @@ pub struct Profiler {
     filter_alias_offset: Option<u64>,
     filter_kernel: bool,
     callchain: CallchainMode,
+    started_at: Arc<Instant>,
     last: Arc<Mutex<Instant>>,
     regs: Arc<AllRegs>,
     stats: Arc<Stats>,
@@ -276,6 +304,7 @@ impl Default for Profiler {
             filter_alias_offset: None,
             filter_kernel: false,
             callchain: CallchainMode::Leaf,
+            started_at: Arc::new(Instant::now()),
             last: Arc::new(Mutex::new(Instant::now())),
             regs: Arc::default(),
             stats: Arc::default(),
@@ -284,7 +313,7 @@ impl Default for Profiler {
 }
 
 impl Profiler {
-    fn sample(&mut self, ip: u64) -> qemu_plugin::Result<()> {
+    fn sample(&mut self, cpu: u32, ip: u64) -> qemu_plugin::Result<()> {
         let now = Instant::now();
         let Ok(mut last) = self.last.try_lock() else {
             return Ok(());
@@ -296,8 +325,15 @@ impl Profiler {
 
         let mut ips = Vec::with_capacity(self.max_depth.min(16));
         ips.push(ip);
+        let sp = if self.callchain.needs_registers() {
+            self.regs.read(self.target.reg(Reg::Sp)).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut fp_value = 0;
         if self.callchain == CallchainMode::Fp {
             let mut fp = self.regs.read(self.target.reg(Reg::Fp))?;
+            fp_value = fp;
             let mut seen_fps = BTreeSet::new();
 
             while fp > 0 && fp % 8 == 0 && ips.len() < self.max_depth {
@@ -322,7 +358,21 @@ impl Profiler {
             }
         }
 
-        match self.tx.try_send(ips) {
+        let elapsed_ns = now
+            .duration_since(*self.started_at)
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let record = SampleRecord {
+            elapsed_ns,
+            pc: ip,
+            sp,
+            fp: fp_value,
+            cpu,
+            callchain: self.callchain.as_raw(),
+            trace: ips,
+        };
+
+        match self.tx.try_send(record) {
             Ok(()) => {
                 self.stats.samples.fetch_add(1, Ordering::Relaxed);
             }
@@ -388,8 +438,8 @@ impl HasCallbacks for Profiler {
             SamplingMode::Tb => {
                 let mut this = self.clone();
                 tb.register_execute_callback_flags(
-                    move |_| {
-                        if this.sample(ip).is_err() {
+                    move |cpu| {
+                        if this.sample(cpu, ip).is_err() {
                             this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                         }
                     },
@@ -403,8 +453,8 @@ impl HasCallbacks for Profiler {
                     };
                     let mut this = self.clone();
                     insn.register_execute_callback_flags(
-                        move |_| {
-                            if this.sample(ip).is_err() {
+                        move |cpu| {
+                            if this.sample(cpu, ip).is_err() {
                                 this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                             }
                         },
@@ -441,6 +491,7 @@ impl Register for Profiler {
         let out = args.out.clone();
         let max_depth = args.max_depth;
         let freq = args.freq;
+        let callchain = args.callchain;
         let target = info.target_name.to_string();
         spawn(move || {
             while let Ok(event) = rx.recv() {
@@ -450,10 +501,22 @@ impl Register for Profiler {
                     writer_stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
+                let _ = file.flush();
             }
             let _ = file.flush();
             if let Ok(mut summary) = File::create(&summary_path).map(BufWriter::new) {
-                let _ = writeln!(summary, "qperf_format_version = 1");
+                let _ = writeln!(summary, "qperf_format_version = 3");
+                let _ = writeln!(summary, "record_timestamp = elapsed_ns");
+                let _ = writeln!(
+                    summary,
+                    "record_fields = elapsed_ns,pc,sp,fp,cpu,callchain,trace"
+                );
+                let _ = writeln!(summary, "callchain_method = {callchain}");
+                let _ = writeln!(
+                    summary,
+                    "callchain_enabled = {}",
+                    callchain.needs_registers()
+                );
                 let _ = writeln!(
                     summary,
                     "samples = {}",
@@ -489,6 +552,8 @@ impl Register for Profiler {
         self.filter_alias_offset = args.filter_alias_offset;
         self.filter_kernel = args.filter_kernel;
         self.callchain = args.callchain;
+        self.started_at = Arc::new(Instant::now());
+        self.last = Arc::new(Mutex::new(Instant::now()));
         self.stats = stats;
 
         Ok(())

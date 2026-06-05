@@ -8,7 +8,7 @@ use std::{
     process::{Command, ExitStatus, Stdio},
     sync::mpsc,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
@@ -653,6 +653,8 @@ exit 1
         assert!(outputs.work_dir.is_absolute());
         assert_eq!(outputs.work_dir, root.join("target"));
         assert_eq!(outputs.dir, root.join("target/qperf-test"));
+        assert!(outputs.qmp_socket.is_absolute());
+        assert!(outputs.qmp_socket.display().to_string().len() < 100);
     }
 
     #[test]
@@ -937,7 +939,7 @@ fn prepare_outputs(
         host_perf: dir.join("qemu.perf.csv"),
         resolve_stats: dir.join("resolve.stats.json"),
         window: dir.join("window.json"),
-        qmp_socket: dir.join("qmp.sock"),
+        qmp_socket: short_qmp_socket_path(),
         profile_stdout: work_dir.join("profile.stdout"),
         profile_stderr: work_dir.join("profile.stderr"),
         report_json: work_dir.join("report.json"),
@@ -946,6 +948,19 @@ fn prepare_outputs(
         hotspot_categories_csv: work_dir.join("hotspot_categories.csv"),
         dir,
     })
+}
+
+fn short_qmp_socket_path() -> PathBuf {
+    let base = if Path::new("/tmp").is_dir() {
+        PathBuf::from("/tmp")
+    } else {
+        env::temp_dir()
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    base.join(format!("tgos-qperf-{}-{nonce}.sock", std::process::id()))
 }
 
 fn rooted_output_path(root: &Path, path: &Path) -> PathBuf {
@@ -2248,7 +2263,7 @@ fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
 
     let mut file = File::create(&outputs.summary)
         .with_context(|| format!("failed to create {}", outputs.summary.display()))?;
-    writeln!(file, "qperf_format_version = 1")?;
+    writeln!(file, "qperf_format_version = 3")?;
     writeln!(file, "arch = {}", input.arch)?;
     writeln!(file, "target = {}", input.target)?;
     writeln!(file, "frequency_hz = {}", args.freq)?;
