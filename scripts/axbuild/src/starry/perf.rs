@@ -592,7 +592,9 @@ fn compiler_command_succeeds(compiler: &str, args: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::cross_c_compiler_works;
+    use std::path::Path;
+
+    use super::{cross_c_compiler_works, prepare_outputs};
 
     #[cfg(unix)]
     #[test]
@@ -633,6 +635,48 @@ exit 1
         fs::set_permissions(&compiler, permissions).unwrap();
 
         assert!(cross_c_compiler_works(compiler.to_str().unwrap()));
+    }
+
+    #[test]
+    fn prepare_outputs_roots_relative_out_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let outputs = prepare_outputs(
+            root,
+            "riscv64",
+            "boot",
+            Some(Path::new("target/qperf-test")),
+            None,
+        )
+        .unwrap();
+
+        assert!(outputs.work_dir.is_absolute());
+        assert_eq!(outputs.work_dir, root.join("target"));
+        assert_eq!(outputs.dir, root.join("target/qperf-test"));
+    }
+
+    #[test]
+    fn prepare_outputs_roots_relative_output_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let outputs = prepare_outputs(
+            root,
+            "riscv64",
+            "boot",
+            None,
+            Some(Path::new("target/qperf-root")),
+        )
+        .unwrap();
+
+        assert!(outputs.work_dir.is_absolute());
+        assert_eq!(
+            outputs.work_dir,
+            root.join("target/qperf-root/perf/riscv64/latest")
+        );
+        assert_eq!(
+            outputs.dir,
+            root.join("target/qperf-root/perf/riscv64/latest/qperf")
+        );
     }
 }
 
@@ -842,7 +886,7 @@ fn prepare_outputs(
     output_dir: Option<&Path>,
 ) -> anyhow::Result<PerfOutputs> {
     let (work_dir, dir) = if let Some(out) = out {
-        let dir = PathBuf::from(out);
+        let dir = rooted_output_path(root, out);
         let work_dir = dir
             .parent()
             .map(Path::to_path_buf)
@@ -850,7 +894,7 @@ fn prepare_outputs(
         (work_dir, dir)
     } else {
         let output_root = output_dir
-            .map(PathBuf::from)
+            .map(|path| rooted_output_path(root, path))
             .unwrap_or_else(|| root.join("target").join("qperf").join(case));
         let work_dir = output_root.join("perf").join(arch).join("latest");
         let dir = work_dir.join("qperf");
@@ -902,6 +946,14 @@ fn prepare_outputs(
         hotspot_categories_csv: work_dir.join("hotspot_categories.csv"),
         dir,
     })
+}
+
+fn rooted_output_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
 }
 
 fn build_qperf_tools(root: &Path, analyzer_flamegraph: bool) -> anyhow::Result<QperfTools> {
@@ -957,7 +1009,7 @@ fn build_qperf_tools(root: &Path, analyzer_flamegraph: bool) -> anyhow::Result<Q
 }
 
 fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
-    if let Some(path) = [root.join("apps/qperf")]
+    if let Some(path) = [root.join("apps/qperf"), root.join("tools/qperf")]
         .into_iter()
         .find(|path| path.join("Cargo.toml").exists())
     {
@@ -970,15 +1022,10 @@ fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
         return Ok(fixed_qperf);
     }
 
-    [root.join("tools/qperf")]
-        .into_iter()
-        .find(|path| path.join("Cargo.toml").exists())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "qperf sources not found; expected apps/qperf, fixed harness kit tools/qperf, or \
-                 tools/qperf to be present"
-            )
-        })
+    Err(anyhow::anyhow!(
+        "qperf sources not found; expected apps/qperf, tools/qperf, or fixed harness kit \
+         tools/qperf to be present"
+    ))
 }
 
 fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {

@@ -41,6 +41,30 @@ impl std::str::FromStr for SamplingMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallchainMode {
+    Leaf,
+    Fp,
+}
+
+impl CallchainMode {
+    fn needs_registers(self) -> bool {
+        matches!(self, Self::Fp)
+    }
+}
+
+impl std::str::FromStr for CallchainMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "leaf" => Ok(Self::Leaf),
+            "fp" | "frame-pointer" | "frame_pointer" => Ok(Self::Fp),
+            _ => bail!("invalid callchain mode: {s} (expected 'leaf' or 'fp')"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PluginArgs {
     freq: u32,
@@ -50,6 +74,11 @@ struct PluginArgs {
     mode: SamplingMode,
     filter_start: Option<u64>,
     filter_end: Option<u64>,
+    filter_alias_start: Option<u64>,
+    filter_alias_end: Option<u64>,
+    filter_alias_offset: Option<u64>,
+    filter_kernel: bool,
+    callchain: CallchainMode,
 }
 
 impl TryFrom<&Args> for PluginArgs {
@@ -98,11 +127,52 @@ impl TryFrom<&Args> for PluginArgs {
             .unwrap_or(SamplingMode::Tb);
         let filter_start = parse_u64_hex_arg(args, "filter_start")?;
         let filter_end = parse_u64_hex_arg(args, "filter_end")?;
+        let filter_alias_start = parse_u64_hex_arg(args, "filter_alias_start")?;
+        let filter_alias_end = parse_u64_hex_arg(args, "filter_alias_end")?;
+        let filter_alias_offset = parse_u64_hex_arg(args, "filter_alias_offset")?;
+        let filter_kernel = parse_bool_arg(args, "filter_kernel")?
+            .unwrap_or(filter_start.is_some() || filter_alias_start.is_some());
+        let callchain = args
+            .parsed
+            .get("callchain")
+            .map(|v| {
+                if let Value::String(s) = v {
+                    s.parse::<CallchainMode>()
+                } else {
+                    bail!("invalid callchain")
+                }
+            })
+            .transpose()?
+            .unwrap_or(CallchainMode::Leaf);
         if max_depth == 0 {
             bail!("max_depth must be greater than 0");
         }
         if queue_size == 0 {
             bail!("queue_size must be greater than 0");
+        }
+        if filter_start.is_some() != filter_end.is_some() {
+            bail!("filter_start and filter_end must be provided together");
+        }
+        if matches!((filter_start, filter_end), (Some(start), Some(end)) if start >= end) {
+            bail!("filter_start must be less than filter_end");
+        }
+        let alias_count = [
+            filter_alias_start.is_some(),
+            filter_alias_end.is_some(),
+            filter_alias_offset.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if alias_count != 0 && alias_count != 3 {
+            bail!(
+                "filter_alias_start, filter_alias_end, and filter_alias_offset must be provided \
+                 together"
+            );
+        }
+        if matches!((filter_alias_start, filter_alias_end), (Some(start), Some(end)) if start >= end)
+        {
+            bail!("filter_alias_start must be less than filter_alias_end");
         }
         Ok(PluginArgs {
             freq,
@@ -112,6 +182,11 @@ impl TryFrom<&Args> for PluginArgs {
             mode,
             filter_start,
             filter_end,
+            filter_alias_start,
+            filter_alias_end,
+            filter_alias_offset,
+            filter_kernel,
+            callchain,
         })
     }
 }
@@ -145,6 +220,21 @@ fn parse_u64_hex_arg(args: &Args, name: &str) -> anyhow::Result<Option<u64>> {
         .transpose()
 }
 
+fn parse_bool_arg(args: &Args, name: &str) -> anyhow::Result<Option<bool>> {
+    args.parsed
+        .get(name)
+        .map(|value| match value {
+            Value::Integer(value) => Ok(*value != 0),
+            Value::String(value) => match value.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Ok(true),
+                "0" | "false" | "no" | "off" => Ok(false),
+                _ => bail!("invalid {name}: expected boolean"),
+            },
+            _ => bail!("invalid {name}: expected boolean"),
+        })
+        .transpose()
+}
+
 #[derive(Default)]
 struct Stats {
     samples: AtomicU64,
@@ -161,6 +251,11 @@ pub struct Profiler {
     mode: SamplingMode,
     filter_start: Option<u64>,
     filter_end: Option<u64>,
+    filter_alias_start: Option<u64>,
+    filter_alias_end: Option<u64>,
+    filter_alias_offset: Option<u64>,
+    filter_kernel: bool,
+    callchain: CallchainMode,
     last: Arc<Mutex<Instant>>,
     regs: Arc<AllRegs>,
     stats: Arc<Stats>,
@@ -176,6 +271,11 @@ impl Default for Profiler {
             mode: SamplingMode::Tb,
             filter_start: None,
             filter_end: None,
+            filter_alias_start: None,
+            filter_alias_end: None,
+            filter_alias_offset: None,
+            filter_kernel: false,
+            callchain: CallchainMode::Leaf,
             last: Arc::new(Mutex::new(Instant::now())),
             regs: Arc::default(),
             stats: Arc::default(),
@@ -196,28 +296,30 @@ impl Profiler {
 
         let mut ips = Vec::with_capacity(self.max_depth.min(16));
         ips.push(ip);
-        let mut fp = self.regs.read(self.target.reg(Reg::Fp))?;
-        let mut seen_fps = BTreeSet::new();
+        if self.callchain == CallchainMode::Fp {
+            let mut fp = self.regs.read(self.target.reg(Reg::Fp))?;
+            let mut seen_fps = BTreeSet::new();
 
-        while fp > 0 && fp % 8 == 0 && ips.len() < self.max_depth {
-            if !seen_fps.insert(fp) {
-                break;
-            }
-            let mut frame = Frame::default();
-            if qemu_plugin_read_memory_vaddr(fp - self.target.fp_offset(), frame.as_mut_bytes())
-                .is_err()
-            {
-                break;
-            };
-            if qemu_plugin_read_memory_vaddr(frame.ip, &mut [0; 8]).is_err() {
-                break;
-            }
+            while fp > 0 && fp % 8 == 0 && ips.len() < self.max_depth {
+                if !seen_fps.insert(fp) {
+                    break;
+                }
+                let mut frame = Frame::default();
+                if qemu_plugin_read_memory_vaddr(fp - self.target.fp_offset(), frame.as_mut_bytes())
+                    .is_err()
+                {
+                    break;
+                };
+                if qemu_plugin_read_memory_vaddr(frame.ip, &mut [0; 8]).is_err() {
+                    break;
+                }
 
-            ips.push(frame.ip);
-            if frame.fp <= fp {
-                break;
+                ips.push(self.canonicalize_ip(frame.ip).unwrap_or(frame.ip));
+                if frame.fp <= fp {
+                    break;
+                }
+                fp = frame.fp;
             }
-            fp = frame.fp;
         }
 
         match self.tx.try_send(ips) {
@@ -234,11 +336,42 @@ impl Profiler {
 
         Ok(())
     }
+
+    fn sample_ip_for(&self, ip: u64) -> Option<u64> {
+        if let Some(mapped) = self.canonicalize_ip(ip) {
+            return Some(mapped);
+        }
+        if self.filter_kernel {
+            return None;
+        }
+        Some(ip)
+    }
+
+    fn canonicalize_ip(&self, ip: u64) -> Option<u64> {
+        if let (Some(start), Some(end)) = (self.filter_start, self.filter_end)
+            && ip >= start
+            && ip < end
+        {
+            return Some(ip);
+        }
+        if let (Some(start), Some(end), Some(offset)) = (
+            self.filter_alias_start,
+            self.filter_alias_end,
+            self.filter_alias_offset,
+        ) && ip >= start
+            && ip < end
+        {
+            return Some(ip.wrapping_add(offset));
+        }
+        None
+    }
 }
 
 impl HasCallbacks for Profiler {
     fn on_vcpu_init(&mut self, _id: PluginId, _vcpu_id: VCPUIndex) -> qemu_plugin::Result<()> {
-        self.regs = Arc::new(qemu_plugin_get_registers()?.into());
+        if self.callchain.needs_registers() {
+            self.regs = Arc::new(qemu_plugin_get_registers()?.into());
+        }
         Ok(())
     }
 
@@ -247,18 +380,9 @@ impl HasCallbacks for Profiler {
         _id: PluginId,
         tb: TranslationBlock,
     ) -> qemu_plugin::Result<()> {
-        const KERNEL_MASK: u64 = 1 << 63;
-
-        let ip = tb.vaddr();
-        if ip & KERNEL_MASK == 0 {
+        let Some(ip) = self.sample_ip_for(tb.vaddr()) else {
             return Ok(());
-        }
-
-        if let (Some(start), Some(end)) = (self.filter_start, self.filter_end)
-            && (ip < start || ip >= end)
-        {
-            return Ok(());
-        }
+        };
 
         match self.mode {
             SamplingMode::Tb => {
@@ -269,12 +393,14 @@ impl HasCallbacks for Profiler {
                             this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                         }
                     },
-                    CallbackFlags::QEMU_PLUGIN_CB_R_REGS,
+                    callback_flags(self.callchain),
                 );
             }
             SamplingMode::Insn => {
                 tb.instructions().for_each(|insn| {
-                    let ip = insn.vaddr();
+                    let Some(ip) = self.sample_ip_for(insn.vaddr()) else {
+                        return;
+                    };
                     let mut this = self.clone();
                     insn.register_execute_callback_flags(
                         move |_| {
@@ -282,13 +408,21 @@ impl HasCallbacks for Profiler {
                                 this.stats.sample_failures.fetch_add(1, Ordering::Relaxed);
                             }
                         },
-                        CallbackFlags::QEMU_PLUGIN_CB_R_REGS,
+                        callback_flags(self.callchain),
                     );
                 });
             }
         }
 
         Ok(())
+    }
+}
+
+fn callback_flags(callchain: CallchainMode) -> CallbackFlags {
+    if callchain.needs_registers() {
+        CallbackFlags::QEMU_PLUGIN_CB_R_REGS
+    } else {
+        CallbackFlags::QEMU_PLUGIN_CB_NO_REGS
     }
 }
 
@@ -350,6 +484,11 @@ impl Register for Profiler {
         self.mode = args.mode;
         self.filter_start = args.filter_start;
         self.filter_end = args.filter_end;
+        self.filter_alias_start = args.filter_alias_start;
+        self.filter_alias_end = args.filter_alias_end;
+        self.filter_alias_offset = args.filter_alias_offset;
+        self.filter_kernel = args.filter_kernel;
+        self.callchain = args.callchain;
         self.stats = stats;
 
         Ok(())
