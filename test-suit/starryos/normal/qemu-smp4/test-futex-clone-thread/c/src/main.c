@@ -436,7 +436,7 @@ static void test_private_flag(void)
      * riscv64 SMP QEMU after the waiter thread is created, which makes the
      * whole normal qemu job wait until its outer 360s timeout. Other
      * architectures still run this subtest, and riscv64 keeps the rest of
-     * this clone/futex coverage.
+     * this clone/futex coverage. Follow-up context: rcore-os/tgoskits#1093.
      */
     printf("  SKIP | T6 FUTEX_PRIVATE_FLAG on riscv64 qemu\n");
     return;

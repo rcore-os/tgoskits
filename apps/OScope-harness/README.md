@@ -1,6 +1,6 @@
 # OScope-harness
 
-`OScope-harness` is packaged as a thin TGOSKits entrypoint. The harness source is not vendored in this repository; `prebuild.sh` clones `cg24-THU/tgoskit-harness_kit` at commit `b4fdf12c8479353d80e3d23960e653819db2a20d` and reuses that checkout from `target/tgoskit-harness-kit/`.
+`OScope-harness` is packaged as a thin TGOSKits entrypoint. The harness source is not vendored in this repository; `prebuild.sh` clones `cg24-THU/tgoskit-harness_kit` at commit `762c22725024a065e85b26e0b01121eccea651c0` and reuses that checkout from `target/tgoskit-harness-kit/`.
 
 ## CLI
 
@@ -19,9 +19,11 @@ The wrapper keeps the original OScope command surface while the implementation s
 
 ```bash
 apps/OScope-harness/scripts/qperf-smoke.sh boot
-apps/OScope-harness/scripts/qperf-smoke.sh blk-read
-apps/OScope-harness/scripts/qperf-smoke.sh compare-self
 ```
+
+The `boot` smoke works with the current `starry perf` runtime. Workload-marker
+smokes such as `blk-read` require the enhanced runtime companion that adds
+`--case`, marker, and shell-init options.
 
 ## MCP
 
