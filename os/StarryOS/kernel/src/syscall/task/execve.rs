@@ -3,19 +3,25 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{ffi::c_char, future::poll_fn, iter, task::Poll};
+use core::{
+    ffi::{c_char, c_int},
+    future::poll_fn,
+    iter,
+    task::Poll,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_process::Pid;
 use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::FD_TABLE,
+    file::{FD_TABLE, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{AsThread, rebind_task_tid, zap_thread},
 };
@@ -26,42 +32,81 @@ pub fn sys_execve(
     argv: *const *const c_char,
     envp: *const *const c_char,
 ) -> AxResult<isize> {
+    let path = vm_load_string(path)?;
+    do_execve(uctx, path, argv, envp)
+}
+
+/// execveat(2) — like execve, but the program is identified by `dirfd` plus
+/// `path` (resolved relative to `dirfd`), or by `dirfd` alone when
+/// `AT_EMPTY_PATH` is set and `path` is empty.
+pub fn sys_execveat(
+    uctx: &mut UserContext,
+    dirfd: c_int,
+    path: *const c_char,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+    flags: u32,
+) -> AxResult<isize> {
+    if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let path = vm_load_string(path)?;
+
+    // Resolve dirfd + path to an absolute pathname so the shared core can
+    // load it exactly like execve. Anonymous fds without a filesystem path
+    // (e.g. memfd) cannot be loaded by the path-based ELF loader yet; surface
+    // that as a visible warning rather than a silent EACCES, since Linux
+    // succeeds here and bring-up needs to spot the gap.
+    let loc = resolve_at(dirfd, Some(path.as_str()), flags)?
+        .into_file()
+        .ok_or_else(|| {
+            warn!("sys_execveat: exec from anonymous fd (e.g. memfd) is not supported yet");
+            AxError::PermissionDenied
+        })?;
+    let abs_path = loc.absolute_path()?.to_string();
+
+    do_execve(uctx, abs_path, argv, envp)
+}
+
+/// Shared execve core (Linux's `do_execveat_common` equivalent): both
+/// `sys_execve` and `sys_execveat` resolve the program path, then funnel the
+/// raw `argv` / `envp` user pointers here to be loaded once.
+fn do_execve(
+    uctx: &mut UserContext,
+    path: String,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+) -> AxResult<isize> {
     // ----------------------------------------------------------------
     // Phase 1: all fallible work — nothing is committed yet.
     // If any of these fail we return an error and the process is intact.
     // ----------------------------------------------------------------
-    let path = vm_load_string(path)?;
 
-    // Linux's `count_strings_kernel` (fs/exec.c) checks
-    // `argv.ptr.native` for NULL and short-circuits to `i=0` rather
-    // than returning EFAULT. glibc's `execl(path, NULL)` and
-    // `execve(path, NULL, NULL)` rely on this: userspace passes NULL
-    // to mean "empty argv/envp" and we must accept it for ABI
-    // compatibility. Linux still supplies an empty string as argv[0]
-    // to the new image, so normalize both NULL and empty argv here.
-    // (Same NULL handling for `envp`, but without the argv[0] synthesis.)
-    let mut args = if argv.is_null() {
-        Vec::new()
-    } else {
-        vm_load_until_nul(argv)?
-            .into_iter()
-            .map(vm_load_string)
-            .collect::<Result<Vec<_>, _>>()?
+    // A NULL vector pointer is accepted as an empty list: glibc's
+    // `execl(path, NULL)` passes NULL to mean "no arguments", and Linux's
+    // `count_strings_kernel` short-circuits NULL to an empty list rather
+    // than returning EFAULT.
+    let load_vec = |ptr: *const *const c_char| -> AxResult<Vec<String>> {
+        if ptr.is_null() {
+            Ok(Vec::new())
+        } else {
+            vm_load_until_nul(ptr)?
+                .into_iter()
+                .map(vm_load_string)
+                .collect::<Result<Vec<_>, _>>()
+        }
     };
+    let mut args = load_vec(argv)?;
+    let envs = load_vec(envp)?;
+
+    // Linux still supplies an empty string as argv[0] to the new image, so
+    // normalize an empty argv here.
     if args.is_empty() {
         args.push(String::new());
     }
 
-    let envs = if envp.is_null() {
-        Vec::new()
-    } else {
-        vm_load_until_nul(envp)?
-            .into_iter()
-            .map(vm_load_string)
-            .collect::<Result<Vec<_>, _>>()?
-    };
-
-    debug!("sys_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
+    debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
     let curr = current();
     let thr = curr.as_thread();
