@@ -60,7 +60,7 @@ flowchart LR
 - `axconfig`
   - 使用 `include_configs!(path_env = "AX_CONFIG_PATH", fallback = "dummy.toml")`
   - 作用是把最终配置文件展开成系统常量。
-- 各平台 crate，例如 `ax-plat-riscv64-qemu-virt`，以及动态平台入口 `axplat-dyn`
+- 各平台 crate，例如 `ax-plat-riscv64-sg2002`，以及动态平台入口 `axplat-dyn`
   - 使用 `include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml")`
   - 作用是把板级默认配置或外部覆盖配置编进平台 crate。
 

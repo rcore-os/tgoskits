@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.7.2...ax-alloc-v0.8.0) - 2026-06-03
+
+### Added
+
+- *(mm)* add page reclaim for file-backed memory pressure (rebased) ([#1007](https://github.com/rcore-os/tgoskits/pull/1007))
+
+### Fixed
+
+- *(axbacktrace)* harden correctness, optimize allocation, and add per-arch IP adjustment ([#1029](https://github.com/rcore-os/tgoskits/pull/1029))
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+
+### Other
+
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.7.1...ax-alloc-v0.7.2) - 2026-05-22
 
 ### Other

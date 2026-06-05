@@ -4,7 +4,6 @@ log = "Warn"
 features = [
   "ax-feat/display",
   "ax-feat/rtc",
-  "ax-driver/rtc",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",

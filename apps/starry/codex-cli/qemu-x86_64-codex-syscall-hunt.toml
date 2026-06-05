@@ -100,6 +100,7 @@ EOF
 codex exec \
   --dangerously-bypass-approvals-and-sandbox \
   --color never \
+  -m gpt-5.4 \
   -C /tmp/tgoskits-syscall-hunt/repo \
   --output-last-message /tmp/codex-tgoskits-syscall-hunt.txt \
   "$(cat /tmp/tgoskits-syscall-hunt-prompt.txt)"

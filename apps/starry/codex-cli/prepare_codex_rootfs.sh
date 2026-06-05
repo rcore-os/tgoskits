@@ -227,7 +227,7 @@ echo "  $rootfs"
 echo
 echo "Run the offline help example with:"
 echo "  cargo xtask starry qemu --arch x86_64 \\"
-echo "    --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \\"
+echo "    --qemu-config apps/starry/codex-cli/qemu-x86_64.toml \\"
 echo "    --rootfs $display_rootfs"
 if [[ -n "$auth_json" ]]; then
     echo

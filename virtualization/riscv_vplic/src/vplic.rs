@@ -5,7 +5,7 @@
 use core::option::Option;
 
 use ax_kspin::SpinNoIrq as Mutex;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use bitmaps::Bitmap;
 
 use crate::consts::*;

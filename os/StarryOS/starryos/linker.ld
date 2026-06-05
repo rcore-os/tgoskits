@@ -1,5 +1,8 @@
 INCLUDE "runtime.x"
 
+PROVIDE(_ex_table_start = 0);
+PROVIDE(_ex_table_end = 0);
+
 SECTIONS {
     .static_keys : {
         __start___static_keys = .;

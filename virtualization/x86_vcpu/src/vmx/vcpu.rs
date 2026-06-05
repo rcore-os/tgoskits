@@ -21,16 +21,12 @@ use core::{
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
-use axaddrspace::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
-    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
+use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
+use axvcpu::{
+    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
+    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
 };
-use axdevice_base::BaseDeviceOps;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::{
-    memory::{self, PhysAddr},
-    vmm::{VCpuId, VMId},
-};
+use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -52,7 +48,7 @@ use super::{
     },
 };
 use crate::{
-    X86VCpuSetupConfig, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters,
+    X86VCpuSetupConfig, ept::GuestPageWalkInfo, host, msr::Msr, regs::GeneralRegisters,
     restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
@@ -219,8 +215,8 @@ impl VmxVcpu {
     }
 
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
-    pub fn inner_run(&mut self) -> Option<VmxExitInfo> {
-        self.inject_pending_events().unwrap();
+    pub fn inner_run(&mut self) -> AxResult<Option<VmxExitInfo>> {
+        self.inject_pending_events()?;
 
         // Run guest
         self.load_guest_xstate();
@@ -263,7 +259,7 @@ impl VmxVcpu {
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => match result {
-                Ok(()) => None,
+                Ok(()) => Ok(None),
                 Err(err) => {
                     panic!(
                         "VmxVcpu failed to handle a VM-exit that should be handled by itself: \
@@ -272,7 +268,7 @@ impl VmxVcpu {
                     );
                 }
             },
-            None => Some(exit_info),
+            None => Ok(Some(exit_info)),
         }
     }
 
@@ -837,7 +833,7 @@ impl VmxVcpu {
 // the host physical address. A non-identity guest memory backend should
 // replace this helper with an explicit GPA-to-HVA translation.
 fn read_guest_phys_u64(gpa: usize) -> u64 {
-    let hva = memory::phys_to_virt(PhysAddr::from(gpa));
+    let hva = host::phys_to_virt(HostPhysAddr::from(gpa));
     unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) }
 }
 
@@ -1240,7 +1236,7 @@ impl VmxVcpu {
 
     fn read_guest_u8(&self, gva: GuestVirtAddr) -> AxResult<u8> {
         let gpa = self.translate_guest_linear(gva)?;
-        let hva = memory::phys_to_virt(PhysAddr::from(gpa.as_usize()));
+        let hva = host::phys_to_virt(HostPhysAddr::from(gpa.as_usize()));
         Ok(unsafe { core::ptr::read_volatile(hva.as_ptr()) })
     }
 
@@ -1574,7 +1570,7 @@ impl AxArchVCpu for VmxVcpu {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        match self.inner_run() {
+        match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 AxVCpuExitReason::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
@@ -1958,7 +1954,7 @@ mod tests {
         #[test]
         fn test_access_width_operations() {
             // Test access width enumeration
-            use axaddrspace::device::AccessWidth;
+            use axvcpu::AccessWidth;
 
             assert_eq!(AccessWidth::Byte as usize, 0);
             assert_eq!(AccessWidth::Word as usize, 1);

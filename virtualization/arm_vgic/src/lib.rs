@@ -19,7 +19,10 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 mod devops_impl;
+pub mod host;
 
 /// Virtual GIC implementation module.
 pub mod vgic;
@@ -41,7 +44,7 @@ pub mod v3;
 /// Re-export arch specific APIs for VGIC to avoid doc build errors
 mod api_reexp {
     #[allow(unused_imports)]
-    pub use axvisor_api::arch::{
+    pub use crate::host::{
         get_host_gicd_base, get_host_gicr_base, hardware_inject_virtual_interrupt, read_vgicd_iidr,
         read_vgicd_typer,
     };
@@ -68,5 +71,5 @@ mod api_reexp {
         pa!(0)
     }
 
-    pub fn hardware_inject_virtual_interrupt(_vector: axvisor_api::vmm::InterruptVector) {}
+    pub fn hardware_inject_virtual_interrupt(_vector: u8) {}
 }

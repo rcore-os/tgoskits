@@ -218,9 +218,9 @@ plat_dyn = false
             r#"
 target = "riscv64gc-unknown-none-elf"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
-features = ["qemu"]
+features = ["ax-driver/serial", "ax-driver/virtio-blk"]
 log = "Warn"
-plat_dyn = false
+plat_dyn = true
 "#,
         );
 

@@ -31,7 +31,7 @@ cargo xtask starry qemu --arch aarch64
 cargo xtask axvisor qemu --arch aarch64
 
 # Linting
-cargo xtask clippy                        # against scripts/test/clippy_crates.csv whitelist
+cargo xtask clippy                        # all workspace crates, no-deps by default; prints timing
 cargo xtask clippy --package <crate>      # specific crate
 cargo xtask clippy --since <git-ref>      # only changed crates
 cargo xtask clippy --all                  # all workspace crates
@@ -85,23 +85,22 @@ Organized by device type: `blk/`, `net/`, `pci/`, `intc/`, `serial/`, `usb/`, `s
 
 ### Platform (`platform/`)
 
-Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv64-visionfive2`, `riscv64-qemu-virt`, `x86-qemu-q35`.
+Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv64-visionfive2`, `x86-qemu-q35`; RISC-V QEMU uses the dynamic platform path.
 
 ## CI
 
 - **fmt**: `cargo fmt --all -- --check`
-- **clippy**: `cargo xtask clippy --since <base>` (incremental for PRs)
+- **clippy**: `cargo xtask clippy --since <base>` (incremental for PRs; prints start, finish, and elapsed time)
 - **sync-lint**: `cargo xtask sync-lint --since <base>`
 - **std tests**: `cargo xtask test`
 - **QEMU tests**: ArceOS/StarryOS/Axvisor across all 4 architectures
 - **Board tests**: self-hosted runners for OrangePi-5-Plus, RDK-S100
-- Crate lists: `scripts/test/clippy_crates.csv`, `scripts/test/std_crates.csv`
+- Std test crate list: `scripts/test/std_crates.csv`
 
 ## Conventions
 
 - PR titles: Conventional Commits `type(scope): content`, e.g. `feat(axbuild): add board test flow`, `fix(starry-process): correct tty cleanup`
 - PR titles in English, bodies in Chinese
 - Do not silence clippy warnings with `allow`; fix the root cause
-- After modifying a crate, if it passes clippy but is missing from `scripts/test/clippy_crates.csv`, add it
 - Do not add agent/AI branding or signatures to commits/PRs
 - Read and strictly follow all conventions in AGENTS.md

@@ -13,6 +13,14 @@ impl VirtualizationBackend {
             Self::Svm => "svm",
         }
     }
+
+    fn from_feature(feature: &str) -> Option<Self> {
+        match feature {
+            "vmx" | "axvm/vmx" => Some(Self::Vmx),
+            "svm" | "axvm/svm" => Some(Self::Svm),
+            _ => None,
+        }
+    }
 }
 
 pub(super) fn normalize_backend_features(features: &mut Vec<String>) -> anyhow::Result<()> {
@@ -23,8 +31,12 @@ fn normalize_backend_features_with(
     features: &mut Vec<String>,
     detect_backend: impl FnOnce() -> anyhow::Result<VirtualizationBackend>,
 ) -> anyhow::Result<()> {
-    let has_vmx = features.iter().any(|feature| feature == "vmx");
-    let has_svm = features.iter().any(|feature| feature == "svm");
+    let has_vmx = features.iter().any(|feature| {
+        VirtualizationBackend::from_feature(feature) == Some(VirtualizationBackend::Vmx)
+    });
+    let has_svm = features.iter().any(|feature| {
+        VirtualizationBackend::from_feature(feature) == Some(VirtualizationBackend::Svm)
+    });
 
     match (has_vmx, has_svm) {
         (true, true) => Err(anyhow!(
@@ -121,8 +133,28 @@ mod tests {
     }
 
     #[test]
+    fn backend_keeps_nested_axvm_choice() {
+        let mut features = vec!["ept-level-4".to_string(), "axvm/svm".to_string()];
+
+        normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Vmx)).unwrap();
+
+        assert!(features.contains(&"axvm/svm".to_string()));
+        assert!(!features.contains(&"vmx".to_string()));
+    }
+
+    #[test]
     fn backend_rejects_conflicting_features() {
         let mut features = vec!["vmx".to_string(), "svm".to_string()];
+
+        let err = normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Vmx))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn backend_rejects_conflicting_nested_features() {
+        let mut features = vec!["vmx".to_string(), "axvm/svm".to_string()];
 
         let err = normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Vmx))
             .unwrap_err();

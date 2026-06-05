@@ -9,7 +9,6 @@ publish = false
 
 [features]
 x86-pc = ["dep:ax-plat-x86-pc"]
-riscv64-qemu-virt = ["dep:ax-plat-riscv64-qemu-virt"]
 loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
 
 [dependencies]
@@ -20,9 +19,6 @@ ax-std = { workspace = true, features = ["myplat"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-plat-x86-pc = { workspace = true, optional = true }
-
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-qemu-virt = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }

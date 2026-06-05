@@ -1,4 +1,4 @@
-use axaddrspace::GuestPhysAddr;
+use axvm_types::GuestPhysAddr;
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
 };

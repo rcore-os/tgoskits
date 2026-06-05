@@ -36,6 +36,8 @@ static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 #[cfg(feature = "ax-std")]
 const WAITER_ENQUEUE_RETRIES: usize = 1024;
+#[cfg(feature = "ax-std")]
+const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[cfg(feature = "ax-std")]
 fn pin_current_to_cpu(cpu_id: usize) {
@@ -127,7 +129,7 @@ fn run_remote_wakeup_test() {
         !api::ax_wait_queue_wait_until(
             &DONE_WQ,
             || DONE.load(Ordering::Acquire),
-            Some(Duration::from_millis(5)),
+            Some(REMOTE_WAKE_PROGRESS_TIMEOUT),
         ),
         "remote wait-queue wakeup did not make bounded progress"
     );

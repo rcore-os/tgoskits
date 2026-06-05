@@ -147,13 +147,8 @@ impl TcpSocket {
 
     fn tcp_info_snapshot(&self) -> TcpInfo {
         self.with_smol_socket(|socket| {
-            let send_capacity = saturating_u32(socket.send_capacity());
             let send_queue = saturating_u32(socket.send_queue());
-            let recv_capacity = saturating_u32(socket.recv_capacity());
-            let recv_queue = saturating_u32(socket.recv_queue());
-            let recv_space = recv_capacity.saturating_sub(recv_queue);
             let snd_mss = TCP_INFO_DEFAULT_MSS;
-            let cwnd_segments = send_capacity.div_ceil(snd_mss).max(1);
 
             let mut options = TcpInfoOptions::empty();
             if socket.timestamp_enabled() {
@@ -173,11 +168,8 @@ impl TcpSocket {
                 notsent_bytes: send_queue,
                 pmtu: TCP_INFO_DEFAULT_PMTU,
                 advmss: snd_mss,
-                snd_cwnd: cwnd_segments,
                 reordering: TCP_INFO_DEFAULT_REORDERING,
-                rcv_space: recv_space,
                 snd_wnd: 0,
-                rcv_wnd: recv_space,
                 ..Default::default()
             }
         })
@@ -867,11 +859,15 @@ mod tests {
     use super::*;
     use crate::{
         options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
-        test_support::{LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network},
+        test_support::{
+            LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network,
+            network_test_guard,
+        },
     };
 
     #[test]
     fn tcp_info_reports_default_socket_metrics() {
+        let _guard = network_test_guard();
         init_split_route_network();
 
         let socket = TcpSocket::new();
@@ -887,12 +883,14 @@ mod tests {
         assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
         assert_eq!(info.notsent_bytes, 0);
         assert_eq!(info.snd_wnd, 0);
-        assert_eq!(info.rcv_space, saturating_u32(TCP_RX_BUF_LEN));
-        assert_eq!(info.rcv_wnd, saturating_u32(TCP_RX_BUF_LEN));
+        assert_eq!(info.snd_cwnd, 0);
+        assert_eq!(info.rcv_space, 0);
+        assert_eq!(info.rcv_wnd, 0);
     }
 
     #[test]
     fn connect_uses_peer_route_for_device_mask() {
+        let _guard = network_test_guard();
         init_split_route_network();
 
         let socket = TcpSocket::new();

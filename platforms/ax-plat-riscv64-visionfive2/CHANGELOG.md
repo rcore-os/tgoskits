@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-visionfive2-v0.1.4...ax-plat-riscv64-visionfive2-v0.1.5) - 2026-06-03
+
+### Added
+
+- *(irq)* introduce shared IRQ framework ([#1065](https://github.com/rcore-os/tgoskits/pull/1065))
+
+### Fixed
+
+- *(repo)* normalize allocator and RISC-V dependencies ([#1021](https://github.com/rcore-os/tgoskits/pull/1021))
+
+### Other
+
+- *(platform)* migrate riscv64 qemu to dynamic platform ([#1085](https://github.com/rcore-os/tgoskits/pull/1085))
+- *(ax-alloc)* remove ax-allocator dependency, simplify to TLSF/buddy-slab backends ([#987](https://github.com/rcore-os/tgoskits/pull/987))
+
 ## [0.1.4](https://github.com/rcore-os/tgoskits/compare/axplat-riscv64-visionfive2-v0.1.3...axplat-riscv64-visionfive2-v0.1.4) - 2026-05-22
 
 ### Other

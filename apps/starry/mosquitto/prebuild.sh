@@ -2,7 +2,7 @@
 set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-base_rootfs="${STARRY_BASE_ROOTFS:-}"
+base_rootfs="${STARRY_ROOTFS:-${STARRY_BASE_ROOTFS:-}}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/mosquitto-apk-cache"
@@ -28,14 +28,13 @@ ensure_host_packages() {
         return
     fi
 
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo "error: missing required host packages and apt-get is unavailable: ${missing[*]}" >&2
+    if ! command -v apk >/dev/null 2>&1; then
+        echo "error: missing required host packages and apk is unavailable: ${missing[*]}" >&2
         exit 1
     fi
 
     echo "installing missing host packages: ${missing[*]}"
-    apt-get update
-    apt-get install -y --no-install-recommends "${missing[@]}"
+    apk add --no-cache "${missing[@]}"
 }
 
 extract_base_rootfs() {
@@ -141,7 +140,7 @@ connection_messages true
 EOF
 }
 
-require_env STARRY_BASE_ROOTFS "$base_rootfs"
+require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
 
