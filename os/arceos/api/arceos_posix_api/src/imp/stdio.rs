@@ -131,6 +131,7 @@ impl super::fd_ops::FileLike for Stdin {
         Ok(PollState {
             readable: true,
             writable: true,
+            readiness_version: 0,
         })
     }
 
@@ -167,6 +168,7 @@ impl super::fd_ops::FileLike for Stdout {
         Ok(PollState {
             readable: true,
             writable: true,
+            readiness_version: 0,
         })
     }
 
