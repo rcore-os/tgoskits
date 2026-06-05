@@ -107,19 +107,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         // out-of-line PC + single-step, or restores PC after the
                         // step) and we resume directly. If not, fall through.
                         match kind {
-                            ExceptionKind::Breakpoint => {
-                                if crate::uprobe::break_uprobe_handler(&mut uctx).is_some() {
-                                    break 'exc;
-                                }
+                            ExceptionKind::Breakpoint
+                                if crate::uprobe::break_uprobe_handler(&mut uctx).is_some() =>
+                            {
+                                break 'exc;
                             }
                             // x86_64 completes the out-of-line single-step via a
                             // #DB; other arches handle stepping inside the
                             // breakpoint path, so the debug hook is x86_64-only.
                             #[cfg(target_arch = "x86_64")]
-                            ExceptionKind::Debug => {
-                                if crate::uprobe::debug_uprobe_handler(&mut uctx).is_some() {
-                                    break 'exc;
-                                }
+                            ExceptionKind::Debug
+                                if crate::uprobe::debug_uprobe_handler(&mut uctx).is_some() =>
+                            {
+                                break 'exc;
                             }
                             _ => {}
                         }
