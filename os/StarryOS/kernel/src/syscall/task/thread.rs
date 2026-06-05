@@ -99,14 +99,26 @@ pub fn sys_arch_prctl(
     let code = ArchPrctlCode::try_from(code).map_err(|_| AxError::InvalidInput)?;
     debug!("sys_arch_prctl: code = {code:?}, addr = {addr:#x}");
 
+    // Reject addresses outside the canonical user-space range (the
+    // high-half of the 48-bit virtual address space is reserved for
+    // the kernel or is non-canonical).
+    const USER_SPACE_END: usize = crate::config::USER_SPACE_BASE + crate::config::USER_SPACE_SIZE;
+    let check_addr = |addr: usize| {
+        use crate::config::USER_SPACE_BASE;
+
+        if !(USER_SPACE_BASE..USER_SPACE_END).contains(&addr) {
+            return Err(AxError::OperationNotPermitted);
+        }
+        Ok(())
+    };
+
     match code {
-        // According to Linux implementation, SetFs & SetGs does not return
-        // error at all
         ArchPrctlCode::GetFs => {
             (addr as *mut usize).vm_write(uctx.tls())?;
             Ok(0)
         }
         ArchPrctlCode::SetFs => {
+            check_addr(addr)?;
             uctx.set_tls(addr);
             Ok(0)
         }
@@ -115,6 +127,7 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::SetGs => {
+            check_addr(addr)?;
             uctx.gs_base = addr as _;
             Ok(0)
         }
