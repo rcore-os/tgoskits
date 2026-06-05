@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -15,6 +15,7 @@ use crate::{
 };
 
 const AX_LIBC_PACKAGE: &str = "ax-libc";
+const PIC_RUSTFLAG: &str = "-Crelocation-model=pic";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArceosCBuildInput {
@@ -37,8 +38,10 @@ pub(crate) fn build_c_app(
 ) -> anyhow::Result<ArceosCBuildOutput> {
     let mut cargo = build::load_cargo_config(request)?;
     cargo.package = AX_LIBC_PACKAGE.to_string();
+    cargo.target = request.target.clone();
     cargo.to_bin = false;
     cargo.features = map_c_app_features(&input.features, &cargo.features);
+    let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
 
     let mode = if request.debug { "debug" } else { "release" };
     let arch = request.arch.as_str();
@@ -61,7 +64,13 @@ pub(crate) fn build_c_app(
     fs::create_dir_all(&input.out_dir)
         .with_context(|| format!("failed to create {}", input.out_dir.display()))?;
 
-    build_axlibc_staticlib(workspace_root, &cargo, &input.target_dir, request.debug)?;
+    build_axlibc_staticlib(
+        workspace_root,
+        &cargo,
+        &input.target_dir,
+        request.debug,
+        dynamic_pie,
+    )?;
     write_pthread_mutex_header(&generated_include_dir, &cargo.features)?;
     let rust_lib = input
         .target_dir
@@ -84,15 +93,16 @@ pub(crate) fn build_c_app(
     )
     .context("failed to locate ArceOS C app linker scripts")?;
 
-    let cflags = cflags(
+    let cflags = cflags(CFlagsInput {
         workspace_root,
         arch,
         mode,
-        &generated_include_dir,
-        &include_dir,
-        &cargo.features,
-        cargo.log,
-    );
+        generated_include_dir: &generated_include_dir,
+        include_dir: &include_dir,
+        features: &cargo.features,
+        log: cargo.log,
+        dynamic_pie,
+    });
     let lib_objects =
         compile_dir_c_sources(&c_source_dir, &axlibc_obj_dir, &cflags, None, "axlibc")?;
     let app_objects = compile_dir_c_sources(&input.app_dir, &app_obj_dir, &cflags, None, "app")?;
@@ -153,8 +163,13 @@ fn build_axlibc_staticlib(
     cargo: &Cargo,
     target_dir: &Path,
     debug: bool,
+    dynamic_pie: bool,
 ) -> anyhow::Result<()> {
     let mut command = Command::new("cargo");
+    let mut env = cargo.env.clone();
+    if dynamic_pie {
+        append_pic_rustflag(&mut env);
+    }
     command
         .current_dir(workspace_root)
         .arg("build")
@@ -174,12 +189,39 @@ fn build_axlibc_staticlib(
     for arg in &cargo.args {
         command.arg(arg);
     }
-    for (key, value) in &cargo.env {
+    for (key, value) in &env {
         command.env(key, value);
     }
     command
         .exec()
         .context("failed to build ax-libc static library")
+}
+
+fn dynamic_pie_for_c_app(features: &[String]) -> bool {
+    has_feature(features, "plat-dyn")
+}
+
+fn append_pic_rustflag(env: &mut HashMap<String, String>) {
+    const ENCODED_RUSTFLAGS: &str = "CARGO_ENCODED_RUSTFLAGS";
+    const RUSTFLAGS: &str = "RUSTFLAGS";
+
+    if let Some(flags) = env.get_mut(ENCODED_RUSTFLAGS) {
+        if !flags.is_empty() {
+            flags.push('\x1f');
+        }
+        flags.push_str(PIC_RUSTFLAG);
+        return;
+    }
+
+    if let Some(flags) = env.get_mut(RUSTFLAGS) {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str(PIC_RUSTFLAG);
+        return;
+    }
+
+    env.insert(ENCODED_RUSTFLAGS.to_string(), PIC_RUSTFLAG.to_string());
 }
 
 fn find_final_linker_script(
@@ -339,47 +381,56 @@ fn platform_linker_owner_prefix(platform: &str, features: &[String]) -> &'static
     }
 }
 
-fn cflags(
-    workspace_root: &Path,
-    arch: &str,
-    mode: &str,
-    generated_include_dir: &Path,
-    include_dir: &Path,
-    features: &[String],
+struct CFlagsInput<'a> {
+    workspace_root: &'a Path,
+    arch: &'a str,
+    mode: &'a str,
+    generated_include_dir: &'a Path,
+    include_dir: &'a Path,
+    features: &'a [String],
     log: Option<LogLevel>,
-) -> Vec<String> {
+    dynamic_pie: bool,
+}
+
+fn cflags(input: CFlagsInput<'_>) -> Vec<String> {
     let mut flags = vec![
         "-nostdinc".to_string(),
         "-fno-builtin".to_string(),
         "-ffreestanding".to_string(),
         "-Wall".to_string(),
-        format!("-I{}", generated_include_dir.display()),
-        format!("-I{}", include_dir.display()),
+        format!("-I{}", input.generated_include_dir.display()),
+        format!("-I{}", input.include_dir.display()),
     ];
-    for feature in c_config_features(features) {
+    for feature in c_config_features(input.features) {
         flags.push(format!("-DAX_CONFIG_{}", c_define_name(&feature)));
     }
     flags.push(format!(
         "-DAX_LOG_{}",
-        format!("{:?}", log.unwrap_or(LogLevel::Warn)).to_uppercase()
+        format!("{:?}", input.log.unwrap_or(LogLevel::Warn)).to_uppercase()
     ));
-    if mode == "release" {
+    if input.mode == "release" {
         flags.push("-O3".to_string());
     }
-    match arch {
+    if input.dynamic_pie {
+        flags.push("-fPIE".to_string());
+    }
+    match input.arch {
         "riscv64" => flags.extend([
             "-march=rv64gc".to_string(),
             "-mabi=lp64d".to_string(),
             "-mcmodel=medany".to_string(),
         ]),
         "loongarch64" => flags.push("-msoft-float".to_string()),
-        "x86_64" if !has_feature(features, "fp-simd") => flags.push("-mno-sse".to_string()),
-        "aarch64" if !has_feature(features, "fp-simd") => {
+        "x86_64" if !has_feature(input.features, "fp-simd") => flags.push("-mno-sse".to_string()),
+        "aarch64" if !has_feature(input.features, "fp-simd") => {
             flags.push("-mgeneral-regs-only".to_string())
         }
         _ => {}
     }
-    flags.push(format!("-I{}", workspace_root.join("include").display()));
+    flags.push(format!(
+        "-I{}",
+        input.workspace_root.join("include").display()
+    ));
     flags
 }
 
@@ -711,6 +762,43 @@ mod tests {
         assert!(features.contains(&"plat-dyn".to_string()));
         assert!(features.contains(&"alloc".to_string()));
         assert!(features.contains(&"smp".to_string()));
+    }
+
+    #[test]
+    fn dynamic_c_apps_use_pie_for_every_dynamic_platform() {
+        assert!(dynamic_pie_for_c_app(&strings(&["plat-dyn"])));
+        assert!(dynamic_pie_for_c_app(&strings(&["ax-std/plat-dyn"])));
+        assert!(!dynamic_pie_for_c_app(&strings(&["smp"])));
+    }
+
+    #[test]
+    fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
+        let mut env = std::collections::HashMap::new();
+        append_pic_rustflag(&mut env);
+        assert_eq!(
+            env.get("CARGO_ENCODED_RUSTFLAGS"),
+            Some(&PIC_RUSTFLAG.to_string())
+        );
+
+        let mut env = std::collections::HashMap::from([(
+            "CARGO_ENCODED_RUSTFLAGS".to_string(),
+            "-Cforce-frame-pointers=yes".to_string(),
+        )]);
+        append_pic_rustflag(&mut env);
+        assert_eq!(
+            env.get("CARGO_ENCODED_RUSTFLAGS"),
+            Some(&format!("-Cforce-frame-pointers=yes\x1f{PIC_RUSTFLAG}"))
+        );
+
+        let mut env = std::collections::HashMap::from([(
+            "RUSTFLAGS".to_string(),
+            "-Cforce-frame-pointers=yes".to_string(),
+        )]);
+        append_pic_rustflag(&mut env);
+        assert_eq!(
+            env.get("RUSTFLAGS"),
+            Some(&format!("-Cforce-frame-pointers=yes {PIC_RUSTFLAG}"))
+        );
     }
 
     #[test]

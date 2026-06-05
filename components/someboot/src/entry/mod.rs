@@ -30,11 +30,10 @@ pub fn primary_init_early(params: PrimaryCpuInitInfo) {
     crate::mem::early_init();
 }
 
-pub(crate) fn secondary_entry(cpu_meta: &PerCpuMeta) {
+pub(crate) fn secondary_entry(cpu_meta_paddr: usize) {
     crate::arch::Arch::per_cpu_trap_init(false);
     let cpu_meta = unsafe {
-        let phys = cpu_meta as *const _ as usize;
-        let virt = crate::mem::phys_to_virt(phys);
+        let virt = crate::mem::phys_to_virt(cpu_meta_paddr);
         &*(virt as *const crate::smp::PerCpuMeta)
     };
 

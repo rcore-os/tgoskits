@@ -10,6 +10,7 @@ repository.workspace = true
 version = "0.21.0"
 
 [dependencies]
+acpi = "6.1.1"
 fdt-edit.workspace = true
 fdt-raw.workspace = true
 log = "0.4"
@@ -27,3 +28,6 @@ rdif-pcie = { workspace = true }
 [dev-dependencies]
 rdif-intc.workspace = true
 rdif-clk.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86.workspace = true

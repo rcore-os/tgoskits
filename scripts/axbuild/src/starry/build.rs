@@ -483,11 +483,11 @@ mod tests {
     }
 
     #[test]
-    fn default_x86_starry_build_info_keeps_static_qemu_feature() {
+    fn default_x86_starry_build_info_uses_dynamic_platform() {
         let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
 
-        assert!(!build_info.plat_dyn);
-        assert_eq!(build_info.features, vec!["qemu".to_string()]);
+        assert!(build_info.plat_dyn);
+        assert!(build_info.features.is_empty());
     }
 
     #[test]

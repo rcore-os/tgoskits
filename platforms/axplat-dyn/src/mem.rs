@@ -7,7 +7,55 @@ static FREE_LIST: Once<Vec<RawRange, 32>> = Once::new();
 static RESERVED_LIST: Once<Vec<RawRange, 32>> = Once::new();
 static MMIO_LIST: Once<Vec<RawRange, 16>> = Once::new();
 
+#[cfg(target_arch = "x86_64")]
+const X86_FIXED_MMIO_RANGES: &[RawRange] = &[
+    (0xfec0_0000, 0x1000), // IOAPIC
+    (0xfed0_0000, 0x1000), // HPET
+    (0xfee0_0000, 0x1000), // LAPIC
+];
+
+#[cfg(target_arch = "x86_64")]
+const X86_RESERVED_RAM_RANGES: &[RawRange] = &[
+    // Match the static q35 platform: the low 2 MiB contains legacy holes and
+    // boot-time data such as the AP trampoline, and must not enter the heap.
+    (0, 0x20_0000),
+];
+
 struct MemIfImpl;
+
+fn push_non_overlapping<const N: usize>(list: &mut Vec<RawRange, N>, range: RawRange) {
+    let (start, size) = range;
+    if size == 0 {
+        return;
+    }
+
+    list.sort_unstable_by_key(|&(start, _)| start);
+    let original_len = list.len();
+    let mut cursor = start;
+    let end = start.saturating_add(size);
+    for index in 0..original_len {
+        let (existing_start, existing_size) = list[index];
+        let existing_end = existing_start.saturating_add(existing_size);
+        if existing_end <= cursor {
+            continue;
+        }
+        if existing_start >= end {
+            break;
+        }
+        if existing_start > cursor {
+            list.push((cursor, existing_start - cursor)).unwrap();
+        }
+        cursor = cursor.max(existing_end);
+        if cursor >= end {
+            break;
+        }
+    }
+
+    if cursor < end {
+        list.push((cursor, end - cursor)).unwrap();
+    }
+    list.sort_unstable_by_key(|&(start, _)| start);
+}
 
 #[impl_plat_interface]
 impl MemIf for MemIfImpl {
@@ -26,12 +74,16 @@ impl MemIf for MemIfImpl {
     fn reserved_phys_ram_ranges() -> &'static [RawRange] {
         RESERVED_LIST.call_once(|| {
             let mut list = Vec::new();
+            #[cfg(target_arch = "x86_64")]
+            for &range in X86_RESERVED_RAM_RANGES {
+                push_non_overlapping(&mut list, range);
+            }
             for r in somehal::mem::memory_map() {
                 if matches!(
                     r.memory_type,
                     MemoryType::Reserved | MemoryType::KImage | MemoryType::PerCpuData
                 ) {
-                    list.push((r.physical_start, r.size_in_bytes)).unwrap();
+                    push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
                 }
             }
             list
@@ -43,8 +95,13 @@ impl MemIf for MemIfImpl {
             let mut list = Vec::new();
             for r in somehal::mem::memory_map() {
                 if matches!(r.memory_type, MemoryType::Mmio) {
-                    list.push((r.physical_start, r.size_in_bytes)).unwrap();
+                    push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
                 }
+            }
+            #[cfg(target_arch = "x86_64")]
+            for &range in X86_FIXED_MMIO_RANGES {
+                // QEMU/OVMF does not always report fixed PC chipset MMIO holes.
+                push_non_overlapping(&mut list, range);
             }
             list
         })
