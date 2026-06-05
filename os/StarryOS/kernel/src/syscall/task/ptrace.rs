@@ -1054,7 +1054,7 @@ fn ptrace_user_word_range_x86_64(offset: usize) -> AxResult<core::ops::Range<usi
     let end = offset
         .checked_add(word_size)
         .ok_or_else(|| AxError::from(LinuxError::EIO))?;
-    if offset % word_size != 0 || end > X86_64_USER_AREA_SIZE {
+    if !offset.is_multiple_of(word_size) || end > X86_64_USER_AREA_SIZE {
         return Err(AxError::from(LinuxError::EIO));
     }
     Ok(offset..end)
