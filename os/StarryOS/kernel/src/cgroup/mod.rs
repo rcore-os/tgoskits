@@ -279,6 +279,10 @@ pub fn path(id: CgroupId) -> AxResult<String> {
 }
 
 pub fn procs_text(id: CgroupId) -> AxResult<String> {
+    // Lock order: callers that need both process state and the cgroup tree must
+    // first take a process-table snapshot and then lock CGROUP_TREE. Do not
+    // hold CGROUP_TREE while entering task lookup/table code: remove_process()
+    // removes from PROCESS_TABLE first and then releases cgroup membership.
     let processes = crate::task::processes();
     let tree = CGROUP_TREE.lock();
     let node = tree.nodes.get(&id).ok_or(AxError::NotFound)?;
@@ -320,7 +324,6 @@ pub fn subtree_control_text(id: CgroupId) -> AxResult<&'static str> {
 }
 
 pub fn write_procs(id: CgroupId, data: &[u8]) -> AxResult<()> {
-    ensure_node_exists(id)?;
     let pid = parse_procs_pid(data)?;
     attach_process(id, pid)
 }
