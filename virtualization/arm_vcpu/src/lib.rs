@@ -23,6 +23,7 @@ mod context_frame;
 #[macro_use]
 mod exception_utils;
 mod exception;
+pub mod host;
 mod pcpu;
 mod smc;
 mod vcpu;

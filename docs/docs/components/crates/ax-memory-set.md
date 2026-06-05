@@ -183,7 +183,7 @@
 
 - `os/arceos/modules/axmm`
 - `os/StarryOS/kernel`
-- `memory/axaddrspace`
+- `virtualization/axaddrspace`
 
 ### 3.3 关系示意
 

@@ -228,20 +228,26 @@ pub fn sys_io_uring_enter(
 }
 
 fn write_probe(arg: *mut u8, nr_args: usize) -> AxResult<isize> {
-    let ops_len = SUPPORTED_OPS.len().min(nr_args).min(u8::MAX as usize);
+    let last_op = IORING_OP_WRITE;
+    let ops_len = (last_op as usize + 1).min(nr_args).min(u8::MAX as usize);
     let header = IoUringProbeHeader {
-        last_op: IORING_OP_WRITE,
+        last_op,
         ops_len: ops_len as u8,
         resv: 0,
         resv2: [0; 3],
     };
     (arg as *mut IoUringProbeHeader).vm_write(header)?;
 
-    for (idx, op) in SUPPORTED_OPS.iter().copied().take(ops_len).enumerate() {
+    for idx in 0..ops_len {
+        let op = idx as u8;
         let probe_op = IoUringProbeOp {
             op,
             resv: 0,
-            flags: IO_URING_OP_SUPPORTED,
+            flags: if SUPPORTED_OPS.contains(&op) {
+                IO_URING_OP_SUPPORTED
+            } else {
+                0
+            },
             resv2: 0,
         };
         (arg.wrapping_add(size_of::<IoUringProbeHeader>())

@@ -475,7 +475,7 @@ fn default_static_platform_for_arch(arch: &str) -> Option<&'static str> {
     match arch {
         "x86_64" => Some("x86-pc"),
         "aarch64" => None,
-        "riscv64" => Some("riscv64-qemu-virt"),
+        "riscv64" => None,
         "loongarch64" => Some("loongarch64-qemu-virt"),
         _ => panic!("Unsupported architecture: {}", arch),
     }

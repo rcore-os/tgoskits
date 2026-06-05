@@ -305,7 +305,7 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
 
 fn default_starry_qemu_platform_feature(feature: &str) -> Option<&str> {
     match feature.strip_prefix("ax-hal/")? {
-        "x86-pc" | "riscv64-qemu-virt" | "loongarch64-qemu-virt" => Some(feature),
+        "x86-pc" | "loongarch64-qemu-virt" => Some(feature),
         _ => None,
     }
 }
@@ -469,6 +469,14 @@ mod tests {
     #[test]
     fn default_aarch64_starry_build_info_uses_dynamic_platform() {
         let build_info = default_starry_build_info_for_target("aarch64-unknown-none-softfloat");
+
+        assert!(build_info.plat_dyn);
+        assert!(!build_info.features.contains(&"qemu".to_string()));
+    }
+
+    #[test]
+    fn default_riscv64_starry_build_info_uses_dynamic_platform() {
+        let build_info = default_starry_build_info_for_target("riscv64gc-unknown-none-elf");
 
         assert!(build_info.plat_dyn);
         assert!(!build_info.features.contains(&"qemu".to_string()));
@@ -701,6 +709,14 @@ HELLO = "world"
     }
 
     #[test]
+    fn riscv64_has_no_starry_default_platform() {
+        assert_eq!(
+            crate::context::starry_default_platform_for_arch_checked("riscv64").unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn uimage_load_paddr_uses_dynamic_riscv64_fallback_without_axconfig() {
         let cargo = Cargo {
             env: HashMap::new(),
@@ -780,7 +796,8 @@ HELLO = "world"
         assert!(
             !cargo
                 .features
-                .contains(&"ax-hal/riscv64-qemu-virt".to_string())
+                .iter()
+                .any(|feature| feature.starts_with("qemu"))
         );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert_eq!(

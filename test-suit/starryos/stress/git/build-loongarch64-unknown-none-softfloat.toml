@@ -1,0 +1,5 @@
+target = "loongarch64-unknown-none-softfloat"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+log = "Warn"
+features = ["qemu"]
+plat_dyn = false

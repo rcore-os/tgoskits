@@ -36,8 +36,10 @@
 #define IORING_OP_READV 1U
 #define IORING_OP_WRITEV 2U
 #define IORING_OP_FSYNC 3U
+#define IORING_OP_TIMEOUT 11U
 #define IORING_OP_READ 22U
 #define IORING_OP_WRITE 23U
+#define IORING_OP_PROBE_COUNT (IORING_OP_WRITE + 1U)
 #define IORING_OP_LAST 63U
 
 struct io_sqring_offsets {
@@ -112,7 +114,7 @@ struct io_uring_probe {
     uint8_t ops_len;
     uint16_t resv;
     uint32_t resv2[3];
-    struct io_uring_probe_op ops[8];
+    struct io_uring_probe_op ops[IORING_OP_PROBE_COUNT];
 };
 
 struct ring_view {
@@ -274,13 +276,26 @@ int main(void)
     struct io_uring_probe probe;
     memset(&probe, 0, sizeof(probe));
     CHECK_RET(syscall(SYS_io_uring_register, ring.fd, IORING_REGISTER_PROBE,
-                      &probe, 8),
+                      &probe, IORING_OP_PROBE_COUNT),
               0, "io_uring_register PROBE succeeds");
-    CHECK(probe.last_op >= IORING_OP_WRITE && probe.ops_len > 0,
+    CHECK(probe.last_op >= IORING_OP_WRITE &&
+              probe.ops_len >= IORING_OP_PROBE_COUNT,
           "probe reports supported operations");
     CHECK(probe.ops[0].op == IORING_OP_NOP, "probe includes NOP first");
     CHECK((probe.ops[0].flags & IO_URING_OP_SUPPORTED) != 0,
           "probe marks NOP as supported");
+    CHECK(probe.ops[4].op == 4 &&
+              (probe.ops[4].flags & IO_URING_OP_SUPPORTED) == 0,
+          "probe leaves unsupported opcode slots clear");
+    CHECK(probe.ops[IORING_OP_TIMEOUT].op == IORING_OP_TIMEOUT &&
+              (probe.ops[IORING_OP_TIMEOUT].flags & IO_URING_OP_SUPPORTED) != 0,
+          "probe marks TIMEOUT by opcode index");
+    CHECK(probe.ops[IORING_OP_READ].op == IORING_OP_READ &&
+              (probe.ops[IORING_OP_READ].flags & IO_URING_OP_SUPPORTED) != 0,
+          "probe marks READ by opcode index");
+    CHECK(probe.ops[IORING_OP_WRITE].op == IORING_OP_WRITE &&
+              (probe.ops[IORING_OP_WRITE].flags & IO_URING_OP_SUPPORTED) != 0,
+          "probe marks WRITE by opcode index");
 
     struct io_uring_sqe sqe;
     memset(&sqe, 0, sizeof(sqe));

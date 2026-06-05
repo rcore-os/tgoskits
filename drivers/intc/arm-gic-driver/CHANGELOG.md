@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.1...arm-gic-driver-v0.17.2) - 2026-06-03
+
+### Other
+
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+
 ## [0.17.0](https://github.com/drivercraft/sparreal-os/compare/arm-gic-driver-v0.16.4...arm-gic-driver-v0.17.0) - 2026-03-05
 
 ### Other

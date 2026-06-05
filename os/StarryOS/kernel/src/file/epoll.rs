@@ -23,7 +23,7 @@ use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
-use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
+use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
 
 use crate::file::{FileLike, get_file_like};
 
@@ -38,6 +38,7 @@ bitflags! {
     pub struct EpollFlags: u32 {
         const EDGE_TRIGGER = EPOLLET;
         const ONESHOT = EPOLLONESHOT;
+        const EXCLUSIVE = EPOLLEXCLUSIVE;
     }
 }
 
@@ -146,6 +147,7 @@ struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
     mode: SpinNoIrq<TriggerMode>,
+    exclusive: bool,
     in_ready_queue: AtomicBool,
 }
 
@@ -155,8 +157,14 @@ impl EpollInterest {
             key,
             event,
             mode: SpinNoIrq::new(TriggerMode::from_flags(flags)),
+            exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
         }
+    }
+
+    #[inline]
+    fn is_exclusive(&self) -> bool {
+        self.exclusive
     }
 
     #[inline]
@@ -353,6 +361,10 @@ impl Epoll {
 
         let mut guard = self.inner.interests.lock();
         let old = guard.get_mut(&key).ok_or(AxError::NotFound)?;
+        // Linux forbids modifying an entry that was added as exclusive.
+        if old.is_exclusive() {
+            return Err(AxError::InvalidInput);
+        }
 
         // Preserve ready-queue membership across the swap. The ready_queue
         // only holds Weak<EpollInterest> pointing at the old Arc, so

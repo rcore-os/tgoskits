@@ -8,7 +8,8 @@ use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
-    EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD, epoll_event, timespec,
+    EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD, EPOLLEXCLUSIVE, epoll_event,
+    timespec,
 };
 use starry_signal::SignalSet;
 use starry_vm::{vm_read_slice, vm_write_slice};
@@ -25,6 +26,12 @@ use crate::{
 };
 
 const EP_MAX_EVENTS: usize = i32::MAX as usize / size_of::<epoll_event>();
+const EPOLLEXCLUSIVE_OK_BITS: u32 = IoEvents::IN.bits()
+    | IoEvents::OUT.bits()
+    | IoEvents::ERR.bits()
+    | IoEvents::HUP.bits()
+    | EpollFlags::EDGE_TRIGGER.bits()
+    | EpollFlags::EXCLUSIVE.bits();
 
 fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> AxResult<()> {
     let len = maxevents
@@ -111,12 +118,14 @@ pub fn sys_epoll_ctl(
     let epoll = Epoll::from_fd(epfd)?;
     debug!("sys_epoll_ctl <= epfd: {epfd}, op: {op}, fd: {fd}");
 
-    let parse_event = || -> AxResult<(EpollEvent, EpollFlags)> {
+    let parse_event = || -> AxResult<(u32, EpollEvent, EpollFlags)> {
         let event = read_epoll_event(event)?;
+        let raw_events = event.events;
         let events = IoEvents::from_bits_truncate(event.events);
         let flags =
-            EpollFlags::from_bits(event.events & !events.bits()).ok_or(AxError::InvalidInput)?;
+            EpollFlags::from_bits(raw_events & !events.bits()).ok_or(AxError::InvalidInput)?;
         Ok((
+            raw_events,
             EpollEvent {
                 events,
                 user_data: event.data,
@@ -126,11 +135,21 @@ pub fn sys_epoll_ctl(
     };
     match op {
         EPOLL_CTL_ADD => {
-            let (event, flags) = parse_event()?;
+            let (raw_events, event, flags) = parse_event()?;
+            // Linux only permits EPOLLEXCLUSIVE on ADD, and it is rejected for
+            // epoll targets as well.
+            if raw_events & EPOLLEXCLUSIVE != 0
+                && (raw_events & !EPOLLEXCLUSIVE_OK_BITS != 0 || Epoll::from_fd(fd).is_ok())
+            {
+                return Err(AxError::InvalidInput);
+            }
             epoll.add(fd, event, flags)?;
         }
         EPOLL_CTL_MOD => {
-            let (event, flags) = parse_event()?;
+            let (_, event, flags) = parse_event()?;
+            if flags.contains(EpollFlags::EXCLUSIVE) {
+                return Err(AxError::InvalidInput);
+            }
             epoll.modify(fd, event, flags)?;
         }
         EPOLL_CTL_DEL => {

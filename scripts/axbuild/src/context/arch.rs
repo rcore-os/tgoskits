@@ -54,7 +54,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "riscv64",
         target: "riscv64gc-unknown-none-elf",
         default_rootfs_image: "rootfs-riscv64-alpine.img",
-        starry_default_platform: Some("riscv64-qemu-virt"),
+        starry_default_platform: None,
         cross_compile: CrossCompileSpec {
             llvm_target: "riscv64-linux-musl",
             cmake_system_processor: "riscv64",

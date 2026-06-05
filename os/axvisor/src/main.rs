@@ -33,18 +33,20 @@ extern crate alloc;
 
 extern crate ax_std as std;
 
-mod hal;
+mod config;
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
+mod fdt;
+mod images;
+mod manager;
 mod shell;
-mod task;
-mod vmm;
 
-use std::os::arceos::api::time::ax_wall_time;
 use std::println;
 
 /// Startup banners printed before the hypervisor begins initialization.
-///
-/// A banner is selected at runtime using the wall clock. This keeps boot output
-/// slightly varied without introducing any state or configuration dependency.
 const LOGO: [&str; 2] = [
     r#"
        d8888            888     888  d8b
@@ -66,40 +68,12 @@ d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
 ];
 
 /// Prints the startup banner to the console.
-///
-/// The banner selection is deliberately best-effort and only depends on the
-/// current wall-clock value. It has no impact on the rest of boot.
 fn print_logo() {
-    let elapsed = ax_wall_time().as_micros() as usize;
-    let logo = LOGO[elapsed % LOGO.len()];
-
     println!();
-    println!("{}", logo);
+    println!("{}", LOGO[0]);
     println!();
     println!("by AxVisor Team");
     println!();
-}
-
-/// Verifies that the current platform can run hardware-assisted virtualization.
-///
-/// # Panics
-///
-/// Panics when virtualization support is unavailable. Axvisor cannot continue
-/// without the architecture-specific virtualization extension, so this is a
-/// fatal early-boot condition.
-fn ensure_hardware_support() {
-    if axvm::has_hardware_support() {
-        return;
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    panic!(
-        "LoongArch virtualization extensions are unavailable. Use a virtualization-capable \
-         LoongArch QEMU build such as QEMU-LVZ instead of stock qemu-system-loongarch64."
-    );
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    panic!("Hardware does not support virtualization");
 }
 
 /// Axvisor kernel entry point.
@@ -115,12 +89,10 @@ fn main() {
     print_logo();
 
     info!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
-    ensure_hardware_support();
-    hal::enable_virtualization();
+    let manager = manager::AxvmManager::new().expect("failed to initialize AxVM manager");
 
-    vmm::init();
-    vmm::start();
+    manager.init_default_vms();
+    manager.start_default_vms();
 
     info!("[OK] Default guest initialized");
 

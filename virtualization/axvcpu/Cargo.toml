@@ -1,7 +1,7 @@
 [package]
 name = "axvcpu"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.5.9"
+version = "0.6.0"
 edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual CPU abstraction for ArceOS hypervisor"
@@ -12,7 +12,8 @@ license = "Apache-2.0"
 [dependencies]
 ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
+ax-page-table-entry = { workspace = true }
 ax-percpu = { workspace = true }
-axaddrspace = { workspace = true }
-axvisor_api = { workspace = true }
+axdevice_base = { workspace = true }
+axvm-types = { workspace = true }
 ax-kspin = { workspace = true }

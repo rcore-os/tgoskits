@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vplic"
-version = "0.4.12"
+version = "0.4.13"
 edition.workspace = true
 authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
@@ -16,10 +16,11 @@ default = []
 
 [dependencies]
 ax-kspin.workspace = true
-axaddrspace = { workspace = true }
+ax-crate-interface = { workspace = true }
 axdevice_base = { workspace = true }
-axvisor_api = { workspace = true }
 ax-errno = { workspace = true }
+ax-memory-addr = { workspace = true }
+axvm-types = { workspace = true }
 bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
 

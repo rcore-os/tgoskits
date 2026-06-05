@@ -1,6 +1,6 @@
 [package]
 name = "axvmconfig"
-version = "0.5.2"
+version = "0.6.0"
 edition.workspace = true
 authors = [
     "Keyang Hu <keyang.hu@qq.com>",
@@ -25,7 +25,7 @@ path = "src/main.rs"
 
 [dependencies]
 ax-errno = { workspace = true }
-enumerable = {version = "1.2", default-features = false}
+axvm-types = { workspace = true }
 log = "0.4.21"
 serde = {version = "1.0.204", default-features = false, features = ["derive"]}
 serde_repr = "0.1"

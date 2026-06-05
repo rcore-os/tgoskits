@@ -712,7 +712,7 @@ pub(crate) fn apply_target_defaults_if_plat_dyn_unspecified(
         return;
     }
 
-    if target.starts_with("aarch64-") {
+    if target.starts_with("aarch64-") || target.starts_with("riscv64") {
         build_info.plat_dyn = BuildInfo::default_for_target(target).plat_dyn;
     }
 }
@@ -1016,7 +1016,6 @@ fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
     matches!(
         platform,
         "x86-pc"
-            | "riscv64-qemu-virt"
             | "riscv64-sg2002"
             | "riscv64-visionfive2"
             | "loongarch64-qemu-virt"
@@ -1050,11 +1049,10 @@ fn default_ax_hal_platform_feature(
 
     Ok(match arch {
         "x86_64" => "ax-hal/x86-pc",
-        "riscv64" => "ax-hal/riscv64-qemu-virt",
         "loongarch64" => "ax-hal/loongarch64-qemu-virt",
-        "aarch64" => {
+        "aarch64" | "riscv64" => {
             return Err(anyhow!(
-                "no static default ax-hal platform for arch `aarch64`"
+                "no static default ax-hal platform for arch `{arch}`"
             ));
         }
         _ => unreachable!("unsupported arch"),
@@ -1171,22 +1169,6 @@ fn require_default_platform_package(metadata: &Metadata, arch: &str) -> anyhow::
         .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
 }
 
-fn explicit_myplat_platform_package(
-    package: &str,
-    arch: &str,
-    metadata: &Metadata,
-) -> Option<String> {
-    match (package, arch) {
-        ("axvisor", "x86_64") => {
-            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
-        }
-        ("axvisor", "riscv64") => {
-            platform_package_by_name_with_workspace_fallback(metadata, "riscv64-qemu-virt")
-        }
-        _ => None,
-    }
-}
-
 fn resolve_platform_package(
     package: &str,
     target: &str,
@@ -1221,28 +1203,18 @@ fn resolve_platform_package(
         .collect();
 
     if let Some(platform) =
-        explicit_platform_package_from_features(package_info, &explicit_platform_features)
+        explicit_platform_package_from_features(package_info, &explicit_platform_features, metadata)
     {
         return Ok(platform);
     }
 
-    if has_myplat_feature(features) {
-        if let Some(dep_name) = explicit_myplat_platform_package(package, arch, metadata)
-            && package_info
-                .dependencies
-                .iter()
-                .any(|dep| dep.name == dep_name)
-        {
-            return Ok(dep_name);
-        }
-
-        if let Some(dep) = package_info
+    if has_myplat_feature(features)
+        && let Some(dep) = package_info
             .dependencies
             .iter()
             .find(|dep| myplat_dependency_matches_arch(&dep.name, arch))
-        {
-            return Ok(dep.name.clone());
-        }
+    {
+        return Ok(dep.name.clone());
     }
 
     require_default_platform_package(metadata, arch)
@@ -1265,19 +1237,25 @@ fn target_arch_name(target: &str) -> anyhow::Result<&'static str> {
 fn explicit_platform_package_from_features(
     package_info: &Package,
     explicit_features: &[&str],
+    metadata: &Metadata,
 ) -> Option<String> {
-    package_info
-        .dependencies
+    explicit_features
         .iter()
-        .find(|dep| {
-            dependency_is_platform(&dep.name)
-                && explicit_features.iter().any(|feature| {
-                    *feature == dep.name
-                        || *feature == linker_platform_name(&dep.name)
-                        || feature_enables_dependency(package_info, feature, &dep.name)
+        .find_map(|feature| platform_package_by_name_with_workspace_fallback(metadata, feature))
+        .or_else(|| {
+            package_info
+                .dependencies
+                .iter()
+                .find(|dep| {
+                    dependency_is_platform(&dep.name)
+                        && explicit_features.iter().any(|feature| {
+                            *feature == dep.name
+                                || *feature == linker_platform_name(&dep.name)
+                                || feature_enables_dependency(package_info, feature, &dep.name)
+                        })
                 })
+                .map(|dep| dep.name.clone())
         })
-        .map(|dep| dep.name.clone())
 }
 
 fn dependency_is_platform(dep_name: &str) -> bool {
@@ -1568,7 +1546,7 @@ mod tests {
     fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         let mut envs = HashMap::new();
         let mut features = vec![
-            "ax-hal/riscv64-qemu-virt".to_string(),
+            "ax-hal/loongarch64-qemu-virt".to_string(),
             "ax-driver/plat-dyn".to_string(),
             "ax-driver/virtio-blk".to_string(),
             "ax-driver/virtio-net".to_string(),
@@ -1581,7 +1559,7 @@ mod tests {
         assert_eq!(
             envs.get("ARCEOS_RUST_FEATURES"),
             Some(
-                &"ax-hal/riscv64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
+                &"ax-hal/loongarch64-qemu-virt,ax-driver/plat-dyn,ax-driver/virtio-blk,ax-driver/\
                   virtio-net"
                     .to_string()
             )
@@ -1845,27 +1823,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(platform, "ax-plat-aarch64-custom");
-    }
-
-    #[test]
-    fn find_local_platform_config_path_resolves_workspace_platform_dir() {
-        let metadata = repo_metadata();
-        let path = find_local_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata)
-            .unwrap()
-            .expect("workspace platform config should exist");
-
-        assert!(path.ends_with("platforms/ax-plat-riscv64-qemu-virt/axconfig.toml"));
-    }
-
-    #[test]
-    fn resolve_platform_config_path_uses_workspace_config() {
-        let metadata = repo_metadata();
-        let deps_metadata = workspace_metadata_with_deps().unwrap();
-        let path =
-            resolve_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata, &deps_metadata)
-                .unwrap();
-
-        assert!(path.ends_with("platforms/ax-plat-riscv64-qemu-virt/axconfig.toml"));
     }
 
     #[test]
