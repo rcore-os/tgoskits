@@ -78,7 +78,6 @@ jobs:
               - "rust-toolchain.toml"
               - "components/**"
               - "drivers/**"
-              - "apps/**"
               - "os/**"
               - "platforms/**"
               - "virtualization/**"
