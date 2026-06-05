@@ -168,7 +168,17 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 Signo::SIGBUS
                             }
                             ExceptionKind::Breakpoint => Signo::SIGTRAP,
-                            ExceptionKind::IllegalInstruction => Signo::SIGILL,
+                            ExceptionKind::IllegalInstruction => {
+                                // AArch64 EL0 reads of ID_AA64*_EL1 (CPU feature
+                                // detection, e.g. the Go runtime) trap as EC=0 /
+                                // IllegalInstruction. Emulate them like Linux
+                                // instead of killing the program with SIGILL.
+                                #[cfg(target_arch = "aarch64")]
+                                if unsafe { uctx.emulate_mrs_id_reg() } {
+                                    break 'exc;
+                                }
+                                Signo::SIGILL
+                            }
                             _ => Signo::SIGTRAP,
                         };
                         raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
