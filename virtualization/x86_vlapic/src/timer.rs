@@ -298,6 +298,12 @@ impl ApicTimer {
         self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 
+    fn invalidate_timer(&self) {
+        self.next_generation();
+        self.shared.interval_ns.store(0, Ordering::Release);
+        self.shared.deadline_ns.store(0, Ordering::Release);
+    }
+
     // /// Set LVT Timer Register.
     // pub fn set_lvt_timer(&mut self, bits: u32) -> RvmResult {
     //     let timer_mode = bits.get_bits(17..19);
@@ -338,6 +344,12 @@ impl ApicTimer {
     //         self.deadline_ns = 0;
     //     }
     // }
+}
+
+impl Drop for ApicTimer {
+    fn drop(&mut self) {
+        self.invalidate_timer();
+    }
 }
 
 fn schedule_apic_timer(
