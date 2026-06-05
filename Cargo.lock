@@ -1669,8 +1669,8 @@ dependencies = [
  "addr2line 0.26.1",
  "anyhow",
  "ax-config-gen",
+ "axloader",
  "axvmconfig",
- "bootloader-common",
  "cargo_metadata",
  "chrono",
  "clap",
@@ -1800,6 +1800,17 @@ dependencies = [
  "irq-framework",
  "mmio-api",
  "trait-ffi",
+]
+
+[[package]]
+name = "axloader"
+version = "0.5.11"
+dependencies = [
+ "anyhow",
+ "httpboot-protocol",
+ "object 0.38.1",
+ "uefi",
+ "uefi-raw",
 ]
 
 [[package]]
@@ -2217,24 +2228,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
 dependencies = [
  "hybrid-array",
-]
-
-[[package]]
-name = "bootloader-common"
-version = "0.5.11"
-dependencies = [
- "anyhow",
- "object 0.38.1",
-]
-
-[[package]]
-name = "bootloader-http"
-version = "0.5.11"
-dependencies = [
- "bootloader-common",
- "httpboot-protocol",
- "uefi",
- "uefi-raw",
 ]
 
 [[package]]
@@ -4310,6 +4303,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 [[package]]
 name = "httpboot-protocol"
 version = "0.1.0"
+source = "git+https://github.com/Josen-B/ostool.git?branch=httpboot#9eb6466498a13c1a05e73b5aeed50ddd657523d3"
 dependencies = [
  "serde",
 ]

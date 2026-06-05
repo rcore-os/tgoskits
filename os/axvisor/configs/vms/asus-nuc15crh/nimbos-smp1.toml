@@ -22,14 +22,11 @@ entry_point = 0x8000
 # The ASUS NUC15CRH HTTP Boot flow embeds the guest image into AxVisor.
 image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "/path/to/nimbos-qemu"
+kernel_path = "/code/vmx/tgoskits/tmp/nimbos/nimbos-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = true
-# Legacy x86 boot flow uses axvm-bios and multiboot info patching.
-boot_protocol = "multiboot"
-
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [

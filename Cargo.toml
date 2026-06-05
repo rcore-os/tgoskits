@@ -15,8 +15,7 @@ resolver = "3"
 members = [
     "apps/starry/orangepi-5-plus-uvc/uvc-fps",
 
-    "bootloader/common",
-    "bootloader/http-loader",
+    "bootloader/axloader",
 
     "components/ax-lazyinit",
     "components/axbacktrace",
@@ -316,7 +315,7 @@ test-simple = { version = "0.3.4", path = "components/crate_interface/test_crate
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
-bootloader-common = { version = "0.5.11", path = "bootloader/common" }
+axloader = { version = "0.5.11", path = "bootloader/axloader" }
 httpboot-protocol = { git = "https://github.com/Josen-B/ostool.git", branch = "httpboot" }
 x86_vcpu = { version = "0.5.11", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.12", path = "virtualization/x86_vlapic" }

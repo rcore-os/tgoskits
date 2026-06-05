@@ -22,7 +22,7 @@ entry_point = 0x8000
 # The ASUS NUC15CRH HTTP Boot flow embeds the guest image into AxVisor.
 image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "/path/to/ax-helloworld-x86_64.bin"
+kernel_path = "/code/vmx/tgoskits/tmp/ax-helloworld-x86_64.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
