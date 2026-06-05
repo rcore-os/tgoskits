@@ -150,6 +150,7 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 apps/starry/ffmpeg/
 ├── prebuild.sh                    # 构建脚本，安装ffmpeg到rootfs
 ├── test_ffmpeg.sh                 # 统一入口，按序运行全部测试
+├── ffmpeg-ensure-media.sh         # 共享脚本，QEMU内生成测试媒体
 ├── ffmpeg-smoke-tests.sh          # Smoke测试脚本
 ├── ffmpeg-basic-tests.sh          # 基础功能测试脚本
 ├── ffmpeg-thread-tests.sh         # 多线程测试脚本
@@ -167,13 +168,22 @@ apps/starry/ffmpeg/
 
 ## 依赖
 
+### 宿主机构建依赖（prebuild.sh 自动检查/安装）
+
+- `apk-tools`（apk 包管理）
+- `e2fsprogs`（debugfs 提取 rootfs）
+- `coreutils`（install 命令）
+- `binutils`（readelf 依赖分析）
+
+### 客户机运行时依赖（apk 安装到 rootfs）
+
 - ffmpeg（主程序）
 - ffmpeg-libs（运行时库）
 - python3（网络测试 HTTP 服务器）
 
 ## 测试媒体
 
-`prebuild.sh` 会在构建时通过宿主机 ffmpeg 生成以下测试媒体文件，所有文件均为必需：
+测试媒体在 QEMU 运行时由 `ffmpeg-ensure-media.sh` 通过客户机自身的 ffmpeg 自动生成（使用 `lavfi` 虚拟输入源），无需宿主机安装 ffmpeg。
 
 | 文件 | 格式 | 用途 |
 |------|------|------|
@@ -184,7 +194,7 @@ apps/starry/ffmpeg/
 | `test_av.mp4` | H.264+AAC MP4 | 基础、多线程测试 |
 | `test_audio.wav` | PCM WAV | 基础、多线程测试 |
 
-如果任一媒体文件缺失，对应测试会立即 **FAIL**（而非静默 SKIP）。
+如果任一媒体文件生成失败，对应测试会立即 **FAIL**。
 
 ## 排查建议
 

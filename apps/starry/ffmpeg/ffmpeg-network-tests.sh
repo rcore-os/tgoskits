@@ -29,7 +29,9 @@ fail() {
 
 mkdir -p /tmp/ffmpeg-net-workdir
 
-TEST_MEDIA_DIR="/usr/share/ffmpeg-test-media"
+# ---- Generate test media if not pre-built ----
+. /usr/bin/ffmpeg-ensure-media.sh
+TEST_MEDIA_DIR="$FFMPEG_TEST_MEDIA_DIR"
 
 has_protocol() {
     ffmpeg -protocols 2>/dev/null | grep -q "$1"
@@ -38,10 +40,6 @@ has_protocol() {
 has_encoder() {
     ffmpeg -encoders 2>/dev/null | grep -q "$1"
 }
-
-# ---- Verify required test media ----
-[ -f "$TEST_MEDIA_DIR/test_160x120.mp4" ] || fail "required test media test_160x120.mp4 missing"
-[ -f "$TEST_MEDIA_DIR/test_audio.mp3" ] || fail "required test media test_audio.mp3 missing"
 
 # ---- Protocol support check ----
 echo "FFMPEG_NETWORK_STAGE protocol-list"

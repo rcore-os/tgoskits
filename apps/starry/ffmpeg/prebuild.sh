@@ -142,59 +142,6 @@ copy_runtime_dependencies() {
     done
 }
 
-generate_test_media() {
-    # Generate small test media files using ffmpeg on the host
-    # These are placed in the overlay so they're available inside QEMU
-    local test_media_dir="$overlay_dir/usr/share/ffmpeg-test-media"
-    mkdir -p "$test_media_dir"
-
-    if ! command -v ffmpeg >/dev/null 2>&1; then
-        echo "error: ffmpeg not found on host — cannot generate test media" >&2
-        echo "       Install ffmpeg (apt-get install ffmpeg) and re-run" >&2
-        exit 1
-    fi
-
-    # Required: MP4 video (used by codec + network tests)
-    ffmpeg -y -f lavfi -i "color=c=red:s=160x120:d=2" \
-        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-        "$test_media_dir/test_160x120.mp4" 2>/dev/null \
-        || { echo "error: failed to generate test_160x120.mp4" >&2; exit 1; }
-
-    # Required: MP3 audio (used by codec + network tests)
-    ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
-        -c:a libmp3lame -b:a 128k \
-        "$test_media_dir/test_audio.mp3" 2>/dev/null \
-        || { echo "error: failed to generate test_audio.mp3" >&2; exit 1; }
-
-    # Required: MKV container (used by codec tests)
-    ffmpeg -y -f lavfi -i "color=c=green:s=160x120:d=2" \
-        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-        "$test_media_dir/test_160x120.mkv" 2>/dev/null \
-        || { echo "error: failed to generate test_160x120.mkv" >&2; exit 1; }
-
-    # Required: AVI container (used by codec tests)
-    ffmpeg -y -f lavfi -i "color=c=yellow:s=160x120:d=2" \
-        -c:v mpeg4 -q:v 10 \
-        "$test_media_dir/test_160x120.avi" 2>/dev/null \
-        || { echo "error: failed to generate test_160x120.avi" >&2; exit 1; }
-
-    # Required: A/V muxed (used by basic + thread tests)
-    ffmpeg -y -f lavfi -i "color=c=blue:s=160x120:d=2" \
-        -f lavfi -i "sine=frequency=440:duration=2" \
-        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-        -c:a aac -b:a 64k \
-        "$test_media_dir/test_av.mp4" 2>/dev/null \
-        || { echo "error: failed to generate test_av.mp4" >&2; exit 1; }
-
-    # Required: WAV audio (used by basic + thread tests)
-    ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
-        -c:a pcm_s16le \
-        "$test_media_dir/test_audio.wav" 2>/dev/null \
-        || { echo "error: failed to generate test_audio.wav" >&2; exit 1; }
-
-    echo "Generated test media files in $test_media_dir"
-}
-
 populate_overlay() {
     copy_file_to_overlay /usr/bin/ffmpeg 0755
     copy_file_to_overlay /usr/bin/ffprobe 0755
@@ -229,9 +176,7 @@ populate_overlay() {
     install -Dm0755 "$app_dir/ffmpeg-thread-tests.sh" "$overlay_dir/usr/bin/ffmpeg-thread-tests.sh"
     install -Dm0755 "$app_dir/ffmpeg-codec-tests.sh" "$overlay_dir/usr/bin/ffmpeg-codec-tests.sh"
     install -Dm0755 "$app_dir/ffmpeg-network-tests.sh" "$overlay_dir/usr/bin/ffmpeg-network-tests.sh"
-
-    # Generate and copy test media files
-    generate_test_media
+    install -Dm0755 "$app_dir/ffmpeg-ensure-media.sh" "$overlay_dir/usr/bin/ffmpeg-ensure-media.sh"
 }
 
 require_env STARRY_ROOTFS "$base_rootfs"

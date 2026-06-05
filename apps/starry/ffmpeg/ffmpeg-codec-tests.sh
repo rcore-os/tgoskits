@@ -25,7 +25,9 @@ fail() {
 
 mkdir -p /tmp/ffmpeg-codec-workdir
 
-TEST_MEDIA_DIR="/usr/share/ffmpeg-test-media"
+# ---- Generate test media if not pre-built ----
+. /usr/bin/ffmpeg-ensure-media.sh
+TEST_MEDIA_DIR="$FFMPEG_TEST_MEDIA_DIR"
 
 has_encoder() {
     ffmpeg -encoders 2>/dev/null | grep -q "$1"

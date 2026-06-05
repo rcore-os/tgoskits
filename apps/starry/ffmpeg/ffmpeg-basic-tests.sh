@@ -26,30 +26,9 @@ fail() {
 
 mkdir -p /tmp/ffmpeg-basic-workdir
 
-# ---- Helper: check if test media exists ----
-TEST_MEDIA_DIR="/usr/share/ffmpeg-test-media"
-has_test_media=false
-if [ -d "$TEST_MEDIA_DIR" ] && [ "$(ls -A "$TEST_MEDIA_DIR" 2>/dev/null)" ]; then
-    has_test_media=true
-fi
-
-# ---- Stage 1: Generate synthetic test data (fallback if no pre-built media) ----
-echo "FFMPEG_BASIC_STAGE generate-test-data"
-if [ "$has_test_media" = false ]; then
-    # Generate a minimal raw video file using ffmpeg's lavfi source
-    # 160x120, 10 frames, raw yuv420p
-    ffmpeg -y -f lavfi -i "color=c=red:s=160x120:d=1" \
-        -c:v rawvideo -pix_fmt yuv420p \
-        -frames:v 10 \
-        /tmp/ffmpeg-basic-workdir/test_raw.yuv 2>/dev/null \
-        || fail "cannot generate synthetic test data"
-    has_test_media=true
-fi
-
-# ---- Verify required test media (hard fail if missing) ----
-[ -f "$TEST_MEDIA_DIR/test_160x120.mp4" ] || fail "required test media test_160x120.mp4 missing"
-[ -f "$TEST_MEDIA_DIR/test_audio.wav" ]   || fail "required test media test_audio.wav missing"
-[ -f "$TEST_MEDIA_DIR/test_av.mp4" ]      || fail "required test media test_av.mp4 missing"
+# ---- Generate test media if not pre-built ----
+. /usr/bin/ffmpeg-ensure-media.sh
+TEST_MEDIA_DIR="$FFMPEG_TEST_MEDIA_DIR"
 
 # ---- Stage 2: ffprobe on test media ----
 echo "FFMPEG_BASIC_STAGE ffprobe"

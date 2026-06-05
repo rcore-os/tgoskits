@@ -25,28 +25,9 @@ fail() {
 
 mkdir -p /tmp/ffmpeg-thread-workdir
 
-TEST_MEDIA_DIR="/usr/share/ffmpeg-test-media"
-
-# ---- Helper: generate test media if not available ----
-ensure_test_media() {
-    if [ -f "$TEST_MEDIA_DIR/test_160x120.mp4" ]; then
-        return 0
-    fi
-    # Generate fallback test media
-    ffmpeg -y -f lavfi -i "color=c=red:s=320x240:d=3" \
-        -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-        /tmp/ffmpeg-thread-workdir/gen_test.mp4 2>/dev/null \
-        || return 1
-    TEST_MEDIA_DIR="/tmp/ffmpeg-thread-workdir"
-    # Rename to match expected name
-    mv /tmp/ffmpeg-thread-workdir/gen_test.mp4 /tmp/ffmpeg-thread-workdir/test_160x120.mp4 2>/dev/null || true
-}
-
-ensure_test_media || fail "cannot generate test media"
-
-# ---- Verify required test media (hard fail if missing) ----
-[ -f "$TEST_MEDIA_DIR/test_audio.wav" ] || fail "required test media test_audio.wav missing"
-[ -f "$TEST_MEDIA_DIR/test_av.mp4" ]   || fail "required test media test_av.mp4 missing"
+# ---- Generate test media if not pre-built ----
+. /usr/bin/ffmpeg-ensure-media.sh
+TEST_MEDIA_DIR="$FFMPEG_TEST_MEDIA_DIR"
 
 # ---- Stage 1: Single-thread baseline (for comparison) ----
 echo "FFMPEG_THREAD_STAGE single-thread"
