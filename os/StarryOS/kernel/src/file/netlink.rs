@@ -432,7 +432,11 @@ impl NetlinkSocket {
     /// `truncate` (MSG_TRUNC): netlink datagrams are not coalesced, so a short
     /// buffer drops the tail. Linux returns the *real* datagram length (not the
     /// copied length) so the caller can resize and retry.
-    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> AxResult<usize> {
+    /// Returns `(len, truncated)`: `len` is the full datagram length when
+    /// `truncate` (MSG_TRUNC) is set, else the number of bytes copied;
+    /// `truncated` is true when the datagram did not fit in `dst` (so the
+    /// caller can raise MSG_TRUNC in `msg_flags`).
+    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> AxResult<(usize, bool)> {
         let msg = {
             let mut queue = self.queue.lock();
             if peek {
@@ -450,7 +454,8 @@ impl NetlinkSocket {
         // Cap at the message length; netlink datagrams are not coalesced.
         let full = msg.len();
         let copied = dst.write(&msg)?;
-        Ok(if truncate { full } else { copied })
+        let truncated = full > copied;
+        Ok((if truncate { full } else { copied }, truncated))
     }
 }
 
@@ -494,7 +499,7 @@ impl NetlinkSocket {
         peek: bool,
         truncate: bool,
         dontwait: bool,
-    ) -> AxResult<usize> {
+    ) -> AxResult<(usize, bool)> {
         let non_blocking = self.nonblocking() || dontwait;
         block_on(poll_io(self, IoEvents::IN, non_blocking, || {
             self.read_one(dst, peek, truncate)
@@ -507,6 +512,7 @@ impl FileLike for NetlinkSocket {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             self.read_one(dst, false, false)
         }))
+        .map(|(len, _)| len)
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
