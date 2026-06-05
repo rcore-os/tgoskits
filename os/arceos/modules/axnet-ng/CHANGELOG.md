@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.7.0...ax-net-ng-v0.7.1) - 2026-06-05
+
+### Added
+
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.6.1...ax-net-ng-v0.7.0) - 2026-06-03
 
 ### Added

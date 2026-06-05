@@ -161,11 +161,11 @@ arceos-sleep = { version = "0.3.1", path = "test-suit/arceos/rust/task/sleep" }
 arceos-tls = { version = "0.3.1", path = "test-suit/arceos/rust/task/tls" }
 arceos-wait-queue = { version = "0.3.1", path = "test-suit/arceos/rust/task/wait_queue" }
 arceos-yield = { version = "0.3.1", path = "test-suit/arceos/rust/task/yield" }
-arm_vcpu = { version = "0.5.10", path = "virtualization/arm_vcpu" }
-arm_vgic = { version = "0.4.11", path = "virtualization/arm_vgic" }
+arm_vcpu = { version = "0.5.11", path = "virtualization/arm_vcpu" }
+arm_vgic = { version = "0.4.12", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8.0", path = "os/arceos/modules/axalloc", default-features = false }
 ax-allocator = { version = "0.5.3", path = "memory/axallocator" }
-ax-api = { version = "0.5.17", path = "os/arceos/api/arceos_api" }
+ax-api = { version = "0.5.18", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 ax-cap-access = { version = "0.3.5", path = "components/cap_access" }
 ax-config = { version = "0.5.11", path = "os/arceos/modules/axconfig" }
@@ -177,76 +177,76 @@ ax-crate-interface = { version = "0.5.7", path = "components/crate_interface" }
 ax-crate-interface-lite = { version = "0.3.5", path = "components/crate_interface/crate_interface_lite" }
 ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
-ax-display = { version = "0.5.15", path = "os/arceos/modules/axdisplay" }
-ax-dma = { version = "0.6.0", path = "os/arceos/modules/axdma" }
-ax-driver = { version = "0.6.1", path = "drivers/ax-driver" }
+ax-display = { version = "0.5.16", path = "os/arceos/modules/axdisplay" }
+ax-dma = { version = "0.6.1", path = "os/arceos/modules/axdma" }
+ax-driver = { version = "0.6.2", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.0", path = "components/axerrno" }
-ax-feat = { version = "0.5.17", path = "os/arceos/api/axfeat" }
-ax-fs = { version = "0.5.15", path = "os/arceos/modules/axfs" }
+ax-feat = { version = "0.5.18", path = "os/arceos/api/axfeat" }
+ax-fs = { version = "0.5.16", path = "os/arceos/modules/axfs" }
 ax-fs-devfs = { version = "0.3.12", path = "components/axfs_crates/axfs_devfs" }
-ax-fs-ng = { version = "0.5.16", path = "os/arceos/modules/axfs-ng" }
+ax-fs-ng = { version = "0.5.17", path = "os/arceos/modules/axfs-ng" }
 ax-fs-ramfs = { version = "0.3.13", path = "components/axfs_crates/axfs_ramfs" }
 ax-fs-vfs = { version = "0.3.11", path = "components/axfs_crates/axfs_vfs" }
-ax-hal = { version = "0.5.16", path = "os/arceos/modules/axhal" }
+ax-hal = { version = "0.5.17", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
 irq-framework = { version = "0.1.0", path = "components/irq-framework" }
 ax-helloworld = { version = "0.3.1", path = "os/arceos/examples/helloworld" }
 ax-helloworld-myplat = { version = "0.3.1", path = "os/arceos/examples/helloworld-myplat" }
 ax-httpclient = { version = "0.3.1", path = "os/arceos/examples/httpclient" }
 ax-httpserver = { version = "0.3.1", path = "os/arceos/examples/httpserver" }
-ax-input = { version = "0.5.15", path = "os/arceos/modules/axinput" }
+ax-input = { version = "0.5.16", path = "os/arceos/modules/axinput" }
 ax-int-ratio = { version = "0.3.7", path = "components/int_ratio" }
 ax-io = { version = "0.5.7", path = "components/axio" }
-ax-ipi = { version = "0.5.15", path = "os/arceos/modules/axipi" }
+ax-ipi = { version = "0.5.16", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.2", path = "components/lockdep" }
 ax-kspin = { version = "0.3.10", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.8", path = "components/ax-lazyinit" }
-ax-libc = { version = "0.5.16", path = "os/arceos/ulib/axlibc" }
+ax-libc = { version = "0.5.17", path = "os/arceos/ulib/axlibc" }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }
 ax-log = { version = "0.5.13", path = "os/arceos/modules/axlog" }
 ax-memory-addr = { version = "0.6.9", path = "memory/memory_addr" }
 ax-memory-set = { version = "0.6.10", path = "memory/memory_set" }
 axpanic = { version = "0.1.0", path = "components/axpanic" }
-ax-mm = { version = "0.5.16", path = "os/arceos/modules/axmm" }
-ax-net = { version = "0.5.15", path = "os/arceos/modules/axnet" }
-ax-net-ng = { version = "0.7.0", path = "os/arceos/modules/axnet-ng" }
+ax-mm = { version = "0.5.17", path = "os/arceos/modules/axmm" }
+ax-net = { version = "0.5.16", path = "os/arceos/modules/axnet" }
+ax-net-ng = { version = "0.7.1", path = "os/arceos/modules/axnet-ng" }
 ax-page-table-entry = { version = "0.8.10", path = "memory/page_table_entry" }
 ax-page-table-multiarch = { version = "0.8.11", path = "memory/page_table_multiarch" }
 ax-percpu = { version = "0.4.12", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.6.0", path = "platforms/ax-plat" }
-ax-plat-loongarch64-qemu-virt = { version = "0.5.11", path = "platforms/ax-plat-loongarch64-qemu-virt", default-features = false }
+ax-plat-loongarch64-qemu-virt = { version = "0.5.12", path = "platforms/ax-plat-loongarch64-qemu-virt", default-features = false }
 ax-plat-macros = { version = "0.3.7", path = "platforms/ax-plat-macros" }
-ax-plat-riscv64-sg2002 = { version = "0.4.0", path = "platforms/ax-plat-riscv64-sg2002" }
-ax-plat-x86-pc = { version = "0.5.11", path = "platforms/ax-plat-x86-pc" }
-ax-posix-api = { version = "0.5.17", path = "os/arceos/api/arceos_posix_api" }
+ax-plat-riscv64-sg2002 = { version = "0.4.1", path = "platforms/ax-plat-riscv64-sg2002" }
+ax-plat-x86-pc = { version = "0.5.12", path = "platforms/ax-plat-x86-pc" }
+ax-posix-api = { version = "0.5.18", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.7", path = "drivers/intc/riscv_plic" }
-ax-runtime = { version = "0.6.0", path = "os/arceos/modules/axruntime" }
+ax-runtime = { version = "0.6.1", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.6", path = "components/axsched" }
 ax-shell = { version = "0.3.1", path = "os/arceos/examples/shell" }
-ax-std = { version = "0.5.16", path = "os/arceos/ulib/axstd" }
-ax-sync = { version = "0.5.16", path = "os/arceos/modules/axsync" }
-ax-task = { version = "0.5.17", path = "os/arceos/modules/axtask" }
+ax-std = { version = "0.5.17", path = "os/arceos/ulib/axstd" }
+ax-sync = { version = "0.5.17", path = "os/arceos/modules/axsync" }
+ax-task = { version = "0.5.18", path = "os/arceos/modules/axtask" }
 ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
-axaddrspace = { version = "0.5.12", path = "virtualization/axaddrspace" }
+axaddrspace = { version = "0.5.13", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4.1", path = "components/axbacktrace" }
-axbuild = { version = "0.4.9", path = "scripts/axbuild" }
-axdevice = { version = "0.4.11", path = "virtualization/axdevice" }
-axdevice_base = { version = "0.4.13", path = "virtualization/axdevice_base" }
-axfs-ng-vfs = { version = "0.4.3", path = "components/axfs-ng-vfs" }
+axbuild = { version = "0.4.10", path = "scripts/axbuild" }
+axdevice = { version = "0.4.12", path = "virtualization/axdevice" }
+axdevice_base = { version = "0.4.14", path = "virtualization/axdevice_base" }
+axfs-ng-vfs = { version = "0.5.0", path = "components/axfs-ng-vfs" }
 axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.0", path = "components/axklib" }
-axplat-dyn = { version = "0.7.0", path = "platforms/axplat-dyn", default-features = false }
+axplat-dyn = { version = "0.7.1", path = "platforms/axplat-dyn", default-features = false }
 ax-plat-riscv64-visionfive2 = { version = "0.1.5", path = "platforms/ax-plat-riscv64-visionfive2" }
-ax-plat-x86-qemu-q35 = { version = "0.4.9", path = "platforms/ax-plat-x86-qemu-q35", default-features = false }
+ax-plat-x86-qemu-q35 = { version = "0.4.10", path = "platforms/ax-plat-x86-qemu-q35", default-features = false }
 axpoll = { version = "0.3.10", path = "components/axpoll" }
-axvcpu = { version = "0.6.0", path = "virtualization/axvcpu" }
-axvisor = { version = "0.5.9", path = "os/axvisor" }
-axvm = { version = "0.5.11", path = "virtualization/axvm", default-features = false }
-axvm-types = { version = "0.5.11", path = "virtualization/axvm-types" }
-axvmconfig = { version = "0.6.0", path = "virtualization/axvmconfig", default-features = false }
+axvcpu = { version = "0.6.1", path = "virtualization/axvcpu" }
+axvisor = { version = "0.5.10", path = "os/axvisor" }
+axvm = { version = "0.5.12", path = "virtualization/axvm", default-features = false }
+axvm-types = { version = "0.5.12", path = "virtualization/axvm-types" }
+axvmconfig = { version = "0.7.0", path = "virtualization/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.6", path = "memory/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
@@ -259,11 +259,11 @@ impl-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_
 arm-gic-driver = { version = "0.17.2", path = "drivers/intc/arm-gic-driver" }
 enumerate = { version = "0.1.1", path = "drivers/examples/enumerate" }
 eth-intel = { version = "0.1.3", path = "drivers/net/eth-intel" }
-loongarch_vcpu = { version = "0.5.4", path = "virtualization/loongarch_vcpu" }
+loongarch_vcpu = { version = "0.5.5", path = "virtualization/loongarch_vcpu" }
 mingo = { version = "0.8.3", path = "os/arceos/tools/raspi4/chainloader" }
 riscv-h = { version = "0.4.8", path = "virtualization/riscv-h" }
-riscv_vcpu = { version = "0.5.10", path = "virtualization/riscv_vcpu" }
-riscv_vplic = { version = "0.4.13", path = "virtualization/riscv_vplic" }
+riscv_vcpu = { version = "0.5.11", path = "virtualization/riscv_vcpu" }
+riscv_vplic = { version = "0.4.14", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.5.0", path = "drivers/blk/nvme-driver" }
 pcie = { version = "0.6.2", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.2", path = "drivers/blk/ramdisk" }
@@ -288,10 +288,10 @@ k230-kpu = { version = "0.1.0", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.2.1", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.3", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.3.1", path = "drivers/soc/rockchip/rockchip-soc" }
-sg2002-tpu = { version = "0.1.3", path = "drivers/tpu/sg2002-tpu" }
+sg2002-tpu = { version = "0.1.4", path = "drivers/tpu/sg2002-tpu" }
 rdrive = { version = "0.21.0", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
-rsext4 = { version = "0.5.0", path = "components/rsext4" }
+rsext4 = { version = "0.5.1", path = "components/rsext4" }
 scope-local = { version = "0.3.8", path = "components/scope-local" }
 crab-usb = { version = "0.9.4", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
@@ -303,17 +303,17 @@ sdhci-host = { version = "0.1.2", path = "drivers/blk/sdhci-host", default-featu
 sdmmc-protocol = { version = "0.1.2", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 axnsproxy = { version = "0.1.1", path = "os/StarryOS/axnsproxy" }
-starry-kernel = { version = "0.5.13", path = "os/StarryOS/kernel" }
+starry-kernel = { version = "0.5.14", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.8", path = "components/starry-process" }
 starry-signal = { version = "0.8.0", path = "components/starry-signal" }
 starry-vm = { version = "0.5.9", path = "components/starry-vm" }
-starryos = { version = "0.5.13", path = "os/StarryOS/starryos" }
+starryos = { version = "0.5.14", path = "os/StarryOS/starryos" }
 test-simple = { version = "0.3.4", path = "components/crate_interface/test_crates/test-simple" }
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
-x86_vcpu = { version = "0.5.11", path = "virtualization/x86_vcpu", default-features = false }
-x86_vlapic = { version = "0.4.12", path = "virtualization/x86_vlapic" }
+x86_vcpu = { version = "0.5.12", path = "virtualization/x86_vcpu", default-features = false }
+x86_vlapic = { version = "0.4.13", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.7.3", path = "memory/page-table-generic" }
 someboot = { version = "0.1.16", path = "components/someboot" }
 some-serial = { version = "0.5.0", path = "drivers/serial/some-serial" }

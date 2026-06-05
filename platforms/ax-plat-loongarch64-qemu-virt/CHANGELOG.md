@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.11...ax-plat-loongarch64-qemu-virt-v0.5.12) - 2026-06-05
+
+### Other
+
+- updated the following local packages: ax-driver
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.10...ax-plat-loongarch64-qemu-virt-v0.5.11) - 2026-06-03
 
 ### Added

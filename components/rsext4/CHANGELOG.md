@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.5.0...rsext4-v0.5.1) - 2026-06-05
+
+### Added
+
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.4.1...rsext4-v0.5.0) - 2026-06-03
 
 ### Added

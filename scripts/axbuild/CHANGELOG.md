@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.9...axbuild-v0.4.10) - 2026-06-05
+
+### Added
+
+- *(axbuild)* improve incremental clippy coverage ([#1088](https://github.com/rcore-os/tgoskits/pull/1088))
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.4.9](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.8...axbuild-v0.4.9) - 2026-06-03
 
 ### Added

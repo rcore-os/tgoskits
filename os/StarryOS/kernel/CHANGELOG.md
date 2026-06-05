@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.13...starry-kernel-v0.5.14) - 2026-06-05
+
+### Added
+
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
+### Fixed
+
+- *(starry,nginx)* multi-worker signal interruption and EPOLLEXCLUSIVE handling ([#1018](https://github.com/rcore-os/tgoskits/pull/1018))
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.12...starry-kernel-v0.5.13) - 2026-06-03
 
 ### Added

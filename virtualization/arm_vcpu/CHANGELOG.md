@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.10...arm_vcpu-v0.5.11) - 2026-06-05
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.9...arm_vcpu-v0.5.10) - 2026-06-03
 
 ### Other

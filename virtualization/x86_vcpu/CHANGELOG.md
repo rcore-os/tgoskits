@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.5.11...x86_vcpu-v0.5.12) - 2026-06-05
+
+### Other
+
+- updated the following local packages: axvm-types, axvcpu, axdevice_base, x86_vlapic
+
 ### Fixed
 
 - publish the host interface module used by `axvm`

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.6.1...ax-driver-v0.6.2) - 2026-06-05
+
+### Other
+
+- *(ax-driver)* remove redundant mmio cfg gate ([#1100](https://github.com/rcore-os/tgoskits/pull/1100))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.6.0...ax-driver-v0.6.1) - 2026-06-03
 
 ### Added

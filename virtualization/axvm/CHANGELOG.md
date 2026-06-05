@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.11...axvm-v0.5.12) - 2026-06-05
+
+### Other
+
+- updated the following local packages: axvm-types, axvcpu, arm_vcpu, arm_vgic, axaddrspace, riscv_vplic, axdevice, ax-hal, loongarch_vcpu, riscv_vcpu, axplat-dyn, axdevice_base, x86_vlapic, ax-std, x86_vcpu
+
 ### Fixed
 
 - publish the corrected feature metadata for host filesystem and platform-dynamic support

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1](https://github.com/rcore-os/tgoskits/compare/arceos-rust-interface-v1.1.0...arceos-rust-interface-v1.1.1) - 2026-06-05
+
+### Other
+
+- updated the following local packages: ax-driver, ax-hal, ax-runtime, ax-feat, ax-api, ax-posix-api
+
 ## [1.1.0](https://github.com/rcore-os/tgoskits/compare/arceos-rust-interface-v1.0.3...arceos-rust-interface-v1.1.0) - 2026-06-03
 
 ### Added

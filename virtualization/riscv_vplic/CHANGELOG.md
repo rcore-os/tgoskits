@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.13...riscv_vplic-v0.4.14) - 2026-06-05
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.4.13](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.12...riscv_vplic-v0.4.13) - 2026-06-03
 
 ### Other
