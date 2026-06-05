@@ -176,7 +176,18 @@ pub fn sys_mmap(
     } else {
         Some(get_file_like(fd)?)
     };
-    let mut device_mmap_top = file.as_ref().map(|fl| fl.device_mmap(offset as u64));
+    // Only probe `device_mmap` for MAP_SHARED. MAP_PRIVATE always maps
+    // through the file_mmap/CoW path below and never consumes this result, so
+    // calling it would be wasted work — and for fds whose `device_mmap` has
+    // side effects (e.g. a perf-event ringbuf allocation) it would leave the
+    // fd in a half-initialized state that rejects the later real MAP_SHARED
+    // mapping. Probe lazily here, then commit it in the MAP_SHARED arm.
+    let mut device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
+        file.as_ref()
+            .map(|fl| fl.device_mmap(offset as u64, length as u64))
+    } else {
+        None
+    };
 
     // Validate file_mmap permissions and memfd seals before any destructive
     // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old
@@ -450,8 +461,16 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
-    // man 2 mprotect: addresses without a mapping → ENOMEM.
-    if aspace.find_area(start_addr).is_none() {
+    // man 2 mprotect: if any page in [addr, addr+len) lacks a mapping → ENOMEM.
+    // Linux validates the whole range, not just the first page: an unmapped hole
+    // in the middle of `[mapped][hole][mapped]` must fail instead of silently
+    // protecting only the mapped fragments. `can_access_range` with an empty
+    // access mask is a pure contiguous-coverage check (every area's flags
+    // trivially contain the empty set), so it returns false on the first gap.
+    // We pre-check and leave the mapping untouched on failure, i.e. report
+    // ENOMEM atomically without any half-applied protection — the errno real
+    // programs test for.
+    if !aspace.can_access_range(start_addr, length, MappingFlags::empty()) {
         return Err(AxError::NoMemory);
     }
     if permission_flags.contains(MmapProt::WRITE) {

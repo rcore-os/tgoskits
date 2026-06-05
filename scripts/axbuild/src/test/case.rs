@@ -37,6 +37,7 @@ const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
+const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str = "grouped-runner-step-markers-v1";
 const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
 const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
@@ -629,6 +630,7 @@ fn case_asset_cache_key(
 }
 
 fn hash_grouped_runner_config(hasher: &mut Sha256, config: &GroupedCaseRunnerConfig) {
+    hash_token(hasher, GROUPED_RUNNER_SCRIPT_FORMAT_VERSION);
     hash_token(hasher, &config.runner_name);
     hash_token(hasher, &config.runner_path);
     match &config.autorun_profile_script {
@@ -811,16 +813,25 @@ pub(crate) fn write_grouped_case_runner_script(
     let runner_path = dest_dir.join(&config.runner_name);
 
     let mut body = String::new();
-    body.push_str("failed=0\n");
+    body.push_str(&format!(
+        "failed=0\ntotal={}\nstep=0\n",
+        test_commands.len()
+    ));
     for command in test_commands {
         let quoted = shell_single_quote(command);
-        let begin = shell_single_quote(&format!("{}: {command}", config.begin_marker));
-        let passed = shell_single_quote(&format!("{}: {command}", config.passed_marker));
-        let failed = shell_single_quote(&format!("{}: {command}", config.failed_marker));
+        let command_label = shell_single_quote(command);
+        let begin = shell_single_quote(&config.begin_marker);
+        let passed = shell_single_quote(&config.passed_marker);
+        let failed = shell_single_quote(&config.failed_marker);
         body.push_str(&format!(
-            "printf '%s\\n' {begin}\nif sh -c {quoted}; then\n\tprintf '%s\\n' \
-             {passed}\nelse\n\tstatus=$?\n\tprintf '%s status=%s\\n' {failed} \
-             \"$status\"\n\tfailed=1\nfi\n"
+            "step=$((step + 1))\nnow=$(date +%s 2>/dev/null || printf unknown)\nprintf '%s: \
+             step=%s/%s epoch=%s command=%s\\n' {begin} \"$step\" \"$total\" \"$now\" \
+             {command_label}\nif sh -c {quoted}; then\n\tnow=$(date +%s 2>/dev/null || printf \
+             unknown)\n\tprintf '%s: step=%s/%s epoch=%s status=0 command=%s\\n' {passed} \
+             \"$step\" \"$total\" \"$now\" {command_label}\nelse\n\tstatus=$?\n\tnow=$(date +%s \
+             2>/dev/null || printf unknown)\n\tprintf '%s: step=%s/%s epoch=%s status=%s \
+             command=%s\\n' {failed} \"$step\" \"$total\" \"$now\" \"$status\" \
+             {command_label}\n\tfailed=1\nfi\n"
         ));
     }
     let all_passed = shell_single_quote(&config.all_passed_marker);
@@ -1083,8 +1094,16 @@ mod tests {
 
         let runner = overlay.join("usr/bin/suite-run-case-tests");
         let content = fs::read_to_string(&runner).unwrap();
-        assert!(content.contains("SUITE_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
-        assert!(content.contains("SUITE_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
+        assert!(content.contains("total=2"));
+        assert!(content.contains("step=$((step + 1))"));
+        assert!(content.contains("printf '%s: step=%s/%s epoch=%s command=%s\\n'"));
+        assert!(content.contains("printf '%s: step=%s/%s epoch=%s status=0 command=%s\\n'"));
+        assert!(content.contains("printf '%s: step=%s/%s epoch=%s status=%s command=%s\\n'"));
+        assert!(content.contains("'SUITE_GROUPED_TEST_BEGIN'"));
+        assert!(content.contains("'SUITE_GROUPED_TEST_PASSED'"));
+        assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
+        assert!(content.contains("'/usr/bin/alpha'"));
+        assert!(content.contains("'/usr/bin/beta --flag'"));
         assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
     }
 

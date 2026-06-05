@@ -203,6 +203,18 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if matches!(
+        vm.vm_status(),
+        crate::VMStatus::Stopping | crate::VMStatus::Stopped
+    ) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
     let vm_vcpus = get_vm_vcpus(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] vCPU resources not found")))?;
     let cpu_id = vm_vcpus.queue_interrupt(vcpu_id, vector)?;

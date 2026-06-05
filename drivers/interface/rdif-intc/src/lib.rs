@@ -9,6 +9,10 @@ pub trait Interface: DriverGeneric {
     fn setup_irq_by_fdt(&mut self, _irq_prop: &[u32]) -> IrqId {
         unimplemented!();
     }
+
+    fn setup_irq_by_acpi(&mut self, _route: &AcpiGsiRoute) -> IrqId {
+        unimplemented!();
+    }
 }
 
 def_driver!(Intc, Interface);

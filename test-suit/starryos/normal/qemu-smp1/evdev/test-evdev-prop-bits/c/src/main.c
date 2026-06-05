@@ -15,18 +15,40 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <linux/input.h>
-#include <linux/input-event-codes.h>
 #include <stdint.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* Keep this test independent from linux-headers in the staging root. */
+#define EV_REL 0x02
+#define EV_ABS 0x03
+#define EV_MAX 0x1f
+#define ABS_X 0x00
+#define ABS_MAX 0x3f
 
 #ifndef INPUT_PROP_POINTER
 #define INPUT_PROP_POINTER 0x00
 #endif
 #ifndef INPUT_PROP_DIRECT
 #define INPUT_PROP_DIRECT  0x01
+#endif
+#ifndef EVIOCGBIT
+#define EVIOCGBIT(ev, len) _IOC(_IOC_READ, 'E', 0x20 + (ev), len)
+#endif
+#ifndef EVIOCGPROP
+#define EVIOCGPROP(len) _IOC(_IOC_READ, 'E', 0x09, len)
+#endif
+#ifndef EVIOCGABS
+struct input_absinfo {
+    int value;
+    int minimum;
+    int maximum;
+    int fuzz;
+    int flat;
+    int resolution;
+};
+#define EVIOCGABS(axis) _IOC(_IOC_READ, 'E', 0x40 + (axis), sizeof(struct input_absinfo))
 #endif
 #ifndef EVIOCGABS_SMALL
 #define EVIOCGABS_SMALL(axis) _IOC(_IOC_READ, 'E', 0x40 + (axis), sizeof(int))

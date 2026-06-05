@@ -40,3 +40,7 @@ arm-gic-driver = {workspace = true, features = ["rdif"]}
 ax-riscv-plic = { workspace = true }
 riscv.workspace = true
 sbi-rt = { workspace = true, features = ["legacy"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x2apic = "0.5"
+x86 = "0.52"

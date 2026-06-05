@@ -1,0 +1,30 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "printf 'start\\n' > /dev/memtrack && printf 'sample\\n' > /dev/memtrack && printf 'sample_hard\\n' > /dev/memtrack && printf 'symbolize\\n' > /dev/memtrack && printf 'end\\n' > /dev/memtrack && echo STARRY_MEMTRACK_BACKTRACE_OK"
+success_regex = [
+    "(?m)^Memory allocation sample recorded\\s*$",
+    "(?m)^Hard memory allocation sample recorded\\s*$",
+    "(?ms)^BACKTRACE_BEGIN\\b.*\\bkind=alloc\\b.*^BT\\s+0\\s+ip=0x[0-9a-fA-F]+\\s+fp=0x[0-9a-fA-F]+.*^BACKTRACE_END\\b",
+    "(?m)^STARRY_MEMTRACK_BACKTRACE_OK\\s*$",
+]
+host_symbolize_success_regex = [
+    "(?ms)^=== host backtrace symbolize ===$.*^BACKTRACE_BLOCK\\s+\\d+\\s+kind=alloc\\b.*^BT\\s+0\\s+ip=0x[0-9a-fA-F]+\\s+fp=0x0\\s+starry_memtrack_symbolize_probe\\b",
+]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 180
