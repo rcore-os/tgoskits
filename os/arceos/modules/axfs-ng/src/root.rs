@@ -5,12 +5,100 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_fs_ng::{BlockRegion, FilesystemKind, FsBlockDevice};
-
-use super::volume::{
-    BlockReader, BlockVolume, DiskId, Error as VolumeError, PartitionTableKind as VolumeTableKind,
-    scan_volumes,
+use crate::{
+    BlockRegion, FilesystemKind, FsBlockDevice, detect_filesystem, init_filesystem,
+    volume::{
+        BlockReader, BlockVolume, DiskId, Error as VolumeError,
+        PartitionTableKind as VolumeTableKind, scan_volumes,
+    },
 };
+
+/// Root filesystem selector parsed from boot arguments.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RootSpec {
+    pub disk_index: Option<usize>,
+    pub partition_index: Option<usize>,
+    pub partuuid: Option<String>,
+    pub partlabel: Option<String>,
+}
+
+impl RootSpec {
+    /// Parses `root=...` from a boot argument string.
+    pub fn parse_bootargs(bootargs: Option<&str>) -> Self {
+        let Some(root) = bootargs.and_then(root_value) else {
+            return Self::default();
+        };
+
+        Self::parse(root)
+    }
+
+    pub fn parse(root: &str) -> Self {
+        if let Some(partuuid) = root.strip_prefix("PARTUUID=") {
+            return Self {
+                partuuid: Some(partuuid.to_string()),
+                ..Self::default()
+            };
+        }
+
+        if let Some(partlabel) = root.strip_prefix("PARTLABEL=") {
+            return Self {
+                partlabel: Some(partlabel.to_string()),
+                ..Self::default()
+            };
+        }
+
+        if let Some((disk_index, partition_index)) = parse_sd_like(root, "/dev/sd")
+            .or_else(|| parse_sd_like(root, "/dev/vd"))
+            .or_else(|| parse_mmcblk(root))
+        {
+            return Self {
+                disk_index: Some(disk_index),
+                partition_index,
+                ..Self::default()
+            };
+        }
+
+        Self::default()
+    }
+
+    pub fn has_explicit_selector(&self) -> bool {
+        self.disk_index.is_some() || self.partuuid.is_some() || self.partlabel.is_some()
+    }
+}
+
+pub struct RootCandidate {
+    pub disk_index: usize,
+    pub partition: Option<DetectedPartition>,
+}
+
+pub struct DiscoveredDisk {
+    pub disk_index: usize,
+    pub dev: Box<dyn FsBlockDevice>,
+    pub partitions: Vec<DetectedPartition>,
+}
+
+#[derive(Clone)]
+pub struct DetectedPartition {
+    pub info: PartitionInfo,
+    pub filesystem: Option<FilesystemKind>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartitionInfo {
+    pub index: usize,
+    pub table_kind: PartitionTableKind,
+    pub region: BlockRegion,
+    pub name: Option<String>,
+    pub part_uuid: Option<String>,
+    pub bootable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PartitionTableKind {
+    Raw,
+    Gpt,
+    Mbr,
+}
 
 struct VolumeReader<'a, T: FsBlockDevice + ?Sized> {
     inner: &'a mut T,
@@ -31,57 +119,15 @@ impl<T: FsBlockDevice + ?Sized> BlockReader for VolumeReader<'_, T> {
         self.inner.num_blocks()
     }
 
-    fn read_block(&mut self, block: u64, buf: &mut [u8]) -> super::volume::Result<()> {
+    fn read_block(&mut self, block: u64, buf: &mut [u8]) -> crate::volume::Result<()> {
         self.inner
             .read_block(block, buf)
             .map_err(|_| VolumeError::Reader)
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct RootSpec {
-    disk_index: Option<usize>,
-    partition_index: Option<usize>,
-    partuuid: Option<String>,
-    partlabel: Option<String>,
-}
-
-pub(crate) struct RootCandidate {
-    pub(crate) disk_index: usize,
-    pub(crate) partition: Option<DetectedPartition>,
-}
-
-pub(crate) struct DiscoveredDisk {
-    pub(crate) disk_index: usize,
-    pub(crate) dev: Box<dyn FsBlockDevice>,
-    pub(crate) partitions: Vec<DetectedPartition>,
-}
-
-#[derive(Clone)]
-pub(crate) struct DetectedPartition {
-    pub(crate) info: PartitionInfo,
-    pub(crate) filesystem: Option<FilesystemKind>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PartitionInfo {
-    pub(crate) index: usize,
-    pub(crate) table_kind: PartitionTableKind,
-    pub(crate) region: BlockRegion,
-    pub(crate) name: Option<String>,
-    pub(crate) part_uuid: Option<String>,
-    pub(crate) bootable: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PartitionTableKind {
-    Raw,
-    Gpt,
-    Mbr,
-}
-
 impl RootCandidate {
-    pub(crate) fn description(&self) -> String {
+    pub fn description(&self) -> String {
         if let Some(partition) = &self.partition {
             describe_partition(self.disk_index, partition)
         } else {
@@ -90,7 +136,36 @@ impl RootCandidate {
     }
 }
 
-pub(crate) fn collect_disks(
+pub fn init_root(
+    block_devs: impl IntoIterator<Item = Box<dyn FsBlockDevice>>,
+    bootargs: Option<&str>,
+) {
+    let root_spec = RootSpec::parse_bootargs(bootargs);
+    let mut disks = collect_disks(block_devs);
+    let candidates = collect_root_candidates(&disks);
+    let (selected_disk_index, selected_partition) = select_root_candidate(&candidates, &root_spec)
+        .unwrap_or_else(|| panic!("failed to determine root device from available block devices"));
+    let selected_disk_pos = disks
+        .iter()
+        .position(|disk| disk.disk_index == selected_disk_index)
+        .unwrap_or_else(|| panic!("selected root disk disappeared during initialization"));
+    let selected = disks.swap_remove(selected_disk_pos);
+    let selected_partition_info = selected_partition.and_then(|part_index| {
+        selected
+            .partitions
+            .iter()
+            .find(|partition| partition.info.index == part_index)
+    });
+    let description = describe_selection(selected.disk_index, selected_partition_info);
+    let region = selected_partition_info.map_or_else(
+        || BlockRegion::from_num_blocks(selected.dev.num_blocks()),
+        |part| part.info.region,
+    );
+
+    init_filesystem(selected.dev, region, &description);
+}
+
+pub fn collect_disks(
     block_devs: impl IntoIterator<Item = Box<dyn FsBlockDevice>>,
 ) -> Vec<DiscoveredDisk> {
     let mut disks = Vec::new();
@@ -128,13 +203,13 @@ fn collect_partitions(
     for volume in volumes {
         if volume.table_kind == VolumeTableKind::Raw {
             let region = region_from_volume(&volume);
-            let raw_fs = ax_fs_ng::detect_filesystem(dev, region);
+            let raw_fs = detect_filesystem(dev, region);
             info!("    raw device fs={:?}", raw_fs);
             continue;
         }
 
         let info = partition_info_from_volume(&volume);
-        let filesystem = ax_fs_ng::detect_filesystem(dev, info.region);
+        let filesystem = detect_filesystem(dev, info.region);
         info!(
             "    partition {} name={:?} fs={:?} lba {}..{}",
             info.index + 1,
@@ -195,7 +270,7 @@ fn table_kind_from_volume(kind: VolumeTableKind) -> PartitionTableKind {
     }
 }
 
-pub(crate) fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
+pub fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
     let mut candidates = Vec::new();
 
     for disk in disks {
@@ -218,7 +293,7 @@ pub(crate) fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandi
     candidates
 }
 
-pub(crate) fn select_root_candidate(
+pub fn select_root_candidate(
     candidates: &[RootCandidate],
     spec: &RootSpec,
 ) -> Option<(usize, Option<usize>)> {
@@ -279,7 +354,7 @@ fn select_explicit_root(
         }
     }
 
-    if spec.disk_index.is_some() || spec.partuuid.is_some() || spec.partlabel.is_some() {
+    if spec.has_explicit_selector() {
         panic!("configured root device was not found in discovered block devices");
     }
 
@@ -366,10 +441,7 @@ fn supported_default_root_partition(partition: &DetectedPartition) -> bool {
     partition.filesystem.is_some()
 }
 
-pub(crate) fn describe_selection(
-    disk_index: usize,
-    partition: Option<&DetectedPartition>,
-) -> String {
+pub fn describe_selection(disk_index: usize, partition: Option<&DetectedPartition>) -> String {
     if let Some(partition) = partition {
         describe_partition(disk_index, partition)
     } else {
@@ -394,92 +466,59 @@ fn describe_partition(disk_index: usize, partition: &DetectedPartition) -> Strin
     )
 }
 
-pub(crate) fn parse_root_spec(bootargs: Option<&str>) -> RootSpec {
-    let mut spec = RootSpec::default();
-
-    if let Some(bootargs) = bootargs
-        && let Some(root_arg) = bootargs
-            .split_whitespace()
-            .find(|arg| arg.starts_with("root="))
-    {
-        let root_value = root_arg.strip_prefix("root=").unwrap_or("");
-        spec = match root_value {
-            value if value.starts_with("/dev/mmcblk") => parse_mmcblk_path(value),
-            value if value.starts_with("/dev/sd") => parse_sd_path(value),
-            value if value.starts_with("PARTUUID=") => RootSpec {
-                partuuid: Some(value.strip_prefix("PARTUUID=").unwrap_or("").to_uppercase()),
-                ..RootSpec::default()
-            },
-            value if value.starts_with("PARTLABEL=") => RootSpec {
-                partlabel: Some(value.strip_prefix("PARTLABEL=").unwrap_or("").to_string()),
-                ..RootSpec::default()
-            },
-            _ => RootSpec::default(),
-        };
-    }
-
-    spec
-}
-
-fn parse_mmcblk_path(path: &str) -> RootSpec {
-    if let Some(remaining) = path.strip_prefix("/dev/mmcblk") {
-        if let Some(p_pos) = remaining.find('p') {
-            let disk = remaining[..p_pos].parse::<usize>().ok();
-            let part = remaining[p_pos + 1..]
-                .parse::<usize>()
-                .ok()
-                .and_then(|part| part.checked_sub(1));
-            return RootSpec {
-                disk_index: disk,
-                partition_index: part,
-                ..RootSpec::default()
-            };
-        }
-
-        if let Ok(disk) = remaining.parse::<usize>() {
-            return RootSpec {
-                disk_index: Some(disk),
-                ..RootSpec::default()
-            };
-        }
-    }
-
-    RootSpec::default()
-}
-
-fn parse_sd_path(path: &str) -> RootSpec {
-    if let Some(remaining) = path.strip_prefix("/dev/sd") {
-        let bytes = remaining.as_bytes();
-        if bytes.is_empty() {
-            return RootSpec::default();
-        }
-
-        let disk_index = bytes[0]
-            .is_ascii_lowercase()
-            .then(|| usize::from(bytes[0] - b'a'));
-        let partition_index = if bytes.len() > 1 {
-            core::str::from_utf8(&bytes[1..])
-                .ok()
-                .and_then(|part| part.parse::<usize>().ok())
-                .and_then(|part| part.checked_sub(1))
-        } else {
-            None
-        };
-        return RootSpec {
-            disk_index,
-            partition_index,
-            ..RootSpec::default()
-        };
-    }
-
-    RootSpec::default()
-}
-
 const fn filesystem_name(fs: FilesystemKind) -> &'static str {
     match fs {
         FilesystemKind::Ext4 => "ext4",
         FilesystemKind::Fat => "fat",
     }
+}
+
+fn root_value(bootargs: &str) -> Option<&str> {
+    bootargs.split_ascii_whitespace().find_map(|arg| {
+        arg.strip_prefix("root=")
+            .and_then(|root| (!root.is_empty()).then_some(root))
+    })
+}
+
+fn parse_sd_like(root: &str, prefix: &str) -> Option<(usize, Option<usize>)> {
+    let rest = root.strip_prefix(prefix)?;
+    let mut chars = rest.chars();
+    let disk = chars.next()?;
+    if !disk.is_ascii_alphabetic() {
+        return None;
+    }
+    let disk_index = disk.to_ascii_lowercase() as usize - 'a' as usize;
+    let partition = parse_one_based_partition(chars.as_str())?;
+    Some((disk_index, partition))
+}
+
+fn parse_mmcblk(root: &str) -> Option<(usize, Option<usize>)> {
+    let rest = root.strip_prefix("/dev/mmcblk")?;
+    let (disk, partition) = match rest.split_once('p') {
+        Some((disk, partition)) => (disk, partition),
+        None => (rest, ""),
+    };
+    let disk_index = parse_usize(disk)?;
+    let partition_index = parse_one_based_partition(partition)?;
+    Some((disk_index, partition_index))
+}
+
+fn parse_one_based_partition(partition: &str) -> Option<Option<usize>> {
+    if partition.is_empty() {
+        return Some(None);
+    }
+    parse_usize(partition).and_then(|partition| partition.checked_sub(1).map(Some))
+}
+
+fn parse_usize(text: &str) -> Option<usize> {
+    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse().ok())
+        .flatten()
+}
+
+#[allow(dead_code)]
+pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
+    out.extend(root.split(',').filter(|candidate| !candidate.is_empty()));
 }
 
 #[cfg(test)]
