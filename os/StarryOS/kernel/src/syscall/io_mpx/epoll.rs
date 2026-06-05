@@ -109,6 +109,7 @@ pub fn sys_epoll_create1(flags: u32) -> AxResult<isize> {
         .map(|fd| fd as isize)
 }
 
+/// Implements legacy `epoll_create`, validating size before creating an epoll fd without flags.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_epoll_create(size: i32) -> AxResult<isize> {
     if size <= 0 {
@@ -234,6 +235,7 @@ pub fn sys_epoll_pwait(
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
 }
 
+/// Implements legacy `epoll_wait` as an x86_64 wrapper around `epoll_pwait`.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_epoll_wait(
     epfd: i32,

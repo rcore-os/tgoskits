@@ -70,6 +70,7 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
     }
 }
 
+// Writes zero-filled chunks into the file over the requested byte range.
 fn write_zero_range(file: &ax_fs::FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
     const ZERO_CHUNK_SIZE: usize = 64 * 1024;
 
