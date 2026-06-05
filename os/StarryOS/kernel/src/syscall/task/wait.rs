@@ -14,19 +14,13 @@ use starry_process::{Pid, Process};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::{
-    AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
-    get_zombie_cred, processes, remove_process, traced_zombies_for, unregister_zombie,
-    wait_on_pollset_with_wchan,
-    task::{,
+use crate::{
     file::{PidFd, get_file_like},
-};
-
-use core::{future::poll_fn, task::Poll};
-
-};
-};
     task::{
+        AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
+        get_zombie_cred, processes, remove_process, traced_zombies_for, unregister_zombie,
+        wait_on_pollset_with_wchan,
+    },
 };
 
 const PTRACE_O_TRACESYSGOOD: usize = 1;
