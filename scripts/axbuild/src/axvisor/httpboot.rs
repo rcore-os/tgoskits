@@ -320,15 +320,15 @@ async fn publish_artifacts_for_session(
     report: &ElfImageReport,
     keep_session: bool,
 ) -> anyhow::Result<()> {
-    if session.boot_mode != "uefi_http" {
+    if !matches!(session.boot_mode.as_str(), "httpboot" | "uefi_http") {
         bail!(
-            "unsupported remote boot mode `{}`; only `uefi_http` is supported",
+            "unsupported remote boot mode `{}`; only `httpboot` is supported",
             session.boot_mode
         );
     }
 
     let boot_profile = client.get_boot_profile(&session.session_id).await?;
-    let profile = boot_profile.uefi_http_profile()?;
+    let profile = boot_profile.httpboot_profile()?;
     let remote_name = publish_config
         .remote_name
         .clone()
@@ -339,11 +339,16 @@ async fn publish_artifacts_for_session(
         .clone()
         .or(profile.kernel_load_addr.clone())
         .unwrap_or_else(|| hex(report.load_addr));
-    let entry_point = publish_config
-        .entry_point
-        .clone()
-        .or(profile.entry_point.clone())
-        .unwrap_or_else(|| hex(report.entry_paddr));
+    let entry_point = publish_config.entry_point.clone().unwrap_or_else(|| {
+        if report.httpboot_entry_symbol.is_some() {
+            hex(report.entry_paddr)
+        } else {
+            profile
+                .entry_point
+                .clone()
+                .unwrap_or_else(|| hex(report.entry_paddr))
+        }
+    });
     let arch = profile.boot_arch.as_deref().unwrap_or("x86_64").to_string();
     if arch != "x86_64" {
         bail!("HTTP Boot board arch is `{arch}`, expected `x86_64`");
@@ -452,10 +457,21 @@ struct PublishConfig {
 
 impl PublishConfig {
     fn load(path: Option<&Path>, workspace_root: &Path) -> anyhow::Result<Self> {
+        let global_config = load_board_global_config_with_notice()?;
+        let (server, port) = global_config.resolve_server(None, None);
+        Self::with_server_defaults(path, workspace_root, server, port)
+    }
+
+    fn with_server_defaults(
+        path: Option<&Path>,
+        workspace_root: &Path,
+        server: String,
+        port: u16,
+    ) -> anyhow::Result<Self> {
         let mut config = Self {
             board_type: None,
-            server: "127.0.0.1".to_string(),
-            port: 2999,
+            server,
+            port,
             remote_name: Some("kernel.bin".to_string()),
             kernel_load_addr: None,
             entry_point: None,
@@ -769,10 +785,10 @@ struct BootProfileResponse {
 }
 
 impl BootProfileResponse {
-    fn uefi_http_profile(&self) -> anyhow::Result<&UefiHttpProfile> {
+    fn httpboot_profile(&self) -> anyhow::Result<&UefiHttpProfile> {
         match &self.boot {
             RemoteBootConfig::UefiHttp(profile) => Ok(profile),
-            _ => bail!("server returned a non-uefi_http boot profile"),
+            _ => bail!("server returned a non-httpboot boot profile"),
         }
     }
 }
@@ -782,6 +798,7 @@ impl BootProfileResponse {
 enum RemoteBootConfig {
     Uboot,
     Pxe,
+    #[serde(rename = "httpboot", alias = "uefi_http")]
     UefiHttp(UefiHttpProfile),
 }
 
