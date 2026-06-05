@@ -225,6 +225,14 @@ impl Nvme {
         self.page_size
     }
 
+    pub fn mask_interrupt_vector(&mut self, vector: u32) {
+        self.reg().mask_interrupt_vector(vector);
+    }
+
+    pub fn unmask_interrupt_vector(&mut self, vector: u32) {
+        self.reg().unmask_interrupt_vector(vector);
+    }
+
     pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
         self.io_queues.get_mut(index)?.take()
     }

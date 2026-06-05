@@ -6,10 +6,11 @@ use core::{
 };
 
 use dma_api::CoherentArray;
+use log::warn;
 use rdif_block::{
-    BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
-    IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags, RequestId,
-    RequestOp, RequestStatus, validate_request,
+    BlkError, CompletionSink, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface,
+    IrqHandler, IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags,
+    RequestId, RequestOp, RequestStatus, validate_request,
 };
 
 use crate::{
@@ -20,6 +21,7 @@ use crate::{
 
 const MAX_PRP_LIST_PAGES: usize = 1;
 const DEFAULT_QUEUE_DEPTH: usize = 64;
+const LEGACY_INTERRUPT_VECTOR: u32 = 0;
 
 struct NvmeBlockInner {
     nvme: Nvme,
@@ -37,6 +39,7 @@ struct NvmeBlockOwner {
     inner: UnsafeCell<NvmeBlockInner>,
     next_queue_id: AtomicUsize,
     irq_enabled: AtomicBool,
+    irq_masked: AtomicBool,
     pending_irq: AtomicU64,
     created_queues: AtomicU64,
 }
@@ -82,7 +85,8 @@ impl NvmeBlockDriver {
             inner: Arc::new(NvmeBlockOwner {
                 inner: UnsafeCell::new(NvmeBlockInner { nvme, namespace }),
                 next_queue_id: AtomicUsize::new(0),
-                irq_enabled: AtomicBool::new(true),
+                irq_enabled: AtomicBool::new(false),
+                irq_masked: AtomicBool::new(true),
                 pending_irq: AtomicU64::new(0),
                 created_queues: AtomicU64::new(0),
             }),
@@ -110,6 +114,7 @@ impl NvmeBlockDriver {
                 inner.nvme.dma_mask(),
                 inner.nvme.page_size(),
                 inner.namespace,
+                self.queue_depth,
             )
         })
     }
@@ -129,6 +134,33 @@ impl NvmeBlockOwner {
     fn with_mut<R>(&self, f: impl FnOnce(&mut NvmeBlockInner) -> R) -> R {
         let inner = unsafe { &mut *self.inner.get() };
         f(inner)
+    }
+
+    fn mask_irq(&self) {
+        if self
+            .irq_masked
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.with_mut(|inner| {
+                inner.nvme.mask_interrupt_vector(LEGACY_INTERRUPT_VECTOR);
+            });
+        }
+    }
+
+    fn unmask_irq(&self) -> bool {
+        if self
+            .irq_masked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.with_mut(|inner| {
+                inner.nvme.unmask_interrupt_vector(LEGACY_INTERRUPT_VECTOR);
+            });
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -185,11 +217,13 @@ impl Interface for NvmeBlockDriver {
     }
 
     fn enable_irq(&self) {
+        let _ = self.inner.unmask_irq();
         self.inner.irq_enabled.store(true, Ordering::Release);
     }
 
     fn disable_irq(&self) {
         self.inner.irq_enabled.store(false, Ordering::Release);
+        self.inner.mask_irq();
     }
 
     fn is_irq_enabled(&self) -> bool {
@@ -221,11 +255,20 @@ impl IrqHandler for NvmeIrqHandler {
         if !self.inner.irq_enabled.load(Ordering::Acquire) {
             return Event::none();
         }
+        self.inner.mask_irq();
         let pending = self.inner.pending_irq.swap(0, Ordering::AcqRel);
         if pending == 0 {
             Event::from_queue_bits(self.inner.created_queues.load(Ordering::Acquire))
         } else {
             Event::from_queue_bits(pending)
+        }
+    }
+
+    fn on_drain_complete(&self) -> Event {
+        if self.inner.irq_enabled.load(Ordering::Acquire) && self.inner.unmask_irq() {
+            Event::from_queue_bits(self.inner.created_queues.load(Ordering::Acquire))
+        } else {
+            Event::none()
         }
     }
 }
@@ -236,6 +279,7 @@ struct NvmeBlockQueue {
     namespace: Namespace,
     dma_mask: u64,
     page_size: usize,
+    depth: usize,
     queue: HardwareQueue,
     slots: Vec<RequestSlot>,
     free_cids: Vec<usize>,
@@ -288,6 +332,7 @@ impl NvmeBlockQueue {
             namespace,
             dma_mask,
             page_size,
+            depth,
             queue,
             slots,
             free_cids,
@@ -300,7 +345,7 @@ impl NvmeBlockQueue {
         QueueInfo {
             id: self.id,
             device: device_info(self.name, self.namespace),
-            limits: limits(self.dma_mask, self.page_size, self.namespace),
+            limits: limits(self.dma_mask, self.page_size, self.namespace, self.depth),
         }
     }
 
@@ -393,6 +438,10 @@ impl NvmeBlockQueue {
                 slot.state = if completion.status.is_success() {
                     SlotState::Complete
                 } else {
+                    warn!(
+                        "nvme queue {} request {} failed: status={:#x}, result={:#x}",
+                        self.id, cid, completion.status.0, completion.result
+                    );
                     SlotState::Failed
                 };
             }
@@ -456,6 +505,33 @@ unsafe impl IQueue for NvmeBlockQueue {
             Some(SlotState::Free) | None => Err(BlkError::InvalidRequest),
         }
     }
+
+    fn poll_completions(
+        &mut self,
+        requests: &[RequestId],
+        sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        self.drain_completions();
+
+        for &request in requests {
+            let cid = usize::from(request);
+            match self.slots.get(cid).map(|slot| slot.state) {
+                Some(SlotState::Pending) => {}
+                Some(SlotState::Complete) => {
+                    self.free_cid(cid);
+                    sink.complete(request, Ok(()));
+                }
+                Some(SlotState::Failed) => {
+                    self.free_cid(cid);
+                    sink.complete(request, Err(BlkError::Io));
+                }
+                Some(SlotState::Free) | None => {
+                    sink.complete(request, Err(BlkError::InvalidRequest))
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn alloc_prp_lists(nvme: &Nvme, depth: usize) -> NvmeResult<Vec<CoherentArray<u64>>> {
@@ -499,7 +575,12 @@ fn device_info(name: &'static str, namespace: Namespace) -> DeviceInfo {
     }
 }
 
-fn limits(dma_mask: u64, page_size: usize, namespace: Namespace) -> QueueLimits {
+fn limits(
+    dma_mask: u64,
+    page_size: usize,
+    namespace: Namespace,
+    max_inflight: usize,
+) -> QueueLimits {
     let prp_entries = page_size / core::mem::size_of::<u64>();
     let max_bytes = page_size.saturating_mul(prp_entries + 1);
     let max_blocks = max_bytes
@@ -510,6 +591,7 @@ fn limits(dma_mask: u64, page_size: usize, namespace: Namespace) -> QueueLimits 
     QueueLimits {
         dma_mask,
         dma_alignment: namespace.lba_size.max(1),
+        max_inflight: max_inflight.max(1),
         max_blocks_per_request: max_blocks,
         max_segments: prp_entries + 1,
         max_segment_size: max_bytes,
