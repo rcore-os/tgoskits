@@ -422,17 +422,35 @@ impl NetlinkSocket {
 
     /// Drain at most one queued message into `dst`.  Returns `WouldBlock`
     /// when the queue is empty.
-    fn read_one(&self, dst: &mut IoDst) -> AxResult<usize> {
+    ///
+    /// `peek` (MSG_PEEK): copy the front message into `dst` without removing it
+    /// from the queue, so a following non-peek recv reads the same message.
+    /// glibc/musl `getifaddrs()` and dnsmasq size their buffer with a
+    /// `MSG_PEEK|MSG_TRUNC` recv first, then read for real; popping on peek
+    /// loses the dump and the second recv blocks forever (startup stall).
+    ///
+    /// `truncate` (MSG_TRUNC): netlink datagrams are not coalesced, so a short
+    /// buffer drops the tail. Linux returns the *real* datagram length (not the
+    /// copied length) so the caller can resize and retry.
+    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> AxResult<usize> {
         let msg = {
             let mut queue = self.queue.lock();
-            let Some(msg) = queue.pop_front() else {
-                return Err(AxError::WouldBlock);
-            };
-            msg
+            if peek {
+                let Some(msg) = queue.front() else {
+                    return Err(AxError::WouldBlock);
+                };
+                msg.clone()
+            } else {
+                let Some(msg) = queue.pop_front() else {
+                    return Err(AxError::WouldBlock);
+                };
+                msg
+            }
         };
         // Cap at the message length; netlink datagrams are not coalesced.
-        let n = dst.write(&msg)?;
-        Ok(n)
+        let full = msg.len();
+        let copied = dst.write(&msg)?;
+        Ok(if truncate { full } else { copied })
     }
 }
 
@@ -466,10 +484,28 @@ pub fn broadcast(protocol: u32, group_mask: u32, payload: &[u8]) {
     }
 }
 
+impl NetlinkSocket {
+    /// Flag-aware receive used by `recvmsg`/`recvfrom`. Honors MSG_PEEK (do not
+    /// consume), MSG_TRUNC (return full datagram length), and MSG_DONTWAIT
+    /// (per-call non-blocking).
+    pub fn recv(
+        &self,
+        dst: &mut IoDst,
+        peek: bool,
+        truncate: bool,
+        dontwait: bool,
+    ) -> AxResult<usize> {
+        let non_blocking = self.nonblocking() || dontwait;
+        block_on(poll_io(self, IoEvents::IN, non_blocking, || {
+            self.read_one(dst, peek, truncate)
+        }))
+    }
+}
+
 impl FileLike for NetlinkSocket {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            self.read_one(dst)
+            self.read_one(dst, false, false)
         }))
     }
 
