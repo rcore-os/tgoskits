@@ -46,8 +46,6 @@ pub fn post_paging() {
     someboot::post_allocator();
     // note: irq controller should be initialized when probe.
     driver::rdrive_setup();
-    #[cfg(target_arch = "x86_64")]
-    arch::init_acpi_irq();
 }
 
 #[unsafe(no_mangle)]
