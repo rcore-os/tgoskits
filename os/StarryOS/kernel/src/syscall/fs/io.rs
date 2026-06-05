@@ -271,7 +271,7 @@ pub fn sys_fallocate(
 
     let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
     let operation = mode & !FALLOC_FL_KEEP_SIZE;
-    let supported_mode = operation == 0
+    let supported_mode = operation == 0 && !keep_size
         || operation == FALLOC_FL_ZERO_RANGE
         || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
     if !supported_mode {
