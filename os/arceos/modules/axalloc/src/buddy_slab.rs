@@ -16,7 +16,7 @@ use buddy_slab_allocator::{
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
 /// The global allocator instance for buddy-slab mode.
-#[cfg_attr(all(any(target_os = "none", arceos_std), not(test)), global_allocator)]
+#[cfg_attr(not(test), global_allocator)]
 static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();
 
 /// The default byte allocator for buddy-slab mode.
