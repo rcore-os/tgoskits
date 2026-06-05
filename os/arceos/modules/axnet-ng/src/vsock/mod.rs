@@ -5,11 +5,11 @@ pub(crate) mod stream;
 
 use core::task::Context;
 
-pub use ax_driver::prelude::{VsockAddr, VsockConnId};
 use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, IoBufMut, Read, Write};
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
+pub use rdif_vsock::{VsockAddr, VsockConnId};
 
 pub use self::stream::VsockStreamTransport;
 use crate::{

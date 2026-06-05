@@ -39,7 +39,6 @@ graph LR
 
 ### 间接依赖
 - `ax-api`
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-alloc`

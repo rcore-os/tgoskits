@@ -334,6 +334,52 @@ qemu_config = "configs/qemu.toml"
 }
 
 #[test]
+fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
+    let root = tempdir().unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+package = "from-snapshot"
+arch = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+plat_dyn = true
+smp = 4
+
+[qemu]
+qemu_config = "configs/snapshot-qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            config: Some(PathBuf::from("/tmp/build-riscv64.toml")),
+            package: Some("arceos-display".into()),
+            arch: None,
+            target: Some("riscv64gc-unknown-none-elf".into()),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.package, "arceos-display");
+    assert_eq!(request.plat_dyn, None);
+    assert_eq!(request.smp, None);
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(snapshot.plat_dyn, None);
+    assert_eq!(snapshot.smp, None);
+    assert_eq!(snapshot.qemu.qemu_config, None);
+}
+
+#[test]
 fn prepare_request_requires_package() {
     let root = tempdir().unwrap();
     let app = test_app_context(root.path());
@@ -489,7 +535,7 @@ fn prepare_axvisor_request_prefers_cli_over_snapshot() {
 config = "os/axvisor/.build.toml"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
+plat_dyn = true
 vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
@@ -970,6 +1016,58 @@ config = "configs/custom-starry.toml"
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from("configs/custom-starry.toml"))
+    );
+}
+
+#[test]
+fn prepare_starry_request_explicit_config_target_overrides_snapshot_target() {
+    let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
+    let config = root.path().join("configs/sg2002.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        r#"
+target = "riscv64gc-unknown-none-elf"
+env = {}
+features = ["sg2002"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
+        r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_starry_request(
+        &app,
+        StarryCliArgs {
+            config: Some(config.clone()),
+            arch: None,
+            target: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(request.build_info_path, config);
+    assert_eq!(snapshot.arch.as_deref(), Some("riscv64"));
+    assert_eq!(
+        snapshot.target.as_deref(),
+        Some("riscv64gc-unknown-none-elf")
     );
 }
 

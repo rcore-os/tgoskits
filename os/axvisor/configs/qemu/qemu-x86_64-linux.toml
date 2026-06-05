@@ -1,0 +1,28 @@
+args = [
+  "-nodefaults",
+  "-no-user-config",
+  "-display",
+  "none",
+  "-serial",
+  "stdio",
+  "-monitor",
+  "none",
+  "-cpu",
+  "host",
+  "-machine",
+  "q35,sata=off,smbus=off,i8042=off,usb=off,graphics=off",
+  "-smp",
+  "1",
+  "-accel",
+  "kvm",
+  "-device",
+  "virtio-blk-pci,drive=disk0,addr=03.0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-m",
+  "512M",
+]
+fail_regex = []
+success_regex = []
+to_bin = false
+uefi = false

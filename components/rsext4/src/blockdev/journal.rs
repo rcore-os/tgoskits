@@ -114,7 +114,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return ReplayStatus::Incomplete;
         };
 
-        jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks)
+        let status = jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks);
+        self.inner.invalidate_cache();
+        status
     }
 
     /// Enables or disables journal use at runtime.
@@ -190,6 +192,17 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Reads one block through the cached inner device.
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
+        if self.journal_use
+            && let Some(system) = self.system.as_ref()
+            && let Some(update) = system
+                .commit_queue
+                .iter()
+                .find(|queued| queued.0 == block_id)
+        {
+            self.inner.cache_clean_block(block_id, &update.1)?;
+            return Ok(());
+        }
+
         self.inner.read_block(block_id)
     }
 

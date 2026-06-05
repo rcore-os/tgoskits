@@ -44,7 +44,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         if !current().as_thread().cred().has_cap_net_raw() {
             return Err(AxError::from(LinuxError::EPERM));
         }
-        let socket = PacketSocket::new(proto as u16);
+        let socket = PacketSocket::new(proto as u16)?;
         if raw_ty & O_NONBLOCK != 0 {
             socket.set_nonblocking(true)?;
         }

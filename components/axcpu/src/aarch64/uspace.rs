@@ -22,9 +22,7 @@ pub struct UserContext {
 }
 
 impl UserContext {
-    const PAD_MAGIC: u64 = 0x1234_5678_9abc_def0;
-    /// Creates a new context with the given entry point, user stack pointer,
-    /// and the argument.
+    /// Creates a new user context with the given entry point, stack top, and argument.
     pub fn new(entry: usize, ustack_top: VirtAddr, arg0: usize) -> Self {
         use aarch64_cpu::registers::SPSR_EL1;
         let mut regs = [0; 31];
@@ -39,7 +37,7 @@ impl UserContext {
                     + SPSR_EL1::I::Unmasked
                     + SPSR_EL1::F::Masked)
                     .value,
-                __pad: Self::PAD_MAGIC,
+                sp: 0,
             },
             sp: ustack_top.as_usize() as _,
             tpidr: 0,

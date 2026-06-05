@@ -1,6 +1,6 @@
 [package]
 name = "ax-cpu"
-version = "0.6.4"
+version = "0.6.5"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -48,7 +48,7 @@ aarch64-cpu = "11.0"
 tock-registers = "0.10"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.16"
+riscv.workspace = true
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 loongArch64 = "0.2"

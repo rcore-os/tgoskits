@@ -54,7 +54,7 @@ flowchart TD
 
 ### 使用场景
 - `HandlerTable::new()`：各平台 IRQ 子系统用它声明静态处理器表。
-- `register_handler()` / `unregister_handler()`：被 `components/axplat_crates/ax-plat/src/irq.rs` 的平台实现间接消费。
+- `register_handler()` / `unregister_handler()`：被 `platforms/ax-plat/src/irq.rs` 的平台实现间接消费。
 - `handle()`：由平台 IRQ 处理路径在拿到实际 IRQ 号后调用。
 
 ### 边界说明
@@ -67,8 +67,8 @@ flowchart TD
 graph LR
     ax_handler_table["ax-handler-table"] --> axplat["ax_plat::irq"]
     axplat --> x86["ax-plat-x86-pc / x86-q35"]
-    axplat --> riscv["ax-plat-riscv64-qemu-virt"]
-    axplat --> aarch64["ax-plat-aarch64-peripherals"]
+    axplat --> riscv["ax-plat-riscv64-sg2002"]
+    axplat --> aarch64["axplat-dyn / somehal"]
     axplat --> loongarch["ax-plat-loongarch64-qemu-virt"]
 ```
 
@@ -77,7 +77,7 @@ graph LR
 
 ### 主要消费者
 - `ax_plat::irq`：把 `HandlerTable` 作为平台 IRQ 管理接口的一部分导出。
-- 各平台 IRQ 实现：如 `ax-plat-x86-pc`、`ax-plat-riscv64-qemu-virt` 等，都直接声明静态 `IRQ_HANDLER_TABLE`。
+- 各平台 IRQ 实现：如 `ax-plat-x86-pc`、`ax-plat-riscv64-sg2002` 等，都直接声明静态 `IRQ_HANDLER_TABLE`。
 
 ## 开发指南
 ### 接入方式

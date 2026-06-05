@@ -9,10 +9,11 @@ mod pin;
 
 #[bare_test::tests]
 mod tests {
+    use ax_kspin::SpinNoIrq as Mutex;
     use bare_test::mem::iomap;
     use log::info;
     use rockchip_soc::{Cru, SocType};
-    use spin::{Mutex, Once};
+    use spin::Once;
 
     use crate::pin::test_pin;
 

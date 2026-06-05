@@ -1,6 +1,6 @@
 [package]
 name = "axfs-ng-vfs"
-version = "0.4.2"
+version = "0.4.3"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
@@ -10,6 +10,7 @@ license = "Apache-2.0"
 
 [dependencies]
 ax-errno = { workspace = true }
+ax-kspin = { workspace = true }
 axpoll = { workspace = true }
 bitflags = "2.10"
 cfg-if = "1"
@@ -17,4 +18,3 @@ hashbrown = "0.16"
 inherit-methods-macro = "0.1"
 log = "0.4"
 smallvec = "1.15"
-spin = { version = "0.10", default-features = false, features = ["mutex"] }

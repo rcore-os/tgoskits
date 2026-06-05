@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use dma_api::{DArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 
 use crate::{JobMode, op::Operation};
 
@@ -28,7 +28,7 @@ pub struct SubmitRef {
 
 pub struct Submit {
     pub base: SubmitBase,
-    pub regcmd_all: DArray<u64>,
+    pub regcmd_all: ContiguousArray<u64>,
     pub tasks: Vec<Operation>,
 }
 
@@ -43,8 +43,8 @@ impl Submit {
             regcfg_amount: tasks[0].reg_amount(),
         };
 
-        let regcmd_all = dma
-            .array_zero_with_align::<u64>(
+        let mut regcmd_all = dma
+            .contiguous_array_zero_with_align::<u64>(
                 base.regcfg_amount as usize * tasks.len(),
                 0x1000,
                 DmaDirection::Bidirectional,
@@ -58,15 +58,11 @@ impl Submit {
 
         let amount = base.regcfg_amount as usize;
         for (i, task) in tasks.iter().enumerate() {
-            let regcmd = unsafe {
-                core::slice::from_raw_parts_mut(
-                    regcmd_all.as_ptr().as_ptr().add(i * amount),
-                    amount,
-                )
-            };
+            let regcmd =
+                unsafe { &mut regcmd_all.as_mut_slice_cpu()[i * amount..(i + 1) * amount] };
             task.fill_regcmd(regcmd);
         }
-        regcmd_all.confirm_write_all();
+        regcmd_all.prepare_for_device_all();
 
         Self {
             base,

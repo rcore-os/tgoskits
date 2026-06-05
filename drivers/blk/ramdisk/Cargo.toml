@@ -7,13 +7,11 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "ramdisk"
 repository.workspace = true
-version = "0.1.1"
-publish = false
+version = "0.1.2"
 
 [dependencies]
 rdif-block = { workspace = true }
-spin = "0.10"
+spin = { workspace = true }
 
 [dev-dependencies]
 dma-api = { workspace = true }
-rd-block = { workspace = true }

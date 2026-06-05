@@ -7,6 +7,7 @@ use alloc::{
 };
 
 use ax_io::{Read, Write};
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     Location, Metadata, Mountpoint, NodePermission, NodeType, VfsError, VfsResult,
@@ -29,7 +30,7 @@ pub static ROOT_FS_CONTEXT: Once<FsContext> = Once::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: spin::Mutex<Vec<Weak<Mutex<FsContext>>>> = spin::Mutex::new(Vec::new());
+static FS_REGISTRY: SpinNoIrq<Vec<Weak<Mutex<FsContext>>>> = SpinNoIrq::new(Vec::new());
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
 fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
@@ -314,7 +315,13 @@ impl FsContext {
     }
 
     /// Creates a new, empty directory at the provided path.
-    pub fn create_dir(&self, path: impl AsRef<Path>, mode: NodePermission) -> VfsResult<Location> {
+    pub fn create_dir(
+        &self,
+        path: impl AsRef<Path>,
+        mode: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Location> {
         let path = path.as_ref();
         // Empty path should return NotFound, not InvalidInput
         if path.as_str().is_empty() {
@@ -336,7 +343,7 @@ impl FsContext {
             }
             Err(e) => return Err(e),
         };
-        dir.create(name, NodeType::Directory, mode)
+        dir.create(name, NodeType::Directory, mode, uid, gid)
     }
 
     /// Creates a new hard link on the filesystem.
@@ -355,12 +362,14 @@ impl FsContext {
         &self,
         target: impl AsRef<str>,
         link_path: impl AsRef<Path>,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_nonexistent(link_path.as_ref())?;
         if dir.lookup_no_follow(name).is_ok() {
             return Err(VfsError::AlreadyExists);
         }
-        let symlink = dir.create(name, NodeType::Symlink, NodePermission::default())?;
+        let symlink = dir.create(name, NodeType::Symlink, NodePermission::default(), uid, gid)?;
         symlink.entry().as_file()?.set_symlink(target.as_ref())?;
         Ok(symlink)
     }

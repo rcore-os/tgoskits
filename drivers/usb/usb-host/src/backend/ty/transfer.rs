@@ -10,7 +10,7 @@ pub struct Transfer {
     pub kind: TransferKind,
     pub direction: usb_if::transfer::Direction,
     #[cfg(kmod)]
-    pub mapping: Option<dma_api::SArrayPtr<u8>>,
+    pub mapping: Option<dma_api::StreamingMap<u8>>,
     #[cfg(umod)]
     pub buffer: Option<(std::ptr::NonNull<u8>, usize)>,
     pub transfer_len: usize,

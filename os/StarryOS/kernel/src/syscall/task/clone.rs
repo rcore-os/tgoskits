@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
-use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -14,7 +14,7 @@ use starry_vm::VmMutPtr;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
-    task::{AsThread, ProcessData, Thread, add_task_to_table, new_user_task},
+    task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
 };
 
 bitflags! {
@@ -116,16 +116,10 @@ impl CloneArgs {
             return Err(AxError::InvalidInput);
         }
 
-        let namespace_flags = CloneFlags::NEWNS
-            | CloneFlags::NEWIPC
-            | CloneFlags::NEWNET
-            | CloneFlags::NEWPID
-            | CloneFlags::NEWUSER
-            | CloneFlags::NEWUTS
-            | CloneFlags::NEWCGROUP;
-
-        if flags.intersects(namespace_flags) {
-            warn!("sys_clone/sys_clone3: namespace flags detected, stub support only");
+        // CLONE_NEWCGROUP is not yet implemented.
+        if flags.contains(CloneFlags::NEWCGROUP) {
+            error!("sys_clone/sys_clone3: unsupported namespace flag CLONE_NEWCGROUP");
+            return Err(AxError::InvalidInput);
         }
 
         Ok(())
@@ -154,6 +148,12 @@ impl CloneArgs {
         } else {
             None
         };
+
+        // Linux blocks the parent for every CLONE_VFORK clone until the child
+        // execs or exits, regardless of whether the caller passed a child stack.
+        // BusyBox shell/timeout paths rely on that ordering when they combine
+        // CLONE_VM, CLONE_VFORK, and a private child stack.
+        let needs_vfork_block = flags.contains(CloneFlags::VFORK);
 
         let mut new_uctx = *uctx;
         new_uctx.prepare_clone_child_return_state();
@@ -218,8 +218,11 @@ impl CloneArgs {
 
             let proc_data = ProcessData::new(
                 proc,
-                old_proc_data.exe_path.read().clone(),
-                old_proc_data.cmdline.read().clone(),
+                ProcessImage::new(
+                    old_proc_data.exe_path.read().clone(),
+                    old_proc_data.cmdline.read().clone(),
+                    old_proc_data.auxv.read().clone(),
+                ),
                 aspace,
                 signal_actions,
                 exit_signal,
@@ -228,6 +231,7 @@ impl CloneArgs {
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
+            proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
             // fork/clone copies mm->dumpable from parent; without this, a
             // child of `prctl(PR_SET_DUMPABLE, 0) -> fork()` would reset to
@@ -235,6 +239,43 @@ impl CloneArgs {
             // supposed to enforce. Verified via Linux host: parent sets 0,
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
+            proc_data.set_thp_disable(old_proc_data.thp_disable());
+
+            // Inherit the parent's namespace proxy, then unshare
+            // each namespace for which a CLONE_NEW* flag is set.
+            let mut new_nsproxy = old_proc_data.nsproxy.lock().clone_all();
+            if flags.contains(CloneFlags::NEWUTS) {
+                new_nsproxy.unshare_uts();
+            }
+            if flags.contains(CloneFlags::NEWIPC) {
+                new_nsproxy.unshare_ipc();
+            }
+            if flags.contains(CloneFlags::NEWNS) {
+                new_nsproxy.unshare_mnt();
+            }
+            if flags.contains(CloneFlags::NEWPID) {
+                new_nsproxy.unshare_pid();
+                new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
+            }
+            if flags.contains(CloneFlags::NEWNET) {
+                new_nsproxy.unshare_net();
+            }
+            if flags.contains(CloneFlags::NEWUSER) {
+                new_nsproxy.unshare_user();
+            }
+
+            // Consume a pending child PID namespace prepared by
+            // unshare(CLONE_NEWPID) in the parent (Linux: the parent is
+            // not moved; the child becomes PID 1 in the new namespace).
+            if !flags.contains(CloneFlags::NEWPID) {
+                let mut parent_ns = old_proc_data.nsproxy.lock();
+                if let Some(child_pid_ns) = parent_ns.child_pid_ns.take() {
+                    new_nsproxy.pid_ns = child_pid_ns;
+                    new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
+                }
+            }
+
+            *proc_data.nsproxy.lock() = new_nsproxy;
 
             {
                 let mut scope = proc_data.scope.write();
@@ -266,12 +307,15 @@ impl CloneArgs {
 
         let parent_cred = Some(curr.as_thread().cred());
         let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
+        if curr.as_thread().no_new_privs() {
+            thr.set_no_new_privs();
+        }
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(&thr)
+                PidFd::new_thread(&thr, tid)
             } else {
                 PidFd::new_process(&new_proc_data)
             };
@@ -283,27 +327,58 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-        // CLONE_VFORK: wire a shared `PollSet` to the child so it can wake us
-        // (PollSet, not WaitQueue, so the parent's wait is interruptible by
-        // `task.interrupt()` — see `wait_vfork_done`).
-        if flags.contains(CloneFlags::VFORK) {
+        // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
+        // execs or exits. Use PollSet so the parent's wait remains
+        // interruptible by task.interrupt().
+        if needs_vfork_block {
             let poll = Arc::new(axpoll::PollSet::new());
             new_proc_data.set_vfork_done(poll);
+        }
+
+        let parent_pid = curr.as_thread().proc_data.proc.pid();
+        let parent_tid = curr.id().as_u64() as Pid;
+        let ptrace_event = if flags.contains(CloneFlags::THREAD) {
+            super::ptrace::PTRACE_EVENT_CLONE
+        } else if flags.contains(CloneFlags::VFORK) {
+            super::ptrace::PTRACE_EVENT_VFORK
+        } else {
+            super::ptrace::PTRACE_EVENT_FORK
+        };
+        let trace_clone = super::ptrace::ptrace_notify_clone(parent_pid, tid as Pid, ptrace_event);
+        if trace_clone
+            && !flags.contains(CloneFlags::THREAD)
+            && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid()
+        {
+            new_proc_data.set_ptrace_tracer_pid(tracer_pid);
+            new_proc_data.set_ptrace_attached();
+            new_proc_data.set_ptrace_stop(starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 
-        // Linux kcov(1): coverage collection is disabled in the child after
-        // fork().  The child's Thread is always created with kcov: None and a
-        // new TID not present in the KCOV state table, but we clean up
-        // explicitly for consistency and future-proofing.
-        #[cfg(feature = "kcov")]
-        crate::kcov::on_fork(tid);
+        if trace_clone {
+            let _ = crate::task::send_signal_to_thread(
+                None,
+                parent_tid,
+                Some(starry_signal::SignalInfo::new_kernel(
+                    starry_signal::Signo::SIGTRAP,
+                )),
+            );
+        }
 
         // Block the parent until the child exec's or exits.
-        if flags.contains(CloneFlags::VFORK) {
+        if needs_vfork_block {
             new_proc_data.wait_vfork_done();
+            if super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid) {
+                let _ = crate::task::send_signal_to_thread(
+                    None,
+                    parent_tid,
+                    Some(starry_signal::SignalInfo::new_kernel(
+                        starry_signal::Signo::SIGTRAP,
+                    )),
+                );
+            }
         }
 
         Ok(tid as _)

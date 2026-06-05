@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.3.9...axpoll-v0.3.10) - 2026-06-03
+
+### Other
+
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+
 ## [0.3.9](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.3.8...axpoll-v0.3.9) - 2026-05-15
 
 ### Added

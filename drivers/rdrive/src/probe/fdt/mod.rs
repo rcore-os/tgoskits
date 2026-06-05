@@ -23,6 +23,12 @@ pub fn init(fdt_addr: NonNull<u8>) -> Result<(), DriverError> {
     Ok(())
 }
 
+pub fn check_addr(fdt_addr: NonNull<u8>) -> Result<(), DriverError> {
+    unsafe { Fdt::from_ptr(fdt_addr.as_ptr()) }
+        .map(|_| ())
+        .map_err(|error| DriverError::Fdt(format!("{error:?}")))
+}
+
 pub fn probe_register(
     register: &DriverRegister,
 ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
@@ -30,8 +36,18 @@ pub fn probe_register(
     sys.probe_register(register)
 }
 
+pub(crate) fn try_probe_register(
+    register: &DriverRegister,
+) -> Option<Result<Vec<Result<(), OnProbeError>>, ProbeError>> {
+    SYSTEM.get().map(|system| system.probe_register(register))
+}
+
 pub(crate) fn system() -> &'static System {
     SYSTEM.get().expect("rdrive not init")
+}
+
+pub(crate) fn try_system() -> Option<&'static System> {
+    SYSTEM.get()
 }
 
 pub struct FdtInfo<'a> {
@@ -40,6 +56,14 @@ pub struct FdtInfo<'a> {
 }
 
 impl<'a> FdtInfo<'a> {
+    pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'a>> {
+        system().get_by_phandle(phandle)
+    }
+
+    pub fn find_compatible(&self, compatible: &[&str]) -> Vec<NodeType<'a>> {
+        system().find_compatible(compatible)
+    }
+
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
     }
@@ -67,8 +91,20 @@ pub struct System {
 unsafe impl Send for System {}
 
 impl System {
+    pub fn fdt(&self) -> &Fdt {
+        &self.fdt
+    }
+
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
+    }
+
+    pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'_>> {
+        self.fdt.get_by_phandle(phandle)
+    }
+
+    pub fn find_compatible(&self, compatible: &[&str]) -> Vec<NodeType<'_>> {
+        self.fdt.find_compatible(compatible)
     }
 
     pub fn new(fdt_addr: NonNull<u8>) -> Result<Self, DriverError> {

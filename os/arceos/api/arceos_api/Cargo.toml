@@ -1,6 +1,6 @@
 [package]
 name = "ax-api"
-version = "0.5.16"
+version = "0.5.17"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -16,9 +16,10 @@ alloc = ["dep:ax-alloc", "ax-feat/alloc"]
 paging = ["dep:ax-mm", "ax-feat/paging"]
 dma = ["dep:ax-dma", "ax-feat/dma"]
 multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-feat/multitask"]
-fs = ["dep:ax-fs", "dep:ax-driver", "ax-feat/fs"]
-net = ["dep:ax-net", "dep:ax-driver", "ax-feat/net"]
-display = ["dep:ax-display", "dep:ax-driver", "ax-feat/display"]
+stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
+fs = ["dep:ax-fs", "ax-feat/fs"]
+net = ["dep:ax-net", "ax-feat/net"]
+display = ["dep:ax-display", "ax-feat/display"]
 
 
 # Use dummy functions if the feature is not enabled
@@ -29,7 +30,6 @@ ax-alloc = { workspace = true, optional = true }
 ax-config.workspace = true
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
-ax-driver = { workspace = true, optional = true }
 ax-errno.workspace = true
 ax-feat.workspace = true
 ax-fs = { workspace = true, optional = true }

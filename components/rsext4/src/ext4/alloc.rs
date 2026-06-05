@@ -40,13 +40,13 @@ impl Ext4FileSystem {
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
-                let stored = desc.block_bitmap_csum();
+                let stored = desc.block_bitmap_csum(&self.superblock);
                 if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     error!(
                         "alloc_blocks: block bitmap checksum mismatch group={group_idx} \
                          expected={expected:#x} stored={stored:#x}"
                     );
-                    return Err(Ext4Error::checksum());
+                    return Err(Ext4Error::checksum().with_operation("alloc_blocks:block_bitmap"));
                 }
             }
 
@@ -182,7 +182,7 @@ impl Ext4FileSystem {
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
                 if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
-                    return Err(Ext4Error::checksum());
+                    return Err(Ext4Error::checksum().with_operation("alloc_inode:inode_bitmap"));
                 }
             }
 

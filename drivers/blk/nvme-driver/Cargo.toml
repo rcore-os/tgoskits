@@ -8,14 +8,15 @@ keywords = ["os", "nvme", "block", "driver"]
 license = "MIT"
 name = "nvme-driver"
 repository.workspace = true
-version = "0.4.2"
+version = "0.5.0"
 
 [dependencies]
 dma-api.workspace = true
 log = "0.4"
 mmio-api.workspace = true
-rd-block.workspace = true
-spin = "0.10"
+mbarrier = "0.1"
+rdif-block.workspace = true
+spin.workspace = true
 tock-registers = "0.10"
 
 [dev-dependencies]

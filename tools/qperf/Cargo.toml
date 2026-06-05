@@ -1,17 +1,12 @@
-[workspace]
-resolver = "3"
-members = ["analyzer"]
-
-[workspace.dependencies]
-bincode = "2.0.1"
-
 [package]
 name = "qperf"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
+test = false
 
 [dependencies]
 anyhow = "1.0.100"

@@ -9,12 +9,16 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "k230-kpu")]
+mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
 #[cfg(feature = "ext4")]
+mod loop_block;
+#[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
@@ -22,19 +26,20 @@ mod memtrack;
 mod rknpu_card;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod rknpu_drm;
-#[cfg(feature = "sg2002")]
+mod rtc;
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod tpu;
 pub mod tty;
 
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod cvi_camera;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod cvi_usb_camera;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod pinmux;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub(super) mod pwm;
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 mod tty_serial;
 
 use alloc::{format, sync::Arc};
@@ -43,10 +48,10 @@ use core::any::Any;
 use ax_errno::AxError;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 use spin::Once;
 
-#[cfg(feature = "sg2002")]
+#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub static ION_DEVICE: Once<Arc<ion::IonDevice>> = Once::new();
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
@@ -267,7 +272,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     #[cfg(feature = "dev-log")]
     root.add(
         "log",
-        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok(b"")),
+        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok("")),
     );
 
     #[cfg(feature = "memtrack")]
@@ -290,17 +295,39 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(CpuDmaLatency),
         ),
     );
-
-    #[cfg(feature = "kcov")]
     root.add(
-        "kcov",
+        "rtc0",
         Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
-            DeviceId::new(10, 57),
-            Arc::new(crate::kcov::KcovDevice),
+            rtc::RTC0_DEVICE_ID,
+            Arc::new(rtc::Rtc),
         ),
     );
+
+    #[cfg(feature = "k230-kpu")]
+    {
+        if let Some(kpu_device) = kpu::KpuDevice::probe().map(Arc::new) {
+            root.add(
+                "kpu",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device.clone(),
+                ),
+            );
+            root.add(
+                "kpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    kpu::KPU_DEVICE_ID,
+                    kpu_device,
+                ),
+            );
+        }
+    }
 
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
@@ -392,7 +419,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         SimpleDir::new_maker(fs.clone(), Arc::new(event::input_devices(fs.clone()))),
     );
 
-    #[cfg(feature = "sg2002")]
+    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
     {
         root.add(
             "cvi-tpu0",

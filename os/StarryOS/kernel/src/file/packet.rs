@@ -18,12 +18,15 @@ use linux_raw_sys::{
 };
 use starry_vm::{vm_read_slice, vm_write_slice};
 
-use super::{FileLike, Kstat};
-use crate::file::{IoDst, IoSrc, get_file_like};
-
-pub(super) const ETH0_IFINDEX: i32 = 2;
+use super::{
+    FileLike, Kstat,
+    net::{ETH0_IFINDEX, ETH0_REAL_MAC},
+};
+use crate::{
+    file::{IoDst, IoSrc, get_file_like},
+    syscall::in_root_net_ns,
+};
 const ETH0_NAME: &[u8] = b"eth0";
-pub(super) const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const SYNTHETIC_PEER_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
 const UNSPEC_IPV4: [u8; 4] = [0, 0, 0, 0];
 
@@ -54,15 +57,16 @@ pub struct SockAddrLl {
 
 impl SockAddrLl {
     fn eth0(protocol: u16) -> Self {
+        let mac = ETH0_REAL_MAC;
         let mut sll_addr = [0; 8];
-        sll_addr[..ETH0_HWADDR.len()].copy_from_slice(&ETH0_HWADDR);
+        sll_addr[..mac.len()].copy_from_slice(&mac);
         Self {
             sll_family: AF_PACKET as u16,
             sll_protocol: protocol,
             sll_ifindex: ETH0_IFINDEX,
             sll_hatype: ARPHRD_ETHER,
             sll_pkttype: PACKET_HOST,
-            sll_halen: ETH0_HWADDR.len() as u8,
+            sll_halen: mac.len() as u8,
             sll_addr,
         }
     }
@@ -113,18 +117,24 @@ pub struct PacketSocket {
 }
 
 impl PacketSocket {
-    pub fn new(protocol: u16) -> Self {
-        Self {
+    pub fn new(protocol: u16) -> AxResult<Self> {
+        if !in_root_net_ns() {
+            return Err(AxError::PermissionDenied);
+        }
+        Ok(Self {
             state: Mutex::new(PacketSocketState {
                 bound: SockAddrLl::eth0(protocol),
                 pending: None,
             }),
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
-        }
+        })
     }
 
     pub fn bind_ll(&self, addr: SockAddrLl) -> AxResult<()> {
+        if !in_root_net_ns() {
+            return Err(AxError::NoSuchDevice);
+        }
         if addr.sll_ifindex != 0 && addr.sll_ifindex != ETH0_IFINDEX {
             return Err(AxError::NoSuchDevice);
         }
@@ -143,6 +153,9 @@ impl PacketSocket {
     }
 
     pub fn send_packet(&self, src: &mut IoSrc) -> AxResult<usize> {
+        if !in_root_net_ns() {
+            return Err(AxError::NoSuchDevice);
+        }
         let len = src.remaining();
         if len == 0 {
             return Ok(0);
@@ -160,8 +173,12 @@ impl PacketSocket {
 
     pub fn recv_packet(&self, dst: &mut IoDst) -> AxResult<(usize, SockAddrLl)> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let Some(frame) = self.state.lock().pending.take() else {
-                return Err(AxError::WouldBlock);
+            let frame = {
+                let mut state = self.state.lock();
+                let Some(frame) = state.pending.take() else {
+                    return Err(AxError::WouldBlock);
+                };
+                frame
             };
             let written = dst.write(&frame.data)?;
             Ok((written, frame.from))
@@ -179,7 +196,7 @@ fn build_arp_reply(request: &[u8]) -> Option<PacketFrame> {
     if request.len() < 28
         || u16::from_be_bytes([request[0], request[1]]) != ARPHRD_ETHER
         || u16::from_be_bytes([request[2], request[3]]) != ETH_P_IP
-        || request[4] != ETH0_HWADDR.len() as u8
+        || request[4] != ETH0_REAL_MAC.len() as u8
         || request[5] != 4
         || u16::from_be_bytes([request[6], request[7]]) != ARPOP_REQUEST
     {
@@ -279,7 +296,7 @@ impl FileLike for PacketSocket {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        if !ifreq_name_is_eth0(arg)? {
+        if !in_root_net_ns() || !ifreq_name_is_eth0(arg)? {
             return Err(AxError::NoSuchDevice);
         }
 
@@ -292,7 +309,7 @@ impl FileLike for PacketSocket {
             SIOCGIFHWADDR => {
                 let mut hwaddr = [0; 16];
                 hwaddr[..2].copy_from_slice(&ARPHRD_ETHER.to_ne_bytes());
-                hwaddr[2..2 + ETH0_HWADDR.len()].copy_from_slice(&ETH0_HWADDR);
+                hwaddr[2..2 + ETH0_REAL_MAC.len()].copy_from_slice(&ETH0_REAL_MAC);
                 write_ifreq_data(arg, &hwaddr)?;
             }
             _ => return Err(AxError::NotATty),

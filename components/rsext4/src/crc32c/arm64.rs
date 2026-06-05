@@ -3,10 +3,8 @@
 use core::arch::asm;
 
 #[cfg(target_arch = "aarch64")]
-lazy_static::lazy_static! {
-    #[allow(dead_code)]
-    pub static ref HARDWARE_SUPPORT_CRC32: bool = has_hardware_crc32();
-}
+#[allow(dead_code)]
+pub static HARDWARE_SUPPORT_CRC32: spin::LazyLock<bool> = spin::LazyLock::new(has_hardware_crc32);
 
 // In `core::arch::aarch64`, the intrinsics with the `c` suffix implement the
 // Castagnoli polynomial used by CRC32C.

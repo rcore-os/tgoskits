@@ -14,7 +14,12 @@
 
 //! # Axvisor Kernel
 //!
-//! The main kernel binary for the Axvisor hypervisor.
+//! Kernel entry point for the Axvisor hypervisor.
+//!
+//! This module wires together early boot presentation, hardware virtualization
+//! enablement, VM initialization/startup, and the interactive management shell.
+//! The implementation is intentionally small so that the boot order is visible
+//! from a single file.
 
 #![no_std]
 #![no_main]
@@ -28,43 +33,66 @@ extern crate alloc;
 
 extern crate ax_std as std;
 
-#[cfg(target_arch = "loongarch64")]
-extern crate ax_plat_loongarch64_qemu_virt;
-#[cfg(target_arch = "x86_64")]
-extern crate axplat_x86_qemu_q35;
-
-mod hal;
-mod logo;
+mod config;
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
+mod fdt;
+mod images;
+mod manager;
 mod shell;
-mod task;
-mod vmm;
 
-fn ensure_hardware_support() {
-    if axvm::has_hardware_support() {
-        return;
-    }
+use std::println;
 
-    #[cfg(target_arch = "loongarch64")]
-    panic!(
-        "LoongArch virtualization extensions are unavailable. Use a virtualization-capable \
-         LoongArch QEMU build such as QEMU-LVZ instead of stock qemu-system-loongarch64."
-    );
+/// Startup banners printed before the hypervisor begins initialization.
+const LOGO: [&str; 2] = [
+    r#"
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+"#,
+    r#"
+    _         __     ___
+   / \   __  _\ \   / (_)___  ___  _ __
+  / _ \  \ \/ /\ \ / /| / __|/ _ \| '__|
+ / ___ \  >  <  \ V / | \__ \ (_) | |
+/_/   \_\/_/\_\  \_/  |_|___/\___/|_|
+"#,
+];
 
-    #[cfg(not(target_arch = "loongarch64"))]
-    panic!("Hardware does not support virtualization");
+/// Prints the startup banner to the console.
+fn print_logo() {
+    println!();
+    println!("{}", LOGO[0]);
+    println!();
+    println!("by AxVisor Team");
+    println!();
 }
 
+/// Axvisor kernel entry point.
+///
+/// The startup sequence is:
+///
+/// 1. Print the startup banner.
+/// 2. Check and enable hardware virtualization on every CPU.
+/// 3. Build and start configured guest VMs.
+/// 4. Enter the management shell after the default guests have exited.
 #[unsafe(no_mangle)]
 fn main() {
-    logo::print_logo();
+    print_logo();
 
     info!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
-    ensure_hardware_support();
-    hal::enable_virtualization();
+    let manager = manager::AxvmManager::new().expect("failed to initialize AxVM manager");
 
-    vmm::init();
-    vmm::start();
+    manager.init_default_vms();
+    manager.start_default_vms();
 
     info!("[OK] Default guest initialized");
 

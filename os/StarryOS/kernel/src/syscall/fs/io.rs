@@ -317,18 +317,33 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     Err(AxError::from(LinuxError::EINVAL))
 }
 
-pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
-    debug!("sys_sync_file_range <= fd: {fd}");
+pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> AxResult<isize> {
+    debug!("sys_sync_file_range <= fd: {fd}, flags: {flags:#x}");
+    const SYNC_FILE_RANGE_WAIT_BEFORE: u32 = 1;
+    const SYNC_FILE_RANGE_WRITE: u32 = 2;
+    const SYNC_FILE_RANGE_WAIT_AFTER: u32 = 4;
+    const SYNC_FILE_RANGE_ALL: u32 =
+        SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
+    if offset < 0 || nbytes < 0 {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+    if (flags & !SYNC_FILE_RANGE_ALL) != 0 {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
     // sync_file_range(2) is an advisory hint to initiate writeback for a
     // byte range. Until range-based writeback is implemented, keep this as
     // a no-op after basic fd validation rather than turning it into a
     // stronger whole-file fdatasync-style flush (matches the advisory
     // nature documented in the man page). Invalid fds still surface the
     // underlying error (EBADF). Directory fds are accepted to match fsync.
-    match File::from_fd(fd) {
-        Ok(_) | Err(AxError::IsADirectory) => Ok(0),
-        Err(e) => Err(e),
+    let any = get_file_like(fd)?;
+    if any.downcast_ref::<File>().is_none()
+        && any.downcast_ref::<Directory>().is_none()
+        && any.downcast_ref::<Memfd>().is_none()
+    {
+        return Err(AxError::from(LinuxError::ESPIPE));
     }
+    Ok(0)
 }
 
 pub fn sys_fadvise64(
@@ -642,7 +657,15 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
             break;
         }
 
-        let bytes_written = dst.write(&buf[..bytes_read])?;
+        let bytes_written = match dst.write(&buf[..bytes_read]) {
+            Ok(n) => n,
+            // Socket send buffer full after partial progress: return what we
+            // managed to transfer so far rather than propagating EAGAIN.
+            // Linux sendfile(2) semantics: return the count of bytes written
+            // when a short write happens, NOT -EAGAIN.
+            Err(AxError::WouldBlock) if total_written > 0 => break,
+            Err(e) => return Err(e),
+        };
         // Advance source offset by bytes actually transferred (partial dst.write
         // must not skip unread source data).
         if let SendFile::Offset(_, user, pos) = &mut src {
@@ -682,14 +705,12 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
 
         SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
     } else {
-        // Linux sendfile 要求 in_fd 是支持 mmap-like 操作的文件。
-        // 这里显式用 File::from_fd(in_fd)? 拒绝 pipe。
+        // 拒绝 pipe 输入：File::from_fd 对 pipe 会失败，但 get_file_like 会成功，后续 read 会返回 EPIPE。Linux sendfile 对 pipe 输入也是 EPIPE。
         let _in_file = File::from_fd(in_fd)?;
-
         SendFile::Direct(get_file_like(in_fd)?)
     };
 
-    let dst: SendFile = SendFile::Direct(get_file_like(out_fd)?);
+    let dst: SendFile = SendFile::Direct(out_file);
 
     do_send(src, dst, len).map(|n: usize| n as _)
 }
@@ -716,59 +737,72 @@ pub fn sys_copy_file_range(
         return Err(AxError::InvalidInput);
     }
 
+    if len > isize::MAX as usize {
+        return Err(AxError::InvalidInput);
+    }
+
     let remap = |e| match e {
         AxError::BadFileDescriptor | AxError::IsADirectory => e,
         _ => AxError::InvalidInput,
     };
+
     let file_in = File::from_fd(fd_in).map_err(remap)?;
     let file_out = File::from_fd(fd_out).map_err(remap)?;
+
     let meta_in = file_in.inner().location().metadata()?;
     let meta_out = file_out.inner().location().metadata()?;
+
+    if meta_in.node_type == NodeType::Directory || meta_out.node_type == NodeType::Directory {
+        return Err(AxError::IsADirectory);
+    }
 
     if meta_in.node_type != NodeType::RegularFile || meta_out.node_type != NodeType::RegularFile {
         return Err(AxError::InvalidInput);
     }
+
     if file_out.inner().access(FileFlags::APPEND).is_ok() {
         return Err(AxError::BadFileDescriptor);
     }
 
+    let pos_in = if off_in.is_null() {
+        file_in.inner().seek(SeekFrom::Current(0))?
+    } else {
+        off_in.vm_read()?
+    };
+
+    let pos_out = if off_out.is_null() {
+        file_out.inner().seek(SeekFrom::Current(0))?
+    } else {
+        off_out.vm_read()?
+    };
+
     if len > 0 && meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
-        let pos_in = if off_in.is_null() {
-            file_in.inner().seek(SeekFrom::Current(0))?
-        } else {
-            off_in.vm_read()?
-        };
-        let pos_out = if off_out.is_null() {
-            file_out.inner().seek(SeekFrom::Current(0))?
-        } else {
-            off_out.vm_read()?
-        };
-        if let Some(copy_end) = (len as u64).checked_sub(1) {
-            let in_end = pos_in.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
-            let out_end = pos_out.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
-            if in_end >= pos_out && pos_in <= out_end {
-                return Err(AxError::InvalidInput);
-            }
+        let copy_last = (len as u64).checked_sub(1).ok_or(AxError::InvalidInput)?;
+
+        let in_end = pos_in.checked_add(copy_last).ok_or(AxError::InvalidInput)?;
+
+        let out_end = pos_out
+            .checked_add(copy_last)
+            .ok_or(AxError::InvalidInput)?;
+
+        if in_end >= pos_out && pos_in <= out_end {
+            return Err(AxError::InvalidInput);
         }
     }
 
-    let src = if !off_in.is_null() {
-        SendFile::Offset(file_in, off_in, off_in.vm_read()?)
+    let src: SendFile = if !off_in.is_null() {
+        SendFile::Offset(file_in, off_in, pos_in)
     } else {
         SendFile::Direct(file_in)
     };
 
-    // Output offset: when fd_out is a memfd, the regular `Offset`
-    // variant would unwrap to the inner `File` and bypass seal checks.
-    // `send_offset_out` keeps the `Memfd` wrapper so `Memfd::write_at`
-    // enforces `F_SEAL_WRITE` / `F_SEAL_GROW`.
-    let dst = if !off_out.is_null() {
+    let dst: SendFile = if !off_out.is_null() {
         send_offset_out(fd_out, off_out)?
     } else {
         SendFile::Direct(get_file_like(fd_out)?)
     };
 
-    do_send(src, dst, len).map(|n| n as _)
+    do_send(src, dst, len).map(|n: usize| n as isize)
 }
 
 pub fn sys_splice(
@@ -777,7 +811,7 @@ pub fn sys_splice(
     fd_out: c_int,
     off_out: *mut i64,
     len: usize,
-    _flags: u32,
+    flags: u32,
 ) -> AxResult<isize> {
     debug!(
         "sys_splice <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
@@ -786,64 +820,137 @@ pub fn sys_splice(
         fd_out,
         !off_out.is_null(),
         len,
-        _flags
+        flags
     );
 
-    let mut has_pipe = false;
+    const SPLICE_F_MOVE: u32 = 0x01;
+    const SPLICE_F_NONBLOCK: u32 = 0x02;
+    const SPLICE_F_MORE: u32 = 0x04;
+    const SPLICE_F_GIFT: u32 = 0x08;
+    const SPLICE_F_ALL: u32 = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
 
+    // 1. 先检查明显非法 fd。
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
         return Err(AxError::BadFileDescriptor);
     }
 
-    let src = if !off_in.is_null() {
+    // 2. 检查 flags。未知 flag 返回 EINVAL。
+    if flags & !SPLICE_F_ALL != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // 3. 防止最终 usize -> isize 溢出。
+    if len > isize::MAX as usize {
+        return Err(AxError::InvalidInput);
+    }
+
+    // 4. 先识别 pipe。
+    let in_pipe = Pipe::from_fd(fd_in).ok();
+    let out_pipe = Pipe::from_fd(fd_out).ok();
+
+    // 如果不是 pipe，先确认它至少是合法 file_like。
+    // 这样 bad fd 会优先返回 EBADF，而不是被下面的 no-pipe 误判成 EINVAL。
+    let in_file = if in_pipe.is_none() {
+        Some(get_file_like(fd_in).map_err(|_| AxError::BadFileDescriptor)?)
+    } else {
+        None
+    };
+
+    let out_file = if out_pipe.is_none() {
+        Some(get_file_like(fd_out).map_err(|_| AxError::BadFileDescriptor)?)
+    } else {
+        None
+    };
+    // splice 要求至少一端是 pipe。
+    if in_pipe.is_none() && out_pipe.is_none() {
+        return Err(AxError::InvalidInput);
+    }
+
+    // 5. pipe 对应的 offset 必须是 NULL，否则返回 ESPIPE。
+    if in_pipe.is_some() && !off_in.is_null() {
+        return Err(AxError::from(LinuxError::ESPIPE));
+    }
+
+    if out_pipe.is_some() && !off_out.is_null() {
+        return Err(AxError::from(LinuxError::ESPIPE));
+    }
+
+    // 6. 检查 pipe 方向。
+    match &in_pipe {
+        Some(pipe) if !pipe.is_read() => return Err(AxError::BadFileDescriptor),
+        _ => {}
+    }
+
+    match &out_pipe {
+        Some(pipe) if !pipe.is_write() => return Err(AxError::BadFileDescriptor),
+        _ => {}
+    }
+
+    // 7. 同一个 pipe 不能同时作为输入和输出。
+    match (&in_pipe, &out_pipe) {
+        (Some(src), Some(dst)) if alloc::sync::Arc::ptr_eq(src, dst) => {
+            return Err(AxError::InvalidInput);
+        }
+        _ => {}
+    }
+
+    // 8. 读取 off_in。到这里时，如果 off_in 非空，fd_in 一定不是 pipe
+    let in_pos = if !off_in.is_null() {
         let pos = off_in.vm_read()?;
         if pos < 0 {
             return Err(AxError::InvalidInput);
         }
-        SendFile::Offset(File::from_fd(fd_in)?, off_in.cast(), pos as u64)
+        Some(pos as u64)
     } else {
-        if let Ok(src) = Pipe::from_fd(fd_in) {
-            if !src.is_read() {
-                return Err(AxError::BadFileDescriptor);
-            }
-            has_pipe = true;
-        }
-        if let Ok(file) = File::from_fd(fd_in)
-            && file.inner().is_path()
-        {
-            return Err(AxError::InvalidInput);
-        }
-        SendFile::Direct(get_file_like(fd_in)?)
+        None
     };
 
-    let dst = if !off_out.is_null() {
+    // 9. 读取 off_out。
+    // 到这里时，如果 off_out 非空，fd_out 一定不是 pipe。
+    let out_pos = if !off_out.is_null() {
         let pos = off_out.vm_read()?;
         if pos < 0 {
             return Err(AxError::InvalidInput);
         }
+        Some(pos as u64)
+    } else {
+        None
+    };
+
+    // 10. 输出目标不能是 O_APPEND。注意要覆盖 off_out 为 NULL 和非 NULL 两种情况。
+    match File::from_fd(fd_out) {
+        Ok(file) if file.inner().access(FileFlags::APPEND).is_ok() => {
+            return Err(AxError::InvalidInput);
+        }
+        _ => {}
+    }
+
+    // 11. 构造输入端。
+    let src = if let Some(pos) = in_pos {
+        SendFile::Offset(File::from_fd(fd_in)?, off_in.cast(), pos)
+    } else if let Some(file) = in_file {
+        SendFile::Direct(file)
+    } else {
+        SendFile::Direct(get_file_like(fd_in)?)
+    };
+    // 12. 构造输出端。
+    let dst: SendFile = if out_pos.is_some() {
         // Route memfd output through the seal-aware wrapper rather
         // than `File::from_fd`'s auto-unwrap.
         send_offset_out(fd_out, off_out.cast())?
     } else {
-        if let Ok(dst) = Pipe::from_fd(fd_out) {
-            if !dst.is_write() {
-                return Err(AxError::BadFileDescriptor);
-            }
-            has_pipe = true;
-        }
-        if let Ok(file) = File::from_fd(fd_out)
-            && file.inner().access(FileFlags::APPEND).is_ok()
-        {
-            return Err(AxError::InvalidInput);
-        }
-        let f = get_file_like(fd_out)?;
+        let f = if let Some(file) = out_file {
+            file
+        } else {
+            get_file_like(fd_out)?
+        };
+
         f.write(&mut b"".as_slice())?;
+
         SendFile::Direct(f)
     };
 
-    if !has_pipe {
-        return Err(AxError::InvalidInput);
-    }
+    let n = do_send(src, dst, len)?;
 
-    do_send(src, dst, len).map(|n| n as _)
+    isize::try_from(n).map_err(|_| AxError::InvalidInput)
 }

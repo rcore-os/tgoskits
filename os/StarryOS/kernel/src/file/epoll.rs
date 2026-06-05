@@ -19,11 +19,11 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::SpinNoIrq;
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
-use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
+use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
 
 use crate::file::{FileLike, get_file_like};
 
@@ -38,6 +38,7 @@ bitflags! {
     pub struct EpollFlags: u32 {
         const EDGE_TRIGGER = EPOLLET;
         const ONESHOT = EPOLLONESHOT;
+        const EXCLUSIVE = EPOLLEXCLUSIVE;
     }
 }
 
@@ -145,7 +146,8 @@ impl Eq for EntryKey {}
 struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
-    mode: SpinNoPreempt<TriggerMode>,
+    mode: SpinNoIrq<TriggerMode>,
+    exclusive: bool,
     in_ready_queue: AtomicBool,
 }
 
@@ -154,9 +156,15 @@ impl EpollInterest {
         Self {
             key,
             event,
-            mode: SpinNoPreempt::new(TriggerMode::from_flags(flags)),
+            mode: SpinNoIrq::new(TriggerMode::from_flags(flags)),
+            exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
         }
+    }
+
+    #[inline]
+    fn is_exclusive(&self) -> bool {
+        self.exclusive
     }
 
     #[inline]
@@ -241,6 +249,10 @@ impl Wake for InterestWaker {
         };
 
         if interest.try_mark_in_queue() {
+            // The queue lock must disable IRQs because wakers may be invoked
+            // from IRQ wake paths. `VecDeque::push_back` can still allocate
+            // when capacity is exhausted; if this path is proven to run in IRQ
+            // context, replace the queue with a bounded or deferred design.
             epoll
                 .ready_queue
                 .lock()
@@ -255,16 +267,16 @@ impl Wake for InterestWaker {
 }
 
 struct EpollInner {
-    interests: SpinNoPreempt<HashMap<EntryKey, Arc<EpollInterest>>>,
-    ready_queue: SpinNoPreempt<VecDeque<Weak<EpollInterest>>>,
+    interests: SpinNoIrq<HashMap<EntryKey, Arc<EpollInterest>>>,
+    ready_queue: SpinNoIrq<VecDeque<Weak<EpollInterest>>>,
     poll_ready: PollSet,
 }
 
 impl Default for EpollInner {
     fn default() -> Self {
         Self {
-            interests: SpinNoPreempt::new(HashMap::new()),
-            ready_queue: SpinNoPreempt::new(VecDeque::new()),
+            interests: SpinNoIrq::new(HashMap::new()),
+            ready_queue: SpinNoIrq::new(VecDeque::new()),
             poll_ready: PollSet::new(),
         }
     }
@@ -349,6 +361,10 @@ impl Epoll {
 
         let mut guard = self.inner.interests.lock();
         let old = guard.get_mut(&key).ok_or(AxError::NotFound)?;
+        // Linux forbids modifying an entry that was added as exclusive.
+        if old.is_exclusive() {
+            return Err(AxError::InvalidInput);
+        }
 
         // Preserve ready-queue membership across the swap. The ready_queue
         // only holds Weak<EpollInterest> pointing at the old Arc, so
@@ -457,17 +473,52 @@ impl Epoll {
                         keep.push_back(Arc::downgrade(&interest));
                     } else {
                         interest.mark_not_in_queue();
+                        // EPOLLET: install a fresh waker so the next edge
+                        // transition fires.  There is a race window between
+                        // mark_not_in_queue() above and register_waker_only()
+                        // below: the previous InterestWaker may have already
+                        // been consumed by the wake that delivered the event
+                        // we are returning here, leaving the underlying
+                        // PollSet empty.  If new data arrives in that gap,
+                        // poll_update.wake() hits the empty PollSet and the
+                        // notification is silently dropped — EPOLLET would
+                        // then never fire again because the new waker is
+                        // installed only after the data already arrived.
+                        // Close the window by re-checking the file's poll
+                        // state after registering and re-queueing the
+                        // interest directly if IN-side data is already
+                        // present.  EPOLLOUT is intentionally excluded: it
+                        // is normally always ready on writable sockets and
+                        // would cause a busy-loop.
                         self.register_waker_only(&interest);
+                        let in_mask = interest.event.events
+                            & (IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP);
+                        if !in_mask.is_empty()
+                            && let Some(f) = interest.key.get_file()
+                            && !(f.poll() & in_mask).is_empty()
+                            && interest.try_mark_in_queue()
+                        {
+                            self.inner
+                                .ready_queue
+                                .lock()
+                                .push_back(Arc::downgrade(&interest));
+                            self.inner.poll_ready.wake();
+                        }
                     }
                 }
                 ConsumeResult::NoEvent => {
+                    // Spurious wakeup: the waker fired but file.poll() did
+                    // not match the interest mask (e.g. a shared PollSet
+                    // wake on a socket that has only EPOLLOUT ready when
+                    // the interest is for EPOLLIN).  Re-arm with a plain
+                    // waker registration — using check_and_register_waker
+                    // here would immediately re-queue the interest via
+                    // waker.wake_by_ref() whenever file.poll() is non-empty,
+                    // which a connected TCP socket (always EPOLLOUT-ready)
+                    // satisfies on every iteration, producing a tight loop
+                    // that fills the ready_queue with phantom events.
                     interest.mark_not_in_queue();
-                    // Events arriving between consume()'s poll and the new
-                    // register() would otherwise be lost: the old waker
-                    // CAS-fails (in_ready_queue still set), and a plain
-                    // register only fires on the next edge. Re-poll after
-                    // registering to recover them.
-                    self.check_and_register_waker(&interest);
+                    self.register_waker_only(&interest);
                 }
             }
         }

@@ -1,4 +1,9 @@
-use alloc::{ffi::CString, vec, vec::Vec};
+use alloc::{
+    ffi::CString,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::{
     ffi::{c_char, c_int},
     mem::offset_of,
@@ -7,7 +12,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FsContext};
-use ax_hal::time::wall_time;
+use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
@@ -22,6 +27,14 @@ use crate::{
     task::AsThread,
     time::TimeValueLike,
 };
+
+fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
+    with_fs(dirfd, |fs| {
+        let loc = fs.resolve_no_follow(path)?;
+        let is_dir = loc.metadata()?.node_type == NodeType::Directory;
+        Ok((loc.absolute_path()?.to_string(), is_dir))
+    })
+}
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -128,16 +141,21 @@ ktracepoint::define_event_trace!(
 );
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
-    let mode = mode & !current().as_thread().proc_data.umask();
+    let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
+    let cred = thread.cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
 
-    with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
+    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode, uid, gid) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -146,10 +164,18 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
             Err(AxError::AlreadyExists)
         }
         Err(err) => Err(err),
-    })
+    });
+    if result.is_ok()
+        && let Ok((path, _)) = path_info_at(dirfd, &path)
+    {
+        crate::file::inotify::notify_create_path(&path, true);
+    }
+    result
 }
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+    let curr = current();
+    let thread = curr.as_thread();
     let path = vm_load_string(path)?;
     debug!(
         "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
@@ -160,7 +186,7 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     let ftype = mode & S_IFMT;
     let mut perm = mode & !S_IFMT;
     // apply umask like mkdir
-    perm &= !current().as_thread().proc_data.umask();
+    perm &= !thread.proc_data.umask();
 
     // Linux mknod semantics: S_IFDIR → EPERM, unknown type bits → EINVAL.
     let node_type = match ftype {
@@ -173,12 +199,17 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
         _ => return Err(AxError::InvalidInput),
     };
 
+    let cred = thread.cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
     let res = with_fs(dirfd, |fs| {
         let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
         let loc = dir.create(
             name,
             node_type,
             NodePermission::from_bits_truncate(perm as u16),
+            uid,
+            gid,
         )?;
 
         // If device node, set rdev via update_metadata
@@ -339,14 +370,21 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
         return Err(AxError::InvalidInput);
     }
 
-    with_fs(dirfd, |fs| {
+    let deleted = path_info_at(dirfd, &path).ok();
+    let result = with_fs(dirfd, |fs| {
         if flags & AT_REMOVEDIR as usize != 0 {
-            fs.remove_dir(path)?;
+            fs.remove_dir(&path)?;
         } else {
-            fs.remove_file(path)?;
+            fs.remove_file(&path)?;
         }
         Ok(0)
-    })
+    });
+    if result.is_ok()
+        && let Some((path, is_dir)) = deleted
+    {
+        crate::file::inotify::notify_delete_path(&path, is_dir);
+    }
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -390,8 +428,11 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_string(linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
+    let cred = current().as_thread().cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
     with_fs(new_dirfd, |fs| {
-        fs.symlink(target, linkpath)?;
+        fs.symlink(target, linkpath, uid, gid)?;
         Ok(0)
     })
 }
@@ -758,8 +799,11 @@ pub fn sys_sync() -> AxResult<isize> {
 
 pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
     debug!("sys_syncfs <= fd: {fd}");
-    // TODO: File::from_fd only accepts regular file fds; Linux syncfs(2) accepts any fd type.
-    let f = crate::file::File::from_fd(fd)?;
-    f.inner().location().filesystem().flush()?;
+    let any = get_file_like(fd)?;
+    if let Some(f) = any.downcast_ref::<crate::file::File>() {
+        f.inner().location().filesystem().flush()?;
+    } else if let Some(d) = any.downcast_ref::<Directory>() {
+        d.inner().filesystem().flush()?;
+    }
     Ok(0)
 }

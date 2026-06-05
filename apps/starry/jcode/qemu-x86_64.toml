@@ -1,0 +1,40 @@
+# Example only: this is not part of the StarryOS test-suit or CI.
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "2G",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-snapshot",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+export HOME=/root
+export USER=root
+export SHELL=/bin/sh
+export TERM=xterm-256color
+export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
+export JCODE_NO_AUTO_UPDATE=1
+set -e
+
+jcode --version
+echo "STARRY_JCODE_SMOKE_PASSED"
+'''
+success_regex = ["(?m)^STARRY_JCODE_SMOKE_PASSED\\s*$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "(?m)^/bin/sh:.*not found",
+]
+timeout = 60

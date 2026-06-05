@@ -1,6 +1,6 @@
 [package]
 name = "ax-alloc"
-version = "0.7.2"
+version = "0.8.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -8,29 +8,17 @@ description = "ArceOS global memory allocator"
 license.workspace = true
 
 [features]
-default = ["tlsf", "ax-allocator/page-alloc-4g"]
+default = []
+tlsf = []
 buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
-buddy = ["dep:ax-allocator", "ax-allocator/buddy"]
-slab = ["dep:ax-allocator", "ax-allocator/slab"]
-tlsf = ["dep:ax-allocator", "ax-allocator/tlsf"]
-page-alloc-4g = [
-    "dep:ax-allocator",
-    "tlsf",
-    "ax-allocator/page-alloc-4g",
-] # Support up to 4GB memory capacity (default: 256MB)
-page-alloc-64g = [
-    "dep:ax-allocator",
-    "tlsf",
-    "ax-allocator/page-alloc-64g",
-] # Support up to 64GB memory capacity (default: 256MB)
-tracking = ["dep:ax-percpu", "dep:axbacktrace", "tlsf"]
+tracking = ["dep:ax-percpu", "dep:axbacktrace"]
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "doc_cfg"]
 
 [dependencies]
-ax-allocator = { workspace = true, features = ["bitmap"], optional = true }
+rlsf = "0.2"
 ax-errno.workspace = true
 ax-kspin.workspace = true
 ax-memory-addr.workspace = true

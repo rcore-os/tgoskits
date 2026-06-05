@@ -123,8 +123,8 @@ impl Ext4GroupDesc {
                 self.used_dirs_count(),
                 self.itable_unused(),
                 self.bg_flags,
-                self.block_bitmap_csum(),
-                self.inode_bitmap_csum()
+                self.block_bitmap_csum(superblock),
+                self.inode_bitmap_csum(superblock)
             );
             return Err(Ext4Error::checksum());
         }
@@ -172,13 +172,21 @@ impl Ext4GroupDesc {
     }
 
     /// Returns the 32-bit block bitmap checksum.
-    pub fn block_bitmap_csum(&self) -> u32 {
-        (self.bg_block_bitmap_csum_hi as u32) << 16 | self.bg_block_bitmap_csum_lo as u32
+    pub fn block_bitmap_csum(&self, superblock: &Ext4Superblock) -> u32 {
+        if superblock.get_desc_size() as usize >= Self::EXT4_DESC_SIZE_64BIT {
+            (self.bg_block_bitmap_csum_hi as u32) << 16 | self.bg_block_bitmap_csum_lo as u32
+        } else {
+            self.bg_block_bitmap_csum_lo as u32
+        }
     }
 
     /// Returns the 32-bit inode bitmap checksum.
-    pub fn inode_bitmap_csum(&self) -> u32 {
-        (self.bg_inode_bitmap_csum_hi as u32) << 16 | self.bg_inode_bitmap_csum_lo as u32
+    pub fn inode_bitmap_csum(&self, superblock: &Ext4Superblock) -> u32 {
+        if superblock.get_desc_size() as usize >= Self::EXT4_DESC_SIZE_64BIT {
+            (self.bg_inode_bitmap_csum_hi as u32) << 16 | self.bg_inode_bitmap_csum_lo as u32
+        } else {
+            self.bg_inode_bitmap_csum_lo as u32
+        }
     }
 
     /// Returns whether a computed bitmap checksum matches this descriptor.
@@ -187,12 +195,12 @@ impl Ext4GroupDesc {
     /// descriptors. The high checksum fields are present only in 64-byte
     /// descriptors.
     pub fn block_bitmap_csum_matches(&self, superblock: &Ext4Superblock, computed: u32) -> bool {
-        Self::bitmap_csum_matches(superblock, self.block_bitmap_csum(), computed)
+        Self::bitmap_csum_matches(superblock, self.block_bitmap_csum(superblock), computed)
     }
 
     /// Returns whether a computed inode bitmap checksum matches this descriptor.
     pub fn inode_bitmap_csum_matches(&self, superblock: &Ext4Superblock, computed: u32) -> bool {
-        Self::bitmap_csum_matches(superblock, self.inode_bitmap_csum(), computed)
+        Self::bitmap_csum_matches(superblock, self.inode_bitmap_csum(superblock), computed)
     }
 
     fn bitmap_csum_matches(superblock: &Ext4Superblock, stored: u32, computed: u32) -> bool {

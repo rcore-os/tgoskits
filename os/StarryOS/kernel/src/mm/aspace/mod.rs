@@ -6,15 +6,15 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_hal::{
-    mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
-    trap::PageFaultFlags,
-};
 use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr, VirtAddrRange, is_aligned_4k,
 };
 use ax_memory_set::{MemoryArea, MemorySet};
+use ax_runtime::hal::{
+    mem::phys_to_virt,
+    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
+    trap::PageFaultFlags,
+};
 use ax_sync::Mutex;
 
 mod backend;
@@ -188,12 +188,27 @@ impl AddrSpace {
         self.validate_region(start, size)?;
         let end = start + size;
 
-        let mut modify = self.pt.cursor();
-        while let Some(area) = self.areas.find(start) {
-            let range = VirtAddrRange::new(start, area.end().min(end));
-            area.backend()
-                .populate(range, area.flags(), access_flags, &mut modify)?;
-            start = area.end();
+        loop {
+            let (area_end, callback) = {
+                let Some(area) = self.areas.find(start) else {
+                    break;
+                };
+                let range = VirtAddrRange::new(start, area.end().min(end));
+                let flags = area.flags();
+                let (_, callback) =
+                    area.backend()
+                        .populate(range, flags, access_flags, &mut self.pt.cursor())?;
+                (area.end(), callback)
+            };
+            // Run the eviction cleanup the populate deferred (unmap + TLB flush
+            // for page-cache pages evicted during this fill). Dropping it — as
+            // the old code did — frees an evicted frame while its user PTE still
+            // points at it: a use-after-free that surfaces as a wild pointer
+            // under heavy file-backed paging (the JVM jimage on loongarch).
+            if let Some(cb) = callback {
+                cb(self);
+            }
+            start = area_end;
             assert!(start.is_aligned_4k());
             if start >= end {
                 break;

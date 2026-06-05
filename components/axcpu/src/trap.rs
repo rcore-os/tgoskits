@@ -81,7 +81,7 @@ pub fn irq_handler(irq: usize) -> bool {
 /// Page fault handler.
 #[eii]
 pub fn page_fault_handler(addr: VirtAddr, flags: PageFaultFlags) -> bool {
-    default_page_fault_handler(addr, flags)
+    dispatch_page_fault(addr, flags)
 }
 
 /// Invoke the page-fault slow path with the IRQ state restored to the

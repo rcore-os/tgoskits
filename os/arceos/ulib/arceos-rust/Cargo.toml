@@ -4,12 +4,15 @@ description = "Rust std support for ArceOS"
 authors = [
     "eternalcomet <mydragonos@outlook.com>"
 ]
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
 
 [lib]
+
+[build-dependencies]
+walkdir = "2"
 
 [features]
 # Default features are specified in `lib/Cargo.toml`
@@ -28,20 +31,17 @@ ipi = []
 # Custom or default platforms
 myplat = []
 defplat = []
+plat-dyn = []
 
 # Memory
 alloc = []
-alloc-tlsf = []
-alloc-slab = []
-alloc-buddy = []
-page-alloc-64g = [] # Support up to 64G memory capacity
-page-alloc-4g = [] # Support up to 4G memory capacity
 paging = []
 dma = []
 tls = []
 
 # Multi-threading and scheduler
 multitask = []
+lockdep = []
 sched-fifo = []
 sched-rr = []
 sched-cfs = []
@@ -59,14 +59,6 @@ display = []
 
 # Real Time Clock (RTC) Driver.
 rtc = []
-
-# Device drivers
-bus-mmio = []
-bus-pci = []
-driver-ramdisk = []
-driver-ixgbe = []
-driver-fxmac = []
-driver-bcm2835-sdhci = []
 
 # Logging
 log-level-off = []

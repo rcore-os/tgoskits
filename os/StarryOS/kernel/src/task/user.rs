@@ -1,11 +1,13 @@
-use ax_hal::uspace::{ExceptionInfo, ExceptionKind, ReturnReason, UserContext};
+use ax_runtime::hal::cpu::uspace::{ExceptionInfo, ExceptionKind, ReturnReason, UserContext};
 use ax_task::TaskInner;
 use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
+use syscalls::Sysno;
 
 use super::{
-    AsThread, SyscallRestartInfo, TimerState, check_signals, raise_signal_fatal, set_timer_state,
+    AsThread, SyscallRestartInfo, SyscallTraceState, TimerState, check_signals,
+    ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
     unblock_next_signal,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
@@ -23,7 +25,17 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
 
             let thr = curr.as_thread();
+            if thr.proc_data.ptrace_stop_signo().is_some() {
+                let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
+            }
             while !thr.pending_exit() {
+                if thr.proc_data.is_ptrace_singlestep()
+                    && (thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached())
+                {
+                    #[cfg(target_arch = "riscv64")]
+                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, &mut uctx);
+                }
+
                 let reason = uctx.run();
 
                 set_timer_state(&curr, TimerState::Kernel);
@@ -33,7 +45,45 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 let is_syscall = matches!(reason, ReturnReason::Syscall);
 
                 match reason {
-                    ReturnReason::Syscall => handle_syscall(&mut uctx),
+                    ReturnReason::Syscall => {
+                        let trace_state = thr.proc_data.take_ptrace_syscall_trace();
+                        if matches!(trace_state, SyscallTraceState::Entry)
+                            && ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
+                        {
+                            match thr.proc_data.take_ptrace_syscall_trace() {
+                                SyscallTraceState::Entry | SyscallTraceState::Exit => thr
+                                    .proc_data
+                                    .set_ptrace_syscall_trace_state(SyscallTraceState::Exit),
+                                SyscallTraceState::None => {}
+                            }
+                        }
+
+                        if let Some(exit_code) = ptrace_exit_event_code(saved_sysno, saved_a0)
+                            && crate::syscall::ptrace_notify_exit(
+                                thr.proc_data.proc.pid(),
+                                exit_code,
+                            )
+                        {
+                            let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                        }
+
+                        handle_syscall(&mut uctx);
+                        if matches!(
+                            thr.proc_data.take_ptrace_syscall_trace(),
+                            SyscallTraceState::Exit
+                        ) {
+                            let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                        }
+                        if thr.proc_data.take_ptrace_exec_stop_pending() {
+                            let _is_event =
+                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
+                            if let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                            {
+                                continue;
+                            }
+                        }
+                    }
                     ReturnReason::PageFault(addr, flags) => {
                         if !thr.proc_data.aspace().lock().handle_page_fault(addr, flags) {
                             info!(
@@ -47,8 +97,32 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     ReturnReason::Interrupt => {}
                     #[allow(unused_labels)]
                     ReturnReason::Exception(exc_info) => 'exc: {
-                        // TODO: detailed handling
                         let kind = exc_info.kind();
+                        if matches!(kind, ExceptionKind::Breakpoint)
+                            && (thr.proc_data.is_ptrace_traceme()
+                                || thr.proc_data.is_ptrace_attached())
+                        {
+                            let saved_insn = thr.proc_data.take_ptrace_ss_saved_insn();
+                            if let Some((addr, insn)) = saved_insn {
+                                if addr == uctx.ip() {
+                                    let aspace = thr.proc_data.aspace();
+                                    let aspace = aspace.lock();
+                                    let _ = aspace.write(
+                                        ax_memory_addr::VirtAddr::from_usize(addr),
+                                        &(insn as u16).to_ne_bytes(),
+                                    );
+                                    #[cfg(target_arch = "riscv64")]
+                                    ax_runtime::hal::cpu::asm::flush_icache_all();
+                                } else {
+                                    thr.proc_data.set_ptrace_ss_saved_insn(Some((addr, insn)));
+                                }
+                            }
+                            if let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                            {
+                                break 'exc;
+                            }
+                        }
                         warn!(
                             "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
                              ec={:#x}, iss={:#x}, info={:?}",
@@ -111,6 +185,13 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
         name.into(),
         crate::config::KERNEL_STACK_SIZE,
     )
+}
+
+fn ptrace_exit_event_code(sysno: usize, arg0: usize) -> Option<i32> {
+    match Sysno::new(sysno) {
+        Some(Sysno::exit | Sysno::exit_group) => Some((arg0 as i32) << 8),
+        _ => None,
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

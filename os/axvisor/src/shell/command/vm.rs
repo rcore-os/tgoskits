@@ -16,18 +16,15 @@ use std::{
     collections::btree_map::BTreeMap,
     println,
     string::{String, ToString},
+    thread,
     vec::Vec,
 };
 
-use ax_hal::time::busy_wait;
-use axvm::VMStatus;
+use axvm::{VCpuState, VMStatus};
 #[cfg(feature = "fs")]
 use std::fs::read_to_string;
 
-use crate::{
-    shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand},
-    vmm::{add_running_vm_count, vcpus, vm_list, with_vm},
-};
+use crate::shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand};
 
 /// Check if a VM can transition to Running state.
 /// Returns Ok(()) if the transition is valid, Err with a message otherwise.
@@ -134,14 +131,13 @@ fn vm_create(cmd: &ParsedCommand) {
         return;
     }
 
-    let initial_vm_count = vm_list::get_vm_list().len();
+    let initial_vm_count = crate::manager::AxvmManager::vm_list().len();
 
     for config_path in args.iter() {
         println!("Creating VM from config: {}", config_path);
 
-        use crate::vmm::config::init_guest_vm;
         match read_to_string(config_path) {
-            Ok(raw_cfg) => match init_guest_vm(&raw_cfg) {
+            Ok(raw_cfg) => match crate::manager::AxvmManager::create_vm_from_toml(&raw_cfg) {
                 Ok(vm_id) => {
                     println!(
                         "✓ Successfully created VM[{}] from config: {}",
@@ -162,7 +158,7 @@ fn vm_create(cmd: &ParsedCommand) {
     }
 
     // Check the actual number of VMs created
-    let final_vm_count = vm_list::get_vm_list().len();
+    let final_vm_count = crate::manager::AxvmManager::vm_list().len();
     let created_count = final_vm_count - initial_vm_count;
 
     if created_count > 0 {
@@ -176,14 +172,14 @@ fn vm_create(cmd: &ParsedCommand) {
 #[cfg(feature = "fs")]
 fn vm_start(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let detach = cmd.flags.get("detach").unwrap_or(&false);
+    let detach = cmd.flags.contains("detach");
 
     if args.is_empty() {
         // start all VMs
         info!("VMM starting, booting all VMs...");
         let mut started_count = 0;
 
-        for vm in vm_list::get_vm_list() {
+        for vm in crate::manager::AxvmManager::vm_list() {
             // Check current status before starting
             let status: VMStatus = vm.vm_status();
             if status == VMStatus::Running {
@@ -218,33 +214,22 @@ fn vm_start(cmd: &ParsedCommand) {
         }
     }
 
-    if *detach {
+    if detach {
         println!("VMs started in background mode");
     }
 }
 
 /// Start a single VM by setting up vCPUs and calling boot.
 /// Returns Ok(()) if successful, Err otherwise.
-fn start_single_vm(vm: crate::vmm::VMRef) -> Result<(), &'static str> {
+fn start_single_vm(vm: axvm::AxVMRef) -> Result<(), &'static str> {
     let vm_id = vm.id();
     let status = vm.vm_status();
 
     // Validate state transition using helper function
     can_start_vm(status)?;
 
-    // Set up primary virtual CPU before starting
-    vcpus::setup_vm_primary_vcpu(vm.clone());
-
-    // Boot the VM
-    match vm.boot() {
-        Ok(_) => {
-            // Transition to Running state and notify the primary VCpu
-            // Note: Since the VCpu task is created directly in the wait queue (blocked state),
-            // we can immediately notify it without waiting for it to be scheduled first.
-            vcpus::notify_primary_vcpu(vm_id);
-            add_running_vm_count(1);
-            Ok(())
-        }
+    match crate::manager::AxvmManager::start_vm(vm_id) {
+        Ok(_) => Ok(()),
         Err(err) => {
             // Revert status on failure
             error!("Failed to boot VM[{}]: {:?}", vm_id, err);
@@ -254,7 +239,7 @@ fn start_single_vm(vm: crate::vmm::VMRef) -> Result<(), &'static str> {
 }
 
 fn start_vm_by_id(vm_id: usize) {
-    match with_vm(vm_id, |vm| start_single_vm(vm.clone())) {
+    match crate::manager::AxvmManager::with_vm(vm_id, |vm| start_single_vm(vm.clone())) {
         Some(Ok(_)) => {
             println!("✓ VM[{}] started successfully", vm_id);
         }
@@ -269,7 +254,7 @@ fn start_vm_by_id(vm_id: usize) {
 
 fn vm_stop(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let force = cmd.flags.get("force").unwrap_or(&false);
+    let force = cmd.flags.contains("force");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -279,7 +264,7 @@ fn vm_stop(cmd: &ParsedCommand) {
 
     for vm_name in args {
         if let Ok(vm_id) = vm_name.parse::<usize>() {
-            stop_vm_by_id(vm_id, *force);
+            stop_vm_by_id(vm_id, force);
         } else {
             println!("Error: Invalid VM ID: {}", vm_name);
         }
@@ -287,7 +272,7 @@ fn vm_stop(cmd: &ParsedCommand) {
 }
 
 fn stop_vm_by_id(vm_id: usize, force: bool) {
-    match with_vm(vm_id, |vm| {
+    match crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.vm_status();
 
         // Validate state transition using helper function
@@ -318,12 +303,8 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
         }
 
         // Call shutdown
-        match vm.shutdown() {
-            Ok(_) => {
-                // Notify all vCPUs to wake up to check the shutdown flag
-                vcpus::notify_all_vcpus(vm_id);
-                Ok(())
-            }
+        match crate::manager::AxvmManager::stop_vm(vm_id) {
+            Ok(_) => Ok(()),
             Err(_err) => {
                 // Revert status on failure
                 Err("Failed to shutdown VM")
@@ -348,7 +329,7 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
 /// Restart a VM by stopping it (if running) and then starting it again.(functionality incomplete)
 fn vm_restart(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let force = cmd.flags.get("force").unwrap_or(&false);
+    let force = cmd.flags.contains("force");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -358,7 +339,7 @@ fn vm_restart(cmd: &ParsedCommand) {
 
     for vm_name in args {
         if let Ok(vm_id) = vm_name.parse::<usize>() {
-            restart_vm_by_id(vm_id, *force);
+            restart_vm_by_id(vm_id, force);
         } else {
             println!("Error: Invalid VM ID: {}", vm_name);
         }
@@ -369,13 +350,10 @@ fn restart_vm_by_id(vm_id: usize, force: bool) {
     println!("Restarting VM[{}]...", vm_id);
 
     // Check current status
-    let current_status = with_vm(vm_id, |vm| vm.vm_status());
-    if current_status.is_none() {
+    let Some(status) = crate::manager::AxvmManager::with_vm(vm_id, |vm| vm.vm_status()) else {
         println!("✗ VM[{}] not found", vm_id);
         return;
-    }
-
-    let status = current_status.unwrap();
+    };
     match status {
         VMStatus::Stopped | VMStatus::Loaded => {
             // VM is already stopped, just start it
@@ -393,7 +371,9 @@ fn restart_vm_by_id(vm_id: usize, force: bool) {
             let mut iterations = 0;
 
             loop {
-                if let Some(vm_status) = with_vm(vm_id, |vm| vm.vm_status()) {
+                if let Some(vm_status) =
+                    crate::manager::AxvmManager::with_vm(vm_id, |vm| vm.vm_status())
+                {
                     match vm_status {
                         VMStatus::Stopped => {
                             println!("✓ VM[{}] stopped successfully", vm_id);
@@ -411,7 +391,7 @@ fn restart_vm_by_id(vm_id: usize, force: bool) {
                                 return;
                             }
                             // Sleep for 100ms
-                            busy_wait(core::time::Duration::from_millis(100));
+                            thread::sleep(core::time::Duration::from_millis(100));
                         }
                         _ => {
                             println!("⚠ VM[{}] in unexpected state: {:?}", vm_id, vm_status);
@@ -472,7 +452,7 @@ fn vm_suspend(cmd: &ParsedCommand) {
 fn suspend_vm_by_id(vm_id: usize) {
     println!("Suspending VM[{}]...", vm_id);
 
-    let result: Option<Result<(), &str>> = with_vm(vm_id, |vm| {
+    let result: Option<Result<(), &str>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.vm_status();
 
         // Check if VM can be suspended
@@ -490,7 +470,8 @@ fn suspend_vm_by_id(vm_id: usize) {
             println!("✓ VM[{}] suspend signal sent", vm_id);
 
             // Get VM to check VCpu count
-            let vcpu_count = with_vm(vm_id, |vm| vm.vcpu_num()).unwrap_or(0);
+            let vcpu_count =
+                crate::manager::AxvmManager::with_vm(vm_id, |vm| vm.vcpu_num()).unwrap_or(0);
             println!(
                 "  Note: {} VCpu task(s) will enter wait queue at next VMExit",
                 vcpu_count
@@ -504,13 +485,13 @@ fn suspend_vm_by_id(vm_id: usize) {
 
             while iterations < max_wait_iterations {
                 // Check if all VCpus are in blocked state
-                if let Some(vm) = crate::vmm::vm_list::get_vm_by_id(vm_id) {
+                if let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) {
                     let vcpu_states: Vec<_> =
                         vm.vcpu_list().iter().map(|vcpu| vcpu.state()).collect();
 
                     let blocked_count = vcpu_states
                         .iter()
-                        .filter(|s| matches!(s, axvcpu::VCpuState::Blocked))
+                        .filter(|s| matches!(s, VCpuState::Blocked))
                         .count();
 
                     if blocked_count == vcpu_states.len() {
@@ -525,7 +506,7 @@ fn suspend_vm_by_id(vm_id: usize) {
                 }
 
                 iterations += 1;
-                busy_wait(core::time::Duration::from_millis(100));
+                thread::sleep(core::time::Duration::from_millis(100));
             }
 
             if all_suspended {
@@ -569,17 +550,13 @@ fn vm_resume(cmd: &ParsedCommand) {
 fn resume_vm_by_id(vm_id: usize) {
     println!("Resuming VM[{}]...", vm_id);
 
-    let result: Option<Result<(), &str>> = with_vm(vm_id, |vm| {
+    let result: Option<Result<(), &str>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.vm_status();
 
         // Check if VM can be resumed
         can_resume_vm(status)?;
 
-        // Set VM status back to Running
-        vm.set_vm_status(VMStatus::Running);
-
-        // Notify all VCpus to wake up
-        vcpus::notify_all_vcpus(vm_id);
+        crate::manager::AxvmManager::resume_vm(vm_id).map_err(|_| "Failed to resume VM")?;
 
         info!("VM[{}] resumed", vm_id);
         Ok(())
@@ -600,8 +577,8 @@ fn resume_vm_by_id(vm_id: usize) {
 
 fn vm_delete(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let force = cmd.flags.get("force").unwrap_or(&false);
-    let keep_data = cmd.flags.get("keep-data").unwrap_or(&false);
+    let force = cmd.flags.contains("force");
+    let keep_data = cmd.flags.contains("keep-data");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -613,14 +590,10 @@ fn vm_delete(cmd: &ParsedCommand) {
 
     if let Ok(vm_id) = vm_name.parse::<usize>() {
         // Check if VM exists and get its status first
-        let vm_status = with_vm(vm_id, |vm| vm.vm_status());
-
-        if vm_status.is_none() {
+        let Some(status) = crate::manager::AxvmManager::with_vm(vm_id, |vm| vm.vm_status()) else {
             println!("✗ VM[{}] not found", vm_id);
             return;
-        }
-
-        let status = vm_status.unwrap();
+        };
 
         // Check if VM is running
         match status {
@@ -655,7 +628,7 @@ fn vm_delete(cmd: &ParsedCommand) {
             }
         }
 
-        delete_vm_by_id(vm_id, *keep_data);
+        delete_vm_by_id(vm_id, keep_data);
     } else {
         println!("Error: Invalid VM ID: {}", vm_name);
     }
@@ -663,7 +636,7 @@ fn vm_delete(cmd: &ParsedCommand) {
 
 fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     // First check VM status and try to stop it if running
-    let vm_status = with_vm(vm_id, |vm| {
+    let vm_status = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.vm_status();
 
         // If VM is running, suspended, or stopping, send shutdown signal
@@ -673,10 +646,7 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
                     "  VM[{}] is {:?}, sending shutdown signal...",
                     vm_id, status
                 );
-                vm.set_vm_status(VMStatus::Stopping);
-                let _ = vm.shutdown();
-                // Notify all vCPUs to wake up to check the shutdown flag
-                vcpus::notify_all_vcpus(vm_id);
+                let _ = crate::manager::AxvmManager::stop_vm(vm_id);
             }
             VMStatus::Loaded => {
                 // Transition from Loaded to Stopped
@@ -684,10 +654,6 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
             }
             _ => {}
         }
-
-        use alloc::sync::Arc;
-        let count = Arc::strong_count(&vm);
-        println!("  [Debug] VM Arc strong_count: {}", count);
 
         status
     });
@@ -697,76 +663,23 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
         return;
     }
 
-    let status = vm_status.unwrap();
-
     // Remove VM from global list
     // Note: This drops the reference from the global list, but the VM object
     // will only be fully destroyed when all vCPU threads exit and drop their references
-    match crate::vmm::vm_list::remove_vm(vm_id) {
-        Some(vm) => {
+    match crate::manager::AxvmManager::remove_vm(vm_id) {
+        Some(_vm) => {
             println!("✓ VM[{}] removed from VM list", vm_id);
-
-            // Wait for vCPU threads to exit if VM has VCpu tasks
-            match status {
-                VMStatus::Running
-                | VMStatus::Suspended
-                | VMStatus::Stopping
-                | VMStatus::Stopped => {
-                    println!("  Waiting for vCPU threads to exit...");
-
-                    // Debug: Check Arc count before cleanup
-                    use alloc::sync::Arc;
-                    println!(
-                        "  [Debug] VM Arc count before cleanup: {}",
-                        Arc::strong_count(&vm)
-                    );
-
-                    // Clean up VCpu resources after threads have exited
-                    println!("  Cleaning up VCpu resources...");
-                    vcpus::cleanup_vm_vcpus(vm_id);
-
-                    // Debug: Check Arc count after final wait
-                    println!(
-                        "  [Debug] VM Arc count after final wait: {}",
-                        Arc::strong_count(&vm)
-                    );
-                }
-                _ => {
-                    // VM not running, no vCPU threads to wait for
-                    // But still need to clean up VCpu queue entry if it exists
-                    vcpus::cleanup_vm_vcpus(vm_id);
-                }
-            }
 
             if keep_data {
                 println!("✓ VM[{}] deleted (configuration and data preserved)", vm_id);
             } else {
                 println!("✓ VM[{}] deleted completely", vm_id);
 
-                // Debug: Check Arc count - should be 1 now (only this variable)
-                // TaskExt uses Weak reference, so it doesn't count
-                use alloc::sync::Arc;
-                let count = Arc::strong_count(&vm);
-                println!("  [Debug] VM Arc strong_count: {}", count);
-
-                if count == 1 {
-                    println!("  ✓ Perfect! VM will be freed immediately when function returns");
-                } else {
-                    println!(
-                        "  ⚠ Warning: Unexpected Arc count {}, possible reference leak!",
-                        count
-                    );
-                }
-
                 // TODO: Clean up VM-related data files
                 // - Remove disk images
                 // - Remove configuration files
                 // - Remove log files
             }
-
-            // When function returns, the 'vm' variable is dropped
-            // Since Arc count is 1, AxVM::drop() is called immediately
-            println!("  VM[{}] will be freed now", vm_id);
         }
         None => {
             println!(
@@ -776,14 +689,12 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
         }
     }
 
-    // When function returns, the 'vm' Arc is dropped
-    // If all vCPU threads have exited (ref_count was 1), AxVM::drop() is called here
     println!("✓ VM[{}] deletion completed", vm_id);
 }
 
 #[cfg(feature = "fs")]
 fn vm_list_simple() {
-    let vms = vm_list::get_vm_list();
+    let vms = crate::manager::AxvmManager::vm_list();
     println!("ID    NAME           STATE      VCPU   MEMORY");
     println!("----  -----------    -------    ----   ------");
     for vm in vms {
@@ -807,7 +718,7 @@ fn vm_list(cmd: &ParsedCommand) {
     let binding = "table".to_string();
     let format = cmd.options.get("format").unwrap_or(&binding);
 
-    let display_vms = vm_list::get_vm_list();
+    let display_vms = crate::manager::AxvmManager::vm_list();
 
     if display_vms.is_empty() {
         println!("No virtual machines found.");
@@ -864,12 +775,12 @@ fn vm_list(cmd: &ParsedCommand) {
             let mut state_counts = std::collections::BTreeMap::new();
             for vcpu in vm.vcpu_list() {
                 let state = match vcpu.state() {
-                    axvcpu::VCpuState::Free => "Free",
-                    axvcpu::VCpuState::Running => "Run",
-                    axvcpu::VCpuState::Blocked => "Blk",
-                    axvcpu::VCpuState::Invalid => "Inv",
-                    axvcpu::VCpuState::Created => "Cre",
-                    axvcpu::VCpuState::Ready => "Rdy",
+                    VCpuState::Free => "Free",
+                    VCpuState::Running => "Run",
+                    VCpuState::Blocked => "Blk",
+                    VCpuState::Invalid => "Inv",
+                    VCpuState::Created => "Cre",
+                    VCpuState::Ready => "Rdy",
                 };
                 *state_counts.entry(state).or_insert(0) += 1;
             }
@@ -896,9 +807,9 @@ fn vm_list(cmd: &ParsedCommand) {
 
 fn vm_show(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
-    let show_config = cmd.flags.get("config").unwrap_or(&false);
-    let show_stats = cmd.flags.get("stats").unwrap_or(&false);
-    let show_full = cmd.flags.get("full").unwrap_or(&false);
+    let show_config = cmd.flags.contains("config");
+    let show_stats = cmd.flags.contains("stats");
+    let show_full = cmd.flags.contains("full");
 
     if args.is_empty() {
         println!("Error: No VM specified");
@@ -916,10 +827,10 @@ fn vm_show(cmd: &ParsedCommand) {
     // Show specific VM details
     let vm_name = &args[0];
     if let Ok(vm_id) = vm_name.parse::<usize>() {
-        if *show_full {
+        if show_full {
             show_vm_full_details(vm_id);
         } else {
-            show_vm_basic_details(vm_id, *show_config, *show_stats);
+            show_vm_basic_details(vm_id, show_config, show_stats);
         }
     } else {
         println!("Error: Invalid VM ID: {}", vm_name);
@@ -928,7 +839,7 @@ fn vm_show(cmd: &ParsedCommand) {
 
 /// Show basic VM information (default view)
 fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
-    match with_vm(vm_id, |vm| {
+    match crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.vm_status();
 
         println!("VM Details: {}", vm_id);
@@ -967,12 +878,12 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         let mut state_counts = std::collections::BTreeMap::new();
         for vcpu in vm.vcpu_list() {
             let state = match vcpu.state() {
-                axvcpu::VCpuState::Free => "Free",
-                axvcpu::VCpuState::Running => "Running",
-                axvcpu::VCpuState::Blocked => "Blocked",
-                axvcpu::VCpuState::Invalid => "Invalid",
-                axvcpu::VCpuState::Created => "Created",
-                axvcpu::VCpuState::Ready => "Ready",
+                VCpuState::Free => "Free",
+                VCpuState::Running => "Running",
+                VCpuState::Blocked => "Blocked",
+                VCpuState::Invalid => "Invalid",
+                VCpuState::Created => "Created",
+                VCpuState::Ready => "Ready",
             };
             *state_counts.entry(state).or_insert(0) += 1;
         }
@@ -1027,7 +938,7 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
 
 /// Show full detailed information about a specific VM (--full flag)
 fn show_vm_full_details(vm_id: usize) {
-    match with_vm(vm_id, |vm| {
+    match crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.vm_status();
 
         println!("=== VM Details: {} ===", vm_id);
@@ -1079,12 +990,12 @@ fn show_vm_full_details(vm_id: usize) {
         let mut state_counts = std::collections::BTreeMap::new();
         for vcpu in vm.vcpu_list() {
             let state = match vcpu.state() {
-                axvcpu::VCpuState::Free => "Free",
-                axvcpu::VCpuState::Running => "Running",
-                axvcpu::VCpuState::Blocked => "Blocked",
-                axvcpu::VCpuState::Invalid => "Invalid",
-                axvcpu::VCpuState::Created => "Created",
-                axvcpu::VCpuState::Ready => "Ready",
+                VCpuState::Free => "Free",
+                VCpuState::Running => "Running",
+                VCpuState::Blocked => "Blocked",
+                VCpuState::Invalid => "Invalid",
+                VCpuState::Created => "Created",
+                VCpuState::Ready => "Ready",
             };
             *state_counts.entry(state).or_insert(0) += 1;
         }
@@ -1099,12 +1010,12 @@ fn show_vm_full_details(vm_id: usize) {
 
         for vcpu in vm.vcpu_list() {
             let vcpu_state = match vcpu.state() {
-                axvcpu::VCpuState::Free => "Free",
-                axvcpu::VCpuState::Running => "Running",
-                axvcpu::VCpuState::Blocked => "Blocked",
-                axvcpu::VCpuState::Invalid => "Invalid",
-                axvcpu::VCpuState::Created => "Created",
-                axvcpu::VCpuState::Ready => "Ready",
+                VCpuState::Free => "Free",
+                VCpuState::Running => "Running",
+                VCpuState::Blocked => "Blocked",
+                VCpuState::Invalid => "Invalid",
+                VCpuState::Created => "Created",
+                VCpuState::Ready => "Ready",
             };
 
             if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {

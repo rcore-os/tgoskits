@@ -1,9 +1,12 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
+    "ax-hal/x86-qemu-q35",
+    "ax-driver/virtio-blk",
+    "ax-driver/plat-static",
     "ept-level-4",
     "fs",
     "vmx",
 ]
 log = "Info"
 target = "x86_64-unknown-none"
-vm_configs = ["os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml"]
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]

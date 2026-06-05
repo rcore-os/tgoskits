@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.15"
+version = "0.5.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -33,13 +33,14 @@ irq = ["ax-posix-api/irq", "ax-feat/irq"]
 # Custom or default platforms
 myplat = ["ax-feat/myplat"]
 defplat = ["ax-feat/defplat"]
+plat-dyn = ["ax-feat/plat-dyn", "ax-posix-api/plat-dyn"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]
 tls = ["alloc", "ax-feat/tls"]
 
 # Multi-task
-multitask = ["ax-posix-api/multitask"]
+multitask = ["ax-feat/multitask", "ax-posix-api/multitask"]
 lockdep = ["ax-posix-api/lockdep", "ax-feat/lockdep"]
 
 # File system
@@ -55,6 +56,8 @@ select = ["ax-posix-api/select"]
 epoll = ["ax-posix-api/epoll"]
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 ax-posix-api.workspace = true
 ax-errno.workspace = true
 ax-feat.workspace = true

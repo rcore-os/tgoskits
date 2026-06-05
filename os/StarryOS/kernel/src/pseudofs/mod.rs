@@ -1,5 +1,6 @@
 //! Basic virtual filesystem support
 
+pub(crate) mod cgroup;
 pub mod debug;
 pub mod dev;
 mod device;
@@ -7,8 +8,7 @@ mod dir;
 mod dyn_debug;
 mod file;
 mod fs;
-mod proc;
-#[cfg(not(feature = "plat-dyn"))]
+pub(crate) mod proc;
 mod sysfs;
 mod tmp;
 #[cfg(feature = "plat-dyn")]
@@ -70,7 +70,7 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
     if fs.resolve(path).is_err() {
-        fs.create_dir(path, DIR_PERMISSION)?;
+        fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
     }
     fs.resolve(path)?.mount(&mount_fs)?;
     info!("Mounted {} at {}", mount_fs.name(), path);
@@ -96,10 +96,9 @@ pub fn mount_all() -> LinuxResult<()> {
 
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
-    #[cfg(feature = "plat-dyn")]
-    mount_at(&fs, "/sys", usbfs::new_sysfs())?;
-    #[cfg(not(feature = "plat-dyn"))]
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+    #[cfg(feature = "plat-dyn")]
+    mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
 
     mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs())?;
 

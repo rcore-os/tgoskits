@@ -3,26 +3,51 @@ use crate::TrapFrame;
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
 struct ExceptionTableEntry {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    ))]
     from: i32,
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    ))]
     to: i32,
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    )))]
     from: usize,
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    )))]
     to: usize,
 }
 
 impl ExceptionTableEntry {
     #[inline]
     fn source_addr(&self) -> usize {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
         {
-            let base = (&self.from as *const i32) as isize;
+            field_relative_addr(&self.from)
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            let base = unsafe { _ex_table_start.as_ptr() } as isize;
             (base + self.from as isize) as usize
         }
 
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        )))]
         {
             self.from
         }
@@ -30,17 +55,33 @@ impl ExceptionTableEntry {
 
     #[inline]
     fn to_addr(&self) -> usize {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
         {
-            let base = (&self.to as *const i32) as isize;
+            field_relative_addr(&self.to)
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            let base = unsafe { _ex_table_start.as_ptr() } as isize;
             (base + self.to as isize) as usize
         }
 
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        )))]
         {
             self.to
         }
     }
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[inline]
+fn field_relative_addr(offset: &i32) -> usize {
+    let base = (offset as *const i32) as isize;
+    (base + *offset as isize) as usize
 }
 
 unsafe extern "C" {
@@ -58,24 +99,44 @@ impl TrapFrame {
                     .offset_from_unsigned(_ex_table_start.as_ptr()),
             )
         };
-        match entries.binary_search_by_key(&self.ip(), ExceptionTableEntry::source_addr) {
-            Ok(entry) => {
-                self.set_ip(entries[entry].to_addr());
-                true
+        #[cfg(target_arch = "x86_64")]
+        {
+            match entries
+                .iter()
+                .find(|entry| entry.source_addr() == self.ip())
+            {
+                Some(entry) => {
+                    self.set_ip(entry.to_addr());
+                    true
+                }
+                None => false,
             }
-            Err(_) => false,
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            match entries.binary_search_by_key(&self.ip(), ExceptionTableEntry::source_addr) {
+                Ok(entry) => {
+                    self.set_ip(entries[entry].to_addr());
+                    true
+                }
+                Err(_) => false,
+            }
         }
     }
 }
 
 pub(crate) fn init_exception_table() {
-    let ex_table = unsafe {
-        core::slice::from_raw_parts_mut(
-            _ex_table_start.as_ptr().cast_mut(),
-            _ex_table_end
-                .as_ptr()
-                .offset_from_unsigned(_ex_table_start.as_ptr()),
-        )
-    };
-    ex_table.sort_unstable_by_key(ExceptionTableEntry::source_addr);
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let ex_table = unsafe {
+            core::slice::from_raw_parts_mut(
+                _ex_table_start.as_ptr().cast_mut(),
+                _ex_table_end
+                    .as_ptr()
+                    .offset_from_unsigned(_ex_table_start.as_ptr()),
+            )
+        };
+        ex_table.sort_unstable_by_key(ExceptionTableEntry::source_addr);
+    }
 }

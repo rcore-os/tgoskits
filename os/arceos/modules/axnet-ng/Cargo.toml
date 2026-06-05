@@ -1,6 +1,6 @@
 [package]
 name = "ax-net-ng"
-version = "0.6.1"
+version = "0.7.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -8,18 +8,18 @@ description = "ArceOS network module"
 license.workspace = true
 
 [features]
-vsock = ["ax-driver/vsock"]
+vsock = ["dep:rdif-vsock"]
 
 [dependencies]
 async-channel = { version = "2.5", default-features = false }
 async-trait = "0.1"
 ax-config = { workspace = true }
-ax-driver = { workspace = true, features = ["net"] }
 ax-errno = { workspace = true }
 ax-fs-ng = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-hal = { workspace = true }
 ax-io = { workspace = true }
+ax-kspin = { workspace = true }
 axpoll = { workspace = true }
 ax-sync = { workspace = true }
 ax-task = { workspace = true, features = ["irq", "multitask"] }
@@ -28,8 +28,9 @@ cfg-if = { workspace = true }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 hashbrown = "0.16"
-lazy_static = { workspace = true }
 log = { workspace = true }
+rd-net = { workspace = true }
+rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 spin = { workspace = true }
 

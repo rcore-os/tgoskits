@@ -6,6 +6,8 @@
 extern crate log;
 extern crate alloc;
 
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
 use ax_hal::{
     irq::{IPI_IRQ, IpiTarget},
     percpu::this_cpu_id,
@@ -22,11 +24,55 @@ use queue::IpiEventQueue;
 #[ax_percpu::def_percpu]
 static IPI_EVENT_QUEUE: LazyInit<SpinNoIrq<IpiEventQueue>> = LazyInit::new();
 
+const IPI_CPU_NOT_READY: u8 = 0;
+const IPI_CPU_BECOMING_READY: u8 = 1;
+const IPI_CPU_READY: u8 = 2;
+
+static IPI_CPU_STATE: [AtomicU8; ax_config::plat::MAX_CPU_NUM] =
+    [const { AtomicU8::new(IPI_CPU_NOT_READY) }; ax_config::plat::MAX_CPU_NUM];
+
 /// Initialize the per-CPU IPI event queue.
 pub fn init() {
     IPI_EVENT_QUEUE.with_current(|ipi_queue| {
         ipi_queue.init_once(SpinNoIrq::new(IpiEventQueue::default()));
     });
+}
+
+/// Marks the current CPU ready to receive and handle queued IPI callbacks.
+///
+/// The runtime should call this after the local IPI event queue is initialized,
+/// the IPI handler is installed, and local IRQs are enabled.
+pub fn mark_current_cpu_ready() {
+    let cpu_id = this_cpu_id();
+    IPI_CPU_STATE[cpu_id].store(IPI_CPU_BECOMING_READY, Ordering::Release);
+    ax_hal::asm::flush_tlb(None);
+    IPI_CPU_STATE[cpu_id].store(IPI_CPU_READY, Ordering::Release);
+}
+
+/// Returns whether `cpu_id` is ready to receive and handle queued IPI callbacks.
+pub fn is_cpu_ready(cpu_id: usize) -> bool {
+    cpu_id < ax_config::plat::MAX_CPU_NUM
+        && IPI_CPU_STATE[cpu_id].load(Ordering::Acquire) == IPI_CPU_READY
+}
+
+/// Waits while `cpu_id` is becoming ready, and returns whether it is ready.
+///
+/// If a page-table update races with a CPU publishing IPI readiness, the caller
+/// must not skip the CPU after it has already started its final local TLB flush.
+/// Waiting for the transition to complete lets the caller send a conservative
+/// follow-up IPI after the CPU can receive callbacks.
+pub fn wait_until_cpu_ready(cpu_id: usize) -> bool {
+    if cpu_id >= ax_config::plat::MAX_CPU_NUM {
+        return false;
+    }
+
+    loop {
+        match IPI_CPU_STATE[cpu_id].load(Ordering::Acquire) {
+            IPI_CPU_READY => return true,
+            IPI_CPU_NOT_READY => return false,
+            _ => core::hint::spin_loop(),
+        }
+    }
 }
 
 /// Executes a callback on the specified destination CPU via IPI.
@@ -41,6 +87,51 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
             .push(this_cpu_id(), callback.into());
         ax_hal::irq::send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id: dest_cpu });
     }
+}
+
+/// Executes a raw thunk synchronously on the specified CPU via IPI.
+///
+/// # Safety
+///
+/// `arg` must remain valid until this function returns, and `f` must be safe
+/// to execute in the target CPU's IPI handler context.
+pub unsafe fn run_on_cpu_sync_raw(
+    dest_cpu: usize,
+    f: unsafe fn(*mut ()),
+    arg: *mut (),
+) -> Result<(), ax_hal::irq::IrqError> {
+    if dest_cpu >= ax_hal::cpu_num() {
+        return Err(ax_hal::irq::IrqError::InvalidCpu);
+    }
+    if !wait_until_cpu_ready(dest_cpu) {
+        return Err(ax_hal::irq::IrqError::CpuOffline);
+    }
+    if dest_cpu == this_cpu_id() {
+        unsafe { f(arg) };
+        return Ok(());
+    }
+
+    struct SyncCall {
+        done: AtomicBool,
+        f: unsafe fn(*mut ()),
+        arg: *mut (),
+    }
+
+    let call = SyncCall {
+        done: AtomicBool::new(false),
+        f,
+        arg,
+    };
+    let call_ptr = &call as *const SyncCall as usize;
+    run_on_cpu(dest_cpu, move || {
+        let call = unsafe { &*(call_ptr as *const SyncCall) };
+        unsafe { (call.f)(call.arg) };
+        call.done.store(true, Ordering::Release);
+    });
+    while !call.done.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    Ok(())
 }
 
 /// Executes a callback on all other CPUs via IPI.

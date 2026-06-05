@@ -204,6 +204,15 @@ fn merge_board_test_uboot_config(
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
     }
+    if test_uboot.kernel_load_addr.is_some() {
+        uboot.kernel_load_addr = test_uboot.kernel_load_addr;
+    }
+    if test_uboot.fit_load_addr.is_some() {
+        uboot.fit_load_addr = test_uboot.fit_load_addr;
+    }
+    if test_uboot.bootm_addr.is_some() {
+        uboot.bootm_addr = test_uboot.bootm_addr;
+    }
     uboot.success_regex = test_uboot.success_regex;
     uboot.fail_regex = test_uboot.fail_regex;
     uboot.uboot_cmd = test_uboot.uboot_cmd;
@@ -640,7 +649,9 @@ impl Axvisor {
     }
 
     fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
+        request.plat_dyn = None;
         request.smp = None;
+        request.vmconfigs.clear();
         request
     }
 
@@ -688,6 +699,7 @@ impl Axvisor {
             &mut self.app,
             cargo,
             qemu,
+            None,
             &case.case.case.qemu_config_path,
             prepared_assets,
             prepare_started.elapsed(),
@@ -736,6 +748,7 @@ fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
         grouped_runner: test_case::GroupedCaseRunnerConfig {
             runner_name: "axvisor-run-case-tests".to_string(),
             runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+            autorun_profile_script: None,
             begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
@@ -775,6 +788,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct TestBuildConfigVmConfigs {
+        #[serde(default)]
+        vm_configs: Vec<PathBuf>,
+    }
 
     fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
         write_qemu_config_in_group(root, "normal", "default", case, arch, body)
@@ -865,6 +884,59 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_test_build_vmconfigs_exist() {
+        let workspace_root = std::env::current_dir().unwrap();
+        let axvisor_suite = workspace_root.join("test-suit/axvisor");
+        if !axvisor_suite.is_dir() {
+            return;
+        }
+
+        let mut stack = vec![axvisor_suite];
+        let mut checked = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !file_name.starts_with("build-")
+                    || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
+                {
+                    continue;
+                }
+
+                let content = fs::read_to_string(&path).unwrap();
+                let config: TestBuildConfigVmConfigs = toml::from_str(&content).unwrap();
+                for vm_config in config.vm_configs {
+                    if vm_config.starts_with("os/axvisor/tmp/vmconfigs") {
+                        continue;
+                    }
+                    checked += 1;
+                    let vm_config_path = if vm_config.is_absolute() {
+                        vm_config
+                    } else {
+                        workspace_root.join(vm_config)
+                    };
+                    assert!(
+                        vm_config_path.is_file(),
+                        "{} references missing vm_config {}",
+                        path.display(),
+                        vm_config_path.display()
+                    );
+                }
+            }
+        }
+
+        assert!(checked > 0);
+    }
+
+    #[test]
     fn parses_supported_arch_aliases() {
         assert_eq!(
             parse_target(&Some("aarch64".to_string()), &None).unwrap(),
@@ -946,6 +1018,36 @@ mod tests {
         let request = Axvisor::qemu_test_request(request);
 
         assert_eq!(request.smp, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_plat_dyn() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request.plat_dyn = Some(true);
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert_eq!(request.plat_dyn, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_vmconfigs() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request
+            .vmconfigs
+            .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert!(request.vmconfigs.is_empty());
     }
 
     #[test]
@@ -1117,6 +1219,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["load"]
         );
+    }
+
+    #[test]
+    fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "normal",
+            "default",
+            "baseline",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+        write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+        write_qemu_config_in_group(
+            root.path(),
+            "uefi",
+            "qemu-nimbos",
+            "smoke",
+            "x86_64",
+            "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = \
+             []\nfail_regex = []\n",
+        );
+
+        let normal_cases =
+            discover_qemu_cases(root.path(), "normal", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(normal_cases.len(), 1);
+        assert_eq!(normal_cases[0].case.name, "baseline");
+
+        let uefi_cases =
+            discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None)
+                .unwrap();
+        assert_eq!(uefi_cases.len(), 1);
+        assert_eq!(uefi_cases[0].case.name, "smoke");
+        assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
     }
 
     #[test]
@@ -1326,6 +1466,9 @@ mod tests {
                 "run ab_select_cmd".to_string(),
                 "run avb_boot".to_string(),
             ]),
+            kernel_load_addr: Some("0x200000".to_string()),
+            fit_load_addr: Some("0x2000000".to_string()),
+            bootm_addr: Some("0x2000000".to_string()),
             shell_prefix: Some("ubuntu login:".to_string()),
             ..Default::default()
         };
@@ -1343,6 +1486,9 @@ mod tests {
         );
         assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
         assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
+        assert_eq!(merged.kernel_load_addr.as_deref(), Some("0x200000"));
+        assert_eq!(merged.fit_load_addr.as_deref(), Some("0x2000000"));
+        assert_eq!(merged.bootm_addr.as_deref(), Some("0x2000000"));
         assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));

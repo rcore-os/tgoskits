@@ -6,7 +6,7 @@ You can use the following command to compile an 'httpserver' app application:
 
 ```shell
 make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml defconfig
-make A=examples/httpserver PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml FEATURES=driver-ixgbe
+make A=examples/httpserver PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml FEATURES=ax-driver/plat-static,ax-driver/ixgbe
 ```
 
 You can also use the following command to start the iperf application:
@@ -14,7 +14,7 @@ You can also use the following command to start the iperf application:
 ```shell
 git clone https://github.com/arceos-org/arceos-apps.git
 make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml defconfig
-make A=arceos-apps/c/iperf PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml FEATURES=driver-ixgbe,driver-ramdisk
+make A=arceos-apps/c/iperf PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml FEATURES=ax-driver/plat-static,ax-driver/ixgbe,ax-driver/ramdisk
 ```
 
 ## Use ixgbe NIC in QEMU with PCI passthrough
@@ -38,7 +38,7 @@ make A=arceos-apps/c/iperf PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.tom
 3. Build and run ArceOS:
 
     ```shell
-    make A=examples/httpserver FEATURES=driver-ixgbe VFIO_PCI=02:00.0 IP=x.x.x.x GW=x.x.x.x run
+    make A=examples/httpserver FEATURES=ax-driver/plat-static,ax-driver/ixgbe VFIO_PCI=02:00.0 IP=x.x.x.x GW=x.x.x.x run
     ```
 
 4. If no longer in use, bind the NIC back to the `ixgbe` driver:

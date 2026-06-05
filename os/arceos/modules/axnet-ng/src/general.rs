@@ -1,10 +1,10 @@
 use core::{
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
     task::Waker,
     time::Duration,
 };
 
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::future::{block_on, poll_io, timeout};
 use axpoll::{IoEvents, Pollable};
 
@@ -24,14 +24,20 @@ pub(crate) struct GeneralOptions {
     recv_timeout_nanos: AtomicU64,
 
     device_mask: AtomicU32,
-}
-impl Default for GeneralOptions {
-    fn default() -> Self {
-        Self::new()
-    }
+
+    /// Socket type: SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3).
+    socket_type: AtomicI32,
+    /// Socket domain: AF_INET (2), AF_UNIX (1), AF_VSOCK (40).
+    domain: i32,
+    /// IP protocol: IPPROTO_TCP (6), IPPROTO_UDP (17), IPPROTO_ICMP (1), etc.
+    protocol: i32,
 }
 impl GeneralOptions {
-    pub fn new() -> Self {
+    /// Create new GeneralOptions. `socket_type` is the SOCK_* constant
+    /// (e.g. SOCK_STREAM=1, SOCK_DGRAM=2, SOCK_RAW=3).
+    /// `domain` is the AF_* constant (e.g. AF_INET=2, AF_UNIX=1, AF_VSOCK=40).
+    /// `protocol` is the IPPROTO_* constant (e.g. IPPROTO_TCP=6, IPPROTO_UDP=17, IPPROTO_ICMP=1).
+    pub fn new(socket_type: i32, domain: i32, protocol: i32) -> Self {
         Self {
             nonblock: AtomicBool::new(false),
             reuse_address: AtomicBool::new(false),
@@ -40,6 +46,10 @@ impl GeneralOptions {
             recv_timeout_nanos: AtomicU64::new(0),
 
             device_mask: AtomicU32::new(0),
+
+            socket_type: AtomicI32::new(socket_type),
+            domain,
+            protocol,
         }
     }
 
@@ -152,6 +162,15 @@ impl Configurable for GeneralOptions {
             O::RecvErr(val) => {
                 **val = false;
             }
+            O::SocketType(t) => {
+                **t = self.socket_type.load(Ordering::Relaxed);
+            }
+            O::SocketProtocol(proto) => {
+                **proto = self.protocol;
+            }
+            O::SocketDomain(domain) => {
+                **domain = self.domain;
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -180,6 +199,10 @@ impl Configurable for GeneralOptions {
             }
             O::RecvErr(_) => {
                 // TODO: Retrieve ICMP errors via errqueue
+            }
+            O::SocketType(_) | O::SocketProtocol(_) | O::SocketDomain(_) => {
+                // Read-only options
+                return Err(AxError::from(LinuxError::ENOPROTOOPT));
             }
             _ => return Ok(false),
         }

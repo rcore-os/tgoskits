@@ -10,10 +10,10 @@
 
 import os
 import select
-import sys
 import subprocess
+import sys
 
-# Trigger strings (try in order; first match sends usertests)
+
 SEND_AFTER = (b"Rust user shell", b">>")
 SEND_LINE = b"usertests\n"
 SUCCESS_MARKERS = (b"usertests passed!",)

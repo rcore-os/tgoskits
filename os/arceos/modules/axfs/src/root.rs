@@ -27,8 +27,8 @@ use alloc::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_vfs::{VfsDirEntry, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsOps, VfsResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
-use spin::Mutex;
 
 use crate::{
     api::FileType,
@@ -94,6 +94,14 @@ impl RootDirectory {
 
     pub fn contains(&self, path: &str) -> bool {
         self.mounts.iter().any(|mp| mp.path == path)
+    }
+
+    pub fn shutdown(&self) -> AxResult {
+        for mp in &self.mounts {
+            mp.fs.umount()?;
+        }
+        self.main_fs.umount()?;
+        Ok(())
     }
 
     /// Normalize path by trimming leading '/' and handling './' prefix
@@ -441,6 +449,13 @@ pub fn mount_virtual_fs(mut root_dir: RootDirectory) {
     ROOT_DIR.init_once(root_dir.clone());
     CURRENT_DIR.init_once(Mutex::new(ROOT_DIR.clone()));
     *CURRENT_DIR_PATH.lock() = "/".into();
+}
+
+pub(crate) fn shutdown_rootfs() -> AxResult {
+    if let Some(root_dir) = ROOT_DIR.get() {
+        root_dir.shutdown()?;
+    }
+    Ok(())
 }
 
 fn parent_node_of(dir: Option<&VfsNodeRef>, path: &str) -> VfsNodeRef {

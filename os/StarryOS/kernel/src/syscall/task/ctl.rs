@@ -11,6 +11,8 @@ use crate::{
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
+const PERSONALITY_GET: u32 = 0xffff_ffff;
+const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
 
 /// Validate the cap header and return the target pid (0 means self).
 fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u32> {
@@ -46,6 +48,10 @@ pub fn sys_capget(
     data: *mut __user_cap_data_struct,
 ) -> AxResult<isize> {
     let pid = validate_cap_header(header)?;
+
+    if data.is_null() {
+        return Ok(0);
+    }
 
     let cred = cred_for_pid(pid)?;
     let caps = if cred.euid == 0 { u32::MAX } else { 0 };
@@ -83,6 +89,16 @@ pub fn sys_umask(mask: u32) -> AxResult<isize> {
     Ok(old as isize)
 }
 
+pub fn sys_personality(persona: usize) -> AxResult<isize> {
+    let curr = current();
+    let proc_data = &curr.as_thread().proc_data;
+    let old = proc_data.personality();
+    if persona as u32 != PERSONALITY_GET {
+        proc_data.replace_personality(persona);
+    }
+    Ok(old as isize)
+}
+
 pub fn sys_get_mempolicy(
     _policy: *mut i32,
     _nodemask: *mut usize,
@@ -100,6 +116,7 @@ pub fn sys_get_mempolicy(
 /// - PR_SET_NAME: set the name of the calling thread, using the value pointed to by `arg2`
 /// - PR_GET_NAME: get the name of the calling
 /// - PR_SET_SECCOMP: enable seccomp mode, with the mode specified in `arg2`
+/// - PR_SET_CHILD_SUBREAPER / PR_GET_CHILD_SUBREAPER: control orphan reparenting
 /// - PR_MCE_KILL: set the machine check exception policy
 /// - PR_SET_MM options: set various memory management options (start/end code/data/brk/stack)
 pub fn sys_prctl(
@@ -136,6 +153,21 @@ pub fn sys_prctl(
             let sig = current().as_thread().pdeathsig() as i32;
             (arg2 as *mut i32).vm_write(sig)?;
         }
+        PR_SET_CHILD_SUBREAPER => {
+            current()
+                .as_thread()
+                .proc_data
+                .proc
+                .set_child_subreaper(arg2 != 0);
+        }
+        PR_GET_CHILD_SUBREAPER => {
+            let enabled = if current().as_thread().proc_data.proc.is_child_subreaper() {
+                1
+            } else {
+                0
+            };
+            (arg2 as *mut i32).vm_write(enabled)?;
+        }
         PR_CAPBSET_READ => {
             if arg2 > CAP_LAST_CAP as usize {
                 return Err(AxError::InvalidInput);
@@ -162,6 +194,44 @@ pub fn sys_prctl(
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
+        PR_SET_NO_NEW_PRIVS => {
+            if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_no_new_privs();
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            return Ok(current().as_thread().no_new_privs() as isize);
+        }
+        PR_SET_THP_DISABLE => {
+            // Linux reserves arg4/arg5 for this option; non-zero values are invalid.
+            if arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            // StarryOS does not implement transparent huge pages, but userspace
+            // may use this prctl as a compatibility hint and query it later.
+            // Linux returns 0, 1, or 3 from PR_GET_THP_DISABLE:
+            //   0: enabled, 1: disabled, 3: disabled except advised mappings.
+            let thp_disable = match (arg2, arg3) {
+                (0, 0) => 0,
+                (0, _) => return Err(AxError::InvalidInput),
+                (_, 0) => 1,
+                (_, PR_THP_DISABLE_EXCEPT_ADVISED) => 1 | PR_THP_DISABLE_EXCEPT_ADVISED,
+                _ => return Err(AxError::InvalidInput),
+            };
+            current()
+                .as_thread()
+                .proc_data
+                .set_thp_disable(thp_disable as u32);
+        }
+        PR_GET_THP_DISABLE => {
+            // PR_GET_THP_DISABLE takes no additional arguments and returns the
+            // process-local state recorded by PR_SET_THP_DISABLE.
+            if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return Ok(current().as_thread().proc_data.thp_disable() as isize);
+        }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings
             return Err(AxError::InvalidInput);

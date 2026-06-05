@@ -1,6 +1,6 @@
 # `axplat-dyn`
 
-> 路径：`platform/axplat-dyn`
+> 路径：`platforms/axplat-dyn`
 > 类型：库 crate
 > 分层：平台层 / 动态平台桥接层
 > 版本：`0.3.0-preview.3`
@@ -16,7 +16,7 @@
 
 - 向下：依赖 `somehal` 提供的入口宏、内存映射、控制台、时钟、中断、电源和 CPU 元数据。
 - 向上：实现 `InitIf`、`ConsoleIf`、`MemIf`、`TimeIf`、`PowerIf` 以及可选 `IrqIf`，并通过 `ax_plat::call_main()` / `call_secondary_main()` 把控制权交给内核入口。
-- 向旁：公开 `drivers` 模块，为 `ax-driver` 的 `dyn` 设备模型提供基于 `rdrive` 的设备探测与块设备封装。
+- 向旁：公开 `drivers` 模块，为 `ax-driver` 的 `dyn` 设备模型提供基于 `rdrive` 和 `rdif-block` 的设备探测与块设备封装。
 - 向链接层：通过 `build.rs` 生成 `axplat.x`，把 `linkme` 段、异常表和若干 ArceOS 约定符号补进最终镜像。
 
 这决定了它与普通板级包的一个根本差异：
@@ -46,7 +46,7 @@
 | --- | --- | --- | --- |
 | 启动 glue | `somehal` | `boot.rs` | 把主核/次核入口收敛到 `ax_plat::call_main()` / `call_secondary_main()` |
 | 平台契约 glue | `axplat` | `init.rs`、`console.rs`、`mem.rs`、`generic_timer.rs`、`irq.rs`、`power.rs` | 用 `#[impl_plat_interface]` 把 `somehal` 能力接到 `axplat` trait |
-| 设备 glue | `rdrive`、`rd-block`、`ax-driver-virtio` | `drivers/*` | 把 FDT/PCIe/VirtIO 探测结果转成 `ax-driver` 可消费的动态块设备 |
+| 设备 glue | `rdrive`、`rdif-block`、`ax-driver` | `drivers/*` | 把 FDT/PCIe/VirtIO 探测结果转成 `rdrive` 可查询的动态块设备 |
 | 链接 glue | `build.rs`、`link.ld` | crate 根目录 | 生成 `axplat.x`，插入所需段和符号，适配 ArceOS 链接约定 |
 
 这套装配方式说明它承担的是“桥接与接线”职责，而不是“重新定义平台抽象”。
@@ -132,13 +132,13 @@ flowchart TD
 2. 调用 `rdrive::probe_all(true)` 触发探测。
 3. `drivers/pci.rs` 通过 `module_driver!` 注册通用 PCIe ECAM 控制器探测器。
 4. `drivers/blk/virtio.rs` 通过 `module_driver!` 注册 `virtio,mmio` block 设备探测器。
-5. 探测出的 `rd_block::Block` 被包成实现 `ax_driver_block::BlockDriverOps` 的 `Block`，最终进入 `BLOCK_DEVICES`。
-6. `os/arceos/modules/axdriver/src/dyn_drivers/mod.rs` 再通过 `take_block_devices()` 把它们取走，转成 `ax-driver` 的动态设备集合。
+5. 探测出的 `rdif_block::Interface` 设备被包成实现 `ax_driver_block::BlockDriverOps` 的 `Block`，最终进入 `BLOCK_DEVICES`。
+6. `drivers/ax-driver/src/dyn_drivers/mod.rs` 再通过 `take_block_devices()` 把它们取走，转成 `ax-driver` 的动态设备集合。
 
 ```mermaid
 flowchart TD
     A[rdrive::probe_all] --> B[PCIe / VirtIO probe modules]
-    B --> C[rd_block::Block]
+    B --> C[rdif_block::Interface]
     C --> D[drivers::blk::Block]
     D --> E[BLOCK_DEVICES]
     E --> F[ax-driver::dyn_drivers::probe_all_devices]
@@ -196,16 +196,15 @@ flowchart TD
 | `somehal` | 提供真实平台事实与入口宏，是本 crate 的核心下层 |
 | `ax-cpu` | 在 `hv` 等场景提供 CPU 模式支持 |
 | `axklib` | 提供 `iomap()` 等内核内存映射辅助 |
-| `ax-alloc` | 为 `VirtIO` DMA 路径提供页分配 |
-| `rdrive`、`rd-block` | 提供运行时设备探测与块设备抽象 |
-| `axdriver_block`、`ax-driver-virtio`、`ax-driver-base` | 将探测结果转接为 ArceOS 驱动接口 |
+| `ax-driver` | 提供共享驱动 probe 与 adapter 入口 |
+| `rdrive`、`rdif-block` | 提供运行时设备探测与块设备能力边界 |
 | `dma-api` | 为设备 DMA 提供抽象接口 |
 | `heapless`、`spin` | 用于固定容量缓存与锁/一次初始化结构 |
 
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：通过 `plat-dyn` feature 选择该平台路径。
-- `os/arceos/modules/axdriver`：通过 `dyn` feature 调用其动态设备探测入口。
+- `drivers/ax-driver`：通过 `dyn` feature 调用其动态设备探测入口。
 - 进一步依赖上述模块的 ArceOS 系统镜像，以及复用同一模块栈的其它内核工程。
 
 ### 3.3 依赖关系示意
@@ -214,7 +213,7 @@ flowchart TD
 graph TD
     A[somehal / ax-cpu / axklib] --> B[axplat-dyn]
     C[axplat] --> B
-    D[rdrive / rd-block / dma-api / ax-driver-virtio] --> B
+    D[rdrive / rdif-block / dma-api / ax-driver] --> B
 
     B --> E[ax-hal: plat-dyn]
     B --> F[ax-driver: dyn]

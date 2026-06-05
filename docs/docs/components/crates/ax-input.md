@@ -45,7 +45,6 @@ graph LR
 - `ax-lazyinit`
 
 ### 间接依赖
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-alloc`
@@ -56,7 +55,7 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
-- `ax-driver-base`
+- `rdif-input`
 - 另外还有 `41` 个同类项未在此展开
 
 ### 3.3 被依赖情况

@@ -1,6 +1,7 @@
-features = ["ax-std"]
+features = ["ax-std", "ax-driver/virtio-blk"]
 log = "Warn"
 max_cpu_num = 4
+plat_dyn = true
 
 [env]
 AX_GW = "10.0.2.2"

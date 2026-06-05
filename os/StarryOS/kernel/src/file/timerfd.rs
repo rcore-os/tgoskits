@@ -33,7 +33,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{TimeValue, monotonic_time, wall_time};
+use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io, timeout_at};
 use axpoll::{IoEvents, PollSet, Pollable};

@@ -26,15 +26,23 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <sched.h>
 #include <unistd.h>
 
-#define N_ITERATIONS 1000
+/* Keep the normal qemu case bounded; larger stress counts belong in stress. */
+#define N_ITERATIONS 64
 #define STACK_SIZE   (64 * 1024)
+#define CLONE_SHARED_FILES_FLAGS \
+    (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | SIGCHLD)
 
 static int  g_pipefd[2];
 static volatile int g_corrupt;
+static volatile int g_done;
 static volatile int g_round;
+static volatile int g_main_pid;
+static volatile int g_worker1_pid;
+static volatile int g_worker2_pid;
 
 static int clone_child_fn(void *arg) {
     int slot = (int)(long)arg;
@@ -56,23 +64,27 @@ static int worker_thread(void *arg) {
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (cld_stk == MAP_FAILED) return 1;
 
-    int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
-
     while (!g_corrupt) {
         int slot = __atomic_fetch_add(&g_round, 1, __ATOMIC_RELAXED);
         if (slot >= N_ITERATIONS) break;
 
         int cld = clone(clone_child_fn,
                         (char *)cld_stk + STACK_SIZE,
-                        flags, (void *)(long)slot);
+                        CLONE_SHARED_FILES_FLAGS, (void *)(long)slot);
         if (cld < 0) {
             printf("  FAIL | %s:%d | w%d clone errno=%d (%s)\n",
                    __FILE__, __LINE__, wid, errno, strerror(errno));
             g_corrupt = 1;
             break;
         }
-        int status;
-        waitpid(cld, &status, __WALL);
+        int status = 0;
+        if (waitpid(cld, &status, __WALL) < 0 ||
+            !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            printf("  FAIL | %s:%d | w%d wait child=%d status=0x%x errno=%d (%s)\n",
+                   __FILE__, __LINE__, wid, cld, status, errno, strerror(errno));
+            g_corrupt = 1;
+            break;
+        }
     }
 
     munmap(cld_stk, STACK_SIZE);
@@ -81,25 +93,42 @@ static int worker_thread(void *arg) {
 
 /* ─── Watchdog ──────────────────────────────────────────────────── */
 
+static void kill_if_valid(int pid) {
+    if (pid > 0) {
+        kill(pid, SIGKILL);
+    }
+}
+
+static void watchdog_fail(const char *reason, int cur) {
+    g_corrupt = 1;
+    printf("  FAIL | %s:%d | %s (r=%d/%d)\n",
+           __FILE__, __LINE__, reason, cur, N_ITERATIONS);
+    kill_if_valid(g_worker1_pid);
+    kill_if_valid(g_worker2_pid);
+    kill_if_valid(g_main_pid);
+    _exit(1);
+}
+
 static int watchdog_thread(void *arg) {
     (void)arg;
     int last = 0, stalls = 0;
     for (int sec = 0; sec < 180; sec++) {
         sleep(1);
-        if (g_corrupt) _exit(1);
+        if (__atomic_load_n(&g_done, __ATOMIC_ACQUIRE)) {
+            return 0;
+        }
         int cur = __atomic_load_n(&g_round, __ATOMIC_RELAXED);
-        if (cur >= N_ITERATIONS) return 0;
+        if (g_corrupt) {
+            watchdog_fail("corruption detected", cur);
+        }
         if (cur == last) {
             if (++stalls >= 30) {
-                printf("  FAIL | %s:%d | stalled (r=%d/%d)\n",
-                       __FILE__, __LINE__, cur, N_ITERATIONS);
-                _exit(1);
+                watchdog_fail("stalled", cur);
             }
         } else { stalls = 0; last = cur; }
     }
-    printf("  FAIL | %s:%d | timeout (r=%d/%d)\n",
-           __FILE__, __LINE__, g_round, N_ITERATIONS);
-    _exit(1);
+    watchdog_fail("timeout", g_round);
+    return 1;
 }
 
 /* ─── Main ──────────────────────────────────────────────────────── */
@@ -110,7 +139,11 @@ int main(void) {
 
     {
         g_corrupt = 0;
+        g_done = 0;
         g_round = 0;
+        g_main_pid = getpid();
+        g_worker1_pid = 0;
+        g_worker2_pid = 0;
         CHECK(pipe(g_pipefd) == 0, "create pipe");
 
         void *stk_w1 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
@@ -125,22 +158,27 @@ int main(void) {
         if (stk_w1 == MAP_FAILED || stk_w2 == MAP_FAILED ||
             stk_wd == MAP_FAILED) goto cleanup;
 
-        int f = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
-
         int td = clone(watchdog_thread,
-                       (char *)stk_wd + STACK_SIZE, f, NULL);
+                       (char *)stk_wd + STACK_SIZE,
+                       CLONE_SHARED_FILES_FLAGS, NULL);
         CHECK(td >= 0, "clone watchdog");
 
         int t1 = clone(worker_thread,
-                       (char *)stk_w1 + STACK_SIZE, f, (void *)0);
+                       (char *)stk_w1 + STACK_SIZE,
+                       CLONE_SHARED_FILES_FLAGS, (void *)0);
+        g_worker1_pid = t1;
         CHECK(t1 >= 0, "clone worker1");
 
         int t2 = clone(worker_thread,
-                       (char *)stk_w2 + STACK_SIZE, f, (void *)1);
+                       (char *)stk_w2 + STACK_SIZE,
+                       CLONE_SHARED_FILES_FLAGS, (void *)1);
+        g_worker2_pid = t2;
         CHECK(t2 >= 0, "clone worker2");
 
         if (t1 >= 0) { int s; waitpid(t1, &s, __WALL); }
         if (t2 >= 0) { int s; waitpid(t2, &s, __WALL); }
+        __atomic_store_n(&g_done, 1, __ATOMIC_RELEASE);
+        if (td >= 0) kill(td, SIGKILL);
         if (td >= 0) { int s; waitpid(td, &s, __WALL); }
 
         CHECK(!g_corrupt && g_round >= N_ITERATIONS,

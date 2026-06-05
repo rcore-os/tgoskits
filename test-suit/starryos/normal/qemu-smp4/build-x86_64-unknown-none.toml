@@ -1,6 +1,13 @@
 target = "x86_64-unknown-none"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 log = "Warn"
-features = ["qemu"]
-plat_dyn = false
+features = [
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+]
+plat_dyn = true
 max_cpu_num = 4

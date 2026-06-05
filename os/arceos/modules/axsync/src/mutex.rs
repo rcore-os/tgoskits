@@ -80,7 +80,7 @@ impl Default for RawMutex {
 }
 
 unsafe impl lock_api::RawMutex for RawMutex {
-    type GuardMarker = lock_api::GuardSend;
+    type GuardMarker = lock_api::GuardNoSend;
 
     /// Initial value for an unlocked mutex.
     ///
@@ -129,7 +129,13 @@ unsafe impl lock_api::RawMutex for RawMutex {
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
-        // wake up one waiting thread.
+        // Wake one waiting thread.  The callback receives the waiter's ID.
+        // When the wait queue is empty, notify_one_with calls the callback
+        // with id=0, which clears owner_id via the swap below.  This is
+        // what makes is_locked_inner() return false — the unlock handoff
+        // DEPENDS on notify_one_with always invoking the callback, even
+        // for empty queues.  If that contract changes, add an explicit
+        // owner_id.store(0, Ordering::Release) fallback here.
         self.wq.notify_one_with(true, |id: u64| {
             self.owner_id.swap(id, Ordering::Release);
         });
@@ -183,7 +189,7 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     #[cfg(feature = "lockdep")]
-    fn lock_nested(&self, subclass: crate::lockdep::LockSubclass) {
+    fn lock_nested(&self, subclass: LockSubclass) {
         might_sleep();
         let current_id = current().id().as_u64();
 
@@ -196,7 +202,8 @@ impl RawMutex {
     #[track_caller]
     #[cfg(not(feature = "lockdep"))]
     fn try_lock_plain(&self) -> bool {
-        might_sleep();
+        // try_lock is a single atomic CAS — it never blocks or sleeps,
+        // so it is safe to call from atomic context (cf. Linux mutex_trylock).
         let current_id = current().id().as_u64();
         self.try_lock_after_prepare(current_id)
     }
@@ -209,8 +216,9 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     #[cfg(feature = "lockdep")]
-    fn try_lock_nested(&self, subclass: crate::lockdep::LockSubclass) -> bool {
-        might_sleep();
+    fn try_lock_nested(&self, subclass: LockSubclass) -> bool {
+        // try_lock is a single atomic CAS — it never blocks or sleeps,
+        // so it is safe to call from atomic context.
         let current_id = current().id().as_u64();
 
         let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, true, subclass);

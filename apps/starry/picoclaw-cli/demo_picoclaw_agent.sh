@@ -134,7 +134,7 @@ run_docker 'command -v debugfs; command -v qemu-system-x86_64; command -v cargo;
 pause
 
 say "Step 4: 生成带 PicoClaw 和在线配置的 StarryOS rootfs"
-run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --output-rootfs '$rootfs'"
+run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
 pause
 
 say "Step 5: 启动 StarryOS x86_64 QEMU，并让 PicoClaw 完成多次真实对话"

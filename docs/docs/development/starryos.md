@@ -119,6 +119,12 @@ StarryOS 专用组件（位于 `components/`）：
 
 内核默认启用：`fp-simd`, `irq`, `uspace`, `page-alloc-4g`, `alloc-slab`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `fs-ng-ext4`, `net-ng`。
 
+### 3.3 KCOV 暂不引入
+
+StarryOS 目前不暴露 `kcov` feature，也不注册 `/dev/kcov`。此前尝试引入 Linux KCOV 兼容接口时，需要同时改动编译插桩参数、`ax-hal` 架构 trampoline、文件描述符状态、设备 mmap、任务生命周期和测试矩阵，侵入面过大。
+
+另一个阻塞点是多核语义：KCOV 的 per-fd / per-task 状态需要和调度、抢占、线程退出、fork 以及中断上下文保持一致，当前实现还不能稳定覆盖 SMP 场景。因此在形成更小的边界和可靠的多核方案前，暂不把 KCOV 纳入 StarryOS。
+
 ---
 
 ## 4. Syscall 开发
@@ -421,10 +427,15 @@ StarryOS 测试配置与 ArceOS 类似，但增加了 shell 交互：
 ```toml
 # build config
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
-features = ["qemu"]
+features = [
+  "ax-feat/rtc",
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]
 log = "Warn"
-plat_dyn = false
-target = "aarch64-unknown-none-softfloat"
+plat_dyn = true
+target = "riscv64gc-unknown-none-elf"
 ```
 
 ```toml

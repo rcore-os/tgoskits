@@ -22,11 +22,11 @@ mod tests {
         },
     };
     use fdt_edit::{ClockType, Fdt, InterruptRef, NodeType};
+    use ax_kspin::SpinNoIrq as Mutex;
     use rdif_intc::Intc;
     use rdif_serial::{BIrqHandler, BReciever, BSender, BSerial, TransferError};
     use rdrive::fdt_phandle_to_device_id;
     use some_serial::{Config, DataBits, InterruptMask, Parity, StopBits};
-    use spin::Mutex;
 
     static TX_INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);
     static RX_INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);

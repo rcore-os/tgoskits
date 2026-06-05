@@ -19,9 +19,3 @@ fn main() {
 
     starry_kernel::entry::init(&args, &envs);
 }
-
-#[cfg(all(
-    feature = "sg2002",
-    any(target_arch = "riscv32", target_arch = "riscv64")
-))]
-extern crate ax_plat_riscv64_sg2002;

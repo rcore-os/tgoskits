@@ -30,10 +30,10 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FileFlags;
-use ax_hal::paging::MappingFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
 use ax_memory_addr::VirtAddr;
 use ax_memory_set::MemoryArea;
+use ax_runtime::hal::paging::MappingFlags;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 

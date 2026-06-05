@@ -59,10 +59,18 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_arceos_arch_and_target(effective_arch, effective_target)?;
-        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
-        let smp = cli.smp.or(snapshot.smp);
-        let inherit_snapshot_runtime =
-            cli.package.is_none() && cli.arch.is_none() && cli.target.is_none();
+        let inherit_snapshot_runtime = cli.package.is_none()
+            && cli.arch.is_none()
+            && cli.target.is_none()
+            && cli.config.is_none();
+        let plat_dyn = cli.plat_dyn.or_else(|| {
+            inherit_snapshot_runtime
+                .then_some(snapshot.plat_dyn)
+                .flatten()
+        });
+        let smp = cli
+            .smp
+            .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
             if inherit_snapshot_runtime {
@@ -137,14 +145,20 @@ impl AppContext {
                 .then_some(snapshot.config.as_ref())
                 .flatten(),
         );
+        let config_target = resolved_config
+            .as_deref()
+            .filter(|_| cli.config.is_some() && cli.target.is_none())
+            .map(crate::starry::build::load_target_from_build_config)
+            .transpose()?
+            .flatten();
         let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() {
+            if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
                 snapshot.arch.clone()
             }
         });
-        let effective_target = cli.target.clone().or_else(|| {
+        let effective_target = cli.target.clone().or(config_target).or_else(|| {
             if cli.arch.is_some() {
                 None
             } else {

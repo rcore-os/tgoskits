@@ -7,7 +7,7 @@
 //! - Populate case overlays that will later be injected into the rootfs image
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -154,6 +154,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         .iter()
         .filter(|subcase| subcase.kind == TestQemuSubcaseKind::C)
         .collect::<Vec<_>>();
+    let c_subcases = selected_grouped_c_subcases(case, c_subcases)?;
 
     if !c_subcases.is_empty() {
         prepare_grouped_c_subcases_sync(arch, case, &c_subcases, layout, config)?;
@@ -166,6 +167,116 @@ pub(crate) fn prepare_grouped_case_assets_sync(
     )?;
     crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+fn selected_grouped_c_subcases<'a>(
+    case: &TestQemuCase,
+    subcases: Vec<&'a TestQemuSubcase>,
+) -> anyhow::Result<Vec<&'a TestQemuSubcase>> {
+    let Some(command_names) = direct_usr_bin_command_names(&case.test_commands) else {
+        return Ok(subcases);
+    };
+
+    let mut known_names = BTreeSet::new();
+    let mut selected = Vec::new();
+    for subcase in subcases {
+        let subcase_names = grouped_c_subcase_binary_names(subcase)?;
+        known_names.extend(subcase_names.iter().cloned());
+        if subcase_names
+            .iter()
+            .any(|name| command_names.contains(name.as_str()))
+        {
+            selected.push(subcase);
+        }
+    }
+
+    let missing = command_names
+        .difference(&known_names)
+        .cloned()
+        .collect::<Vec<_>>();
+    ensure!(
+        missing.is_empty(),
+        "grouped qemu case `{}` references test command(s) without C subcases: {}",
+        case.qemu_config_path.display(),
+        missing.join(", ")
+    );
+
+    Ok(selected)
+}
+
+fn direct_usr_bin_command_names(commands: &[String]) -> Option<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for command in commands {
+        let token = command.split_ascii_whitespace().next()?;
+        let name = token.strip_prefix("/usr/bin/")?;
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
+            return None;
+        }
+        names.insert(name.to_string());
+    }
+    Some(names)
+}
+
+fn grouped_c_subcase_binary_names(subcase: &TestQemuSubcase) -> anyhow::Result<BTreeSet<String>> {
+    let mut names = BTreeSet::from([subcase.name.clone()]);
+    let cmake_lists = subcase
+        .case_dir
+        .join(CASE_C_DIR_NAME)
+        .join(CASE_CMAKE_FILE_NAME);
+    if cmake_lists.is_file() {
+        let content = fs::read_to_string(&cmake_lists)
+            .with_context(|| format!("failed to read {}", cmake_lists.display()))?;
+        names.extend(cmake_install_target_names(&content));
+    }
+    Ok(names)
+}
+
+fn cmake_install_target_names(content: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for line in content.lines() {
+        let line = line.split_once('#').map_or(line, |(code, _)| code);
+        if !line.contains("install") || !line.contains("TARGETS") {
+            continue;
+        }
+
+        let mut collect_targets = false;
+        for token in line.split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '(' | ')')) {
+            if token.is_empty() {
+                continue;
+            }
+
+            let keyword = token.to_ascii_uppercase();
+            if collect_targets {
+                if matches!(
+                    keyword.as_str(),
+                    "ARCHIVE"
+                        | "BUNDLE"
+                        | "COMPONENT"
+                        | "CONFIGURATIONS"
+                        | "DESTINATION"
+                        | "EXCLUDE_FROM_ALL"
+                        | "FRAMEWORK"
+                        | "LIBRARY"
+                        | "NAMELINK_COMPONENT"
+                        | "OBJECTS"
+                        | "OPTIONAL"
+                        | "PERMISSIONS"
+                        | "RENAME"
+                        | "RUNTIME"
+                ) {
+                    break;
+                }
+                names.insert(token.to_string());
+            } else if keyword == "TARGETS" {
+                collect_targets = true;
+            }
+        }
+    }
+    names
 }
 
 fn prepare_grouped_c_subcases_sync(
@@ -264,6 +375,8 @@ fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) -> TestQemuCa
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
+        host_symbolize_success_regex: Vec::new(),
+        host_http_server: case.host_http_server.clone(),
         subcases: Vec::new(),
     }
 }
@@ -1317,6 +1430,7 @@ mod tests {
             grouped_runner: case_assets::GroupedCaseRunnerConfig {
                 runner_name: "suite-run-case-tests".to_string(),
                 runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                autorun_profile_script: None,
                 begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
                 passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
                 failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
@@ -1350,7 +1464,37 @@ mod tests {
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),
+            host_symbolize_success_regex: Vec::new(),
+            host_http_server: None,
             subcases: Vec::new(),
+        }
+    }
+
+    fn fake_c_subcase(
+        root: &Path,
+        case: &TestQemuCase,
+        name: &str,
+        install_targets: &[&str],
+    ) -> TestQemuSubcase {
+        let case_dir = case.case_dir.join(name);
+        let c_dir = case_dir.join("c");
+        fs::create_dir_all(&c_dir).unwrap();
+        fs::write(
+            c_dir.join(CASE_CMAKE_FILE_NAME),
+            format!(
+                "add_executable({target} src/main.c)\ninstall(TARGETS {} RUNTIME DESTINATION \
+                 usr/bin)\n",
+                install_targets.join(" "),
+                target = install_targets.first().unwrap_or(&name)
+            ),
+        )
+        .unwrap();
+
+        assert!(case_dir.starts_with(root));
+        TestQemuSubcase {
+            name: name.to_string(),
+            case_dir,
+            kind: TestQemuSubcaseKind::C,
         }
     }
 
@@ -1455,6 +1599,66 @@ mod tests {
         assert_eq!(
             command_env(&command, "LD_LIBRARY_PATH"),
             Some(guest_library_path(&layout.staging_root))
+        );
+    }
+
+    #[test]
+    fn grouped_c_subcases_keep_only_direct_usr_bin_commands() {
+        let root = tempdir().unwrap();
+        let mut case = fake_case(root.path(), "bugfix");
+        case.test_commands = vec![
+            "/usr/bin/alpha".to_string(),
+            "/usr/bin/gamma --stress".to_string(),
+        ];
+
+        let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+        let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
+        let gamma = fake_c_subcase(root.path(), &case, "gamma-dir", &["gamma"]);
+        let subcases = vec![&alpha, &beta, &gamma];
+
+        let selected = selected_grouped_c_subcases(&case, subcases).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|subcase| subcase.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "gamma-dir"]
+        );
+    }
+
+    #[test]
+    fn grouped_c_subcases_keep_all_dynamic_shell_commands() {
+        let root = tempdir().unwrap();
+        let mut case = fake_case(root.path(), "syscall");
+        case.test_commands =
+            vec!["for bin in /usr/bin/starry-test-suit/*; do \"$bin\"; done".to_string()];
+
+        let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+        let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
+        let subcases = vec![&alpha, &beta];
+
+        let selected = selected_grouped_c_subcases(&case, subcases).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|subcase| subcase.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
+        let root = tempdir().unwrap();
+        let mut case = fake_case(root.path(), "bugfix");
+        case.test_commands = vec!["/usr/bin/missing".to_string()];
+
+        let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+        let err = selected_grouped_c_subcases(&case, vec![&alpha]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("references test command(s) without C subcases: missing")
         );
     }
 

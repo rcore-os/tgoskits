@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use dma_api::{DArray, DmaDirection};
+use dma_api::{CoherentArray, DmaDirection};
 use mbarrier::mb;
 use xhci::ring::trb::event::Allowed;
 
@@ -8,6 +8,7 @@ use super::ring::{Ring, TRBS_PER_SEGMENT};
 use crate::{err::*, osal::Kernel};
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct EventRingSte {
     pub addr: u64,
     pub size: u16,
@@ -19,7 +20,7 @@ pub struct EventRing {
     segment_index: usize,
     trb_index: usize,
     cycle: bool,
-    pub ste: DArray<EventRingSte>,
+    pub ste: CoherentArray<EventRingSte>,
 }
 
 unsafe impl Send for EventRing {}
@@ -36,11 +37,11 @@ impl EventRing {
         }
 
         let mut ste = dma
-            .array_zero_with_align(segment_count, 64, DmaDirection::Bidirectional)
+            .coherent_array_zero_with_align(segment_count, 64)
             .map_err(|_| USBError::NoMemory)?;
 
         for (index, segment) in segments.iter().enumerate() {
-            ste.set(
+            ste.set_cpu(
                 index,
                 EventRingSte {
                     addr: segment.trbs.dma_addr().as_u64(),
@@ -115,7 +116,7 @@ impl EventRing {
     fn current_data(&self) -> super::ring::TrbData {
         self.current_segment()
             .trbs
-            .read(self.trb_index)
+            .read_cpu(self.trb_index)
             .expect("event ring TRB index out of bounds")
     }
 

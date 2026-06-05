@@ -15,7 +15,7 @@ pub fn enable_mmu() -> ! {
     }
 
     let mmu_entry_phys = super::entry::mmu_entry as *const () as usize;
-    let meta = crate::smp::cpu_meta(crate::smp::cpu_idx()).unwrap();
+    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
     let v_sp = meta.stack_top_virt;
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
@@ -106,43 +106,44 @@ fn setup_page_table() -> anyhow::Result<()> {
         }
     }
 
-    let v_start = __kimage_va(k_start);
+    let v_start = __kimage_va(k_start) as usize;
     let size = crate::mem::kimage_range().len().align_up(2 * MB);
 
-    print_mapping("KImage", v_start as _, k_start, size);
+    if !is_ram_alias(v_start, k_start) {
+        print_mapping("KImage", v_start, k_start, size);
 
-    table.map(&MapConfig {
-        vaddr: v_start.into(),
-        paddr: k_start.into(),
-        size,
-        pte: ram_pte,
-        allow_huge: true,
-        flush: false,
-    })?;
+        table.map(&MapConfig {
+            vaddr: v_start.into(),
+            paddr: k_start.into(),
+            size,
+            pte: ram_pte,
+            allow_huge: true,
+            flush: false,
+        })?;
+    }
 
     let percpu = crate::smp::percpu_range();
-    print_mapping(
-        "PerCpu",
-        __percpu(percpu.start) as _,
-        percpu.start,
-        percpu.len(),
-    );
+    let percpu_vstart = __percpu(percpu.start) as usize;
 
-    table.map(&MapConfig {
-        vaddr: __percpu(percpu.start).into(),
-        paddr: percpu.start.into(),
-        size: percpu.len(),
-        pte: PteConfig {
-            valid: true,
-            read: true,
-            writable: true,
-            executable: true,
-            mem_attr: MemAttributes::PerCpu,
-            ..Default::default()
-        },
-        allow_huge: true,
-        flush: false,
-    })?;
+    if !is_ram_alias(percpu_vstart, percpu.start) {
+        print_mapping("PerCpu", percpu_vstart, percpu.start, percpu.len());
+
+        table.map(&MapConfig {
+            vaddr: percpu_vstart.into(),
+            paddr: percpu.start.into(),
+            size: percpu.len(),
+            pte: PteConfig {
+                valid: true,
+                read: true,
+                writable: true,
+                executable: true,
+                mem_attr: MemAttributes::PerCpu,
+                ..Default::default()
+            },
+            allow_huge: true,
+            flush: false,
+        })?;
+    }
 
     let tb_addr = table.root_paddr();
     println!("Boot page table at physical address: {:#x}", tb_addr.raw());
@@ -155,4 +156,8 @@ fn setup_page_table() -> anyhow::Result<()> {
     };
 
     Ok(())
+}
+
+fn is_ram_alias(vaddr: usize, paddr: usize) -> bool {
+    vaddr == paddr || vaddr == __va(paddr) as usize
 }

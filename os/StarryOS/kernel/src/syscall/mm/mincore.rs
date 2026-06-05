@@ -9,8 +9,8 @@
 use alloc::vec;
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::paging::MappingFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use starry_vm::vm_write_slice;
 

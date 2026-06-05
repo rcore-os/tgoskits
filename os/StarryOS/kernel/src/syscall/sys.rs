@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
-use ax_config::ARCH;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_sync::Mutex;
@@ -16,6 +15,8 @@ use ringbuf::{
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
+#[cfg(target_arch = "riscv64")]
+use crate::mm::UserPtr;
 use crate::task::{AsThread, processes};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
@@ -95,9 +96,8 @@ impl SyslogState {
     }
 }
 
-lazy_static::lazy_static! {
-    static ref SYSLOG_STATE: Mutex<SyslogState> = Mutex::new(SyslogState::new());
-}
+static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
+    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
 /// Mirror of Linux kernel `uid_valid()` / `make_kuid()` rejection: any caller-
 /// supplied UID/GID of `(uid_t)-1` (`u32::MAX`) is invalid outside the NOCHG
@@ -110,37 +110,78 @@ fn uid_valid(id: u32) -> bool {
     id != NOCHG
 }
 
-/// man 2 setuid §NOTES: "If uid is different from the old effective UID, the
-/// process will be forbidden from leaving core dumps."  Linux clears
-/// `mm->dumpable` in `commit_creds()`; StarryOS keeps the flag on `ProcessData`
-/// (single mm per process). Called by every uid-setter that may change `euid`.
-fn maybe_clear_dumpable_on_euid_change(old_euid: u32, new_euid: u32) {
-    if old_euid != new_euid {
-        current().as_thread().proc_data.set_dumpable(0);
+/// Linux clears `mm->dumpable` from `commit_creds()` when effective or
+/// filesystem credentials change. StarryOS keeps this process-wide flag on
+/// `ProcessData`, so each credential setter checks the committed deltas.
+#[inline]
+fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bool {
+    old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
+}
+
+fn user_ns_overflow_uid() -> u32 {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    let ns = nsproxy.user_ns.lock();
+    if ns.is_root || ns.uid_mapped {
+        return 0;
     }
+    65534
+}
+
+fn user_ns_overflow_gid() -> u32 {
+    let curr = current();
+    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    let ns = nsproxy.user_ns.lock();
+    if ns.is_root || ns.gid_mapped {
+        return 0;
+    }
+    65534
 }
 
 pub fn sys_getuid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.uid as isize)
 }
 
 pub fn sys_geteuid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.euid as isize)
 }
 
 pub fn sys_getgid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_gid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.gid as isize)
 }
 
 pub fn sys_getegid() -> AxResult<isize> {
+    let overflow = user_ns_overflow_gid();
+    if overflow != 0 {
+        return Ok(overflow as isize);
+    }
     let cred = current().as_thread().cred();
     Ok(cred.egid as isize)
 }
 
 pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult<isize> {
+    let overflow = user_ns_overflow_uid();
+    if overflow != 0 {
+        ruid.vm_write(overflow)?;
+        euid.vm_write(overflow)?;
+        suid.vm_write(overflow)?;
+        return Ok(0);
+    }
     let cred = current().as_thread().cred();
     ruid.vm_write(cred.uid)?;
     euid.vm_write(cred.euid)?;
@@ -149,6 +190,13 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult
 }
 
 pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult<isize> {
+    let overflow = user_ns_overflow_gid();
+    if overflow != 0 {
+        rgid.vm_write(overflow)?;
+        egid.vm_write(overflow)?;
+        sgid.vm_write(overflow)?;
+        return Ok(0);
+    }
     let cred = current().as_thread().cred();
     rgid.vm_write(cred.gid)?;
     egid.vm_write(cred.egid)?;
@@ -201,8 +249,11 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
 
     // fsuid always tracks euid.
     new.fsuid = new.euid;
-    maybe_clear_dumpable_on_euid_change(old.euid, new.euid);
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -246,7 +297,11 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
     }
 
     new.fsgid = new.egid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -278,8 +333,11 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     }
 
     new.fsuid = new.euid;
-    maybe_clear_dumpable_on_euid_change(old.euid, new.euid);
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -306,7 +364,11 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
     }
 
     new.fsgid = new.egid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -352,8 +414,11 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
     }
 
     new.fsuid = new.euid;
-    maybe_clear_dumpable_on_euid_change(old.euid, new.euid);
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -391,7 +456,11 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
     }
 
     new.fsgid = new.egid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -431,13 +500,10 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
     if allowed {
         let mut new = (*old).clone();
         new.fsuid = fsuid;
+        let reset_dumpable = dumpable_should_reset(&old, &new);
         thread.set_cred(new);
-        // man 2 prctl PR_SET_DUMPABLE: dumpable is also reset to
-        // /proc/sys/fs/suid_dumpable (default 0) when filesystem uid changes.
-        // Without this, `PR_SET_DUMPABLE(1) -> setfsuid(new) -> PR_GET_DUMPABLE`
-        // would falsely return 1, breaking Linux semantics (ZR233 review #718).
-        if fsuid != prev_fsuid {
-            maybe_clear_dumpable_on_euid_change(prev_fsuid, fsuid);
+        if reset_dumpable {
+            thread.proc_data.set_dumpable(0);
         }
     }
     // Always return previous fsuid, even when the request was ignored.
@@ -464,11 +530,10 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
     if allowed {
         let mut new = (*old).clone();
         new.fsgid = fsgid;
+        let reset_dumpable = dumpable_should_reset(&old, &new);
         thread.set_cred(new);
-        // man 2 prctl PR_SET_DUMPABLE: dumpable is also reset when filesystem
-        // gid changes (ZR233 review #718, same as fsuid path above).
-        if fsgid != prev_fsgid {
-            maybe_clear_dumpable_on_euid_change(prev_fsgid, fsgid);
+        if reset_dumpable {
+            thread.proc_data.set_dumpable(0);
         }
     }
     Ok(prev_fsgid as isize)
@@ -502,6 +567,10 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     if !old.has_cap_setgid() {
         return Err(AxError::OperationNotPermitted);
     }
+    // Linux 3.19+: writing "deny" to /proc/self/setgroups prevents setgroups(2).
+    if thread.setgroups_deny() {
+        return Err(AxError::OperationNotPermitted);
+    }
     if size > NGROUPS_MAX {
         return Err(AxError::InvalidInput);
     }
@@ -523,34 +592,68 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     Ok(0)
 }
 
-const fn pad_str(info: &str) -> [c_char; 65] {
-    let mut data: [c_char; 65] = [0; 65];
-    // this needs #![feature(const_copy_from_slice)]
-    // data[..info.len()].copy_from_slice(info.as_bytes());
-    unsafe {
-        core::ptr::copy_nonoverlapping(info.as_ptr().cast(), data.as_mut_ptr(), info.len());
-    }
-    data
+pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
+    let curr = current();
+    // Build the utsname inside a block so the SpinNoIrq guard is dropped
+    // before we touch user memory via vm_write (access_user_memory requires
+    // IRQs enabled, but SpinNoIrq disables them).
+    let uts = {
+        let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+        let ns = nsproxy.uts_ns.lock();
+        axnsproxy::build_utsname(&ns)
+    };
+    name.vm_write(uts)?;
+    Ok(0)
 }
 
-const UTSNAME: new_utsname = new_utsname {
-    sysname: pad_str("Linux"),
-    nodename: pad_str("starry"),
-    release: pad_str("10.0.0"),
-    version: pad_str("10.0.0"),
-    machine: pad_str(ARCH),
-    domainname: pad_str("https://github.com/Starry-OS/StarryOS"),
-};
+pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
+    if len > 64 {
+        return Err(AxError::InvalidInput);
+    }
+    let curr = current();
+    if curr.as_thread().cred().euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
+    vm_read_slice(name.cast::<u8>(), &mut buf)?;
+    let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
+    let mut nodename: [c_char; 65] = [0; 65];
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), nodename.as_mut_ptr(), len);
+    }
+    let proc_data = &curr.as_thread().proc_data;
+    proc_data.nsproxy.lock().uts_ns.lock().nodename = nodename;
+    Ok(0)
+}
 
-pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
-    name.vm_write(UTSNAME)?;
+pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
+    if len > 64 {
+        return Err(AxError::InvalidInput);
+    }
+    let curr = current();
+    if curr.as_thread().cred().euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
+    vm_read_slice(name.cast::<u8>(), &mut buf)?;
+    let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
+    let mut domainname: [c_char; 65] = [0; 65];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr().cast::<c_char>(),
+            domainname.as_mut_ptr(),
+            len,
+        );
+    }
+    let proc_data = &curr.as_thread().proc_data;
+    proc_data.nsproxy.lock().uts_ns.lock().domainname = domainname;
     Ok(0)
 }
 
 pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
 
-    let total = ax_hal::mem::total_ram_size();
+    let total = ax_runtime::hal::mem::total_ram_size();
     let usages = ax_alloc::global_allocator().usages();
     let used = usages.get(ax_alloc::UsageKind::RustHeap)
         + usages.get(ax_alloc::UsageKind::VirtMem)
@@ -559,7 +662,7 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let free = total.saturating_sub(used);
-    let uptime = ax_hal::time::monotonic_time();
+    let uptime = ax_runtime::hal::time::monotonic_time();
 
     kinfo.uptime = uptime.as_secs() as _;
     kinfo.totalram = total as _;
@@ -701,5 +804,70 @@ pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> AxResult<isize> {
 #[cfg(target_arch = "riscv64")]
 pub fn sys_riscv_flush_icache() -> AxResult<isize> {
     riscv::asm::fence_i();
+    Ok(0)
+}
+
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct RiscvHwprobe {
+    key: i64,
+    value: u64,
+}
+
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_BASE_BEHAVIOR: i64 = 3;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_BASE_BEHAVIOR_IMA: u64 = 1 << 0;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_IMA_EXT_0: i64 = 4;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_IMA_FD: u64 = 1 << 0;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_IMA_C: u64 = 1 << 1;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_CPUPERF_0: i64 = 5;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF: i64 = 9;
+#[cfg(target_arch = "riscv64")]
+const RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF: i64 = 10;
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_hwprobe(
+    pairs: *mut u8,
+    pair_count: usize,
+    cpu_count: usize,
+    cpus: *const usize,
+    flags: u32,
+) -> AxResult<isize> {
+    if flags != 0 || cpu_count != 0 || !cpus.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    if pair_count == 0 {
+        return Ok(0);
+    }
+    if pair_count > isize::MAX as usize / core::mem::size_of::<RiscvHwprobe>() {
+        return Err(AxError::InvalidInput);
+    }
+
+    let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
+    for pair in pairs {
+        match pair.key {
+            RISCV_HWPROBE_KEY_BASE_BEHAVIOR => pair.value = RISCV_HWPROBE_BASE_BEHAVIOR_IMA,
+            RISCV_HWPROBE_KEY_IMA_EXT_0 => {
+                pair.value = RISCV_HWPROBE_IMA_FD | RISCV_HWPROBE_IMA_C;
+            }
+            RISCV_HWPROBE_KEY_CPUPERF_0
+            | RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF
+            | RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF => {
+                pair.value = 0;
+            }
+            _ => {
+                pair.key = -1;
+                pair.value = 0;
+            }
+        }
+    }
+
     Ok(0)
 }

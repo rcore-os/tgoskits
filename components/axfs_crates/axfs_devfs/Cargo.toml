@@ -3,7 +3,7 @@ name = "ax-fs-devfs"
 description = "Device filesystem used by ArceOS"
 keywords = ["arceos", "filesystem", "devfs"]
 edition.workspace = true
-version = "0.3.11"
+version = "0.3.12"
 repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 categories = ["os", "no-std", "filesystem"]
@@ -11,5 +11,5 @@ license = "Apache-2.0"
 
 [dependencies]
 ax-fs-vfs.workspace = true
-spin = "0.9"
+spin = { workspace = true }
 log = "0.4"

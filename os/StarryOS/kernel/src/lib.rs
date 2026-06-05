@@ -3,6 +3,7 @@
 
 #![no_std]
 #![feature(likely_unlikely)]
+#![feature(c_variadic)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -17,11 +18,14 @@ pub mod dyn_debug; // Re-export debug macros for use in other modules. It will o
 
 pub mod entry;
 
+mod cgroup;
 mod config;
+mod ebpf;
 mod file;
-#[cfg(feature = "kcov")]
-mod kcov;
+mod kmod;
+mod kprobe;
 mod mm;
+mod perf;
 mod pseudofs;
 mod stop_machine;
 mod syscall;

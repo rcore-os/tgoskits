@@ -28,6 +28,7 @@ fn main() {
         arch: Arch::from(arch.as_str()),
         out_dir,
         kernel_vaddr: 0x200000,
+        kernel_paddr: 0x200000,
         uspace,
         hv,
         page_size: 4096,
@@ -40,7 +41,6 @@ fn main() {
     } else if build.uspace {
         println!("cargo:rustc-cfg=uspace");
     }
-
     if build.page_size == 4096 {
         println!("cargo:rustc-cfg=page_size_4k");
     } else if build.page_size == 16384 {
@@ -74,6 +74,7 @@ struct Build {
     arch: Arch,
     out_dir: PathBuf,
     kernel_vaddr: u64,
+    kernel_paddr: u64,
     uspace: bool,
     hv: bool,
     page_size: usize,
@@ -158,10 +159,11 @@ impl Build {
     fn prepare_riscv64(&mut self) {
         let ld_src = "src/arch/riscv64/link.ld";
 
-        if self.uspace {
+        self.kernel_paddr = env_u64("SOMEBOOT_RISCV64_KERNEL_LOAD_PADDR").unwrap_or(0x8020_0000);
+        if self.uspace || self.hv {
             self.kernel_vaddr = 0xffff_ffff_8000_0000;
         } else {
-            self.kernel_vaddr = 0x8020_0000;
+            self.kernel_vaddr = self.kernel_paddr;
         }
 
         let kernel_load_vaddr = self.kernel_vaddr as usize;
@@ -176,13 +178,28 @@ impl Build {
 
     fn gen_defines(&self) {
         let kernel_load_vaddr = self.kernel_vaddr as usize;
+        let kernel_load_paddr = self.kernel_paddr as usize;
         let defines = quote::quote! {
             #[allow(dead_code)]
             pub const VM_LOAD_ADDRESS: usize = #kernel_load_vaddr;
+            #[allow(dead_code)]
+            pub const KERNEL_LOAD_ADDRESS: usize = #kernel_load_paddr;
         };
         let syntax_tree = syn::parse2(defines).unwrap();
         let formatted = prettyplease::unparse(&syntax_tree);
         let mut out_file = fs::File::create(self.out_dir.join("defines.rs")).unwrap();
         out_file.write_all(formatted.as_bytes()).unwrap();
+    }
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    println!("cargo:rerun-if-env-changed={name}");
+    let value = std::env::var(name).ok()?;
+    let value = value.replace('_', "");
+    let value = value.trim();
+    if let Some(hex) = value.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse().ok()
     }
 }

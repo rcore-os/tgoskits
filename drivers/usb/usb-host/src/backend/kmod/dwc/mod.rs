@@ -6,7 +6,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
-use dma_api::{DArray, DmaDirection};
+use dma_api::{ContiguousArray, DmaDirection};
 use event::EventBuffer;
 use futures::{FutureExt, future::BoxFuture};
 use reg::{GCTL, GEVNTSIZ, GHWPARAMS0, GHWPARAMS1, GHWPARAMS3, GHWPARAMS4, GUCTL1, GUSB2PHYCFG};
@@ -123,7 +123,7 @@ pub struct Dwc {
     revistion: u32,
     nr_scratch: u32,
     params: DwcParams,
-    scratchbuf: Option<DArray<u8>>,
+    scratchbuf: Option<ContiguousArray<u8>>,
 }
 
 impl Dwc {
@@ -506,20 +506,13 @@ impl Dwc {
 
         let scratchbuf = self
             .kernel()
-            .array_zero_with_align(
+            .contiguous_array_zero_with_align(
                 scratch_size,
                 self.kernel().page_size(),
                 DmaDirection::Bidirectional,
             )
             .map_err(|_| USBError::NoMemory)?;
-
-        // let scratchbuf = DVec::zeros(
-        //     self.xhci.dma_mask as _,
-        //     scratch_size,
-        //     page_size(),
-        //     dma_api::Direction::Bidirectional,
-        // )
-        // .map_err(|_| USBError::NoMemory)?;
+        scratchbuf.prepare_for_device_all();
 
         self.scratchbuf = Some(scratchbuf);
         debug!(

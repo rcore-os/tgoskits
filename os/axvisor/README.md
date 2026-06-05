@@ -77,7 +77,9 @@ Hardware platform configuration files are located in the `configs/board/` direct
 
 Guest configuration files are located in the `configs/vms/` directory, defining the runtime parameters of guests, including basic information, kernel configuration, memory regions, and device configuration details.
 
-The configuration file naming format is `<os>-<arch>-board_or_cpu-smpx`, where `<os>` is the guest system name (such as `arceos`, `linux`, `nimbos`), `<arch>` is the architecture (such as `aarch64`, `x86_64`, `riscv64`), `board_or_cpu` is the hardware development board or CPU name, and `smpx` is the number of CPUs allocated to the guest.
+Guest configs are organized by platform first. QEMU configs live under `configs/vms/qemu/<arch>/`, while board configs live under `configs/vms/<board>/`. File names keep only the guest system and variant, such as `configs/vms/qemu/aarch64/arceos-smp1.toml` or `configs/vms/roc-rk3568-pc/linux-smp1.toml`.
+
+On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps the legacy `axvm-bios` path and patches the generated multiboot info into the BIOS image, while `uefi` loads the external firmware from `uefi_firmware_path` without multiboot patching. Legacy UEFI configs that still use `bios_path` are accepted as a compatibility fallback. See `configs/vms/qemu/x86_64/linux-uefi-smp1.toml`, `configs/vms/qemu/x86_64/arceos-uefi-smp1.toml`, and the QEMU quickstart for the UEFI guest path.
 
 ## Compilation
 
@@ -90,8 +92,8 @@ AxVisor uses the xtask tool for build management, supporting multiple hardware p
 3. **Execute Build**: Use `cargo xtask build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask build --config configs/board/<board_name>.toml`.
 
 4. **Run on QEMU or Board**:
-   - QEMU: `cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/arceos-aarch64-qemu-smp1.toml`
-   - U-Boot board flow: `cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/arceos-aarch64-rk3568-smp1.toml`
+   - QEMU: `cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
+   - U-Boot board flow: `cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/roc-rk3568-pc/arceos-smp1.toml`
 
 For local bring-up, you can also use `./scripts/quick-start.sh` for the supported QEMU and board platforms. See the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for examples.
 

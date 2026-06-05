@@ -2,5 +2,6 @@ features = ["ax-std", "panic-path"]
 log = "Warn"
 max_cpu_num = 4
 
+plat_dyn = true
 [env]
 DWARF = "y"

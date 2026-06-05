@@ -50,6 +50,23 @@ impl Ext4FileSystem {
         self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
     }
 
+    fn set_recovery_state(&mut self) {
+        self.superblock.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    }
+
+    fn valid_lost_found_hint<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<bool> {
+        let ino = self.superblock.s_lpf_ino;
+        if ino == 0 {
+            return Ok(false);
+        }
+
+        let inode = self.get_inode_by_num(block_dev, InodeNumber::new(ino)?)?;
+        Ok(inode.i_mode != 0 && inode.is_dir())
+    }
+
     fn journal_blocks<B: BlockDevice>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -224,6 +241,8 @@ impl Ext4FileSystem {
                     // mounting from the recovered on-disk state.
                     fs.reload_after_journal_replay(block_dev)?;
                     fs.clear_recovery_state();
+                } else if block_dev.is_use_journal() {
+                    fs.set_recovery_state();
                 }
             }
             // If the filesystem was created without a journal (e.g. small images
@@ -236,7 +255,6 @@ impl Ext4FileSystem {
         }
 
         // rootinode check !
-        debug!("Checking root directory...");
         {
             let root_inode = fs.get_root(block_dev).map_err(|e| {
                 error!("Failed to load root inode: {e}");
@@ -254,30 +272,36 @@ impl Ext4FileSystem {
         }
 
         // Verify the recovery directory after the root directory is known good.
-        debug!("Checking lost+found directory...");
         {
-            // Trust the superblock hint when present, but still validate via a
-            // path lookup so stale metadata does not silently pass.
-            if fs.superblock.s_lpf_ino != 0 {
+            if fs.valid_lost_found_hint(block_dev)? {
                 let ino = fs.superblock.s_lpf_ino;
-                debug!("Lost+found inode recorded in superblock: {ino}");
+                info!("/lost+found exists (superblock hint inode={ino})");
             } else {
-                debug!("s_lpf_ino is 0, lost+found inode hint missing in superblock");
-            }
+                if fs.superblock.s_lpf_ino != 0 {
+                    let ino = fs.superblock.s_lpf_ino;
+                    warn!("s_lpf_ino={ino} is not a valid directory, falling back to path scan");
+                }
 
-            match find_file(&mut fs, block_dev, "/lost+found") {
-                Ok(_inode) => {
-                    info!("/lost+found exists (path resolution)");
-                }
-                Err(err) if err.code == Errno::ENOENT => {
-                    info!("/lost+found not found by path scan;will create!");
-                    if create_lost_found_directory(&mut fs, block_dev).is_err() {
-                        warn!("/lost+found missing and create failed");
+                match get_file_inode(&mut fs, block_dev, "/lost+found") {
+                    Ok(Some((ino, inode))) if inode.is_dir() => {
+                        fs.superblock.s_lpf_ino = ino.raw();
+                        fs.sync_superblock(block_dev)?;
+                        info!("/lost+found exists (path resolution, repaired hint inode={ino})");
                     }
-                }
-                Err(err) => {
-                    error!("Failed to resolve /lost+found: {err}");
-                    return Err(err);
+                    Ok(Some((_ino, _inode))) => {
+                        error!("/lost+found exists but is not a directory");
+                        return Err(Ext4Error::corrupted());
+                    }
+                    Ok(None) => {
+                        info!("/lost+found not found by path scan;will create!");
+                        if create_lost_found_directory(&mut fs, block_dev).is_err() {
+                            warn!("/lost+found missing and create failed");
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to resolve /lost+found: {err}");
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -310,9 +334,10 @@ impl Ext4FileSystem {
 
             if ext4_superblock_has_metadata_csum(&fs.superblock) {
                 if !g0.is_inode_bitmap_uninit() {
-                    let expected_inode =
+                    let stored_inode = g0.inode_bitmap_csum(&fs.superblock);
+                    let computed_inode =
                         ext4_inode_bitmap_csum32(&fs.superblock, &inode_bitmap_data.data);
-                    let stored_inode = g0.inode_bitmap_csum();
+                    let expected_inode = computed_inode;
                     if !g0.inode_bitmap_csum_matches(&fs.superblock, expected_inode) {
                         error!(
                             "Inode bitmap checksum mismatch group=0 expected={expected_inode:#x} \
@@ -326,9 +351,10 @@ impl Ext4FileSystem {
                 }
 
                 if !g0.is_block_bitmap_uninit() {
-                    let expected_block =
+                    let stored_block = g0.block_bitmap_csum(&fs.superblock);
+                    let computed_block =
                         ext4_block_bitmap_csum32(&fs.superblock, &blockbitmap_data.data);
-                    let stored_block = g0.block_bitmap_csum();
+                    let expected_block = computed_block;
                     if !g0.block_bitmap_csum_matches(&fs.superblock, expected_block) {
                         error!(
                             "Block bitmap checksum mismatch group=0 expected={expected_block:#x} \
@@ -389,6 +415,7 @@ impl Ext4FileSystem {
         // The superblock is written with EXT4_VALID_FS cleared so a later mount
         // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
         fs.sync_filesystem(block_dev)?;
+        block_dev.umount_commit();
 
         Ok(fs)
     }

@@ -43,7 +43,7 @@ flowchart TD
 
     starry["StarryOS<br/>os/StarryOS/"]
     axvisor["Axvisor<br/>os/axvisor/"]
-    platform["平台层<br/>platform/"]
+    platform["平台层<br/>platforms/"]
     tests["测试套件<br/>test-suit/"]
 
     components --> arceos
@@ -65,7 +65,7 @@ flowchart TD
 |------|------|------|
 | 组件层 | `components/` | 调度、内存、驱动、文件系统、网络、虚拟化等基础能力 |
 | 系统层 | `os/{arceos,starryos,axvisor}/` | 三套操作系统 / Hypervisor 的核心实现 |
-| 平台层 | `platform/`、`components/axplat_crates/` | 架构与板级适配 |
+| 平台层 | `platforms/` | 架构与板级适配 |
 | 测试层 | `test-suit/`、`scripts/test/` | 系统级 QEMU / 板级测试及主机端验证 |
 
 ## 目录结构
@@ -97,10 +97,11 @@ tgoskits/
 │       ├── src/               # HAL, VMM, Shell, 任务管理
 │       ├── configs/           # 板级 / VM / 测试配置
 │       └── xtask/             # Axvisor 专用构建任务
-├── platform/                  # 平台适配层
+├── platforms/                  # 平台适配层
 │   ├── axplat-dyn/            # 动态平台支持
-│   ├── riscv64-qemu-virt/     # RISC-V QEMU virt 平台
-│   └── x86-qemu-q35/          # x86 Q35 平台
+│   ├── ax-plat-riscv64-sg2002/ # RISC-V SG2002 静态平台
+│   ├── ax-plat-riscv64-visionfive2/ # RISC-V VisionFive2 静态平台
+│   └── ax-plat-x86-qemu-q35/  # x86 Q35 平台
 ├── drivers/                   # SoC 专用驱动（RK3588 时钟 / NPU / 电源管理）
 ├── test-suit/                 # 系统级测试套件
 │   ├── arceos/                # ArceOS（7 C + 18 Rust）
@@ -229,7 +230,7 @@ flowchart TD
 | 虚拟化抽象 | `axvm`（VM 管理）、`axvcpu`（vCPU 抽象）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
 | Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
-| 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/*.toml`）双层结构 |
+| 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |
 
 → 开发指南：[Axvisor 开发指南](/docs/development/axvisor) | 架构说明：[Axvisor 架构](/docs/architecture/axvisor)
 

@@ -24,6 +24,7 @@ use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeRef, VfsNodeType, VfsOps,
     VfsResult,
 };
+use ax_kspin::SpinNoIrq as Mutex;
 use rsext4::{
     Ext4Error, Ext4FileSystem as Rsext4FileSystem, Ext4Result, Ext4Timestamp, Jbd2Dev,
     api::{OpenFile, fs_mount, lseek, open, read_at},
@@ -32,7 +33,6 @@ use rsext4::{
     file::{delete_dir, is_dir_empty, mkfile, mv, truncate, unlink, write_file},
     loopfile::resolve_inode_block_allextend,
 };
-use spin::Mutex;
 
 use crate::dev::{Disk, Partition};
 
@@ -93,6 +93,12 @@ impl Ext4FileSystem {
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
 impl VfsOps for Ext4FileSystem {
+    fn umount(&self) -> VfsResult {
+        let mut fs = self.fs.lock();
+        let mut inner = self.inner.lock();
+        fs.umount(&mut inner).map_err(|_| VfsError::Io)
+    }
+
     fn root_dir(&self) -> VfsNodeRef {
         debug!("Get root_dir");
         Arc::new(FileWrapper::new(
@@ -105,6 +111,12 @@ impl VfsOps for Ext4FileSystem {
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
 impl VfsOps for Ext4FileSystemPartition {
+    fn umount(&self) -> VfsResult {
+        let mut fs = self.fs.lock();
+        let mut inner = self.inner.lock();
+        fs.umount(&mut inner).map_err(|_| VfsError::Io)
+    }
+
     fn root_dir(&self) -> VfsNodeRef {
         debug!("Get root_dir");
         Arc::new(FileWrapper::new(

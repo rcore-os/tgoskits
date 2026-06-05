@@ -65,7 +65,6 @@ graph LR
 - `smoltcp`
 
 ### 间接依赖
-- `ax-arm-pl011`
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-alloc`
@@ -75,8 +74,8 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
-- `ax-driver-base`
-- `axdriver_block`
+- `rdrive`
+- `rd-net`
 - 另外还有 `38` 个同类项未在此展开
 
 ### 3.3 被依赖情况

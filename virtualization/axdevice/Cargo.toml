@@ -1,0 +1,35 @@
+[package]
+name = "axdevice"
+version = "0.4.11"
+description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
+homepage = "https://github.com/arceos-hypervisor/axdevice"
+repository = "https://github.com/arceos-hypervisor/axdevice"
+keywords = ["hypervisor"]
+authors = ["Su Mingxian <aarkegz@gmail.com>"]
+documentation = "https://docs.rs/axdevice"
+categories = ["virtualization"]
+edition.workspace = true
+readme = "README.md"
+license = "Apache-2.0"
+
+[features]
+
+[dependencies]
+log = "0.4"
+cfg-if = "1.0"
+ax-kspin.workspace = true
+
+# System independent crates provided by ArceOS.
+ax-errno = { workspace = true }
+ax-memory-addr = { workspace = true }
+axdevice_base = { workspace = true }
+axvm-types = { workspace = true }
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+arm_vgic = { workspace = true, features = ["vgicv3"] }
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv_vplic = { workspace = true }
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_vlapic = { workspace = true }
+
+[dev-dependencies]
+ax-crate-interface = { workspace = true }

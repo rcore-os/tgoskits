@@ -1,8 +1,8 @@
 .macro _asm_extable, from, to
     .pushsection __ex_table, "a"
-    .balign 8
-    .quad \from
-    .quad \to
+    .balign 4
+    .long \from - .
+    .long \to - .
     .popsection
 .endm
 

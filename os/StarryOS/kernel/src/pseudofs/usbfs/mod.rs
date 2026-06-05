@@ -18,12 +18,12 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_sync::Mutex as BlockingMutex;
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
 use event_listener::Event as NotifyEvent;
-use spin::Mutex;
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use self::{irq::manager, manager::UsbFsManager, tree::UsbRootDir};
@@ -69,8 +69,8 @@ pub(crate) fn new_usbfs() -> LinuxResult<Filesystem> {
     Ok(create_filesystem(manager))
 }
 
-pub(crate) fn new_sysfs() -> Filesystem {
-    sysfs::new_sysfs()
+pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
+    sysfs::new_bus_usb_sysfs()
 }
 
 pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
@@ -98,7 +98,7 @@ pub(crate) fn open_usbfs_file(
         lease: BlockingMutex::new(None),
         lifecycle_lock: BlockingMutex::new(()),
         claimed_interfaces: Mutex::new(Default::default()),
-        submitted_urbs: Arc::new(Mutex::new(VecDeque::new())),
+        submitted_urbs: Arc::new(BlockingMutex::new(VecDeque::new())),
         pending_urbs: Arc::new(Mutex::new(VecDeque::new())),
         poll_urbs: Arc::new(PollSet::new()),
         urb_worker: Arc::new(UrbWorker::new()),
@@ -117,7 +117,7 @@ struct UsbDeviceFile {
     lease: BlockingMutex<Option<Arc<manager::UsbDeviceLease>>>,
     lifecycle_lock: BlockingMutex<()>,
     claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
-    submitted_urbs: Arc<Mutex<VecDeque<SubmittedUrb>>>,
+    submitted_urbs: Arc<BlockingMutex<VecDeque<SubmittedUrb>>>,
     pending_urbs: Arc<Mutex<VecDeque<CompletedUrb>>>,
     poll_urbs: Arc<PollSet>,
     urb_worker: Arc<UrbWorker>,
@@ -1348,7 +1348,7 @@ fn cleanup_submitted_urbs(
     mut submitted_urbs: Vec<SubmittedUrb>,
     timeout: Option<Duration>,
 ) -> Vec<SubmittedUrb> {
-    let deadline = timeout.map(|timeout| ax_hal::time::wall_time() + timeout);
+    let deadline = timeout.map(|timeout| ax_runtime::hal::time::wall_time() + timeout);
     for submitted in &submitted_urbs {
         if let Err(err) = submitted.cancel() {
             debug!(
@@ -1376,7 +1376,7 @@ fn cleanup_submitted_urbs(
         }
 
         if !submitted_urbs.is_empty() {
-            if deadline.is_some_and(|deadline| ax_hal::time::wall_time() >= deadline) {
+            if deadline.is_some_and(|deadline| ax_runtime::hal::time::wall_time() >= deadline) {
                 break;
             }
             ax_task::sleep(Duration::from_millis(1));

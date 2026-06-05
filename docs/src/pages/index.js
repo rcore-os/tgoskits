@@ -186,7 +186,7 @@ function SystemsDiagram({ systems }) {
       </div>
       <div className="systems-diagram__foundation">
         <strong>共享组件基础层</strong>
-        <code>components/ · ax* crates · starry-* · drivers/ · platform/</code>
+        <code>components/ · ax* crates · starry-* · drivers/ · platforms/</code>
       </div>
     </div>
   );
@@ -659,7 +659,7 @@ function QualitySection() {
   const lanes = [
     { title: 'Host 侧组件验证', desc: '在宿主机上直接执行标准库测试与 clippy 静态检查，秒级反馈，无需交叉编译。', items: ['cargo test -p <crate>', 'cargo xtask clippy', 'cargo xtask test'] },
     { title: 'QEMU 系统级验证', desc: '构建目标系统镜像后在 QEMU 中运行，验证 syscall、进程管理、设备驱动等系统级行为。', items: ['ArceOS example 运行检查', 'StarryOS rootfs + shell 启动', 'Axvisor Guest 引导与交互'] },
-    { title: '板级场景回归', desc: '变更涉及平台适配或跨系统共享组件时，在物理板卡上执行端到端回归测试，确认硬件行为一致。', items: ['platform/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 变更的多系统影响面检查'] },
+    { title: '板级场景回归', desc: '变更涉及平台适配或跨系统共享组件时，在物理板卡上执行端到端回归测试，确认硬件行为一致。', items: ['platforms/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 变更的多系统影响面检查'] },
   ];
 
   return (
@@ -738,17 +738,19 @@ function PlatformSection() {
 /* ── Driver Section ──────────────────────────────────────── */
 function DriverSection() {
   const driverCategories = [
-    { icon: 'server', title: '块设备驱动', desc: 'SD/MMC 存储支持', cssClass: 'blk', items: ['simple-sdmmc'] },
+    { icon: 'server', title: '块设备驱动', desc: 'SD/MMC 存储支持', cssClass: 'blk', items: ['sdhci-host', 'dwmmc-host', 'sdmmc-protocol'] },
     { icon: 'chip', title: 'NPU 驱动', desc: '神经网络加速', cssClass: 'npu', items: ['rockchip-npu'] },
     { icon: 'layers', title: 'PCI 总线驱动', desc: 'PCIe 控制器适配', cssClass: 'pci', items: ['rk3588-pci'] },
     { icon: 'grid', title: 'SoC 平台驱动', desc: '片上系统外设', cssClass: 'soc', items: ['rockchip (GPIO, clk, reset)'] },
   ];
 
   const driverSubsystems = [
-    { name: 'block', label: '块设备' }, { name: 'display', label: '显示' },
-    { name: 'input', label: '输入' }, { name: 'net', label: '网络' },
-    { name: 'pci', label: 'PCI 总线' }, { name: 'virtio', label: 'VirtIO' },
-    { name: 'vsock', label: '虚拟 Socket' }, { name: 'base', label: '驱动基础层' },
+    { name: 'rdif-block', label: '块设备' },
+    { name: 'rd-net', label: '网络' },
+    { name: 'rdif-display', label: '显示' },
+    { name: 'rdif-input', label: '输入' },
+    { name: 'rdif-vsock', label: '虚拟 Socket' },
+    { name: 'rdrive', label: '设备注册' },
   ];
 
   return (
@@ -780,11 +782,11 @@ function DriverSection() {
         </div>
         <div className="driver-subsystem-panel">
           <h3>驱动子系统抽象</h3>
-          <p className="driver-subtitle">axdriver_crates 提供的通用驱动接口层</p>
+          <p className="driver-subtitle">rdrive 与 RDIF 提供的通用驱动能力层</p>
           <div className="driver-subsystem-grid">
             {driverSubsystems.map((sub) => (
               <div className="driver-subsystem-chip" key={sub.name}>
-                <code>axdriver_{sub.name}</code>
+                <code>{sub.name}</code>
                 <span>{sub.label}</span>
               </div>
             ))}

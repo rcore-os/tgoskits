@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.8...axbuild-v0.4.9) - 2026-06-03
+
+### Added
+
+- *(starry-kernel)* port LKM loader + cargo xtask starry kmod build ([#851](https://github.com/rcore-os/tgoskits/pull/851))
+- *(axbuild)* support Starry QEMU apps ([#1078](https://github.com/rcore-os/tgoskits/pull/1078))
+- *(starry-kernel)* support waitid P_PGID ([#1032](https://github.com/rcore-os/tgoskits/pull/1032))
+- *(starryos)* add QEMU K230 boot support ([#1046](https://github.com/rcore-os/tgoskits/pull/1046))
+- *(qperf)* TCG hotspot profiling tool for StarryOS ([#940](https://github.com/rcore-os/tgoskits/pull/940))
+- *(axtask)* replace PREV_TASK Weak<AxTask> with raw pointer ([#996](https://github.com/rcore-os/tgoskits/pull/996))
+- *(riscv64)* support dynamic platform on QEMU and SG2002 ([#961](https://github.com/rcore-os/tgoskits/pull/961))
+- *(starry)* add SG2002 board boot support ([#834](https://github.com/rcore-os/tgoskits/pull/834))
+
+### Fixed
+
+- *(axbacktrace)* harden correctness, optimize allocation, and add per-arch IP adjustment ([#1029](https://github.com/rcore-os/tgoskits/pull/1029))
+- *(starry)* add loongarch64 to_bin support and rename test case ([#1025](https://github.com/rcore-os/tgoskits/pull/1025))
+- *(arceos)* address lockdep test issues ([#1009](https://github.com/rcore-os/tgoskits/pull/1009))
+- *(axbuild)* use target spec stem as rustflags config key ([#1023](https://github.com/rcore-os/tgoskits/pull/1023))
+- *(starry)* abort test run on first failure ([#983](https://github.com/rcore-os/tgoskits/pull/983))
+- *(ci)* stabilize Starry LoongArch apk-curl test ([#959](https://github.com/rcore-os/tgoskits/pull/959))
+- *(axbuild)* skip disabled grouped C subcases ([#942](https://github.com/rcore-os/tgoskits/pull/942))
+- *(ax-task)* preempt on async wake, guard wait queue against double-enqueue ([#912](https://github.com/rcore-os/tgoskits/pull/912))
+- *(starry)* repair SG2002 CI build ([#929](https://github.com/rcore-os/tgoskits/pull/929))
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+
+### Other
+
+- *(platform)* migrate riscv64 qemu to dynamic platform ([#1085](https://github.com/rcore-os/tgoskits/pull/1085))
+- *(platform)* remove static aarch64 platforms ([#1074](https://github.com/rcore-os/tgoskits/pull/1074))
+- *(linker)* layer platform runtime and final scripts ([#1075](https://github.com/rcore-os/tgoskits/pull/1075))
+- *(axvisor)* reorganize VM configs into platform-first directory structure ([#1063](https://github.com/rcore-os/tgoskits/pull/1063))
+- *(ci)* bump Rust toolchain to nightly-2026-05-28 and fix clippy ([#1027](https://github.com/rcore-os/tgoskits/pull/1027))
+- [AxVisor] add x86_64 UEFI guest support ([#760](https://github.com/rcore-os/tgoskits/pull/760))
+- *(starry-kernel)* add memtrack alloc backtrace e2e ([#1020](https://github.com/rcore-os/tgoskits/pull/1020))
+- *(rdif-block)* switch block drivers to submit poll ([#976](https://github.com/rcore-os/tgoskits/pull/976))
+- Implement platform-specific IRQ handling and architecture setup ([#979](https://github.com/rcore-os/tgoskits/pull/979))
+- Adds support for kernel symbol dumping via kallsyms ([#837](https://github.com/rcore-os/tgoskits/pull/837))
+- *(starry)* route HAL access through ax-runtime ([#963](https://github.com/rcore-os/tgoskits/pull/963))
+- Revert "fix(ax-task): preempt on async wake, guard wait queue against double-…" ([#939](https://github.com/rcore-os/tgoskits/pull/939))
+- *(axbuild)* remove unused feature toggles ([#933](https://github.com/rcore-os/tgoskits/pull/933))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+- *(axbuild)* use target JSON specs for kernel builds ([#839](https://github.com/rcore-os/tgoskits/pull/839))
+
 ## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.7...axbuild-v0.4.8) - 2026-05-22
 
 ### Added

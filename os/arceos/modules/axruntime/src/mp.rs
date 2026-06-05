@@ -124,8 +124,21 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 /// It is called from the bootstrapping code in the specific platform crate.
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
+    // Park harts whose logical index is beyond the compile-time CPU count: QEMU
+    // may start more harts (`-smp M`) than the kernel was built for
+    // (`MAX_CPU_NUM == N`). Mirror Linux — run on the first N CPUs and park the
+    // excess, rather than panicking in `percpu::init_secondary(cpu_id)` /
+    // `AxCpuMask::one_shot(cpu_id)` / `RUN_QUEUES[cpu_id]`, which all assert
+    // `index < MAX_CPU_NUM`. Must precede `init_secondary`, which would otherwise
+    // mis-index the per-CPU area first.
+    if cpu_id >= MAX_CPU_NUM {
+        loop {
+            ax_hal::asm::wait_for_irqs();
+        }
+    }
     ax_hal::percpu::init_secondary(cpu_id);
-    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
+    // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 
@@ -154,10 +167,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     }
 
     #[cfg(feature = "irq")]
-    ax_hal::asm::enable_irqs();
+    super::init_percpu_irq(cpu_id);
 
     #[cfg(feature = "irq")]
-    ax_hal::time::set_oneshot_timer(100);
+    ax_hal::asm::enable_irqs();
+
+    #[cfg(all(feature = "irq", feature = "ipi"))]
+    ax_ipi::mark_current_cpu_ready();
 
     #[cfg(all(feature = "tls", not(feature = "multitask")))]
     super::init_tls();

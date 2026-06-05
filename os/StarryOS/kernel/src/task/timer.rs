@@ -3,14 +3,14 @@
 use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
 use core::{mem, time::Duration};
 
-use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
+use ax_kspin::SpinNoIrq as Mutex;
+use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_task::{
     WeakAxTaskRef, current,
     future::{block_on, timeout_at},
 };
 use event_listener::{Event, listener};
-use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
@@ -51,10 +51,9 @@ impl Ord for Entry {
     }
 }
 
-lazy_static! {
-    static ref ALARM_LIST: Mutex<BinaryHeap<Entry>> = Mutex::new(BinaryHeap::new());
-    static ref EVENT_NEW_TIMER: Event = Event::new();
-}
+static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> =
+    LazyLock::new(|| Mutex::new(BinaryHeap::new()));
+static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
 
 /// The type of interval timer.
 #[repr(i32)]

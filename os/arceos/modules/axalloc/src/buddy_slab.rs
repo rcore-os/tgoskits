@@ -178,10 +178,12 @@ impl GlobalAllocator {
 
     /// Gives back the allocated region to the byte allocator.
     pub fn dealloc(&self, pos: NonNull<u8>, layout: Layout) {
+        // Lock order: inner then usages (consistent with alloc/alloc_pages).
+        // Guards are temporary — locks are never held simultaneously.
+        unsafe { self.inner.lock().dealloc(pos, layout) };
         self.usages
             .lock()
             .dealloc(UsageKind::RustHeap, layout.size());
-        unsafe { self.inner.lock().dealloc(pos, layout) };
     }
 
     /// Allocates contiguous pages.
@@ -191,15 +193,30 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let result = self
-            .inner
-            .lock()
-            .alloc_pages(num_pages, alignment)
-            .map_err(crate::AllocError::from);
-        if result.is_ok() {
-            self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        let mut result = self.inner.lock().alloc_pages(num_pages, alignment);
+        if result.is_err() {
+            for _ in 0..4 {
+                // Reclaim num_pages (at least 16 to build free-pool headroom).
+                // page_cache_reclaim doubles this target internally.
+                // NOTE: for very large contiguous requests, reclaimed pages
+                // may be too fragmented to satisfy the allocation even when
+                // the target is met.  Consider geometric growth across retries
+                // if this becomes a problem in practice.
+                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
+                // Retry allocation regardless of whether reclaim ran;
+                // concurrent reclaim may have freed pages.
+                result = self.inner.lock().alloc_pages(num_pages, alignment);
+                if result.is_ok() {
+                    break;
+                }
+                if reclaimed == 0 {
+                    break;
+                }
+            }
         }
-        result
+        let addr = result.map_err(crate::AllocError::from)?;
+        self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        Ok(addr)
     }
 
     /// Allocates contiguous low-memory pages (physical address < 4 GiB).
@@ -209,15 +226,22 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let result = self
-            .inner
-            .lock()
-            .alloc_pages_lowmem(num_pages, alignment)
-            .map_err(crate::AllocError::from);
-        if result.is_ok() {
-            self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        let mut result = self.inner.lock().alloc_pages_lowmem(num_pages, alignment);
+        if result.is_err() {
+            for _ in 0..4 {
+                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
+                result = self.inner.lock().alloc_pages_lowmem(num_pages, alignment);
+                if result.is_ok() {
+                    break;
+                }
+                if reclaimed == 0 {
+                    break;
+                }
+            }
         }
-        result
+        let addr = result.map_err(crate::AllocError::from)?;
+        self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        Ok(addr)
     }
 
     /// Allocates contiguous pages starting from the given address.
@@ -233,8 +257,10 @@ impl GlobalAllocator {
 
     /// Gives back the allocated pages starts from `pos` to the page allocator.
     pub fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
-        self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
+        // Lock order: inner then usages (consistent with alloc_pages).
+        // Guards are temporary — locks are never held simultaneously.
         self.inner.lock().dealloc_pages(pos, num_pages);
+        self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
     }
 
     /// Returns the number of allocated bytes in the allocator backend.
@@ -346,6 +372,9 @@ pub fn global_allocator() -> &'static GlobalAllocator {
 }
 
 /// Initializes the per-CPU slab for the current CPU.
+///
+/// Must run after per-CPU storage is initialized and before scheduler, IPI, or
+/// IRQ paths can allocate on this CPU.
 pub fn init_percpu_slab(cpu_id: usize) {
     PERCPU_SLAB.with_current(|slab| slab.init(cpu_id));
 }

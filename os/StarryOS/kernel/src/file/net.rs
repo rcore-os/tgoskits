@@ -16,18 +16,28 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     ioctl::{
-        SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS, SIOCGIFHWADDR,
-        SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK, SIOCGIFTXQLEN,
+        FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
+        SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
+        SIOCGIFTXQLEN,
     },
     net::{AF_INET, ifreq},
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
 use super::{FileLike, Kstat};
-use crate::file::{IoDst, IoSrc, get_file_like};
+use crate::{
+    file::{IoDst, IoSrc, get_file_like},
+    syscall::in_root_net_ns,
+};
 
+/// Real eth0 MAC address. Uses the QEMU default; TODO: query
+/// `EthernetDriver::mac_address()` from axnet at init time once the API is
+/// exposed, then replace this with a `static` or `LazyLock`.
+pub const ETH0_REAL_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+
+pub(super) const ETH0_IFINDEX: i32 = 2;
+pub(super) const LO_IFINDEX: i32 = 1;
 const ETH0_NAME: &[u8] = b"eth0";
-const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const LO_NAME: &[u8] = b"lo";
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
@@ -102,7 +112,12 @@ fn read_ifreq_interface(arg: usize) -> AxResult<NetInterface> {
     let name = read_user_bytes::<IFREQ_NAME_LEN>(arg as *const u8)?;
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     match &name[..end] {
-        ETH0_NAME => Ok(NetInterface::Eth0),
+        ETH0_NAME => {
+            if !in_root_net_ns() {
+                return Err(AxError::NoSuchDevice);
+            }
+            Ok(NetInterface::Eth0)
+        }
         LO_NAME => Ok(NetInterface::Loopback),
         _ => Err(AxError::NoSuchDevice),
     }
@@ -146,7 +161,7 @@ fn write_eth0_ifconf(arg: usize) -> AxResult<()> {
 
     if buf != 0 {
         let mut written = 0;
-        if ifc_len >= IFREQ_COMPAT_LEN as i32 {
+        if in_root_net_ns() && ifc_len >= IFREQ_COMPAT_LEN as i32 {
             write_ifconf_entry(buf, written, ETH0_NAME, configured_eth0_ipv4())?;
             written += IFREQ_COMPAT_LEN;
         }
@@ -156,7 +171,12 @@ fn write_eth0_ifconf(arg: usize) -> AxResult<()> {
         }
         len = (written as i32).to_ne_bytes();
     } else {
-        len = 0i32.to_ne_bytes();
+        // SIOCGIFCONF sizing call (ifc_buf == NULL): Linux's dev_ifconf returns
+        // the number of bytes needed to hold all interfaces so the caller can
+        // size its buffer. Returning 0 made OpenJDK's
+        // NetworkInterface.enumIPv4Interfaces malloc a 0-byte buffer and find no
+        // interfaces. Report space for eth0 + lo.
+        len = (2 * IFREQ_COMPAT_LEN as i32).to_ne_bytes();
     }
     vm_write_slice((arg + IFCONF_LEN_OFFSET) as *mut u8, &len)?;
     Ok(())
@@ -232,6 +252,10 @@ impl FileLike for Socket {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         match cmd {
+            FIONREAD => {
+                let available = self.inner.recv_available()?.min(c_int::MAX as usize) as c_int;
+                (arg as *mut c_int).vm_write(available)?;
+            }
             SIOCGIFCONF => write_eth0_ifconf(arg)?,
             SIOCGIFFLAGS => {
                 let flags = match read_ifreq_interface(arg)? {
@@ -273,7 +297,7 @@ impl FileLike for Socket {
                 write_ifreq_sockaddr(arg, addr)?;
             }
             SIOCGIFHWADDR => match read_ifreq_interface(arg)? {
-                NetInterface::Eth0 => write_ifreq_hwaddr(arg, ARPHRD_ETHER, &ETH0_HWADDR)?,
+                NetInterface::Eth0 => write_ifreq_hwaddr(arg, ARPHRD_ETHER, &ETH0_REAL_MAC)?,
                 NetInterface::Loopback => write_ifreq_hwaddr(arg, ARPHRD_LOOPBACK, &[])?,
             },
             SIOCGIFMTU => {
@@ -295,6 +319,13 @@ impl FileLike for Socket {
                 read_ifreq_interface(arg)?;
                 let qlen_ptr = (arg + offset_of!(ifreq, ifr_ifru)) as *mut i32;
                 qlen_ptr.vm_write(1000)?;
+            }
+            SIOCGIFINDEX => {
+                let idx = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => ETH0_IFINDEX,
+                    NetInterface::Loopback => LO_IFINDEX,
+                };
+                write_ifreq_data(arg, &idx.to_ne_bytes())?;
             }
             _ => return Err(AxError::NotATty),
         }

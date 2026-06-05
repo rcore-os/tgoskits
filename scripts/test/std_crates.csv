@@ -1,6 +1,5 @@
 package
 aarch64_sysreg
-ax-arm-pl011
 ax-arm-pl031
 arm_vgic
 axaddrspace
@@ -22,12 +21,12 @@ bitmap-allocator
 ax-cap-access
 ax-cpumask
 ax-handler-table
+irq-framework
 ax-int-ratio
 ax-kernel-guard
 ax-kspin
 ax-lazyinit
 ax-linked-list-r4l
-range-alloc-arceos
 riscv-h
 ax-riscv-plic
 riscv_vplic

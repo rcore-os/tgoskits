@@ -14,7 +14,7 @@
 
 //! This build script reads config file paths from the `AXVISOR_VM_CONFIGS` environment variable,
 //! reads them, and then outputs them to `$(OUT_DIR)/vm_configs.rs` to be used by
-//! `src/vmm/config.rs`.
+//! `src/runtime/config.rs`.
 //!
 //! The `AXVISOR_VM_CONFIGS` environment variable should follow the format convention for the `PATH`
 //! environment variable on the building platform, i.e., paths are separated by colons (`:`) on
@@ -24,7 +24,7 @@
 //! `Vec<&'static str>` containing the contents of the configuration files.
 //!
 //! If the `AXVISOR_VM_CONFIGS` environment variable is not set, `static_vm_configs` will call the
-//! `default_static_vm_configs` function from `src/vmm/config.rs` to return the default
+//! `default_static_vm_configs` function from `src/runtime/config.rs` to return the default
 //! configurations.
 //!
 //! If the `AXVISOR_VM_CONFIGS` environment variable is set but the configuration files cannot be
@@ -45,8 +45,19 @@ use std::{
 };
 
 use anyhow::Context;
-use quote::quote;
+use quote::{ToTokens, quote};
+use syn::LitStr;
 use toml::Table;
+
+fn fallback_platform_for_arch(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64-generic",
+        "loongarch64" => "loongarch64-qemu-virt",
+        "x86_64" => "x86-qemu-q35",
+        "riscv64" => "riscv64-plat-dyn",
+        _ => "dummy",
+    }
+}
 
 /// A configuration file that has been read from disk.
 struct ConfigFile {
@@ -89,7 +100,7 @@ fn get_configs() -> Result<Vec<ConfigFile>, String> {
 ///
 /// Returns the file handle.
 fn open_output_file() -> fs::File {
-    let output_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let output_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo"));
     let output_file = output_dir.join("vm_configs.rs");
 
     fs::OpenOptions::new()
@@ -97,13 +108,17 @@ fn open_output_file() -> fs::File {
         .create(true)
         .truncate(true)
         .open(output_file)
-        .unwrap()
+        .expect("failed to open generated vm_configs.rs")
 }
 
 // Convert relative path to absolute path
 fn convert_to_absolute(configs_path: impl AsRef<Path>, path: &str) -> PathBuf {
     let path = Path::new(path);
-    let configs_path = configs_path.as_ref().parent().unwrap().join(path);
+    let configs_path = configs_path
+        .as_ref()
+        .parent()
+        .map(|parent| parent.join(path))
+        .unwrap_or_else(|| path.to_path_buf());
     if path.is_relative() {
         fs::canonicalize(configs_path).unwrap_or_else(|_| path.to_path_buf())
     } else {
@@ -119,11 +134,27 @@ struct MemoryImage {
     pub ramdisk: Option<PathBuf>,
 }
 
+fn boot_firmware_path(kernel_config: &Table, enable_bios: bool) -> Option<&str> {
+    if !enable_bios {
+        return None;
+    }
+
+    let bios_path = || kernel_config.get("bios_path").and_then(|v| v.as_str());
+    let uefi_firmware_path = || {
+        kernel_config
+            .get("uefi_firmware_path")
+            .and_then(|v| v.as_str())
+    };
+
+    match kernel_config.get("boot_protocol").and_then(|v| v.as_str()) {
+        Some("uefi" | "efi") => uefi_firmware_path().or_else(bios_path),
+        Some("direct" | "kernel") => None,
+        _ => bios_path(),
+    }
+}
+
 fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
-    let config = config_file
-        .content
-        .parse::<Table>()
-        .expect("failed to parse config file");
+    let config = config_file.content.parse::<Table>().ok()?;
 
     let id = config.get("base")?.as_table()?.get("id")?.as_integer()? as usize;
 
@@ -137,7 +168,7 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
 
     let kernel_path = config.get("kernel")?.as_table()?.get("kernel_path")?;
 
-    let kernel = convert_to_absolute(&config_file.path, kernel_path.as_str().unwrap());
+    let kernel = convert_to_absolute(&config_file.path, kernel_path.as_str()?);
 
     let dtb = config
         .get("kernel")?
@@ -153,20 +184,12 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let bios = if enable_bios {
-        config
-            .get("kernel")?
-            .as_table()?
-            .get("bios_path")
-            .and_then(|v| v.as_str())
-            .map(|v| convert_to_absolute(&config_file.path, v))
-    } else {
-        None
-    };
+    let kernel_config = config.get("kernel")?.as_table()?;
 
-    let ramdisk = config
-        .get("kernel")?
-        .as_table()?
+    let bios = boot_firmware_path(kernel_config, enable_bios)
+        .map(|v| convert_to_absolute(&config_file.path, v));
+
+    let ramdisk = kernel_config
         .get("ramdisk_path")
         .and_then(|v| v.as_str())
         .map(|v| convert_to_absolute(&config_file.path, v));
@@ -199,7 +222,11 @@ fn generate_guest_img_loading_functions(
                 .to_string();
             let dtb = match files.dtb {
                 Some(v) => {
-                    let s = v.canonicalize().unwrap().display().to_string();
+                    let s = v
+                        .canonicalize()
+                        .with_context(|| format!("Path {} not found", v.display()))?
+                        .display()
+                        .to_string();
                     quote! { Some(include_bytes!(#s)) }
                 }
                 None => quote! { None },
@@ -207,7 +234,11 @@ fn generate_guest_img_loading_functions(
 
             let bios = match files.bios {
                 Some(v) => {
-                    let s = v.canonicalize().unwrap().display().to_string();
+                    let s = v
+                        .canonicalize()
+                        .with_context(|| format!("Path {} not found", v.display()))?
+                        .display()
+                        .to_string();
                     quote! { Some(include_bytes!(#s)) }
                 }
                 None => quote! { None },
@@ -215,7 +246,11 @@ fn generate_guest_img_loading_functions(
 
             let ramdisk = match files.ramdisk {
                 Some(v) => {
-                    let s = v.canonicalize().unwrap().display().to_string();
+                    let s = v
+                        .canonicalize()
+                        .with_context(|| format!("Path {} not found", v.display()))?
+                        .display()
+                        .to_string();
                     quote! { Some(include_bytes!(#s)) }
                 }
                 None => quote! { None },
@@ -255,7 +290,7 @@ fn generate_guest_img_loading_functions(
             ]
         }
     };
-    let syntax_tree = syn::parse2(output).unwrap();
+    let syntax_tree = syn::parse2(output)?;
     let formatted = prettyplease::unparse(&syntax_tree);
     out_file.write_all(formatted.as_bytes())?;
 
@@ -263,21 +298,20 @@ fn generate_guest_img_loading_functions(
 }
 
 fn main() -> anyhow::Result<()> {
-    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    println!("cargo:rerun-if-changed=linker.ld");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
+    let linker = out_dir.join("linker.x");
+    fs::write(&linker, include_str!("linker.ld"))?;
+    println!("cargo:rustc-link-search={}", out_dir.display());
+    fs::write(
+        out_dir.join("../../..").join("linker.x"),
+        include_str!("linker.ld"),
+    )?;
 
-    // let platform = env::var("AX_PLATFORM").unwrap_or("".to_string());
+    let arch =
+        std::env::var("CARGO_CFG_TARGET_ARCH").context("CARGO_CFG_TARGET_ARCH is not set")?;
 
-    let platform = if arch == "aarch64" {
-        "aarch64-generic".to_string()
-    } else if arch == "loongarch64" {
-        "loongarch64-qemu-virt".to_string()
-    } else if arch == "x86_64" {
-        "x86-qemu-q35".to_string()
-    } else if arch == "riscv64" {
-        "riscv64-qemu-virt".to_string()
-    } else {
-        "dummy".to_string()
-    };
+    let platform = fallback_platform_for_arch(&arch);
 
     println!("cargo:rustc-cfg=platform=\"{platform}\"");
 
@@ -306,7 +340,8 @@ fn main() -> anyhow::Result<()> {
             } else {
                 writeln!(output_file, "    vec![")?;
                 for config_file in &config_files {
-                    writeln!(output_file, "        r###\"{}\"###,", config_file.content)?;
+                    let content = LitStr::new(&config_file.content, proc_macro2::Span::call_site());
+                    writeln!(output_file, "        {},", content.to_token_stream())?;
                 }
                 writeln!(output_file, "    ]")?;
             }

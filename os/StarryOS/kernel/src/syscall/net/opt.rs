@@ -89,27 +89,45 @@ macro_rules! call_dispatch {
 
         call_dispatch! {
             $dispatch, $pat,
+            // ---- Implemented socket options ----
             (SOL_SOCKET, SO_REUSEADDR) => ReuseAddress as IntBool,
             (SOL_SOCKET, SO_ERROR) => Error,
-            (SOL_SOCKET, SO_DONTROUTE) => DontRoute as IntBool,
-            (SOL_SOCKET, SO_SNDBUF) => SendBuffer as Int<usize>,
-            (SOL_SOCKET, SO_RCVBUF) => ReceiveBuffer as Int<usize>,
+            (SOL_SOCKET, SO_DONTROUTE) => DontRoute as IntBool,   // stored but routing logic ignores it
+            (SOL_SOCKET, SO_SNDBUF) => SendBuffer as Int<usize>,  // TODO: set is no-op, smoltcp uses fixed buffer
+            (SOL_SOCKET, SO_RCVBUF) => ReceiveBuffer as Int<usize>,// TODO: set is no-op, smoltcp uses fixed buffer
             (SOL_SOCKET, SO_KEEPALIVE) => KeepAlive as IntBool,
             (SOL_SOCKET, SO_RCVTIMEO) => ReceiveTimeout as Duration,
             (SOL_SOCKET, SO_SNDTIMEO) => SendTimeout as Duration,
-            (SOL_SOCKET, SO_PASSCRED) => PassCredentials as IntBool,
+            (SOL_SOCKET, SO_PASSCRED) => PassCredentials as IntBool, // TODO: set accepted but no-op for non-unix
             (SOL_SOCKET, SO_PEERCRED) => PeerCredentials as Ucred,
+            (SOL_SOCKET, SO_TYPE) => SocketType as Int<i32>,       // read-only
+            (SOL_SOCKET, SO_PROTOCOL) => SocketProtocol as Int<i32>,// read-only
+            (SOL_SOCKET, SO_DOMAIN) => SocketDomain as Int<i32>,   // read-only
 
             (PROTO_TCP, TCP_NODELAY) => NoDelay as IntBool,
-            (PROTO_TCP, TCP_MAXSEG) => MaxSegment as Int<usize>,
+            (PROTO_TCP, TCP_MAXSEG) => MaxSegment as Int<usize>,  // TODO: hardcoded 1460, get actual MSS
             (PROTO_TCP, TCP_KEEPIDLE) => TcpKeepIdle as Int<u32>,
             (PROTO_TCP, TCP_KEEPINTVL) => TcpKeepInterval as Int<u32>,
             (PROTO_TCP, TCP_KEEPCNT) => TcpKeepCount as Int<u32>,
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
-            (PROTO_TCP, TCP_INFO) => TcpInfo,
+            (PROTO_TCP, TCP_INFO) => TcpInfo,  // TODO: stub, returns empty struct
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
-            (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,
+            (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
+            // ---- Not yet implemented (add as needed) ----
+            // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
+            // (SOL_SOCKET, SO_REUSEPORT) => ...,     // TODO: needs kernel support
+            // (SOL_SOCKET, SO_PRIORITY) => ...,       // TODO: needs kernel support
+            // (SOL_SOCKET, SO_RCVLOWAT) => ...,       // TODO: needs kernel support
+            // (SOL_SOCKET, SO_SNDLOWAT) => ...,       // TODO: needs kernel support
+            // (PROTO_TCP, TCP_CORK) => ...,           // TODO: needs smoltcp support
+            // (PROTO_TCP, TCP_DEFER_ACCEPT) => ...,   // TODO: needs kernel support
+            // (PROTO_TCP, TCP_QUICKACK) => ...,       // TODO: needs kernel support
+            // (PROTO_TCP, TCP_SYNCNT) => ...,         // TODO: needs kernel support
+            // (PROTO_TCP, TCP_WINDOW_CLAMP) => ...,   // TODO: needs kernel support
+            // (PROTO_IP, IP_TOS) => ...,              // TODO: needs kernel support
+            // (PROTO_IP, IP_OPTIONS) => ...,          // TODO: needs kernel support
+            // (IPPROTO_IPV6, IPV6_V6ONLY) => ...,     // TODO: currently hardcoded inline
         }
     }};
     ($dispatch:ident, $in:expr, $($pat:pat => $which:ident $(as $conv:ty)?),* $(,)?) => {
@@ -150,6 +168,30 @@ pub fn sys_getsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
+
+    // SO_TYPE is handled at the kernel level because the socket type is
+    // known from the Socket enum variant, not from a per-protocol option.
+    {
+        use axnet::Socket as SocketInner;
+        use linux_raw_sys::net::{SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET};
+
+        if level == SOL_SOCKET && optname == SO_TYPE {
+            if *optlen == 0 {
+                return Ok(0);
+            }
+            let so_type = match &**socket {
+                SocketInner::Tcp(_) => SOCK_STREAM,
+                SocketInner::Udp(_) => SOCK_DGRAM,
+                SocketInner::Raw(_) => SOCK_RAW,
+                SocketInner::Unix(_) => SOCK_STREAM,
+                #[cfg(feature = "vsock")]
+                SocketInner::Vsock(_) => SOCK_STREAM,
+            };
+            *get(optval, optlen)? = so_type as i32;
+            return Ok(0);
+        }
+    }
+
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
         // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
         *get::<i32>(optval, optlen)? = 0;

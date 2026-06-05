@@ -48,11 +48,12 @@ use core::{
     time::Duration,
 };
 
-use ax_driver::{AxDeviceContainer, prelude::*};
 use ax_sync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
-use spin::{Lazy, Once};
+use spin::{LazyLock, Once};
 
+#[cfg(feature = "vsock")]
+pub use self::device::{VsockDevice, VsockDeviceList};
 use self::{
     consts::{GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
@@ -61,10 +62,16 @@ use self::{
     service::Service,
     wrapper::SocketSetWrapper,
 };
-pub use self::{device::ArpEntry, socket::*};
+pub use self::{
+    device::{
+        ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult,
+        NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
+    },
+    socket::*,
+};
 
-static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
-static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
+static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
+static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
@@ -81,7 +88,7 @@ fn get_service() -> ax_sync::MutexGuard<'static, Service> {
 }
 
 /// Initializes the network subsystem by NIC devices.
-pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
+pub fn init_network(mut net_devs: EthernetDeviceList) {
     info!("Initialize network subsystem...");
 
     let mut router = Router::new();
@@ -99,10 +106,11 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
     let mut dhcp_dev = None;
     let mut dhcp_mac = None;
 
-    let eth0_ip = if let Some(dev) = net_devs.take_one() {
+    let eth0_ip = if !net_devs.is_empty() {
+        let dev = net_devs.remove(0);
         info!("  use NIC 0: {:?}", dev.device_name());
 
-        let eth0_address = EthernetAddress(dev.mac_address().0);
+        let eth0_address = EthernetAddress(dev.mac_address());
         let eth0_ip = static_network
             .then(|| Ipv4Cidr::new(IP.parse().expect("Invalid IPv4 address"), IP_PREFIX));
 
@@ -160,11 +168,11 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
 
 /// Init vsock subsystem by vsock devices.
 #[cfg(feature = "vsock")]
-pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
+pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
     use self::device::register_vsock_device;
     info!("Initialize vsock subsystem...");
-    if let Some(dev) = vsock_devs.take_one() {
-        info!("  use vsock 0: {:?}", dev.device_name());
+    if let Some(dev) = vsock_devs.pop() {
+        info!("  use vsock 0: {:?}", dev.name());
         if let Err(e) = register_vsock_device(dev) {
             warn!("Failed to initialize vsock device: {:?}", e);
         }
@@ -212,7 +220,7 @@ fn dhcp_bootstrap() {
 #[cfg(test)]
 pub(crate) mod test_support {
     use alloc::boxed::Box;
-    use std::sync::Once;
+    use std::sync::{Mutex as StdMutex, MutexGuard, Once};
 
     use ax_sync::Mutex;
     use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
@@ -228,6 +236,12 @@ pub(crate) mod test_support {
     pub(crate) const PEER_MASK: u32 = 1 << 1;
     pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
     pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
+
+    static NETWORK_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    pub(crate) fn network_test_guard() -> MutexGuard<'static, ()> {
+        NETWORK_TEST_LOCK.lock().unwrap()
+    }
 
     pub(crate) fn init_split_route_network() {
         static INIT: Once = Once::new();

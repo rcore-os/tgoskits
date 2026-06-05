@@ -9,10 +9,10 @@ use arceos_rust as _;
 #[cfg(feature = "dns")]
 const DEST: &str = "ident.me:80";
 #[cfg(not(feature = "dns"))]
-const DEST: &str = "65.108.151.63:80";
+const DEST: &str = "10.0.2.2:18080";
 
 const REQUEST: &str = "\
-GET / HTTP/1.1\r\nHost: ident.me\r\nAccept: */*\r\n\r\n";
+GET / HTTP/1.1\r\nHost: axbuild.local\r\nAccept: */*\r\n\r\n";
 
 fn client() -> io::Result<()> {
     #[cfg(feature = "dns")]

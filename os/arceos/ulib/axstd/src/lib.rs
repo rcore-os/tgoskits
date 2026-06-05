@@ -17,9 +17,6 @@
 //!     - `irq`: Enable interrupt handling support.
 //! - Memory
 //!     - `alloc`: Enable dynamic memory allocation.
-//!     - `alloc-tlsf`: Use the TLSF allocator.
-//!     - `alloc-slab`: Use the slab allocator.
-//!     - `alloc-buddy`: Use the buddy system allocator.
 //!     - `paging`: Enable page table manipulation.
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
@@ -32,12 +29,8 @@
 //!     - `net`: Enable networking support.
 //!     - `dns`: Enable DNS lookup support.
 //!     - `display`: Enable graphics support.
-//! - Device drivers
-//!     - `bus-mmio`: Use device tree to probe all MMIO devices.
-//!     - `bus-pci`: Use PCI bus to probe all PCI devices.
-//!     - `driver-ramdisk`: Use the RAM disk to emulate the block device.
-//!     - `driver-ixgbe`: Enable the Intel 82599 10Gbit NIC driver.
-//!     - `driver-bcm2835-sdhci`: Enable the BCM2835 SDHCI driver (Raspberry Pi SD card).
+//! - Device drivers are selected directly through `ax-driver/*` features by
+//!   board configurations.
 //!
 //! [ArceOS]: https://github.com/arceos-org/arceos
 

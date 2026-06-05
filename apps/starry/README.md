@@ -52,6 +52,25 @@ cargo xtask starry qemu \
 See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
 flows.
 
+## K230 KPU NNCase
+
+The `k230-kpu-nncase` case is the operator-facing K230 KPU/NPU demo. It installs
+the StarryOS guest NNCase runtime demo binaries, `yolov8n_320.kmodel`, and
+`bus.jpg` into the K230 rootfs overlay, then runs:
+
+```text
+.kmodel -> NNCase runtime -> KPU command stream -> /dev/kpu -> IRQ/done -> output hashes
+```
+
+```bash
+bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
+PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
+  cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
+```
+
+See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
+asset preparation flow.
+
 ## Redis
 
 The `redis` case is a QEMU app workflow that installs Redis into a temporary
@@ -64,6 +83,60 @@ cargo xtask starry app run -t redis --arch riscv64
 
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
+
+## GDB Smoke
+
+The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
+rootfs overlay with GDB, GDBServer, and two tiny target programs.
+
+```bash
+cargo xtask starry app run -t gdb-smoke --arch riscv64
+cargo xtask starry app run -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-gdbserver.toml
+```
+
+## MariaDB
+
+The `mariadb` case is a QEMU app workflow that installs MariaDB in the guest,
+initializes a fresh data directory, runs an InnoDB SQL workload, and checks that
+the data survives a server restart.
+
+```bash
+cargo xtask starry app run -t mariadb --arch aarch64
+cargo xtask starry app run -t mariadb --arch loongarch64
+cargo xtask starry app run -t mariadb --arch x86_64
+cargo xtask starry app run -t mariadb --arch riscv64
+```
+
+## jcode
+
+The `jcode` case is an x86_64 QEMU app workflow that downloads the jcode AI coding
+agent from GitHub releases, patches the glibc-linked binary for musl compatibility
+using `patchelf`, builds a glibc stub shared library, and injects everything into
+the app rootfs overlay.
+
+```bash
+apps/starry/jcode/prepare_jcode_rootfs.sh
+cargo xtask starry qemu \
+  --arch x86_64 \
+  --qemu-config apps/starry/jcode/qemu-x86_64.toml \
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-jcode.img
+```
+
+See `jcode/README.md` for interactive usage and troubleshooting.
+
+## Nginx
+
+The `nginx` case is a QEMU app integration workflow. It installs Alpine nginx
+packages in a staging root during prebuild, injects runtime artifacts to the
+app overlay, then runs nginx smoke tests inside StarryOS.
+
+```bash
+cargo xtask starry app run -t nginx --arch x86_64
+```
+
+`apps/starry/nginx` maintains four directories: `smoke`, `phase`, `stress`, and
+`debug`. Currently only smoke is connected as nginx test entry in tgoskits workflows.
 
 ## Orange Pi 5 Plus UVC
 

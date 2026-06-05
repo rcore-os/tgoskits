@@ -9,28 +9,16 @@ publish = false
 
 [features]
 x86-pc = ["dep:ax-plat-x86-pc"]
-aarch64-raspi4 = ["dep:ax-plat-aarch64-raspi"]
-aarch64-qemu-virt = ["dep:ax-plat-aarch64-qemu-virt"]
-aarch64-bsta1000b = ["dep:ax-plat-aarch64-bsta1000b"]
-aarch64-phytium-pi = ["dep:ax-plat-aarch64-phytium-pi"]
-riscv64-qemu-virt = ["dep:ax-plat-riscv64-qemu-virt"]
 loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
 
 [dependencies]
+ax-driver.workspace = true
+ax-hal.workspace = true
 cfg-if.workspace = true
 ax-std = { workspace = true, features = ["myplat"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-ax-plat-x86-pc = { workspace = true, features = ["smp", "irq"], optional = true }
-
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-ax-plat-aarch64-qemu-virt = { workspace = true, features = ["smp", "irq"], optional = true }
-ax-plat-aarch64-raspi = { workspace = true, features = ["smp", "irq"], optional = true }
-ax-plat-aarch64-bsta1000b = { workspace = true, features = ["smp", "irq"], optional = true }
-ax-plat-aarch64-phytium-pi = { workspace = true, features = ["smp", "irq"], optional = true }
-
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-qemu-virt = { workspace = true, features = ["smp", "irq"], optional = true }
+ax-plat-x86-pc = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { workspace = true, features = ["smp", "irq"], optional = true }
+ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }

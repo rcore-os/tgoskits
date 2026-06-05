@@ -12,11 +12,17 @@
 
 use core::time::Duration;
 
+#[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
-use axklib::{AxResult, IrqHandler, Klib, PhysAddr, VirtAddr, impl_trait};
+#[cfg(feature = "irq")]
+use axklib::IrqError;
+use axklib::{
+    AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr, impl_trait,
+};
 
 struct KlibImpl;
 
+#[cfg(feature = "paging")]
 fn dma_coherent_range(addr: VirtAddr, size: usize) -> Option<(VirtAddr, usize)> {
     if size == 0 {
         return None;
@@ -27,7 +33,19 @@ fn dma_coherent_range(addr: VirtAddr, size: usize) -> Option<(VirtAddr, usize)> 
     Some((start, end - start))
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(feature = "irq")]
+fn map_irq_error(err: IrqError) -> AxError {
+    match err {
+        IrqError::InvalidIrq | IrqError::InvalidCpu => AxError::InvalidInput,
+        IrqError::CpuOffline | IrqError::Unsupported => AxError::Unsupported,
+        IrqError::Busy | IrqError::InIrqContext => AxError::ResourceBusy,
+        IrqError::NoMemory => AxError::NoMemory,
+        IrqError::NotFound => AxError::NotFound,
+        IrqError::Controller => AxError::Io,
+    }
+}
+
+#[cfg(all(feature = "paging", target_arch = "aarch64"))]
 fn clean_invalidate_dcache_to_poc(addr: VirtAddr, size: usize) {
     use core::arch::asm;
 
@@ -43,26 +61,26 @@ fn clean_invalidate_dcache_to_poc(addr: VirtAddr, size: usize) {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(feature = "paging", not(target_arch = "aarch64")))]
 fn clean_invalidate_dcache_to_poc(_addr: VirtAddr, _size: usize) {}
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(feature = "paging", target_arch = "aarch64"))]
 #[inline]
 fn dsb_sy() {
     unsafe { core::arch::asm!("dsb sy") };
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(feature = "paging", not(target_arch = "aarch64")))]
 #[inline]
 fn dsb_sy() {}
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(feature = "paging", target_arch = "aarch64"))]
 #[inline]
 fn isb_sy() {
     unsafe { core::arch::asm!("isb") };
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(feature = "paging", not(target_arch = "aarch64")))]
 #[inline]
 fn isb_sy() {}
 
@@ -73,45 +91,98 @@ impl_trait! {
         /// This function forwards the request to `ax_mm::iomap` and returns the
         /// resulting virtual address wrapped in an `AxResult`.
         fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
-            // Convert from AxError (struct in ax_errno 0.2) to AxErrorKind (enum used by axklib)
-            ax_mm::iomap(addr, size)
+            #[cfg(feature = "paging")]
+            {
+                // Convert from AxError (struct in ax_errno 0.2) to AxErrorKind (enum used by axklib)
+                ax_mm::iomap(addr, size)
+            }
+            #[cfg(not(feature = "paging"))]
+            {
+                let _ = (addr, size);
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
+            ax_hal::mem::virt_to_phys(addr)
         }
 
         fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult {
-            let Some((start, size)) = dma_coherent_range(addr, size) else {
-                return Ok(());
-            };
+            #[cfg(feature = "paging")]
+            {
+                let Some((start, size)) = dma_coherent_range(addr, size) else {
+                    return Ok(());
+                };
 
-            clean_invalidate_dcache_to_poc(start, size);
-            dsb_sy();
-            ax_mm::kernel_aspace().lock().protect(
-                start,
-                size,
-                ax_hal::paging::MappingFlags::READ
-                    | ax_hal::paging::MappingFlags::WRITE
-                    | ax_hal::paging::MappingFlags::UNCACHED,
-            )?;
-            ax_hal::asm::flush_tlb(None);
-            dsb_sy();
-            isb_sy();
-            Ok(())
+                clean_invalidate_dcache_to_poc(start, size);
+                dsb_sy();
+                ax_mm::kernel_aspace().lock().protect(
+                    start,
+                    size,
+                    ax_hal::paging::MappingFlags::READ
+                        | ax_hal::paging::MappingFlags::WRITE
+                        | ax_hal::paging::MappingFlags::UNCACHED,
+                )?;
+                ax_hal::asm::flush_tlb(None);
+                dsb_sy();
+                isb_sy();
+                Ok(())
+            }
+            #[cfg(not(feature = "paging"))]
+            {
+                let _ = (addr, size);
+                Err(AxError::Unsupported)
+            }
         }
 
         fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> AxResult {
-            let Some((start, size)) = dma_coherent_range(addr, size) else {
-                return Ok(());
-            };
+            #[cfg(feature = "paging")]
+            {
+                let Some((start, size)) = dma_coherent_range(addr, size) else {
+                    return Ok(());
+                };
 
-            dsb_sy();
-            ax_mm::kernel_aspace().lock().protect(
-                start,
-                size,
-                ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
-            )?;
-            ax_hal::asm::flush_tlb(None);
-            dsb_sy();
-            isb_sy();
-            Ok(())
+                dsb_sy();
+                ax_mm::kernel_aspace().lock().protect(
+                    start,
+                    size,
+                    ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
+                )?;
+                ax_hal::asm::flush_tlb(None);
+                dsb_sy();
+                isb_sy();
+                Ok(())
+            }
+            #[cfg(not(feature = "paging"))]
+            {
+                let _ = (addr, size);
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> AxResult<VirtAddr> {
+            let addr = if dma_mask <= u32::MAX as u64 {
+                ax_alloc::global_allocator().alloc_dma32_pages(
+                    num_pages,
+                    align,
+                    ax_alloc::UsageKind::Dma,
+                )
+            } else {
+                ax_alloc::global_allocator().alloc_pages(
+                    num_pages,
+                    align,
+                    ax_alloc::UsageKind::Dma,
+                )
+            }?;
+            Ok(VirtAddr::from(addr))
+        }
+
+        fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize) {
+            ax_alloc::global_allocator().dealloc_pages(
+                addr.as_usize(),
+                num_pages,
+                ax_alloc::UsageKind::Dma,
+            );
         }
 
         /// Busy-wait for the given duration by calling into `ax-hal`.
@@ -123,34 +194,86 @@ impl_trait! {
             ax_hal::time::busy_wait(dur);
         }
 
+        fn time_monotonic_nanos() -> u64 {
+            ax_hal::time::monotonic_time_nanos()
+        }
+
+        fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
+            ax_hal::time::try_init_epoch_offset(epoch_time_nanos)
+        }
+
         /// Enable or disable the specified IRQ line.
         ///
         /// When the `irq` feature is enabled this forwards to
-        /// `ax_hal::irq::set_enable`. If the feature is not enabled the
-        /// function currently panics via `unimplemented!()`; callers should
-        /// avoid relying on IRQ operations when the platform omits IRQ
-        /// support.
+        /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
+        /// ignore this request because there is no interrupt controller
+        /// service to program.
         fn irq_set_enable(_irq: usize, _enabled: bool) {
             #[cfg(feature = "irq")]
             ax_hal::irq::set_enable(_irq, _enabled);
-            #[cfg(not(feature = "irq"))]
-            unimplemented!();
         }
 
-        /// Register an IRQ handler for the given IRQ number.
-        ///
-        /// Returns `true` when registration succeeds. With the `irq`
-        /// feature enabled this delegates to `ax_hal::irq::register`.
-        /// When IRQs are not enabled the function is currently unimplemented
-        /// and will panic if called.
-        fn irq_register(_irq: usize, _handler: IrqHandler) -> bool {
+        fn irq_request_shared(
+            _irq: usize,
+            _handler: RawIrqHandler,
+            _data: core::ptr::NonNull<()>,
+        ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::register(_irq, _handler)
+                ax_hal::irq::request_shared_irq(_irq, _handler, _data).map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]
             {
-                unimplemented!()
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn irq_request_percpu(
+            _irq: usize,
+            _cpus: IrqCpuMask,
+            _handler: RawIrqHandler,
+            _data: core::ptr::NonNull<()>,
+        ) -> AxResult<IrqHandle> {
+            #[cfg(feature = "irq")]
+            {
+                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler, _data).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn irq_free(_handle: IrqHandle) -> AxResult {
+            #[cfg(feature = "irq")]
+            {
+                ax_hal::irq::free_irq(_handle).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn irq_enable(_handle: IrqHandle) -> AxResult {
+            #[cfg(feature = "irq")]
+            {
+                ax_hal::irq::enable_irq(_handle).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn irq_disable(_handle: IrqHandle) -> AxResult {
+            #[cfg(feature = "irq")]
+            {
+                ax_hal::irq::disable_irq(_handle).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
             }
         }
     }

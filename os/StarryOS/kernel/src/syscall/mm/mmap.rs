@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FileBackend, FileFlags};
-use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use ax_task::current;
 use linux_raw_sys::general::*;
 
@@ -36,7 +36,7 @@ bitflags::bitflags! {
 
 impl From<MmapProt> for MappingFlags {
     fn from(value: MmapProt) -> Self {
-        let mut flags = MappingFlags::USER;
+        let mut flags = MappingFlags::empty();
         if value.contains(MmapProt::READ) {
             flags |= MappingFlags::READ;
         }
@@ -51,6 +51,15 @@ impl From<MmapProt> for MappingFlags {
         }
         if value.contains(MmapProt::EXEC) {
             flags |= MappingFlags::EXECUTE;
+        }
+        // PROT_NONE must yield empty flags so the PTE is non-present and any
+        // access faults. Tagging it USER would, on x86_64, still set the PRESENT
+        // bit (present implies readable on x86) and silently defeat the
+        // protection — breaking guard pages such as JVM thread-stack guards,
+        // letting a stack overflow corrupt adjacent memory instead of trapping.
+        // Only accessible mappings get the USER tag.
+        if !flags.is_empty() {
+            flags |= MappingFlags::USER;
         }
         flags
     }
@@ -89,6 +98,8 @@ bitflags::bitflags! {
         const HUGE = MAP_HUGETLB;
         /// Huge page 1g size
         const HUGE_1GB = MAP_HUGETLB | MAP_HUGE_1GB;
+        /// Synchronous file updates for persistent memory mappings.
+        const SYNC = MAP_SYNC;
         /// Deprecated flag
         const DENYWRITE = MAP_DENYWRITE;
 
@@ -124,15 +135,16 @@ pub fn sys_mmap(
             MmapFlags::from_bits_truncate(flags)
         }
     };
-    // Exactly one of MAP_PRIVATE or MAP_SHARED must be set. `MAP_PRIVATE|MAP_SHARED`
-    // shares the bit pattern 0x03 with `MAP_SHARED_VALIDATE`; Linux rejects this
-    // ambiguous combo with EINVAL, and StarryOS does not implement `SHARED_VALIDATE`
-    // semantics separately, so we reject 0x03 here too.
-    let map_type = map_flags & MmapFlags::TYPE;
-    let type_bits = map_type.bits();
-    if type_bits != MAP_PRIVATE && type_bits != MAP_SHARED {
-        return Err(AxError::InvalidInput);
+    if map_flags.contains(MmapFlags::SYNC) {
+        return Err(AxError::OperationNotSupported);
     }
+    // MAP_SHARED_VALIDATE has type bits 0x03. Accept it for feature probing,
+    // then run it through the same mapping path as MAP_SHARED.
+    let map_type = match flags & MmapFlags::TYPE.bits() {
+        MAP_SHARED | MAP_SHARED_VALIDATE => MmapFlags::SHARED,
+        MAP_PRIVATE => MmapFlags::PRIVATE,
+        _ => return Err(AxError::InvalidInput),
+    };
     let offset: usize = offset.try_into().map_err(|_| AxError::InvalidInput)?;
     if !PageSize::Size4K.is_aligned(offset) {
         return Err(AxError::InvalidInput);
@@ -173,16 +185,14 @@ pub fn sys_mmap(
     if let Some(ref fl) = file {
         let needs_file_mmap_checks = match map_type {
             MmapFlags::PRIVATE => true,
-            MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
+            MmapFlags::SHARED => {
                 // Ok(None) and Err(_) both mean "fall back to file_mmap"
                 // (memfd, regular files). Direct device mappings do not.
                 match device_mmap_top
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::SharedPages(_)) | Ok(DeviceMmap::NotConfigured) => false,
+                    Ok(DeviceMmap::Physical(..)) | Ok(DeviceMmap::Cache(_)) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
             }
@@ -193,9 +203,7 @@ pub fn sys_mmap(
             if !flags.contains(FileFlags::READ) {
                 return Err(AxError::PermissionDenied);
             }
-            if matches!(map_type, MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE)
-                && permission_flags.contains(MmapProt::WRITE)
-            {
+            if matches!(map_type, MmapFlags::SHARED) && permission_flags.contains(MmapProt::WRITE) {
                 if !flags.contains(FileFlags::WRITE) {
                     return Err(AxError::PermissionDenied);
                 }
@@ -232,7 +240,7 @@ pub fn sys_mmap(
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
     // 这样可以避免通用路径中 `range.start += offset` 对 Ion buffer 的错误偏移。
-    #[cfg(feature = "sg2002")]
+    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
     if let Some(ref file) = file {
         use crate::file::ion::IonBufferFile;
         if let Some(ion_file) = file.downcast_ref::<IonBufferFile>() {
@@ -282,30 +290,29 @@ pub fn sys_mmap(
     let mut mapping_flags: MappingFlags = permission_flags.into();
 
     let backend = match map_type {
-        MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
+        MmapFlags::SHARED => {
             if let Some(ref file) = file {
                 match device_mmap_top
                     .take()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(mut range)) => {
+                    Ok(DeviceMmap::Physical(mut range, retain)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
                         range.start += offset;
                         if range.is_empty() {
                             return Err(AxError::InvalidInput);
                         }
                         length = length.min(range.size().align_down(page_size));
-                        Backend::new_linear(
-                            start,
-                            start.as_usize() as isize - range.start.as_usize() as isize,
-                            true,
-                        )
+                        let pa_va_offset =
+                            start.as_usize() as isize - range.start.as_usize() as isize;
+                        match retain {
+                            Some(retain) => {
+                                Backend::new_linear_anchored(start, pa_va_offset, true, retain)
+                            }
+                            None => Backend::new_linear(start, pa_va_offset, true),
+                        }
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::NotConfigured) => return Err(AxError::InvalidInput),
-                    #[cfg(feature = "kcov")]
-                    Ok(DeviceMmap::SharedPages(pages)) => Backend::new_shared(start, pages),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
@@ -343,23 +350,24 @@ pub fn sys_mmap(
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }
-                                    #[cfg(feature = "kcov")]
-                                    DeviceMmap::NotConfigured => {
-                                        return Err(AxError::InvalidInput);
-                                    }
-                                    DeviceMmap::Physical(range) => {
+                                    DeviceMmap::Physical(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
                                             return Err(AxError::InvalidInput);
                                         }
                                         length =
                                             capped_device_map_len(length, range.size(), page_size);
-                                        Backend::new_linear(
-                                            start,
-                                            start.as_usize() as isize
-                                                - range.start.as_usize() as isize,
-                                            true,
-                                        )
+                                        let pa_va_offset = start.as_usize() as isize
+                                            - range.start.as_usize() as isize;
+                                        match retain {
+                                            Some(retain) => Backend::new_linear_anchored(
+                                                start,
+                                                pa_va_offset,
+                                                true,
+                                                retain,
+                                            ),
+                                            None => Backend::new_linear(start, pa_va_offset, true),
+                                        }
                                     }
                                     DeviceMmap::Cache(cache) => Backend::new_file(
                                         start,
@@ -369,10 +377,6 @@ pub fn sys_mmap(
                                         &curr.as_thread().proc_data.aspace(),
                                         true,
                                     ),
-                                    #[cfg(feature = "kcov")]
-                                    DeviceMmap::SharedPages(pages) => {
-                                        Backend::new_shared(start, pages)
-                                    }
                                 }
                             }
                         }

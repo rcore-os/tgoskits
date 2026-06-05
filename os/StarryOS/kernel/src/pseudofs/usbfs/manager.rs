@@ -6,6 +6,8 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::Mutex as BlockingMutex;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, EventHandler, ProbedDevice,
     usb_if::{
@@ -17,7 +19,7 @@ use crab_usb::{
 };
 use event_listener::{Event as NotifyEvent, listener};
 use rdrive::DeviceId as RDriveDeviceId;
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 use starry_vm::{VmMutPtr, vm_load, vm_write_slice};
 
 use super::{
@@ -74,7 +76,7 @@ struct UsbDeviceRecord {
 type EndpointHandle = Arc<Mutex<Endpoint>>;
 
 struct LiveDeviceState {
-    device: Mutex<Device>,
+    device: BlockingMutex<Device>,
     endpoints: RwLock<BTreeMap<u8, EndpointHandle>>,
     endpoint_interfaces: RwLock<BTreeMap<u8, u8>>,
     interface_owners: Mutex<BTreeMap<u8, u64>>,
@@ -227,7 +229,7 @@ fn wait_control(
 
 pub(super) struct UsbFsManager {
     state: Mutex<UsbFsState>,
-    open_lock: Mutex<()>,
+    open_lock: BlockingMutex<()>,
     pub(super) refresh_event: NotifyEvent,
     usb_activity: UsbActivity,
 }
@@ -366,7 +368,7 @@ impl UsbFsManager {
 
         Self {
             state: Mutex::new(UsbFsState { hosts, devices }),
-            open_lock: Mutex::new(()),
+            open_lock: BlockingMutex::new(()),
             refresh_event: NotifyEvent::new(),
             usb_activity: UsbActivity::new(),
         }
@@ -414,8 +416,7 @@ impl UsbFsManager {
             };
 
             for (device_id, bus_num) in pending_hosts {
-                let host = match rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(device_id)
-                {
+                let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
                     Ok(host) => host,
                     Err(err) => {
                         warn!(
@@ -681,7 +682,7 @@ impl UsbFsManager {
                     let mut state = self.state.lock();
                     let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
                     record.live_device = Some(Arc::new(LiveDeviceState {
-                        device: Mutex::new(live_device),
+                        device: BlockingMutex::new(live_device),
                         endpoints: RwLock::new(BTreeMap::new()),
                         endpoint_interfaces: RwLock::new(BTreeMap::new()),
                         interface_owners: Mutex::new(BTreeMap::new()),
@@ -700,7 +701,7 @@ impl UsbFsManager {
 
     #[cfg(target_os = "none")]
     fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
-        let host = rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(host_device_id)
+        let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
         ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
@@ -722,7 +723,7 @@ impl UsbFsManager {
 
     #[cfg(target_os = "none")]
     fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
-        let host = rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(host_device_id)
+        let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
         let devices =
@@ -1174,7 +1175,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
         let mut failed_device_ids = Vec::new();
 
         for (device_id, bus_num, irq_num) in hosts {
-            let host = match rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(device_id) {
+            let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
                 Ok(host) => host,
                 Err(err) => {
                     warn!(
@@ -1234,7 +1235,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
 
         for (_, irq_num) in failed_device_ids {
             if let Some(irq_num) = irq_num {
-                let _ = ax_hal::irq::unregister(irq_num);
+                irq::free_irq(irq_num);
             }
         }
 
@@ -1318,7 +1319,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
     }
     #[cfg(target_os = "none")]
     {
-        let hosts = rdrive::get_list::<axplat_dyn::drivers::usb::PlatformUsbHost>();
+        let hosts = rdrive::get_list::<ax_driver::usb::PlatformUsbHost>();
         let mut initialized_hosts = Vec::new();
         let mut irq_slots = Vec::new();
 

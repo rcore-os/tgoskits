@@ -2,9 +2,16 @@
 name = "qperf-analyzer"
 version = "0.1.0"
 edition = "2024"
+publish = false
+
+[features]
+default = []
+flamegraph = ["inferno"]
 
 [dependencies]
 addr2line = "0.25.0"
 anyhow = "1.0.100"
 bincode.workspace = true
 clap = { version = "4.5.45", features = ["derive"] }
+inferno = { version = "0.12", optional = true, default-features = false }
+object = "0.37"

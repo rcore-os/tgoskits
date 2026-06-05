@@ -47,6 +47,14 @@ on:
         required: false
         type: string
         default: "1"
+      timeout_minutes:
+        description: Maximum minutes to allow the command job to run.
+        required: false
+        type: number
+        default: 360
+    secrets:
+      CLAW_API_KEY:
+        required: false
 jobs:
   run_host:
     if: >-
@@ -56,6 +64,7 @@ jobs:
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -75,6 +84,7 @@ jobs:
       - name: Run command
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
         run: ${{ inputs.command }}
 
   run_container:
@@ -85,6 +95,7 @@ jobs:
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
       credentials:
@@ -145,4 +156,5 @@ jobs:
       - name: Run command
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
         run: ${{ inputs.command }}

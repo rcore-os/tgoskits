@@ -3,6 +3,7 @@ use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, OpenOptions};
+use ax_task::current;
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
@@ -21,6 +22,7 @@ use crate::{
     },
     mm::vm_load_string,
     pseudofs,
+    task::AsThread,
 };
 
 /// `MFD_ALLOW_SEALING` — bit 1. `linux-raw-sys` does not export it on every
@@ -64,9 +66,12 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
 
     let fs = FS_CONTEXT.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
+    let cred = current().as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
         &name_str,
         axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),
+        cred.fsuid,
+        cred.fsgid,
     );
     let loc = axfs_ng_vfs::Location::new(mountpoint, entry);
 

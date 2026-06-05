@@ -50,6 +50,7 @@ __attribute__((__packed__))
 ;
 
 int epoll_create(int __size);
+int epoll_create1(int __flags);
 int epoll_ctl(int, int, int, struct epoll_event *);
 int epoll_wait(int, struct epoll_event *, int, int);
 

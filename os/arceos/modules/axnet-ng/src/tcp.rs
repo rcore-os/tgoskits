@@ -16,7 +16,7 @@ use smoltcp::{
     time::Duration,
     wire::{IpEndpoint, IpListenEndpoint},
 };
-use spin::Lazy;
+use spin::LazyLock;
 
 use crate::{
     LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
@@ -74,7 +74,7 @@ impl TcpSocket {
             peer_endpoint: Mutex::new(None),
             bound_registered: AtomicBool::new(false),
 
-            general: GeneralOptions::new(),
+            general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
             pending_error: AtomicI32::new(0),
             keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
             keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
@@ -98,7 +98,7 @@ impl TcpSocket {
             peer_endpoint: Mutex::new(Some(remote_endpoint)),
             bound_registered: AtomicBool::new(false),
 
-            general: GeneralOptions::new(),
+            general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
             pending_error: AtomicI32::new(0),
             keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
             keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
@@ -510,6 +510,18 @@ impl SocketOps for TcpSocket {
         })
     }
 
+    fn recv_available(&self) -> AxResult<usize> {
+        if self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
+        let available = self.with_smol_socket(|socket| socket.recv_queue());
+        if available > 0 {
+            return Ok(available);
+        }
+        poll_interfaces();
+        Ok(self.with_smol_socket(|socket| socket.recv_queue()))
+    }
+
     fn local_addr(&self) -> AxResult<SocketAddrEx> {
         let endpoint = self.with_smol_socket(|socket| {
             socket
@@ -714,8 +726,8 @@ impl TcpSocket {
     }
 }
 
-static TCP_BOUND_PORTS: Lazy<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<Option<smoltcp::wire::IpAddress>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
     if endpoint.port == 0 {
@@ -789,11 +801,15 @@ mod tests {
     use super::*;
     use crate::{
         options::{Configurable, SetSocketOption},
-        test_support::{LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network},
+        test_support::{
+            LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network,
+            network_test_guard,
+        },
     };
 
     #[test]
     fn connect_uses_peer_route_for_device_mask() {
+        let _guard = network_test_guard();
         init_split_route_network();
 
         let socket = TcpSocket::new();

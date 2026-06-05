@@ -2,11 +2,12 @@ use core::{any::Any, time::Duration};
 
 use ax_config::plat::PHYS_VIRT_OFFSET;
 use ax_errno::AxError;
-use ax_hal::{
+use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
     time::busy_wait,
 };
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
@@ -22,7 +23,6 @@ use sg200x_bsp::{
         host::{self, UvcEnumerated, dwc2, dwc2::ep0 as dwc2_ep0},
     },
 };
-use spin::Mutex;
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 

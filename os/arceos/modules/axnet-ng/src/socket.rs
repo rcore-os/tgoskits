@@ -6,15 +6,13 @@ use core::{
     task::Context,
 };
 
-#[cfg(feature = "vsock")]
-use ax_driver::prelude::VsockAddr;
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
 
 #[cfg(feature = "vsock")]
-use crate::vsock::VsockSocket;
+use crate::vsock::{VsockAddr, VsockSocket};
 use crate::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     raw::RawSocket,
@@ -195,6 +193,10 @@ pub trait SocketOps: Configurable {
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
     /// Receive data from the socket.
     fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize>;
+    /// Returns the number of bytes that can be read without blocking.
+    fn recv_available(&self) -> AxResult<usize> {
+        Err(AxError::OperationNotSupported)
+    }
 
     /// Get the local endpoint of the socket.
     fn local_addr(&self) -> AxResult<SocketAddrEx>;
@@ -228,6 +230,10 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
 
     fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
         (**self).recv(dst, options)
+    }
+
+    fn recv_available(&self) -> AxResult<usize> {
+        (**self).recv_available()
     }
 
     fn local_addr(&self) -> AxResult<SocketAddrEx> {
@@ -371,6 +377,17 @@ impl SocketOps for Socket {
             Socket::Unix(unix) => unix.recv(dst, options),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.recv(dst, options),
+        }
+    }
+
+    fn recv_available(&self) -> AxResult<usize> {
+        match self {
+            Socket::Tcp(tcp) => tcp.recv_available(),
+            Socket::Udp(udp) => udp.recv_available(),
+            Socket::Raw(raw) => raw.recv_available(),
+            Socket::Unix(unix) => unix.recv_available(),
+            #[cfg(feature = "vsock")]
+            Socket::Vsock(vsock) => vsock.recv_available(),
         }
     }
 

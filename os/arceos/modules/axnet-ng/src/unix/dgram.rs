@@ -58,7 +58,7 @@ impl DgramTransport {
             connected: RwLock::new(None),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
             poll_state: Arc::default(),
-            general: GeneralOptions::default(),
+            general: GeneralOptions::new(2, 1, 0), // SOCK_DGRAM
             pid,
         }
     }
@@ -73,7 +73,7 @@ impl DgramTransport {
             connected: RwLock::new(Some(connected)),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
             poll_state: Arc::default(),
-            general: GeneralOptions::default(),
+            general: GeneralOptions::new(2, 1, 0), // SOCK_DGRAM
             pid,
         }
     }

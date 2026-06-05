@@ -18,6 +18,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  scheduled_clippy_all:
+    name: Scheduled clippy all
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rcore-os/tgoskits-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: starry-apps-clippy-all
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run clippy all
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo xtask clippy --all
+
   starry_apps:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -30,9 +57,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Starry app smoke
-            cache_key: starry-apps-all
-            command: cargo xtask starry app run --all
+          - name: Starry app smoke x86_64
+            cache_key: starry-apps-x86_64
+            arch: x86_64
+          - name: Starry app smoke aarch64
+            cache_key: starry-apps-aarch64
+            arch: aarch64
+          - name: Starry app smoke riscv64
+            cache_key: starry-apps-riscv64
+            arch: riscv64
+          - name: Starry app smoke loongarch64
+            cache_key: starry-apps-loongarch64
+            arch: loongarch64
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -76,4 +112,4 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          ${{ matrix.command }}
+          cargo xtask starry app qemu --all --arch "${{ matrix.arch }}"

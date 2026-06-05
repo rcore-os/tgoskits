@@ -1,6 +1,6 @@
 # `riscv-h`
 
-> 路径：`components/riscv-h`
+> 路径：`virtualization/riscv-h`
 > 类型：库 crate
 > 分层：组件层 / RISC-V H 扩展寄存器封装层
 > 版本：`0.2.0`
