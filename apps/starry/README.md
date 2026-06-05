@@ -52,23 +52,6 @@ cargo xtask starry qemu \
 See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
 flows.
 
-## macOS HVF Self-Build
-
-The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
-AArch64 StarryOS SMP kernel with QEMU/HVF, enters the StarryOS guest userland,
-and runs guest `cargo build` to build StarryOS again.
-
-```bash
-KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
-ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
-SMP=8 JOBS=8 SOURCE_TMPFS=1 \
-EXTRA_RUSTFLAGS='-Z threads=2' \
-apps/starry/macos-selfbuild/run_selfbuild.sh
-```
-
-See `macos-selfbuild/README.md` for rootfs requirements, QEMU/HVF details, PASS
-markers, and representative self-build timings.
-
 ## K230 KPU NNCase
 
 The `k230-kpu-nncase` case is the operator-facing K230 KPU/NPU demo. It installs
@@ -87,6 +70,23 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 
 See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
+
+## macOS HVF Self-Build
+
+The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
+AArch64 StarryOS SMP kernel with QEMU/HVF, enters the StarryOS guest userland,
+and runs guest `cargo build` to build StarryOS again.
+
+```bash
+KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
+ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
+SMP=8 JOBS=8 RAYON_NUM_THREADS=1 RUSTC_THREADS=2 SOURCE_TMPFS=1 \
+apps/starry/macos-selfbuild/run_selfbuild.sh
+```
+
+See `macos-selfbuild/README.md` for the no-Docker reviewer path, native rootfs
+build/check flow, QEMU/HVF details, PASS markers, and representative self-build
+timings.
 
 ## Redis
 

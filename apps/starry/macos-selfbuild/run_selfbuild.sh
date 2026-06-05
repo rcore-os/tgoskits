@@ -7,13 +7,19 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 usage() {
     cat <<'USAGE'
 Usage:
+  apps/starry/macos-selfbuild/reproduce.sh
+
+or run the final QEMU step directly:
+
   KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
   ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
   SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  EXPECTED_MAX_CRATES=420
   QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
+  QEMU_SNAPSHOT=0
   BOOT_ONLY=1
   EXTRA_RUSTFLAGS='<extra guest rustflags>'
 USAGE
@@ -72,6 +78,20 @@ emit_export() {
     printf '\n'
 }
 
+copy_image() {
+    local src="$1"
+    local dst="$2"
+
+    rm -f "$dst"
+    if cp -c "$src" "$dst" 2>/dev/null; then
+        return
+    fi
+    if cp --reflink=auto "$src" "$dst" 2>/dev/null; then
+        return
+    fi
+    cp "$src" "$dst"
+}
+
 qemu="$(find_tool "${QEMU:-}" qemu-system-aarch64 /opt/homebrew/bin/qemu-system-aarch64)"
 debugfs="$(find_tool "${DEBUGFS:-}" debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 
@@ -90,6 +110,7 @@ qemu_accel="${QEMU_ACCEL:-hvf}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
 qemu_cpu="${QEMU_CPU:-host}"
 boot_only="${BOOT_ONLY:-0}"
+qemu_snapshot="${QEMU_SNAPSHOT:-0}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
 qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-7200}"
 stamp="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
@@ -99,6 +120,8 @@ work_rootfs="${WORK_ROOTFS:-$out_root/rootfs/rootfs-${case_name}-${stamp}.img}"
 log="${LOG:-$out_root/logs/${case_name}-${stamp}.log}"
 guest_script="$script_dir/guest-selfbuild.sh"
 work_dir="$out_root/work/${case_name}-${stamp}"
+failure_pattern='(panicked at|kernel panic|panic:|unhandled trap|trap frame|fatal exception|segmentation fault)'
+require_fresh_rootfs="${REQUIRE_FRESH_ROOTFS:-1}"
 
 if [[ ! -f "$kernel" ]]; then
     echo "kernel not found: $kernel" >&2
@@ -119,7 +142,43 @@ source_commit="${TGOSKITS_COMMIT:-$actual_commit}"
 source_ref="${TGOSKITS_REF:-$(git_value detached symbolic-ref --quiet --short HEAD)}"
 
 mkdir -p "$(dirname "$work_rootfs")" "$(dirname "$log")" "$work_dir"
-cp "$rootfs" "$work_rootfs"
+copy_image "$rootfs" "$work_rootfs"
+
+if [[ "$require_fresh_rootfs" = "1" ]]; then
+    rootfs_meta="$("$debugfs" -R "cat /opt/tgoskits-src.meta" "$work_rootfs" 2>/dev/null || true)"
+    rootfs_commit="$(printf '%s\n' "$rootfs_meta" | sed -n 's/^commit=//p' | tail -1)"
+    if [[ -z "$rootfs_commit" ]]; then
+        cat >&2 <<EOF
+rootfs source metadata is missing in $rootfs.
+Rebuild or refresh the self-build rootfs from the current checkout:
+
+  apps/starry/macos-selfbuild/build_rootfs.sh
+
+or, if the toolchain rootfs is already current:
+
+  apps/starry/macos-selfbuild/prepare_rootfs.sh
+EOF
+        exit 1
+    fi
+    if [[ "$actual_commit" != "unknown" && "$rootfs_commit" != "$source_commit" ]]; then
+        cat >&2 <<EOF
+rootfs source commit does not match this checkout.
+  checkout: $source_commit
+  rootfs:   $rootfs_commit
+
+This usually means an old rootfs is being reused. Refresh it before running:
+
+  apps/starry/macos-selfbuild/prepare_rootfs.sh
+
+or rebuild the full rootfs:
+
+  apps/starry/macos-selfbuild/build_rootfs.sh
+
+Set REQUIRE_FRESH_ROOTFS=0 only for deliberate stale-rootfs experiments.
+EOF
+        exit 1
+    fi
+fi
 
 guest_runner="$work_dir/starry-macos-run.sh"
 {
@@ -127,22 +186,35 @@ guest_runner="$work_dir/starry-macos-run.sh"
     printf 'set -eu\n'
     emit_export "JOBS" "$jobs"
     emit_export "SMP" "$smp"
+    emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
+    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-2}"
     emit_export "SOURCE_TMPFS" "$source_tmpfs"
     emit_export "PROFILE" "${PROFILE:-release}"
     emit_export "BUILD_TARGET" "${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
     emit_export "BUILD_PACKAGE" "${BUILD_PACKAGE:-starryos}"
     emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
-    emit_export "BUILD_STD" "${BUILD_STD:-core,alloc,compiler_builtins}"
-    emit_export "FEATURES" "${FEATURES:-plat-dyn,cntv-timer,smp,ax-feat/display,ax-feat/rtc,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
+    emit_export "BUILD_STD" "${BUILD_STD:-core,alloc}"
+    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
     emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-0}"
+    emit_export "TARGET_SPEC_MODE" "${TARGET_SPEC_MODE:-pie}"
+    emit_export "TARGET_SPEC_PATH" "${TARGET_SPEC_PATH:-}"
+    emit_export "ARTIFACT_TO_BIN" "${ARTIFACT_TO_BIN:-1}"
+    emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-64M}"
     emit_export "CARGO_SUBCOMMAND" "${CARGO_SUBCOMMAND:-build}"
+    emit_export "CARGO_BIN" "${CARGO_BIN:-/opt/cargo-nightly-sysroot}"
     emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
     emit_export "WORK_DIR" "${WORK_DIR:-/tmp/starryos-selfbuild-src}"
     emit_export "CARGO_TARGET_DIR" "${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
+    emit_export "ARTIFACT_DIR" "${ARTIFACT_DIR:-/opt/starryos-selfbuild-artifacts}"
+    emit_export "TARGET_HEARTBEAT_SEC" "${TARGET_HEARTBEAT_SEC:-0}"
+    emit_export "TRACE_RUSTC" "${TRACE_RUSTC:-0}"
+    emit_export "CARGO_VERBOSE" "${CARGO_VERBOSE:-0}"
     emit_export "CARGO_PROFILE_RELEASE_LTO" "${CARGO_PROFILE_RELEASE_LTO:-false}"
     emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
     emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
     emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
+    emit_export "ALLOW_SLOW_SELFBUILD" "${ALLOW_SLOW_SELFBUILD:-0}"
+    emit_export "GUEST_MONITOR_INTERVAL_SEC" "${GUEST_MONITOR_INTERVAL_SEC:-60}"
     emit_export "TGOSKITS_COMMIT" "$source_commit"
     emit_export "TGOSKITS_REF" "$source_ref"
     if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then
@@ -172,35 +244,80 @@ echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
 echo "qemu=$qemu"
 echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu"
-echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_timeout_sec=$qemu_timeout_sec"
+echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_snapshot=$qemu_snapshot qemu_timeout_sec=$qemu_timeout_sec"
 echo "source_commit=$source_commit source_ref=$source_ref"
 : >"$log"
 
+qemu_args=()
+if [[ "$qemu_snapshot" = "1" ]]; then
+    qemu_args+=(-snapshot)
+fi
+qemu_args+=(
+    -nographic
+    -accel "$qemu_accel"
+    -machine "$qemu_machine"
+    -cpu "$qemu_cpu"
+    -m "$mem"
+    -smp "$smp"
+    -device virtio-blk-pci,drive=disk0
+    -drive "id=disk0,if=none,format=raw,file=$work_rootfs,file.locking=off"
+    -device virtio-net-pci,netdev=net0
+    -netdev user,id=net0
+    -kernel "$kernel"
+    -monitor none
+    -serial mon:stdio
+)
+
 "$qemu" \
-    -snapshot \
-    -nographic \
-    -accel "$qemu_accel" \
-    -machine "$qemu_machine" \
-    -cpu "$qemu_cpu" \
-    -m "$mem" \
-    -smp "$smp" \
-    -device virtio-blk-pci,drive=disk0 \
-    -drive "id=disk0,if=none,format=raw,file=$work_rootfs,file.locking=off" \
-    -device virtio-net-pci,netdev=net0 \
-    -netdev user,id=net0 \
-    -kernel "$kernel" \
-    -monitor none \
-    -serial mon:stdio \
+    "${qemu_args[@]}" \
     <"$input_fifo" >"$log" 2>&1 &
 qemu_pid="$!"
 
 exec 3>"$input_fifo"
 sent_cmd=0
 host_rc=124
-start_ts="$(date +%s)"
+start_seconds="$SECONDS"
+heartbeat_sec="${HOST_HEARTBEAT_SEC:-30}"
+next_heartbeat="$heartbeat_sec"
+expected_max_crates="${EXPECTED_MAX_CRATES:-420}"
+crate_count_guarded=0
+
+check_crate_count_guard() {
+    local line total
+
+    if [[ "${ALLOW_SLOW_SELFBUILD:-0}" = "1" || "$expected_max_crates" = "0" || "$crate_count_guarded" = "1" ]]; then
+        return 0
+    fi
+
+    line="$(
+        LC_ALL=C tr '\r' '\n' <"$log" \
+            | grep -a -E 'Building \[[^]]*\][[:space:]]+[0-9]+/[0-9]+' \
+            | tail -1
+    )"
+    [[ -n "$line" ]] || return 0
+
+    total="$(printf '%s\n' "$line" | sed -n 's/.*Building \[[^]]*\][[:space:]]*[0-9][0-9]*\/\([0-9][0-9]*\).*/\1/p' | tail -1)"
+    [[ -n "$total" ]] || return 0
+
+    crate_count_guarded=1
+    if (( total > expected_max_crates )); then
+        cat >>"$log" <<EOF
+===HOST-QEMU-STOP reason=unexpected-crate-count total=$total expected_max=$expected_max_crates===
+This run is not using the fast macOS self-build profile. An unexpected Cargo total
+usually means a stale rootfs or slow feature set is being used. Refresh the rootfs with:
+  apps/starry/macos-selfbuild/prepare_rootfs.sh
+or set ALLOW_SLOW_SELFBUILD=1 only for deliberate slow-profile experiments.
+EOF
+        kill "$qemu_pid" 2>/dev/null || true
+        wait "$qemu_pid" 2>/dev/null
+        host_rc=2
+        return 2
+    fi
+}
 
 set +e
 while kill -0 "$qemu_pid" 2>/dev/null; do
+    elapsed=$((SECONDS - start_seconds))
     if [[ "$sent_cmd" = "0" ]] && LC_ALL=C grep -a -q "root@starry:" "$log"; then
         if [[ "$boot_only" = "1" ]]; then
             echo "===HOST-QEMU-STOP reason=boot-only-shell pid=$qemu_pid===" >>"$log"
@@ -226,7 +343,7 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
         break
     fi
 
-    if LC_ALL=C grep -a -E -i -q '(panic|panicked at|unhandled trap|trap frame|fatal|segmentation fault)' "$log"; then
+    if LC_ALL=C grep -a -E -i -q "$failure_pattern" "$log"; then
         echo "===HOST-QEMU-STOP reason=failure-pattern pid=$qemu_pid===" >>"$log"
         kill "$qemu_pid" 2>/dev/null || true
         wait "$qemu_pid" 2>/dev/null
@@ -234,10 +351,24 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
         break
     fi
 
+    if ! check_crate_count_guard; then
+        break
+    fi
+
+    if (( heartbeat_sec > 0 && elapsed >= next_heartbeat )); then
+        heartbeat_line="$(
+            LC_ALL=C tr '\r' '\n' <"$log" \
+                | grep -a -E '===STARRY-MACOS-SELFBUILD|Building \[|Compiling|Finished|error:' \
+                | tail -1 \
+                | cut -c 1-220
+        )"
+        echo "host-heartbeat elapsed=${elapsed}s qemu_pid=$qemu_pid ${heartbeat_line:-waiting-for-guest-output}"
+        next_heartbeat=$((elapsed + heartbeat_sec))
+    fi
+
     if [[ "$qemu_timeout_sec" != "0" ]]; then
-        now_ts="$(date +%s)"
-        if (( now_ts - start_ts >= qemu_timeout_sec )); then
-            echo "===HOST-QEMU-STOP reason=timeout pid=$qemu_pid elapsed=$((now_ts - start_ts)) timeout=$qemu_timeout_sec===" >>"$log"
+        if (( elapsed >= qemu_timeout_sec )); then
+            echo "===HOST-QEMU-STOP reason=timeout pid=$qemu_pid elapsed=$elapsed timeout=$qemu_timeout_sec===" >>"$log"
             kill "$qemu_pid" 2>/dev/null || true
             wait "$qemu_pid" 2>/dev/null
             host_rc=124
@@ -251,11 +382,35 @@ done
 if ! kill -0 "$qemu_pid" 2>/dev/null && ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP" "$log"; then
     wait "$qemu_pid" 2>/dev/null
     qemu_rc="$?"
-    echo "===HOST-QEMU-STOP reason=qemu-exit pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+    if [[ "$boot_only" != "1" && "$sent_cmd" = "1" ]] \
+        && ! LC_ALL=C grep -a -q "===STARRY-MACOS-SELFBUILD-RUN-END rc=" "$log"; then
+        echo "===HOST-QEMU-STOP reason=qemu-exit-without-run-end pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+    else
+        echo "===HOST-QEMU-STOP reason=qemu-exit pid=$qemu_pid rc=$qemu_rc===" >>"$log"
+    fi
     host_rc="$qemu_rc"
 fi
 
+if LC_ALL=C grep -a -E -i -q "$failure_pattern" "$log"; then
+    host_rc=1
+fi
+
+if LC_ALL=C grep -a -q "===STARRY-MACOS-SELFBUILD-RUN-END rc=" "$log"; then
+    marker_rc="$(
+        LC_ALL=C sed -n 's/^===STARRY-MACOS-SELFBUILD-RUN-END rc=\([0-9][0-9]*\)===.*/\1/p' "$log" | tail -1
+    )"
+    host_rc="${marker_rc:-$host_rc}"
+fi
+
+if [[ "$boot_only" != "1" && "$sent_cmd" = "1" ]] \
+    && ! LC_ALL=C grep -a -q "===STARRY-MACOS-SELFBUILD-RUN-END rc=" "$log"; then
+    host_rc=1
+fi
+
 if kill -0 "$qemu_pid" 2>/dev/null; then
+    if ! LC_ALL=C grep -a -q "===HOST-QEMU-STOP" "$log"; then
+        echo "===HOST-QEMU-STOP reason=host-cleanup pid=$qemu_pid rc=$host_rc===" >>"$log"
+    fi
     kill "$qemu_pid" 2>/dev/null || true
     wait "$qemu_pid" 2>/dev/null
 fi

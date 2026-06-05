@@ -59,6 +59,20 @@ if [[ -z "$debugfs" ]]; then
     fi
 fi
 
+copy_image() {
+    local src="$1"
+    local dst="$2"
+
+    rm -f "$dst"
+    if cp -c "$src" "$dst" 2>/dev/null; then
+        return
+    fi
+    if cp --reflink=auto "$src" "$dst" 2>/dev/null; then
+        return
+    fi
+    cp "$src" "$dst"
+}
+
 if [[ ! -f "$base_rootfs" ]]; then
     echo "base rootfs not found: $base_rootfs" >&2
     echo "provide a rootfs that already contains guest Cargo/Rust toolchain files" >&2
@@ -71,7 +85,7 @@ if [[ ! -f "$source_dir/Cargo.toml" ]]; then
 fi
 
 mkdir -p "$(dirname "$output_rootfs")" "$repo_root/target/starry-macos-selfbuild"
-cp "$base_rootfs" "$output_rootfs"
+copy_image "$base_rootfs" "$output_rootfs"
 
 git_value() {
     local fallback="$1"

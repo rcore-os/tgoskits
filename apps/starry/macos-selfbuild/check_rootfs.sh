@@ -40,12 +40,35 @@ if [[ -z "$debugfs" ]]; then
 fi
 
 missing=0
+path_exists() {
+    local guest_path="$1"
+    local out
+
+    out="$("$debugfs" -R "stat $guest_path" "$rootfs" 2>&1 || true)"
+    if printf '%s\n' "$out" | grep -E -q 'File not found|Ext2 inode is not a|ext2_lookup|No such file'; then
+        return 1
+    fi
+    printf '%s\n' "$out" | grep -q 'Inode:'
+}
+
+dir_contains() {
+    local guest_dir="$1"
+    local pattern="$2"
+    local out
+
+    out="$("$debugfs" -R "ls $guest_dir" "$rootfs" 2>&1 || true)"
+    printf '%s\n' "$out" | grep -q "$pattern"
+}
+
 for guest_path in \
     "/usr/bin/cargo" \
+    "/opt/rust-nightly/bin/rustc" \
+    "/opt/rust-nightly/lib/rustlib/src/rust/library/Cargo.lock" \
     "/usr/bin/aarch64-linux-musl-gcc" \
+    "/opt/cargo-nightly-sysroot" \
     "/opt/rustc-nightly-sysroot" \
     "/opt/rustdoc-nightly-sysroot"; do
-    if "$debugfs" -R "stat $guest_path" "$rootfs" >/dev/null 2>&1; then
+    if path_exists "$guest_path"; then
         echo "OK $guest_path"
     else
         echo "MISSING $guest_path"
@@ -53,9 +76,23 @@ for guest_path in \
     fi
 done
 
+if dir_contains "/opt/rust-nightly/lib" "librustc_driver-.*\\.so"; then
+    echo "OK /opt/rust-nightly/lib/librustc_driver-*.so"
+else
+    echo "MISSING /opt/rust-nightly/lib/librustc_driver-*.so"
+    missing=1
+fi
+
+if path_exists "/usr/lib/libclang.so" || path_exists "/usr/lib/llvm22/lib/libclang.so"; then
+    echo "OK libclang.so"
+else
+    echo "MISSING libclang.so"
+    missing=1
+fi
+
 source_ok=0
 for guest_path in "/opt/tgoskits/Cargo.toml" "/opt/tgoskits-src.tar"; do
-    if "$debugfs" -R "stat $guest_path" "$rootfs" >/dev/null 2>&1; then
+    if path_exists "$guest_path"; then
         echo "OK $guest_path"
         source_ok=1
     else
@@ -68,11 +105,11 @@ if [[ "$source_ok" = "0" ]]; then
 fi
 
 deps_ok=0
-if "$debugfs" -R "stat /opt/tgoskits/vendor" "$rootfs" >/dev/null 2>&1; then
+if path_exists "/opt/tgoskits/vendor"; then
     echo "OK /opt/tgoskits/vendor"
     deps_ok=1
-elif "$debugfs" -R "stat /root/.cargo/registry/index" "$rootfs" >/dev/null 2>&1 \
-    && "$debugfs" -R "stat /root/.cargo/registry/cache" "$rootfs" >/dev/null 2>&1; then
+elif path_exists "/root/.cargo/registry/index" \
+    && path_exists "/root/.cargo/registry/cache"; then
     echo "OK /root/.cargo/registry/index"
     echo "OK /root/.cargo/registry/cache"
     deps_ok=1
