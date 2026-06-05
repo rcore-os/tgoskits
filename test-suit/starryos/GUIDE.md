@@ -99,7 +99,7 @@ test-suit/starryos/
 | `c` | case 目录下存在 `c/` | 使用 CMake 交叉编译，安装产物到 rootfs overlay |
 | `sh` | case 目录下存在 `sh/` | 将 shell 脚本注入 `/usr/bin/` |
 | `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，并注入 `.py` 文件 |
-| `grouped` | `qemu-<arch>.toml` 中存在 `test_commands` | 构建子目录中的 C subcase，生成 `/usr/bin/starry-run-case-tests` 顺序执行命令 |
+| `grouped` | `qemu-<arch>.toml` 中存在 `test_commands` | 构建子目录中的 C subcase，生成 `/usr/bin/starry-run-case-tests` 顺序执行命令，并为每个命令打印步骤标记 |
 
 Pipeline case 会创建每个 case 独立的 rootfs 副本，并把注入后的 rootfs 缓存在：
 
@@ -215,7 +215,14 @@ success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 ```
 
-运行器会稳定排序子目录、构建 C subcase，并注入 `/usr/bin/starry-run-case-tests`。
+运行器会稳定排序子目录、构建 C subcase，并注入 `/usr/bin/starry-run-case-tests`。每个命令执行前后都会打印带 `step=当前/总数`、`epoch=`、`status=` 和 `command=` 的标记，例如：
+
+```text
+STARRY_GROUPED_TEST_BEGIN: step=1/2 epoch=... command=/usr/bin/test-a
+STARRY_GROUPED_TEST_PASSED: step=1/2 epoch=... status=0 command=/usr/bin/test-a
+```
+
+如果 grouped case 超时，CI 日志中最后一个 `STARRY_GROUPED_TEST_BEGIN` 通常就是卡住的子命令。
 目前 grouped Rust subcase 还不支持。
 
 ## Shell 和 Python 用例
