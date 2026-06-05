@@ -1,41 +1,14 @@
 extern crate alloc;
 
 use alloc::format;
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_intx_route)]
 use alloc::vec::Vec;
 
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_intx_route)]
 use fdt_edit::Fdt;
 use fdt_edit::{NodeType, PciRange, PciSpace};
 use log::{debug, trace, warn};
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_intx_route)]
 use rdrive::probe::pci::PciAddress;
 use rdrive::{
     PlatformDevice,
@@ -158,16 +131,7 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     super::register_legacy_irq_route(0, logical_bus_end, irq);
 }
 
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_intx_route)]
 pub fn fdt_irq_for_endpoint(
     address: PciAddress,
     interrupt_pin: u8,
@@ -180,16 +144,7 @@ pub fn fdt_irq_for_endpoint(
     result.map(Some)
 }
 
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_intx_route)]
 fn resolve_pci_irq_from_fdt(
     fdt: &Fdt,
     address: PciAddress,
@@ -259,16 +214,7 @@ fn resolve_pci_irq_from_fdt(
     })
 }
 
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_intx_route)]
 fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
     match specifier {
         [irq] => Some(*irq as usize),

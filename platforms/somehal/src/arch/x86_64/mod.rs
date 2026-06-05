@@ -1,7 +1,13 @@
 use alloc::vec::Vec;
 
-use rdrive::probe::acpi::{AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger};
-use spin::Mutex;
+use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
+use rdrive::{
+    DriverGeneric, PlatformDevice, module_driver,
+    probe::{
+        OnProbeError,
+        acpi::{AcpiId, AcpiInfo, AcpiIoApic},
+    },
+};
 use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
 
 use crate::{common::PlatOp, irq::_handle_irq};
@@ -9,8 +15,6 @@ use crate::{common::PlatOp, irq::_handle_irq};
 pub struct Plat;
 
 const APIC_TIMER_VECTOR: usize = 0x20;
-const IOAPIC_VECTOR_BASE: usize = 0x30;
-
 const LAPIC_REG_EOI: u32 = 0x0b0;
 const LAPIC_REG_ICR_LOW: u32 = 0x300;
 const LAPIC_REG_ICR_HIGH: u32 = 0x310;
@@ -19,24 +23,162 @@ const ICR_FIXED_BASE: u32 = 0x0000_4000;
 const ICR_DEST_SELF: u32 = 0x0004_0000;
 const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0x000c_0000;
 
-static IOAPICS: Mutex<Vec<IoApicState>> = Mutex::new(Vec::new());
+module_driver!(
+    name: "ACPI IOAPIC",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::INTC,
+    probe_kinds: &[ProbeKind::Acpi {
+        ids: &[AcpiId {
+            hid: "ACPIIOAP",
+            cids: &[],
+        }],
+        on_probe: probe_ioapic
+    }],
+);
 
-struct IoApicState {
+struct X86IoApicIntc {
+    ioapics: Vec<X86IoApic>,
+    routes: Vec<AcpiGsiRoute>,
+}
+
+impl X86IoApicIntc {
+    fn new(ioapics: &[AcpiIoApic]) -> Self {
+        Self {
+            ioapics: ioapics.iter().copied().map(X86IoApic::new).collect(),
+            routes: Vec::new(),
+        }
+    }
+
+    fn remember_route(&mut self, route: AcpiGsiRoute) {
+        if let Some(existing) = self.routes.iter_mut().find(|r| r.vector == route.vector) {
+            *existing = route;
+        } else {
+            self.routes.push(route);
+        }
+    }
+
+    fn route_for_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
+        self.routes
+            .iter()
+            .copied()
+            .find(|r| r.vector == vector)
+            .or_else(|| {
+                rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_vector(vector))
+                    .flatten()
+            })
+    }
+
+    fn set_vector_enable(&mut self, vector: usize, enable: bool) -> bool {
+        let Some(route) = self.route_for_vector(vector) else {
+            return false;
+        };
+
+        self.set_route_enable(&route, enable);
+        true
+    }
+
+    fn set_route_enable(&mut self, route: &AcpiGsiRoute, enable: bool) {
+        for ioapic in &mut self.ioapics {
+            if ioapic.contains_route(route) {
+                ioapic.set_route_enable(route, enable);
+                return;
+            }
+        }
+    }
+}
+
+struct X86IoApic {
     info: AcpiIoApic,
     ioapic: IoApic,
 }
 
-impl IoApicState {
+impl X86IoApic {
+    fn new(info: AcpiIoApic) -> Self {
+        let ioapic_base = someboot::mem::phys_to_virt(info.address as usize) as u64;
+        let mut ioapic = unsafe { IoApic::new(ioapic_base) };
+        let max_entry = unsafe { ioapic.max_table_entry() };
+        let redirection_entries = max_entry.saturating_add(1);
+
+        unsafe {
+            ioapic.init(irq_vector_base(info.gsi_base) as u8);
+            for input in 0..=max_entry {
+                let mut entry = ioapic.table_entry(input);
+                entry.set_flags(entry.flags() | IrqFlags::MASKED);
+                ioapic.set_table_entry(input, entry);
+            }
+        }
+
+        info!(
+            "ACPI IOAPIC initialized: id={} base={:#x} gsi_base={} entries={}",
+            info.id, info.address, info.gsi_base, redirection_entries
+        );
+
+        Self {
+            info: AcpiIoApic {
+                redirection_entries,
+                ..info
+            },
+            ioapic,
+        }
+    }
+
     fn contains(&self, gsi: u32) -> bool {
         let start = self.info.gsi_base;
         let end = start.saturating_add(u32::from(self.info.redirection_entries));
         (start..end).contains(&gsi)
     }
 
-    fn input_for(&self, gsi: u32) -> Option<u8> {
-        let input = gsi.checked_sub(self.info.gsi_base)?;
-        u8::try_from(input).ok()
+    fn contains_route(&self, route: &AcpiGsiRoute) -> bool {
+        self.info.id == route.controller_id
+            && self.info.address == route.controller_address
+            && self.contains(route.gsi)
     }
+
+    fn set_route_enable(&mut self, route: &AcpiGsiRoute, enable: bool) {
+        if !self.contains_route(route) {
+            return;
+        }
+
+        unsafe {
+            let input = route.controller_input;
+            let mut entry = self.ioapic.table_entry(input);
+            entry.set_vector(route.vector as u8);
+            entry.set_mode(IrqMode::Fixed);
+            entry.set_flags(intx_flags(route.trigger, route.polarity));
+            entry.set_dest(0);
+            self.ioapic.set_table_entry(input, entry);
+
+            if enable {
+                self.ioapic.enable_irq(input);
+            } else {
+                self.ioapic.disable_irq(input);
+            }
+        }
+    }
+}
+
+impl DriverGeneric for X86IoApicIntc {
+    fn name(&self) -> &str {
+        "x86 ACPI IOAPIC"
+    }
+}
+
+impl rdif_intc::Interface for X86IoApicIntc {
+    fn setup_irq_by_acpi(&mut self, route: &AcpiGsiRoute) -> rdrive::IrqId {
+        self.remember_route(*route);
+        self.set_route_enable(route, false);
+        route.vector.into()
+    }
+}
+
+fn probe_ioapic(info: AcpiInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+    let ioapics = info.root.routing().io_apics();
+    if ioapics.is_empty() {
+        return Err(OnProbeError::NotMatch);
+    }
+
+    dev.register(rdif_intc::Intc::new(X86IoApicIntc::new(ioapics)));
+    Ok(())
 }
 
 impl PlatOp for Plat {
@@ -110,77 +252,14 @@ impl PlatOp for Plat {
     }
 }
 
-pub fn init_acpi_irq() {
-    init_ioapics_from_acpi();
-}
-
-fn init_ioapics_from_acpi() {
-    let Some(routing) = rdrive::probe::acpi::with_acpi(|system| system.routing().clone()) else {
-        return;
-    };
-
-    let mut ioapics = IOAPICS.lock();
-    if !ioapics.is_empty() {
-        return;
-    }
-
-    for info in routing.io_apics().iter().copied() {
-        let ioapic_base = someboot::mem::phys_to_virt(info.address as usize) as u64;
-        let mut ioapic = unsafe { IoApic::new(ioapic_base) };
-        let max_entry = unsafe { ioapic.max_table_entry() };
-        let redirection_entries = max_entry.saturating_add(1);
-
-        unsafe {
-            ioapic.init(IOAPIC_VECTOR_BASE as u8);
-            for input in 0..=max_entry {
-                let mut entry = ioapic.table_entry(input);
-                entry.set_flags(entry.flags() | IrqFlags::MASKED);
-                ioapic.set_table_entry(input, entry);
-            }
-        }
-
-        info!(
-            "ACPI IOAPIC initialized: id={} base={:#x} gsi_base={} entries={}",
-            info.id, info.address, info.gsi_base, redirection_entries
-        );
-        ioapics.push(IoApicState {
-            info: AcpiIoApic {
-                redirection_entries,
-                ..info
-            },
-            ioapic,
-        });
-    }
-}
-
 fn set_ioapic_vector_enable(vector: usize, enable: bool) {
-    let Some(gsi) = vector.checked_sub(IOAPIC_VECTOR_BASE).map(|gsi| gsi as u32) else {
-        return;
-    };
-
-    let mut ioapics = IOAPICS.lock();
-    let Some(ioapic) = ioapics.iter_mut().find(|ioapic| ioapic.contains(gsi)) else {
-        return;
-    };
-    let Some(input) = ioapic.input_for(gsi) else {
-        return;
-    };
-
-    unsafe {
-        let mut entry = ioapic.ioapic.table_entry(input);
-        entry.set_vector(vector as u8);
-        entry.set_mode(IrqMode::Fixed);
-        entry.set_flags(intx_flags(
-            AcpiIrqTrigger::Level,
-            AcpiIrqPolarity::ActiveLow,
-        ));
-        entry.set_dest(0);
-        ioapic.ioapic.set_table_entry(input, entry);
-
-        if enable {
-            ioapic.ioapic.enable_irq(input);
-        } else {
-            ioapic.ioapic.disable_irq(input);
+    for intc in rdrive::get_list::<rdif_intc::Intc>() {
+        if intc.descriptor().name.starts_with("ACPI IOAPIC")
+            && let Ok(ioapic) = intc.downcast::<X86IoApicIntc>()
+            && let Ok(mut ioapic) = ioapic.try_lock()
+            && ioapic.set_vector_enable(vector, enable)
+        {
+            return;
         }
     }
 }
@@ -194,6 +273,10 @@ fn intx_flags(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> IrqFlags {
         flags |= IrqFlags::LOW_ACTIVE;
     }
     flags
+}
+
+fn irq_vector_base(gsi_base: u32) -> usize {
+    rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + gsi_base as usize
 }
 
 fn lapic_eoi() {
@@ -233,4 +316,20 @@ fn lapic_ptr(offset: u32) -> *mut u32 {
     const LAPIC_BASE_MASK: u64 = 0xffff_f000;
     let base = unsafe { x86::msr::rdmsr(IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
     unsafe { someboot::mem::phys_to_virt(base).add(offset as usize) }.cast()
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acpi_intx_flags_preserve_trigger_and_polarity() {
+        let level_low = intx_flags(AcpiIrqTrigger::Level, AcpiIrqPolarity::ActiveLow);
+        assert!(level_low.contains(IrqFlags::LEVEL_TRIGGERED));
+        assert!(level_low.contains(IrqFlags::LOW_ACTIVE));
+
+        let edge_high = intx_flags(AcpiIrqTrigger::Edge, AcpiIrqPolarity::ActiveHigh);
+        assert!(!edge_high.contains(IrqFlags::LEVEL_TRIGGERED));
+        assert!(!edge_high.contains(IrqFlags::LOW_ACTIVE));
+    }
 }

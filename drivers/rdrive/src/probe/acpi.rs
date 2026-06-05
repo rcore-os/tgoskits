@@ -22,6 +22,7 @@ use acpi::{
         pci::PciConfigRegions,
     },
 };
+pub use rdif_base::irq::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use spin::{Mutex, Once};
 
 use crate::{
@@ -31,7 +32,7 @@ use crate::{
     register::{DriverRegister, ProbeKind},
 };
 
-const PCI_INTX_VECTOR_BASE: usize = 0x30;
+pub const PCI_INTX_VECTOR_BASE: usize = 0x30;
 const PCI_ROOT_FALLBACK_PATHS: &[&str] = &["\\_SB.PCI0", "\\_SB.PCI1", "\\_SB.PC00", "\\_SB.PC01"];
 
 static SYSTEM: Once<System> = Once::new();
@@ -98,29 +99,6 @@ impl AcpiIoApic {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcpiGsiRoute {
-    pub gsi: u32,
-    pub vector: usize,
-    pub io_apic_id: u8,
-    pub io_apic_address: u32,
-    pub io_apic_input: u8,
-    pub trigger: AcpiIrqTrigger,
-    pub polarity: AcpiIrqPolarity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpiIrqTrigger {
-    Edge,
-    Level,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpiIrqPolarity {
-    ActiveHigh,
-    ActiveLow,
-}
-
 #[derive(Debug, Clone)]
 pub struct AcpiRouting {
     io_apics: Vec<AcpiIoApic>,
@@ -151,12 +129,17 @@ impl AcpiRouting {
         Some(AcpiGsiRoute {
             gsi,
             vector: PCI_INTX_VECTOR_BASE + gsi as usize,
-            io_apic_id: io_apic.id,
-            io_apic_address: io_apic.address,
-            io_apic_input: input,
+            controller_id: io_apic.id,
+            controller_address: io_apic.address,
+            controller_input: input,
             trigger: AcpiIrqTrigger::Level,
             polarity: AcpiIrqPolarity::ActiveLow,
         })
+    }
+
+    pub fn resolve_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
+        let gsi = vector.checked_sub(PCI_INTX_VECTOR_BASE)?;
+        self.resolve_gsi(gsi as u32)
     }
 }
 
@@ -170,13 +153,7 @@ impl Default for AcpiRouting {
 pub struct AcpiPciIrqRoute {
     pub address: PciAddress,
     pub interrupt_pin: u8,
-    pub gsi: u32,
-    pub vector: usize,
-    pub io_apic_id: u8,
-    pub io_apic_address: u32,
-    pub io_apic_input: u8,
-    pub trigger: AcpiIrqTrigger,
-    pub polarity: AcpiIrqPolarity,
+    pub gsi: AcpiGsiRoute,
 }
 
 pub struct AcpiInfo<'a> {
@@ -507,13 +484,11 @@ impl System {
         Ok(Some(AcpiPciIrqRoute {
             address,
             interrupt_pin,
-            gsi: route.gsi,
-            vector: route.vector,
-            io_apic_id: route.io_apic_id,
-            io_apic_address: route.io_apic_address,
-            io_apic_input: route.io_apic_input,
-            trigger: irq_trigger(irq.trigger),
-            polarity: irq_polarity(irq.polarity),
+            gsi: AcpiGsiRoute {
+                trigger: irq_trigger(irq.trigger),
+                polarity: irq_polarity(irq.polarity),
+                ..route
+            },
         }))
     }
 

@@ -3,6 +3,7 @@ use ax_task::current;
 
 use crate::task::AsThread;
 
+#[inline(never)]
 pub fn sys_getpid() -> AxResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
