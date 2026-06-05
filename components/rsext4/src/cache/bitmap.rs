@@ -3,7 +3,7 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 
 use log::debug;
-use spin::Mutex as SpinMutex;
+use ax_kspin::SpinNoPreempt as SpinMutex;
 
 use crate::{
     BITMAP_CACHE_MAX,

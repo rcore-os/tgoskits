@@ -3,8 +3,27 @@
 use core::arch::asm;
 
 #[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
-pub static HARDWARE_SUPPORT_CRC32: spin::LazyLock<bool> = spin::LazyLock::new(has_hardware_crc32);
+use core::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_arch = "aarch64")]
+static CRC32_HW_CHECKED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static mut CRC32_HW_SUPPORTED: bool = false;
+
+/// Returns whether the current CPU supports hardware CRC32C instructions.
+///
+/// The result is computed once on first call and cached for all subsequent calls.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn is_hardware_crc32_supported() -> bool {
+    if CRC32_HW_CHECKED.load(Ordering::Acquire) {
+        return unsafe { CRC32_HW_SUPPORTED };
+    }
+    let supported = has_hardware_crc32();
+    unsafe { CRC32_HW_SUPPORTED = supported };
+    CRC32_HW_CHECKED.store(true, Ordering::Release);
+    supported
+}
 
 // In `core::arch::aarch64`, the intrinsics with the `c` suffix implement the
 // Castagnoli polynomial used by CRC32C.

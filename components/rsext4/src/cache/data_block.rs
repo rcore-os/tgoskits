@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use spin::Mutex as SpinMutex;
+use ax_kspin::SpinNoPreempt as SpinMutex;
 
 use crate::{blockdev::*, bmalloc::AbsoluteBN, config::*, error::*};
 /// Cache key for one physical data block.
