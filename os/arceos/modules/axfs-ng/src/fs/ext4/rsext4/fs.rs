@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::BTreeSet, sync::Arc};
 use core::cell::OnceCell;
 
 use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
@@ -15,6 +15,9 @@ const EXT4_ROOT_INO: u32 = 2;
 pub(crate) struct Ext4State {
     pub fs: rsext4::Ext4FileSystem,
     pub dev: Jbd2Dev<Ext4Disk>,
+    /// Inodes with link count zero and at least one live open reference.
+    /// Keyed by `InodeNumber`; cleaned when the final reference is dropped.
+    pub(crate) pending_unlink: BTreeSet<InodeNumber>,
 }
 
 impl Ext4State {
@@ -22,6 +25,18 @@ impl Ext4State {
         let fs = &mut self.fs as *mut _;
         let dev = &mut self.dev as *mut _;
         unsafe { (&mut *fs, &mut *dev) }
+    }
+
+    pub(crate) fn register_pending(&mut self, ino: InodeNumber) {
+        self.pending_unlink.insert(ino);
+    }
+
+    pub(crate) fn is_pending(&self, ino: InodeNumber) -> bool {
+        self.pending_unlink.contains(&ino)
+    }
+
+    pub(crate) fn remove_pending(&mut self, ino: InodeNumber) {
+        self.pending_unlink.remove(&ino);
     }
 }
 
@@ -44,7 +59,11 @@ impl Ext4Filesystem {
         let fs = rsext4::mount(&mut dev).map_err(into_vfs_err)?;
 
         let fs = Arc::new(Self {
-            inner: Mutex::new(Ext4State { fs, dev }),
+            inner: Mutex::new(Ext4State {
+                fs,
+                dev,
+                pending_unlink: BTreeSet::new(),
+            }),
             root_dir: OnceCell::new(),
         });
         let _ = fs.root_dir.set(DirEntry::new_dir(

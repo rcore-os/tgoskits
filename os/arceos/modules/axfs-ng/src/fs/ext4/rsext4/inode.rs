@@ -1,5 +1,6 @@
 use alloc::{
     borrow::ToOwned,
+    collections::BTreeSet,
     format,
     string::{String, ToString},
     sync::Arc,
@@ -95,6 +96,21 @@ impl Inode {
             }
         })
         .map_err(into_vfs_err)
+    }
+}
+
+impl Drop for Inode {
+    fn drop(&mut self) {
+        let mut state = self.fs.lock();
+        if state.is_pending(self.ino) {
+            // Remove from the pending set before freeing so a
+            // double-Drop (should one occur) is a no-op.
+            state.remove_pending(self.ino);
+            let (fs, dev) = state.split();
+            if let Ok(mut on_disk) = fs.get_inode_by_num(dev, self.ino) {
+                let _ = rsext4::free_inode(fs, dev, self.ino, &mut on_disk);
+            }
+        }
     }
 }
 
@@ -590,43 +606,41 @@ impl DirNodeOps for Inode {
         let path = join_child_path(&dir_path, name);
         {
             let mut state = self.fs.lock();
+            // Use split() for disjoint fs/dev access; the compiler does not
+            // yet support field-level disjoint borrows on this toolchain.
             let (fs, dev) = state.split();
             let inode_info =
                 rsext4::dir::get_inode_with_num(fs, dev, &path).map_err(into_vfs_err)?;
             if inode_info.is_none() {
                 return Err(VfsError::NotFound);
             }
-            let (_ino, inode) = inode_info.unwrap();
+            let (ino, inode) = inode_info.unwrap();
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
                 if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {
                     return Err(VfsError::DirectoryNotEmpty);
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
-            } else {
-                // Linux-compatible unlink(2): remove the directory entry for
-                // every regular file regardless of its name. When this is the
-                // last link and the inode is still open, the inode must stay
-                // alive until the final close.
-                //
-                // rsext4::unlink decrements i_links_count and frees the inode
-                // when the count reaches zero.  Temporarily bump the link count
-                // so the inode survives and open file descriptors can still
-                // reach it by inode number.  After the directory entry is gone,
-                // set the count back to zero so fstat reports st_nlink == 0.
-                let was_last_link = inode.i_links_count == 1;
-                if was_last_link {
-                    fs.modify_inode(dev, _ino, |on_disk| {
-                        on_disk.i_links_count = 2;
-                    })
-                    .map_err(into_vfs_err)?;
-                }
+            } else if inode.i_links_count > 1 {
+                // Multiple hard links remain after this one is removed.
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
-                if was_last_link {
-                    fs.modify_inode(dev, _ino, |on_disk| {
-                        on_disk.i_links_count = 0;
-                    })
+            } else {
+                // Last (or only) link.  Mark the inode zero-link,
+                // remove the directory entry, and register pending-delete.
+                // (Re-derive fs/dev through raw pointers so we can still
+                // touch state.pending_unlink after split() borrows `state`.)
+                fs.modify_inode(dev, ino, |on_disk| {
+                    on_disk.i_links_count = 0;
+                })
+                .map_err(into_vfs_err)?;
+                rsext4::remove_inodeentry_from_parentdir(fs, dev, &dir_path, name)
                     .map_err(into_vfs_err)?;
+                // SAFETY: fs and dev point to distinct fields; the pending
+                // set is a third field with no aliasing concerns.
+                unsafe {
+                    let pending: &mut BTreeSet<InodeNumber> =
+                        &mut *(&mut state.pending_unlink as *mut _);
+                    pending.insert(ino);
                 }
             }
         }

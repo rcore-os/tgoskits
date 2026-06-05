@@ -7,7 +7,7 @@ pub(crate) struct ParentDirEntry {
     pub file_type: u8,
 }
 
-fn free_inode_with_dtime<B: BlockDevice>(
+pub fn free_inode<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
@@ -96,7 +96,7 @@ pub fn unlink<B: BlockDevice>(
     // When the final link disappears, free blocks and inode through the shared
     // deletion path.
     if new_links == 0 {
-        free_inode_with_dtime(fs, block_dev, entry.ino, &mut target_inode)?;
+        free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
     }
 
     // Remove the directory entry at the block found above (no second scan).
@@ -522,7 +522,7 @@ pub fn delete_dir<B: BlockDevice>(
             fs.set_inode_links_count(block_dev, pino, parent_new_links)?;
         }
 
-        free_inode_with_dtime(fs, block_dev, frame.ino_num, &mut cur_inode)?;
+        free_inode(fs, block_dev, frame.ino_num, &mut cur_inode)?;
 
         // Keep the group-descriptor directory count in sync with the removal.
         let (group_idx, _idx_in_group) = fs.inode_allocator.global_to_group(frame.ino_num)?;
@@ -603,7 +603,7 @@ pub fn delete_file<B: BlockDevice>(
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
     if new_links == 0 {
         debug!("Will free inode:{} path:{path}", entry.ino);
-        free_inode_with_dtime(fs, block_dev, entry.ino, &mut target_inode)?;
+        free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
     } else {
         debug!(
             "inode {} still has {new_links} link(s); removing directory entry only",

@@ -24,9 +24,57 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 static int fails;
+
+/* ── statvfs resource-reclamation probe ────────────────────────── */
+
+struct fs_snapshot {
+    unsigned long free_inodes;
+    unsigned long free_blocks;
+};
+
+static int take_snapshot(const char *path, struct fs_snapshot *snap)
+{
+    struct statvfs vfs;
+    if (statvfs(path, &vfs) != 0)
+        return -1;
+    snap->free_inodes = vfs.f_favail;
+    snap->free_blocks = vfs.f_bfree;
+    return 0;
+}
+
+/*
+ * Verify that free inodes and blocks are within `tolerance` of baseline.
+ * ext4 may batch or delay bitmap updates, so allow a small slack.
+ * Returns 0 if within tolerance, 1 if leaked beyond tolerance.
+ */
+static int check_no_leak(const struct fs_snapshot *before,
+                         const struct fs_snapshot *after,
+                         unsigned long tolerance,
+                         const char *label)
+{
+    long ino_delta = (long)after->free_inodes - (long)before->free_inodes;
+    long blk_delta = (long)after->free_blocks - (long)before->free_blocks;
+
+    printf("  INFO: %s: ino_delta=%ld blk_delta=%ld (tol=%lu)\n",
+           label, ino_delta, blk_delta, tolerance);
+
+    if (ino_delta < -(long)tolerance) {
+        printf("  FAIL: %s: inode leak (delta=%ld)\n", label, ino_delta);
+        fails++;
+        return 1;
+    }
+    if (blk_delta < -(long)tolerance) {
+        printf("  FAIL: %s: block leak (delta=%ld)\n", label, blk_delta);
+        fails++;
+        return 1;
+    }
+    printf("  PASS: %s\n", label);
+    return 0;
+}
 
 static void pass(const char *msg)
 {
@@ -83,7 +131,7 @@ static void test_core_cycle(const char *path, const char *label)
     const char *payload_pre  = "pre-unlink data\n";
     const char *payload_post = "post-unlink payload\n";
     char buf[128] = {0};
-    int fd, fd2;
+    int fd;
     ssize_t n;
     struct stat st;
 
@@ -145,7 +193,6 @@ static void test_core_cycle(const char *path, const char *label)
 
 out_close:
     close(fd);
-    (void)fd2;
 }
 
 /* ── O_APPEND write through unlinked fd ── */
@@ -386,23 +433,146 @@ static void test_hardlink_unlink(void)
         { fail("hardlink: fstat nlink 1"); goto out; }
     pass("hardlink: fstat nlink 1");
 
-    /* link path still works */
-    fd = open(linkpath, O_RDONLY);
-    if (fd < 0)
+    /* link path still accessible via a second fd */
+    int fd_link = open(linkpath, O_RDONLY);
+    if (fd_link < 0)
         { fail("hardlink: link path still accessible"); }
     else
-        { pass("hardlink: link path still accessible"); close(fd); }
+        { pass("hardlink: link path still accessible"); close(fd_link); }
 
-    /* unlink the last link */
+    /* unlink the last link while fd is still open → nlink goes 1→0 */
     if (unlink(linkpath) != 0)
-        { fail("hardlink: unlink link"); goto out; }
-    pass("hardlink: unlink link");
+        { fail("hardlink: unlink last link (fd still open)"); goto out; }
+    pass("hardlink: unlink last link (fd still open)");
     assert_noent(linkpath, "hardlink: link path gone after unlink");
+
+    /* fd still works through zero-link inode */
+    lseek(fd, 0, SEEK_SET);
+    memset(buf, 0, sizeof(buf));
+    if (read(fd, buf, strlen(payload)) != (ssize_t)strlen(payload))
+        { fail("hardlink: read through fd with nlink 0"); goto out; }
+    pass("hardlink: read through fd with nlink 0");
+
+    /* fstat reports nlink == 0 after final link removed */
+    if (fstat(fd, &st) != 0 || st.st_nlink != 0)
+        { fail("hardlink: fstat nlink 0 after last link removed"); goto out; }
+    pass("hardlink: fstat nlink 0 after last link removed");
 
 out:
     close(fd);
     unlink(orig);
     unlink(linkpath);
+}
+
+/* ── closed-file unlink: no open fd → free immediately ── */
+static void test_closed_file_unlink(void)
+{
+    const char *path = "/tmp/open-unlink-closed.tmp";
+    const char *payload = "closed-unlink\n";
+    struct fs_snapshot before, after;
+    int fd;
+
+    printf("-- closed-file unlink: %s --\n", path);
+    unlink(path);
+
+    /* snapshot before creation */
+    if (take_snapshot("/tmp", &before) != 0)
+        { fail("closed: statvfs before"); return; }
+    pass("closed: statvfs before");
+
+    fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { fail("closed: open"); return; }
+    pass("closed: open");
+
+    if (write(fd, payload, strlen(payload)) != (ssize_t)strlen(payload))
+        { fail("closed: write"); goto out; }
+    pass("closed: write");
+
+    /* close before unlink — no open fd remains */
+    close(fd);
+
+    /* unlink with no open fd must free resources immediately */
+    if (unlink(path) != 0)
+        { fail("closed: unlink"); return; }
+    pass("closed: unlink");
+
+    /* sync to flush any deferred bitmap updates */
+    sync();
+
+    if (take_snapshot("/tmp", &after) != 0)
+        { fail("closed: statvfs after"); return; }
+    pass("closed: statvfs after");
+
+    /*
+     * After creating-then-unlinking a small file with no open fd,
+     * free inode/block counts should be close to baseline.
+     * ext4 may batch updates so use a permissive tolerance.
+     */
+    check_no_leak(&before, &after, 32, "closed: no inode/block leak");
+    return;
+
+out:
+    close(fd);
+    unlink(path);
+}
+
+/* ── open-close cycle reclamation probe ── */
+static void test_reclaim_after_close(void)
+{
+    const char *path = "/tmp/open-unlink-reclaim.tmp";
+    const char *payload = "reclaim test\n";
+    struct fs_snapshot base, after_create, after_close;
+    int fd;
+
+    printf("-- reclaim after close: %s --\n", path);
+    unlink(path);
+
+    if (take_snapshot("/tmp", &base) != 0)
+        { fail("reclaim: baseline snapshot"); return; }
+    pass("reclaim: baseline snapshot");
+
+    fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { fail("reclaim: open"); return; }
+    if (write(fd, payload, strlen(payload)) != (ssize_t)strlen(payload))
+        { fail("reclaim: write"); goto out; }
+
+    if (take_snapshot("/tmp", &after_create) != 0)
+        { fail("reclaim: after-create snapshot"); goto out; }
+    pass("reclaim: after-create snapshot");
+
+    if (unlink(path) != 0)
+        { fail("reclaim: unlink (fd open)"); goto out; }
+    pass("reclaim: unlink (fd open)");
+
+    /* Write through unlinked fd — inode still alive */
+    if (write(fd, "more\n", 5) != 5)
+        { fail("reclaim: write through unlinked fd"); goto out; }
+    pass("reclaim: write through unlinked fd");
+
+    /* fsync + close triggers final Drop → pending-delete cleanup */
+    if (fsync(fd) != 0)
+        { fail("reclaim: fsync before close"); goto out; }
+    pass("reclaim: fsync before close");
+
+    close(fd);
+    sync();
+
+    if (take_snapshot("/tmp", &after_close) != 0)
+        { fail("reclaim: after-close snapshot"); return; }
+    pass("reclaim: after-close snapshot");
+
+    /*
+     * After the final close, pending-delete cleanup should have freed
+     * the inode and its data blocks.  Verify free counts return to
+     * roughly baseline levels.
+     */
+    check_no_leak(&base, &after_close, 64,
+                  "reclaim: resources freed after close");
+    return;
+
+out:
+    close(fd);
+    unlink(path);
 }
 
 /* ── directory unlink non-regression ── */
@@ -452,6 +622,8 @@ int main(void)
     test_empty_file_unlink();
     test_two_fd_concurrent();
     test_hardlink_unlink();
+    test_closed_file_unlink();
+    test_reclaim_after_close();
     test_dir_unlink_unchanged();
 
     /* ── hidden-orphan scan ────────────────────────────────────── */
