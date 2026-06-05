@@ -252,18 +252,15 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
             warn!("mount_ext4: {:?} is not a loop device", source);
             AxError::NoSuchDevice
         })?;
-    let block_dev = loop_dev.as_dyn_block_device().inspect_err(|e| {
-        warn!(
-            "mount_ext4: loop device as_dyn_block_device failed: {:?}",
-            e
-        );
+    let handle = loop_dev.block_handle().inspect_err(|e| {
+        warn!("mount_ext4: loop device block handle failed: {:?}", e);
     })?;
 
-    let num_blocks = block_dev.num_blocks();
+    let num_blocks = handle.device_info().num_blocks;
     let region = ax_fs_ng::BlockRegion::from_num_blocks(num_blocks);
 
-    // Create ext4 filesystem from the dynamic block device
-    let fs = ax_fs_ng::vfs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
+    // Create ext4 filesystem from the native block runtime handle
+    let fs = ax_fs_ng::vfs::new_filesystem_from_handle(handle, region).map_err(|e| {
         warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
         AxError::Io
     })?;

@@ -1,12 +1,14 @@
 use alloc::{
-    boxed::Box,
     format,
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
 
 use crate::{
-    BlockRegion, FilesystemKind, FsBlockDevice, detect_filesystem, init_filesystem,
+    BlockDeviceHandle, BlockRegion, FilesystemKind,
+    block::{FsBlockDevice, boxed_native_handle_block_device},
+    detect_filesystem, init_filesystem,
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
         PartitionTableKind as VolumeTableKind, scan_volumes,
@@ -66,35 +68,35 @@ impl RootSpec {
     }
 }
 
-pub struct RootCandidate {
+struct RootCandidate {
     pub disk_index: usize,
     pub partition: Option<DetectedPartition>,
 }
 
-pub struct DiscoveredDisk {
-    pub disk_index: usize,
-    pub dev: Box<dyn FsBlockDevice>,
-    pub partitions: Vec<DetectedPartition>,
+struct DiscoveredDisk {
+    disk_index: usize,
+    handle: Arc<BlockDeviceHandle>,
+    partitions: Vec<DetectedPartition>,
 }
 
 #[derive(Clone)]
-pub struct DetectedPartition {
-    pub info: PartitionInfo,
-    pub filesystem: Option<FilesystemKind>,
+struct DetectedPartition {
+    info: PartitionInfo,
+    filesystem: Option<FilesystemKind>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PartitionInfo {
-    pub index: usize,
-    pub table_kind: PartitionTableKind,
-    pub region: BlockRegion,
-    pub name: Option<String>,
-    pub part_uuid: Option<String>,
-    pub bootable: bool,
+struct PartitionInfo {
+    index: usize,
+    table_kind: PartitionTableKind,
+    region: BlockRegion,
+    name: Option<String>,
+    part_uuid: Option<String>,
+    bootable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PartitionTableKind {
+enum PartitionTableKind {
     Raw,
     Gpt,
     Mbr,
@@ -137,7 +139,7 @@ impl RootCandidate {
 }
 
 pub fn init_root(
-    block_devs: impl IntoIterator<Item = Box<dyn FsBlockDevice>>,
+    block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
     bootargs: Option<&str>,
 ) {
     let root_spec = RootSpec::parse_bootargs(bootargs);
@@ -158,19 +160,21 @@ pub fn init_root(
     });
     let description = describe_selection(selected.disk_index, selected_partition_info);
     let region = selected_partition_info.map_or_else(
-        || BlockRegion::from_num_blocks(selected.dev.num_blocks()),
+        || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
         |part| part.info.region,
     );
 
-    init_filesystem(selected.dev, region, &description);
+    init_filesystem(selected.handle, region, &description);
 }
 
-pub fn collect_disks(
-    block_devs: impl IntoIterator<Item = Box<dyn FsBlockDevice>>,
+fn collect_disks(
+    block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
 ) -> Vec<DiscoveredDisk> {
     let mut disks = Vec::new();
 
-    for (disk_index, mut dev) in block_devs.into_iter().enumerate() {
+    for (disk_index, dev) in block_devs.into_iter().enumerate() {
+        let handle = dev.clone();
+        let mut dev = boxed_native_handle_block_device(dev);
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
@@ -179,7 +183,7 @@ pub fn collect_disks(
                 log_disk(disk_index, &device_name, &partitions);
                 disks.push(DiscoveredDisk {
                     disk_index,
-                    dev,
+                    handle,
                     partitions,
                 });
             }
@@ -270,7 +274,7 @@ fn table_kind_from_volume(kind: VolumeTableKind) -> PartitionTableKind {
     }
 }
 
-pub fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
+fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
     let mut candidates = Vec::new();
 
     for disk in disks {
@@ -293,7 +297,7 @@ pub fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
     candidates
 }
 
-pub fn select_root_candidate(
+fn select_root_candidate(
     candidates: &[RootCandidate],
     spec: &RootSpec,
 ) -> Option<(usize, Option<usize>)> {
@@ -441,7 +445,7 @@ fn supported_default_root_partition(partition: &DetectedPartition) -> bool {
     partition.filesystem.is_some()
 }
 
-pub fn describe_selection(disk_index: usize, partition: Option<&DetectedPartition>) -> String {
+fn describe_selection(disk_index: usize, partition: Option<&DetectedPartition>) -> String {
     if let Some(partition) = partition {
         describe_partition(disk_index, partition)
     } else {

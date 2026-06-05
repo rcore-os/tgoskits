@@ -1,13 +1,24 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FileBackend;
+use ax_fs_ng::{
+    block_runtime::{
+        BlockDeviceHandle, BlockDmaBuffer, BlockDmaDirection, BlockDmaProvider, BlockDrainWake,
+        BlockIrqBridge, BlockRuntimeConfig,
+    },
+    vfs::FileBackend,
+};
 use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::VfsResult;
+use rdif_block::{
+    BlkError, DeviceInfo, IQueue, QueueInfo, QueueLimits, Request, RequestId, RequestOp,
+    RequestStatus,
+};
 
 use super::r#loop::LoopDevice;
 
+const LOOP_BLOCK_SIZE: usize = 512;
 const CACHE_BLK: usize = 4096;
 
 pub(super) struct BlockCache {
@@ -21,14 +32,14 @@ impl BlockCache {
 }
 
 struct CacheData {
-    blocks: SpinNoIrq<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
+    blocks: SpinNoIrq<Vec<Vec<u8>>>,
     total_len: usize,
     dirty: AtomicBool,
     mounted: AtomicBool,
 }
 
 impl CacheData {
-    fn new(blocks: alloc::vec::Vec<alloc::vec::Vec<u8>>, total_len: usize) -> Self {
+    fn new(blocks: Vec<Vec<u8>>, total_len: usize) -> Self {
         Self {
             blocks: SpinNoIrq::new(blocks),
             total_len,
@@ -38,89 +49,140 @@ impl CacheData {
     }
 }
 
-struct LoopBlockDevice {
+struct LoopDmaBuffer {
+    bytes: Vec<u8>,
+    bus: u64,
+}
+
+impl LoopDmaBuffer {
+    fn new(len: usize) -> Self {
+        let mut bytes = vec![0u8; len.max(1)];
+        let bus = bytes.as_mut_ptr() as u64;
+        Self { bytes, bus }
+    }
+}
+
+impl BlockDmaBuffer for LoopDmaBuffer {
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn bus_addr(&self) -> u64 {
+        self.bus
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.bytes.as_mut_ptr()
+    }
+
+    fn prepare_for_submit(&mut self, direction: BlockDmaDirection, src: Option<&[u8]>) {
+        if direction == BlockDmaDirection::Write
+            && let Some(src) = src
+        {
+            self.bytes[..src.len()].copy_from_slice(src);
+        }
+    }
+
+    fn complete_after_submit(&mut self, direction: BlockDmaDirection, dst: Option<&mut [u8]>) {
+        if direction == BlockDmaDirection::Read
+            && let Some(dst) = dst
+        {
+            dst.copy_from_slice(&self.bytes[..dst.len()]);
+        }
+    }
+}
+
+struct LoopDmaProvider;
+
+impl BlockDmaProvider for LoopDmaProvider {
+    fn alloc(
+        &self,
+        _dma_mask: u64,
+        len: usize,
+        _align: usize,
+        _direction: BlockDmaDirection,
+    ) -> Result<Box<dyn BlockDmaBuffer>, BlkError> {
+        Ok(Box::new(LoopDmaBuffer::new(len)))
+    }
+}
+
+struct LoopDrainWake;
+
+impl BlockDrainWake for LoopDrainWake {
+    fn wake_drain(&self) {}
+}
+
+struct LoopQueue {
     cache: Arc<CacheData>,
-    block_size: usize,
     ro: bool,
+    info: QueueInfo,
+    next_request_id: usize,
+    pending: BTreeMap<RequestId, RequestStatus>,
 }
 
-impl LoopBlockDevice {
-    fn new(cache: Arc<CacheData>, ro: bool) -> VfsResult<Self> {
+impl LoopQueue {
+    fn new(cache: Arc<CacheData>, ro: bool) -> Self {
         cache.mounted.store(true, Ordering::Release);
-        Ok(Self {
+        let total_len = cache.total_len;
+        let mut limits = QueueLimits::simple(LOOP_BLOCK_SIZE, u64::MAX);
+        limits.supports_flush = true;
+        let mut device = DeviceInfo::new((total_len / LOOP_BLOCK_SIZE) as u64, LOOP_BLOCK_SIZE);
+        device.read_only = ro;
+        Self {
             cache,
-            block_size: 512,
             ro,
-        })
-    }
-}
-
-impl Drop for LoopBlockDevice {
-    fn drop(&mut self) {
-        self.cache.mounted.store(false, Ordering::Release);
-    }
-}
-
-impl ax_fs_ng::FsBlockDevice for LoopBlockDevice {
-    fn name(&self) -> &str {
-        "loop"
+            info: QueueInfo {
+                id: 0,
+                device,
+                limits,
+            },
+            next_request_id: 1,
+            pending: BTreeMap::new(),
+        }
     }
 
-    fn num_blocks(&self) -> u64 {
-        self.cache.total_len as u64 / self.block_size as u64
-    }
-
-    fn block_size(&self) -> usize {
-        self.block_size
-    }
-
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
-        let byte_off = block_id as usize * self.block_size;
-        if byte_off
-            .checked_add(buf.len())
+    fn copy_from_cache(&self, offset: usize, dst: &mut [u8]) -> Result<(), BlkError> {
+        if offset
+            .checked_add(dst.len())
             .is_none_or(|end| end > self.cache.total_len)
         {
-            return Err(AxError::Io);
+            return Err(BlkError::InvalidRequest);
         }
         let blocks = self.cache.blocks.lock();
         let mut pos = 0;
-        let mut cur = byte_off;
-        while pos < buf.len() {
+        let mut cur = offset;
+        while pos < dst.len() {
             let idx = cur / CACHE_BLK;
             let off = cur % CACHE_BLK;
             let Some(chunk) = blocks.get(idx) else {
-                return Err(AxError::Io);
+                return Err(BlkError::InvalidRequest);
             };
-            let to_copy = (buf.len() - pos).min(CACHE_BLK - off);
-            buf[pos..pos + to_copy].copy_from_slice(&chunk[off..off + to_copy]);
+            let to_copy = (dst.len() - pos).min(CACHE_BLK - off);
+            dst[pos..pos + to_copy].copy_from_slice(&chunk[off..off + to_copy]);
             pos += to_copy;
             cur += to_copy;
         }
         Ok(())
     }
 
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
-        if self.ro {
-            return Err(AxError::Io);
-        }
-        let byte_off = block_id as usize * self.block_size;
-        if byte_off
-            .checked_add(buf.len())
+    fn copy_into_cache(&self, offset: usize, src: &[u8]) -> Result<(), BlkError> {
+        if offset
+            .checked_add(src.len())
             .is_none_or(|end| end > self.cache.total_len)
         {
-            return Err(AxError::Io);
+            return Err(BlkError::InvalidRequest);
         }
         let mut blocks = self.cache.blocks.lock();
         let mut pos = 0;
-        let mut cur = byte_off;
-        while pos < buf.len() {
+        let mut cur = offset;
+        while pos < src.len() {
             let idx = cur / CACHE_BLK;
             let off = cur % CACHE_BLK;
             let Some(chunk) = blocks.get_mut(idx) else {
-                return Err(AxError::Io);
+                return Err(BlkError::InvalidRequest);
             };
-            let to_copy = (buf.len() - pos).min(CACHE_BLK - off);
-            chunk[off..off + to_copy].copy_from_slice(&buf[pos..pos + to_copy]);
+            let to_copy = (src.len() - pos).min(CACHE_BLK - off);
+            chunk[off..off + to_copy].copy_from_slice(&src[pos..pos + to_copy]);
             pos += to_copy;
             cur += to_copy;
         }
@@ -128,13 +190,76 @@ impl ax_fs_ng::FsBlockDevice for LoopBlockDevice {
         Ok(())
     }
 
-    fn flush(&mut self) -> AxResult {
-        Ok(())
+    fn block_offset(lba: u64) -> Result<usize, BlkError> {
+        let lba = usize::try_from(lba).map_err(|_| BlkError::InvalidRequest)?;
+        lba.checked_mul(LOOP_BLOCK_SIZE)
+            .ok_or(BlkError::InvalidRequest)
+    }
+
+    fn execute_request(&self, request: &mut Request<'_>) -> Result<(), BlkError> {
+        let base = Self::block_offset(request.lba)?;
+        match request.op {
+            RequestOp::Read => {
+                let mut offset = 0usize;
+                for segment in request.segments.iter_mut() {
+                    let len = segment.len;
+                    self.copy_from_cache(base + offset, &mut segment[..len])?;
+                    offset += len;
+                }
+                Ok(())
+            }
+            RequestOp::Write => {
+                if self.ro {
+                    return Err(BlkError::Io);
+                }
+                let mut offset = 0usize;
+                for segment in request.segments.iter() {
+                    let len = segment.len;
+                    self.copy_into_cache(base + offset, &segment[..len])?;
+                    offset += len;
+                }
+                Ok(())
+            }
+            RequestOp::Flush => Ok(()),
+            _ => Err(BlkError::NotSupported),
+        }
+    }
+}
+
+impl Drop for LoopQueue {
+    fn drop(&mut self) {
+        self.cache.mounted.store(false, Ordering::Release);
+    }
+}
+
+// SAFETY: The queue executes all operations synchronously while holding
+// exclusive `&mut self` access and only touches the cached file bytes.
+unsafe impl IQueue for LoopQueue {
+    fn id(&self) -> usize {
+        self.info.id
+    }
+
+    fn info(&self) -> QueueInfo {
+        self.info
+    }
+
+    fn submit_request(&mut self, mut request: Request<'_>) -> Result<RequestId, BlkError> {
+        self.execute_request(&mut request)?;
+        let request_id = RequestId::new(self.next_request_id);
+        self.next_request_id += 1;
+        self.pending.insert(request_id, RequestStatus::Complete);
+        Ok(request_id)
+    }
+
+    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
+        self.pending
+            .remove(&request)
+            .ok_or(BlkError::InvalidRequest)
     }
 }
 
 impl LoopDevice {
-    pub fn as_dyn_block_device(&self) -> VfsResult<Box<dyn ax_fs_ng::FsBlockDevice>> {
+    pub fn block_handle(&self) -> VfsResult<Arc<BlockDeviceHandle>> {
         let file = self.file.lock().clone();
         let file = file.ok_or(AxError::from(LinuxError::ENXIO))?;
         let len = file.location().len().unwrap_or(0) as usize;
@@ -165,10 +290,14 @@ impl LoopDevice {
         cache.data = Some(cd.clone());
         drop(cache);
 
-        Ok(Box::new(LoopBlockDevice::new(
-            cd,
-            self.ro.load(Ordering::Relaxed),
-        )?))
+        let handle = BlockDeviceHandle::new(
+            "loop",
+            [Box::new(LoopQueue::new(cd, self.ro.load(Ordering::Relaxed))) as Box<dyn IQueue>],
+            Arc::new(BlockIrqBridge::new()),
+            BlockRuntimeConfig::new(Arc::new(LoopDmaProvider), Arc::new(LoopDrainWake)),
+        )
+        .map_err(|_| AxError::Io)?;
+        Ok(handle)
     }
 
     pub fn flush_cache_to_file(&self) -> AxResult<()> {

@@ -20,15 +20,13 @@ pub use irq::{BlockIrqBridge, DrainEvents};
 #[cfg(test)]
 pub use queue::{CompletionDrain, CompletionSink, RequestPoller};
 pub use request::{
-    BlockWaitToken, BlockWaiter, PendingRequest, PendingTable, PollClaim, PollProgress, RequestKey,
-    RequestState, RuntimeRequestId,
+    PendingRequest, PendingTable, PollClaim, PollProgress, RequestKey, RequestState,
+    RuntimeRequestId,
 };
-#[cfg(test)]
-pub use request::{SpinWaitToken, SpinWaiter};
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+    use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
@@ -43,66 +41,6 @@ mod tests {
     use spin::Mutex as SpinNoIrq;
 
     use super::*;
-    use crate::FsBlockDevice;
-
-    struct CounterToken {
-        ready: SpinWaitToken,
-        wakes: AtomicUsize,
-        waits: AtomicUsize,
-    }
-
-    impl CounterToken {
-        const fn new() -> Self {
-            Self {
-                ready: SpinWaitToken::new(),
-                wakes: AtomicUsize::new(0),
-                waits: AtomicUsize::new(0),
-            }
-        }
-
-        fn wakes(&self) -> usize {
-            self.wakes.load(Ordering::Acquire)
-        }
-    }
-
-    impl BlockWaitToken for CounterToken {
-        fn wait(&self) {
-            self.waits.fetch_add(1, Ordering::AcqRel);
-            self.ready.wait();
-        }
-
-        fn wake(&self) {
-            self.wakes.fetch_add(1, Ordering::AcqRel);
-            self.ready.wake();
-        }
-
-        fn mark_ready(&self) {
-            self.ready.mark_ready();
-        }
-
-        fn is_ready(&self) -> bool {
-            self.ready.is_ready()
-        }
-    }
-
-    #[derive(Default)]
-    struct CounterWaiter {
-        tokens: SpinNoIrq<Vec<Arc<CounterToken>>>,
-    }
-
-    impl CounterWaiter {
-        fn latest(&self) -> Arc<CounterToken> {
-            self.tokens.lock().last().unwrap().clone()
-        }
-    }
-
-    impl BlockWaiter for CounterWaiter {
-        fn new_token(&self) -> Arc<dyn BlockWaitToken> {
-            let token = Arc::new(CounterToken::new());
-            self.tokens.lock().push(token.clone());
-            token
-        }
-    }
 
     struct ChannelDrainWake {
         tx: std::sync::Mutex<mpsc::Sender<()>>,
@@ -228,8 +166,7 @@ mod tests {
         table.insert_submitted(0, RequestId::new(1), None).unwrap();
         assert!(table.complete(key(1), Ok(())).is_none());
 
-        let token = Arc::new(CounterToken::new());
-        assert_eq!(table.register_wait_token(key(1), token), Some(Ok(())));
+        assert_eq!(table.register_waiter_task(key(1), 7), Some(Ok(())));
         assert_eq!(
             table.take_completed(key(1)).map(|(result, _)| result),
             Some(Ok(()))
@@ -237,15 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn request_completes_after_wait_token_registration() {
+    fn request_completes_after_waiter_task_registration() {
         let mut table = PendingTable::new();
         let key = table.insert_submitted(0, RequestId::new(2), None).unwrap();
-        let token = Arc::new(CounterToken::new());
-        assert_eq!(table.register_wait_token(key, token.clone()), None);
+        assert_eq!(table.register_waiter_task(key, 7), None);
 
         let wake = table.complete(key, Ok(())).unwrap();
-        wake.wake();
-        assert_eq!(token.wakes(), 1);
+        assert_eq!(wake, 7);
         assert_eq!(
             table.take_completed(key).map(|(result, _)| result),
             Some(Ok(()))
@@ -290,10 +225,8 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(2), None)
             .unwrap();
-        let token1 = Arc::new(CounterToken::new());
-        let token2 = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key(1), token1.clone());
-        pending.lock().register_wait_token(key(2), token2.clone());
+        pending.lock().register_waiter_task(key(1), 1);
+        pending.lock().register_waiter_task(key(2), 2);
 
         let mut poller = Poller::default();
         poller.complete(driver_key(1));
@@ -303,8 +236,6 @@ mod tests {
             request_id: RequestId::new(1),
         });
 
-        assert_eq!(token1.wakes(), 1);
-        assert_eq!(token2.wakes(), 0);
         assert!(pending.lock().request(key(2)).is_some());
     }
 
@@ -319,19 +250,14 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(2), None)
             .unwrap();
-        let token1 = Arc::new(CounterToken::new());
-        let token2 = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key(1), token1.clone());
-        pending.lock().register_wait_token(key(2), token2.clone());
+        pending.lock().register_waiter_task(key(1), 1);
+        pending.lock().register_waiter_task(key(2), 2);
 
         let mut poller = Poller::default();
         poller.complete(driver_key(1));
         poller.complete(driver_key(2));
         let mut drain = CompletionDrain::new(&pending, &mut poller);
         assert_eq!(drain.drain_hint(CompletionHint::Queue { queue_id: 0 }), 2);
-
-        assert_eq!(token1.wakes(), 1);
-        assert_eq!(token2.wakes(), 1);
     }
 
     #[test]
@@ -345,10 +271,8 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(2), None)
             .unwrap();
-        let token1 = Arc::new(CounterToken::new());
-        let token2 = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key(1), token1.clone());
-        pending.lock().register_wait_token(key(2), token2.clone());
+        pending.lock().register_waiter_task(key(1), 1);
+        pending.lock().register_waiter_task(key(2), 2);
 
         let mut completions = BTreeMap::new();
         completions.insert(driver_key(1), Ok(RequestStatus::Complete));
@@ -360,8 +284,6 @@ mod tests {
         assert_eq!(poller.batch_calls, 1);
         assert_eq!(poller.single_polls, 0);
         assert_eq!(poller.last_batch, [driver_key(1), driver_key(2)]);
-        assert_eq!(token1.wakes(), 1);
-        assert_eq!(token2.wakes(), 1);
     }
 
     #[test]
@@ -379,12 +301,9 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(3), None)
             .unwrap();
-        let token1 = Arc::new(CounterToken::new());
-        let token2 = Arc::new(CounterToken::new());
-        let token3 = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key(1), token1.clone());
-        pending.lock().register_wait_token(key(2), token2.clone());
-        pending.lock().register_wait_token(key(3), token3.clone());
+        pending.lock().register_waiter_task(key(1), 1);
+        pending.lock().register_waiter_task(key(2), 2);
+        pending.lock().register_waiter_task(key(3), 3);
 
         let mut completions = BTreeMap::new();
         completions.insert(driver_key(1), Ok(RequestStatus::Complete));
@@ -402,9 +321,6 @@ mod tests {
         assert_eq!(poller.batch_calls, 1);
         assert_eq!(poller.single_polls, 0);
         assert_eq!(poller.last_batch, [driver_key(1), driver_key(3)]);
-        assert_eq!(token1.wakes(), 1);
-        assert_eq!(token2.wakes(), 0);
-        assert_eq!(token3.wakes(), 1);
     }
 
     #[test]
@@ -414,8 +330,7 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(1), None)
             .unwrap();
-        let token = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key, token.clone());
+        pending.lock().register_waiter_task(key, 4);
 
         let mut completions = BTreeMap::new();
         completions.insert(driver_key(1), Ok(RequestStatus::Complete));
@@ -423,11 +338,9 @@ mod tests {
         let mut drain = CompletionDrain::new(&pending, &mut poller);
 
         assert_eq!(drain.drain_hint(CompletionHint::Queue { queue_id: 0 }), 0);
-        assert_eq!(token.wakes(), 0);
         assert_eq!(pending.lock().result(key), None);
 
         assert_eq!(drain.drain_hint(CompletionHint::Queue { queue_id: 0 }), 1);
-        assert_eq!(token.wakes(), 1);
         assert_eq!(
             pending.lock().take_completed(key).map(|(result, _)| result),
             Some(Ok(()))
@@ -445,10 +358,8 @@ mod tests {
             .lock()
             .insert_submitted(1, RequestId::new(7), None)
             .unwrap();
-        let token1 = Arc::new(CounterToken::new());
-        let token2 = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key(1), token1.clone());
-        pending.lock().register_wait_token(key(2), token2.clone());
+        pending.lock().register_waiter_task(key(1), 1);
+        pending.lock().register_waiter_task(key(2), 2);
 
         let mut completions = BTreeMap::new();
         completions.insert((0, RequestId::new(1)), Ok(RequestStatus::Complete));
@@ -465,8 +376,6 @@ mod tests {
         );
         assert_eq!(poller.batch_calls, 2);
         assert_eq!(poller.single_polls, 0);
-        assert_eq!(token1.wakes(), 1);
-        assert_eq!(token2.wakes(), 1);
     }
 
     #[test]
@@ -581,8 +490,7 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(1), None)
             .unwrap();
-        let token = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key, token.clone());
+        pending.lock().register_waiter_task(key, 1);
 
         let mut poller = RepollPoller {
             pending: &pending,
@@ -599,7 +507,6 @@ mod tests {
         );
 
         assert_eq!(poller.polls, 2);
-        assert_eq!(token.wakes(), 1);
         assert_eq!(
             pending.lock().take_completed(key).map(|(result, _)| result),
             Some(Ok(()))
@@ -613,8 +520,7 @@ mod tests {
             .lock()
             .insert_submitted(0, RequestId::new(3), None)
             .unwrap();
-        let token = Arc::new(CounterToken::new());
-        pending.lock().register_wait_token(key, token.clone());
+        pending.lock().register_waiter_task(key, 1);
 
         let mut poller = Poller::default();
         poller.fail(driver_key(3));
@@ -624,7 +530,6 @@ mod tests {
             request_id: RequestId::new(3),
         });
 
-        assert_eq!(token.wakes(), 1);
         assert_eq!(
             pending.lock().take_completed(key).map(|(result, _)| result),
             Some(Err(BlkError::Io))

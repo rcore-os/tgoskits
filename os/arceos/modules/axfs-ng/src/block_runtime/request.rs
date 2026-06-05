@@ -1,6 +1,4 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-#[cfg(test)]
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use rdif_block::{BlkError, RequestId};
 
@@ -27,69 +25,6 @@ pub type RequestKey = RuntimeRequestId;
 pub struct SubmittedRequest {
     pub queue_id: usize,
     pub request_id: RequestId,
-}
-
-pub trait BlockWaitToken: Send + Sync {
-    fn wait(&self);
-    fn wake(&self);
-    fn mark_ready(&self);
-    fn is_ready(&self) -> bool;
-}
-
-#[cfg(test)]
-pub struct SpinWaitToken {
-    ready: AtomicBool,
-}
-
-#[cfg(test)]
-impl SpinWaitToken {
-    pub const fn new() -> Self {
-        Self {
-            ready: AtomicBool::new(false),
-        }
-    }
-}
-
-#[cfg(test)]
-impl Default for SpinWaitToken {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl BlockWaitToken for SpinWaitToken {
-    fn wait(&self) {
-        while !self.ready.load(Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn wake(&self) {
-        self.mark_ready();
-    }
-
-    fn mark_ready(&self) {
-        self.ready.store(true, Ordering::Release);
-    }
-
-    fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
-    }
-}
-
-pub trait BlockWaiter: Send + Sync {
-    fn new_token(&self) -> Arc<dyn BlockWaitToken>;
-}
-
-#[cfg(test)]
-pub struct SpinWaiter;
-
-#[cfg(test)]
-impl BlockWaiter for SpinWaiter {
-    fn new_token(&self) -> Arc<dyn BlockWaitToken> {
-        Arc::new(SpinWaitToken::new())
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,7 +55,7 @@ pub enum PollProgress {
 pub struct PendingRequest {
     submitted: SubmittedRequest,
     state: RequestState,
-    wait_token: Option<Arc<dyn BlockWaitToken>>,
+    waiter_task_id: Option<u64>,
     buffer_guard: Option<DmaBufferGuard>,
     result: Option<Result<(), BlkError>>,
     polling: bool,
@@ -132,7 +67,7 @@ impl PendingRequest {
         Self {
             submitted,
             state: RequestState::Submitted,
-            wait_token: None,
+            waiter_task_id: None,
             buffer_guard,
             result: None,
             polling: false,
@@ -156,6 +91,10 @@ impl PendingRequest {
         self.buffer_guard.is_some()
     }
 
+    pub const fn waiter_task_id(&self) -> Option<u64> {
+        self.waiter_task_id
+    }
+
     pub fn take_completed_guard(&mut self) -> Option<DmaBufferGuard> {
         if self.result.is_some() {
             self.buffer_guard.take()
@@ -164,11 +103,11 @@ impl PendingRequest {
         }
     }
 
-    fn register_wait_token(&mut self, token: Arc<dyn BlockWaitToken>) -> bool {
+    fn register_waiter_task(&mut self, task_id: u64) -> bool {
         if self.result.is_some() {
             return true;
         }
-        self.wait_token = Some(token);
+        self.waiter_task_id = Some(task_id);
         self.state = RequestState::Pending;
         false
     }
@@ -182,7 +121,7 @@ impl PendingRequest {
         }
     }
 
-    fn complete(&mut self, result: Result<(), BlkError>) -> Option<Arc<dyn BlockWaitToken>> {
+    fn complete(&mut self, result: Result<(), BlkError>) -> Option<u64> {
         if self.result.is_some() {
             return None;
         }
@@ -198,11 +137,11 @@ impl PendingRequest {
         if abandoned {
             self.buffer_guard.take();
         }
-        self.wait_token.take()
+        self.waiter_task_id.take()
     }
 
     fn abandon(&mut self) -> bool {
-        self.wait_token.take();
+        self.waiter_task_id.take();
         if self.result.is_some() {
             return true;
         }
@@ -257,13 +196,13 @@ impl PendingTable {
         Ok(key)
     }
 
-    pub fn register_wait_token(
+    pub fn register_waiter_task(
         &mut self,
         key: RequestKey,
-        token: Arc<dyn BlockWaitToken>,
+        task_id: u64,
     ) -> Option<Result<(), BlkError>> {
         let request = self.requests.get_mut(&key)?;
-        if request.register_wait_token(token) {
+        if request.register_waiter_task(task_id) {
             request.result
         } else {
             None
@@ -280,11 +219,7 @@ impl PendingTable {
         }
     }
 
-    pub fn complete(
-        &mut self,
-        key: RequestKey,
-        result: Result<(), BlkError>,
-    ) -> Option<Arc<dyn BlockWaitToken>> {
+    pub fn complete(&mut self, key: RequestKey, result: Result<(), BlkError>) -> Option<u64> {
         self.requests
             .get_mut(&key)
             .and_then(|request| request.complete(result))

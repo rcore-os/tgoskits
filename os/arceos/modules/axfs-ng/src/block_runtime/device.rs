@@ -13,10 +13,10 @@ use rdif_block::{
 use spin::Mutex as SpinNoIrq;
 
 use super::{
-    BlockDmaDirection, BlockDmaProvider, BlockIrqBridge, BlockWaitToken, BlockWaiter,
-    DmaBufferGuard, DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey,
+    BlockDmaDirection, BlockDmaProvider, BlockIrqBridge, DmaBufferGuard, DrainEvents, PendingTable,
+    PollClaim, PollProgress, RequestKey,
 };
-use crate::FsBlockDevice;
+use crate::os::{current_task_id, task_yield, wake_task};
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
@@ -46,11 +46,11 @@ struct ClaimedQueueBatch {
 
 struct QueueProgressWaiter {
     queue_id: usize,
-    token: Arc<dyn BlockWaitToken>,
+    task_id: u64,
 }
 
 struct BarrierWaiter {
-    token: Arc<dyn BlockWaitToken>,
+    task_id: u64,
 }
 
 struct DataIoGuard<'a> {
@@ -63,10 +63,12 @@ impl Drop for DataIoGuard<'_> {
     }
 }
 
+#[cfg(feature = "ext4")]
 struct FlushBarrierGuard<'a> {
     device: &'a BlockDeviceHandle,
 }
 
+#[cfg(feature = "ext4")]
 impl Drop for FlushBarrierGuard<'_> {
     fn drop(&mut self) {
         self.device.flush_active.store(false, Ordering::Release);
@@ -88,7 +90,6 @@ impl BlockDrainWake for NoopDrainWake {
 
 pub struct BlockRuntimeConfig {
     pub dma: Arc<dyn BlockDmaProvider>,
-    pub waiter: Arc<dyn BlockWaiter>,
     pub drain_wake: Arc<dyn BlockDrainWake>,
     pub max_transfer_bytes: usize,
     pub max_segments: usize,
@@ -96,14 +97,9 @@ pub struct BlockRuntimeConfig {
 }
 
 impl BlockRuntimeConfig {
-    pub fn new(
-        dma: Arc<dyn BlockDmaProvider>,
-        waiter: Arc<dyn BlockWaiter>,
-        drain_wake: Arc<dyn BlockDrainWake>,
-    ) -> Self {
+    pub fn new(dma: Arc<dyn BlockDmaProvider>, drain_wake: Arc<dyn BlockDrainWake>) -> Self {
         Self {
             dma,
-            waiter,
             drain_wake,
             max_transfer_bytes: DEFAULT_MAX_TRANSFER_BYTES,
             max_segments: usize::MAX,
@@ -121,7 +117,6 @@ pub struct BlockDeviceHandle {
     barrier_waiters: SpinNoIrq<Vec<BarrierWaiter>>,
     bridge: Arc<BlockIrqBridge>,
     dma: Arc<dyn BlockDmaProvider>,
-    waiter: Arc<dyn BlockWaiter>,
     drain_wake: Arc<dyn BlockDrainWake>,
     submit_window: usize,
     drain_running: AtomicBool,
@@ -181,12 +176,6 @@ impl BlockRuntime {
     pub fn devices(&self) -> &[Arc<BlockDeviceHandle>] {
         &self.devices
     }
-
-    pub fn into_fs_devices(self) -> impl Iterator<Item = Box<dyn FsBlockDevice>> {
-        self.devices
-            .into_iter()
-            .map(|device| Box::new(device) as Box<dyn FsBlockDevice>)
-    }
 }
 
 impl Default for BlockRuntime {
@@ -240,7 +229,6 @@ impl BlockDeviceHandle {
             barrier_waiters: SpinNoIrq::new(Vec::new()),
             bridge,
             dma: config.dma,
-            waiter: config.waiter,
             drain_wake: config.drain_wake,
             submit_window: config.submit_window.max(1),
             drain_running: AtomicBool::new(false),
@@ -252,6 +240,10 @@ impl BlockDeviceHandle {
 
     pub fn bridge(&self) -> Arc<BlockIrqBridge> {
         self.bridge.clone()
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn queue_ids(&self) -> Vec<usize> {
@@ -460,7 +452,17 @@ impl BlockDeviceHandle {
                     match progress {
                         PollProgress::Pending | PollProgress::Complete => {}
                         PollProgress::Repoll => {
-                            completed += usize::from(self.poll_claimed_one(key));
+                            let completed_key = match self.pending.lock().request(key) {
+                                Some(request) => {
+                                    let result = self.poll_request(
+                                        request.submitted_request().queue_id,
+                                        request.submitted_request().request_id,
+                                    );
+                                    self.finish_poll(key, result).is_some()
+                                }
+                                None => false,
+                            };
+                            completed += usize::from(completed_key);
                         }
                     }
                 }
@@ -504,6 +506,7 @@ impl BlockDeviceHandle {
         batches
     }
 
+    #[cfg(feature = "ext4")]
     fn poll_one(&self, key: RequestKey) -> bool {
         if self.pending.lock().begin_poll(key) != PollClaim::Claimed {
             return false;
@@ -511,6 +514,7 @@ impl BlockDeviceHandle {
         self.poll_claimed_one(key)
     }
 
+    #[cfg(feature = "ext4")]
     fn poll_claimed_one(&self, key: RequestKey) -> bool {
         loop {
             let submitted = match self.pending.lock().request(key) {
@@ -529,7 +533,7 @@ impl BlockDeviceHandle {
         key: RequestKey,
         result: Result<RequestStatus, BlkError>,
     ) -> Option<bool> {
-        let token = match result {
+        let task_id = match result {
             Ok(RequestStatus::Pending) => match self.pending.lock().finish_pending_poll(key) {
                 PollProgress::Pending => None,
                 PollProgress::Repoll => return None,
@@ -539,19 +543,18 @@ impl BlockDeviceHandle {
             Err(err) => self.pending.lock().complete(key, Err(err)),
         };
         if !matches!(result, Ok(RequestStatus::Pending)) {
-            self.wake_completed_request(key, token);
+            self.wake_completed_request(key, task_id);
         }
         Some(!matches!(result, Ok(RequestStatus::Pending)))
     }
 
-    fn wake_completed_request(&self, key: RequestKey, token: Option<Arc<dyn BlockWaitToken>>) {
+    fn wake_completed_request(&self, key: RequestKey, task_id: Option<u64>) {
         let queue_id = self.queue_id_for_key(key);
         if let Some(queue_id) = queue_id {
             self.wake_queue_progress(queue_id);
         }
-        if let Some(token) = token {
-            token.mark_ready();
-            token.wake();
+        if let Some(task_id) = task_id {
+            wake_task(task_id);
         }
     }
 
@@ -569,51 +572,32 @@ impl BlockDeviceHandle {
             let mut idx = 0;
             while idx < waiters.len() {
                 if waiters[idx].queue_id == queue_id {
-                    matching.push(waiters.swap_remove(idx).token);
+                    matching.push(waiters.swap_remove(idx).task_id);
                 } else {
                     idx += 1;
                 }
             }
             matching
         };
-        for token in waiters {
-            token.mark_ready();
-            token.wake();
+        for task_id in waiters {
+            wake_task(task_id);
         }
     }
 
-    fn poll_locked_request(&self, key: RequestKey, queue: &mut QueueRuntime) -> bool {
-        if self.pending.lock().begin_poll(key) != PollClaim::Claimed {
-            return false;
-        }
-        self.poll_locked_claimed_one(key, queue)
-    }
-
-    fn poll_locked_claimed_one(&self, key: RequestKey, queue: &mut QueueRuntime) -> bool {
-        loop {
-            let submitted = match self.pending.lock().request(key) {
-                Some(request) => request.submitted_request(),
-                None => return false,
-            };
-            let result = queue.queue.poll_request(submitted.request_id);
-            if let Some(completed) = self.finish_poll(key, result) {
-                return completed;
-            }
-        }
-    }
-
-    fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
+    pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
         self.check_not_poisoned()?;
         self.submit_io(RequestOp::Read, block_id, buf, None)
     }
 
-    fn write_blocks(&self, block_id: u64, buf: &[u8]) -> AxResult {
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> AxResult {
         self.check_not_poisoned()?;
         let mut no_dst = [];
         self.submit_io(RequestOp::Write, block_id, &mut no_dst, Some(buf))
     }
 
-    fn flush_blocks(&self) -> AxResult {
+    #[cfg(feature = "ext4")]
+    pub(crate) fn flush_blocks(&self) -> AxResult {
         self.check_not_poisoned()?;
         let _barrier = self.acquire_flush_barrier()?;
         self.wait_for_all_pending()?;
@@ -639,7 +623,6 @@ impl BlockDeviceHandle {
                         .lock()
                         .insert_submitted(info.id, request_id, None)
                         .map_err(map_blk_err_to_ax_err)?;
-                    self.poll_locked_request(key, &mut queue);
                     drop(queue);
                     return self.wait_for_completion(key, None);
                 }
@@ -654,6 +637,7 @@ impl BlockDeviceHandle {
         }
     }
 
+    #[cfg(feature = "ext4")]
     fn flush_queue_index(&self) -> Option<usize> {
         self.queues
             .iter()
@@ -661,6 +645,7 @@ impl BlockDeviceHandle {
             .find_map(|(idx, queue)| queue.lock().info.limits.supports_flush.then_some(idx))
     }
 
+    #[cfg(feature = "ext4")]
     fn wait_for_all_pending(&self) -> AxResult {
         loop {
             let queues =
@@ -793,6 +778,7 @@ impl BlockDeviceHandle {
         }
     }
 
+    #[cfg(feature = "ext4")]
     fn acquire_flush_barrier(&self) -> AxResult<FlushBarrierGuard<'_>> {
         loop {
             if self
@@ -811,46 +797,47 @@ impl BlockDeviceHandle {
     }
 
     fn wait_for_flush_release(&self) -> AxResult {
-        let token = self.waiter.new_token();
+        let task_id = current_task_id().unwrap_or(0);
         if !self.flush_active.load(Ordering::Acquire) {
             return Ok(());
         }
-        self.barrier_waiters.lock().push(BarrierWaiter {
-            token: token.clone(),
-        });
+        self.barrier_waiters.lock().push(BarrierWaiter { task_id });
         if !self.flush_active.load(Ordering::Acquire) {
-            self.remove_barrier_waiter(&token);
+            self.remove_barrier_waiter(task_id);
             return Ok(());
         }
-        if !token.is_ready() {
-            token.wait();
+        if task_id != 0 {
+            task_yield();
+        } else {
+            core::hint::spin_loop();
         }
         Ok(())
     }
 
+    #[cfg(feature = "ext4")]
     fn wait_for_active_data_drain(&self) -> AxResult {
-        let token = self.waiter.new_token();
+        let task_id = current_task_id().unwrap_or(0);
         if self.active_data_ops.load(Ordering::Acquire) == 0 {
             return Ok(());
         }
-        self.barrier_waiters.lock().push(BarrierWaiter {
-            token: token.clone(),
-        });
+        self.barrier_waiters.lock().push(BarrierWaiter { task_id });
         if self.active_data_ops.load(Ordering::Acquire) == 0 {
-            self.remove_barrier_waiter(&token);
+            self.remove_barrier_waiter(task_id);
             return Ok(());
         }
-        if !token.is_ready() {
-            token.wait();
+        if task_id != 0 {
+            task_yield();
+        } else {
+            core::hint::spin_loop();
         }
         Ok(())
     }
 
-    fn remove_barrier_waiter(&self, token: &Arc<dyn BlockWaitToken>) {
+    fn remove_barrier_waiter(&self, task_id: u64) {
         let mut waiters = self.barrier_waiters.lock();
         let mut idx = 0;
         while idx < waiters.len() {
-            if Arc::ptr_eq(&waiters[idx].token, token) {
+            if waiters[idx].task_id == task_id {
                 waiters.swap_remove(idx);
             } else {
                 idx += 1;
@@ -864,8 +851,7 @@ impl BlockDeviceHandle {
             core::mem::take(&mut *waiters)
         };
         for waiter in waiters {
-            waiter.token.mark_ready();
-            waiter.token.wake();
+            wake_task(waiter.task_id);
         }
     }
 
@@ -1007,14 +993,12 @@ impl BlockDeviceHandle {
     }
 
     fn wait_for_any_active(&self, active: &[WindowEntry]) -> AxResult {
-        let token = self.waiter.new_token();
+        let task_id = current_task_id().unwrap_or(0);
         let mut observed = false;
         {
             let mut pending = self.pending.lock();
             for entry in active {
-                observed |= pending
-                    .register_wait_token(entry.key, token.clone())
-                    .is_some();
+                observed |= pending.register_waiter_task(entry.key, task_id).is_some();
             }
         }
         if observed {
@@ -1036,42 +1020,43 @@ impl BlockDeviceHandle {
         }
         self.record_queue_ready_for_keys(&keys);
         self.drain_wake.wake_drain();
-        if !token.is_ready() {
-            token.wait();
+        if task_id != 0 {
+            task_yield();
+        } else {
+            core::hint::spin_loop();
         }
         Ok(())
     }
 
     fn wait_for_queue_progress(&self, queue_id: usize) -> AxResult<bool> {
-        let token = self.waiter.new_token();
+        let task_id = current_task_id().unwrap_or(0);
         if self.pending.lock().keys_for_queue(queue_id).is_empty() {
             return Ok(false);
         }
         self.queue_progress_waiters
             .lock()
-            .push(QueueProgressWaiter {
-                queue_id,
-                token: token.clone(),
-            });
+            .push(QueueProgressWaiter { queue_id, task_id });
         let keys = self.pending.lock().keys_for_queue(queue_id);
         let _ = self.poll_batch(&keys);
-        if token.is_ready() || self.pending.lock().keys_for_queue(queue_id).is_empty() {
-            self.remove_queue_progress_waiter(queue_id, &token);
+        if self.pending.lock().keys_for_queue(queue_id).is_empty() {
+            self.remove_queue_progress_waiter(queue_id, task_id);
             return Ok(true);
         }
         self.bridge.record_queue_ready(queue_id);
         self.drain_wake.wake_drain();
-        if !token.is_ready() {
-            token.wait();
+        if task_id != 0 {
+            task_yield();
+        } else {
+            core::hint::spin_loop();
         }
         Ok(true)
     }
 
-    fn remove_queue_progress_waiter(&self, queue_id: usize, token: &Arc<dyn BlockWaitToken>) {
+    fn remove_queue_progress_waiter(&self, queue_id: usize, task_id: u64) {
         let mut waiters = self.queue_progress_waiters.lock();
         let mut idx = 0;
         while idx < waiters.len() {
-            if waiters[idx].queue_id == queue_id && Arc::ptr_eq(&waiters[idx].token, token) {
+            if waiters[idx].queue_id == queue_id && waiters[idx].task_id == task_id {
                 waiters.swap_remove(idx);
             } else {
                 idx += 1;
@@ -1079,9 +1064,10 @@ impl BlockDeviceHandle {
         }
     }
 
+    #[cfg(feature = "ext4")]
     fn wait_for_completion(&self, key: RequestKey, dst: Option<&mut [u8]>) -> AxResult {
-        let token = self.waiter.new_token();
-        let observed = self.pending.lock().register_wait_token(key, token.clone());
+        let task_id = current_task_id().unwrap_or(0);
+        let observed = self.pending.lock().register_waiter_task(key, task_id);
         let observed = match observed {
             Some(result) => result,
             None => {
@@ -1097,7 +1083,11 @@ impl BlockDeviceHandle {
                     }
                     self.record_queue_ready_for_keys(&[key]);
                     self.drain_wake.wake_drain();
-                    token.wait();
+                    if task_id != 0 {
+                        task_yield();
+                    } else {
+                        core::hint::spin_loop();
+                    }
                 }
             }
         };
@@ -1196,36 +1186,10 @@ impl DeviceCompletionSink<'_> {
     }
 
     fn complete_runtime(&mut self, key: RequestKey, result: Result<(), BlkError>) {
-        let token = self.device.pending.lock().complete(key, result);
-        self.device.wake_completed_request(key, token);
+        let task_id = self.device.pending.lock().complete(key, result);
+        self.device.wake_completed_request(key, task_id);
         self.terminal.push(key);
         self.completed += 1;
-    }
-}
-
-impl FsBlockDevice for Arc<BlockDeviceHandle> {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn num_blocks(&self) -> u64 {
-        self.device_info().num_blocks
-    }
-
-    fn block_size(&self) -> usize {
-        self.device_info().logical_block_size
-    }
-
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
-        self.read_blocks(block_id, buf)
-    }
-
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
-        self.write_blocks(block_id, buf)
-    }
-
-    fn flush(&mut self) -> AxResult {
-        self.flush_blocks()
     }
 }
 

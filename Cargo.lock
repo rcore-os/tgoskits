@@ -7765,6 +7765,7 @@ dependencies = [
  "ouroboros",
  "rand 0.10.1",
  "rbpf",
+ "rdif-block",
  "rdrive",
  "ringbuf",
  "riscv",

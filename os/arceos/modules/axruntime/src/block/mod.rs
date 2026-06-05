@@ -15,9 +15,9 @@ use core::{
 use ax_fs_ng::{
     block_runtime::{
         BlockDeviceHandle, BlockDmaBuffer, BlockDmaDirection, BlockDmaProvider, BlockDrainWake,
-        BlockIrqBridge, BlockRuntime, BlockRuntimeConfig, BlockWaitToken, BlockWaiter,
+        BlockIrqBridge, BlockRuntime, BlockRuntimeConfig,
     },
-    os::{AddressTranslator, BlockTimeProvider},
+    os::{AddressTranslator, BlockTaskOps, BlockTimeProvider},
 };
 #[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
 use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
@@ -67,50 +67,24 @@ impl AddressTranslator for RuntimeAddressTranslator {
 static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 #[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
 static ADDRESS_TRANSLATOR: RuntimeAddressTranslator = RuntimeAddressTranslator;
+#[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
+static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
 
 #[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
-struct RuntimeWaitToken {
-    ready: AtomicBool,
-    wq: ax_task::WaitQueue,
-}
+struct RuntimeTaskOps;
 
 #[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
-impl RuntimeWaitToken {
-    const fn new() -> Self {
-        Self {
-            ready: AtomicBool::new(false),
-            wq: ax_task::WaitQueue::new(),
-        }
-    }
-}
-
-#[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
-impl BlockWaitToken for RuntimeWaitToken {
-    fn wait(&self) {
-        self.wq.wait_until(|| self.ready.load(Ordering::Acquire));
+impl BlockTaskOps for RuntimeTaskOps {
+    fn current_task_id(&self) -> Option<u64> {
+        ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
     }
 
-    fn wake(&self) {
-        self.ready.store(true, Ordering::Release);
-        self.wq.notify_one(true);
+    fn task_yield(&self) {
+        ax_task::yield_now();
     }
 
-    fn mark_ready(&self) {
-        self.ready.store(true, Ordering::Release);
-    }
-
-    fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
-    }
-}
-
-#[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
-struct RuntimeWaiter;
-
-#[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
-impl BlockWaiter for RuntimeWaiter {
-    fn new_token(&self) -> Arc<dyn BlockWaitToken> {
-        Arc::new(RuntimeWaitToken::new())
+    fn wake_task(&self, task_id: u64) {
+        let _ = ax_task::wake_task_by_id(task_id);
     }
 }
 
@@ -324,15 +298,12 @@ fn take_raw_block_devices() -> Vec<ax_driver::block::RawBlockDevice> {
 fn init_fs_from_raw_blocks(blocks: Vec<ax_driver::block::RawBlockDevice>, bootargs: Option<&str>) {
     ax_fs_ng::os::set_time_provider(&TIME_PROVIDER);
     ax_fs_ng::os::set_address_translator(&ADDRESS_TRANSLATOR);
+    ax_fs_ng::os::set_task_ops(&TASK_OPS);
 
     let runtime = Arc::new(build_block_runtime(blocks));
-    let fs_devices: Vec<_> = runtime.devices().to_vec();
     BLOCK_RUNTIME.call_once(|| runtime.clone());
     spawn_block_drain_task(runtime.clone());
-    ax_fs_ng::root::init_root(
-        fs_devices.into_iter().map(|dev| Box::new(dev) as Box<_>),
-        bootargs,
-    );
+    ax_fs_ng::root::init_root(runtime.devices().iter().cloned(), bootargs);
 }
 
 #[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
@@ -397,7 +368,6 @@ fn build_block_device(
         bridge.clone(),
         BlockRuntimeConfig::new(
             Arc::new(RuntimeDmaProvider),
-            Arc::new(RuntimeWaiter),
             Arc::new(RuntimeDrainWake { device_index }),
         ),
     )

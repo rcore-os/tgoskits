@@ -1,8 +1,11 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 
 use axfs_ng_vfs::{Filesystem, VfsResult};
 
-use crate::block::{BlockRegion, FsBlockDevice};
+use crate::{
+    BlockDeviceHandle,
+    block::{BlockRegion, FsBlockDevice},
+};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "ext4")] {
@@ -12,7 +15,9 @@ cfg_if::cfg_if! {
         mod fat;
         type DefaultFilesystem = fat::FatFilesystem;
     } else {
+        #[allow(dead_code)]
         struct DefaultFilesystem;
+        #[allow(dead_code)]
         impl DefaultFilesystem {
             pub fn new(_dev: Box<dyn FsBlockDevice>, _region: BlockRegion) -> VfsResult<Filesystem> {
                 panic!("No filesystem feature enabled");
@@ -22,6 +27,7 @@ cfg_if::cfg_if! {
 }
 
 /// Create a filesystem instance from a block device.
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub fn new_default(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
     DefaultFilesystem::new(dev, region)
 }
@@ -30,7 +36,15 @@ pub fn new_default(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResul
 ///
 /// Use this for loop devices and other block backends created outside the
 /// platform probe path.
-#[cfg(all(feature = "ext4", feature = "vfs"))]
-pub fn new_from_dyn(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
-    ext4::Ext4Filesystem::new_from_boxed(dev, region)
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub fn new_from_handle(dev: Arc<BlockDeviceHandle>, region: BlockRegion) -> VfsResult<Filesystem> {
+    new_default(crate::block::boxed_native_handle_block_device(dev), region)
+}
+
+#[cfg(not(any(feature = "ext4", feature = "fat")))]
+pub fn new_from_handle(
+    _dev: Arc<BlockDeviceHandle>,
+    _region: BlockRegion,
+) -> VfsResult<Filesystem> {
+    panic!("No filesystem feature enabled");
 }
