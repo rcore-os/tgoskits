@@ -1,7 +1,7 @@
-#[cfg(all(feature = "net", feature = "fs-ng"))]
+#[cfg(all(feature = "net", feature = "fs"))]
 pub(crate) struct AxFsUnixNamespace;
 
-#[cfg(all(feature = "net", feature = "fs-ng"))]
+#[cfg(all(feature = "net", feature = "fs"))]
 impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     fn resolve(&self, path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use ax_errno::AxError;

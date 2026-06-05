@@ -53,14 +53,14 @@ mod mp;
 #[cfg(any(feature = "irq", feature = "paging"))]
 mod klib;
 
-#[cfg(any(feature = "fs", feature = "fs-ng", test))]
+#[cfg(any(feature = "fs", test))]
 mod block;
 mod devices;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
 
-#[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
 
 #[cfg(feature = "aic8800-wifi")]
@@ -299,17 +299,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     );
 
     cfg_if::cfg_if! {
-        if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {
-            block::init_dyn_fs_ng(ax_hal::dtb::get_chosen_bootargs());
-        } else if #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))] {
-            block::init_static_fs_ng();
-        } else if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
-            ax_fs::init_filesystems(
-                devices::take_dyn_fs_block_devices(),
-                ax_hal::dtb::get_chosen_bootargs(),
-            );
+        if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
+            block::init_dyn_fs(ax_hal::dtb::get_chosen_bootargs());
         } else if #[cfg(all(feature = "fs", not(feature = "plat-dyn")))] {
-            ax_fs::init_filesystems(devices::take_static_fs_block_devices(), None);
+            block::init_static_fs();
         }
     }
 
