@@ -6700,6 +6700,7 @@ dependencies = [
 name = "rdrive"
 version = "0.21.0"
 dependencies = [
+ "acpi",
  "fdt-edit",
  "fdt-raw",
  "log",
@@ -6713,6 +6714,7 @@ dependencies = [
  "rdrive-macros",
  "spin 0.12.0",
  "thiserror 2.0.18",
+ "x86",
 ]
 
 [[package]]
@@ -7845,6 +7847,8 @@ dependencies = [
  "spin 0.12.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
+ "x2apic",
+ "x86",
 ]
 
 [[package]]

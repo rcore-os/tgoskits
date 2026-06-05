@@ -752,7 +752,7 @@ impl Starry {
         let mut prepared = Vec::with_capacity(cases.len());
         let mut rootfs_paths = BTreeSet::new();
         for starry_case in cases {
-            let qemu = self
+            let mut qemu = self
                 .app
                 .tool_mut()
                 .read_qemu_config_from_path_for_cargo(cargo, &starry_case.case.qemu_config_path)
@@ -763,6 +763,7 @@ impl Starry {
                         starry_case.case.display_name
                     )
                 })?;
+            qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path);
             rootfs_paths.insert(rootfs_path.clone());
@@ -941,6 +942,7 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
         case::run_qemu_with_prepared_case_assets(
             &mut self.app,
             cargo,

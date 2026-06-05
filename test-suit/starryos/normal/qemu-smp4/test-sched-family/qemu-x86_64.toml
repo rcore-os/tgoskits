@@ -1,9 +1,7 @@
 target = "x86_64-unknown-none"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
-features = [
-  "qemu",
-]
-plat_dyn = false
+features = []
+plat_dyn = true
 max_cpu_num = 4
 log = "Warn"
 args = [

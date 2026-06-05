@@ -21,4 +21,4 @@ shell_prefix = "arceos:"
 shell_init_cmd = "pwd && echo 'FS shell tests passed!'"
 success_regex = ["FS shell tests passed!"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
-timeout=3
+timeout = 30
