@@ -176,9 +176,18 @@ pub fn sys_mmap(
     } else {
         Some(get_file_like(fd)?)
     };
-    let mut device_mmap_top = file
-        .as_ref()
-        .map(|fl| fl.device_mmap(offset as u64, length as u64));
+    // Only probe `device_mmap` for MAP_SHARED. MAP_PRIVATE always maps
+    // through the file_mmap/CoW path below and never consumes this result, so
+    // calling it would be wasted work — and for fds whose `device_mmap` has
+    // side effects (e.g. a perf-event ringbuf allocation) it would leave the
+    // fd in a half-initialized state that rejects the later real MAP_SHARED
+    // mapping. Probe lazily here, then commit it in the MAP_SHARED arm.
+    let mut device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
+        file.as_ref()
+            .map(|fl| fl.device_mmap(offset as u64, length as u64))
+    } else {
+        None
+    };
 
     // Validate file_mmap permissions and memfd seals before any destructive
     // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old

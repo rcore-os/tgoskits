@@ -9,7 +9,7 @@
 //! `data_head` / `data_tail` and kernel writes via `bpf_perf_event_output`
 //! share one buffer.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::{any::Any, fmt::Debug};
 
 use ax_alloc::GlobalPage;
@@ -31,29 +31,38 @@ use crate::{
 };
 
 /// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with kernel state: a poll
-/// set so readers can wait for new records, and the backing pages produced
-/// by `device_mmap` (Some after the user `mmap`s the ringbuf; None before).
+/// set so readers can wait for new records, and a weak handle to the
+/// backing pages produced by `device_mmap` (Some after the first
+/// `mmap(perf_fd)`; None before).
 ///
-/// Field order is load-bearing: `inner` holds a raw pointer into the page
-/// buffer for the lifetime of the `RingPage`; `pages` owns the allocation.
-/// Rust drops fields in declaration order, so `inner` (the borrower) goes
-/// before `pages` (the owner), and the buffer is freed only after the last
-/// access through `inner` is gone.
+/// Ownership model: the user VMA owns the ringbuf pages via the strong
+/// `Arc<GlobalPage>` threaded into `DeviceMmap::Physical`'s retainer slot;
+/// this wrapper keeps only a `Weak`. Consequences:
 ///
-/// `pages` is refcounted (`Arc`): `device_mmap` hands a second strong ref
-/// back through `DeviceMmap::Physical`'s retainer slot, which the resulting
-/// user VMA holds onto. The backing pages therefore outlive `close(perf_fd)`
-/// (which drops this wrapper) for as long as the user mapping is live, so a
-/// userspace read of the ringbuf after closing the fd — or a later reuse of
-/// those frames — can never observe freed memory.
+/// * UAF safety — the pages outlive `close(perf_fd)` (which drops this
+///   wrapper) for as long as a mapping is live, because the VMA holds the
+///   strong ref. A userspace read after closing the fd never observes
+///   freed memory.
+/// * Self-cleaning allocation — if a `device_mmap` result is never adopted
+///   by a surviving VMA (a non-direct mmap path, a permission/address
+///   error, or an `aspace.map` failure), the lone strong ref drops, the
+///   frames free, and `is_mapped` flips back to false so the perf fd can
+///   be mmap'd again instead of being wedged in `ResourceBusy`. After a
+///   normal `munmap` the same thing happens, matching Linux's allowance to
+///   re-`mmap` a perf fd.
+///
+/// `inner` holds a raw pointer into the page buffer; `RingPage` has no
+/// destructor and is never dereferenced once the pages are gone (every
+/// access through `inner` is gated on [`Self::is_mapped`]), so a dangling
+/// pointer left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
     inner: BpfPerfEvent,
     poll_ready: PollSet,
-    /// MUST be declared after `inner`. Holds the contiguous pages backing
-    /// the ringbuf, refcounted so a user VMA keeps them alive across perf-fd
-    /// close; the frames return to the global page allocator only once both
-    /// this wrapper and every mapping built from it are gone.
-    pages: Option<Arc<GlobalPage>>,
+    /// Weak handle to the contiguous pages backing the ringbuf. The strong
+    /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
+    /// mapping still exists. See the type-level docs for the ownership
+    /// rationale.
+    pages: Option<Weak<GlobalPage>>,
 }
 
 impl BpfPerfEventWrapper {
@@ -66,11 +75,21 @@ impl BpfPerfEventWrapper {
         }
     }
 
-    /// Write a record into the ringbuf and wake any readers. Pre-mmap
-    /// calls are accepted as no-ops: `kbpf_basic::RingPage` is in its
-    /// `empty()` state and writing through its null `ptr` would be UB.
+    /// Whether a live user mapping of the ringbuf currently exists. The
+    /// wrapper only holds a `Weak` to the backing pages, so this is true
+    /// exactly while some VMA still pins them; once every mapping is gone
+    /// (munmap / exit) — or an in-progress mmap was abandoned before a VMA
+    /// adopted the pages — the strong refs drop and this returns false.
+    fn is_mapped(&self) -> bool {
+        self.pages.as_ref().is_some_and(|w| w.strong_count() > 0)
+    }
+
+    /// Write a record into the ringbuf and wake any readers. Calls before a
+    /// mapping exists (or after it is gone) are accepted as no-ops: the
+    /// `kbpf_basic::RingPage` pointer is either still `empty()` or now
+    /// dangling, so dereferencing it would be UB.
     pub fn write_event(&mut self, data: &[u8]) -> AxResult<()> {
-        if self.pages.is_none() {
+        if !self.is_mapped() {
             return Ok(());
         }
         self.inner.write_event(data).into_ax_result()?;
@@ -103,9 +122,11 @@ impl PerfEventOps for BpfPerfEventWrapper {
     }
 
     fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        if self.pages.is_some() {
-            // Linux allows only one mmap per perf event fd; a second call
-            // would orphan the first user mapping if we swapped the pages.
+        if self.is_mapped() {
+            // Linux allows only one live mmap per perf event fd; a second
+            // mapping while the first is alive would orphan it. A stale
+            // `Weak` from an abandoned or munmap'd previous attempt does not
+            // count (its pages are already freed), so the fd stays mmap-able.
             return Err(AxError::ResourceBusy);
         }
         // libbpf requires `(1 + 2^N) * PAGE_SIZE` so the data region is a
@@ -126,12 +147,16 @@ impl PerfEventOps for BpfPerfEventWrapper {
             .do_mmap(kvirt.as_usize(), len, 0)
             .map_err(|_| AxError::InvalidInput)?;
         let pages = Arc::new(pages);
-        // Hand a second strong ref back to the caller, which threads it into
-        // `DeviceMmap::Physical`'s retainer so the user VMA pins these frames
-        // until `munmap`/exit even if the perf fd (and this wrapper) is closed
-        // first. Without the anchor the pages would free under a live mapping.
-        let anchor: Arc<dyn Any + Send + Sync> = pages.clone();
-        self.pages = Some(pages);
+        // Keep only a `Weak`; hand the sole strong ref to the caller, which
+        // threads it into `DeviceMmap::Physical`'s retainer so the user VMA
+        // pins these frames until `munmap`/exit even if the perf fd (and this
+        // wrapper) is closed first. Because the wrapper does not retain a
+        // strong ref, an mmap that is abandoned or fails before a VMA adopts
+        // the anchor simply frees the pages and leaves the fd mmap-able again
+        // (see the type-level docs). Without the anchor the pages would free
+        // under a live mapping.
+        self.pages = Some(Arc::downgrade(&pages));
+        let anchor: Arc<dyn Any + Send + Sync> = pages;
         Ok((paddr, anchor))
     }
 }
