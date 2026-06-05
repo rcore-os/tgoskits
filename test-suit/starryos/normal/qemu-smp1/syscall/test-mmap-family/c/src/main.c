@@ -91,6 +91,23 @@ int main(void)
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0),
                    EEXIST, "mmap FIXED_NOREPLACE 覆盖已映射 → EEXIST");
 
+    /* mmap addr+length 溢出 → 被拒绝, 而非环绕成功 (回归)
+     * MAP_FIXED 指向接近地址空间顶端、`addr + length` 回绕的请求。关键不变量:
+     * 内核必须**拒绝**, 不能让 `(addr + length).align_up` 内部回绕成一个小值
+     * 再继续(length 下溢成超大、在低地址环绕落地)。修复用 `checked_add` +
+     * `end < raw_end` 双重校验。errno 上 Linux 此处给 ENOMEM(地址越界), starry
+     * 修复给 EINVAL(算术溢出); 两者都是合法拒绝, 故都接受 —— 真正回归的是
+     * "r == -1"(不得返回一个环绕后的有效地址)。直接走 syscall 层。*/
+    {
+        unsigned long near_top = ~0xFFFUL; /* 页对齐, 接近 usize::MAX */
+        errno = 0;
+        long r = syscall(SYS_mmap, (void *)near_top, (size_t)(8 * ps),
+                         PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, (off_t)0);
+        CHECK(r == -1 && (errno == EINVAL || errno == ENOMEM),
+              "mmap MAP_FIXED 且 addr+length 溢出 → 被拒(EINVAL/ENOMEM), 不环绕");
+    }
+
     /* ===================== mprotect ===================== */
 
     /* mprotect happy path: READ|WRITE → 0 */
