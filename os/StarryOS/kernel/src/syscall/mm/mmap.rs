@@ -138,10 +138,8 @@ pub fn sys_mmap(
     if map_flags.contains(MmapFlags::SYNC) {
         return Err(AxError::OperationNotSupported);
     }
-    // MAP_SHARED_VALIDATE has type bits 0x03. Accept it for feature probing,
-    // then run it through the same mapping path as MAP_SHARED.
     let map_type = match flags & MmapFlags::TYPE.bits() {
-        MAP_SHARED | MAP_SHARED_VALIDATE => MmapFlags::SHARED,
+        MAP_SHARED => MmapFlags::SHARED,
         MAP_PRIVATE => MmapFlags::PRIVATE,
         _ => return Err(AxError::InvalidInput),
     };
