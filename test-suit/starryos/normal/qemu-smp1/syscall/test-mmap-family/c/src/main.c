@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <signal.h>
+#include <setjmp.h>
 
 #ifndef PROT_GROWSDOWN
 #define PROT_GROWSDOWN 0x01000000
@@ -41,6 +43,28 @@
         if (_r != MAP_FAILED) { munmap(_r, 4096); }                    \
     }                                                                   \
 } while(0)
+
+/* 写一字节到 *p, 返回是否触发 SIGSEGV (用于验证某页是否仍可写)。 */
+static sigjmp_buf g_jb;
+static volatile int g_faulted;
+static void on_segv(int sig)
+{
+    (void)sig;
+    g_faulted = 1;
+    siglongjmp(g_jb, 1);
+}
+static int write_faults(volatile char *p)
+{
+    struct sigaction sa = {0}, old;
+    sa.sa_handler = on_segv;
+    sigaction(SIGSEGV, &sa, &old);
+    g_faulted = 0;
+    if (sigsetjmp(g_jb, 1) == 0) {
+        *p = 0x55;
+    }
+    sigaction(SIGSEGV, &old, NULL);
+    return g_faulted;
+}
 
 int main(void)
 {
@@ -127,6 +151,34 @@ int main(void)
     CHECK_RET(munmap(gone, ps), 0, "munmap gone 页");
     CHECK_ERR(mprotect(gone, ps, PROT_READ),
               ENOMEM, "mprotect 未映射区间 → ENOMEM");
+
+    /* mprotect 跨 [mapped][hole][mapped] → ENOMEM (回归: 起始页有映射但区间
+     * 中段是空洞)。man 2 mprotect: 区间内任一页未映射即 ENOMEM。旧 starry 仅
+     * 检查起始页所在 VMA (find_area(start) 命中) 便放行, 静默成功跳过空洞;
+     * 修复后用 can_access_range 做整段连续覆盖校验。*/
+    {
+        char *hole = mmap(NULL, 3 * ps, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(hole != MAP_FAILED, "mmap 3 页用于 hole-mprotect 测试");
+        if (hole != MAP_FAILED) {
+            /* 在中间页打一个洞, 留下 [mapped][hole][mapped] */
+            CHECK_RET(munmap(hole + ps, ps), 0, "munmap 中间页造洞");
+            CHECK_ERR(mprotect(hole, 3 * ps, PROT_READ),
+                      ENOMEM, "mprotect 跨中段空洞 → ENOMEM");
+            /* 原子性: StarryOS 用 can_access_range 在改任何权限前先校验整段,
+             * 命中空洞即原子拒绝、一页都不改, 故左右两页保持原 RW。
+             * 注: 真 Linux 在此并非原子 —— 它把保护位应用到空洞前的前缀页(左页
+             * 会变成 PROT_READ)再返回 ENOMEM; StarryOS 选择更安全的原子语义。
+             * 本断言锁住该原子行为: 若日后把 pre-check 挪到逐页 protect 之后,
+             * 左页会被半改成只读, 这里立刻抓住。*/
+            CHECK(write_faults(hole) == 0,
+                  "失败 mprotect 后左页仍可写 (StarryOS 原子拒绝, 未半改)");
+            CHECK(write_faults(hole + 2 * ps) == 0,
+                  "失败 mprotect 后右页仍可写 (空洞之后, 任何实现都不应改)");
+            munmap(hole, ps);
+            munmap(hole + 2 * ps, ps);
+        }
+    }
 
     /* ===================== munmap ===================== */
 

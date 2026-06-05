@@ -461,8 +461,16 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
-    // man 2 mprotect: addresses without a mapping → ENOMEM.
-    if aspace.find_area(start_addr).is_none() {
+    // man 2 mprotect: if any page in [addr, addr+len) lacks a mapping → ENOMEM.
+    // Linux validates the whole range, not just the first page: an unmapped hole
+    // in the middle of `[mapped][hole][mapped]` must fail instead of silently
+    // protecting only the mapped fragments. `can_access_range` with an empty
+    // access mask is a pure contiguous-coverage check (every area's flags
+    // trivially contain the empty set), so it returns false on the first gap.
+    // We pre-check and leave the mapping untouched on failure, i.e. report
+    // ENOMEM atomically without any half-applied protection — the errno real
+    // programs test for.
+    if !aspace.can_access_range(start_addr, length, MappingFlags::empty()) {
         return Err(AxError::NoMemory);
     }
     if permission_flags.contains(MmapProt::WRITE) {
