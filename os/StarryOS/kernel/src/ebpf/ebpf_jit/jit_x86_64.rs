@@ -853,12 +853,13 @@ impl JitBackend for X86_64Backend {
         let imm = insn.imm as i64;
         let base = bpf_to_x86(insn.dst_reg());
         let adjusted_off = if base == X86_RBP { off - 32 } else { off };
+        let scratch = if base == X86_RCX { X86_R11 } else { X86_RCX };
         if insn.size() == BPF_DW {
-            emit_mov_imm64(buf, X86_RCX, imm as u64);
-            emit_store_mem(buf, base, adjusted_off, X86_RCX, BPF_DW);
+            emit_mov_imm64(buf, scratch, imm as u64);
+            emit_store_mem(buf, base, adjusted_off, scratch, BPF_DW);
         } else {
-            emit_mov_imm32(buf, X86_RCX, imm as i32);
-            emit_store_mem(buf, base, adjusted_off, X86_RCX, insn.size());
+            emit_mov_imm32(buf, scratch, imm as i32);
+            emit_store_mem(buf, base, adjusted_off, scratch, insn.size());
         }
     }
 
