@@ -26,6 +26,9 @@ pub type EndpointId = u64;
 /// A core-provided session identifier for one open control connection.
 pub type SessionId = u64;
 
+/// A host file descriptor returned to userspace.
+pub type HostFd = i32;
+
 /// Events reported by a host control endpoint.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ControlEvents {
@@ -100,4 +103,10 @@ pub trait ControlIf {
 
     /// Unregisters a host-visible control endpoint.
     fn unregister_endpoint(id: EndpointId) -> AxResult;
+
+    /// Creates a VM object fd owned by the current userspace process.
+    ///
+    /// On success, the host fd owns `session` and must release it when the fd
+    /// is closed. On failure, ownership remains with `axvisor-core`.
+    fn create_vm_fd(endpoint: EndpointId, session: SessionId) -> AxResult<HostFd>;
 }

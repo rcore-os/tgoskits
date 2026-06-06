@@ -14,9 +14,11 @@
 
 //! AxVisor KVM-compatible host control endpoint callbacks.
 
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use ax_errno::{AxResult, ax_err};
+use ax_errno::{AxError, AxResult, ax_err};
+use ax_kspin::SpinNoIrq as Mutex;
 use axvisor_api::control::{self as api_control, ControlOps, EndpointSpec};
 
 const KVMIO: u32 = 0xae;
@@ -46,6 +48,13 @@ const KVM_VCPU_MMAP_SIZE: usize = 0x1000;
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static ENDPOINT_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+static SESSIONS: Mutex<BTreeMap<api_control::SessionId, SessionKind>> = Mutex::new(BTreeMap::new());
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionKind {
+    System,
+    Vm,
+}
 
 /// Registers the host-visible KVM-compatible control endpoint.
 pub fn init() -> AxResult {
@@ -82,25 +91,65 @@ pub fn shutdown() -> AxResult {
 }
 
 fn open() -> AxResult<api_control::SessionId> {
+    create_session(SessionKind::System)
+}
+
+fn release(session: api_control::SessionId) -> AxResult {
+    if SESSIONS.lock().remove(&session).is_some() {
+        Ok(())
+    } else {
+        ax_err!(NotFound)
+    }
+}
+
+fn create_session(kind: SessionKind) -> AxResult<api_control::SessionId> {
     let session = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
     if session == 0 {
         return ax_err!(OutOfRange);
     }
+    SESSIONS.lock().insert(session, kind);
     Ok(session)
 }
 
-fn release(_session: api_control::SessionId) -> AxResult {
-    Ok(())
+fn session_kind(session: api_control::SessionId) -> AxResult<SessionKind> {
+    match SESSIONS.lock().get(&session).copied() {
+        Some(kind) => Ok(kind),
+        None => ax_err!(NotFound),
+    }
 }
 
-fn ioctl(_session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
+fn ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
+    match session_kind(session)? {
+        SessionKind::System => system_ioctl(cmd, arg),
+        SessionKind::Vm => vm_ioctl(cmd, arg),
+    }
+}
+
+fn system_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
         KVM_GET_API_VERSION => Ok(KVM_API_VERSION as isize),
         KVM_CHECK_EXTENSION => Ok(check_extension(arg) as isize),
         KVM_GET_VCPU_MMAP_SIZE => Ok(KVM_VCPU_MMAP_SIZE as isize),
-        KVM_CREATE_VM => ax_err!(Unsupported),
+        KVM_CREATE_VM => {
+            let endpoint = ENDPOINT_ID.load(Ordering::Acquire);
+            if endpoint == 0 {
+                return ax_err!(NotFound);
+            }
+            let vm_session = create_session(SessionKind::Vm)?;
+            match api_control::create_vm_fd(endpoint, vm_session) {
+                Ok(fd) => Ok(fd as isize),
+                Err(err) => {
+                    let _ = release(vm_session);
+                    Err(err)
+                }
+            }
+        }
         _ => ax_err!(Unsupported),
     }
+}
+
+fn vm_ioctl(_cmd: u32, _arg: usize) -> AxResult<isize> {
+    Err(AxError::Unsupported)
 }
 
 fn check_extension(capability: usize) -> usize {
