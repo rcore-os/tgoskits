@@ -68,8 +68,7 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - -bsfs 位流过滤器列表
 - -buildconf 编译配置
 
-### 基础测试 (ffmpeg-basic-tests.sh) — 24 个阶段
-- 合成测试数据生成（无预置媒体时的回退）
+### 基础测试 (ffmpeg-basic-tests.sh) — 23 个阶段
 - ffprobe 媒体信息探测
 - 格式识别（MP4, WAV）
 - 流信息提取（视频流、音频流）
@@ -108,23 +107,32 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - 多线程解码为原始帧
 - 多线程音频重采样 + 编码
 
-### 编解码器测试 (ffmpeg-codec-tests.sh) — 27 个阶段
-- H.264 (libx264) 编码/解码
-- MPEG-4 编码/解码
-- VP8 (libvpx) 编码/解码
+### 编解码器测试 (ffmpeg-codec-tests.sh) — 29 个阶段
+- H.264 (libx264) 编码
+- H.264 (libx264) 解码
+- MPEG-4 编码
+- MPEG-4 解码
+- VP8 (libvpx) 编码
+- VP8 (libvpx) 解码
 - VP9 (libvpx-vp9) 编码
-- MJPEG 编码/解码
+- MJPEG 编码
+- MJPEG 解码
 - Raw Video 编码
-- MP3 (libmp3lame) 编码/解码
-- AAC 编码/解码
+- MP3 (libmp3lame) 编码
+- MP3 (libmp3lame) 解码
+- AAC 编码
+- AAC 解码
 - Vorbis (libvorbis) 编码
-- Opus (libopus) 编码/解码
-- FLAC 编码/解码
+- Opus (libopus) 编码
+- Opus (libopus) 解码
+- FLAC 编码
+- FLAC 解码
 - MKV 容器重封装
 - AVI 容器重封装
 - WebM 容器编码/重封装
 - 跨容器转码（MP4 -> WebM -> MKV）
-- H.265 (libx265) 编码/解码
+- H.265 (libx265) 编码
+- H.265 (libx265) 解码
 - 音频采样格式转换（s16 -> f32）
 - 音频码率阶梯（64/128/192/256k）
 - 音视频合流（video + audio mux）
