@@ -38,6 +38,8 @@ pub const KVM_GET_VCPU_MMAP_SIZE: u32 = ioc(KVMIO, 0x04);
 pub const KVM_CREATE_VCPU: u32 = ioc(KVMIO, 0x41);
 /// Configures one userspace-backed guest memory slot on a VM fd.
 pub const KVM_SET_USER_MEMORY_REGION: u32 = iow(KVMIO, 0x46, KVM_USERSPACE_MEMORY_REGION_SIZE);
+/// Returns the vCPU MP state.
+pub const KVM_GET_MP_STATE: u32 = ior(KVMIO, 0x98, KVM_MP_STATE_SIZE);
 
 pub const KVM_CAP_USER_MEMORY: usize = 3;
 pub const KVM_CAP_NR_VCPUS: usize = 9;
@@ -49,6 +51,8 @@ const KVM_MAX_VCPUS: usize = 1;
 const KVM_MAX_MEMORY_SLOTS: usize = 32;
 const KVM_VCPU_MMAP_SIZE: usize = 0x1000;
 const KVM_USERSPACE_MEMORY_REGION_SIZE: u32 = 32;
+const KVM_MP_STATE_SIZE: u32 = 4;
+const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
 const PAGE_SIZE: u64 = 4096;
 
@@ -212,8 +216,14 @@ fn vm_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<i
     }
 }
 
-fn vcpu_ioctl(_cmd: u32, _arg: usize) -> AxResult<isize> {
-    Err(AxError::Unsupported)
+fn vcpu_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
+    match cmd {
+        KVM_GET_MP_STATE => {
+            write_u32_user(arg, KVM_MP_STATE_RUNNABLE)?;
+            Ok(0)
+        }
+        _ => Err(AxError::Unsupported),
+    }
 }
 
 fn check_extension(capability: usize) -> usize {
@@ -262,7 +272,7 @@ fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isiz
         vcpu_session
     };
 
-    match api_control::create_vcpu_fd(endpoint, vcpu_session) {
+    match api_control::create_vcpu_fd(endpoint, vcpu_session, KVM_VCPU_MMAP_SIZE) {
         Ok(fd) => Ok(fd as isize),
         Err(err) => {
             let _ = remove_vcpu_session(vcpu_session);
@@ -293,6 +303,10 @@ fn read_userspace_memory_region(arg: usize) -> AxResult<UserspaceMemoryRegion> {
         memory_size: u64::from_ne_bytes(bytes[16..24].try_into().unwrap()),
         userspace_addr: u64::from_ne_bytes(bytes[24..32].try_into().unwrap()),
     })
+}
+
+fn write_u32_user(arg: usize, value: u32) -> AxResult {
+    api_control::write_user(arg, &value.to_ne_bytes())
 }
 
 fn set_user_memory_region(
@@ -385,4 +399,13 @@ const fn iow(type_: u32, nr: u32, size: u32) -> u32 {
     const IOC_DIRSHIFT: u32 = 30;
 
     (IOC_WRITE << IOC_DIRSHIFT) | (size << IOC_SIZESHIFT) | (type_ << IOC_TYPESHIFT) | nr
+}
+
+const fn ior(type_: u32, nr: u32, size: u32) -> u32 {
+    const IOC_READ: u32 = 2;
+    const IOC_TYPESHIFT: u32 = 8;
+    const IOC_SIZESHIFT: u32 = 16;
+    const IOC_DIRSHIFT: u32 = 30;
+
+    (IOC_READ << IOC_DIRSHIFT) | (size << IOC_SIZESHIFT) | (type_ << IOC_TYPESHIFT) | nr
 }

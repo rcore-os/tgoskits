@@ -114,7 +114,11 @@ pub trait ControlIf {
     ///
     /// On success, the host fd owns `session` and must release it when the fd
     /// is closed. On failure, ownership remains with `axvisor-core`.
-    fn create_vcpu_fd(endpoint: EndpointId, session: SessionId) -> AxResult<HostFd>;
+    fn create_vcpu_fd(
+        endpoint: EndpointId,
+        session: SessionId,
+        mmap_size: usize,
+    ) -> AxResult<HostFd>;
 
     /// Reads bytes from the current userspace task.
     ///
@@ -123,4 +127,12 @@ pub trait ControlIf {
     /// copies from its current user address space; `axvisor-core` owns the ABI
     /// layout and command semantics.
     fn read_user(addr: usize, buf: &mut [u8]) -> AxResult;
+
+    /// Writes bytes into the current userspace task.
+    ///
+    /// This is the host-neutral copy-to-user primitive used by KVM ioctls whose
+    /// third argument is a userspace pointer. The host validates and copies
+    /// into its current user address space; `axvisor-core` owns the ABI layout
+    /// and command semantics.
+    fn write_user(addr: usize, buf: &[u8]) -> AxResult;
 }
