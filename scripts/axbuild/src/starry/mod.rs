@@ -561,7 +561,6 @@ impl Starry {
             let cargo = build::load_cargo_config(&request)?;
             let mut qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
                 .await?;
             rootfs::patch_rootfs(
@@ -596,7 +595,6 @@ impl Starry {
         let asset_config = test::starry_case_asset_config();
         let mut qemu = self
             .app
-            .tool_mut()
             .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
             .await?;
         qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
@@ -717,7 +715,6 @@ impl Starry {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .tool_mut()
                 .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
@@ -733,14 +730,12 @@ impl Starry {
         match board_config_path {
             Some(path) => {
                 self.app
-                    .tool_mut()
                     .read_board_run_config_from_path_for_cargo(cargo, path)
                     .await
             }
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
-                    .tool_mut()
                     .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
             }
