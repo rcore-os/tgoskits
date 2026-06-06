@@ -194,7 +194,9 @@ impl<T> BaseScheduler for CFScheduler<T> {
     fn pick_next_task(&mut self) -> Option<Self::SchedItem> {
         // Find the first non-throttled task without allocating a temporary Vec.
         // Use iter() to find the key, then remove it directly.
-        let key_to_take = self.ready_queue.iter()
+        let key_to_take = self
+            .ready_queue
+            .iter()
             .find(|(_, task)| !task.is_throttled())
             .map(|(k, _)| k.clone());
         key_to_take.and_then(|key| self.ready_queue.remove(&key))

@@ -199,9 +199,16 @@ impl SimpleDirOps for CgroupDirOps {
                     fs,
                     RwFile::new(move |req| match req {
                         SimpleFileOperation::Read => {
-                            let quota = n.cpu.bandwidth.quota.load(core::sync::atomic::Ordering::Relaxed);
-                            let period =
-                                n.cpu.bandwidth.period.load(core::sync::atomic::Ordering::Relaxed);
+                            let quota = n
+                                .cpu
+                                .bandwidth
+                                .quota
+                                .load(core::sync::atomic::Ordering::Relaxed);
+                            let period = n
+                                .cpu
+                                .bandwidth
+                                .period
+                                .load(core::sync::atomic::Ordering::Relaxed);
                             if quota < 0 {
                                 Ok(Some(format!("max {}\n", period).into_bytes()))
                             } else {
