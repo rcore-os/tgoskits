@@ -30,6 +30,8 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #if defined(__x86_64__)
 
@@ -352,6 +354,165 @@ static void test_eperm_invalid_address_set(void)
     }
 }
 
+/* 11. Low-address ARCH_SET_FS / ARCH_SET_GS via fork.
+ *     Linux allows base addresses 0, 1, 0xfff, 0x1000 for both
+ *     FS and GS — only the upper canonical boundary is checked.
+ *     Run in a child process to avoid corrupting the runner's TLS
+ *     (FS base) and the GS base used by the test framework. */
+static void test_low_address_set_fs_gs(void)
+{
+    printf("--- Low address ARCH_SET_FS / ARCH_SET_GS (fork) ---\n");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("  FAIL | fork() failed, errno=%d (%s)\n",
+               errno, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    if (pid == 0) {
+        /* ---- child ---- */
+        unsigned long low_addrs[] = {0, 1, 0xfff, 0x1000};
+        int n_low = sizeof(low_addrs) / sizeof(low_addrs[0]);
+        int failed = 0;
+
+        /* save original bases so we can restore before exit */
+        unsigned long orig_fs = 0, orig_gs = 0;
+        int have_fs = 0, have_gs = 0;
+
+        if (raw_arch_prctl_ptr(ARCH_GET_FS, &orig_fs) == 0)
+            have_fs = 1;
+        if (raw_arch_prctl_ptr(ARCH_GET_GS, &orig_gs) == 0)
+            have_gs = 1;
+
+        /* ARCH_SET_FS with low addresses */
+        for (int i = 0; i < n_low; i++) {
+            errno = 0;
+            long ret = raw_arch_prctl(ARCH_SET_FS, low_addrs[i]);
+            if (ret != 0) {
+                printf("  FAIL | ARCH_SET_FS(0x%lx) returned %ld, errno=%d (%s)\n",
+                       low_addrs[i], ret, errno, strerror(errno));
+                failed = 1;
+                continue;
+            }
+            /* verify with ARCH_GET_FS */
+            unsigned long verify = 0;
+            if (raw_arch_prctl_ptr(ARCH_GET_FS, &verify) == 0) {
+                if (verify != low_addrs[i]) {
+                    printf("  FAIL | ARCH_SET_FS(0x%lx) but GET returned 0x%lx\n",
+                           low_addrs[i], verify);
+                    failed = 1;
+                } else {
+                    printf("  PASS | ARCH_SET_FS(0x%lx) succeeded\n",
+                           low_addrs[i]);
+                }
+            }
+        }
+
+        /* ARCH_SET_GS with low addresses */
+        for (int i = 0; i < n_low; i++) {
+            errno = 0;
+            long ret = raw_arch_prctl(ARCH_SET_GS, low_addrs[i]);
+            if (ret == -1 && errno == EINVAL) {
+                printf("  info | ARCH_SET_GS disabled by kernel, skip remaining\n");
+                break;
+            }
+            if (ret != 0) {
+                printf("  FAIL | ARCH_SET_GS(0x%lx) returned %ld, errno=%d (%s)\n",
+                       low_addrs[i], ret, errno, strerror(errno));
+                failed = 1;
+                continue;
+            }
+            /* verify with ARCH_GET_GS */
+            unsigned long verify = 0;
+            if (raw_arch_prctl_ptr(ARCH_GET_GS, &verify) == 0) {
+                if (verify != low_addrs[i]) {
+                    printf("  FAIL | ARCH_SET_GS(0x%lx) but GET returned 0x%lx\n",
+                           low_addrs[i], verify);
+                    failed = 1;
+                } else {
+                    printf("  PASS | ARCH_SET_GS(0x%lx) succeeded\n",
+                           low_addrs[i]);
+                }
+            }
+        }
+
+        /* restore original bases */
+        if (have_fs)
+            raw_arch_prctl(ARCH_SET_FS, orig_fs);
+        if (have_gs)
+            raw_arch_prctl(ARCH_SET_GS, orig_gs);
+
+        _exit(failed ? 1 : 0);
+    }
+
+    /* ---- parent ---- */
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        printf("  PASS | low-address ARCH_SET_FS / ARCH_SET_GS all passed in child\n");
+        __pass++;
+    } else {
+        printf("  FAIL | low-address tests failed in child (exit=%d, sig=%d)\n",
+               WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+               WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        __fail++;
+    }
+}
+
+/* 12. Verify that a user-mode #GP (General Protection Fault) delivers
+ *     SIGSEGV, not SIGTRAP. The kernel maps unrecognised exception
+ *     types to SIGSEGV (matching Linux/POSIX); before the fix these
+ *     were incorrectly mapped to SIGTRAP.
+ *     Run in a child that executes a privileged instruction (CLI)
+ *     from ring 3 to reliably trigger #GP. */
+static void test_gp_delivers_sigsegv(void)
+{
+    printf("--- #GP delivers SIGSEGV (fork) ---\n");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("  FAIL | fork() failed, errno=%d (%s)\n",
+               errno, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    if (pid == 0) {
+        /* ---- child: trigger #GP via privileged instruction ---- */
+        __asm__ volatile("cli");
+        /* not reached if #GP fires */
+        _exit(0);
+    }
+
+    /* ---- parent ---- */
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        if (sig == SIGSEGV) {
+            printf("  PASS | #GP delivered SIGSEGV (signal=%d)\n", sig);
+            __pass++;
+        } else if (sig == SIGTRAP) {
+            printf("  FAIL | #GP delivered SIGTRAP (signal=%d) — old buggy behavior\n", sig);
+            __fail++;
+        } else {
+            printf("  FAIL | #GP delivered unexpected signal=%d, expected SIGSEGV\n", sig);
+            __fail++;
+        }
+    } else if (WIFEXITED(status)) {
+        printf("  FAIL | privileged instruction did not fault (exit=%d)\n",
+               WEXITSTATUS(status));
+        __fail++;
+    } else {
+        printf("  FAIL | unexpected child status (status=%d)\n", status);
+        __fail++;
+    }
+}
+
 /* ============================================================
  * MAIN
  * ============================================================ */
@@ -375,6 +536,8 @@ int main(void)
     test_einval_invalid_op();
     test_efault_bad_pointer();
     test_eperm_invalid_address_set();
+    test_low_address_set_fs_gs();
+    test_gp_delivers_sigsegv();
 
     TEST_DONE();
 }

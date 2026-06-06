@@ -91,9 +91,7 @@ pub fn sys_arch_prctl(
     // the kernel or is non-canonical).
     const USER_SPACE_END: usize = crate::config::USER_SPACE_BASE + crate::config::USER_SPACE_SIZE;
     let check_addr = |addr: usize| {
-        use crate::config::USER_SPACE_BASE;
-
-        if !(USER_SPACE_BASE..USER_SPACE_END).contains(&addr) {
+        if !(0..USER_SPACE_END).contains(&addr) {
             return Err(AxError::OperationNotPermitted);
         }
         Ok(())
