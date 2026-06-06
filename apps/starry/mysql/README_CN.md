@@ -2,11 +2,25 @@
 
 这个应用会先准备一个带 Oracle MySQL 8.4.6 generic glibc 二进制包的 x86_64 Debian rootfs，然后在 StarryOS guest 中运行 SQL 测试。
 
+当前只支持 x86_64 Debian/glibc rootfs。Oracle generic 包不适合 aarch64，也不适合 Alpine/musl rootfs。
+
+## 宿主机权限要求
+
+MySQL rootfs 准备流程必须以 `root` 身份运行，或者由具备 passwordless
+`sudo` 的用户运行。`prebuild.sh` 会使用 `losetup` 挂载生成的 ext4
+镜像，然后在镜像内安装 MySQL、解包 Debian 运行时依赖，并写入
+`/root/mysql-env.sh`。如果没有这些权限，app 流程会在 QEMU 启动前停止。
+
+请在 root shell、具备 root 权限的容器，或者能以 passwordless `sudo`
+执行挂载流程的宿主机账号下运行：
+
 ```bash
 cargo xtask starry app qemu -t mysql --arch x86_64
 ```
 
-当前只支持 x86_64 Debian/glibc rootfs。Oracle generic 包不适合 aarch64，也不适合 Alpine/musl rootfs。
+生成后的镜像会缓存在 `tmp/axbuild/rootfs/rootfs-x86_64-mysql.img`，下载内容会缓存在
+`target/mysql`，但当前 `prebuild.sh` 在检查、扩容、挂载和刷新镜像时仍然需要
+root 权限。
 
 ## Rootfs 准备
 
