@@ -15,7 +15,7 @@ use anyhow::anyhow;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Axvisor, build};
-use crate::{context::ResolvedAxvisorRequest, rootfs};
+use crate::{context::ResolvedAxvisorRequest, rootfs, test::qemu as qemu_test};
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
     let request = axvisor.prepare_request(
@@ -66,6 +66,7 @@ pub(super) async fn load_patched_qemu_config(
         axvisor.app.workspace_root(),
         explicit_rootfs,
     )?;
+    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
     Ok(qemu)
 }
 

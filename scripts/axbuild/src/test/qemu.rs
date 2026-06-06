@@ -916,6 +916,7 @@ pub(crate) fn apply_dynamic_x86_64_qemu_boot(qemu: &mut QemuConfig, cargo: &Carg
     keep_qemu_default_devices_for_uefi(qemu);
     disable_unneeded_default_x86_64_devices(qemu);
     disable_dynamic_x86_64_five_level_paging(qemu);
+    enable_dynamic_x86_64_nested_vmx_features(qemu);
     apply_drive_snapshot_without_global_snapshot(qemu);
     apply_dynamic_x86_64_qemu_debug_args(qemu);
 }
@@ -993,6 +994,30 @@ fn disable_dynamic_x86_64_five_level_paging(qemu: &mut QemuConfig) {
             disable_qemu_cpu_feature(cpu, "la57");
         }
     }
+}
+
+fn enable_dynamic_x86_64_nested_vmx_features(qemu: &mut QemuConfig) {
+    for index in 0..qemu.args.len() {
+        if qemu.args.get(index).is_some_and(|arg| arg == "-cpu")
+            && let Some(cpu) = qemu.args.get_mut(index + 1)
+        {
+            for feature in ["vmx-ept", "vmx-unrestricted-guest", "vmx-flexpriority"] {
+                enable_qemu_cpu_feature(cpu, feature);
+            }
+        }
+    }
+}
+
+fn enable_qemu_cpu_feature(cpu: &mut String, feature: &str) {
+    let enabled_feature = format!("+{feature}");
+    if cpu.split(',').any(|part| part.trim() == enabled_feature) {
+        return;
+    }
+
+    if !cpu.is_empty() {
+        cpu.push(',');
+    }
+    cpu.push_str(&enabled_feature);
 }
 
 fn disable_qemu_cpu_feature(cpu: &mut String, feature: &str) {
@@ -1608,7 +1633,7 @@ mod tests {
             qemu.args,
             [
                 "-cpu",
-                "host,+x2apic,-la57",
+                "host,+x2apic,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
                 "-machine",
                 "q35",
                 "-net",

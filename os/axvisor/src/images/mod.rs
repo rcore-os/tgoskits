@@ -17,7 +17,7 @@ use alloc::format;
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use axvmconfig::AxVMCrateConfig;
 #[cfg(target_arch = "x86_64")]
-use axvmconfig::{VMBootProtocol, VmMemMappingType};
+use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
 use byte_unit::Byte;
 
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
@@ -518,6 +518,14 @@ impl ImageLoader {
                 address.base_gpa,
                 address.length,
             ));
+        }
+        for device in &self.config.devices.emu_devices {
+            if matches!(device.emu_type, EmulatedDeviceType::X86IoApic) {
+                builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                    device.base_gpa,
+                    device.length,
+                ));
+            }
         }
         builder.add_reserved_range(x86_mptable::reserved_range());
 

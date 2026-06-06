@@ -27,6 +27,10 @@ kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
+# Linux direct boot has no firmware-provided default command line; keep these
+# parameters explicit so the guest can find serial console, virtio rootfs, and
+# legacy QEMU/MPTable devices.
+cmdline = "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0 dumb"
 
 ## The path of the disk image.
 # disk_path = ""
@@ -70,6 +74,10 @@ passthrough_devices = [
 passthrough_addresses = [
   # QEMU q35 low MMIO window needed by PCI/virtio-blk probing.
   [0xfe00_0000, 0x00c0_0000],
+  # Linux probes a q35/ICH system MMIO page after the PIT/HLT path is active.
+  [0xfed8_0000, 0x1000],
+  # QEMU q35 assigns the virtio PCI 64-bit MMIO BAR above 4G.
+  [0x70_0000_0000, 0x10_0000],
 ]
 
 # Devices that are not desired to be passed through to the guest

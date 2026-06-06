@@ -249,11 +249,6 @@ impl ApicTimer {
         let (vm_id, vcpu_id) = self.where_am_i;
         let generation = self.next_generation();
 
-        trace!(
-            "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) starts timer @ ns {current_ns:?}, deadline ns \
-             {deadline_ns:?}"
-        );
-
         self.last_start_ticks = current_ns;
         self.deadline_ns = deadline_ns;
         self.shared
@@ -372,10 +367,6 @@ fn schedule_apic_timer(
             let mode = (lvt & LVT_TIMER::TimerMode::SET.mask()) >> 17;
 
             if !masked {
-                trace!(
-                    "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt \
-                     {vector}"
-                );
                 let _ = host::inject_interrupt(vm_id, vcpu_id, vector);
             }
 

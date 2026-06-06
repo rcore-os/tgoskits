@@ -13,6 +13,7 @@ const PIT_PORT_END: u16 = PIT_SPEAKER_CONTROL;
 const PIT_BASE_FREQUENCY_HZ: u64 = 1_193_182;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 const MIN_PERIOD_NS: u64 = 1_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessMode {
     LatchCount,
@@ -399,7 +400,9 @@ impl BaseDeviceOps<PortRange> for EmulatedPit {
         match port.0 {
             PIT_CHANNEL0 => state.channel0.write_count(val as u8, now_ns),
             PIT_CHANNEL2 => state.channel2.write_count(val as u8, now_ns),
-            PIT_COMMAND => Self::write_command(&mut state, val as u8, now_ns),
+            PIT_COMMAND => {
+                Self::write_command(&mut state, val as u8, now_ns);
+            }
             PIT_SPEAKER_CONTROL => state.speaker_control = val as u8,
             _ => return ax_err!(Unsupported, "unsupported x86 PIT write port"),
         }

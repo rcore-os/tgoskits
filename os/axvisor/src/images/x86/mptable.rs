@@ -146,7 +146,7 @@ const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
     // for the current smoke device. This is intentionally narrow; a later PCI
     // IRQ router should derive it from platform/device topology instead.
     if dev == 3 && pin == 0 {
-        23
+        18
     } else {
         16 + ((dev + pin) & 3)
     }

@@ -31,7 +31,7 @@ use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
     bits64::vmx,
-    controlregs::Xcr0,
+    controlregs::{Xcr0, cr2, cr2_write},
     dtables::{self, DescriptorTablePointer},
     segmentation::SegmentSelector,
 };
@@ -61,7 +61,12 @@ const X86_PIT_PORT_COUNT: u32 = 4;
 const X86_PIT_SPEAKER_PORT: u16 = 0x61;
 const X86_COM1_PORT_BASE: u16 = 0x3f8;
 const X86_COM1_PORT_COUNT: u32 = 8;
+const X2APIC_MSR_BASE: u32 = 0x800;
+const X2APIC_MSR_END: u32 = 0x8ff;
+const X2APIC_EOI_MSR: u32 = X2APIC_MSR_BASE + 0xb;
 pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
+const X86_LOCAL_APIC_SIZE: usize = 0x1000;
+const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
 
@@ -75,6 +80,10 @@ pub enum VmCpuMode {
 
 const MSR_IA32_EFER_LMA_BIT: u64 = 1 << 10;
 const CR0_PE: usize = 1 << 0;
+
+fn secondary_control_bits_allowed(bits: u32) -> bool {
+    ((Msr::IA32_VMX_PROCBASED_CTLS2.read() >> 32) as u32 & bits) == bits
+}
 
 #[derive(Clone, Copy, Debug)]
 struct PendingEvent {
@@ -122,6 +131,8 @@ pub struct VmxVcpu {
     pending_events: VecDeque<PendingEvent>,
     /// Emulated Local APIC.
     vlapic: EmulatedLocalApic,
+    /// Guest CR2 is not saved or restored by VMX hardware.
+    guest_cr2: usize,
 
     // Extra states
     /// The XState of the VCpu. Both host and guest.
@@ -150,6 +161,7 @@ impl VmxVcpu {
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
+            guest_cr2: 0,
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
             guest_regs_exiting: GeneralRegisters::default(),
@@ -234,6 +246,7 @@ impl VmxVcpu {
         }
 
         unsafe {
+            cr2_write(self.guest_cr2 as u64);
             if self.launched {
                 self.vmx_resume();
             } else {
@@ -244,6 +257,7 @@ impl VmxVcpu {
 
                 self.vmx_launch();
             }
+            self.guest_cr2 = cr2();
         }
         self.load_host_xstate();
         restore_host_interrupt_flag(self.host_rflags);
@@ -655,22 +669,27 @@ impl VmxVcpu {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val = CpuCtrl2::VIRTUALIZE_APIC
-            | CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY
-            | CpuCtrl2::ENABLE_EPT
-            | CpuCtrl2::UNRESTRICTED_GUEST;
+        let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
+        for feature in [CpuCtrl2::VIRTUALIZE_APIC] {
+            if secondary_control_bits_allowed(feature.bits()) {
+                val |= feature;
+            }
+        }
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
             && features.has_rdtscp()
+            && secondary_control_bits_allowed(CpuCtrl2::ENABLE_RDTSCP.bits())
         {
             val |= CpuCtrl2::ENABLE_RDTSCP;
         }
         if let Some(features) = raw_cpuid.get_extended_feature_info()
             && features.has_invpcid()
+            && secondary_control_bits_allowed(CpuCtrl2::ENABLE_INVPCID.bits())
         {
             val |= CpuCtrl2::ENABLE_INVPCID;
         }
         if let Some(features) = raw_cpuid.get_extended_state_info()
             && features.has_xsaves_xrstors()
+            && secondary_control_bits_allowed(CpuCtrl2::ENABLE_XSAVES_XRSTORS.bits())
         {
             val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
         }
@@ -942,8 +961,6 @@ impl VmxVcpu {
     /// Return the result or None if the vm-exit was not handled.
     fn builtin_vmexit_handler(&mut self, exit_info: &VmxExitInfo) -> Option<AxResult> {
         const APIC_BASE_MSR: u32 = 0x1b;
-        const X2APIC_MSR_BASE: u32 = 0x800;
-        const X2APIC_MSR_END: u32 = 0x8ff; // SDM says 0x8ff, but actually 0x83f, we respect the SDM here.
         const AMD64_DE_CFG: u32 = 0xc001_1029;
         // Following vm-exits are handled here:
         // - interrupt window: turn off interrupt window;
@@ -960,22 +977,10 @@ impl VmxVcpu {
                 Some(self.handle_apic_base_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
             }
             msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
-                if {
-                    let msr = self.regs().rcx as u32;
-                    (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr)
-                } =>
-            {
-                Some(self.handle_apic_msr_access(
-                    msr_rw == VmxExitReason::MSR_WRITE,
-                    self.regs().rcx as u32,
-                ))
-            }
-            msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
                 if self.regs().rcx as u32 == AMD64_DE_CFG =>
             {
                 Some(self.handle_amd64_de_cfg_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
             }
-            VmxExitReason::APIC_ACCESS => Some(self.handle_apic_access(exit_info)),
             _ => None,
         }
     }
@@ -1008,34 +1013,41 @@ impl VmxVcpu {
         }
     }
 
-    fn handle_apic_msr_access(&mut self, write: bool, msr: u32) -> AxResult {
+    fn handle_apic_msr_access(&mut self, write: bool, msr: u32) -> AxResult<AxVCpuExitReason> {
         const VMEXIT_INSTR_LEN_RDMSR_WRMSR: u8 = 2;
 
         self.advance_rip(VMEXIT_INSTR_LEN_RDMSR_WRMSR)?;
 
-        let msr = msr as _;
+        let reg = msr as usize;
         if write {
             let value = self.read_edx_eax() as usize;
 
             trace!("handle_vlapic_msr_write: msr={msr:#x}, value={value:#x}");
 
-            <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_write(
-                &self.vlapic,
-                SysRegAddr::new(msr),
-                AccessWidth::Qword,
-                value,
-            )
+            if msr == X2APIC_EOI_MSR {
+                Ok(AxVCpuExitReason::InterruptEnd {
+                    vector: self.vlapic.handle_eoi(),
+                })
+            } else {
+                <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_write(
+                    &self.vlapic,
+                    SysRegAddr::new(reg),
+                    AccessWidth::Qword,
+                    value,
+                )?;
+                Ok(AxVCpuExitReason::Nothing)
+            }
         } else {
             let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(
                 &self.vlapic,
-                SysRegAddr::new(msr),
+                SysRegAddr::new(reg),
                 AccessWidth::Qword,
             )? as u64;
 
             trace!("handle_vlapic_msr_read: msr={msr:#x}, value={value:#x}");
 
             self.write_edx_eax(value);
-            Ok(())
+            Ok(AxVCpuExitReason::Nothing)
         }
     }
 
@@ -1049,7 +1061,7 @@ impl VmxVcpu {
         Ok(())
     }
 
-    fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult {
+    fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult<AxVCpuExitReason> {
         let apic_access_exit_info = self.apic_access_exit_info()?;
 
         let write = match apic_access_exit_info.access_type {
@@ -1066,14 +1078,21 @@ impl VmxVcpu {
 
         let reg = apic_access_exit_info.offset as usize;
         let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + reg);
+        let mut exit_reason = AxVCpuExitReason::Nothing;
         if write {
             let value = self.decode_apic_mmio_write_value(exit_info)?;
-            <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
-                &self.vlapic,
-                addr,
-                AccessWidth::Dword,
-                value,
-            )?;
+            if reg == X86_LOCAL_APIC_EOI_OFFSET {
+                exit_reason = AxVCpuExitReason::InterruptEnd {
+                    vector: self.vlapic.handle_eoi(),
+                };
+            } else {
+                <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+                    &self.vlapic,
+                    addr,
+                    AccessWidth::Dword,
+                    value,
+                )?;
+            }
         } else {
             let value =
                 <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_read(
@@ -1084,7 +1103,8 @@ impl VmxVcpu {
             self.regs_mut().rax = value as u64;
         }
 
-        self.advance_rip(exit_info.exit_instruction_length as _)
+        self.advance_rip(exit_info.exit_instruction_length as _)?;
+        Ok(exit_reason)
     }
 
     fn decode_apic_mmio_write_value(&self, exit_info: &VmxExitInfo) -> AxResult<usize> {
@@ -1123,20 +1143,25 @@ impl VmxVcpu {
     }
 
     fn decode_ept_mmio_access(
-        &self,
+        &mut self,
         exit_info: &VmxExitInfo,
         addr: GuestPhysAddr,
         write: bool,
-    ) -> Option<AxVCpuExitReason> {
-        // Keep EPT-violation MMIO decoding scoped to the PC IOAPIC window used
+    ) -> Option<(AxVCpuExitReason, u8)> {
+        // Keep EPT-violation MMIO decoding scoped to the PC APIC windows used
         // by the current x86 Linux direct-boot path. The VMX exit qualification
         // alone does not tell us whether an unmapped GPA is an emulated device
         // or a genuine missing memory mapping.
-        if !(X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr.as_usize()) {
+        let addr_usize = addr.as_usize();
+        let local_apic =
+            (X86_APIC_ACCESS_GPA..X86_APIC_ACCESS_GPA + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
+        let ioapic = (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr_usize);
+        if !local_apic && !ioapic {
             return None;
         }
 
-        let mut rip = self.gla2gva(GuestVirtAddr::from(exit_info.guest_rip));
+        let start = self.gla2gva(GuestVirtAddr::from(exit_info.guest_rip));
+        let mut rip = start;
         let mut rex = 0u8;
         if let Err(err) = Self::skip_simple_prefixes(self, &mut rip, &mut rex) {
             debug!("failed to decode EPT MMIO prefixes: {err:?}");
@@ -1155,11 +1180,10 @@ impl VmxVcpu {
         match (write, opcode) {
             (true, 0x89) => {
                 let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
-                Some(AxVCpuExitReason::MmioWrite {
-                    addr,
-                    width: AccessWidth::Dword,
-                    data: self.guest_regs.get_reg_of_index(reg) as u32 as u64,
-                })
+                let end = self.skip_modrm_memory_operand(rip, modrm, rex).ok()?;
+                let data = self.guest_regs.get_reg_of_index(reg) as u32 as u64;
+                let exit = self.handle_decoded_ept_mmio_write(addr, data, local_apic)?;
+                Some((exit, (end.as_usize() - start.as_usize()) as u8))
             }
             (true, 0xc7) if (modrm >> 3) & 0x7 == 0 => {
                 let imm_addr = self.skip_modrm_memory_operand(rip, modrm, rex).ok()?;
@@ -1167,27 +1191,73 @@ impl VmxVcpu {
                 for i in 0..size_of::<u32>() {
                     data |= (self.read_guest_u8(imm_addr + i).ok()? as u32) << (i * 8);
                 }
-                Some(AxVCpuExitReason::MmioWrite {
-                    addr,
-                    width: AccessWidth::Dword,
-                    data: data as u64,
-                })
+                let exit = self.handle_decoded_ept_mmio_write(addr, data as u64, local_apic)?;
+                Some((
+                    exit,
+                    (imm_addr.as_usize() + size_of::<u32>() - start.as_usize()) as u8,
+                ))
             }
             (false, 0x8b) => {
                 let reg = (((modrm >> 3) & 0x7) | ((rex & 0x4) << 1)) as usize;
-                Some(AxVCpuExitReason::MmioRead {
-                    addr,
-                    width: AccessWidth::Dword,
-                    reg,
-                    reg_width: AccessWidth::Dword,
-                    signed_ext: false,
-                })
+                let end = self.skip_modrm_memory_operand(rip, modrm, rex).ok()?;
+                let exit = if local_apic {
+                    let val =
+                        <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_read(
+                            &self.vlapic,
+                            addr,
+                            AccessWidth::Dword,
+                        )
+                        .ok()?;
+                    self.regs_mut()
+                        .set_reg_of_index(reg as u8, val as u32 as u64);
+                    AxVCpuExitReason::Nothing
+                } else {
+                    AxVCpuExitReason::MmioRead {
+                        addr,
+                        width: AccessWidth::Dword,
+                        reg,
+                        reg_width: AccessWidth::Dword,
+                        signed_ext: false,
+                    }
+                };
+                Some((exit, (end.as_usize() - start.as_usize()) as u8))
             }
             _ => {
                 debug!("unsupported EPT MMIO opcode {opcode:#x}, write={write}");
                 None
             }
         }
+    }
+
+    fn handle_decoded_ept_mmio_write(
+        &mut self,
+        addr: GuestPhysAddr,
+        data: u64,
+        local_apic: bool,
+    ) -> Option<AxVCpuExitReason> {
+        if !local_apic {
+            return Some(AxVCpuExitReason::MmioWrite {
+                addr,
+                width: AccessWidth::Dword,
+                data,
+            });
+        }
+
+        let offset = addr.as_usize() - X86_APIC_ACCESS_GPA;
+        if offset == X86_LOCAL_APIC_EOI_OFFSET {
+            return Some(AxVCpuExitReason::InterruptEnd {
+                vector: self.vlapic.handle_eoi(),
+            });
+        }
+
+        <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+            &self.vlapic,
+            addr,
+            AccessWidth::Dword,
+            data as usize,
+        )
+        .ok()?;
+        Some(AxVCpuExitReason::Nothing)
     }
 
     fn skip_simple_prefixes(&self, rip: &mut GuestVirtAddr, rex: &mut u8) -> AxResult {
@@ -1642,30 +1712,35 @@ impl AxArchVCpu for VmxVcpu {
                         self.handle_vmx_preemption_timer()?;
                         AxVCpuExitReason::PreemptionTimer
                     }
+                    VmxExitReason::HLT => {
+                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                        AxVCpuExitReason::PreemptionTimer
+                    }
                     VmxExitReason::VIRTUALIZED_EOI => AxVCpuExitReason::InterruptEnd {
                         vector: self.vlapic.handle_eoi(),
                     },
                     VmxExitReason::APIC_WRITE => {
                         let offset = self.apic_access_exit_info()?.offset as usize;
-                        if offset == 0xb0 {
+                        if offset == X86_LOCAL_APIC_EOI_OFFSET {
                             let vector = self.vlapic.handle_eoi();
                             AxVCpuExitReason::InterruptEnd { vector }
                         } else {
                             AxVCpuExitReason::Nothing
                         }
                     }
+                    VmxExitReason::APIC_ACCESS => self.handle_apic_access(&exit_info)?,
                     VmxExitReason::EPT_VIOLATION => {
                         let info = self.nested_page_fault_info()?;
                         let write = info.access_flags.contains(MappingFlags::WRITE);
                         let read = info.access_flags.contains(MappingFlags::READ);
                         if (read || write)
-                            && let Some(mmio_exit) = self.decode_ept_mmio_access(
+                            && let Some((mmio_exit, instruction_len)) = self.decode_ept_mmio_access(
                                 &exit_info,
                                 info.fault_guest_paddr,
                                 write,
                             )
                         {
-                            self.advance_rip(exit_info.exit_instruction_length as _)?;
+                            self.advance_rip(instruction_len)?;
                             mmio_exit
                         } else {
                             AxVCpuExitReason::NestedPageFault {
@@ -1675,18 +1750,28 @@ impl AxArchVCpu for VmxVcpu {
                         }
                     }
                     VmxExitReason::MSR_READ => {
-                        // `reg` is unused here.
-                        AxVCpuExitReason::SysRegRead {
-                            addr: SysRegAddr::new(self.regs().rcx as _),
-                            reg: 0,
+                        let msr = self.regs().rcx as u32;
+                        if (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr) {
+                            self.handle_apic_msr_access(false, msr)?
+                        } else {
+                            // `reg` is unused here.
+                            AxVCpuExitReason::SysRegRead {
+                                addr: SysRegAddr::new(msr as _),
+                                reg: 0,
+                            }
                         }
                     }
                     VmxExitReason::MSR_WRITE => {
-                        let value = (self.regs().rax & 0xffff_ffff)
-                            | ((self.regs().rdx & 0xffff_ffff) << 32);
-                        AxVCpuExitReason::SysRegWrite {
-                            addr: SysRegAddr::new(self.regs().rcx as _),
-                            value,
+                        let msr = self.regs().rcx as u32;
+                        if (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr) {
+                            self.handle_apic_msr_access(true, msr)?
+                        } else {
+                            let value = (self.regs().rax & 0xffff_ffff)
+                                | ((self.regs().rdx & 0xffff_ffff) << 32);
+                            AxVCpuExitReason::SysRegWrite {
+                                addr: SysRegAddr::new(msr as _),
+                                value,
+                            }
                         }
                     }
                     _ => {
