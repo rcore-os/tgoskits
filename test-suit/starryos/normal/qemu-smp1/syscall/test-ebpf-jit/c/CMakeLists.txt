@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-ebpf-jit C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-ebpf-jit src/main.c)
+target_compile_options(test-ebpf-jit PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-ebpf-jit RUNTIME DESTINATION usr/bin/starry-test-suit)
