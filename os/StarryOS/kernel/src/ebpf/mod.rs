@@ -31,9 +31,7 @@ use kbpf_basic::{
     raw_tracepoint::BpfRawTracePointArg,
 };
 
-#[allow(dead_code)] // wired in by follow-up PRs (ebpf-jit-2/3)
 pub(crate) mod bpf_insn;
-#[allow(dead_code)] // wired in by follow-up PRs (ebpf-jit-2/3)
 pub mod ebpf_jit;
 pub(crate) mod error;
 pub mod map;

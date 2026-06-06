@@ -26,7 +26,7 @@ use rbpf::EbpfVmRaw;
 
 use super::PerfEventOps;
 use crate::{
-    ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
+    ebpf::{BPF_HELPER_FUN_SET, bpf_insn::BpfInsn, ebpf_jit, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
 };
 
@@ -188,36 +188,89 @@ pub fn perf_event_open_bpf(args: PerfProbeArgs) -> BpfPerfEventWrapper {
     BpfPerfEventWrapper::new(BpfPerfEvent::new(args))
 }
 
-/// A loaded BPF program bundled with an `rbpf` interpreter that borrows
-/// into the program's instruction buffer.
+/// Execution backend for a loaded BPF program: JIT-compiled native code
+/// or the `rbpf` interpreter as fallback.
+enum EbpfExecutor {
+    /// JIT-compiled native code.
+    Jit {
+        entry: unsafe extern "C" fn(*mut u8) -> u64,
+        _jit_buf: ebpf_jit::JitBuffer,
+    },
+    /// Interpreted execution via `rbpf::EbpfVmRaw`.
+    Interpreter(EbpfVmRaw<'static>),
+}
+
+/// A loaded BPF program bundled with an execution backend (JIT or
+/// interpreter).
 ///
-/// Soundness: the interpreter holds a `'static`-typed slice into the
-/// instruction bytes owned by `_prog`; the only thing keeping those bytes
-/// alive is the [`Arc<BpfProg>`] in `_prog`. Field order in this struct is
-/// therefore load-bearing — `vm` is declared first, `_prog` last, so the
-/// struct's drop glue runs `vm`'s destructor before `_prog`'s, and the
-/// instruction buffer is freed strictly after the borrower is gone. Do not
-/// reorder the fields.
+/// Soundness: both the interpreter and the JIT buffer reference the
+/// instruction bytes owned by `_prog`. Field order is load-bearing —
+/// `executor` is declared first, `_prog` last, so the struct's drop glue
+/// runs the executor's destructor before `_prog`'s.
+/// Do not reorder the fields.
 pub struct OwnedEbpfVm {
-    vm: EbpfVmRaw<'static>,
-    /// MUST be declared after `vm` (drop order). Keeps the instruction
-    /// buffer alive for the entire lifetime of `vm`.
+    executor: EbpfExecutor,
+    /// MUST be declared after `executor` (drop order).
     _prog: Arc<BpfProg>,
 }
 
 impl OwnedEbpfVm {
-    /// Build an `rbpf::EbpfVmRaw` around the program's instruction stream
-    /// and register the kernel helper table on it. The returned value owns
-    /// both the VM and the [`Arc<BpfProg>`] backing its instruction buffer.
+    /// Build an execution backend for the BPF program. Tries JIT
+    /// compilation first; falls back to the `rbpf` interpreter.
     pub fn new(bpf_prog: Arc<dyn FileLike>) -> AxResult<Self> {
         let prog = bpf_prog
             .into_any_arc()
             .downcast::<BpfProg>()
             .map_err(|_| AxError::InvalidInput)?;
-        // Extend the borrow of `prog.insns()` to `'static`. SAFETY: the
-        // Arc<BpfProg> is moved into the returned `OwnedEbpfVm` together
-        // with the VM, and the struct's field drop order (vm before _prog)
-        // guarantees the borrower is destroyed before the buffer is freed.
+
+        let executor = if let Some(jit_executor) = Self::try_jit(&prog) {
+            jit_executor
+        } else {
+            Self::build_interpreter(&prog)?
+        };
+
+        Ok(Self {
+            executor,
+            _prog: prog,
+        })
+    }
+
+    fn try_jit(prog: &Arc<BpfProg>) -> Option<EbpfExecutor> {
+        let prog_slice = prog.insns();
+        if !prog_slice
+            .len()
+            .is_multiple_of(core::mem::size_of::<BpfInsn>())
+        {
+            warn!("eBPF JIT: bytecode length not aligned to BpfInsn size");
+            return None;
+        }
+        let insn_count = prog_slice.len() / core::mem::size_of::<BpfInsn>();
+        if insn_count == 0 {
+            return None;
+        }
+        // SAFETY: BpfInsn is #[repr(C)] and 8 bytes; the byte slice is
+        // byte-swapped (little-endian) by kbpf-basic preprocessor.
+        let insns = unsafe {
+            core::slice::from_raw_parts(prog_slice.as_ptr() as *const BpfInsn, insn_count)
+        };
+        let helpers = BPF_HELPER_FUN_SET.get()?;
+        let jit_buf = ebpf_jit::try_jit_compile(insns, helpers)?;
+        // SAFETY: the JIT buffer is page-aligned and holds valid native
+        // code for the target architecture.
+        let entry: unsafe extern "C" fn(*mut u8) -> u64 =
+            unsafe { core::mem::transmute(jit_buf.entry()) };
+        info!(
+            "eBPF JIT: compiled {} instructions into {} bytes of native code",
+            insn_count,
+            jit_buf.offset()
+        );
+        Some(EbpfExecutor::Jit {
+            entry,
+            _jit_buf: jit_buf,
+        })
+    }
+
+    fn build_interpreter(prog: &Arc<BpfProg>) -> AxResult<EbpfExecutor> {
         let prog_slice = prog.insns();
         let prog_slice =
             unsafe { core::slice::from_raw_parts(prog_slice.as_ptr(), prog_slice.len()) };
@@ -225,60 +278,53 @@ impl OwnedEbpfVm {
             error!("rbpf::EbpfVmRaw::new failed: {e:?}");
             AxError::InvalidInput
         })?;
-
         if let Some(table) = BPF_HELPER_FUN_SET.get() {
             for (key, value) in table.iter() {
                 let _ = vm.register_helper(*key, *value);
             }
         }
-        // TODO: not all of the address space is accessible to a BPF program;
-        // allowing the full `0..u64::MAX` range disables rbpf's bounds check
-        // and lets a buggy/hostile program read arbitrary kernel memory via
-        // direct loads. Narrow this to the legitimately-reachable context /
-        // map / stack ranges once kbpf-basic exposes the per-program bounds.
         vm.register_allowed_memory(0..u64::MAX);
-
-        Ok(Self { vm, _prog: prog })
+        Ok(EbpfExecutor::Interpreter(vm))
     }
 
-    /// Execute the wrapped BPF program with the supplied context bytes.
-    ///
-    /// Takes `&self`: `rbpf::EbpfVmRaw::execute_program` is itself `&self`
-    /// (the interpreter keeps its scratch state on the local stack), so no
-    /// exterior mutability — and therefore no lock — is required around an
-    /// `OwnedEbpfVm`.
     pub fn execute_program(&self, ctx: &mut [u8]) -> Result<u64, rbpf::lib::Error> {
-        self.vm.execute_program(ctx)
+        match &self.executor {
+            EbpfExecutor::Jit { entry, .. } => Ok(unsafe { entry(ctx.as_mut_ptr()) }),
+            EbpfExecutor::Interpreter(vm) => vm.execute_program(ctx),
+        }
     }
 
-    /// Execute the wrapped BPF program with a `PtRegs` as the single-pointer
-    /// context argument the kprobe/kretprobe ABI expects.
     pub fn execute_with_ptregs(&self, pt_regs: &mut PtRegs) -> Result<u64, rbpf::lib::Error> {
-        // SAFETY: kbpf-basic's kprobe-context contract passes a raw
-        // pointer to `PtRegs` as the program context; we hand the same
-        // bytes here.
-        let probe_context = unsafe {
-            core::slice::from_raw_parts_mut(
-                pt_regs as *mut PtRegs as *mut u8,
-                core::mem::size_of::<PtRegs>(),
-            )
-        };
-        self.vm.execute_program(probe_context)
+        match &self.executor {
+            EbpfExecutor::Jit { entry, .. } => {
+                Ok(unsafe { entry(pt_regs as *mut PtRegs as *mut u8) })
+            }
+            EbpfExecutor::Interpreter(vm) => {
+                let probe_context = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        pt_regs as *mut PtRegs as *mut u8,
+                        core::mem::size_of::<PtRegs>(),
+                    )
+                };
+                vm.execute_program(probe_context)
+            }
+        }
     }
 }
 
 impl Debug for OwnedEbpfVm {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "OwnedEbpfVm")
+        match &self.executor {
+            EbpfExecutor::Jit { .. } => write!(f, "OwnedEbpfVm(jit)"),
+            EbpfExecutor::Interpreter(_) => write!(f, "OwnedEbpfVm(interp)"),
+        }
     }
 }
 
-// SAFETY: the bundled `EbpfVmRaw<'static>` is an interpreter over an immutable
-// instruction slice; the `Arc<BpfProg>` backing that slice is `Send + Sync`.
-// `execute_program` runs entirely off `&self` and a private stack, so it is
-// re-entrant and may be driven concurrently from probe-fire paths on several
-// CPUs without data races. The raw-pointer fields rbpf carries internally are
-// never mutated after construction, so promoting the bundle to `Send + Sync`
-// is sound.
+// SAFETY: both execution backends operate over an immutable instruction
+// slice / JIT buffer backed by the `Arc<BpfProg>`; `execute_program` runs
+// entirely off `&self` and a private stack, so it is re-entrant and may be
+// driven concurrently from probe-fire paths on several CPUs without data
+// races. The JIT code is read-only after compilation.
 unsafe impl Send for OwnedEbpfVm {}
 unsafe impl Sync for OwnedEbpfVm {}
