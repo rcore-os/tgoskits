@@ -143,6 +143,18 @@ impl CowBackend {
 
             file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)?;
         }
+        // On non-coherent XuanTie C9xx (e.g. SG2002 C906), instruction bytes
+        // just written through the cacheable kernel mapping sit in dirty L1
+        // D-cache lines that `fence.i` will not write back. Clean them to the
+        // point of unification so the instruction fetch (after the fence.i on
+        // user entry) sees the new code instead of stale memory.
+        #[cfg(target_arch = "riscv64")]
+        if flags.contains(MappingFlags::EXECUTE) {
+            ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(
+                phys_to_virt(frame),
+                self.size as usize,
+            );
+        }
         pt.map(vaddr, frame, self.size, flags)?;
         Ok(())
     }
@@ -227,6 +239,16 @@ impl CowBackend {
                         phys_to_virt(paddr).as_ptr(),
                         phys_to_virt(new_frame).as_mut_ptr(),
                         self.size as _,
+                    );
+                }
+                // See `alloc_new_at`: clean the freshly copied page on
+                // XuanTie C9xx so a later instruction fetch of a copied
+                // executable page (e.g. W^X transitions) is not stale.
+                #[cfg(target_arch = "riscv64")]
+                if flags.contains(MappingFlags::EXECUTE) {
+                    ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(
+                        phys_to_virt(new_frame),
+                        self.size as usize,
                     );
                 }
                 pt.remap(vaddr, new_frame, flags)?;
