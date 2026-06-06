@@ -54,7 +54,7 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 
 ## 测试内容
 
-### Smoke测试 (ffmpeg-smoke-tests.sh)
+### Smoke测试 (ffmpeg-smoke-tests.sh) — 12 个阶段
 - ffmpeg -version 输出验证
 - ffmpeg -h 帮助信息
 - -codecs 编解码器列表
@@ -138,7 +138,7 @@ cargo xtask starry app qemu -t ffmpeg --arch x86_64 --qemu-config qemu-x86_64-ne
 - 音视频合流（video + audio mux）
 - 视频分辨率阶梯（80x60 / 160x120）
 
-### 网络测试 (ffmpeg-network-tests.sh)
+### 网络测试 (ffmpeg-network-tests.sh) — 12 个阶段
 - 协议支持检测（http, tcp, udp, rtmp, rtsp等）
 - file:// 协议访问
 - pipe:0/pipe:1 管道协议
