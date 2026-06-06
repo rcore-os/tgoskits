@@ -29,13 +29,37 @@ impl PidsState {
         self.current.load(Ordering::Relaxed) < max
     }
 
-    /// Called when a process is created.
+    /// Atomically check limit and increment — eliminates TOCTOU race.
+    /// Returns true if allowed, false if limit exceeded.
+    pub fn try_fork(&self) -> bool {
+        loop {
+            let current = self.current.load(Ordering::Relaxed);
+            let max = self.max.load(Ordering::Relaxed);
+            if max >= 0 && current >= max {
+                return false;
+            }
+            if self
+                .current
+                .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    /// Called when a process is created (legacy, prefer try_fork).
     pub fn fork(&self) {
         self.current.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Called when a process exits.
+    /// Prevents underflow below 0.
     pub fn exit(&self) {
-        self.current.fetch_sub(1, Ordering::Relaxed);
+        self.current
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                if current > 0 { Some(current - 1) } else { None }
+            })
+            .ok();
     }
 }

@@ -759,7 +759,7 @@ impl ProcessData {
                 crate::cgroup::GLOBAL_CGROUP_ROOT
                     .get()
                     .cloned()
-                    .unwrap_or_else(|| crate::cgroup::CgroupNode::new_root()),
+                    .unwrap_or_else(crate::cgroup::CgroupNode::new_root),
             ),
 
             nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),

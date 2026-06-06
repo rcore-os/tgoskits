@@ -525,8 +525,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     {
         let pid = process.pid();
         let cgroup = thr.proc_data.cgroup.read().clone();
-        cgroup.procs.lock().retain(|&p| p != pid);
-        cgroup.pids.exit();
+        let mut procs = cgroup.procs.lock();
+        if let Some(pos) = procs.iter().position(|&p| p == pid) {
+            procs.swap_remove(pos);
+            cgroup.pids.exit();
+        }
     }
 
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After

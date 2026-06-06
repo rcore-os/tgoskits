@@ -263,14 +263,13 @@ impl CloneArgs {
             let parent_cgroup = old_proc_data.cgroup.read().clone();
             *proc_data.cgroup.write() = parent_cgroup.clone();
 
-            // Check cgroup pids limit before creating
-            if !parent_cgroup.pids.can_fork() {
+            // Check cgroup pids limit and atomically increment
+            if !parent_cgroup.pids.try_fork() {
                 return Err(AxError::WouldBlock);
             }
 
-            // Register in parent's cgroup and update pids counter
+            // Register in parent cgroup
             parent_cgroup.procs.lock().push(tid);
-            parent_cgroup.pids.fork();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
