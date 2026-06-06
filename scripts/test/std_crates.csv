@@ -6,6 +6,7 @@ arm_vgic
 axaddrspace
 ax-allocator
 axbacktrace
+axbus
 axdevice
 axdevice_base
 ax-errno

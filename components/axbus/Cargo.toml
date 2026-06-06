@@ -1,0 +1,19 @@
+[package]
+name = "axbus"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Unified device & bus abstraction for ArceOS hypervisor (AxVisor)"
+
+[features]
+default = []
+
+[dependencies]
+log = "0.4"
+slotmap = { version = "1.0", default-features = false }
+ax-memory-addr = { workspace = true }
+ax-errno = { workspace = true }
+axaddrspace = { workspace = true }
+axdevice_base = { workspace = true }
+axvmconfig = { workspace = true }

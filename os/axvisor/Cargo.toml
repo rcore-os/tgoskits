@@ -54,6 +54,7 @@ serial = ["dep:axplat-dyn", "axplat-dyn/serial"]
 [target.'cfg(not(any(windows, unix)))'.dependencies]
 bitflags = "2.2"
 cfg-if = "1.0"
+axbus = { workspace = true }
 ax-cpumask = { workspace = true }
 ax-kernel-guard = { workspace = true }
 ax-kspin = { workspace = true }

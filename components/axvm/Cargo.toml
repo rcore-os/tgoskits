@@ -32,6 +32,7 @@ ax-percpu = { workspace = true, features = ["arm-el2"] }
 axvcpu = { workspace = true }
 axaddrspace = { workspace = true }
 axvisor_api = { workspace = true }
+axbus = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
 axvmconfig = { path = "../axvmconfig", default-features = false }

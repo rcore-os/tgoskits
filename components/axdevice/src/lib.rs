@@ -28,6 +28,7 @@ extern crate log;
 
 mod config;
 mod device;
+pub mod factories;
 
 pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;

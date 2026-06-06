@@ -21,6 +21,8 @@ use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{
     AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
 };
+use alloc::sync::Arc as StdArc;
+use axbus::{BusRouter, LegacyMmioAdapter, LegacySysRegAdapter, DeviceId};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
@@ -50,7 +52,8 @@ pub type AxVMRef = Arc<AxVM>;
 struct AxVMInnerConst {
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Box<[AxVCpuRef]>,
-    devices: AxVmDevices,
+    router: BusRouter,
+    ivc_mgr: Option<Mutex<axbus::IVCManager>>,
 }
 
 unsafe impl Send for AxVMInnerConst {}
@@ -339,10 +342,40 @@ impl AxVM {
             }
         }
 
+        // Build BusRouter from the legacy AxVmDevices (adapter pattern).
+        let mut router = BusRouter::new();
+        let mut dev_id: u64 = 1;
+        for dev in devices.iter_mmio_dev() {
+            let id = DeviceId::from_u64(dev_id); dev_id += 1;
+            let adapter = LegacyMmioAdapter::new(id, dev.clone());
+            let _ = router.register(StdArc::new(adapter));
+        }
+        for dev in devices.iter_sys_reg_dev() {
+            let id = DeviceId::from_u64(dev_id); dev_id += 1;
+            let adapter = LegacySysRegAdapter::new(id, dev.clone());
+            let _ = router.register(StdArc::new(adapter));
+        }
+        for dev in devices.iter_port_dev() {
+            let id = DeviceId::from_u64(dev_id); dev_id += 1;
+            let adapter = axbus::LegacyPortAdapter::new(id, dev.clone());
+            let _ = router.register(StdArc::new(adapter));
+        }
+
+        // Build IVCManager from the first IVCChannel emulated device config.
+        let ivc_mgr = inner_mut.config.emu_devices().iter().find_map(|cfg| {
+            use axvmconfig::EmulatedDeviceType;
+            if cfg.emu_type == EmulatedDeviceType::IVCChannel {
+                Some(Mutex::new(axbus::IVCManager::new(cfg.base_gpa, cfg.length)))
+            } else {
+                None
+            }
+        });
+
         self.inner_const.call_once(|| AxVMInnerConst {
             phys_cpu_ls: inner_mut.config.phys_cpu_ls.clone(),
             vcpu_list: vcpu_list.into_boxed_slice(),
-            devices,
+            router,
+            ivc_mgr,
         });
 
         // Setup VCpus.
@@ -503,9 +536,15 @@ impl AxVM {
     // TODO: implement suspend/resume.
     // TODO: implement re-init.
 
-    /// Returns this VM's emulated devices.
+    /// Returns this VM's bus router.
+    pub fn router(&self) -> &BusRouter {
+        &self.inner_const().router
+    }
+
+    /// (deprecated) Use `router()` instead.
+    #[deprecated(note = "use router() instead")]
     pub fn get_devices(&self) -> &AxVmDevices {
-        &self.inner_const().devices
+        panic!("get_devices() is deprecated; use router() instead");
     }
 
     /// Run a vCPU according to the given vcpu_id.
@@ -525,6 +564,17 @@ impl AxVM {
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;
             trace!("{exit_reason:#x?}");
+            /// Convert `axaddrspace::AccessWidth` to `axbus::AccessWidth`.
+            /// Exhaustive match: if a new variant is added to either enum, this
+            /// will fail to compile, alerting the developer immediately.
+            let width_map = |w: AccessWidth| -> axbus::AccessWidth {
+                match w {
+                    AccessWidth::Byte => axbus::AccessWidth::U8,
+                    AccessWidth::Word => axbus::AccessWidth::U16,
+                    AccessWidth::Dword => axbus::AccessWidth::U32,
+                    AccessWidth::Qword => axbus::AccessWidth::U64,
+                }
+            };
             let handled = match &exit_reason {
                 AxVCpuExitReason::MmioRead {
                     addr,
@@ -533,46 +583,82 @@ impl AxVM {
                     reg_width: _,
                     signed_ext: _,
                 } => {
-                    let val = self.get_devices().handle_mmio_read(*addr, *width)?;
+                    let addr_u64 = GuestPhysAddr::as_usize(*addr) as u64;
+                    let w = width_map(*width);
+                    let val = match self.router().route(
+                        axbus::BusKind::Mmio,
+                        &axbus::BusAccess::Read { addr: addr_u64, width: w },
+                    ) {
+                        axbus::BusResponse::Success(Some(v)) => v as usize,
+                        axbus::BusResponse::Success(None) => 0,
+                        _ => return ax_err!(Io, "MMIO read failed"),
+                    };
                     vcpu.set_gpr(*reg, val);
                     true
                 }
                 AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                    self.get_devices()
-                        .handle_mmio_write(*addr, *width, *data as usize)?;
+                    let addr_u64 = GuestPhysAddr::as_usize(*addr) as u64;
+                    let w = width_map(*width);
+                    match self.router().route(
+                        axbus::BusKind::Mmio,
+                        &axbus::BusAccess::Write { addr: addr_u64, width: w, val: *data },
+                    ) {
+                        axbus::BusResponse::Success(_) => {}
+                        _ => return ax_err!(Io, "MMIO write failed"),
+                    };
                     true
                 }
                 AxVCpuExitReason::IoRead { port, width } => {
-                    let val = self.get_devices().handle_port_read(*port, *width)?;
+                    let addr_u64 = port.0 as u64;
+                    let w = width_map(*width);
+                    let val = match self.router().route(
+                        axbus::BusKind::Pio,
+                        &axbus::BusAccess::Read { addr: addr_u64, width: w },
+                    ) {
+                        axbus::BusResponse::Success(Some(v)) => v as usize,
+                        axbus::BusResponse::Success(None) => 0,
+                        _ => return ax_err!(Io, "PIO read failed"),
+                    };
                     #[cfg(not(target_arch = "riscv64"))]
-                    vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
-
+                    vcpu.set_gpr(0, val);
                     #[cfg(target_arch = "riscv64")]
                     vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
-
                     true
                 }
                 AxVCpuExitReason::IoWrite { port, width, data } => {
-                    self.get_devices()
-                        .handle_port_write(*port, *width, *data as usize)?;
+                    let addr_u64 = port.0 as u64;
+                    let w = width_map(*width);
+                    match self.router().route(
+                        axbus::BusKind::Pio,
+                        &axbus::BusAccess::Write { addr: addr_u64, width: w, val: *data },
+                    ) {
+                        axbus::BusResponse::Success(_) => {}
+                        _ => return ax_err!(Io, "PIO write failed"),
+                    };
                     true
                 }
                 AxVCpuExitReason::SysRegRead { addr, reg } => {
-                    let val = self.get_devices().handle_sys_reg_read(
-                        *addr,
-                        // Generally speaking, the width of system register is fixed and needless to be specified.
-                        // AccessWidth::Qword here is just a placeholder, may be changed in the future.
-                        AccessWidth::Qword,
-                    )?;
+                    let addr_u64 = addr.0 as u64;
+                    let val = match self.router().route(
+                        axbus::BusKind::SysReg,
+                        &axbus::BusAccess::Read { addr: addr_u64, width: axbus::AccessWidth::U64 },
+                    ) {
+                        axbus::BusResponse::Success(Some(v)) => v as usize,
+                        axbus::BusResponse::Success(None) => 0,
+                        _ => return ax_err!(Io, "SysReg read failed"),
+                    };
                     vcpu.set_gpr(*reg, val);
                     true
                 }
                 AxVCpuExitReason::SysRegWrite { addr, value } => {
-                    self.get_devices().handle_sys_reg_write(
-                        *addr,
-                        AccessWidth::Qword,
-                        *value as usize,
-                    )?;
+                    let addr_u64 = addr.0 as u64;
+                    match self.router().route(
+                        axbus::BusKind::SysReg,
+                        &axbus::BusAccess::Write { addr: addr_u64, width: axbus::AccessWidth::U64, val: *value },
+                    ) {
+                        axbus::BusResponse::Success(_) => {}
+                        _ => return ax_err!(Io, "SysReg write failed"),
+                    };
                     true
                 }
                 AxVCpuExitReason::NestedPageFault { addr, access_flags } => self
@@ -730,10 +816,12 @@ impl AxVM {
     /// ## Returns
     /// * `AxResult<(GuestPhysAddr, usize)>` - A tuple containing the guest physical address of the allocated IVC channel and its actual size.
     pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxResult<(GuestPhysAddr, usize)> {
-        // Ensure the expected size is aligned to 4K.
+        let ivc = self.inner_const().ivc_mgr.as_ref().ok_or_else(|| {
+            ax_err_type!(NotFound, "No IVC channel configured")
+        })?;
         let size = align_up_4k(expected_size);
-        let gpa = self.inner_const().devices.alloc_ivc_channel(size)?;
-        Ok((gpa, size))
+        ivc.lock().alloc_channel_mut(size)
+            .map(|gpa| (gpa, size))
     }
 
     /// Releases an IVC channel for inter-VM communication region.
@@ -743,8 +831,11 @@ impl AxVM {
     /// ## Returns
     /// * `AxResult<()>` - An empty result indicating success or failure.
     pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxResult {
-        self.inner_const().devices.release_ivc_channel(gpa, size)?;
-        Ok(())
+        let ivc = self.inner_const().ivc_mgr.as_ref().ok_or_else(|| {
+            ax_err_type!(NotFound, "No IVC channel configured")
+        })?;
+        let size = align_up_4k(size);
+        ivc.lock().release_channel_mut(gpa, size)
     }
 
     /// Allocates a new memory region for the VM.
@@ -915,8 +1006,8 @@ impl AxVM {
             debug!(
                 "VM[{}] devices cleanup: {} MMIO devices, {} SysReg devices",
                 self.id(),
-                inner_const.devices.iter_mmio_dev().count(),
-                inner_const.devices.iter_sys_reg_dev().count()
+                inner_const.router.total_devices(),
+                0 // SysReg count included in total_devices
             );
 
             // TODO: Add device-specific cleanup if needed

@@ -22,6 +22,7 @@ members = [
     "components/axaddrspace",
     "components/axallocator",
     "components/axbacktrace",
+    "components/axbus",
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
     "components/axcpu",
@@ -431,3 +432,4 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 x86 = "0.52"
+axbus = { version = "0.1.0", path = "components/axbus" }
