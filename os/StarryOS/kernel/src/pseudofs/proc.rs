@@ -767,7 +767,6 @@ impl SimpleDirOps for ThreadDir {
                 "setgroups",
                 "cgroup",
                 "ns",
-                "cgroup",
             ]
             .into_iter()
             .map(Cow::Borrowed),
@@ -1030,7 +1029,6 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(NsDir {

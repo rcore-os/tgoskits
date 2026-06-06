@@ -199,9 +199,9 @@ impl SimpleDirOps for CgroupDirOps {
                     fs,
                     RwFile::new(move |req| match req {
                         SimpleFileOperation::Read => {
-                            let quota = n.cpu.cfs_quota.load(core::sync::atomic::Ordering::Relaxed);
+                            let quota = n.cpu.bandwidth.quota.load(core::sync::atomic::Ordering::Relaxed);
                             let period =
-                                n.cpu.cfs_period.load(core::sync::atomic::Ordering::Relaxed);
+                                n.cpu.bandwidth.period.load(core::sync::atomic::Ordering::Relaxed);
                             if quota < 0 {
                                 Ok(Some(format!("max {}\n", period).into_bytes()))
                             } else {
@@ -214,16 +214,10 @@ impl SimpleDirOps for CgroupDirOps {
                             if !parts.is_empty() {
                                 if parts[0] == "max" {
                                     n.cpu
-                                        .cfs_quota
-                                        .store(-1, core::sync::atomic::Ordering::Relaxed);
-                                    n.cpu
                                         .bandwidth
                                         .quota
                                         .store(-1, core::sync::atomic::Ordering::Relaxed);
                                 } else if let Ok(quota) = parts[0].parse::<i64>() {
-                                    n.cpu
-                                        .cfs_quota
-                                        .store(quota, core::sync::atomic::Ordering::Relaxed);
                                     n.cpu
                                         .bandwidth
                                         .quota
@@ -233,9 +227,6 @@ impl SimpleDirOps for CgroupDirOps {
                             if parts.len() > 1
                                 && let Ok(period) = parts[1].parse::<i64>()
                             {
-                                n.cpu
-                                    .cfs_period
-                                    .store(period, core::sync::atomic::Ordering::Relaxed);
                                 n.cpu
                                     .bandwidth
                                     .period
