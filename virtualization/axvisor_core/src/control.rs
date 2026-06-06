@@ -14,12 +14,14 @@
 
 //! AxVisor KVM-compatible host control endpoint callbacks.
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, format};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
+use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
 use axvisor_api::control::{self as api_control, ControlOps, EndpointSpec};
+use axvm::{AxVM, AxVMRef, VMStatus, config::AxVMConfig};
 
 const KVMIO: u32 = 0xae;
 
@@ -55,21 +57,23 @@ const KVM_MP_STATE_SIZE: u32 = 4;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
 const PAGE_SIZE: u64 = 4096;
+const PAGE_SIZE_USIZE: usize = PAGE_SIZE as usize;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static ENDPOINT_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 static SESSIONS: Mutex<BTreeMap<api_control::SessionId, Session>> = Mutex::new(BTreeMap::new());
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 enum Session {
     System,
     Vm(VmSession),
     Vcpu(VcpuSession),
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone)]
 struct VmSession {
+    vm: AxVMRef,
     memory_slots: BTreeMap<u32, MemorySlot>,
     vcpu_ids: BTreeMap<u32, api_control::SessionId>,
 }
@@ -86,6 +90,7 @@ struct MemorySlot {
     guest_phys_addr: u64,
     memory_size: u64,
     userspace_addr: u64,
+    acquired_memory: api_control::UserMemoryHandle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +155,10 @@ fn release(session: api_control::SessionId) -> AxResult {
     };
 
     if let Session::Vm(vm) = removed {
+        let _ = vm.vm.shutdown();
+        for memory_slot in vm.memory_slots.into_values() {
+            unmap_memory_slot(&vm.vm, memory_slot);
+        }
         for vcpu_session in vm.vcpu_ids.into_values() {
             let _ = SESSIONS.lock().remove(&vcpu_session);
         }
@@ -158,11 +167,16 @@ fn release(session: api_control::SessionId) -> AxResult {
 }
 
 fn create_session(session_data: Session) -> AxResult<api_control::SessionId> {
+    let session = next_session_id()?;
+    SESSIONS.lock().insert(session, session_data);
+    Ok(session)
+}
+
+fn next_session_id() -> AxResult<api_control::SessionId> {
     let session = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
     if session == 0 {
         return ax_err!(OutOfRange);
     }
-    SESSIONS.lock().insert(session, session_data);
     Ok(session)
 }
 
@@ -191,7 +205,7 @@ fn system_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
             if endpoint == 0 {
                 return ax_err!(NotFound);
             }
-            let vm_session = create_session(Session::Vm(VmSession::default()))?;
+            let vm_session = create_vm_session()?;
             match api_control::create_vm_fd(endpoint, vm_session) {
                 Ok(fd) => Ok(fd as isize),
                 Err(err) => {
@@ -202,6 +216,33 @@ fn system_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
         }
         _ => ax_err!(Unsupported),
     }
+}
+
+fn create_vm_session() -> AxResult<api_control::SessionId> {
+    let session = next_session_id()?;
+    let vm_id = session_id_to_usize(session)?;
+    let config = AxVMConfig::new_host_controlled(vm_id, format!("kvm-vm-{vm_id}"), KVM_MAX_VCPUS);
+    let vm = AxVM::new(config)?;
+    vm.init()?;
+    vm.set_vm_status(VMStatus::Loaded);
+
+    SESSIONS.lock().insert(
+        session,
+        Session::Vm(VmSession {
+            vm,
+            memory_slots: BTreeMap::new(),
+            vcpu_ids: BTreeMap::new(),
+        }),
+    );
+    Ok(session)
+}
+
+fn session_id_to_usize(session: api_control::SessionId) -> AxResult<usize> {
+    let value = session as usize;
+    if value as api_control::SessionId != session {
+        return ax_err!(OutOfRange);
+    }
+    Ok(value)
 }
 
 fn vm_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
@@ -238,9 +279,6 @@ fn check_extension(capability: usize) -> usize {
 }
 
 fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isize> {
-    if vcpu_id >= KVM_MAX_VCPUS {
-        return ax_err!(InvalidInput);
-    }
     let vcpu_id = vcpu_id as u32;
 
     let endpoint = ENDPOINT_ID.load(Ordering::Acquire);
@@ -253,14 +291,14 @@ fn create_vcpu(session: api_control::SessionId, vcpu_id: usize) -> AxResult<isiz
         let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
             return ax_err!(NotFound);
         };
+        if vcpu_id as usize >= vm.vm.vcpu_num() {
+            return ax_err!(InvalidInput);
+        }
         if vm.vcpu_ids.contains_key(&vcpu_id) {
             return ax_err!(AlreadyExists);
         }
 
-        let vcpu_session = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-        if vcpu_session == 0 {
-            return ax_err!(OutOfRange);
-        }
+        let vcpu_session = next_session_id()?;
         vm.vcpu_ids.insert(vcpu_id, vcpu_session);
         sessions.insert(
             vcpu_session,
@@ -321,19 +359,42 @@ fn set_user_memory_region(
     };
 
     if region.memory_size == 0 {
-        vm.memory_slots.remove(&region.slot);
+        if let Some(old_slot) = vm.memory_slots.remove(&region.slot) {
+            unmap_memory_slot(&vm.vm, old_slot);
+        }
         return Ok(());
     }
 
+    let vm_ref = vm.vm.clone();
+    ensure_no_memory_overlap(vm, region.slot, region.into())?;
+    drop(sessions);
+
+    let acquired = api_control::acquire_user_memory(
+        region.userspace_addr as usize,
+        region.memory_size as usize,
+        true,
+    )?;
+    let acquired_handle = acquired.handle;
+
+    if let Err(err) = map_acquired_user_memory(&vm_ref, region, &acquired) {
+        let _ = api_control::release_user_memory(acquired_handle);
+        return Err(err);
+    }
+
     let new_slot = MemorySlot {
-        flags: region.flags,
-        guest_phys_addr: region.guest_phys_addr,
-        memory_size: region.memory_size,
-        userspace_addr: region.userspace_addr,
+        acquired_memory: acquired_handle,
+        ..region.into()
     };
 
+    let mut sessions = SESSIONS.lock();
+    let Some(Session::Vm(vm)) = sessions.get_mut(&session) else {
+        unmap_memory_slot(&vm_ref, new_slot);
+        return ax_err!(NotFound);
+    };
     ensure_no_memory_overlap(vm, region.slot, new_slot)?;
-    vm.memory_slots.insert(region.slot, new_slot);
+    if let Some(old_slot) = vm.memory_slots.insert(region.slot, new_slot) {
+        unmap_memory_slot(&vm.vm, old_slot);
+    }
     Ok(())
 }
 
@@ -359,6 +420,63 @@ fn validate_memory_region(region: UserspaceMemoryRegion) -> AxResult {
         .checked_add(region.memory_size)
         .ok_or(AxError::InvalidInput)?;
     Ok(())
+}
+
+impl From<UserspaceMemoryRegion> for MemorySlot {
+    fn from(region: UserspaceMemoryRegion) -> Self {
+        Self {
+            flags: region.flags,
+            guest_phys_addr: region.guest_phys_addr,
+            memory_size: region.memory_size,
+            userspace_addr: region.userspace_addr,
+            acquired_memory: 0,
+        }
+    }
+}
+
+fn map_acquired_user_memory(
+    vm: &AxVMRef,
+    region: UserspaceMemoryRegion,
+    acquired: &api_control::AcquiredUserMemory,
+) -> AxResult {
+    let page_count = region.memory_size as usize / PAGE_SIZE_USIZE;
+    if acquired.pages.len() != page_count {
+        return ax_err!(InvalidInput);
+    }
+
+    let flags =
+        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER;
+    let mut mapped_pages = 0;
+    for (page_index, page_hpa) in acquired.pages.iter().enumerate() {
+        let page_gpa = region.guest_phys_addr as usize + page_index * PAGE_SIZE_USIZE;
+        if let Err(err) = vm.map_region(
+            GuestPhysAddr::from(page_gpa),
+            HostPhysAddr::from(page_hpa.as_usize()),
+            PAGE_SIZE_USIZE,
+            flags,
+        ) {
+            for rollback_index in 0..mapped_pages {
+                let rollback_gpa =
+                    region.guest_phys_addr as usize + rollback_index * PAGE_SIZE_USIZE;
+                let _ = vm.unmap_region(GuestPhysAddr::from(rollback_gpa), PAGE_SIZE_USIZE);
+            }
+            return Err(err);
+        }
+        mapped_pages += 1;
+    }
+
+    Ok(())
+}
+
+fn unmap_memory_slot(vm: &AxVMRef, slot: MemorySlot) {
+    let page_count = slot.memory_size as usize / PAGE_SIZE_USIZE;
+    for page_index in 0..page_count {
+        let page_gpa = slot.guest_phys_addr as usize + page_index * PAGE_SIZE_USIZE;
+        let _ = vm.unmap_region(GuestPhysAddr::from(page_gpa), PAGE_SIZE_USIZE);
+    }
+    if slot.acquired_memory != 0 {
+        let _ = api_control::release_user_memory(slot.acquired_memory);
+    }
 }
 
 fn ensure_no_memory_overlap(vm: &VmSession, slot_id: u32, new_slot: MemorySlot) -> AxResult {

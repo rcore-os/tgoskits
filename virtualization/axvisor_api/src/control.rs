@@ -18,7 +18,11 @@
 //! as `/dev/kvm`. The host adapter owns the OS file/device plumbing, while
 //! `axvisor-core` owns KVM command semantics and object handles.
 
+use alloc::vec::Vec;
+
 use ax_errno::AxResult;
+
+use crate::memory::PhysAddr;
 
 /// A host-provided control endpoint identifier.
 pub type EndpointId = u64;
@@ -28,6 +32,17 @@ pub type SessionId = u64;
 
 /// A host file descriptor returned to userspace.
 pub type HostFd = i32;
+
+/// A host-provided acquired userspace memory handle.
+pub type UserMemoryHandle = u64;
+
+/// Host physical pages backing an acquired userspace memory range.
+pub struct AcquiredUserMemory {
+    /// Host-owned handle used to release the acquired pages.
+    pub handle: UserMemoryHandle,
+    /// Page-sized host physical addresses, in userspace virtual-address order.
+    pub pages: Vec<PhysAddr>,
+}
 
 /// Events reported by a host control endpoint.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -135,4 +150,16 @@ pub trait ControlIf {
     /// into its current user address space; `axvisor-core` owns the ABI layout
     /// and command semantics.
     fn write_user(addr: usize, buf: &[u8]) -> AxResult;
+
+    /// Acquires pages from the current userspace task and returns their physical backing pages.
+    ///
+    /// The host must keep the returned pages stable until [`release_user_memory`]
+    /// is called with the returned handle. The host may implement this by pinning
+    /// frames, holding VM object references, or any other mechanism with the same
+    /// lifetime semantics.
+    fn acquire_user_memory(addr: usize, len: usize, writable: bool)
+    -> AxResult<AcquiredUserMemory>;
+
+    /// Releases a userspace memory range returned by [`acquire_user_memory`].
+    fn release_user_memory(handle: UserMemoryHandle) -> AxResult;
 }

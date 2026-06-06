@@ -167,6 +167,28 @@ pub fn adjusted_kernel_load_gpa(
 }
 
 impl AxVMConfig {
+    /// Creates a VM configuration whose guest resources are supplied by a host control API.
+    pub fn new_host_controlled(id: usize, name: String, vcpu_count: usize) -> Self {
+        Self {
+            id,
+            name,
+            vm_type: VMType::VMTLinux,
+            phys_cpu_ls: PhysCpuList {
+                cpu_num: vcpu_count,
+                phys_cpu_ids: None,
+                phys_cpu_sets: None,
+            },
+            cpu_config: AxVCpuConfig::default(),
+            image_config: VMImageConfig::default(),
+            emu_devices: Vec::new(),
+            pass_through_devices: Vec::new(),
+            excluded_devices: Vec::new(),
+            pass_through_addresses: Vec::new(),
+            spi_list: Vec::new(),
+            interrupt_mode: VMInterruptMode::NoIrq,
+        }
+    }
+
     /// Returns VM id.
     pub fn id(&self) -> usize {
         self.id

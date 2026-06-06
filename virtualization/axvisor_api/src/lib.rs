@@ -144,6 +144,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub use axvisor_api_proc::{api_def, api_impl};
 
 pub mod arch;
