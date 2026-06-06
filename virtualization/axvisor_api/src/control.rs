@@ -135,6 +135,9 @@ pub trait ControlIf {
         mmap_size: usize,
     ) -> AxResult<HostFd>;
 
+    /// Writes bytes into a vCPU run page owned by the host fd for `session`.
+    fn write_vcpu_run_page(session: SessionId, offset: usize, buf: &[u8]) -> AxResult;
+
     /// Reads bytes from the current userspace task.
     ///
     /// This is the host-neutral copy-from-user primitive used by KVM ioctls

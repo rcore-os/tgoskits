@@ -20,6 +20,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ax_errno::{AxError, AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
+use axvcpu::AxVCpuExitReason;
 use axvisor_api::control::{self as api_control, ControlOps, EndpointSpec};
 use axvm::{AxVM, AxVMRef, VMStatus, config::AxVMConfig};
 
@@ -40,6 +41,8 @@ pub const KVM_GET_VCPU_MMAP_SIZE: u32 = ioc(KVMIO, 0x04);
 pub const KVM_CREATE_VCPU: u32 = ioc(KVMIO, 0x41);
 /// Configures one userspace-backed guest memory slot on a VM fd.
 pub const KVM_SET_USER_MEMORY_REGION: u32 = iow(KVMIO, 0x46, KVM_USERSPACE_MEMORY_REGION_SIZE);
+/// Runs a vCPU until it exits to userspace.
+pub const KVM_RUN: u32 = ioc(KVMIO, 0x80);
 /// Returns the vCPU MP state.
 pub const KVM_GET_MP_STATE: u32 = ior(KVMIO, 0x98, KVM_MP_STATE_SIZE);
 
@@ -56,6 +59,16 @@ const KVM_USERSPACE_MEMORY_REGION_SIZE: u32 = 32;
 const KVM_MP_STATE_SIZE: u32 = 4;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
+const KVM_RUN_EXIT_REASON_OFFSET: usize = 8;
+const KVM_EXIT_UNKNOWN: u32 = 0;
+const KVM_EXIT_HLT: u32 = 5;
+const KVM_EXIT_MMIO: u32 = 6;
+const KVM_EXIT_SHUTDOWN: u32 = 8;
+const KVM_EXIT_FAIL_ENTRY: u32 = 9;
+const KVM_EXIT_INTR: u32 = 10;
+const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
+const KVM_EXIT_MEMORY_FAULT: u32 = 39;
+const KVM_RUN_MAX_INTERNAL_EXITS: usize = 1024;
 const PAGE_SIZE: u64 = 4096;
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE as usize;
 
@@ -191,7 +204,7 @@ fn ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isiz
     match session_data(session)? {
         Session::System => system_ioctl(cmd, arg),
         Session::Vm(_) => vm_ioctl(session, cmd, arg),
-        Session::Vcpu(_) => vcpu_ioctl(cmd, arg),
+        Session::Vcpu(_) => vcpu_ioctl(session, cmd, arg),
     }
 }
 
@@ -257,14 +270,73 @@ fn vm_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<i
     }
 }
 
-fn vcpu_ioctl(cmd: u32, arg: usize) -> AxResult<isize> {
+fn vcpu_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
+        KVM_RUN => run_vcpu(session),
         KVM_GET_MP_STATE => {
             write_u32_user(arg, KVM_MP_STATE_RUNNABLE)?;
             Ok(0)
         }
         _ => Err(AxError::Unsupported),
     }
+}
+
+fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
+    let (vm, vcpu_id) = {
+        let sessions = SESSIONS.lock();
+        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+            return ax_err!(NotFound);
+        };
+        let Some(Session::Vm(vm)) = sessions.get(&vcpu.vm_session) else {
+            return ax_err!(NotFound);
+        };
+        (vm.vm.clone(), vcpu.vcpu_id as usize)
+    };
+
+    if !vm.running() {
+        vm.boot()?;
+    }
+
+    let mut internal_exits = 0;
+    let exit_reason = loop {
+        let exit_reason = match vm.run_vcpu(vcpu_id) {
+            Ok(exit_reason) => exit_reason,
+            Err(err) => {
+                warn!("KVM_RUN vCPU error: {:?}", err);
+                break KVM_EXIT_INTERNAL_ERROR;
+            }
+        };
+
+        match exit_reason {
+            AxVCpuExitReason::Nothing => {
+                internal_exits += 1;
+                if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
+                    break KVM_EXIT_INTR;
+                }
+            }
+            exit_reason => break kvm_exit_reason(exit_reason),
+        }
+    };
+    write_vcpu_run_u32(session, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
+    Ok(0)
+}
+
+fn kvm_exit_reason(exit_reason: AxVCpuExitReason) -> u32 {
+    match exit_reason {
+        AxVCpuExitReason::Halt => KVM_EXIT_HLT,
+        AxVCpuExitReason::MmioRead { .. } | AxVCpuExitReason::MmioWrite { .. } => KVM_EXIT_MMIO,
+        AxVCpuExitReason::NestedPageFault { .. } => KVM_EXIT_MEMORY_FAULT,
+        AxVCpuExitReason::SystemDown => KVM_EXIT_SHUTDOWN,
+        AxVCpuExitReason::FailEntry { .. } => KVM_EXIT_FAIL_ENTRY,
+        AxVCpuExitReason::ExternalInterrupt { .. } | AxVCpuExitReason::PreemptionTimer => {
+            KVM_EXIT_INTR
+        }
+        _ => KVM_EXIT_UNKNOWN,
+    }
+}
+
+fn write_vcpu_run_u32(session: api_control::SessionId, offset: usize, value: u32) -> AxResult {
+    api_control::write_vcpu_run_page(session, offset, &value.to_ne_bytes())
 }
 
 fn check_extension(capability: usize) -> usize {
