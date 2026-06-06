@@ -102,8 +102,6 @@ impl Drop for Inode {
     fn drop(&mut self) {
         let mut state = self.fs.lock();
         if state.is_pending(self.ino) {
-            // Remove from the pending set before freeing so a
-            // double-Drop (should one occur) is a no-op.
             state.remove_pending(self.ino);
             let (fs, dev) = state.split();
             if let Ok(mut on_disk) = fs.get_inode_by_num(dev, self.ino) {
@@ -600,13 +598,11 @@ impl DirNodeOps for Inode {
         self.lookup_locked(name)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
+    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
         {
             let mut state = self.fs.lock();
-            // Use split() for disjoint fs/dev access; the compiler does not
-            // yet support field-level disjoint borrows on this toolchain.
             let (fs, dev) = state.split();
             let inode_info =
                 rsext4::dir::get_inode_with_num(fs, dev, &path).map_err(into_vfs_err)?;
@@ -614,6 +610,11 @@ impl DirNodeOps for Inode {
                 return Err(VfsError::NotFound);
             }
             let (ino, inode) = inode_info.unwrap();
+            match (inode.is_dir(), is_dir) {
+                (true, false) => return Err(VfsError::IsADirectory),
+                (false, true) => return Err(VfsError::NotADirectory),
+                _ => {}
+            }
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
                 if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {

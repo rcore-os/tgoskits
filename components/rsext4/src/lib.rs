@@ -12,6 +12,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 // Re-export shared configuration constants for external callers.
 // Re-export the most frequently used public APIs.
 pub use api::{lseek, open, read_at, write_at};

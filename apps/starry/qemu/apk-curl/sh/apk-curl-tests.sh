@@ -1,12 +1,13 @@
 #!/bin/sh
 
-fetch_timeout=60
+default_fetch_timeout=180
 repo_file=/etc/apk/repositories
 original_repos="$(cat "$repo_file")"
 
 try_apk_curl() {
     mirror="$1"
     label="$2"
+    fetch_timeout="$3"
     probe_url="$mirror/MIRRORS.txt"
     printf '%s\n' "$original_repos" |
         sed "s#http://[^/]*/alpine/#$mirror/#g;s#https://[^/]*/alpine/#$mirror/#g" > "$repo_file"
@@ -26,14 +27,16 @@ try_apk_curl() {
 
 i=0
 for repo in \
-    "https://mirrors.cernet.edu.cn/alpine cernet" \
-    "https://dl-cdn.alpinelinux.org/alpine upstream"
+    "https://mirrors.cernet.edu.cn/alpine cernet 60" \
+    "https://dl-cdn.alpinelinux.org/alpine upstream $default_fetch_timeout"
 do
     i=$((i + 1))
-    mirror=${repo% *}
-    label=${repo#* }
+    set -- $repo
+    mirror=$1
+    label=$2
+    fetch_timeout=$3
     echo "APK_CURL_ATTEMPT_$i"
-    if try_apk_curl "$mirror" "$label"; then
+    if try_apk_curl "$mirror" "$label" "$fetch_timeout"; then
         echo 'APK_CURL_TEST_PASSED'
         exit 0
     fi

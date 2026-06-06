@@ -356,5 +356,41 @@ int main(void)
         close(p[1]);
     }
 
+    /* ================================================================
+     * 收缩后再扩展: 原页尾部必须读作 \0 (回归)
+     * 写满一页 0xAA -> 收缩到 100 字节 -> 再扩回 4096。Linux 在收缩时把
+     * 部分末页 [100, 4096) 的尾部清零, 因此 regrow 后这段读作 \0。旧
+     * starry 只改文件长度、漏清 page-cache 中已驻留页的尾部, 导致 regrow
+     * 后读到残留的 0xAA(sqlite WAL 跨进程 reopen 据此读到脏 header 而崩)。
+     * ================================================================ */
+    {
+        char tmpl[] = "/tmp/test-ftruncate-XXXXXX";
+        int fd = mkstemp(tmpl);
+        CHECK(fd >= 0, "mkstemp 应成功 (shrink-regrow tail)");
+
+        char page[4096];
+        memset(page, 0xAA, sizeof(page));
+        CHECK_RET(write(fd, page, sizeof(page)), 4096, "写满一页 0xAA");
+        CHECK_RET(call_ftruncate(fd, 100), 0, "收缩到 100 字节");
+        CHECK_RET(call_ftruncate(fd, 4096), 0, "再扩回 4096 字节");
+
+        char back[4096];
+        memset(back, 0xFF, sizeof(back));
+        ssize_t n = pread(fd, back, sizeof(back), 0);
+        CHECK(n == 4096, "pread 整页回读");
+        int tail_zero = 1;
+        for (int i = 100; i < 4096; i++) {
+            if (back[i] != 0) {
+                tail_zero = 0;
+                break;
+            }
+        }
+        CHECK(tail_zero,
+              "收缩-扩展后原页尾部 [100,4096) 必须为全零 (无脏残留)");
+
+        close(fd);
+        unlink(tmpl);
+    }
+
     TEST_DONE();
 }

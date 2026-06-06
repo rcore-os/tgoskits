@@ -15,3 +15,5 @@ bincode.workspace = true
 clap = { version = "4.5.45", features = ["derive"] }
 inferno = { version = "0.12", optional = true, default-features = false }
 object = "0.37"
+regex = "1.12"
+rustc-demangle = "0.1"
