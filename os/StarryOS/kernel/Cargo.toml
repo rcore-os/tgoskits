@@ -47,12 +47,8 @@ ax-feat = { workspace = true, features = [
 
     "multitask",
     "task-ext",
-<<<<<<< HEAD
     "tracepoint-hooks",
     "sched-rr",
-=======
-    "sched-cfs",
->>>>>>> 6da0608f8 (feat(cgroup): cpu controller infrastructure — weight, bandwidth, throttling)
 
     "rtc",
 

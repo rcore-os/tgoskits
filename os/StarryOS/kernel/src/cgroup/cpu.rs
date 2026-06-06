@@ -84,7 +84,7 @@ pub fn bandwidth_tick() {
         bw.consumed.store(0, Ordering::Relaxed);
         bw.period_start.store(now_us, Ordering::Relaxed);
         bw.nr_periods.fetch_add(1, Ordering::Relaxed);
-        ax_task::set_current_throttled(false);
+        // ax_task::set_current_throttled(false); // TODO: deferred
         return;
     }
 
@@ -92,7 +92,7 @@ pub fn bandwidth_tick() {
     let consumed = bw.consumed.fetch_add(tick_usec, Ordering::Relaxed) + tick_usec;
 
     if consumed >= quota {
-        ax_task::set_current_throttled(true);
+        // ax_task::set_current_throttled(true); // TODO: deferred
         bw.nr_throttled.fetch_add(1, Ordering::Relaxed);
         bw.throttled_usec
             .fetch_add(tick_usec_u64, Ordering::Relaxed);
