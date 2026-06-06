@@ -28,7 +28,6 @@
 - For ArceOS, StarryOS, and Axvisor builds/tests/runs, prefer the `cargo xtask` command family instead of raw `cargo build`, `cargo test`, or `cargo run`.
 - If `cargo xtask` cannot satisfy a special configuration, inspect the `xtask` flow first and only then fall back to native Cargo commands with manually matched arguments.
 - When resolving rebase or merge conflicts, do not manually merge conflicted `Cargo.lock` contents. Resolve all other conflicts first, then regenerate `Cargo.lock` with Cargo and verify the generated lockfile.
-- When running tests, prefer the CI-like path first: use the project container through Podman or Docker and run only the relevant CI segment or targeted test scope instead of the full CI pipeline.
 - When reviewing a PR, fully read (完整阅读) `.claude/skills/review-single-pr/SKILL.md` before judging merge readiness, drafting comments, approving, requesting changes, or posting a no-submit summary.
 - During PR review, build a todo/checklist from the full `review-single-pr` requirements and verify each applicable merge requirement one by one. Mark each item as satisfied, not applicable with a concrete reason, or blocking with evidence.
 - For PRs, issues, review replies, discussions, and similar project-facing submissions, keep the language neutral and project-focused.
