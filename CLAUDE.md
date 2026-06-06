@@ -101,6 +101,8 @@ Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv6
 
 - PR titles: Conventional Commits `type(scope): content`, e.g. `feat(axbuild): add board test flow`, `fix(starry-process): correct tty cleanup`
 - PR titles in English, bodies in Chinese
+- For any PR review, fully read (完整阅读) `.claude/skills/review-single-pr/SKILL.md` first; `AGENTS.md` and that skill are the review source of truth.
+- Before deciding merge readiness, create a todo/checklist from the full `review-single-pr` requirements and verify each applicable item as satisfied, not applicable with reason, or blocking with evidence.
 - Do not silence clippy warnings with `allow`; fix the root cause
 - Do not add agent/AI branding or signatures to commits/PRs
 - Read and strictly follow all conventions in AGENTS.md
