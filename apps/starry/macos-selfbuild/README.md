@@ -48,21 +48,34 @@ cd tgoskits
 git checkout app/starry-macos-selfbuild
 ```
 
-Build the self-build rootfs on macOS:
+Run the complete reproduction on macOS:
 
 ```bash
 RUST_DIST_SERVER=https://rsproxy.cn \
 STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/ \
-apps/starry/macos-selfbuild/build_rootfs.sh
+apps/starry/macos-selfbuild/reproduce.sh
 ```
 
-`RUST_DIST_SERVER` and `STARRY_CARGO_REGISTRY_INDEX` are optional. Omit them to
-use the official Rust and crates.io endpoints, or set them to closer mirrors
-when `static.rust-lang.org` or `index.crates.io` is slow. The script downloads
-Alpine AArch64 APKs and Rust nightly components, then runs `cargo fetch` on the
-host to populate the guest offline cache. The `cargo fetch` phase may print only
-`Updating crates.io index` for several minutes while the sparse registry cache
-is being populated.
+The mirror variables are optional. Omit them to use the official Rust and
+crates.io endpoints, or set them to closer mirrors when `static.rust-lang.org`
+or `index.crates.io` is slow.
+
+`reproduce.sh` runs the three required steps: build or refresh the rootfs, build
+the seed kernel, and launch the QEMU HVF self-build. On a base M1 with 8 GB
+memory, close other heavy applications before running the 8-vCPU case; if it is
+memory pressured, first verify the setup with:
+
+```bash
+SMP=4 JOBS=4 MEM=3072M \
+RUST_DIST_SERVER=https://rsproxy.cn \
+STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/ \
+apps/starry/macos-selfbuild/reproduce.sh
+```
+
+The rootfs build downloads Alpine AArch64 APKs and Rust nightly components, then
+runs `cargo fetch` on the host to populate the guest offline cache. The
+`cargo fetch` phase may print only `Updating crates.io index` for several
+minutes while the sparse registry cache is being populated.
 
 The expected output ends with:
 
@@ -137,6 +150,11 @@ If the log shows the old full-device feature set with `plat-dyn`,
 slow experimental profile. The guest now refuses that profile unless
 `ALLOW_SLOW_SELFBUILD=1` is explicitly set.
 
+The host runner also refuses unexpected Cargo totals by default. If a run shows
+`Building [255/318]`, it is not the fast reproducible profile and will stop with
+`reason=unexpected-crate-count`; refresh the rootfs from the current checkout and
+rerun the command above.
+
 Logs are written under:
 
 ```text
@@ -170,7 +188,6 @@ must contain:
 
 ```text
 /usr/bin/cargo
-/opt/rust-nightly/bin/cargo
 /opt/rust-nightly/bin/rustc
 /opt/rust-nightly/lib/rustlib/src/rust/library/Cargo.lock
 /usr/bin/aarch64-linux-musl-gcc

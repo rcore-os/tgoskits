@@ -62,7 +62,6 @@ dir_contains() {
 
 for guest_path in \
     "/usr/bin/cargo" \
-    "/opt/rust-nightly/bin/cargo" \
     "/opt/rust-nightly/bin/rustc" \
     "/opt/rust-nightly/lib/rustlib/src/rust/library/Cargo.lock" \
     "/usr/bin/aarch64-linux-musl-gcc" \

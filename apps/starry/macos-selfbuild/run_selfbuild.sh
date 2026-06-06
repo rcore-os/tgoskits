@@ -7,12 +7,17 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 usage() {
     cat <<'USAGE'
 Usage:
+  apps/starry/macos-selfbuild/reproduce.sh
+
+or run the final QEMU step directly:
+
   KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
   ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
   SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  EXPECTED_MAX_CRATES=300
   QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
   BOOT_ONLY=1
   EXTRA_RUSTFLAGS='<extra guest rustflags>'
@@ -256,6 +261,41 @@ host_rc=124
 start_seconds="$SECONDS"
 heartbeat_sec="${HOST_HEARTBEAT_SEC:-30}"
 next_heartbeat="$heartbeat_sec"
+expected_max_crates="${EXPECTED_MAX_CRATES:-300}"
+crate_count_guarded=0
+
+check_crate_count_guard() {
+    local line total
+
+    if [[ "${ALLOW_SLOW_SELFBUILD:-0}" = "1" || "$expected_max_crates" = "0" || "$crate_count_guarded" = "1" ]]; then
+        return 0
+    fi
+
+    line="$(
+        LC_ALL=C grep -a -E 'Building \[[0-9]+/[0-9]+\]' "$log" \
+            | tail -1 \
+            | tr -d '\r'
+    )"
+    [[ -n "$line" ]] || return 0
+
+    total="$(printf '%s\n' "$line" | sed -n 's/.*Building \[[0-9][0-9]*\/\([0-9][0-9]*\)\].*/\1/p' | tail -1)"
+    [[ -n "$total" ]] || return 0
+
+    crate_count_guarded=1
+    if (( total > expected_max_crates )); then
+        cat >>"$log" <<EOF
+===HOST-QEMU-STOP reason=unexpected-crate-count total=$total expected_max=$expected_max_crates===
+This run is not using the fast macOS self-build profile. A log such as Building [255/318]
+usually means a stale rootfs or slow feature set is being used. Refresh the rootfs with:
+  apps/starry/macos-selfbuild/prepare_rootfs.sh
+or set ALLOW_SLOW_SELFBUILD=1 only for deliberate slow-profile experiments.
+EOF
+        kill "$qemu_pid" 2>/dev/null || true
+        wait "$qemu_pid" 2>/dev/null
+        host_rc=2
+        return 2
+    fi
+}
 
 set +e
 while kill -0 "$qemu_pid" 2>/dev/null; do
@@ -290,6 +330,10 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
         kill "$qemu_pid" 2>/dev/null || true
         wait "$qemu_pid" 2>/dev/null
         host_rc=1
+        break
+    fi
+
+    if ! check_crate_count_guard; then
         break
     fi
 
