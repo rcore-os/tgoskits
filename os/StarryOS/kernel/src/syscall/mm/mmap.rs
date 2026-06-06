@@ -853,6 +853,46 @@ pub fn sys_mlock(addr: usize, length: usize) -> AxResult<isize> {
     sys_mlock2(addr, length, 0)
 }
 
-pub fn sys_mlock2(_addr: usize, _length: usize, _flags: u32) -> AxResult<isize> {
+pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
+    // Linux `mlock2` accepts only `flags == 0` or `MLOCK_ONFAULT`; any other bit
+    // is rejected with EINVAL and must produce no populate/fault side effect.
+    const MLOCK_ONFAULT: u32 = 0x01;
+    if flags & !MLOCK_ONFAULT != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if length == 0 {
+        return Ok(0);
+    }
+    let aligned = addr.align_down(PageSize::Size4K);
+    // `checked_add` guards `addr + length`, but `align_up` itself adds
+    // `PAGE_SIZE - 1` internally and can still wrap a near-`usize::MAX` end to a
+    // small value; detect that wrap (end < raw_end) and reject, as Linux rejects
+    // an out-of-range mlock with EINVAL rather than locking a tiny wrapped range.
+    let raw_end = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end = raw_end.align_up(PageSize::Size4K);
+    if end < raw_end {
+        return Err(AxError::InvalidInput);
+    }
+    let size = end - aligned;
+
+    let curr = current();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
+    let start = VirtAddr::from(aligned);
+    if flags & MLOCK_ONFAULT != 0 {
+        // MLOCK_ONFAULT: lock the range but bring pages in lazily (no eager
+        // fault). Still report ENOMEM if the range has an unmapped hole, as
+        // Linux does. An empty access mask makes `can_access_range` a pure
+        // contiguous-coverage check.
+        if !aspace.can_access_range(start, size, MappingFlags::empty()) {
+            return Err(AxError::NoMemory);
+        }
+    } else {
+        // Plain mlock (flags == 0): honor the "fault now" contract by faulting
+        // the whole range in, reporting ENOMEM on any unmapped page. On this
+        // no-swap kernel the faulted pages then stay resident, satisfying mlock's
+        // residency guarantee. `populate_area` is the MAP_POPULATE primitive.
+        aspace.populate_area(start, size, MappingFlags::READ)?;
+    }
     Ok(0)
 }
