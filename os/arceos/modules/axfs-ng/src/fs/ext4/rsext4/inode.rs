@@ -33,6 +33,10 @@ impl Inode {
         this: Option<WeakDirEntry>,
         path: Option<String>,
     ) -> Arc<Self> {
+        // NOTE: callers MUST call state.inc_ref(ino) before or after
+        // creating the Inode Arc.  We cannot lock here because many
+        // callers already hold the Ext4State lock (lookup_locked,
+        // create, link) and SpinNoIrq is not recursive.
         Arc::new(Self {
             fs,
             ino,
@@ -81,6 +85,7 @@ impl Inode {
         let (ino, inode) = rsext4::dir::get_inode_with_num(fs, dev, &path)
             .map_err(into_vfs_err)?
             .ok_or(VfsError::NotFound)?;
+        state.inc_ref(ino);
         Ok(self.create_entry(ino, &inode, name))
     }
 
@@ -101,8 +106,9 @@ impl Inode {
 impl Drop for Inode {
     fn drop(&mut self) {
         let mut state = self.fs.lock();
-        if state.is_pending(self.ino) {
-            state.remove_pending(self.ino);
+        let is_last = state.dec_ref(self.ino);
+        if is_last && state.is_zero_link(self.ino) {
+            state.clear_zero_link(self.ino);
             let (fs, dev) = state.split();
             if let Ok(mut on_disk) = fs.get_inode_by_num(dev, self.ino) {
                 let _ = rsext4::free_inode(fs, dev, self.ino, &mut on_disk);
@@ -546,6 +552,7 @@ impl DirNodeOps for Inode {
             })
             .map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, ino)?;
+            state.inc_ref(ino);
             ino
         };
 
@@ -615,6 +622,7 @@ impl DirNodeOps for Inode {
                 (false, true) => return Err(VfsError::NotADirectory),
                 _ => {}
             }
+            let mut deferred_zero_link: Option<InodeNumber> = None;
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
                 if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {
@@ -626,14 +634,27 @@ impl DirNodeOps for Inode {
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
             } else {
                 // Last (or only) link.  Mark the inode zero-link,
-                // remove the directory entry, and register pending-delete.
+                // remove the directory entry, and defer the
+                // zero-link / free_inode check until after the
+                // fs/dev split borrow ends.
                 fs.modify_inode(dev, ino, |on_disk| {
                     on_disk.i_links_count = 0;
                 })
                 .map_err(into_vfs_err)?;
                 rsext4::remove_inodeentry_from_parentdir(fs, dev, &dir_path, name)
                     .map_err(into_vfs_err)?;
-                state.register_pending(ino);
+                deferred_zero_link = Some(ino);
+            }
+            // fs/dev borrow ends here (last use in all branches).
+            // `state` is accessible again.
+            if let Some(ino) = deferred_zero_link {
+                if state.mark_zero_link(ino) {
+                    // No live Inode Arcs — free immediately.
+                    let (fs, dev) = state.split();
+                    if let Ok(mut on_disk) = fs.get_inode_by_num(dev, ino) {
+                        let _ = rsext4::free_inode(fs, dev, ino, &mut on_disk);
+                    }
+                }
             }
         }
         self.fs.sync_to_disk()

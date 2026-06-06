@@ -125,7 +125,7 @@
               LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
 
               shellHook = ''
-                project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
                 # export RUSTUP_HOME="$project_root/.rustup"
                 export CARGO_HOME="$project_root/.cargo"

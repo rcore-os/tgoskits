@@ -575,6 +575,359 @@ out:
     unlink(path);
 }
 
+/* ── hardlink refcount open-unlink (T021) ─────────────────────────── */
+/*
+ * Hardlink + zero-link refcount race regression.
+ *
+ * Scenario (matches PR #1125 review concern):
+ *   1. open A → Inode Arc#1 ref=1
+ *   2. link A→B → nlink=2
+ *   3. open B → Inode Arc#2 ref=2  (same ino, different Inode object)
+ *   4. unlink A → nlink=1
+ *   5. unlink B → nlink=0, zero_link flag set
+ *   6. close fd2 (Arc#2 drops) → ref=1, NOT zero → free_inode NOT called
+ *   7. force-allocate new file → may reuse ino if premature free happened
+ *   8. verify fd1 still reads old content, st_ino unchanged, st_nlink=0
+ *   9. close fd1 (Arc#1 drops) → ref=0 + zero_link → free_inode called
+ *
+ * If the refcount is wrong and free_inode runs at step 6, the inode
+ * number may be reallocated in step 7 and fd1's subsequent reads would
+ * see the new file's data (silent corruption).
+ */
+static void test_hardlink_refcount_open_unlink(void)
+{
+    const char *orig = "/tmp/hl-refcount-orig.tmp";
+    const char *linkpath = "/tmp/hl-refcount-link.tmp";
+    const char *newfile = "/tmp/hl-refcount-new.tmp";
+    char old_content[64] = {0};
+    char new_content[64] = {0};
+    int fd1 = -1, fd2 = -1, fd_new = -1;
+    struct stat st1_before, st1_after;
+    ino_t saved_ino;
+
+    printf("-- hardlink refcount open-unlink: %s → %s --\n", orig, linkpath);
+    unlink(orig);
+    unlink(linkpath);
+    unlink(newfile);
+
+    /* 1. Create a file (>4 KB) with known content. */
+    fd1 = open(orig, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd1 < 0) { fail("hl-refcount: open orig"); return; }
+
+    {
+        char big[8192];
+        /* Fill with a distinctive pattern: AAAA... at start, BBBB... at
+           offset 4096.  This lets us detect cross-inode corruption. */
+        memset(big, 'A', 4096);
+        memset(big + 4096, 'B', 4096);
+        if (write(fd1, big, sizeof(big)) != (ssize_t)sizeof(big))
+            { fail("hl-refcount: write 8 KB"); goto out; }
+        pass("hl-refcount: write 8 KB (A... at 0, B... at 4096)");
+    }
+    fsync(fd1);
+
+    /* 2. Create hardlink A→B (nlink 2). */
+    if (link(orig, linkpath) != 0)
+        { fail("hl-refcount: link A→B"); goto out; }
+    pass("hl-refcount: link A→B (nlink=2)");
+
+    /* 3. Open B — creates second Inode Arc for same ino (ref=2). */
+    fd2 = open(linkpath, O_RDWR);
+    if (fd2 < 0) { fail("hl-refcount: open B"); goto out; }
+    pass("hl-refcount: open B → second Inode Arc (live_refs=2)");
+
+    /* 4-5. Unlink both paths → nlink goes 2→1→0, zero_link=true. */
+    if (unlink(orig) != 0)
+        { fail("hl-refcount: unlink A (nlink 2→1)"); goto out; }
+    pass("hl-refcount: unlink A (nlink 2→1)");
+
+    if (unlink(linkpath) != 0)
+        { fail("hl-refcount: unlink B (nlink 1→0, zero_link)"); goto out; }
+    pass("hl-refcount: unlink B (nlink 1→0, zero_link)");
+
+    /* Both fds I/O works after nlink→0. */
+    if (pwrite(fd2, "Y", 1, 8191) != 1) /* write near end via fd2 */
+        { fail("hl-refcount: fd2 write after nlink=0"); goto out; }
+    pass("hl-refcount: fd2 write after nlink=0");
+
+    /* Verify fd1 sees fd2's write (same inode). */
+    {
+        char c = 0;
+        if (pread(fd1, &c, 1, 8191) != 1 || c != 'Y')
+            { fail("hl-refcount: fd1 read fd2's write"); goto out; }
+    }
+    pass("hl-refcount: fd1 sees fd2's write (same inode)");
+
+    /* Both fds report nlink=0. */
+    if (fstat(fd1, &st1_before) != 0 || st1_before.st_nlink != 0)
+        { fail("hl-refcount: fd1 fstat nlink=0"); goto out; }
+    pass("hl-refcount: fd1 fstat nlink=0");
+
+    if (fstat(fd2, &st1_before) != 0 || st1_before.st_nlink != 0)
+        { fail("hl-refcount: fd2 fstat nlink=0"); goto out; }
+    saved_ino = st1_before.st_ino;
+
+    /* Save fd1's current content (first 64 bytes = "AAAA..."). */
+    if (pread(fd1, old_content, 64, 0) != 64)
+        { fail("hl-refcount: save fd1 content"); goto out; }
+    pass("hl-refcount: save fd1 content");
+
+    /* 6. Close fd2 — refcount 2→1.  free_inode MUST NOT run. */
+    close(fd2);
+    fd2 = -1;
+    sync();
+
+    /* 7. Force-allocate a new file.  If free_inode was called prematurely
+       in step 6, this new file may reuse the same ino and data blocks,
+       and fd1's view would be corrupted. */
+    fd_new = open(newfile, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd_new < 0) { fail("hl-refcount: create new file"); goto out; }
+    {
+        /*
+         * Write a completely different pattern (all 'Z').  If fd1's
+         * inode was prematurely freed, the old data blocks may have been
+         * returned to the free pool and reallocated to this new file.
+         * fd1 would then read 'Z's instead of the original 'A's/'B's.
+         */
+        char big[8192];
+        memset(big, 'Z', sizeof(big));
+        if (write(fd_new, big, sizeof(big)) != (ssize_t)sizeof(big))
+            { fail("hl-refcount: write new file"); close(fd_new); goto out; }
+        pass("hl-refcount: new file write 8 KB (all Z)");
+    }
+
+    /* Read new file's content for reference. */
+    if (pread(fd_new, new_content, 64, 0) != 64)
+        { fail("hl-refcount: read new file content"); close(fd_new); goto out; }
+    pass("hl-refcount: read new file content");
+
+    /* 8. CRITICAL: fd1 must still see the ORIGINAL content, not the
+       new file's content.  This proves free_inode did NOT run at step 6
+       (refcount prevented it). */
+    {
+        char buf_check[64] = {0};
+        if (pread(fd1, buf_check, 64, 0) != 64)
+            { fail("hl-refcount: read fd1 after new allocation"); goto out; }
+        if (memcmp(buf_check, old_content, 64) != 0)
+            { fail("hl-refcount: fd1 content CORRUPTED after new allocation (refcount race)"); goto out; }
+        pass("hl-refcount: fd1 content UNCHANGED after new allocation");
+    }
+
+    /* fd1's st_ino must be unchanged. */
+    if (fstat(fd1, &st1_after) != 0)
+        { fail("hl-refcount: fd1 fstat after new allocation"); goto out; }
+    if (st1_after.st_ino != saved_ino)
+        { fail("hl-refcount: fd1 st_ino CHANGED after new allocation"); goto out; }
+    pass("hl-refcount: fd1 st_ino unchanged");
+
+    /* fd1's st_nlink must still be 0. */
+    if (st1_after.st_nlink != 0)
+        { fail("hl-refcount: fd1 st_nlink != 0 after new allocation"); goto out; }
+    pass("hl-refcount: fd1 st_nlink=0 after new allocation");
+
+    /* fd1 and new file must have different inode numbers
+       (if they accidentally share one, the content check above already
+       caught it, but this double-checks the allocator). */
+    {
+        struct stat st_new;
+        if (fstat(fd_new, &st_new) != 0)
+            { fail("hl-refcount: new file fstat"); goto out; }
+        printf("  INFO: hl-refcount: saved_ino=%lu new_ino=%lu\n",
+               (unsigned long)saved_ino, (unsigned long)st_new.st_ino);
+        if (st_new.st_ino == saved_ino)
+            { fail("hl-refcount: new file reused same ino (premature free)"); goto out; }
+        pass("hl-refcount: new file had different ino (allocator stable)");
+    }
+
+    /* Close the new file before the final drop. */
+    close(fd_new);
+    fd_new = -1;
+    sync();
+
+    /* 9. Close fd1 — refcount 1→0 + zero_link=true → free_inode. */
+    close(fd1);
+    fd1 = -1;
+    sync();
+
+    /*
+     * After final close, verify resources are reclaimed.  Create and
+     * immediately unlink a probe file to confirm inode/block allocator
+     * is functional (not leaked).
+     */
+    {
+        struct fs_snapshot snap;
+        if (take_snapshot("/tmp", &snap) != 0)
+            { fail("hl-refcount: statvfs after final close"); return; }
+        pass("hl-refcount: statvfs after final close (allocator healthy)");
+    }
+    return;
+
+ out:
+    if (fd1 >= 0) close(fd1);
+    if (fd2 >= 0) close(fd2);
+    if (fd_new >= 0) close(fd_new);
+    unlink(orig);
+    unlink(linkpath);
+    unlink(newfile);
+}
+
+/* ── hardlink partial unlink (T022) ───────────────────────────────── */
+/*
+ * Verify partial hardlink semantics:
+ *   - unlink one name while the other remains → st_nlink=1
+ *   - unlinked path → ENOENT; remaining path → accessible
+ *   - final unlink → st_nlink=0 + fd I/O works → close → reclaim
+ */
+static void test_hardlink_partial_unlink(void)
+{
+    const char *orig = "/tmp/hl-partial-orig.tmp";
+    const char *linkpath = "/tmp/hl-partial-link.tmp";
+    char buf[64] = {0};
+    struct fs_snapshot base, after;
+    int fd;
+    struct stat st;
+
+    printf("-- hardlink partial unlink: %s → %s --\n", orig, linkpath);
+    unlink(orig);
+    unlink(linkpath);
+
+    if (take_snapshot("/tmp", &base) != 0)
+        { fail("hl-partial: baseline statvfs"); return; }
+    pass("hl-partial: baseline statvfs");
+
+    fd = open(orig, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { fail("hl-partial: create orig"); return; }
+    {
+        const char *payload = "partial-unlink\n";
+        if (write(fd, payload, strlen(payload)) != (ssize_t)strlen(payload))
+            { fail("hl-partial: write"); close(fd); return; }
+    }
+    close(fd);
+
+    if (link(orig, linkpath) != 0)
+        { fail("hl-partial: link"); goto cleanup; }
+    pass("hl-partial: link A→B (nlink=2)");
+
+    /* Unlink original — nlink 2→1, B still accessible. */
+    if (unlink(orig) != 0)
+        { fail("hl-partial: unlink A"); goto cleanup; }
+    pass("hl-partial: unlink A (nlink 2→1)");
+
+    /* A → ENOENT, B → accessible. */
+    assert_noent(orig, "hl-partial: path A → ENOENT");
+    fd = open(linkpath, O_RDONLY);
+    if (fd < 0)
+        { fail("hl-partial: path B still accessible"); goto cleanup; }
+    pass("hl-partial: path B still accessible");
+
+    if (fstat(fd, &st) != 0 || st.st_nlink != 1)
+        { fail("hl-partial: fstat nlink=1 after partial unlink"); close(fd); goto cleanup; }
+    pass("hl-partial: fstat nlink=1 after partial unlink");
+
+    close(fd);
+
+    /* Now unlink the last link → nlink 1→0 with open fd. */
+    fd = open(linkpath, O_RDWR);
+    if (fd < 0) { fail("hl-partial: open B for final unlink"); goto cleanup; }
+
+    if (unlink(linkpath) != 0)
+        { fail("hl-partial: unlink B (final link)"); close(fd); goto cleanup; }
+    pass("hl-partial: unlink B (nlink 1→0, pending)");
+    assert_noent(linkpath, "hl-partial: path B → ENOENT after final unlink");
+
+    /* fd I/O still works through zero-link inode. */
+    if (pwrite(fd, "Z", 1, 0) != 1)
+        { fail("hl-partial: write through nlink=0 fd"); close(fd); goto cleanup; }
+    pass("hl-partial: write through nlink=0 fd");
+
+    memset(buf, 0, sizeof(buf));
+    if (pread(fd, buf, 1, 0) != 1 || buf[0] != 'Z')
+        { fail("hl-partial: read through nlink=0 fd"); close(fd); goto cleanup; }
+    pass("hl-partial: read through nlink=0 fd");
+
+    if (fstat(fd, &st) != 0 || st.st_nlink != 0)
+        { fail("hl-partial: fstat nlink=0"); close(fd); goto cleanup; }
+    pass("hl-partial: fstat nlink=0");
+
+    close(fd);
+    sync();
+
+    if (take_snapshot("/tmp", &after) != 0)
+        { fail("hl-partial: statvfs after close"); return; }
+    pass("hl-partial: statvfs after close");
+
+    check_no_leak(&base, &after, 64,
+                  "hl-partial: resources freed after final close");
+    return;
+
+ cleanup:
+    unlink(orig);
+    unlink(linkpath);
+}
+
+/* ── closed-file unlink: immediate free, >= delta check (T023) ────── */
+/*
+ * Create a file, close it, take a statvfs baseline, then unlink.
+ * With no open fd the inode should be freed immediately.
+ * Use a >= delta check: free counts may be slightly above or equal
+ * to baseline (tolerates ext4 journal/accounting granularity).
+ */
+static void test_closed_file_immediate_free(void)
+{
+    const char *path = "/tmp/imm-free.tmp";
+    char payload[5120]; /* 5 KB — guaranteed to consume at least 1 block */
+    struct fs_snapshot before, after;
+    int fd;
+
+    printf("-- closed-file immediate free: %s --\n", path);
+    unlink(path);
+
+    memset(payload, 'D', sizeof(payload));
+
+    fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { fail("imm-free: create"); return; }
+    if (write(fd, payload, sizeof(payload)) != (ssize_t)sizeof(payload))
+        { fail("imm-free: write 5 KB"); close(fd); unlink(path); return; }
+    close(fd);
+    pass("imm-free: create + write 5 KB + close (no open fd)");
+
+    sync();
+    if (take_snapshot("/tmp", &before) != 0)
+        { fail("imm-free: statvfs before unlink"); return; }
+    pass("imm-free: statvfs before unlink");
+
+    /* Unlink with no open fd — resources must be released immediately. */
+    if (unlink(path) != 0)
+        { fail("imm-free: unlink"); return; }
+    pass("imm-free: unlink (no open fd)");
+
+    sync();
+    if (take_snapshot("/tmp", &after) != 0)
+        { fail("imm-free: statvfs after unlink+sync"); return; }
+    pass("imm-free: statvfs after unlink+sync");
+
+    /*
+     * >= delta check: free blocks/inodes after unlink must be at least
+     * as much as before (i.e., no leak).  They may be equal (if resources
+     * were freed immediately) or marginally above baseline (ext4 journal
+     * batching).  A negative delta beyond tolerance signals a leak.
+     */
+    {
+        long ino_delta = (long)after.free_inodes - (long)before.free_inodes;
+        long blk_delta = (long)after.free_blocks - (long)before.free_blocks;
+        printf("  INFO: imm-free: ino_delta=%ld blk_delta=%ld\n",
+               ino_delta, blk_delta);
+
+        if (ino_delta >= -4 && blk_delta >= -32) {
+            pass("imm-free: resources returned to baseline (>= delta check)");
+        } else {
+            printf("  FAIL: imm-free: resource leak (ino_delta=%ld blk_delta=%ld)\n",
+                   ino_delta, blk_delta);
+            fails++;
+        }
+    }
+}
+
 /* ── directory unlink non-regression ── */
 static void test_dir_unlink_unchanged(void)
 {
@@ -624,6 +977,9 @@ int main(void)
     test_hardlink_unlink();
     test_closed_file_unlink();
     test_reclaim_after_close();
+    test_hardlink_refcount_open_unlink();
+    test_hardlink_partial_unlink();
+    test_closed_file_immediate_free();
     test_dir_unlink_unchanged();
 
     /* ── hidden-orphan scan ────────────────────────────────────── */

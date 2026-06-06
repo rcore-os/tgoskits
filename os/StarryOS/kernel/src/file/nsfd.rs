@@ -58,7 +58,21 @@ impl FileLike for NsFd {
     }
 
     fn stat(&self) -> AxResult<super::Kstat> {
-        Ok(super::Kstat::default())
+        let ino = match self {
+            NsFd::Uts(ns) => ns.lock().id,
+            NsFd::Ipc(ns) => ns.lock().ns_id,
+            NsFd::Mnt { ns, .. } => ns.lock().id(),
+            NsFd::Pid(ns) => ns.lock().id,
+            NsFd::Net(ns) => ns.lock().ns_id,
+            NsFd::User(ns) => ns.lock().id,
+        };
+        Ok(super::Kstat {
+            ino,
+            mode: 0o100_444, // S_IFREG | 0444
+            nlink: 1,
+            blksize: 4096,
+            ..super::Kstat::default()
+        })
     }
 }
 

@@ -568,25 +568,23 @@ impl SimpleDirOps for NsDir {
         let content: String = match name {
             "uts" => {
                 let nsproxy = proc_data.nsproxy.lock();
-                let nodename = &nsproxy.uts_ns.lock().nodename;
-                let nodename_str = core::ffi::CStr::from_bytes_until_nul(unsafe {
-                    core::mem::transmute::<&[core::ffi::c_char; 65], &[u8; 65]>(nodename)
-                })
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default();
-                format!("uts:[{}]\n", nodename_str)
+                let ns_id = nsproxy.uts_ns.lock().id;
+                format!("uts:[{}]\n", ns_id)
             }
             "ipc" => {
                 let nsproxy = proc_data.nsproxy.lock();
                 let ns_id = nsproxy.ipc_ns.lock().ns_id;
                 format!("ipc:[{}]\n", ns_id)
             }
-            "mnt" => "mnt:[root]\n".to_string(),
+            "mnt" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let ns_id = nsproxy.mnt_ns.lock().id();
+                format!("mnt:[{}]\n", ns_id)
+            }
             "pid" => {
                 let nsproxy = proc_data.nsproxy.lock();
-                let level = nsproxy.pid_ns.lock().level;
-                format!("pid:[{}]\n", level)
+                let ns_id = nsproxy.pid_ns.lock().id;
+                format!("pid:[{}]\n", ns_id)
             }
             "net" => {
                 let nsproxy = proc_data.nsproxy.lock();
@@ -595,12 +593,8 @@ impl SimpleDirOps for NsDir {
             }
             "user" => {
                 let nsproxy = proc_data.nsproxy.lock();
-                let inner = nsproxy.user_ns.lock();
-                if inner.is_root {
-                    "user:[root]\n".to_string()
-                } else {
-                    format!("user:[{}]\n", inner.owner_uid)
-                }
+                let ns_id = nsproxy.user_ns.lock().id;
+                format!("user:[{}]\n", ns_id)
             }
             _ => return Err(VfsError::NotFound),
         };
