@@ -116,7 +116,7 @@ fn map_elf<'a>(
         .iter()
         .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Tls))
         .map(|ph| {
-            info!(
+            debug!(
                 "PT_TLS: vaddr={:#x} memsz={:#x} filesz={:#x} offset={:#x}",
                 ph.virtual_addr, ph.mem_size, ph.file_size, ph.offset
             );
@@ -599,27 +599,22 @@ impl ElfLoader {
             ldso.as_ref()
                 .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
         );
+        let has_ldso = ldso.is_some();
         let mut auxv = elf
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
             .collect::<Vec<_>>();
-        // `aux_vector()` only emits PHDR/PHENT/PHNUM/PAGESZ/ENTRY (+BASE). Add
-        // AT_HWCAP so `getauxval(AT_HWCAP)` returns the CPU capability bits the
-        // kernel actually provides (notably LSX on loongarch64, which numpy
-        // requires to import). See `hwcap_value()` for the per-arch policy.
         auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
-
-        // Terminate the auxiliary vector with AT_NULL. The musl dynamic linker
-        // (ld-musl-*.so) scans auxv entries until it hits type == AT_NULL (0).
-        // Without this terminator the ldso reads past the auxv array into the
-        // argument/environment string area on the stack, interpreting arbitrary
-        // bytes as auxv entries. Whether that causes an observable crash depends
-        // on the exact stack layout: a layout where the garbage data happens to
-        // alias AT_PHDR or AT_ENTRY can redirect the ldso to wrong program
-        // headers or a wrong entry point, producing pc=0 SIGSEGV. The second
-        // exec in init.sh ("exec /bin/sh -l -i") has a different stack shape
-        // (inherited env vars) than the first exec, which is why the first
-        // boot stage can succeed while the interactive shell crashes.
         auxv.push(AuxEntry::new(AuxType::NULL, 0));
+
+        info!(
+            "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
+            entry.as_usize(),
+            auxv.len(),
+            has_ldso,
+            auxv.last()
+                .map(|e| e.get_type() as usize)
+                .unwrap_or(usize::MAX),
+        );
 
         Ok(Ok((entry, auxv)))
     }
