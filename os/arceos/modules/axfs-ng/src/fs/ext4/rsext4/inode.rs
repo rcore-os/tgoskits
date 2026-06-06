@@ -647,13 +647,13 @@ impl DirNodeOps for Inode {
             }
             // fs/dev borrow ends here (last use in all branches).
             // `state` is accessible again.
-            if let Some(ino) = deferred_zero_link {
-                if state.mark_zero_link(ino) {
-                    // No live Inode Arcs — free immediately.
-                    let (fs, dev) = state.split();
-                    if let Ok(mut on_disk) = fs.get_inode_by_num(dev, ino) {
-                        let _ = rsext4::free_inode(fs, dev, ino, &mut on_disk);
-                    }
+            if let Some(ino) = deferred_zero_link
+                && state.mark_zero_link(ino)
+            {
+                // No live Inode Arcs — free immediately.
+                let (fs, dev) = state.split();
+                if let Ok(mut on_disk) = fs.get_inode_by_num(dev, ino) {
+                    let _ = rsext4::free_inode(fs, dev, ino, &mut on_disk);
                 }
             }
         }
