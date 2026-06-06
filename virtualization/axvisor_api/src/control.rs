@@ -14,10 +14,9 @@
 
 //! Host control endpoint registration APIs for AxVisor.
 //!
-//! This module lets `axvisor-core` register a host-visible control endpoint
-//! such as `/dev/axvisor`, a syscall entry, or a shell command. The endpoint
-//! transports bytes and operation codes only. VM lifecycle semantics and object
-//! handles remain owned by `axvisor-core`.
+//! This module lets `axvisor-core` register a host-visible KVM endpoint such
+//! as `/dev/kvm`. The host adapter owns the OS file/device plumbing, while
+//! `axvisor-core` owns KVM command semantics and object handles.
 
 use ax_errno::AxResult;
 
@@ -67,12 +66,13 @@ pub struct ControlOps {
     pub open: fn() -> AxResult<SessionId>,
     /// Releases a previously opened control session.
     pub release: fn(SessionId) -> AxResult,
-    /// Dispatches an ioctl-like command.
+    /// Dispatches a KVM ioctl command.
     ///
-    /// Host adapters must copy user memory into `input` and copy `output`
-    /// back to userspace after this function returns. Raw userspace pointers
-    /// must not cross into `axvisor-core`.
-    pub ioctl: fn(SessionId, u32, &[u8], &mut [u8]) -> AxResult<usize>,
+    /// The `cmd` and `arg` values are the raw ioctl request and third argument
+    /// supplied by userspace. The callback return value is the ioctl syscall
+    /// return value. KVM commands decide whether `arg` is unused, an immediate
+    /// value, or a userspace pointer.
+    pub ioctl: fn(SessionId, u32, usize) -> AxResult<isize>,
     /// Optional stream read operation.
     pub read: Option<fn(SessionId, &mut [u8]) -> AxResult<usize>>,
     /// Optional stream write operation.
@@ -86,7 +86,7 @@ pub struct ControlOps {
 /// Specification for a host-visible control endpoint.
 #[derive(Clone, Copy)]
 pub struct EndpointSpec {
-    /// Stable endpoint name, for example `axvisor`.
+    /// Stable endpoint name, for example `kvm`.
     pub name: &'static str,
     /// Core callbacks for endpoint operations.
     pub ops: ControlOps,
