@@ -70,6 +70,18 @@ The expected output ends with:
 STARRY_MACOS_SELFBUILD_ROOTFS_OK
 ```
 
+After every `git pull`, branch switch, or source edit, refresh the source
+payload embedded in the rootfs before running QEMU:
+
+```bash
+apps/starry/macos-selfbuild/prepare_rootfs.sh
+```
+
+`run_selfbuild.sh` checks `/opt/tgoskits-src.meta` by default and exits early if
+the rootfs was built from a different commit. This avoids accidentally running
+an old rootfs for an hour. Set `REQUIRE_FRESH_ROOTFS=0` only for deliberate
+stale-rootfs experiments.
+
 If a prebuilt rootfs artifact is supplied, it can still be placed at the
 standard path instead of rebuilding locally. Use either a local downloaded file:
 
@@ -108,9 +120,22 @@ apps/starry/macos-selfbuild/run_selfbuild.sh
 A successful run prints:
 
 ```text
+===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~282===
 ===STARRY-MACOS-SELFBUILD-PASS jobs=8 elapsed=<seconds>===
 ===STARRY-MACOS-SELFBUILD-RUN-END rc=0===
 ```
+
+The fast reproducible profile should show:
+
+```text
+rustc_threads=2
+features=ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp
+```
+
+If the log shows the old full-device feature set with `plat-dyn`,
+`ax-driver/virtio-*`, `starry-kernel/input`, or `starry-kernel/vsock`, it is the
+slow experimental profile. The guest now refuses that profile unless
+`ALLOW_SLOW_SELFBUILD=1` is explicitly set.
 
 Logs are written under:
 
@@ -173,8 +198,8 @@ apps/starry/macos-selfbuild/prepare_rootfs.sh \
 ```
 
 `prepare_rootfs.sh` writes `/opt/tgoskits-src.tar` and
-`/opt/tgoskits-src.meta`. The guest checks the embedded commit when
-`TGOSKITS_COMMIT` is supplied to the host runner.
+`/opt/tgoskits-src.meta`. The host runner checks this metadata before booting
+QEMU, and the guest checks it again when `TGOSKITS_COMMIT` is supplied.
 
 ## Important Knobs
 
@@ -194,6 +219,8 @@ apps/starry/macos-selfbuild/prepare_rootfs.sh \
 | `BUILD_PACKAGE` | `starryos` | Cargo package to build. |
 | `BUILD_BIN` | `starryos` | Cargo binary to build. |
 | `FEATURES` | `ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp` | Feature-slim StarryOS build used by the fast reproducible self-build. |
+| `REQUIRE_FRESH_ROOTFS` | `1` | Refuse a rootfs whose embedded source commit does not match the checkout. |
+| `ALLOW_SLOW_SELFBUILD` | `0` | Permit the slow full-device feature profile only for explicit experiments. |
 | `EXTRA_RUSTFLAGS` | empty | Extra guest Rust flags for local experiments. |
 
 ## Rootfs Rebuild Details

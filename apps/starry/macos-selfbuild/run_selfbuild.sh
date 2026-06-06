@@ -114,6 +114,7 @@ log="${LOG:-$out_root/logs/${case_name}-${stamp}.log}"
 guest_script="$script_dir/guest-selfbuild.sh"
 work_dir="$out_root/work/${case_name}-${stamp}"
 failure_pattern='(panicked at|kernel panic|panic:|unhandled trap|trap frame|fatal exception|segmentation fault)'
+require_fresh_rootfs="${REQUIRE_FRESH_ROOTFS:-1}"
 
 if [[ ! -f "$kernel" ]]; then
     echo "kernel not found: $kernel" >&2
@@ -135,6 +136,42 @@ source_ref="${TGOSKITS_REF:-$(git_value detached symbolic-ref --quiet --short HE
 
 mkdir -p "$(dirname "$work_rootfs")" "$(dirname "$log")" "$work_dir"
 copy_image "$rootfs" "$work_rootfs"
+
+if [[ "$require_fresh_rootfs" = "1" ]]; then
+    rootfs_meta="$("$debugfs" -R "cat /opt/tgoskits-src.meta" "$work_rootfs" 2>/dev/null || true)"
+    rootfs_commit="$(printf '%s\n' "$rootfs_meta" | sed -n 's/^commit=//p' | tail -1)"
+    if [[ -z "$rootfs_commit" ]]; then
+        cat >&2 <<EOF
+rootfs source metadata is missing in $rootfs.
+Rebuild or refresh the self-build rootfs from the current checkout:
+
+  apps/starry/macos-selfbuild/build_rootfs.sh
+
+or, if the toolchain rootfs is already current:
+
+  apps/starry/macos-selfbuild/prepare_rootfs.sh
+EOF
+        exit 1
+    fi
+    if [[ "$actual_commit" != "unknown" && "$rootfs_commit" != "$source_commit" ]]; then
+        cat >&2 <<EOF
+rootfs source commit does not match this checkout.
+  checkout: $source_commit
+  rootfs:   $rootfs_commit
+
+This usually means an old rootfs is being reused. Refresh it before running:
+
+  apps/starry/macos-selfbuild/prepare_rootfs.sh
+
+or rebuild the full rootfs:
+
+  apps/starry/macos-selfbuild/build_rootfs.sh
+
+Set REQUIRE_FRESH_ROOTFS=0 only for deliberate stale-rootfs experiments.
+EOF
+        exit 1
+    fi
+fi
 
 guest_runner="$work_dir/starry-macos-run.sh"
 {
@@ -161,6 +198,7 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
     emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
     emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
+    emit_export "ALLOW_SLOW_SELFBUILD" "${ALLOW_SLOW_SELFBUILD:-0}"
     emit_export "TGOSKITS_COMMIT" "$source_commit"
     emit_export "TGOSKITS_REF" "$source_ref"
     if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then

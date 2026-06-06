@@ -20,6 +20,31 @@ build_bin="${BUILD_BIN:-starryos}"
 build_std="${BUILD_STD:-core,alloc,compiler_builtins}"
 features="${FEATURES:-ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp}"
 no_default_features="${NO_DEFAULT_FEATURES:-0}"
+allow_slow_selfbuild="${ALLOW_SLOW_SELFBUILD:-0}"
+
+assert_fast_profile() {
+    if [ "$allow_slow_selfbuild" = "1" ]; then
+        echo "===${marker}-SLOW-PROFILE-ALLOWED==="
+        return
+    fi
+
+    if [ "$rustc_threads" != "2" ]; then
+        echo "===${marker}-FAST-PROFILE-ERROR rustc_threads=${rustc_threads} expected=2==="
+        echo "Set RUSTC_THREADS=2 for the reproducible fast profile, or ALLOW_SLOW_SELFBUILD=1 for experiments."
+        finish_guest 2
+    fi
+
+    case ",${features}," in
+        *",plat-dyn,"*|*",ax-feat/display,"*|*",ax-driver/virtio-"*|*",starry-kernel/input,"*|*",starry-kernel/vsock,"*)
+            echo "===${marker}-FAST-PROFILE-ERROR features=${features}==="
+            echo "This feature set selects the slow full-device profile seen as about 386 crates."
+            echo "Use the default feature-slim profile for reproduction, or set ALLOW_SLOW_SELFBUILD=1 for experiments."
+            finish_guest 2
+            ;;
+    esac
+
+    echo "===${marker}-FAST-PROFILE expected_crates~282==="
+}
 
 finish_guest() {
     rc="$1"
@@ -156,6 +181,7 @@ echo "build_bin=${build_bin}"
 echo "build_target=${build_target}"
 echo "build_std=${build_std}"
 echo "features=${features}"
+echo "allow_slow_selfbuild=${allow_slow_selfbuild}"
 echo "source_dir=${source_dir}"
 echo "target_dir=${target_dir}"
 echo "work_dir=$(pwd)"
@@ -166,6 +192,8 @@ echo "rustflags=${RUSTFLAGS}"
 "$RUSTC" --version || true
 "$cargo_bin" --version || true
 echo "===${marker}-ENV-END==="
+
+assert_fast_profile
 
 set -- "$cargo_bin" "$cargo_subcommand" \
     -p "$build_package" \

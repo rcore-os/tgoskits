@@ -47,7 +47,15 @@ CARGO_NET_OFFLINE=true
 RUSTC_BOOTSTRAP=1
 RUSTC=/opt/rustc-nightly-sysroot
 RUSTDOC=/opt/rustdoc-nightly-sysroot
+ALLOW_SLOW_SELFBUILD=0
 ```
+
+The fast reproducible profile is guarded by the guest script. Unless
+`ALLOW_SLOW_SELFBUILD=1` is set for experiments, it refuses the older
+full-device profile containing `plat-dyn`, `ax-driver/virtio-*`,
+`starry-kernel/input`, or `starry-kernel/vsock`. That older profile expands to
+about 386 crates and is the common reason for a run appearing to hang for more
+than an hour.
 
 The guest source copy also patches `lwprintf-rs` to the local
 `apps/starry/macos-selfbuild/crates/lwprintf-rs` compatibility crate. This keeps
