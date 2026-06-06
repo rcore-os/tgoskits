@@ -1,0 +1,16 @@
+[package]
+name = "profile-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+profile-common = { path = "../profile-common" }
+
+aya-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "profile"
+path = "src/main.rs"
