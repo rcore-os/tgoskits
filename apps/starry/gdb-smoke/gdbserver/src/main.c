@@ -3,7 +3,7 @@
 
 #define RISCV_HWCAP_ISA_D (1UL << ('D' - 'A'))
 
-static int compute_value(void)
+__attribute__((noinline)) static int compute_value(void)
 {
     return 40 + 2;
 }

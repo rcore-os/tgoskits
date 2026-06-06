@@ -13,7 +13,7 @@ use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
 use crate::{
     mm::{AddrSpace, IoVec},
-    task::{AsThread, ProcessData, get_process_data},
+    task::{AsThread, ProcessData, get_process_data, get_task},
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -125,7 +125,7 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
         PTRACE_ATTACH => ptrace_attach(pid),
         PTRACE_DETACH => ptrace_detach(pid, data),
         PTRACE_SYSCALL => ptrace_syscall(pid, data),
-        PTRACE_SETOPTIONS => ptrace_setoptions(pid, addr),
+        PTRACE_SETOPTIONS => ptrace_setoptions(pid, data),
         PTRACE_GETEVENTMSG => ptrace_geteventmsg(pid, data),
         PTRACE_GETSIGINFO => ptrace_getsiginfo(pid, data),
         PTRACE_SETSIGINFO => ptrace_setsiginfo(pid, data),
@@ -162,10 +162,11 @@ fn ptrace_resume_signo(data: usize) -> AxResult<u32> {
 
 fn ptrace_cont(pid: usize, data: usize) -> AxResult<isize> {
     let signo = ptrace_resume_signo(data)?;
-    let tracee = ptrace_stopped_tracee(pid)?;
-    tracee.set_ptrace_singlestep(false);
-    tracee.set_ptrace_syscall_trace(false);
-    tracee.resume_ptrace_stop_with_signal(signo);
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    tracee.set_ptrace_singlestep_for(tid, false);
+    tracee.set_ptrace_syscall_trace_for(tid, false);
+    tracee.resume_ptrace_stop_with_signal_for(tid, signo);
+    ax_task::yield_now();
     Ok(0)
 }
 
@@ -186,10 +187,10 @@ fn ptrace_kill(pid: usize) -> AxResult<isize> {
 
 fn ptrace_singlestep(pid: usize, data: usize) -> AxResult<isize> {
     let signo = ptrace_resume_signo(data)?;
-    let tracee = ptrace_stopped_tracee(pid)?;
-    tracee.set_ptrace_singlestep(true);
-    tracee.set_ptrace_syscall_trace(false);
-    tracee.resume_ptrace_stop_with_signal(signo);
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    tracee.set_ptrace_singlestep_for(tid, true);
+    tracee.set_ptrace_syscall_trace_for(tid, false);
+    tracee.resume_ptrace_stop_with_signal_for(tid, signo);
     Ok(0)
 }
 
@@ -219,23 +220,23 @@ fn ptrace_attach(pid: usize) -> AxResult<isize> {
 
 fn ptrace_detach(pid: usize, data: usize) -> AxResult<isize> {
     let signo = ptrace_resume_signo(data)?;
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     tracee.clear_ptrace_traceme();
     tracee.clear_ptrace_attached();
     tracee.clear_ptrace_tracer_pid();
-    tracee.set_ptrace_singlestep(false);
-    tracee.set_ptrace_syscall_trace(false);
+    tracee.set_ptrace_singlestep_for(tid, false);
+    tracee.set_ptrace_syscall_trace_for(tid, false);
     tracee.set_ptrace_options(0);
-    tracee.resume_ptrace_stop_with_signal(signo);
+    tracee.resume_ptrace_stop_with_signal_for(tid, signo);
     Ok(0)
 }
 
 fn ptrace_syscall(pid: usize, data: usize) -> AxResult<isize> {
     let signo = ptrace_resume_signo(data)?;
-    let tracee = ptrace_stopped_tracee(pid)?;
-    tracee.set_ptrace_singlestep(false);
-    tracee.set_ptrace_syscall_trace(true);
-    tracee.resume_ptrace_stop_with_signal(signo);
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    tracee.set_ptrace_singlestep_for(tid, false);
+    tracee.set_ptrace_syscall_trace_for(tid, true);
+    tracee.resume_ptrace_stop_with_signal_for(tid, signo);
     Ok(0)
 }
 
@@ -256,16 +257,16 @@ fn ptrace_setoptions(pid: usize, options: usize) -> AxResult<isize> {
 }
 
 fn ptrace_geteventmsg(pid: usize, data: usize) -> AxResult<isize> {
-    let tracee = ptrace_stopped_tracee(pid)?;
-    let msg = tracee.ptrace_event_msg();
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    let msg = tracee.ptrace_event_msg_for(tid);
     (data as *mut usize).vm_write(msg)?;
     Ok(0)
 }
 
 fn ptrace_getsiginfo(pid: usize, data: usize) -> AxResult<isize> {
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let siginfo = tracee
-        .ptrace_stop_siginfo()
+        .ptrace_stop_siginfo_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
 
     #[cfg(target_arch = "riscv64")]
@@ -292,10 +293,10 @@ fn ptrace_setsiginfo(pid: usize, data: usize) -> AxResult<isize> {
     if data == 0 {
         return Err(AxError::InvalidInput);
     }
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let siginfo = ptrace_read_user_siginfo(data)?;
     let signo = ptrace_siginfo_signo(&siginfo)?;
-    if !tracee.set_ptrace_stop_siginfo(signo, starry_signal::SignalInfo(siginfo)) {
+    if !tracee.set_ptrace_stop_siginfo_for(tid, signo, starry_signal::SignalInfo(siginfo)) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
     Ok(0)
@@ -481,9 +482,9 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> AxResult<isize> {
 
 #[cfg(target_arch = "riscv64")]
 fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<RiscvUserRegs> {
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let uctx = tracee
-        .ptrace_stop_user_context()
+        .ptrace_stop_user_context_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     Ok(RiscvUserRegs::from(&uctx))
 }
@@ -503,12 +504,12 @@ fn ptrace_read_user_regs(data: usize) -> AxResult<RiscvUserRegs> {
 
 #[cfg(target_arch = "riscv64")]
 fn ptrace_write_stopped_user_regs(pid: usize, regs: RiscvUserRegs) -> AxResult<isize> {
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let mut uctx = tracee
-        .ptrace_stop_user_context()
+        .ptrace_stop_user_context_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     regs.write_to(&mut uctx);
-    if !tracee.set_ptrace_stop_user_context(uctx) {
+    if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
     Ok(0)
@@ -557,9 +558,9 @@ fn ptrace_setregset_fpregset(pid: usize, data: usize) -> AxResult<isize> {
 
 #[cfg(target_arch = "riscv64")]
 fn ptrace_read_stopped_fp_regs(pid: usize) -> AxResult<RiscvFpRegs> {
-    let tracee = ptrace_stopped_tracee(pid)?;
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let fp_data = tracee
-        .ptrace_stop_fp_data()
+        .ptrace_stop_fp_data_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     Ok(RiscvFpRegs {
         f: fp_data.0,
@@ -601,8 +602,8 @@ fn ptrace_siginfo_signo(siginfo: &linux_raw_sys::general::siginfo_t) -> AxResult
 
 #[cfg(target_arch = "riscv64")]
 fn ptrace_write_stopped_fp_regs(pid: usize, regs: RiscvFpRegs) -> AxResult<isize> {
-    let tracee = ptrace_stopped_tracee(pid)?;
-    if !tracee.set_ptrace_stop_fp_data((regs.f, regs.fcsr)) {
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    if !tracee.set_ptrace_stop_fp_data_for(tid, (regs.f, regs.fcsr)) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
     Ok(0)
@@ -762,6 +763,12 @@ fn process_vm_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
     }
 }
 
+fn ptrace_tracee_by_pid_or_tid(pid: Pid) -> AxResult<Arc<ProcessData>> {
+    get_process_data(pid)
+        .or_else(|_| get_task(pid).map(|task| task.as_thread().proc_data.clone()))
+        .map_err(|_| AxError::from(LinuxError::ESRCH))
+}
+
 fn read_iovecs(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<IoVec>> {
     if iovcnt > 1024 {
         return Err(AxError::InvalidInput);
@@ -809,9 +816,13 @@ fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> AxResult {
 }
 
 fn ptrace_stopped_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
+    ptrace_stopped_tracee_with_tid(pid).map(|(tracee, _tid)| tracee)
+}
+
+fn ptrace_stopped_tracee_with_tid(pid: usize) -> AxResult<(Arc<ProcessData>, u32)> {
     let pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     let tracer_pid = current().as_thread().proc_data.proc.pid();
-    let tracee = get_process_data(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee = ptrace_tracee_by_pid_or_tid(pid)?;
     let is_tracer = (tracee.is_ptrace_traceme() || tracee.is_ptrace_attached())
         && tracee
             .ptrace_tracer_pid()
@@ -819,19 +830,30 @@ fn ptrace_stopped_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
     if !is_tracer || tracee.ptrace_stop_signo().is_none() {
         return Err(AxError::from(LinuxError::ESRCH));
     }
-    Ok(tracee)
+    if pid == tracee.proc.pid() {
+        if tracee.ptrace_stop_signo_for(pid).is_some() {
+            tracee.select_ptrace_stop(pid);
+        }
+    } else if !tracee.select_ptrace_stop(pid) {
+        return Err(AxError::from(LinuxError::ESRCH));
+    }
+    let tid = tracee
+        .selected_ptrace_stop_tid()
+        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+    Ok((tracee, tid))
 }
 
 #[cfg(target_arch = "riscv64")]
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
+    tid: Pid,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
     let aspace = tracee.aspace();
     let mut aspace = aspace.lock();
 
-    let saved = tracee.take_ptrace_ss_saved_insn();
+    let saved = tracee.take_ptrace_ss_saved_insn_for(tid);
     if let Some((saved_addr, saved_insn)) = saved {
         let _ = ptrace_write_u16_unlocked(&mut aspace, saved_addr, saved_insn as u16);
     }
@@ -839,7 +861,7 @@ pub fn ptrace_setup_singlestep(
     let first_half = match ptrace_read_u16_unlocked(&aspace, pc) {
         Ok(half) => half,
         Err(_) => {
-            tracee.set_ptrace_ss_saved_insn(None);
+            tracee.set_ptrace_ss_saved_insn_for(tid, None);
             return;
         }
     };
@@ -850,31 +872,31 @@ pub fn ptrace_setup_singlestep(
         match ptrace_read_u32_unlocked(&aspace, pc) {
             Ok(word) => word,
             Err(_) => {
-                tracee.set_ptrace_ss_saved_insn(None);
+                tracee.set_ptrace_ss_saved_insn_for(tid, None);
                 return;
             }
         }
     };
     let next_insn_addr = riscv_next_pc(current_insn, insn_len, pc, uctx);
     if next_insn_addr == pc {
-        tracee.set_ptrace_ss_saved_insn(None);
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
         return;
     }
     let orig_insn = match ptrace_read_u16_unlocked(&aspace, next_insn_addr) {
         Ok(half) => half,
         Err(_) => {
-            tracee.set_ptrace_ss_saved_insn(None);
+            tracee.set_ptrace_ss_saved_insn_for(tid, None);
             return;
         }
     };
     if orig_insn == EBREAK_INSN {
-        tracee.set_ptrace_ss_saved_insn(None);
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
         ax_runtime::hal::cpu::asm::flush_icache_all();
         return;
     }
 
     let _ = ptrace_write_u16_unlocked(&mut aspace, next_insn_addr, EBREAK_INSN);
-    tracee.set_ptrace_ss_saved_insn(Some((next_insn_addr, orig_insn as usize)));
+    tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
     ax_runtime::hal::cpu::asm::flush_icache_all();
 }
 
@@ -1080,7 +1102,7 @@ fn ptrace_write_u16_unlocked(aspace: &mut AddrSpace, addr: usize, data: u16) -> 
     Ok(())
 }
 
-pub fn ptrace_notify_clone(parent_pid: Pid, child_pid: Pid, event: u32) -> bool {
+pub fn ptrace_notify_clone(parent_pid: Pid, parent_tid: Pid, child_pid: Pid, event: u32) -> bool {
     let Ok(parent) = get_process_data(parent_pid) else {
         return false;
     };
@@ -1097,8 +1119,7 @@ pub fn ptrace_notify_clone(parent_pid: Pid, child_pid: Pid, event: u32) -> bool 
     if options & option_flag == 0 {
         return false;
     }
-    parent.set_ptrace_event_msg(child_pid as usize);
-    parent.set_ptrace_event(event);
+    parent.set_ptrace_pending_event(parent_tid, event, child_pid as usize);
     true
 }
 
@@ -1110,8 +1131,7 @@ pub fn ptrace_notify_exec(tracee_pid: Pid) -> bool {
     if options & PTRACE_O_TRACEEXEC == 0 {
         return false;
     }
-    tracee.set_ptrace_event_msg(tracee_pid as usize);
-    tracee.set_ptrace_event(PTRACE_EVENT_EXEC);
+    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_EXEC, tracee_pid as usize);
     true
 }
 
@@ -1126,8 +1146,7 @@ pub fn ptrace_notify_exit(tracee_pid: Pid, exit_code: i32) -> bool {
     if options & PTRACE_O_TRACEEXIT == 0 {
         return false;
     }
-    tracee.set_ptrace_event_msg(exit_code as usize);
-    tracee.set_ptrace_event(PTRACE_EVENT_EXIT);
+    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_EXIT, exit_code as usize);
     true
 }
 
@@ -1142,8 +1161,7 @@ pub fn ptrace_notify_vfork_done(parent_pid: Pid, child_pid: Pid) -> bool {
     if options & PTRACE_O_TRACEVFORKDONE == 0 {
         return false;
     }
-    parent.set_ptrace_event_msg(child_pid as usize);
-    parent.set_ptrace_event(PTRACE_EVENT_VFORK_DONE);
+    parent.set_ptrace_pending_event(parent_pid, PTRACE_EVENT_VFORK_DONE, child_pid as usize);
     true
 }
 

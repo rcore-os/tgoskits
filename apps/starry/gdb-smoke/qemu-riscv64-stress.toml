@@ -10,19 +10,10 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/gdbserver-smoke.sh"
-success_regex = ["GDBSERVER_SMOKE_DONE"]
+shell_init_cmd = "/usr/bin/gdb-ptrace-thread-breakpoint-stress"
+success_regex = ["DONE: 1 pass, 0 fail"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
-    'gdb: not found',
-    'Python Exception',
-    'Python initialization failed',
-    'Cannot insert breakpoint',
-    'Remote communication error',
-    'ptrace: Function not implemented',
-    'No stack',
-    'Program received signal SIGSEGV',
-    '(?i)Segmentation fault',
 ]
-timeout = 180
+timeout = 120
