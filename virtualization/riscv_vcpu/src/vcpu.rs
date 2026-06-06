@@ -45,6 +45,8 @@ unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
 }
 
+mod kvm_regs;
+
 const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
 const EID_TIME: usize = 0x5449_4D45;
@@ -291,6 +293,18 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
                 warn!("RISCVVCpu: Unsupported general purpose register index: {index}");
             }
         }
+    }
+
+    fn get_arch_reg(&self, reg_id: u64) -> AxResult<u64> {
+        self.get_kvm_arch_reg(reg_id)
+    }
+
+    fn arch_reg_ids(&self) -> &'static [u64] {
+        self.kvm_arch_reg_ids()
+    }
+
+    fn set_arch_reg(&mut self, reg_id: u64, value: u64) -> AxResult {
+        self.set_kvm_arch_reg(reg_id, value)
     }
 
     fn inject_interrupt(&mut self, _vector: usize) -> AxResult {

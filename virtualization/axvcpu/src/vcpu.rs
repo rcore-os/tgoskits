@@ -301,6 +301,21 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.get_arch_vcpu().set_gpr(reg, val);
     }
 
+    /// Returns the value of an architecture-specific control register.
+    pub fn get_arch_reg(&self, reg_id: u64) -> AxResult<u64> {
+        self.get_arch_vcpu().get_arch_reg(reg_id)
+    }
+
+    /// Returns the architecture-specific register IDs supported by this VCpu.
+    pub fn arch_reg_ids(&self) -> &'static [u64] {
+        self.get_arch_vcpu().arch_reg_ids()
+    }
+
+    /// Sets the value of an architecture-specific control register.
+    pub fn set_arch_reg(&self, reg_id: u64, value: u64) -> AxResult {
+        self.get_arch_vcpu().set_arch_reg(reg_id, value)
+    }
+
     /// Inject an interrupt to the VCpu.
     pub fn inject_interrupt(&self, vector: usize) -> AxResult {
         self.get_arch_vcpu().inject_interrupt(vector)

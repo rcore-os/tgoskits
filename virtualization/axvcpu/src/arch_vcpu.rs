@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axvisor_api::vmm::{VCpuId, VMId};
 
@@ -90,6 +90,21 @@ pub trait AxArchVCpu: Sized {
 
     /// Sets the value of a general-purpose register.
     fn set_gpr(&mut self, reg: usize, val: usize);
+
+    /// Returns the value of an architecture-specific control register.
+    fn get_arch_reg(&self, _reg_id: u64) -> AxResult<u64> {
+        Err(AxError::Unsupported)
+    }
+
+    /// Returns the architecture-specific register IDs supported by this vCPU.
+    fn arch_reg_ids(&self) -> &'static [u64] {
+        &[]
+    }
+
+    /// Sets the value of an architecture-specific control register.
+    fn set_arch_reg(&mut self, _reg_id: u64, _value: u64) -> AxResult {
+        Err(AxError::Unsupported)
+    }
 
     /// Inject an interrupt to the VCpu.
     ///

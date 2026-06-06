@@ -45,11 +45,18 @@ pub const KVM_SET_USER_MEMORY_REGION: u32 = iow(KVMIO, 0x46, KVM_USERSPACE_MEMOR
 pub const KVM_RUN: u32 = ioc(KVMIO, 0x80);
 /// Returns the vCPU MP state.
 pub const KVM_GET_MP_STATE: u32 = ior(KVMIO, 0x98, KVM_MP_STATE_SIZE);
+/// Gets one architecture-specific vCPU register.
+pub const KVM_GET_ONE_REG: u32 = iow(KVMIO, 0xab, KVM_ONE_REG_SIZE);
+/// Sets one architecture-specific vCPU register.
+pub const KVM_SET_ONE_REG: u32 = iow(KVMIO, 0xac, KVM_ONE_REG_SIZE);
+/// Gets the architecture-specific vCPU register IDs supported by this vCPU.
+pub const KVM_GET_REG_LIST: u32 = iowr(KVMIO, 0xb0, KVM_REG_LIST_SIZE);
 
 pub const KVM_CAP_USER_MEMORY: usize = 3;
 pub const KVM_CAP_NR_VCPUS: usize = 9;
 pub const KVM_CAP_NR_MEMSLOTS: usize = 10;
 pub const KVM_CAP_MAX_VCPUS: usize = 66;
+pub const KVM_CAP_ONE_REG: usize = 70;
 pub const KVM_CAP_IMMEDIATE_EXIT: usize = 136;
 
 const KVM_MAX_VCPUS: usize = 1;
@@ -57,6 +64,8 @@ const KVM_MAX_MEMORY_SLOTS: usize = 32;
 const KVM_VCPU_MMAP_SIZE: usize = 0x1000;
 const KVM_USERSPACE_MEMORY_REGION_SIZE: u32 = 32;
 const KVM_MP_STATE_SIZE: u32 = 4;
+const KVM_ONE_REG_SIZE: u32 = 16;
+const KVM_REG_LIST_SIZE: u32 = 8;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
 const KVM_RUN_EXIT_REASON_OFFSET: usize = 8;
@@ -113,6 +122,12 @@ struct UserspaceMemoryRegion {
     guest_phys_addr: u64,
     memory_size: u64,
     userspace_addr: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OneReg {
+    id: u64,
+    addr: u64,
 }
 
 /// Registers the host-visible KVM-compatible control endpoint.
@@ -273,12 +288,30 @@ fn vm_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<i
 fn vcpu_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
         KVM_RUN => run_vcpu(session),
+        KVM_GET_ONE_REG => get_one_reg(session, arg),
+        KVM_SET_ONE_REG => set_one_reg(session, arg),
+        KVM_GET_REG_LIST => get_reg_list(session, arg),
         KVM_GET_MP_STATE => {
             write_u32_user(arg, KVM_MP_STATE_RUNNABLE)?;
             Ok(0)
         }
         _ => Err(AxError::Unsupported),
     }
+}
+
+fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
+    let (vm, vcpu_id) = {
+        let sessions = SESSIONS.lock();
+        let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
+            return ax_err!(NotFound);
+        };
+        let Some(Session::Vm(vm)) = sessions.get(&vcpu.vm_session) else {
+            return ax_err!(NotFound);
+        };
+        (vm.vm.clone(), vcpu.vcpu_id as usize)
+    };
+
+    vm.vcpu(vcpu_id).ok_or(AxError::InvalidInput)
 }
 
 fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
@@ -321,6 +354,37 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
     Ok(0)
 }
 
+fn get_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let one_reg = read_one_reg(arg)?;
+    let value = get_vcpu(session)?.get_arch_reg(one_reg.id)?;
+    write_u64_user(one_reg.addr as usize, value)?;
+    Ok(0)
+}
+
+fn set_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let one_reg = read_one_reg(arg)?;
+    let value = read_u64_user(one_reg.addr as usize)?;
+    get_vcpu(session)?.set_arch_reg(one_reg.id, value)?;
+    Ok(0)
+}
+
+fn get_reg_list(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let vcpu = get_vcpu(session)?;
+    let reg_ids = vcpu.arch_reg_ids();
+    let requested = read_u64_user(arg)? as usize;
+    write_u64_user(arg, reg_ids.len() as u64)?;
+    if requested < reg_ids.len() {
+        return ax_err!(ArgumentListTooLong);
+    }
+
+    let mut offset = arg.checked_add(8).ok_or(AxError::InvalidInput)?;
+    for reg_id in reg_ids {
+        write_u64_user(offset, *reg_id)?;
+        offset = offset.checked_add(8).ok_or(AxError::InvalidInput)?;
+    }
+    Ok(0)
+}
+
 fn kvm_exit_reason(exit_reason: AxVCpuExitReason) -> u32 {
     match exit_reason {
         AxVCpuExitReason::Halt => KVM_EXIT_HLT,
@@ -345,6 +409,7 @@ fn check_extension(capability: usize) -> usize {
         KVM_CAP_NR_VCPUS => KVM_MAX_VCPUS,
         KVM_CAP_MAX_VCPUS => KVM_MAX_VCPUS,
         KVM_CAP_NR_MEMSLOTS => KVM_MAX_MEMORY_SLOTS,
+        KVM_CAP_ONE_REG => usize::from(cfg!(target_arch = "riscv64")),
         KVM_CAP_IMMEDIATE_EXIT => 1,
         _ => 0,
     }
@@ -417,6 +482,26 @@ fn read_userspace_memory_region(arg: usize) -> AxResult<UserspaceMemoryRegion> {
 
 fn write_u32_user(arg: usize, value: u32) -> AxResult {
     api_control::write_user(arg, &value.to_ne_bytes())
+}
+
+fn read_u64_user(arg: usize) -> AxResult<u64> {
+    let mut bytes = [0u8; 8];
+    api_control::read_user(arg, &mut bytes)?;
+    Ok(u64::from_ne_bytes(bytes))
+}
+
+fn write_u64_user(arg: usize, value: u64) -> AxResult {
+    api_control::write_user(arg, &value.to_ne_bytes())
+}
+
+fn read_one_reg(arg: usize) -> AxResult<OneReg> {
+    let mut bytes = [0u8; KVM_ONE_REG_SIZE as usize];
+    api_control::read_user(arg, &mut bytes)?;
+
+    Ok(OneReg {
+        id: u64::from_ne_bytes(bytes[0..8].try_into().unwrap()),
+        addr: u64::from_ne_bytes(bytes[8..16].try_into().unwrap()),
+    })
 }
 
 fn set_user_memory_region(
@@ -598,4 +683,17 @@ const fn ior(type_: u32, nr: u32, size: u32) -> u32 {
     const IOC_DIRSHIFT: u32 = 30;
 
     (IOC_READ << IOC_DIRSHIFT) | (size << IOC_SIZESHIFT) | (type_ << IOC_TYPESHIFT) | nr
+}
+
+const fn iowr(type_: u32, nr: u32, size: u32) -> u32 {
+    const IOC_WRITE: u32 = 1;
+    const IOC_READ: u32 = 2;
+    const IOC_TYPESHIFT: u32 = 8;
+    const IOC_SIZESHIFT: u32 = 16;
+    const IOC_DIRSHIFT: u32 = 30;
+
+    ((IOC_WRITE | IOC_READ) << IOC_DIRSHIFT)
+        | (size << IOC_SIZESHIFT)
+        | (type_ << IOC_TYPESHIFT)
+        | nr
 }
