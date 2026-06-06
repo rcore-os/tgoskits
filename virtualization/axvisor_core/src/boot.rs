@@ -56,10 +56,12 @@ static mut AXVM_PER_CPU: AxVMPerCpu = AxVMPerCpu::new_uninit();
 pub fn run() {
     print_logo();
 
-    info!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
-    ensure_hardware_support();
-    enable_virtualization_on_all_cores();
+    init_hardware();
+
+    #[cfg(feature = "control")]
+    let _ = crate::control::init().inspect_err(|err| {
+        warn!("Failed to register AxVisor control endpoint: {err:?}");
+    });
 
     vmm::init();
     vmm::start();
@@ -68,6 +70,14 @@ pub fn run() {
 
     #[cfg(feature = "shell")]
     crate::shell::console_init();
+}
+
+/// Initializes host virtualization hardware on all CPUs.
+pub fn init_hardware() {
+    info!("Starting virtualization...");
+    info!("Hardware support: {:?}", axvm::has_hardware_support());
+    ensure_hardware_support();
+    enable_virtualization_on_all_cores();
 }
 
 fn print_logo() {

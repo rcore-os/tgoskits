@@ -148,6 +148,8 @@ pub use axvisor_api_proc::{api_def, api_impl};
 
 pub mod arch;
 pub mod console;
+#[cfg(feature = "control")]
+pub mod control;
 #[cfg(feature = "fs")]
 pub mod fs;
 pub mod host;
