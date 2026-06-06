@@ -521,21 +521,23 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let process = &thr.proc_data.proc;
 
-    // Update cgroup: remove process and decrement pids counter
-    {
-        let pid = process.pid();
-        let cgroup = thr.proc_data.cgroup.read().clone();
-        let mut procs = cgroup.procs.lock();
-        if let Some(pos) = procs.iter().position(|&p| p == pid) {
-            procs.swap_remove(pos);
-            cgroup.pids.exit();
-        }
-    }
-
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     if process.exit_thread(thr.tid(), exit_code) {
+        // Update cgroup: remove process and decrement pids counter.
+        // Only do this when the last thread exits (inside exit_thread block)
+        // to avoid premature removal from cgroup.procs while other threads
+        // are still running.
+        {
+            let pid = process.pid();
+            let cgroup = thr.proc_data.cgroup.read().clone();
+            let mut procs = cgroup.procs.lock();
+            if let Some(pos) = procs.iter().position(|&p| p == pid) {
+                procs.swap_remove(pos);
+                cgroup.pids.exit();
+            }
+        }
         // AIO contexts pin the process address space and may have worker tasks
         // waiting on outstanding requests. Tear them down before releasing the
         // process address-space slot.
