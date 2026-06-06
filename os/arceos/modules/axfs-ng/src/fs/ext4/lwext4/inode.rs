@@ -258,8 +258,15 @@ impl DirNodeOps for Inode {
         self.lookup_locked(&mut fs, name)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
-        self.fs.lock().unlink(self.ino, name).map_err(into_vfs_err)
+    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
+        let mut fs = self.fs.lock();
+        let (_ino, target_is_dir) = self.lookup_ino_locked(&mut fs, name)?;
+        match (target_is_dir, is_dir) {
+            (true, false) => return Err(VfsError::IsADirectory),
+            (false, true) => return Err(VfsError::NotADirectory),
+            _ => {}
+        }
+        fs.unlink(self.ino, name).map_err(into_vfs_err)
     }
 
     fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
