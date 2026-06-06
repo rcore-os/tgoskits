@@ -2,11 +2,25 @@
 
 This app prepares an x86_64 Debian rootfs with Oracle MySQL 8.4.6 generic glibc binaries, then runs a StarryOS guest-side SQL workload.
 
+Only x86_64 Debian/glibc rootfs images are supported. The Oracle generic package is not suitable for aarch64 or Alpine/musl rootfs images.
+
+## Host Privileges
+
+MySQL rootfs preparation must run as `root`, or as a user with passwordless `sudo`.
+The prebuild script attaches the generated ext4 image with `losetup` and mounts it
+to install MySQL, unpack Debian runtime libraries, and write `/root/mysql-env.sh`.
+Without those privileges, the app flow stops before QEMU starts.
+
+Run the app from a root shell, a root-capable container, or a host account that
+can run the required mount flow with passwordless `sudo`:
+
 ```bash
 cargo xtask starry app qemu -t mysql --arch x86_64
 ```
 
-Only x86_64 Debian/glibc rootfs images are supported. The Oracle generic package is not suitable for aarch64 or Alpine/musl rootfs images.
+The generated image is cached at `tmp/axbuild/rootfs/rootfs-x86_64-mysql.img`,
+and downloads are cached under `target/mysql`, but the current prebuild still
+needs root privileges when it verifies, resizes, mounts, and refreshes the image.
 
 ## Rootfs Preparation
 

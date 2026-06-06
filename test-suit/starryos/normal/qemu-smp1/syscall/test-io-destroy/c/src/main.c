@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define IOCB_CMD_POLL 5
@@ -23,6 +24,42 @@ struct iocb {
     uint32_t aio_flags;
     uint32_t aio_resfd;
 };
+
+static void child_exit_without_io_destroy(void)
+{
+    pid_t child = fork();
+    CHECK(child >= 0, "fork child for implicit AIO cleanup");
+    if (child == 0) {
+        aio_context_t child_ctx = 0;
+        if (syscall(SYS_io_setup, 4, &child_ctx) != 0 || child_ctx == 0) {
+            _exit(10);
+        }
+
+        int child_pipe[2] = {-1, -1};
+        if (pipe(child_pipe) != 0) {
+            _exit(11);
+        }
+
+        struct iocb cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.aio_data = 0x6262;
+        cb.aio_lio_opcode = IOCB_CMD_POLL;
+        cb.aio_fildes = (uint32_t)child_pipe[0];
+        cb.aio_buf = POLLIN;
+        struct iocb *list[1] = {&cb};
+        if (syscall(SYS_io_submit, child_ctx, 1, list) != 1) {
+            _exit(12);
+        }
+
+        _exit(0);
+    }
+
+    int status = 0;
+    CHECK_RET(waitpid(child, &status, 0), child,
+              "wait child that exits without io_destroy");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "child exits cleanly after implicit AIO cleanup");
+}
 
 int main(void)
 {
@@ -66,6 +103,8 @@ int main(void)
     if (pipefd[1] >= 0) {
         CHECK_RET(close(pipefd[1]), 0, "close poll pipe write end");
     }
+
+    child_exit_without_io_destroy();
 
     CHECK_ERR(syscall(SYS_io_destroy, 0), EINVAL,
               "io_destroy rejects context 0");
