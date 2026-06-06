@@ -225,6 +225,14 @@ int main(void)
             CHECK_RET(close(efd), 0, "close aio eventfd");
         }
 
+        memset(&cb, 0, sizeof(cb));
+        cb.aio_lio_opcode = IOCB_CMD_NOOP;
+        cb.aio_flags = IOCB_FLAG_RESFD;
+        cb.aio_resfd = (uint32_t)fd;
+        struct iocb *bad_resfd[1] = {&cb};
+        CHECK_ERR(syscall(SYS_io_submit, ctx, 1, bad_resfd), EINVAL,
+                  "io_submit rejects IOCB_FLAG_RESFD with non-eventfd fd");
+
         struct iocb valid;
         struct iocb invalid;
         memset(&valid, 0, sizeof(valid));

@@ -33,7 +33,7 @@ use starry_signal::SignalSet;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    file::{Directory, File, FileLike, get_file_like, memfd::Memfd},
+    file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, Backend, IoVec},
     syscall::signal::check_sigset_size,
     task::{AsThread, with_blocked_signals},
@@ -159,7 +159,7 @@ struct AioRequest {
     cb_ptr: usize,
     data: u64,
     op: AioOperation,
-    resfd: Option<Arc<dyn FileLike>>,
+    resfd: Option<Arc<EventFd>>,
 }
 
 struct PendingRequest {
@@ -607,11 +607,14 @@ fn sync_target_from_fd(fd: c_int) -> AxResult<AioSyncTarget> {
 }
 
 // Resolve the optional eventfd notification target from an iocb.
-fn resolve_resfd(cb: &Iocb) -> AxResult<Option<Arc<dyn FileLike>>> {
+fn resolve_resfd(cb: &Iocb) -> AxResult<Option<Arc<EventFd>>> {
     if (cb.flags & IOCB_FLAG_RESFD) == 0 {
         Ok(None)
     } else {
-        get_file_like(cb.resfd as c_int).map(Some)
+        let file = get_file_like(cb.resfd as c_int)?;
+        file.downcast_arc::<EventFd>()
+            .map(Some)
+            .map_err(|_| AxError::InvalidInput)
     }
 }
 
@@ -733,7 +736,7 @@ fn prepare_request(
 }
 
 // Signal an eventfd completion counter when IOCB_FLAG_RESFD is set.
-fn notify_resfd(resfd: &Arc<dyn FileLike>) -> AxResult<()> {
+fn notify_resfd(resfd: &EventFd) -> AxResult<()> {
     let data = 1u64.to_ne_bytes();
     resfd.write(&mut data.as_slice())?;
     Ok(())
@@ -1254,10 +1257,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> 
 }
 
 // Destroy an AIO context after cancelling queued work and draining workers.
-pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
-    debug!("sys_io_destroy called: ctx={:#x}", ctx);
-    let context = lookup_context(ctx)?;
-    AIO_CONTEXTS.write().remove(&context.id);
+fn destroy_context(context: Arc<AioContext>) {
     context.destroying.store(true, Ordering::Release);
 
     {
@@ -1287,6 +1287,35 @@ pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
         warn!("sys_io_destroy: failed to unmap ring buffer: {:?}", err);
     }
     debug!("sys_io_destroy: success");
+}
+
+// Destroy all AIO contexts owned by a process during last-thread exit.
+pub fn cleanup_aio_contexts_for_pid(pid: Pid) {
+    let contexts = {
+        let mut table = AIO_CONTEXTS.write();
+        let ids: Vec<_> = table
+            .iter()
+            .filter_map(|(&id, context)| (context.owner == pid).then_some(id))
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| table.remove(&id))
+            .collect::<Vec<_>>()
+    };
+
+    for context in contexts {
+        destroy_context(context);
+    }
+}
+
+// Destroy an AIO context after cancelling queued work and draining workers.
+pub fn sys_io_destroy(ctx: AioContextId) -> AxResult<isize> {
+    debug!("sys_io_destroy called: ctx={:#x}", ctx);
+    let context = lookup_context(ctx)?;
+    let context = AIO_CONTEXTS
+        .write()
+        .remove(&context.id)
+        .ok_or_else(invalid_context)?;
+    destroy_context(context);
     Ok(0)
 }
 
