@@ -170,9 +170,6 @@ fn map_elf<'a>(
             false,
             backend,
         )?;
-
-        // I-cache coherence is handled by handle_page_fault for each
-        // newly-populated executable page at first fault time.
     }
 
     // Apply relocations for static-pie binaries
@@ -616,38 +613,6 @@ impl ElfLoader {
                 .map(|e| e.get_type() as usize)
                 .unwrap_or(usize::MAX),
         );
-        // DIAG: dump every auxv entry (type -> value) for crash correlation.
-        for e in &auxv {
-            info!(
-                "loader: auxv type={} val={:#x}",
-                e.get_type() as usize,
-                e.value()
-            );
-        }
-        // DIAG: force-populate and dump the first 16 bytes of code at the entry
-        // we jump to (ldso) and at AT_ENTRY (the application), to tell whether
-        // the loaded instruction bytes are correct or corrupted.
-        let app_entry = auxv
-            .iter()
-            .find(|e| matches!(e.get_type(), AuxType::ENTRY))
-            .map(|e| e.value());
-        for (label, addr) in [
-            Some(("ldso_entry", entry.as_usize())),
-            app_entry.map(|a| ("app_entry", a)),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let page = VirtAddr::from_usize(addr).align_down_4k();
-            let mut buf = [0u8; 16];
-            let pop = uspace.populate_area(
-                page,
-                PAGE_SIZE_4K,
-                MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
-            );
-            let rd = uspace.read(VirtAddr::from_usize(addr), &mut buf);
-            info!("loader: {label}={addr:#x} populate={pop:?} read={rd:?} bytes={buf:02x?}");
-        }
 
         Ok(Ok((entry, auxv)))
     }

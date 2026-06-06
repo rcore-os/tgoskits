@@ -129,31 +129,26 @@ impl CowBackend {
             };
             // vaddr can be smaller than file_vaddr_base (at most 1 page) due to
             // non-aligned mappings; compute page-internal write offset accordingly.
+            // The mapping invariant is: a virtual address `V` corresponds to
+            // file offset `file_start + (V - file_vaddr_base)`. The file-backed
+            // bytes of this page begin at buf[start] (= virtual address
+            // `file_vaddr_base` when the page starts below it, i.e. the
+            // unaligned first page), which therefore reads from `file_start`.
+            // `saturating_sub` yields exactly that: 0 when vaddr < file_vaddr_base
+            // (read from file_start) and the positive delta otherwise. Do NOT
+            // subtract the gap here — doing so reads the segment's bytes from
+            // the wrong offset and corrupts e.g. the dynamic linker's
+            // .dynamic/GOT, making ld-musl jump to a null pointer.
             let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
             assert!(start < self.size as _);
 
-            let file_read_offset = if vaddr >= *file_vaddr_base {
-                *file_start + (vaddr.as_usize() - file_vaddr_base.as_usize()) as u64
-            } else {
-                file_start.saturating_sub((file_vaddr_base.as_usize() - vaddr.as_usize()) as u64)
-            };
+            let file_read_offset =
+                *file_start + vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
             let max_read = file_end
                 .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
                 .min((buf.len() - start) as u64) as usize;
 
             file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)?;
-        }
-        // On non-coherent XuanTie C9xx (e.g. SG2002 C906), instruction bytes
-        // just written through the cacheable kernel mapping sit in dirty L1
-        // D-cache lines that `fence.i` will not write back. Clean them to the
-        // point of unification so the instruction fetch (after the fence.i on
-        // user entry) sees the new code instead of stale memory.
-        #[cfg(target_arch = "riscv64")]
-        if flags.contains(MappingFlags::EXECUTE) {
-            ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(
-                phys_to_virt(frame),
-                self.size as usize,
-            );
         }
         pt.map(vaddr, frame, self.size, flags)?;
         Ok(())
@@ -241,16 +236,6 @@ impl CowBackend {
                         self.size as _,
                     );
                 }
-                // See `alloc_new_at`: clean the freshly copied page on
-                // XuanTie C9xx so a later instruction fetch of a copied
-                // executable page (e.g. W^X transitions) is not stale.
-                #[cfg(target_arch = "riscv64")]
-                if flags.contains(MappingFlags::EXECUTE) {
-                    ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(
-                        phys_to_virt(new_frame),
-                        self.size as usize,
-                    );
-                }
                 pt.remap(vaddr, new_frame, flags)?;
                 frame.drop_frame(paddr, self.size);
             }
@@ -270,12 +255,14 @@ impl CowBackend {
             let path = loc.absolute_path().map(|pb| pb.to_string())?;
             let inode = loc.inode();
             let dev = loc.metadata()?.device;
-            let offset = if self.start >= file_vaddr_base {
-                file_start + (self.start.as_usize() - file_vaddr_base.as_usize()) as u64
-            } else {
-                file_start
-                    .saturating_sub((file_vaddr_base.as_usize() - self.start.as_usize()) as u64)
-            };
+            // Same invariant as `alloc_new_at`: a virtual address maps to
+            // `file_start + (vaddr - file_vaddr_base)`, clamped to file_start
+            // for the unaligned first page (where self.start < file_vaddr_base).
+            let offset = file_start
+                + self
+                    .start
+                    .as_usize()
+                    .saturating_sub(file_vaddr_base.as_usize()) as u64;
             let offset = align_down_4k(offset as usize) as u64;
             return Ok(BackendFileInfo {
                 path,

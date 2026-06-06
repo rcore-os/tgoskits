@@ -99,49 +99,6 @@ pub fn flush_icache_all() {
     riscv::asm::fence_i();
 }
 
-/// XuanTie C9xx (C906/C910) L1 cache line size in bytes.
-#[cfg(feature = "xuantie-c9xx")]
-const XUANTIE_CACHELINE_SIZE: usize = 64;
-
-/// Cleans (writes back) the D-cache for the given virtual address range to the
-/// point of unification.
-///
-/// On XuanTie C9xx cores the L1 D-cache is write-back and `fence.i` does **not**
-/// write it back, so instruction bytes freshly stored through a (cacheable)
-/// data mapping are not visible to a later instruction fetch until the dirty
-/// lines are cleaned to memory. Call this on the kernel mapping used to write
-/// the code, before the `fence.i` performed on user-space entry.
-///
-/// On non-XuanTie RISC-V (e.g. coherent QEMU) this is a no-op; `fence.i` alone
-/// is sufficient there.
-#[inline]
-pub fn clean_dcache_range_to_pou(vaddr: VirtAddr, size: usize) {
-    #[cfg(feature = "xuantie-c9xx")]
-    {
-        let mut line = vaddr.as_usize() & !(XUANTIE_CACHELINE_SIZE - 1);
-        let end = vaddr.as_usize() + size;
-        while line < end {
-            // th.dcache.cva a0 — clean (write back) the D-cache line by VA.
-            // Encoding per Linux arch/riscv/errata/thead/errata.c (operand fixed
-            // to a0). funct7=1, rs2=9 (cva), rs1=10 (a0), funct3=0, opcode=0x0b.
-            unsafe {
-                core::arch::asm!(
-                    ".long 0x0295000b",
-                    in("a0") line,
-                    options(nostack, preserves_flags),
-                );
-            }
-            line += XUANTIE_CACHELINE_SIZE;
-        }
-        // th.sync.s — ensure the cache operations above have completed.
-        unsafe {
-            core::arch::asm!(".long 0x0190000b", options(nostack, preserves_flags));
-        }
-    }
-    #[cfg(not(feature = "xuantie-c9xx"))]
-    let _ = (vaddr, size);
-}
-
 /// Flushes the TLB.
 ///
 /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB
