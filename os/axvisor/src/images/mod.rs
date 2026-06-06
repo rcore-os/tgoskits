@@ -492,14 +492,18 @@ impl ImageLoader {
             layout,
             x86_linux::X86LinuxRange::new(self.main_memory.gpa.as_usize(), self.main_memory.size()),
         );
-        if let Some(command_line) = self.config.kernel.cmdline.as_deref() {
-            builder.set_command_line(command_line).map_err(|err| {
-                ax_errno::ax_err_type!(
-                    InvalidInput,
-                    format!("invalid x86 Linux command line: {err:?}")
-                )
-            })?;
-        }
+        let command_line = self.config.kernel.cmdline.as_deref().ok_or_else(|| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                "x86 Linux direct boot requires kernel.cmdline in the VM config"
+            )
+        })?;
+        builder.set_command_line(command_line).map_err(|err| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                format!("invalid x86 Linux command line: {err:?}")
+            )
+        })?;
 
         for memory in &self.config.kernel.memory_regions {
             if memory.map_type == VmMemMappingType::MapAlloc {
