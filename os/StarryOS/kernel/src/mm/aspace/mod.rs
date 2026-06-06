@@ -524,6 +524,19 @@ impl AddrSpace {
                             warn!("No pages populated for {vaddr:?} ({flags:?})");
                             false
                         } else {
+                            // On real hardware (T-Head C906 / SG2002) the
+                            // L1 I/D caches lack hardware coherence.  A
+                            // recycled physical frame may still hold stale
+                            // instruction cache lines from a prior exec.
+                            // New code bytes written via D-cache stores must
+                            // be made visible to the I-cache before we
+                            // return to userspace; otherwise the CPU may
+                            // fetch garbage and jump to pc=0.  QEMU has no
+                            // real caches so this is a pure nop there.
+                            #[cfg(target_arch = "riscv64")]
+                            if flags.contains(MappingFlags::EXECUTE) {
+                                ax_runtime::hal::cpu::asm::flush_icache_all();
+                            }
                             true
                         }
                     }

@@ -171,7 +171,8 @@ fn map_elf<'a>(
             backend,
         )?;
 
-        // TDOO: flush the I-cache
+        // I-cache coherence is handled by handle_page_fault for each
+        // newly-populated executable page at first fault time.
     }
 
     // Apply relocations for static-pie binaries
