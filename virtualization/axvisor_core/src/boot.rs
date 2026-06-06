@@ -52,17 +52,45 @@ const CPU_INIT_TASK_STACK_SIZE: usize = 0x40000; // 256 KiB
 #[ax_percpu::def_percpu]
 static mut AXVM_PER_CPU: AxVMPerCpu = AxVMPerCpu::new_uninit();
 
-/// Run the host-neutral AxVisor boot flow.
+/// Run the host-neutral AxVisor static boot flow.
 pub fn run() {
+    run_static_mode();
+}
+
+/// Initializes AxVisor as a host-controlled hypervisor endpoint.
+#[cfg(feature = "control")]
+pub fn init_control_mode() -> ax_errno::AxResult {
+    print_logo();
+    init_runtime()
+}
+
+/// Runs AxVisor with static VM configuration.
+pub fn run_static_mode() {
     print_logo();
 
-    init_hardware();
+    if let Err(err) = init_runtime() {
+        warn!("Failed to initialize AxVisor control runtime: {err:?}");
+    }
+
+    run_static_vmm();
+}
+
+fn init_runtime() -> ax_errno::AxResult {
+    info!("Starting virtualization...");
+    info!("Hardware support: {:?}", axvm::has_hardware_support());
+    ensure_hardware_support();
+    enable_virtualization_on_all_cores();
 
     #[cfg(feature = "control")]
-    let _ = crate::control::init().inspect_err(|err| {
+    return crate::control::init().inspect_err(|err| {
         warn!("Failed to register AxVisor control endpoint: {err:?}");
     });
 
+    #[cfg(not(feature = "control"))]
+    Ok(())
+}
+
+fn run_static_vmm() {
     vmm::init();
     vmm::start();
 
@@ -70,14 +98,6 @@ pub fn run() {
 
     #[cfg(feature = "shell")]
     crate::shell::console_init();
-}
-
-/// Initializes host virtualization hardware on all CPUs.
-pub fn init_hardware() {
-    info!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
-    ensure_hardware_support();
-    enable_virtualization_on_all_cores();
 }
 
 fn print_logo() {
