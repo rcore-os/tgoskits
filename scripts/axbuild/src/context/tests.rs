@@ -898,7 +898,7 @@ vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
         r#"
 arch = "x86_64"
 target = "x86_64-unknown-none"
-vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]
+vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
 "#,
     )
     .unwrap();
