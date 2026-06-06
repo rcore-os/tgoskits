@@ -524,6 +524,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     if process.exit_thread(thr.tid(), exit_code) {
+        // AIO contexts pin the process address space and may have worker tasks
+        // waiting on outstanding requests. Tear them down before releasing the
+        // process address-space slot.
+        crate::syscall::cleanup_aio_contexts_for_pid(process.pid());
+
         // Close all file descriptors before marking the process as exited.
         // This ensures pipe write ends and other resources are properly released,
         // so parent processes blocking on pipe reads will receive EOF.
