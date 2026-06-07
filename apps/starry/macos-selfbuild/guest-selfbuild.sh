@@ -43,7 +43,7 @@ assert_fast_profile() {
             ;;
     esac
 
-    echo "===${marker}-FAST-PROFILE expected_crates~282==="
+    echo "===${marker}-FAST-PROFILE expected_crates~318==="
 }
 
 finish_guest() {

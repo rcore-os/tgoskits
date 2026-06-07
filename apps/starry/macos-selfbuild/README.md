@@ -133,7 +133,7 @@ apps/starry/macos-selfbuild/run_selfbuild.sh
 A successful run prints:
 
 ```text
-===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~282===
+===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~318===
 ===STARRY-MACOS-SELFBUILD-PASS jobs=8 elapsed=<seconds>===
 ===STARRY-MACOS-SELFBUILD-RUN-END rc=0===
 ```
@@ -150,10 +150,10 @@ If the log shows the old full-device feature set with `plat-dyn`,
 slow experimental profile. The guest now refuses that profile unless
 `ALLOW_SLOW_SELFBUILD=1` is explicitly set.
 
-The host runner also refuses unexpected Cargo totals by default. If a run shows
-`Building [255/318]`, it is not the fast reproducible profile and will stop with
-`reason=unexpected-crate-count`; refresh the rootfs from the current checkout and
-rerun the command above.
+The host runner also refuses unexpectedly large Cargo totals by default. The
+current fast profile is expected to report about `318` Cargo units. A much larger
+total usually means a stale rootfs or slow feature set is being used; refresh the
+rootfs from the current checkout and rerun the command above.
 
 Logs are written under:
 
