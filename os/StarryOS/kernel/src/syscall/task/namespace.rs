@@ -60,11 +60,8 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         // CLONE_FS alone: clone the FsContext to break sharing with any
         // task created via clone(CLONE_FS).  Single lock to avoid
         // re-entrant acquisition of the task-scoped mutex.
-        let ctx = {
-            let mut guard = FS_CONTEXT.lock();
-            let clone = guard.clone();
-            *guard = clone;
-        };
+        let mut guard = FS_CONTEXT.lock();
+        *guard = guard.clone();
     }
 
     Ok(0)
