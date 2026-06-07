@@ -69,6 +69,8 @@ pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
 
+mod kvm_regs;
+
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
     Real,
@@ -650,6 +652,7 @@ impl VmxVcpu {
         let mut primary_set =
             (CpuCtrl::USE_IO_BITMAPS | CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS)
                 .bits();
+        primary_set |= CpuCtrl::HLT_EXITING.bits();
         if apicv_supported {
             primary_set |= CpuCtrl::USE_TPR_SHADOW.bits();
         }
@@ -1664,6 +1667,7 @@ impl AxArchVCpu for VmxVcpu {
                             ],
                         }
                     }
+                    VmxExitReason::HLT => AxVCpuExitReason::Halt,
                     VmxExitReason::IO_INSTRUCTION => {
                         let io_info = self.io_exit_info().unwrap();
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
@@ -1783,6 +1787,22 @@ impl AxArchVCpu for VmxVcpu {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+
+    fn get_kvm_regs(&self, buf: &mut [u8]) -> AxResult {
+        self.encode_kvm_regs(buf)
+    }
+
+    fn set_kvm_regs(&mut self, buf: &[u8]) -> AxResult {
+        self.decode_kvm_regs(buf)
+    }
+
+    fn get_kvm_sregs(&self, buf: &mut [u8]) -> AxResult {
+        self.encode_kvm_sregs(buf)
+    }
+
+    fn set_kvm_sregs(&mut self, buf: &[u8]) -> AxResult {
+        self.decode_kvm_sregs(buf)
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {

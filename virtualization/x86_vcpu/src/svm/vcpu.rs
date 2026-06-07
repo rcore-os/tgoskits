@@ -82,6 +82,8 @@ const X2APIC_MSR_BASE: u32 = 0x800;
 // Match the current VMX/vLAPIC path, which handles x2APIC register offsets 0x00..=0x3f.
 const X2APIC_MSR_END: u32 = 0x83f;
 
+mod kvm_regs;
+
 const SVM_INT_CTL_V_IRQ: u32 = 1 << 8;
 const SVM_INT_CTL_V_INTR_PRIO_SHIFT: u32 = 16;
 const SVM_INT_CTL_V_INTR_PRIO_MASK: u32 = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
@@ -1546,6 +1548,22 @@ impl AxArchVCpu for SvmVcpu {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+
+    fn get_kvm_regs(&self, buf: &mut [u8]) -> AxResult {
+        self.encode_kvm_regs(buf)
+    }
+
+    fn set_kvm_regs(&mut self, buf: &[u8]) -> AxResult {
+        self.decode_kvm_regs(buf)
+    }
+
+    fn get_kvm_sregs(&self, buf: &mut [u8]) -> AxResult {
+        self.encode_kvm_sregs(buf)
+    }
+
+    fn set_kvm_sregs(&mut self, buf: &[u8]) -> AxResult {
+        self.decode_kvm_sregs(buf)
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {

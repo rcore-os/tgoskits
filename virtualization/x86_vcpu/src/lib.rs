@@ -36,6 +36,8 @@ pub struct X86VCpuSetupConfig {
     pub emulate_com1: bool,
 }
 
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub(crate) mod kvm;
 pub(crate) mod msr;
 #[cfg(feature = "vmx")]
 #[macro_use]

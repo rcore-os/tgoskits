@@ -43,6 +43,14 @@ pub const KVM_CREATE_VCPU: u32 = ioc(KVMIO, 0x41);
 pub const KVM_SET_USER_MEMORY_REGION: u32 = iow(KVMIO, 0x46, KVM_USERSPACE_MEMORY_REGION_SIZE);
 /// Runs a vCPU until it exits to userspace.
 pub const KVM_RUN: u32 = ioc(KVMIO, 0x80);
+/// Gets x86 general-purpose register state.
+pub const KVM_GET_REGS: u32 = ior(KVMIO, 0x81, KVM_X86_REGS_SIZE);
+/// Sets x86 general-purpose register state.
+pub const KVM_SET_REGS: u32 = iow(KVMIO, 0x82, KVM_X86_REGS_SIZE);
+/// Gets x86 special register state.
+pub const KVM_GET_SREGS: u32 = ior(KVMIO, 0x83, KVM_X86_SREGS_SIZE);
+/// Sets x86 special register state.
+pub const KVM_SET_SREGS: u32 = iow(KVMIO, 0x84, KVM_X86_SREGS_SIZE);
 /// Returns the vCPU MP state.
 pub const KVM_GET_MP_STATE: u32 = ior(KVMIO, 0x98, KVM_MP_STATE_SIZE);
 /// Gets one architecture-specific vCPU register.
@@ -66,6 +74,8 @@ const KVM_USERSPACE_MEMORY_REGION_SIZE: u32 = 32;
 const KVM_MP_STATE_SIZE: u32 = 4;
 const KVM_ONE_REG_SIZE: u32 = 16;
 const KVM_REG_LIST_SIZE: u32 = 8;
+const KVM_X86_REGS_SIZE: u32 = 18 * 8;
+const KVM_X86_SREGS_SIZE: u32 = 312;
 const KVM_MP_STATE_RUNNABLE: u32 = 0;
 const KVM_MEM_ALLOWED_FLAGS: u32 = 0;
 const KVM_RUN_EXIT_REASON_OFFSET: usize = 8;
@@ -288,6 +298,10 @@ fn vm_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<i
 fn vcpu_ioctl(session: api_control::SessionId, cmd: u32, arg: usize) -> AxResult<isize> {
     match cmd {
         KVM_RUN => run_vcpu(session),
+        KVM_GET_REGS => get_kvm_regs(session, arg),
+        KVM_SET_REGS => set_kvm_regs(session, arg),
+        KVM_GET_SREGS => get_kvm_sregs(session, arg),
+        KVM_SET_SREGS => set_kvm_sregs(session, arg),
         KVM_GET_ONE_REG => get_one_reg(session, arg),
         KVM_SET_ONE_REG => set_one_reg(session, arg),
         KVM_GET_REG_LIST => get_reg_list(session, arg),
@@ -315,7 +329,7 @@ fn get_vcpu(session: api_control::SessionId) -> AxResult<axvm::AxVCpuRef> {
 }
 
 fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
-    let (vm, vcpu_id) = {
+    let (vm, vcpu_id, vcpu) = {
         let sessions = SESSIONS.lock();
         let Some(Session::Vcpu(vcpu)) = sessions.get(&session) else {
             return ax_err!(NotFound);
@@ -323,7 +337,11 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
         let Some(Session::Vm(vm)) = sessions.get(&vcpu.vm_session) else {
             return ax_err!(NotFound);
         };
-        (vm.vm.clone(), vcpu.vcpu_id as usize)
+        let vcpu_id = vcpu.vcpu_id as usize;
+        let Some(vcpu) = vm.vm.vcpu(vcpu_id) else {
+            return ax_err!(NotFound);
+        };
+        (vm.vm.clone(), vcpu_id, vcpu)
     };
 
     if !vm.running() {
@@ -341,13 +359,20 @@ fn run_vcpu(session: api_control::SessionId) -> AxResult<isize> {
         };
 
         match exit_reason {
-            AxVCpuExitReason::Nothing => {
+            AxVCpuExitReason::Nothing
+            | AxVCpuExitReason::PreemptionTimer
+            | AxVCpuExitReason::ExternalInterrupt { .. }
+            | AxVCpuExitReason::InterruptEnd { .. } => {
+                crate::vmm::vcpus::handle_internal_exit(&vm, &vcpu, &exit_reason);
                 internal_exits += 1;
                 if internal_exits >= KVM_RUN_MAX_INTERNAL_EXITS {
                     break KVM_EXIT_INTR;
                 }
             }
-            exit_reason => break kvm_exit_reason(exit_reason),
+            exit_reason => {
+                let kvm_reason = kvm_exit_reason(&exit_reason);
+                break kvm_reason;
+            }
         }
     };
     write_vcpu_run_u32(session, KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
@@ -358,6 +383,34 @@ fn get_one_reg(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
     let one_reg = read_one_reg(arg)?;
     let value = get_vcpu(session)?.get_arch_reg(one_reg.id)?;
     write_u64_user(one_reg.addr as usize, value)?;
+    Ok(0)
+}
+
+fn get_kvm_regs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let mut bytes = [0u8; KVM_X86_REGS_SIZE as usize];
+    get_vcpu(session)?.get_kvm_regs(&mut bytes)?;
+    api_control::write_user(arg, &bytes)?;
+    Ok(0)
+}
+
+fn set_kvm_regs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let mut bytes = [0u8; KVM_X86_REGS_SIZE as usize];
+    api_control::read_user(arg, &mut bytes)?;
+    get_vcpu(session)?.set_kvm_regs(&bytes)?;
+    Ok(0)
+}
+
+fn get_kvm_sregs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let mut bytes = [0u8; KVM_X86_SREGS_SIZE as usize];
+    get_vcpu(session)?.get_kvm_sregs(&mut bytes)?;
+    api_control::write_user(arg, &bytes)?;
+    Ok(0)
+}
+
+fn set_kvm_sregs(session: api_control::SessionId, arg: usize) -> AxResult<isize> {
+    let mut bytes = [0u8; KVM_X86_SREGS_SIZE as usize];
+    api_control::read_user(arg, &mut bytes)?;
+    get_vcpu(session)?.set_kvm_sregs(&bytes)?;
     Ok(0)
 }
 
@@ -385,7 +438,7 @@ fn get_reg_list(session: api_control::SessionId, arg: usize) -> AxResult<isize> 
     Ok(0)
 }
 
-fn kvm_exit_reason(exit_reason: AxVCpuExitReason) -> u32 {
+fn kvm_exit_reason(exit_reason: &AxVCpuExitReason) -> u32 {
     match exit_reason {
         AxVCpuExitReason::Halt => KVM_EXIT_HLT,
         AxVCpuExitReason::MmioRead { .. } | AxVCpuExitReason::MmioWrite { .. } => KVM_EXIT_MMIO,

@@ -106,6 +106,26 @@ pub trait AxArchVCpu: Sized {
         Err(AxError::Unsupported)
     }
 
+    /// Writes the KVM-compatible general register state into `buf`.
+    fn get_kvm_regs(&self, _buf: &mut [u8]) -> AxResult {
+        Err(AxError::Unsupported)
+    }
+
+    /// Reads the KVM-compatible general register state from `buf`.
+    fn set_kvm_regs(&mut self, _buf: &[u8]) -> AxResult {
+        Err(AxError::Unsupported)
+    }
+
+    /// Writes the KVM-compatible special register state into `buf`.
+    fn get_kvm_sregs(&self, _buf: &mut [u8]) -> AxResult {
+        Err(AxError::Unsupported)
+    }
+
+    /// Reads the KVM-compatible special register state from `buf`.
+    fn set_kvm_sregs(&mut self, _buf: &[u8]) -> AxResult {
+        Err(AxError::Unsupported)
+    }
+
     /// Inject an interrupt to the VCpu.
     ///
     /// It's guaranteed (for implementors, and required for callers) that this function is called

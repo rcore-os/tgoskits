@@ -413,6 +413,7 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
 
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => match exit_reason {
+                exit_reason if handle_internal_exit(&vm, &vcpu, &exit_reason) => {}
                 AxVCpuExitReason::Hypercall { nr, args } => {
                     debug!("Hypercall [{nr}] args {args:x?}");
                     use crate::vmm::hvc::HyperCall;
@@ -441,40 +442,6 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                          {hardware_entry_failure_reason}"
                     );
                 }
-                AxVCpuExitReason::ExternalInterrupt { vector } => {
-                    debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
-
-                    // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
-                    axvisor_api::irq::handle_irq(vector as usize);
-                    super::timer::check_events();
-                    #[cfg(target_arch = "x86_64")]
-                    super::devices::x86::forward_passthrough_irq_from_vmexit(
-                        &vm,
-                        &vcpu,
-                        vector as usize,
-                    );
-                    #[cfg(target_arch = "x86_64")]
-                    super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
-                    #[cfg(target_arch = "riscv64")]
-                    {
-                        vcpu.get_arch_vcpu().latch_hvip_from_hw();
-                    }
-                }
-                AxVCpuExitReason::PreemptionTimer => {
-                    super::timer::check_events();
-                    #[cfg(target_arch = "x86_64")]
-                    super::devices::x86::inject_due_pit_irq0(&vm, &vcpu);
-                    #[cfg(target_arch = "x86_64")]
-                    super::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
-                }
-                AxVCpuExitReason::InterruptEnd { vector: _vector } => {
-                    #[cfg(target_arch = "x86_64")]
-                    if let Some(vector) = _vector {
-                        super::devices::x86::inject_pending_ioapic_irq_after_eoi(
-                            &vm, &vcpu, vector,
-                        );
-                    }
-                }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
                     #[cfg(target_arch = "x86_64")]
@@ -484,7 +451,6 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                     #[cfg(not(target_arch = "x86_64"))]
                     wait(vm_id)
                 }
-                AxVCpuExitReason::Nothing => {}
                 AxVCpuExitReason::CpuDown { _state } => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
                     wait(vm_id)
@@ -618,4 +584,45 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+pub(crate) fn handle_internal_exit(
+    vm: &VMRef,
+    vcpu: &VCpuRef,
+    exit_reason: &AxVCpuExitReason,
+) -> bool {
+    match *exit_reason {
+        AxVCpuExitReason::ExternalInterrupt { vector } => {
+            debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
+            // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
+            axvisor_api::irq::handle_irq(vector as usize);
+            super::timer::check_events();
+            #[cfg(target_arch = "x86_64")]
+            super::devices::x86::forward_passthrough_irq_from_vmexit(vm, vcpu, vector as usize);
+            #[cfg(target_arch = "x86_64")]
+            super::devices::x86::inject_pending_serial_irq(vm, vcpu);
+            #[cfg(target_arch = "riscv64")]
+            {
+                vcpu.get_arch_vcpu().latch_hvip_from_hw();
+            }
+            true
+        }
+        AxVCpuExitReason::PreemptionTimer => {
+            super::timer::check_events();
+            #[cfg(target_arch = "x86_64")]
+            super::devices::x86::inject_due_pit_irq0(vm, vcpu);
+            #[cfg(target_arch = "x86_64")]
+            super::devices::x86::inject_pending_serial_irq(vm, vcpu);
+            true
+        }
+        AxVCpuExitReason::InterruptEnd { vector } => {
+            #[cfg(target_arch = "x86_64")]
+            if let Some(vector) = vector {
+                super::devices::x86::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
+            }
+            true
+        }
+        AxVCpuExitReason::Nothing => true,
+        _ => false,
+    }
 }

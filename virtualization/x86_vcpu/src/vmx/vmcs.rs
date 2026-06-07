@@ -793,31 +793,29 @@ pub fn update_efer() -> AxResult {
 
     let efer = VmcsGuest64::IA32_EFER.read()?;
     let mut guest_efer = EferFlags::from_bits_truncate(efer);
-
-    if guest_efer.contains(EferFlags::LONG_MODE_ENABLE)
-        && guest_efer.contains(EferFlags::LONG_MODE_ACTIVE)
-    {
-        // debug!("Guest IA32_EFER LONG_MODE_ACTIVE is set, just return");
-        return Ok(());
-    }
-
-    guest_efer.set(EferFlags::LONG_MODE_ACTIVE, true);
-
-    // debug!(
-    //     "Guest IA32_EFER from {:?} update to {:?}",
-    //     EferFlags::from_bits_truncate(efer),
-    //     guest_efer
-    // );
+    let cr0 = VmcsGuestNW::CR0.read()?;
+    let long_mode_active = guest_efer.contains(EferFlags::LONG_MODE_ENABLE)
+        && cr0 & x86_64::registers::control::Cr0Flags::PAGING.bits() as usize != 0;
+    guest_efer.set(EferFlags::LONG_MODE_ACTIVE, long_mode_active);
 
     VmcsGuest64::IA32_EFER.write(guest_efer.bits())?;
 
     use controls::EntryControls as EntryCtrl;
+    let ia32e_mode_guest = (EntryCtrl::IA32E_MODE_GUEST).bits();
     set_control(
         VmcsControl32::VMENTRY_CONTROLS,
         Msr::IA32_VMX_TRUE_ENTRY_CTLS,
         VmcsControl32::VMENTRY_CONTROLS.read()?,
-        (EntryCtrl::IA32E_MODE_GUEST).bits(),
-        0,
+        if long_mode_active {
+            ia32e_mode_guest
+        } else {
+            0
+        },
+        if long_mode_active {
+            0
+        } else {
+            ia32e_mode_guest
+        },
     )?;
 
     Ok(())

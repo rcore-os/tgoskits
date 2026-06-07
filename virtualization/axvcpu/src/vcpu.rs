@@ -316,6 +316,26 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.get_arch_vcpu().set_arch_reg(reg_id, value)
     }
 
+    /// Writes the KVM-compatible general register state into `buf`.
+    pub fn get_kvm_regs(&self, buf: &mut [u8]) -> AxResult {
+        self.get_arch_vcpu().get_kvm_regs(buf)
+    }
+
+    /// Reads the KVM-compatible general register state from `buf`.
+    pub fn set_kvm_regs(&self, buf: &[u8]) -> AxResult {
+        self.get_arch_vcpu().set_kvm_regs(buf)
+    }
+
+    /// Writes the KVM-compatible special register state into `buf`.
+    pub fn get_kvm_sregs(&self, buf: &mut [u8]) -> AxResult {
+        self.get_arch_vcpu().get_kvm_sregs(buf)
+    }
+
+    /// Reads the KVM-compatible special register state from `buf`.
+    pub fn set_kvm_sregs(&self, buf: &[u8]) -> AxResult {
+        self.get_arch_vcpu().set_kvm_sregs(buf)
+    }
+
     /// Inject an interrupt to the VCpu.
     pub fn inject_interrupt(&self, vector: usize) -> AxResult {
         self.get_arch_vcpu().inject_interrupt(vector)
