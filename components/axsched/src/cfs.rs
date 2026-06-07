@@ -198,7 +198,7 @@ impl<T> BaseScheduler for CFScheduler<T> {
             .ready_queue
             .iter()
             .find(|(_, task)| !task.is_throttled())
-            .map(|(k, _)| k.clone());
+            .map(|(k, _)| *k);
         key_to_take.and_then(|key| self.ready_queue.remove(&key))
     }
 

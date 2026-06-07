@@ -1037,12 +1037,19 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || {
-                Ok(b"0::/
-"
-                .to_vec())
-            })
-            .into(),
+            "cgroup" => {
+                let proc_data = task.as_thread().proc_data.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let cgroup = proc_data.cgroup.read();
+                    Ok(format!(
+                        "0::{}
+",
+                        cgroup.path
+                    )
+                    .into_bytes())
+                })
+                .into()
+            }
             _ => return Err(VfsError::NotFound),
         })
     }

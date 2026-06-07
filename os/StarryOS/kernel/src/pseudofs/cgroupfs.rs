@@ -83,51 +83,47 @@ impl SimpleDirOps for CgroupDirOps {
                             Ok(Some(buf))
                         }
                         SimpleFileOperation::Write(data) => {
-                            let s = core::str::from_utf8(data).unwrap_or("");
-                            for line in s.lines() {
-                                let trimmed = line.trim();
-                                if trimmed.is_empty() {
-                                    continue;
-                                }
-                                let pid: u32 = trimmed.parse().map_err(|_| {
-                                    axfs_ng_vfs::VfsError::from(ax_errno::LinuxError::EINVAL)
-                                })?;
-                                if pid == 0 {
+                            // Validate input: reject empty, non-numeric, pid=0
+                            let trimmed = core::str::from_utf8(data).unwrap_or("").trim();
+                            if trimmed.is_empty() {
+                                return Err(axfs_ng_vfs::VfsError::from(
+                                    ax_errno::LinuxError::EINVAL,
+                                ));
+                            }
+                            if !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+                                return Err(axfs_ng_vfs::VfsError::from(
+                                    ax_errno::LinuxError::EINVAL,
+                                ));
+                            }
+                            let pid: u32 = match trimmed.parse() {
+                                Ok(0) => {
                                     return Err(axfs_ng_vfs::VfsError::from(
                                         ax_errno::LinuxError::EINVAL,
                                     ));
                                 }
-                                // Get process data — return ESRCH if PID not found
-                                let pd = crate::task::get_process_data(pid as _).map_err(|_| {
-                                    axfs_ng_vfs::VfsError::from(ax_errno::LinuxError::ESRCH)
-                                })?;
-                                let old_cgroup = pd.cgroup.read().clone();
-                                // Skip if already in this cgroup
-                                if old_cgroup.path == n.path {
-                                    continue;
-                                }
-                                // Check pids.max limit before migration (atomic CAS)
-                                if !n.pids.try_fork() {
+                                Ok(p) => p,
+                                Err(_) => {
                                     return Err(axfs_ng_vfs::VfsError::from(
-                                        ax_errno::LinuxError::EAGAIN,
+                                        ax_errno::LinuxError::EINVAL,
                                     ));
                                 }
-                                // Remove from old cgroup
-                                {
-                                    let mut old_procs = old_cgroup.procs.lock();
-                                    if let Some(pos) = old_procs.iter().position(|&p| p == pid) {
-                                        old_procs.swap_remove(pos);
-                                    }
-                                }
+                            };
+                            // Check process exists
+                            let pd = crate::task::get_process_data(pid as _).map_err(|_| {
+                                axfs_ng_vfs::VfsError::from(ax_errno::LinuxError::ESRCH)
+                            })?;
+                            // Migrate process to this cgroup
+                            let old_cgroup = pd.cgroup.read().clone();
+                            if old_cgroup.path != n.path {
+                                old_cgroup.procs.lock().retain(|&p| p != pid);
                                 old_cgroup.pids.exit();
-                                // Add to new cgroup (already counted by try_fork)
-                                {
-                                    let mut procs = n.procs.lock();
-                                    if !procs.contains(&pid) {
-                                        procs.push(pid);
-                                    }
+                                let mut procs = n.procs.lock();
+                                if !procs.contains(&pid) {
+                                    procs.push(pid);
                                 }
-                                // Update process cgroup reference
+                                n.pids
+                                    .current
+                                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                                 *pd.cgroup.write() = n.clone();
                             }
                             Ok(None)

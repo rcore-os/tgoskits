@@ -21,6 +21,7 @@ impl PidsState {
     }
 
     /// Check if a new process can be created.
+    #[allow(dead_code)]
     pub fn can_fork(&self) -> bool {
         let max = self.max.load(Ordering::Relaxed);
         if max < 0 {

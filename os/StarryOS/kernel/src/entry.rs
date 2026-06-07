@@ -82,6 +82,7 @@ pub fn init(args: &[String], envs: &[String]) {
     // Register init process in cgroup root
     if let Some(root) = crate::cgroup::GLOBAL_CGROUP_ROOT.get() {
         root.procs.lock().push(pid as u32);
+        root.pids.fork();
     }
 
     {

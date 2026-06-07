@@ -81,8 +81,6 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
 pub fn mount_all() -> LinuxResult<()> {
     info!("Initialize pseudofs...");
 
-    crate::cgroup::init();
-
     let fs = FS_CONTEXT.lock();
     mount_at(&fs, "/dev", dev::new_devfs())?;
     #[cfg(feature = "plat-dyn")]
@@ -100,6 +98,7 @@ pub fn mount_all() -> LinuxResult<()> {
 
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
 
+    crate::cgroup::init();
     mount_at(&fs, "/cgroup", cgroupfs::new_cgroupfs())?;
     #[cfg(feature = "plat-dyn")]
     mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
