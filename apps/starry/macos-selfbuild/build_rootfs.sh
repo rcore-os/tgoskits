@@ -36,7 +36,7 @@ guest payload under target/, and injects it into the rootfs.
 Environment:
   ROOTFS_PAYLOAD       Local payload tarball to inject
   ROOTFS_PAYLOAD_URL   Payload URL to download and inject
-  ALPINE_BRANCH        Alpine branch for APK payloads (default: edge)
+  ALPINE_BRANCH        Alpine branch for APK payloads (default: v3.23)
   ALPINE_MIRROR        Alpine mirror URL
   RUST_DIST_SERVER     Rust dist server URL (default: https://static.rust-lang.org)
   STARRY_CARGO_REGISTRY_INDEX
@@ -44,7 +44,7 @@ Environment:
   RUST_TOOLCHAIN       Rust toolchain date/name (default: nightly-2026-05-28)
   BUILD_TARGET         Guest Cargo target to prefetch (default: aarch64-unknown-none-softfloat)
   DOCKER_IMAGE     Maintainer-only Alpine image for --build-payload-with-docker
-                   (default: alpine:edge)
+                   (default: alpine:v3.23)
   ROOTFS_SIZE_MB   Size of the toolchain image after resize (default: 16384)
   DEBUGFS          Path to debugfs
   E2FSCK           Path to e2fsck
@@ -60,13 +60,13 @@ rust_nightly_dir="${RUST_NIGHTLY_DIR:-}"
 rust_toolchain="${RUST_TOOLCHAIN:-nightly-2026-05-28}"
 rootfs_payload="${ROOTFS_PAYLOAD:-}"
 rootfs_payload_url="${ROOTFS_PAYLOAD_URL:-}"
-alpine_branch="${ALPINE_BRANCH:-edge}"
+alpine_branch="${ALPINE_BRANCH:-v3.23}"
 alpine_arch="${ALPINE_ARCH:-aarch64}"
 alpine_mirror="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 rust_dist_server="${RUST_DIST_SERVER:-https://static.rust-lang.org}"
 cargo_registry_index="${STARRY_CARGO_REGISTRY_INDEX:-${CARGO_REGISTRY_INDEX:-}}"
 guest_target="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
-docker_image="${DOCKER_IMAGE:-alpine:edge}"
+docker_image="${DOCKER_IMAGE:-alpine:v3.23}"
 rootfs_size_mb="${ROOTFS_SIZE_MB:-16384}"
 build_payload_with_docker=0
 
@@ -269,8 +269,10 @@ extract_payload() {
     fi
 }
 
-apk_cache_dir="$work_dir/apk-cache"
-rust_dist_dir="$work_dir/rust-dist"
+cache_alpine_branch="${alpine_branch//\//_}"
+cache_rust_toolchain="${rust_toolchain//\//_}"
+apk_cache_dir="$work_dir/apk-cache-${cache_alpine_branch}-${alpine_arch}"
+rust_dist_dir="$work_dir/rust-dist-${cache_rust_toolchain}"
 cargo_home_dir="$work_dir/cargo-home"
 prefetch_source_dir="$work_dir/prefetch-source"
 extra_fetch_dir="$work_dir/extra-fetch"
@@ -396,7 +398,7 @@ build_native_payload() {
         pkgconf
         build-base
         clang
-        clang22-libclang
+        clang-libclang
         lld
         llvm
         rust
@@ -756,7 +758,7 @@ if [[ "$build_payload_with_docker" = "1" ]]; then
 
         apk_add \
             bash ca-certificates coreutils curl findutils grep sed gawk tar xz git make cmake pkgconf \
-            build-base clang clang22-libclang lld llvm rust cargo rust-src
+            build-base clang clang-libclang lld llvm rust cargo rust-src
         update-ca-certificates
 
         mkdir -p /payload/usr /payload/lib /payload/root/.cargo /payload/opt

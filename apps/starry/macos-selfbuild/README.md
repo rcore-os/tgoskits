@@ -77,6 +77,11 @@ runs `cargo fetch` on the host to populate the guest offline cache. The
 `cargo fetch` phase may print only `Updating crates.io index` for several
 minutes while the sparse registry cache is being populated.
 
+For reproducibility, the default native rootfs payload is pinned to Alpine
+`v3.23` and Rust `nightly-2026-05-28`. Do not switch `ALPINE_BRANCH=edge` for
+the graded reproduction: Alpine edge currently provides a newer Cargo/Rust
+package set and can change the build-std schedule substantially.
+
 The expected output ends with:
 
 ```text
@@ -124,7 +129,6 @@ ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
 SMP=8 \
 JOBS=8 \
 RAYON_NUM_THREADS=1 \
-RUSTC_THREADS=2 \
 SOURCE_TMPFS=1 \
 QEMU_TIMEOUT_SEC=10800 \
 apps/starry/macos-selfbuild/run_selfbuild.sh
@@ -133,7 +137,7 @@ apps/starry/macos-selfbuild/run_selfbuild.sh
 A successful run prints:
 
 ```text
-===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~318===
+===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~318 rustc_threads=default===
 ===STARRY-MACOS-SELFBUILD-PASS jobs=8 elapsed=<seconds>===
 ===STARRY-MACOS-SELFBUILD-RUN-END rc=0===
 ```
@@ -141,7 +145,7 @@ A successful run prints:
 The fast reproducible profile should show:
 
 ```text
-rustc_threads=2
+rustc_threads=
 features=ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp
 ```
 
@@ -225,7 +229,7 @@ QEMU, and the guest checks it again when `TGOSKITS_COMMIT` is supplied.
 | `SMP` | `8` | QEMU vCPU count, passed to `-smp`. |
 | `JOBS` | `SMP` | Guest Cargo job count. |
 | `RAYON_NUM_THREADS` | `1` | Rayon worker limit for guest build scripts. |
-| `RUSTC_THREADS` | `2` | Passed as guest `-Zthreads=<N>`; local best used `2`. |
+| `RUSTC_THREADS` | empty | Optional guest `-Zthreads=<N>` override for local experiments. |
 | `SOURCE_TMPFS` | `1` | Copy source into `/tmp` before building. |
 | `QEMU_TIMEOUT_SEC` | `7200` | Host timeout; use `0` to disable. |
 | `QEMU_ACCEL` | `hvf` | QEMU accelerator string. |
@@ -238,6 +242,7 @@ QEMU, and the guest checks it again when `TGOSKITS_COMMIT` is supplied.
 | `FEATURES` | `ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp` | Feature-slim StarryOS build used by the fast reproducible self-build. |
 | `REQUIRE_FRESH_ROOTFS` | `1` | Refuse a rootfs whose embedded source commit does not match the checkout. |
 | `ALLOW_SLOW_SELFBUILD` | `0` | Permit the slow full-device feature profile only for explicit experiments. |
+| `GUEST_MONITOR_INTERVAL_SEC` | `60` | Print guest `ps` snapshots while Cargo runs; set `0` to disable. |
 | `EXTRA_RUSTFLAGS` | empty | Extra guest Rust flags for local experiments. |
 
 ## Rootfs Rebuild Details

@@ -4,7 +4,7 @@ set -eu
 marker="${MARKER:-STARRY-MACOS-SELFBUILD}"
 jobs="${JOBS:-8}"
 rayon_threads="${RAYON_NUM_THREADS:-1}"
-rustc_threads="${RUSTC_THREADS:-2}"
+rustc_threads="${RUSTC_THREADS:-}"
 cargo_bin="${CARGO_BIN:-/usr/bin/cargo}"
 source_dir="${SOURCE_DIR:-/opt/tgoskits}"
 work_dir="${WORK_DIR:-/tmp/starryos-selfbuild-src}"
@@ -21,17 +21,12 @@ build_std="${BUILD_STD:-core,alloc,compiler_builtins}"
 features="${FEATURES:-ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp}"
 no_default_features="${NO_DEFAULT_FEATURES:-0}"
 allow_slow_selfbuild="${ALLOW_SLOW_SELFBUILD:-0}"
+guest_monitor_interval="${GUEST_MONITOR_INTERVAL_SEC:-60}"
 
 assert_fast_profile() {
     if [ "$allow_slow_selfbuild" = "1" ]; then
         echo "===${marker}-SLOW-PROFILE-ALLOWED==="
         return
-    fi
-
-    if [ "$rustc_threads" != "2" ]; then
-        echo "===${marker}-FAST-PROFILE-ERROR rustc_threads=${rustc_threads} expected=2==="
-        echo "Set RUSTC_THREADS=2 for the reproducible fast profile, or ALLOW_SLOW_SELFBUILD=1 for experiments."
-        finish_guest 2
     fi
 
     case ",${features}," in
@@ -43,7 +38,7 @@ assert_fast_profile() {
             ;;
     esac
 
-    echo "===${marker}-FAST-PROFILE expected_crates~318==="
+    echo "===${marker}-FAST-PROFILE expected_crates~318 rustc_threads=${rustc_threads:-default}==="
 }
 
 finish_guest() {
@@ -141,6 +136,7 @@ if [ "$source_tmpfs" = "1" ]; then
     done
     if [ -f "${work_dir}/.cargo/config.toml" ]; then
         sed -i "s#${source_dir}/vendor#${work_dir}/vendor#g" "${work_dir}/.cargo/config.toml" || true
+        sed -i '/^include[[:space:]]*=/d' "${work_dir}/.cargo/config.toml" || true
     fi
     echo "===${marker}-SOURCE-COPY-END==="
     cd "$work_dir"
@@ -182,6 +178,7 @@ echo "build_target=${build_target}"
 echo "build_std=${build_std}"
 echo "features=${features}"
 echo "allow_slow_selfbuild=${allow_slow_selfbuild}"
+echo "guest_monitor_interval_sec=${guest_monitor_interval}"
 echo "source_dir=${source_dir}"
 echo "target_dir=${target_dir}"
 echo "work_dir=$(pwd)"
@@ -224,8 +221,30 @@ start="$(date +%s)"
 echo "===${marker}-START jobs=${jobs} start=${start}==="
 
 set +e
-"$@"
+cargo_pid=""
+monitor_pid=""
+
+"$@" &
+cargo_pid="$!"
+
+if [ "$guest_monitor_interval" != "0" ]; then
+    (
+        while kill -0 "$cargo_pid" 2>/dev/null; do
+            echo "===${marker}-GUEST-PROCS timestamp=$(date +%s) cargo_pid=${cargo_pid}==="
+            ps -ef 2>/dev/null || ps 2>/dev/null || true
+            echo "===${marker}-GUEST-PROCS-END==="
+            sleep "$guest_monitor_interval"
+        done
+    ) &
+    monitor_pid="$!"
+fi
+
+wait "$cargo_pid"
 rc="$?"
+if [ -n "$monitor_pid" ]; then
+    kill "$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+fi
 set -e
 
 end="$(date +%s)"

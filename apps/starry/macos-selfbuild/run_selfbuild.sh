@@ -185,7 +185,7 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "JOBS" "$jobs"
     emit_export "SMP" "$smp"
     emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
-    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-2}"
+    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-}"
     emit_export "SOURCE_TMPFS" "$source_tmpfs"
     emit_export "PROFILE" "${PROFILE:-release}"
     emit_export "BUILD_TARGET" "${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
@@ -204,6 +204,7 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
     emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
     emit_export "ALLOW_SLOW_SELFBUILD" "${ALLOW_SLOW_SELFBUILD:-0}"
+    emit_export "GUEST_MONITOR_INTERVAL_SEC" "${GUEST_MONITOR_INTERVAL_SEC:-60}"
     emit_export "TGOSKITS_COMMIT" "$source_commit"
     emit_export "TGOSKITS_REF" "$source_ref"
     if [[ -n "${EXTRA_RUSTFLAGS:-}" ]]; then
@@ -272,9 +273,9 @@ check_crate_count_guard() {
     fi
 
     line="$(
-        LC_ALL=C grep -a -E 'Building \[[^]]*\][[:space:]]+[0-9]+/[0-9]+' "$log" \
-            | tail -1 \
-            | tr -d '\r'
+        LC_ALL=C tr '\r' '\n' <"$log" \
+            | grep -a -E 'Building \[[^]]*\][[:space:]]+[0-9]+/[0-9]+' \
+            | tail -1
     )"
     [[ -n "$line" ]] || return 0
 
@@ -339,9 +340,9 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
 
     if (( heartbeat_sec > 0 && elapsed >= next_heartbeat )); then
         heartbeat_line="$(
-            LC_ALL=C grep -a -E '===STARRY-MACOS-SELFBUILD|Building \[|Compiling|Finished|error:' "$log" \
+            LC_ALL=C tr '\r' '\n' <"$log" \
+                | grep -a -E '===STARRY-MACOS-SELFBUILD|Building \[|Compiling|Finished|error:' \
                 | tail -1 \
-                | tr -d '\r' \
                 | cut -c 1-220
         )"
         echo "host-heartbeat elapsed=${elapsed}s qemu_pid=$qemu_pid ${heartbeat_line:-waiting-for-guest-output}"
