@@ -299,7 +299,7 @@ impl FileLike for IoUring {
         "anon_inode:[io_uring]".into()
     }
 
-    fn device_mmap(&self, offset: u64) -> AxResult<DeviceMmap> {
+    fn device_mmap(&self, offset: u64, _length: u64) -> AxResult<DeviceMmap> {
         self.rings.mmap_region(offset)
     }
 }
