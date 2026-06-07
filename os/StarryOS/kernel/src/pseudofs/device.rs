@@ -23,6 +23,11 @@ pub enum DeviceMmap {
     /// [`LinearBackend`] so userspace can't observe freed memory if
     /// the device drops the buffer before munmap.
     Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an already offset-resolved physical address range.
+    ///
+    /// This is for file descriptors whose mmap offset is a selector rather than
+    /// a byte offset into a linear device, such as io_uring ring offsets.
+    PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
 }

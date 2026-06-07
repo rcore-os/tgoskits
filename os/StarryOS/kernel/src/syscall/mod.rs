@@ -322,6 +322,21 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg5(),
         ),
         Sysno::io_cancel => sys_io_cancel(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::io_uring_setup => sys_io_uring_setup(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::io_uring_enter => sys_io_uring_enter(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4(),
+            uctx.arg5(),
+        ),
+        Sysno::io_uring_register => sys_io_uring_register(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2(),
+            uctx.arg3() as _,
+        ),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -844,7 +859,6 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // dummy fds
         Sysno::userfaultfd
-        | Sysno::io_uring_setup
         | Sysno::fsopen
         | Sysno::fspick
         | Sysno::open_tree

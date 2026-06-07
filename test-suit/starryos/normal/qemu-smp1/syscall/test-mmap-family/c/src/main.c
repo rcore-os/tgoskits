@@ -27,6 +27,9 @@
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE 0x100000
 #endif
+#ifndef MAP_SHARED_VALIDATE
+#define MAP_SHARED_VALIDATE 0x03
+#endif
 
 /* mmap 失败 → MAP_FAILED + errno 期望值 */
 #define CHECK_MMAP_ERR(call, exp_errno, msg) do {                       \
@@ -339,6 +342,31 @@ int main(void)
     }
 
     /* ===================== 文件背景 mmap ===================== */
+
+    /* File-backed MAP_SHARED_VALIDATE should be accepted as a shared mapping. */
+    {
+        const char *path = "/tmp/mmap_family_shared_validate";
+        const char data[] = "shared validate";
+        size_t dlen = sizeof(data) - 1;
+
+        int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open /tmp/mmap_family_shared_validate O_RDWR");
+        if (fd >= 0) {
+            CHECK(write(fd, data, dlen) == (ssize_t)dlen,
+                  "write MAP_SHARED_VALIDATE fixture");
+            CHECK_RET(ftruncate(fd, ps), 0, "ftruncate MAP_SHARED_VALIDATE fixture");
+
+            void *vp = mmap(NULL, ps, PROT_READ, MAP_SHARED_VALIDATE, fd, 0);
+            CHECK(vp != MAP_FAILED, "mmap file-backed MAP_SHARED_VALIDATE");
+            if (vp != MAP_FAILED) {
+                CHECK(memcmp(vp, data, dlen) == 0,
+                      "MAP_SHARED_VALIDATE mapping reads file data");
+                munmap(vp, ps);
+            }
+            close(fd);
+            unlink(path);
+        }
+    }
 
     /* 文件背景 MAP_PRIVATE + PROT_READ：通过映射读文件内容 */
     {

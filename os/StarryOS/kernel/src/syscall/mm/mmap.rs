@@ -138,10 +138,10 @@ pub fn sys_mmap(
     if map_flags.contains(MmapFlags::SYNC) {
         return Err(AxError::OperationNotSupported);
     }
-    // MAP_SHARED_VALIDATE has type bits 0x03. Accept it for feature probing,
-    // then run it through the same mapping path as MAP_SHARED.
+    let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     let map_type = match flags & MmapFlags::TYPE.bits() {
-        MAP_SHARED | MAP_SHARED_VALIDATE => MmapFlags::SHARED,
+        MAP_SHARED => MmapFlags::SHARED,
+        MAP_SHARED_VALIDATE if !anonymous => MmapFlags::SHARED,
         MAP_PRIVATE => MmapFlags::PRIVATE,
         _ => return Err(AxError::InvalidInput),
     };
@@ -149,7 +149,6 @@ pub fn sys_mmap(
     if !PageSize::Size4K.is_aligned(offset) {
         return Err(AxError::InvalidInput);
     }
-    let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     if !anonymous && fd < 0 {
         return Err(AxError::BadFileDescriptor);
     }
@@ -215,7 +214,9 @@ pub fn sys_mmap(
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    Ok(DeviceMmap::Physical(..)) | Ok(DeviceMmap::Cache(_)) => false,
+                    Ok(DeviceMmap::Physical(..))
+                    | Ok(DeviceMmap::PhysicalResolved(..))
+                    | Ok(DeviceMmap::Cache(_)) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
             }
@@ -335,6 +336,21 @@ pub fn sys_mmap(
                             None => Backend::new_linear(start, pa_va_offset, true),
                         }
                     }
+                    Ok(DeviceMmap::PhysicalResolved(range, retain)) => {
+                        mapping_flags |= MappingFlags::UNCACHED;
+                        if range.is_empty() {
+                            return Err(AxError::InvalidInput);
+                        }
+                        length = length.min(range.size().align_down(page_size));
+                        let pa_va_offset =
+                            start.as_usize() as isize - range.start.as_usize() as isize;
+                        match retain {
+                            Some(retain) => {
+                                Backend::new_linear_anchored(start, pa_va_offset, true, retain)
+                            }
+                            None => Backend::new_linear(start, pa_va_offset, true),
+                        }
+                    }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
@@ -374,6 +390,25 @@ pub fn sys_mmap(
                                         return Err(AxError::NoSuchDevice);
                                     }
                                     DeviceMmap::Physical(range, retain) => {
+                                        mapping_flags |= MappingFlags::UNCACHED;
+                                        if range.is_empty() {
+                                            return Err(AxError::InvalidInput);
+                                        }
+                                        length =
+                                            capped_device_map_len(length, range.size(), page_size);
+                                        let pa_va_offset = start.as_usize() as isize
+                                            - range.start.as_usize() as isize;
+                                        match retain {
+                                            Some(retain) => Backend::new_linear_anchored(
+                                                start,
+                                                pa_va_offset,
+                                                true,
+                                                retain,
+                                            ),
+                                            None => Backend::new_linear(start, pa_va_offset, true),
+                                        }
+                                    }
+                                    DeviceMmap::PhysicalResolved(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
                                             return Err(AxError::InvalidInput);
