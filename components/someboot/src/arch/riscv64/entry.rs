@@ -15,8 +15,10 @@ pub unsafe extern "C" fn _head() -> ! {
     naked_asm!(
         ".option push",
         ".option norvc",
-        // code0/code1
-        "j {kernel_entry}",
+        // code0/code1: use lla+jr instead of j to avoid R_RISCV_JAL
+        // range limit (±1MB); lla expands to auipc+addi with ±2GB reach
+        "lla t0, {kernel_entry}",
+        "jr t0",
         "nop",
         ".option pop",
         // text_offset
