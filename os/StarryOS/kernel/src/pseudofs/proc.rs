@@ -660,27 +660,24 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
     let aspace_arc = task.as_thread().proc_data.aspace();
     let mm = aspace_arc.lock();
 
-    let area_count = mm.areas().count();
-    warn!("render_thread_maps: {} areas", area_count);
-
-    for (idx, area) in mm.areas().enumerate() {
+    for area in mm.areas() {
         let start = area.start();
         let end = area.end();
         let backend = area.backend();
-        warn!(
-            "  area[{}]: {:#x}-{:#x} flags={:?}",
-            idx,
-            start.as_usize(),
-            end.as_usize(),
-            area.flags()
-        );
+        let bi = backend.file_info().unwrap_or_else(|_| BackendFileInfo {
+            path: String::new(),
+            offset: None,
+            inode: None,
+            dev: None,
+            shared: false,
+        });
         let BackendFileInfo {
             path,
             offset: file_offset,
             inode,
             dev,
             shared: is_shared,
-        } = backend.file_info()?;
+        } = bi;
 
         let flag_end = if is_shared { 's' } else { 'p' };
         let flags = area.flags();
