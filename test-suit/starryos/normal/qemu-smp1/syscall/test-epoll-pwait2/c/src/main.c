@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/syscall.h>
 #include <time.h>
@@ -286,6 +287,54 @@ static void test_sigmask_effect_and_eintr(void)
     close(epfd);
 }
 
+/* 回归: epoll_pwait2 把就绪事件写出到一个"有效但未按 alignof(epoll_event)
+ * 对齐"的用户缓冲时不应返回 EFAULT。Go 的 []syscall.EpollEvent 仅按 4 字节
+ * 对齐, 而 starry 曾对用户指针强制 8 字节对齐 → epoll_pwait 在 riscv64/
+ * loongarch64/aarch64 上误返 EFAULT。Linux copy_to_user 是逐字节的, 任何
+ * 有效地址都能写。这里用一个 8 对齐缓冲 +4 偏移构造 4-对齐-非-8 的指针
+ * (与 Go 的内存布局同形), 经 memcpy 读回事件以隔离纯内核 copy-out 行为。*/
+static void test_misaligned_events_buffer(void)
+{
+    int epfd = epoll_create1(0);
+    CHECK(epfd >= 0, "epoll_create1 ok (misaligned events buffer)");
+    if (epfd < 0) {
+        return;
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        CHECK(0, "pipe created (misaligned events buffer)");
+        close(epfd);
+        return;
+    }
+
+    struct epoll_event ev = {
+        .events = EPOLLIN,
+        .data = {.fd = pipefd[0]},
+    };
+    CHECK_RET(epoll_ctl(epfd, EPOLL_CTL_ADD, pipefd[0], &ev), 0,
+              "epoll_ctl ADD (misaligned events buffer)");
+    CHECK_RET(write(pipefd[1], "X", 1), 1, "write one byte (misaligned events buffer)");
+
+    _Alignas(8) unsigned char raw[4 + sizeof(struct epoll_event) * 4];
+    struct epoll_event *out = (struct epoll_event *)(void *)(raw + 4);
+    CHECK(((uintptr_t)out & 7u) == 4u,
+          "events buffer is 4-byte-aligned but not 8 (Go []EpollEvent layout)");
+
+    long n = raw_epoll_pwait2(epfd, out, 4, NULL, NULL, KERNEL_SIGSET_SIZE);
+    CHECK(n == 1,
+          "epoll_pwait2 to 4-aligned (non-8) events buffer returns 1, not EFAULT");
+
+    struct epoll_event got;
+    memcpy(&got, raw + 4, sizeof(got));
+    CHECK((got.events & EPOLLIN) != 0 && got.data.fd == pipefd[0],
+          "event content from misaligned buffer is correct");
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+    close(epfd);
+}
+
 int main(void)
 {
     TEST_START("epoll_pwait2 Linux semantics");
@@ -297,6 +346,7 @@ int main(void)
     test_timeout_monotonic_duration();
     test_maxevents_boundary();
     test_sigmask_effect_and_eintr();
+    test_misaligned_events_buffer();
 
     TEST_DONE();
 }
