@@ -6,12 +6,12 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq;
 use ax_task::{
     current,
     future::{block_on, poll_io},
 };
 use axpoll::{IoEvents, PollSet, Pollable};
-use spin::RwLock;
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};
 
@@ -80,7 +80,9 @@ impl SignalfdSiginfo {
 }
 
 pub struct Signalfd {
-    mask: RwLock<SignalSet>,
+    // SignalSet is a single Copy bitset, so a short project-visible spin lock
+    // is enough for now. Revisit this when a lockdep-aware project RwLock exists.
+    mask: SpinNoIrq<SignalSet>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -88,19 +90,21 @@ pub struct Signalfd {
 impl Signalfd {
     pub fn new(mask: SignalSet) -> Arc<Self> {
         Arc::new(Self {
-            mask: RwLock::new(mask),
+            mask: SpinNoIrq::new(mask),
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
         })
     }
 
     pub fn update_mask(&self, mask: SignalSet) {
-        *self.mask.write() = mask;
+        {
+            *self.mask.lock() = mask;
+        }
         self.poll_rx.wake();
     }
 
     fn mask(&self) -> SignalSet {
-        *self.mask.read()
+        *self.mask.lock()
     }
 
     /// Check if there are any pending signals matching the mask

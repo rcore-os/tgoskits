@@ -16,13 +16,11 @@ use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err};
-use axvisor_api::{
-    time::{self, register_timer},
-    vmm::{VCpuId, VMId, inject_interrupt},
-};
+use axvm_types::{VCpuId, VMId};
 
 use crate::{
     consts::RESET_LVT_REG,
+    host,
     regs::lvt::{
         LVT_TIMER::{self, TimerMode::Value as TimerMode},
         LvtTimerRegisterLocal,
@@ -188,7 +186,7 @@ impl ApicTimer {
             return 0;
         }
         let mut deadline_ns = self.shared.deadline_ns.load(Ordering::Acquire);
-        let now_ns = time::current_time_nanos();
+        let now_ns = host::current_time_nanos();
         if now_ns >= deadline_ns {
             if !self.is_periodic() {
                 return 0;
@@ -244,7 +242,7 @@ impl ApicTimer {
             return ax_err!(BadState, "Timer already started");
         }
 
-        let current_ns = time::current_time_nanos();
+        let current_ns = host::current_time_nanos();
         let interval_ticks = (self.initial_count_register as u64) << self.divide_shift;
         let interval_ns = interval_ticks / APIC_TIMER_TICKS_PER_NANO;
         let deadline_ns = current_ns + interval_ns;
@@ -266,7 +264,7 @@ impl ApicTimer {
             .store(self.deadline_ns, Ordering::Release);
 
         self.cancel_token = Some(schedule_apic_timer(
-            time::current_time() + core::time::Duration::from_nanos(interval_ns),
+            host::current_time() + core::time::Duration::from_nanos(interval_ns),
             Arc::clone(&self.shared),
             generation,
             vm_id,
@@ -285,7 +283,7 @@ impl ApicTimer {
         self.shared.deadline_ns.store(0, Ordering::Release);
 
         if let Some(token) = self.cancel_token.take() {
-            time::cancel_timer(token);
+            host::cancel_timer(token);
         }
 
         Ok(())
@@ -298,6 +296,12 @@ impl ApicTimer {
 
     fn next_generation(&self) -> usize {
         self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn invalidate_timer(&self) {
+        self.next_generation();
+        self.shared.interval_ns.store(0, Ordering::Release);
+        self.shared.deadline_ns.store(0, Ordering::Release);
     }
 
     // /// Set LVT Timer Register.
@@ -342,14 +346,20 @@ impl ApicTimer {
     // }
 }
 
+impl Drop for ApicTimer {
+    fn drop(&mut self) {
+        self.invalidate_timer();
+    }
+}
+
 fn schedule_apic_timer(
-    deadline: time::TimeValue,
+    deadline: core::time::Duration,
     shared: Arc<ApicTimerShared>,
     generation: usize,
     vm_id: VMId,
     vcpu_id: VCpuId,
 ) -> usize {
-    register_timer(
+    host::register_timer(
         deadline,
         Box::new(move |_| {
             if shared.generation.load(Ordering::Acquire) != generation {
@@ -366,7 +376,7 @@ fn schedule_apic_timer(
                     "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt \
                      {vector}"
                 );
-                inject_interrupt(vm_id, vcpu_id, vector);
+                let _ = host::inject_interrupt(vm_id, vcpu_id, vector);
             }
 
             if mode == TimerMode::Periodic as u32
@@ -378,7 +388,7 @@ fn schedule_apic_timer(
                     let next_deadline_ns = next_periodic_deadline_ns(
                         old_deadline,
                         interval_ns,
-                        time::current_time_nanos(),
+                        host::current_time_nanos(),
                     );
                     let next_deadline = core::time::Duration::from_nanos(next_deadline_ns);
                     shared
@@ -402,7 +412,7 @@ fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) ->
 
 #[cfg(test)]
 mod tests {
-    use axvisor_api::vmm::{VCpuId, VMId};
+    use axvm_types::{VCpuId, VMId};
 
     use crate::{regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode, timer::ApicTimer};
 

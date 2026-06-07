@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version = "0.6.2"
+version = "0.7.0"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"
@@ -14,6 +14,7 @@ default = ["smp", "irq" ]
 smp = ["ax-plat/smp"]
 irq = ["ax-plat/irq"]
 rtc = []
+efi = ["somehal/efi"]
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]

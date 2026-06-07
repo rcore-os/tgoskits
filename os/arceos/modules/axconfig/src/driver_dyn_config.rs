@@ -25,17 +25,34 @@ mod arch {
     pub const KERNEL_BASE_VADDR: usize = 0xffff_ffff_8000_0000;
 }
 
-#[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(target_arch = "x86_64")]
 mod arch {
-    pub const ARCH: &str = "aarch64";
-    pub const PACKAGE: &str = "axplat-aarch64-generic";
-    pub const PLATFORM: &str = "aarch64-generic";
-    pub const TIMER_IRQ: usize = 0xf0;
-    pub const IPI_IRQ: usize = 0;
+    pub const ARCH: &str = "x86_64";
+    pub const PACKAGE: &str = "axplat-dyn";
+    pub const PLATFORM: &str = "x86_64-plat-dyn";
+    pub const TIMER_IRQ: usize = 0;
+    pub const IPI_IRQ: usize = 0xf3;
     pub const KERNEL_ASPACE_BASE: usize = 0xffff_8000_0000_0000;
     pub const KERNEL_ASPACE_SIZE: usize = 0x0000_7fff_ffff_f000;
-    pub const KERNEL_BASE_PADDR: usize = 0x20_0000;
-    pub const KERNEL_BASE_VADDR: usize = 0xffff_8000_0020_0000;
+    pub const KERNEL_BASE_PADDR: usize = 0;
+    pub const KERNEL_BASE_VADDR: usize = 0xffff_8000_0000_0000;
+}
+
+#[cfg(not(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+)))]
+mod arch {
+    pub const ARCH: &str = "unknown";
+    pub const PACKAGE: &str = "axplat-dyn";
+    pub const PLATFORM: &str = "unknown-plat-dyn";
+    pub const TIMER_IRQ: usize = 0;
+    pub const IPI_IRQ: usize = 0;
+    pub const KERNEL_ASPACE_BASE: usize = 0;
+    pub const KERNEL_ASPACE_SIZE: usize = 0;
+    pub const KERNEL_BASE_PADDR: usize = 0;
+    pub const KERNEL_BASE_VADDR: usize = 0;
 }
 
 #[doc = " Architecture identifier."]
@@ -110,4 +127,13 @@ pub mod plat {
     pub const PHYS_MEMORY_SIZE: usize = 0x0;
     #[doc = " No need."]
     pub const PHYS_VIRT_OFFSET: usize = 0;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_dynamic_platform_uses_dedicated_ipi_vector() {
+        assert_eq!(super::devices::IPI_IRQ, 0xf3);
+    }
 }

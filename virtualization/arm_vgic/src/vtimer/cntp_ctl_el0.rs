@@ -14,8 +14,9 @@
 
 use aarch64_sysreg::SystemRegType;
 use ax_errno::AxResult;
-use axaddrspace::device::{AccessWidth, DeviceAddrRange, SysRegAddr, SysRegAddrRange};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType, SysRegAddr, SysRegAddrRange,
+};
 use log::info;
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {

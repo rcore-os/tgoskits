@@ -16,8 +16,7 @@ use core::cell::UnsafeCell;
 
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axvisor_api::vmm::{VCpuId, VMId};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, VCpuId, VMId};
 
 use super::{AxArchVCpu, AxVCpuExitReason, InterruptTriggerMode};
 
@@ -232,8 +231,12 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     where
         F: FnOnce() -> T,
     {
-        if get_current_vcpu::<A>().is_some() {
-            panic!("Nested vcpu operation is not allowed!");
+        if let Some(current_vcpu) = get_current_vcpu::<A>() {
+            if core::ptr::eq(current_vcpu, self) {
+                f()
+            } else {
+                panic!("Nested vcpu operation is not allowed!");
+            }
         } else {
             unsafe {
                 set_current_vcpu(self);

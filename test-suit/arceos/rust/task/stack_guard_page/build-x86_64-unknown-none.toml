@@ -2,4 +2,5 @@ features = ["ax-std"]
 log = "Info"
 max_cpu_num = 4
 
+plat_dyn = true
 [env]

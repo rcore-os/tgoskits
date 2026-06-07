@@ -204,6 +204,15 @@ fn merge_board_test_uboot_config(
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
     }
+    if test_uboot.kernel_load_addr.is_some() {
+        uboot.kernel_load_addr = test_uboot.kernel_load_addr;
+    }
+    if test_uboot.fit_load_addr.is_some() {
+        uboot.fit_load_addr = test_uboot.fit_load_addr;
+    }
+    if test_uboot.bootm_addr.is_some() {
+        uboot.bootm_addr = test_uboot.bootm_addr;
+    }
     uboot.success_regex = test_uboot.success_regex;
     uboot.fail_regex = test_uboot.fail_regex;
     uboot.uboot_cmd = test_uboot.uboot_cmd;
@@ -443,12 +452,7 @@ impl Axvisor {
         let cargo = build::load_cargo_config(&request)?;
         let base_uboot = match request.uboot_config.as_deref() {
             Some(_) => self.load_uboot_config(&request, &cargo).await?,
-            None => Some(
-                self.app
-                    .tool_mut()
-                    .ensure_uboot_config_for_cargo(&cargo)
-                    .await?,
-            ),
+            None => Some(self.app.ensure_uboot_config_for_cargo(&cargo).await?),
         };
         let board_config = self
             .load_board_config(&cargo, Some(board_test_config.as_path()))
@@ -595,7 +599,6 @@ impl Axvisor {
             )?;
             let qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(&cargo, &case.case.qemu_config_path)
                 .await
                 .with_context(|| {
@@ -640,6 +643,7 @@ impl Axvisor {
     }
 
     fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
+        request.plat_dyn = None;
         request.smp = None;
         request.vmconfigs.clear();
         request
@@ -1008,6 +1012,20 @@ mod tests {
         let request = Axvisor::qemu_test_request(request);
 
         assert_eq!(request.smp, None);
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_plat_dyn() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request.plat_dyn = Some(true);
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert_eq!(request.plat_dyn, None);
     }
 
     #[test]
@@ -1442,6 +1460,9 @@ mod tests {
                 "run ab_select_cmd".to_string(),
                 "run avb_boot".to_string(),
             ]),
+            kernel_load_addr: Some("0x200000".to_string()),
+            fit_load_addr: Some("0x2000000".to_string()),
+            bootm_addr: Some("0x2000000".to_string()),
             shell_prefix: Some("ubuntu login:".to_string()),
             ..Default::default()
         };
@@ -1459,6 +1480,9 @@ mod tests {
         );
         assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
         assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
+        assert_eq!(merged.kernel_load_addr.as_deref(), Some("0x200000"));
+        assert_eq!(merged.fit_load_addr.as_deref(), Some("0x2000000"));
+        assert_eq!(merged.bootm_addr.as_deref(), Some("0x2000000"));
         assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));

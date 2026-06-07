@@ -114,7 +114,7 @@ impl BuildInfo {
 
     pub fn default_for_target(target: &str) -> Self {
         Self {
-            plat_dyn: supports_platform_dynamic(target),
+            plat_dyn: defaults_to_platform_dynamic(target),
             ..Self::default()
         }
     }
@@ -210,7 +210,7 @@ impl BuildInfo {
             prepare_std_build_env(&mut cargo.env, target, plat_dyn, metadata)?;
             pass_std_build_nested_features(&mut cargo.env, &mut cargo.features);
             cargo.extra_config = Some(std_cargo_config_path(plat_dyn)?.display().to_string());
-            cargo.to_bin = false;
+            cargo.to_bin = plat_dyn && target.starts_with("x86_64-");
             return Ok(cargo);
         }
 
@@ -234,7 +234,7 @@ impl BuildInfo {
             package.to_string(),
             cargo_target,
             args,
-            default_to_bin_for_target(target),
+            default_to_bin_for_target_config(target, plat_dyn),
         ))
     }
 
@@ -486,7 +486,7 @@ pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Re
     if plat_dyn {
         if !matches!(
             target,
-            "aarch64-unknown-none-softfloat" | "riscv64gc-unknown-none-elf"
+            "aarch64-unknown-none-softfloat" | "riscv64gc-unknown-none-elf" | "x86_64-unknown-none"
         ) {
             bail!("unsupported PIE target `{target}`");
         }
@@ -737,11 +737,19 @@ pub(crate) fn resolve_effective_plat_dyn(
 }
 
 fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-") || target.starts_with("riscv64")
+    target.starts_with("aarch64-") || target.starts_with("riscv64") || target.starts_with("x86_64-")
+}
+
+fn defaults_to_platform_dynamic(target: &str) -> bool {
+    target.starts_with("aarch64-") || target.starts_with("riscv64") || target.starts_with("x86_64-")
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
     !target.starts_with("x86_64-") && !target.starts_with("loongarch64-")
+}
+
+fn default_to_bin_for_target_config(target: &str, plat_dyn: bool) -> bool {
+    default_to_bin_for_target(target) || (plat_dyn && target.starts_with("x86_64-"))
 }
 
 fn normalize_legacy_feature_alias(feature: &str) -> String {
@@ -1169,19 +1177,6 @@ fn require_default_platform_package(metadata: &Metadata, arch: &str) -> anyhow::
         .ok_or_else(|| anyhow!("no default platform package is registered for arch `{arch}`"))
 }
 
-fn explicit_myplat_platform_package(
-    package: &str,
-    arch: &str,
-    metadata: &Metadata,
-) -> Option<String> {
-    match (package, arch) {
-        ("axvisor", "x86_64") => {
-            platform_package_by_name_with_workspace_fallback(metadata, "x86-qemu-q35")
-        }
-        _ => None,
-    }
-}
-
 fn resolve_platform_package(
     package: &str,
     target: &str,
@@ -1216,28 +1211,18 @@ fn resolve_platform_package(
         .collect();
 
     if let Some(platform) =
-        explicit_platform_package_from_features(package_info, &explicit_platform_features)
+        explicit_platform_package_from_features(package_info, &explicit_platform_features, metadata)
     {
         return Ok(platform);
     }
 
-    if has_myplat_feature(features) {
-        if let Some(dep_name) = explicit_myplat_platform_package(package, arch, metadata)
-            && package_info
-                .dependencies
-                .iter()
-                .any(|dep| dep.name == dep_name)
-        {
-            return Ok(dep_name);
-        }
-
-        if let Some(dep) = package_info
+    if has_myplat_feature(features)
+        && let Some(dep) = package_info
             .dependencies
             .iter()
             .find(|dep| myplat_dependency_matches_arch(&dep.name, arch))
-        {
-            return Ok(dep.name.clone());
-        }
+    {
+        return Ok(dep.name.clone());
     }
 
     require_default_platform_package(metadata, arch)
@@ -1260,19 +1245,25 @@ fn target_arch_name(target: &str) -> anyhow::Result<&'static str> {
 fn explicit_platform_package_from_features(
     package_info: &Package,
     explicit_features: &[&str],
+    metadata: &Metadata,
 ) -> Option<String> {
-    package_info
-        .dependencies
+    explicit_features
         .iter()
-        .find(|dep| {
-            dependency_is_platform(&dep.name)
-                && explicit_features.iter().any(|feature| {
-                    *feature == dep.name
-                        || *feature == linker_platform_name(&dep.name)
-                        || feature_enables_dependency(package_info, feature, &dep.name)
+        .find_map(|feature| platform_package_by_name_with_workspace_fallback(metadata, feature))
+        .or_else(|| {
+            package_info
+                .dependencies
+                .iter()
+                .find(|dep| {
+                    dependency_is_platform(&dep.name)
+                        && explicit_features.iter().any(|feature| {
+                            *feature == dep.name
+                                || *feature == linker_platform_name(&dep.name)
+                                || feature_enables_dependency(package_info, feature, &dep.name)
+                        })
                 })
+                .map(|dep| dep.name.clone())
         })
-        .map(|dep| dep.name.clone())
 }
 
 fn dependency_is_platform(dep_name: &str) -> bool {
@@ -1621,11 +1612,55 @@ mod tests {
         .unwrap();
 
         assert!(cargo.features.contains(&"arceos-rust/plat-dyn".to_string()));
+        assert!(!cargo.env.contains_key("ARCEOS_RUST_FEATURES"));
         assert!(!cargo.env.contains_key("ARCEOS_RUST_CONFIG"));
         let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
         assert!(config.contains("link-arg=-pie"));
         assert!(config.contains("link-arg=-Tlinker.x"));
         assert!(!config.contains("link-arg=-Taxplat.x"));
+    }
+
+    #[test]
+    fn std_build_dynamic_x86_64_prepares_binary_artifact() {
+        let metadata = repo_metadata();
+        let cargo = BuildInfo {
+            std_build: true,
+            ..BuildInfo::default_for_target("x86_64-unknown-none")
+        }
+        .into_prepared_base_cargo_config_with_metadata(
+            "test-arceos-std-app",
+            "x86_64-unknown-none",
+            None,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_eq!(cargo.target, "x86_64-unknown-hermit");
+        assert!(cargo.to_bin);
+        assert!(cargo.features.contains(&"arceos-rust/plat-dyn".to_string()));
+        assert!(!cargo.env.contains_key("ARCEOS_RUST_FEATURES"));
+    }
+
+    #[test]
+    fn std_build_plat_dyn_stays_on_arceos_rust_dependency() {
+        let mut info = BuildInfo {
+            std_build: true,
+            features: vec!["ax-feat/plat-dyn".to_string(), "alloc".to_string()],
+            ..BuildInfo::default()
+        };
+
+        info.resolve_std_features();
+        let mut envs = HashMap::new();
+        pass_std_build_nested_features(&mut envs, &mut info.features);
+
+        assert_eq!(
+            info.features,
+            vec![
+                "arceos-rust/alloc".to_string(),
+                "arceos-rust/plat-dyn".to_string()
+            ]
+        );
+        assert!(!envs.contains_key("ARCEOS_RUST_FEATURES"));
     }
 
     #[test]
@@ -1655,6 +1690,28 @@ mod tests {
         let path = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap();
 
         assert!(path.ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json"));
+    }
+
+    #[test]
+    fn cargo_target_json_path_maps_x86_64_dyn_to_pie_target() {
+        let path = cargo_target_json_path("x86_64-unknown-none", true).unwrap();
+
+        assert!(path.ends_with("scripts/targets/pie/x86_64-unknown-none.json"));
+    }
+
+    #[test]
+    fn x86_64_defaults_to_dynamic_platform() {
+        assert!(supports_platform_dynamic("x86_64-unknown-none"));
+        assert!(BuildInfo::default_for_target("x86_64-unknown-none").plat_dyn);
+        assert!(resolve_effective_plat_dyn(
+            "x86_64-unknown-none",
+            true,
+            None
+        ));
+        assert!(default_to_bin_for_target_config(
+            "x86_64-unknown-none",
+            true
+        ));
     }
 
     #[test]
@@ -1708,6 +1765,7 @@ mod tests {
             include_str!("../../targets/no-pie/x86_64-unknown-none.json"),
             include_str!("../../targets/pie/aarch64-unknown-none-softfloat.json"),
             include_str!("../../targets/pie/riscv64gc-unknown-none-elf.json"),
+            include_str!("../../targets/pie/x86_64-unknown-none.json"),
         ];
 
         for spec in specs {
@@ -1731,6 +1789,24 @@ mod tests {
         let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
         assert!(link_args.iter().any(|arg| arg == "-no-pie"));
         assert!(!link_args.iter().any(|arg| arg == "-pie"));
+    }
+
+    #[test]
+    fn x86_64_pie_target_uses_final_linker_script() {
+        let spec: serde_json::Value =
+            serde_json::from_str(include_str!("../../targets/pie/x86_64-unknown-none.json"))
+                .unwrap();
+
+        assert_eq!(spec["position-independent-executables"], true);
+        assert_eq!(spec["static-position-independent-executables"], true);
+        assert_eq!(spec["relocation-model"], "pic");
+
+        let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
+        assert!(link_args.iter().any(|arg| arg == "-pie"));
+        assert!(link_args.iter().any(|arg| arg == "-znostart-stop-gc"));
+        assert!(link_args.iter().any(|arg| arg == "-Tlinker.x"));
+        assert!(!link_args.iter().any(|arg| arg == "-Taxplat.x"));
+        assert!(!link_args.iter().any(|arg| arg == "-no-pie"));
     }
 
     #[test]

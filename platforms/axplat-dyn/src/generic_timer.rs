@@ -14,7 +14,7 @@ pub(crate) fn ticks_to_nanos(ticks: u64) -> u64 {
     if freq == 0 {
         return 0;
     }
-    (ticks * ax_plat::time::NANOS_PER_SEC) / freq
+    ((ticks as u128 * ax_plat::time::NANOS_PER_SEC as u128) / freq as u128) as u64
 }
 
 pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
@@ -22,7 +22,7 @@ pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
     if freq == 0 {
         return 0;
     }
-    (nanos * freq) / ax_plat::time::NANOS_PER_SEC
+    ((nanos as u128 * freq as u128) / ax_plat::time::NANOS_PER_SEC as u128) as u64
 }
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {

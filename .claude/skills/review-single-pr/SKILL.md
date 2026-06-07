@@ -1,9 +1,19 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, validate Starry app-support test placement, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
 ---
 
 # Review Single PR
+
+## Normative Use
+
+This skill is a normative review specification, not a suggestion list. When it triggers, read the entire `SKILL.md` before deciding the review outcome, then follow every applicable requirement unless a higher-priority system or developer instruction conflicts.
+
+Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
+
+After reading the full skill, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, duplicate and overlap analysis, validation, blocking findings, submission rules, reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+
+When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
 ## Goal
 
@@ -58,6 +68,38 @@ gh api graphql \
 
 For failing, cancelled, missing, or suspicious GitHub Actions checks, follow `github:gh-fix-ci`: use the GitHub app/MCP for PR context and use `gh` for Actions check/log inspection because the connector does not expose that workflow end to end. Remote CI is evidence, not a substitute for local review and targeted validation.
 
+When a reviewer or page summary claims CI is "all skipped", or when the GitHub UI and API summaries appear inconsistent, verify the current PR head directly before drawing conclusions:
+
+1. Resolve the current PR head SHA (`headRefOid` / `head.sha`) and query checks for that exact SHA, not an older reviewed commit or a stale merge ref.
+2. Prefer GraphQL `statusCheckRollup` and check suites/check runs, because they report GitHub Actions check runs and their aggregate state:
+   ```graphql
+   query($owner:String!, $repo:String!, $sha:GitObjectID!) {
+     repository(owner:$owner, name:$repo) {
+       object(oid:$sha) { ... on Commit {
+         checkSuites(first:20) { nodes {
+           status conclusion
+           workflowRun { databaseId url workflow { name } }
+           checkRuns(first:100) { nodes { name status conclusion } }
+         } }
+         statusCheckRollup { state contexts(first:100) { nodes {
+           __typename
+           ... on CheckRun { name status conclusion detailsUrl }
+           ... on StatusContext { context state targetUrl }
+         } } }
+       } }
+     }
+   }
+   ```
+3. REST fallback: query Actions check runs and jobs by the same head SHA, then count conclusions instead of relying on a single UI label:
+   ```bash
+   gh api "repos/<owner>/<repo>/commits/<head-sha>/check-runs?per_page=100"
+   gh api "repos/<owner>/<repo>/actions/runs?head_sha=<head-sha>&per_page=100"
+   gh api "repos/<owner>/<repo>/actions/runs/<run-id>/jobs?per_page=100"
+   ```
+4. Do not use `GET /repos/<owner>/<repo>/commits/<sha>/status` by itself to decide Actions CI state. That endpoint reports classic commit statuses only; it may return `pending` with an empty `statuses` array even when GitHub Actions check runs and the workflow have already succeeded.
+5. Distinguish expected skipped matrix jobs from a truly skipped workflow. In this repository, mutually exclusive `run_host` / `run_container` jobs, branch-restricted publish jobs, or path-filtered jobs may be `skipped` while sibling jobs in the same workflow are `success`; that is not "all CI skipped". Summarize the evidence with counts such as `success=N, skipped=M, failure=0` and name the relevant successful or skipped checks.
+6. Treat skipped checks as suspicious only when the PR changed the surface that the skipped check is supposed to cover, when path filters skipped required coverage, or when every relevant check for the changed app/test/architecture was skipped. Otherwise, record them as expected CI matrix/path-filter behavior.
+
 Always inspect CI failures before submitting the review:
 
 1. Fetch check summaries and enough logs to classify each non-passing required check:
@@ -68,15 +110,26 @@ Always inspect CI failures before submitting the review:
 2. Decide whether each CI failure is caused by this PR's changed surface, a likely unrelated pre-existing/infrastructure failure, or unclear.
 3. Treat CI as PR-related when the failing job exercises files, crates, cases, commands, platforms, or behavior changed by the PR; when the failure reproduces locally on the PR head but not on base; or when the new/modified tests, configs, or workflow steps cause the failure, hang, skip, or timeout.
 4. Treat CI as unrelated only when there is concrete evidence: the failure is outside the changed surface, known flaky/infrastructure behavior, already fails on base, or is tracked by an existing issue. Do not mark a failure unrelated merely because local focused validation passed.
-5. For unrelated CI failures, state that in the review body with the failing check name, observed failure, and why it is unrelated to this PR. Search for an existing issue before finishing:
+5. For unrelated CI failures, state that in the review body with the failing check name, observed failure, and why it is unrelated to this PR. Search for an existing issue before finishing. Use multiple searches keyed by the workflow/job name, distinctive error text, runner/platform, affected case, or failing command; do not rely on only one broad query:
    ```bash
-   gh issue list --repo <owner>/<repo> --state open --search '<job name or distinctive error>'
+   gh issue list --repo <owner>/<repo> --state open --search '<workflow or job name>'
+   gh issue list --repo <owner>/<repo> --state open --search '<distinctive error excerpt>'
+   gh issue list --repo <owner>/<repo> --state open --search '<runner platform, case, or command>'
+   ```
+   Inspect plausible matches before deciding whether they are suitable:
+   ```bash
+   gh issue view <issue-number> --repo <owner>/<repo> --comments
+   ```
+   A suitable issue tracks the same workflow/job, same distinctive failure mode, or same infrastructure/component breakage. If a suitable open issue exists, update it before finishing: add a neutral comment with the current PR number/URL, head SHA, check/run URL, failing job and step, representative log excerpt, why the failure appears unrelated to this PR, and any reproduction, rerun, or base-branch evidence. If the issue title/body is stale or too vague and repository permissions allow, update the title/body while preserving previous context; otherwise use a new issue comment.
+   ```bash
+   gh issue comment <issue-number> --repo <owner>/<repo> --body-file issue-update.md
+   gh issue edit <issue-number> --repo <owner>/<repo> --title '<updated neutral title>' --body-file issue.md
    ```
    If no suitable open issue exists, create one with a neutral title and body describing the CI job, PR where it was observed, representative log excerpt, why it appears unrelated, and any reproduction or rerun evidence:
    ```bash
    gh issue create --repo <owner>/<repo> --title '<neutral CI issue title>' --body-file issue.md
    ```
-   Link the existing or newly-created issue in the review body. Do not create duplicate issues.
+   Link the existing, updated, or newly-created issue in the review body. Do not create duplicate issues.
 6. For PR-related CI failures, submit `REQUEST_CHANGES`. The review body and any inline comment must explain the failing check, the concrete failure mode, why it belongs to this PR, and the expected fix direction.
 7. When causality is unclear after reasonable log inspection, do not approve on CI alone. Either request changes with the concrete uncertainty and next debugging direction, or mark the review blocked/no-submit if the user asked for investigation only.
 
@@ -160,7 +213,7 @@ Review the PR against its stated intent, the current base branch, existing proje
 - `starry-test-suit` rules when StarryOS test cases or `qemu-*.toml` files change.
 - `cross-kernel-driver` architecture rules when portable driver crates or driver glue change.
 
-For bug fixes, require a reproduction test that fails before the fix and passes after it unless the environment makes that impossible. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
+For bug fixes (修复 bug), require a regression or reproduction test that fails on the unfixed behavior and passes only after the fix unless concrete evidence shows the environment makes such a test impossible. The reviewer must verify this from the test code, author-provided red/green evidence, or local red/green validation when practical. If the PR fixes a bug but lacks a post-fix-only regression test and no concrete impossibility is documented, treat that as blocking. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
 
 For PRs that add StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
 
@@ -171,6 +224,8 @@ For PRs that add StarryOS app support, separate operator-facing app scenarios fr
 - Do not approve app-support PRs that put app workflows only into `test-suit/starryos/normal`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
 - If the PR adds or changes an app-oriented Starry QEMU case under either `apps/starry` or `test-suit/starryos`, run the actual documented app command or exact `cargo xtask starry test qemu ... -c <case>` path in QEMU for at least the changed/claimed architecture. For multi-arch `qemu-*.toml` additions, run the architecture most likely to fail from CI or PR history; if any newly added required architecture is already failing in CI, reproduce or classify that architecture before approval.
 - Do not approve when the app/test cannot be run as described by the PR, when its success depends on an unavailable or unstable external service without a controlled fallback, or when the command only passes on a narrower target than the PR claims. Report the exact command, architecture, guest-visible failure marker, and whether the failure matches remote CI.
+
+Apply the same runtime-validation expectation to ArceOS apps and app-facing tools. A PR that adds or changes an ArceOS app, `apps/**` demo, QEMU wrapper, rootfs/app preparation tool, symbolizer/log parser, packaging helper, or other tool that claims to make a StarryOS/ArceOS app usable must be reviewed as an executable workflow, not as a syntax-only or docs-only change.
 
 Do not approve changes that are only shaped to satisfy the added tests, such as hard-coded special cases, skipped behavior, fake state updates, no-op compatibility shims, or logic that does not implement the intended subsystem semantics. Treat this as blocking even when local tests and CI pass.
 
@@ -270,6 +325,25 @@ cargo tree -p starry-kernel | sed -n '/kbpf-basic v0.5.7/,+12p'
 
 The expected result for that example is that local workspace crates still use local `components/axerrno`, while `kbpf-basic` resolves its own crates.io `ax-errno` and local Starry eBPF/perf code performs explicit error conversion at the boundary.
 
+For app/tool workflows that CI does not execute exactly, manual runtime validation is a hard gate. This applies when the PR adds or changes:
+
+- StarryOS user-space app support, `apps/starry/**` scenarios, Starry rootfs/app preparation, or Starry QEMU run docs/scripts;
+- ArceOS apps, `apps/**` demos, `test-suit/arceos/**` app configs, or ArceOS QEMU run docs/scripts;
+- tools or wrappers that prepare, launch, inspect, symbolize, package, or otherwise operate on a StarryOS or ArceOS app workflow;
+- README/PR-body runbooks that claim the app/tool is usable while the current CI matrix does not run that exact command and success condition.
+
+Do not approve based only on `cargo fmt`, clippy, shellcheck, `--help`, script readability, TOML parsing, case listing, build success, or another reviewer saying an older head passed. Those checks are useful supplements, but they do not prove the app or tool works.
+
+Required manual flow:
+
+1. Read the PR body, README, scripts, and config files to find the exact documented workflow and expected success marker.
+2. Do the documented preparation first, such as `cargo xtask starry rootfs --arch <arch>`, managed rootfs download/patching, app asset generation, tool build steps, or log/artifact capture.
+3. Run the current PR head through the actual runtime command, such as `cargo xtask starry app qemu ...`, `cargo xtask starry test qemu ...`, `cargo xtask arceos test qemu ...`, or the documented wrapper script that reaches QEMU.
+4. Verify guest-visible behavior and the tool's real output: success markers, app command output, generated logs, symbolized blocks, packaged artifacts, or other documented postconditions. A command that exits 0 but skips the app behavior is not sufficient.
+5. For multi-architecture support, run the newly added or most failure-prone architecture, prioritizing any architecture skipped or failing in CI. If the PR claims all-arch support and CI covers only part of it, local validation must cover at least one CI-missing or highest-risk architecture.
+6. If the workflow cannot be run because required documentation, rootfs preparation, assets, or tool outputs are missing or wrong, submit `REQUEST_CHANGES`; that is a PR problem, not an environment limitation.
+7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a normal regression test, or explicit user acceptance before approval.
+
 For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. Running the containing grouped case is the preferred check, for example `cargo xtask starry test qemu --arch x86_64 -c syscall`. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, unreliable `success_regex`/`fail_regex`, or tests that accept both broken and fixed behavior as blocking.
 
 For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
@@ -297,7 +371,7 @@ Use GitHub check status as required evidence, but not as the only review input:
 gh pr checks <pr> --watch=false
 ```
 
-Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link an existing or newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
+Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link the existing issue that was updated or the newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
 When GitHub log download fails or returns an empty log, do not infer the check passed or was irrelevant. Use `gh pr checks <pr> --repo <owner>/<repo> --watch=false` and `gh run view <run-id> --json headSha,jobs` to confirm the current head, failing job names, conclusions, and failing steps. If the failing job matches a newly added or changed app/test architecture, treat it as PR-related unless concrete evidence proves otherwise.
 
@@ -309,11 +383,13 @@ Treat these as blocking unless clearly non-blocking:
 - targeted tests, formatting, clippy, or PR-related CI fail;
 - a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
 - a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
+- a PR adds or changes CI-missing StarryOS user-space support, an ArceOS app, or an app-facing tool/wrapper, but the documented preparation plus QEMU/runtime workflow was not run on the current head;
+- an app/tool workflow's documentation is incomplete or wrong enough that the reviewer cannot prepare the environment, launch QEMU, or verify the documented postcondition;
 - new tests are not discovered by the project test runner or do not exercise the fixed ABI surface;
 - a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
-- bug fixes lack meaningful reproduction coverage;
+- a bug-fix PR lacks a regression or reproduction test that fails on the unfixed behavior and passes only after the fix, unless concrete evidence shows such a test is impossible;
 - the PR adds, changes, or relies on any `[patch.crates-io]` override, instead of using normal dependency resolution, an upstream fix, a dependency upgrade, or an explicit local boundary adapter;
 - merge conflicts are unresolved, conflict repair resurrects outdated base APIs instead of adapting PR intent to current base, or the repaired head was not revalidated after push;
 - StarryOS app-support PRs place app workflows under `test-suit/starryos/normal` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching normal test-suit case;
@@ -368,12 +444,13 @@ Review body must explain in Chinese:
 - what the PR changed;
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
+- for CI-missing app/tool workflows, the documented preparation performed, the exact QEMU/runtime command run, the architecture, and the guest-visible or tool-output postcondition that proved usability;
 - when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
-- CI status, including any unrelated failing checks, the evidence for unrelatedness, and the linked tracking issue;
+- CI status, including any unrelated failing checks, the evidence for unrelatedness, the linked tracking issue, and whether that issue was updated or created during review;
 - duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
 - conflict handling status when applicable: conflicted files, resolution logic, validation after repair, and whether a repair commit was pushed or the work was intentionally kept as a dry run;
 - for PR-related CI failures, the failing check, failure mode, and expected fix direction;
-- reproduction coverage status for bug fixes;
+- reproduction coverage status for bug fixes, including whether the regression test fails on the unfixed behavior and passes only after the fix;
 - unresolved review conversations that were resolved, and conversations intentionally left open and why;
 - any behavior that remains unimplemented, partial, or should be completed in future work;
 - any known environment limitation.

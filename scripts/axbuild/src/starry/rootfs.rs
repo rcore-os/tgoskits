@@ -90,7 +90,6 @@ pub(super) async fn load_patched_qemu_config(
         Some(path) => {
             starry
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(cargo, path)
                 .await?
         }
@@ -101,7 +100,6 @@ pub(super) async fn load_patched_qemu_config(
             );
             starry
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(cargo, &path)
                 .await?
         }
@@ -113,6 +111,7 @@ pub(super) async fn load_patched_qemu_config(
     } else if apply_default_args {
         patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None, mode)?;
     }
+    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
 
     Ok(qemu)

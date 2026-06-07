@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.16"
+version = "0.5.17"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -49,6 +49,7 @@ multitask = [
 ]
 lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
 task-ext = ["ax-task/task-ext"]
+tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-fifo = ["ax-task/sched-fifo"]
 sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]

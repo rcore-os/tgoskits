@@ -902,12 +902,34 @@ impl CachedFile {
                 let old_page_offset = (old_len - page_start) as usize;
                 let new_page_offset = (len - page_start).min(PAGE_SIZE as u64) as usize;
                 page.data()[old_page_offset..new_page_offset].fill(0);
+                // Mark dirty so the zeroed gap is written back: ext4 `set_len`
+                // only updates `i_size`, it does not clear the bytes on disk, so
+                // a clean eviction + reload would otherwise resurrect stale data.
+                page.dirty = true;
             }
-        } else if old_last_page > new_last_page {
-            // For truncating, we need to remove all pages that are beyond the
-            // new length
-            // TODO(mivik): can this be more efficient?
+        } else if len < old_len {
             let mut guard = self.shared.page_cache.lock();
+            // Linux `truncate(len)` zeroes the tail of the partial last page, so a
+            // later extend or `mmap` reads those bytes as zero. Without this, a
+            // shrink that leaves a partial last page (e.g. sqlite's
+            // `ftruncate(<-shm>, 3)`) keeps stale bytes there; a subsequent mmap of
+            // the regrown file then sees the stale tail, so a fresh reader trusts a
+            // stale wal-index header instead of recovering (juicefs sqlite WAL
+            // cross-process reopen failure). This branch also covers shrinking
+            // within a single page, where neither old branch ran at all.
+            let tail = (len % PAGE_SIZE as u64) as usize;
+            if tail != 0
+                && let Some(page) = guard.get_mut(&new_last_page)
+            {
+                page.data()[tail..].fill(0);
+                // Mark dirty so the zeroed tail is written back: ext4 `set_len`
+                // updates `i_size` but leaves the on-disk bytes past it intact, so
+                // a clean eviction + reload (or mmap fault) would otherwise reload
+                // the stale tail from disk.
+                page.dirty = true;
+            }
+            // Remove all pages that are wholly beyond the new length.
+            // TODO(mivik): can this be more efficient?
             let keys = guard
                 .iter()
                 .map(|(k, _)| *k)

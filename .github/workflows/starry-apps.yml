@@ -18,6 +18,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  scheduled_clippy_all:
+    name: Scheduled clippy all
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rcore-os/tgoskits-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: starry-apps-clippy-all
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run clippy all
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo xtask clippy --all
+
   starry_apps:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest

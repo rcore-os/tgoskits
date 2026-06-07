@@ -17,6 +17,9 @@ shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/bug-futex-wait-wake",
     "/usr/bin/bug-epoll-wait-user-buffer-race",
+    "/usr/bin/bug-epoll-compat-entrypoints",
+    "/usr/bin/bug-fallocate-zero-punch",
+    "/usr/bin/bug-mempolicy-validation",
     "/usr/bin/bug-getcwd-syscall-return",
     "/usr/bin/bug-lseek-negative-einval",
     "/usr/bin/bug-mkdir-empty-path",

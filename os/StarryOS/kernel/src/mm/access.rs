@@ -493,11 +493,21 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
     let aligned_addr = addr.align_down_4k();
     let aligned_length = (addr + data.len()).align_up_4k() - aligned_addr;
 
-    let mut guard = ax_mm::kernel_aspace().lock();
-    let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
-
+    // The kernel address-space lock (`SpinNoIrq`) MUST be acquired *inside* the
+    // `stop_machine` critical section, not before it. `stop_machine` itself
+    // takes a `SpinNoIrq` (`STOP_MACHINE_LOCK`); acquiring `kernel_aspace`
+    // first and then dropping it inside the closure produces a non-LIFO nesting
+    // of two IRQ-saving guards, which crosses their saved IRQ states and leaks
+    // an IRQ-disabled state out of this function. That stranded state later
+    // trips the atomic-context guard (e.g. `clear_proc_shm` on process exit
+    // right after a static-key `disable_key`). Nesting it LIFO here keeps the
+    // IRQ flag balanced — this mirrors the kprobe `set_writeable_for_address`
+    // path.
     crate::stop_machine::stop_machine(
         move || -> AxResult<()> {
+            let mut guard = ax_mm::kernel_aspace().lock();
+            let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+
             guard.protect(
                 aligned_addr,
                 aligned_length,

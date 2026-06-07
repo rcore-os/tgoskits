@@ -15,7 +15,10 @@ use x86::{
 };
 
 use super::irq::{LAPIC_SPURIOUS_VECTOR, LAPIC_TIMER_VECTOR};
-use crate::{irq, mem::page_size};
+use crate::{
+    irq,
+    mem::{page_size, phys_to_virt},
+};
 
 const IA32_EFER: u32 = 0xc000_0080;
 const IA32_EFER_NXE: u64 = 1 << 11;
@@ -374,7 +377,7 @@ fn write_lapic_reg(offset: u32, value: u32) {
 
 fn lapic_ptr(offset: u32) -> *mut u32 {
     let base = unsafe { rdmsr(msr::IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
-    (base + offset as usize) as *mut u32
+    unsafe { phys_to_virt(base).add(offset as usize) }.cast()
 }
 
 fn enable_nxe() {

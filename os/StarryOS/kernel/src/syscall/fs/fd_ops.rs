@@ -336,6 +336,7 @@ pub fn sys_openat(
             Err(err) => Err(err),
         })?;
 
+    // Open first, then install the file so filesystem errors propagate unchanged.
     let fd =
         with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
     if should_notify_create {

@@ -18,8 +18,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use ax_errno::{AxResult, ax_err};
-use ax_page_table_entry::MappingFlags;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
+use axvcpu::{GuestPhysAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
 use bit_field::BitField;
 use x86::bits64::vmx;
 

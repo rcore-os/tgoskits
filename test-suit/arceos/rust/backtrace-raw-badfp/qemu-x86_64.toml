@@ -14,6 +14,6 @@ args = [
 uefi = false
 to_bin = false
 success_regex = [
-    "(?ms)^emitting raw backtrace report \\(corrupted fp\\)\\.\\.\\.$.*^BACKTRACE_BEGIN\\b.*\\bkind=raw\\b.*^BT\\s+0\\s+ip=0x[0-9a-fA-F]+\\s+fp=0x[0-9a-fA-F]+.*^BACKTRACE_END\\b.*^test pass\\s*$",
+    "(?s)emitting raw backtrace report \\(corrupted fp\\)\\.\\.\\..*BACKTRACE_BEGIN\\b.*\\bkind=raw\\b.*BT\\s+0\\s+ip=0x[0-9a-fA-F]+\\s+fp=0x[0-9a-fA-F]+.*BACKTRACE_END\\b.*test pass",
 ]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

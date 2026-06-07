@@ -176,7 +176,7 @@ pub trait FileLike: Pollable + DowncastSync {
         Err(AxError::NoSuchDevice)
     }
 
-    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
+    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
         Err(AxError::BadFileDescriptor)
     }
 

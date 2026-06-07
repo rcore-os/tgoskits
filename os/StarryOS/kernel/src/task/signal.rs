@@ -444,11 +444,11 @@ pub fn with_blocked_signals<R>(
     let sig = &curr.as_thread().signal;
 
     let old_blocked = blocked.map(|set| sig.set_blocked(set));
-    f().inspect(|_| {
-        if let Some(old) = old_blocked {
-            sig.set_blocked(old);
-        }
-    })
+    let result = f();
+    if let Some(old) = old_blocked {
+        sig.set_blocked(old);
+    }
+    result
 }
 
 pub(super) fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: SignalInfo) {
@@ -472,7 +472,7 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         // tkill/tgkill must NOT interrupt the target per POSIX; the signal
         // is queued as pending and stays invisible until unblocked.
         if thread.signal.send_signal(sig) {
-            ax_task::wake_task(&task);
+            task.interrupt();
         }
     }
 
@@ -521,9 +521,11 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             proc_data.clear_ptrace_stop();
         }
         if let Some(tid) = proc_data.signal.send_signal(sig) {
-            // A thread was found that doesn't have the signal blocked — wake it.
+            // A thread was found that doesn't have the signal blocked.
+            // Mark it interrupted so blocking syscalls wrapped by
+            // `future::interruptible` can return EINTR promptly.
             if let Ok(task) = get_task(tid) {
-                ax_task::wake_task(&task);
+                task.interrupt();
             }
         } else {
             // All threads have this signal blocked — the signal is now pending

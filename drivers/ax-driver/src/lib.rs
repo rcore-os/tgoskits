@@ -44,22 +44,6 @@ crate::model_register!(
 );
 
 pub mod error;
-#[cfg(any(
-    all(feature = "serial", plat_dyn),
-    all(any(target_arch = "aarch64", target_arch = "riscv64"), plat_dyn),
-    all(feature = "rockchip-soc", plat_dyn),
-    all(feature = "rockchip-pm", plat_dyn),
-    all(feature = "sg2002-placeholder", plat_dyn),
-    all(feature = "rockchip-dwmmc", plat_dyn),
-    all(feature = "rockchip-sdhci", plat_dyn),
-    all(feature = "phytium-mci", plat_dyn),
-    all(feature = "k230-sdhci", plat_dyn),
-    all(feature = "rk3588-pcie", plat_dyn),
-    all(feature = "rknpu", plat_dyn),
-    all(feature = "xhci-mmio", target_os = "none", plat_dyn),
-    all(feature = "xhci-pci", target_os = "none"),
-    all(virtio_dev, plat_dyn)
-))]
 pub mod mmio;
 
 #[cfg(feature = "block")]

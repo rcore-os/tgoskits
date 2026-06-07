@@ -1,0 +1,32 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "2G",
+    "-smp",
+    "4",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-ffmpeg.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-snapshot",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/test_ffmpeg.sh"
+success_regex = ["(?m)^={2,}\\s*ALL FFMPEG TESTS PASSED\\s*={2,}\\s*$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?m)^FFMPEG_SMOKE_TEST_FAILED\\s*$",
+    "(?m)^FFMPEG_BASIC_TEST_FAILED\\s*$",
+    "(?m)^FFMPEG_THREAD_TEST_FAILED\\s*$",
+    "(?m)^FFMPEG_CODEC_TEST_FAILED\\s*$",
+    "(?m)^FFMPEG_NETWORK_TEST_FAILED\\s*$",
+]
+timeout = 3600

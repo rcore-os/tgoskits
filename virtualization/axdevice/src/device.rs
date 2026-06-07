@@ -22,14 +22,11 @@ use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
-use axaddrspace::{
-    GuestPhysAddr, GuestPhysAddrRange,
-    device::{AccessWidth, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange},
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
+    DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
-#[cfg(target_arch = "x86_64")]
-use axdevice_base::map_device_of_type;
-use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
-use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
@@ -80,6 +77,12 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
     }
 }
 
+impl<R: DeviceAddrRange + 'static> Default for AxEmuDevices<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 type AxEmuMmioDevices = AxEmuDevices<GuestPhysAddrRange>;
 type AxEmuSysRegDevices = AxEmuDevices<SysRegAddrRange>;
 type AxEmuPortDevices = AxEmuDevices<PortRange>;
@@ -90,6 +93,12 @@ pub struct AxVmDevices {
     emu_mmio_devices: AxEmuMmioDevices,
     emu_sys_reg_devices: AxEmuSysRegDevices,
     emu_port_devices: AxEmuPortDevices,
+    #[cfg(target_arch = "x86_64")]
+    x86_ioapic: Option<Arc<EmulatedIoApic>>,
+    #[cfg(target_arch = "x86_64")]
+    x86_pit: Option<Arc<EmulatedPit>>,
+    #[cfg(target_arch = "x86_64")]
+    x86_serial: Option<Arc<EmulatedSerialPort>>,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator>>,
 }
@@ -128,6 +137,12 @@ impl AxVmDevices {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
+            #[cfg(target_arch = "x86_64")]
+            x86_ioapic: None,
+            #[cfg(target_arch = "x86_64")]
+            x86_pit: None,
+            #[cfg(target_arch = "x86_64")]
+            x86_serial: None,
             ivc_channel: None,
         };
 
@@ -287,7 +302,9 @@ impl AxVmDevices {
                 EmulatedDeviceType::Console => {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        this.add_port_dev(Arc::new(EmulatedSerialPort::new()));
+                        let serial = Arc::new(EmulatedSerialPort::new());
+                        this.x86_serial = Some(Arc::clone(&serial));
+                        this.add_port_dev(serial);
                         info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
@@ -301,10 +318,12 @@ impl AxVmDevices {
                 EmulatedDeviceType::X86IoApic => {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        this.add_mmio_dev(Arc::new(EmulatedIoApic::new(
+                        let ioapic = Arc::new(EmulatedIoApic::new(
                             config.base_gpa.into(),
                             Some(config.length),
-                        )));
+                        ));
+                        this.x86_ioapic = Some(Arc::clone(&ioapic));
+                        this.add_mmio_dev(ioapic);
                         info!(
                             "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
                             config.base_gpa, config.length
@@ -321,7 +340,9 @@ impl AxVmDevices {
                 EmulatedDeviceType::X86Pit => {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        this.add_port_dev(Arc::new(EmulatedPit::new()));
+                        let pit = Arc::new(EmulatedPit::new());
+                        this.x86_pit = Some(Arc::clone(&pit));
+                        this.add_port_dev(pit);
                         info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
@@ -440,46 +461,41 @@ impl AxVmDevices {
     /// Returns the guest vector programmed for an x86 IOAPIC GSI.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_vector_for_gsi(&self, gsi: usize) -> Option<u8> {
-        self.emu_mmio_devices.iter().find_map(|dev| {
-            map_device_of_type(dev, |ioapic: &EmulatedIoApic| ioapic.vector_for_gsi(gsi)).flatten()
-        })
+        self.x86_ioapic
+            .as_ref()
+            .and_then(|ioapic| ioapic.vector_for_gsi(gsi))
     }
 
     /// Assert an x86 IOAPIC GSI and return the interrupt to inject.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
-        self.emu_mmio_devices.iter().find_map(|dev| {
-            map_device_of_type(dev, |ioapic: &EmulatedIoApic| ioapic.assert_gsi(gsi)).flatten()
-        })
+        self.x86_ioapic
+            .as_ref()
+            .and_then(|ioapic| ioapic.assert_gsi(gsi))
     }
 
     /// Broadcast an x86 local APIC EOI to the virtual IOAPIC.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicInterrupt> {
-        self.emu_mmio_devices.iter().find_map(|dev| {
-            map_device_of_type(dev, |ioapic: &EmulatedIoApic| {
-                ioapic.end_of_interrupt(vector)
-            })
-            .flatten()
-        })
+        self.x86_ioapic
+            .as_ref()
+            .and_then(|ioapic| ioapic.end_of_interrupt(vector))
     }
 
     /// Consume a pending x86 PIT channel 0 timer tick if the deadline is due.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_pit_consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        self.emu_port_devices.iter().any(|dev| {
-            map_device_of_type(dev, |pit: &EmulatedPit| pit.consume_irq0_if_due(now_ns))
-                .unwrap_or(false)
-        })
+        self.x86_pit
+            .as_ref()
+            .is_some_and(|pit| pit.consume_irq0_if_due(now_ns))
     }
 
     /// Poll x86 COM1 and return whether it has a pending RX interrupt.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_serial_poll_irq(&self) -> bool {
-        self.emu_port_devices.iter().any(|dev| {
-            map_device_of_type(dev, |serial: &EmulatedSerialPort| serial.poll_irq())
-                .unwrap_or(false)
-        })
+        self.x86_serial
+            .as_ref()
+            .is_some_and(|serial| serial.poll_irq())
     }
 
     /// Iterates over the MMIO devices in the set.

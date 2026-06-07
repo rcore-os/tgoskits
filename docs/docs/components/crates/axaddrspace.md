@@ -1,6 +1,6 @@
 # `axaddrspace`
 
-> 路径：`memory/axaddrspace`
+> 路径：`virtualization/axaddrspace`
 > 类型：库 crate
 > 分层：组件层 / 客户机地址空间与嵌套页表
 > 版本：`0.3.0`

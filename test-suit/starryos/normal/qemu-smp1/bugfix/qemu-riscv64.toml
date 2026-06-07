@@ -18,6 +18,8 @@ to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/bug-futex-wait-wake",
+    "/usr/bin/bug-fallocate-zero-punch",
+    "/usr/bin/bug-mempolicy-validation",
     "/usr/bin/bug-faccessat2-validation",
     "/usr/bin/bug-fchmodat2-flags",
     "/usr/bin/bug-linkat-flags-symlink",

@@ -30,7 +30,7 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh \
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \
+  --qemu-config apps/starry/codex-cli/qemu-x86_64.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
@@ -98,6 +98,7 @@ cd /tmp/tgoskits-demo
 git clone --depth 1 --branch dev https://github.com/rcore-os/tgoskits.git repo
 cd repo
 codex exec \
+  -m gpt-5.4 \
   --dangerously-bypass-approvals-and-sandbox \
   -C /tmp/tgoskits-demo/repo \
   'Please read this repository and briefly describe its StarryOS syscall test structure. Answer in Simplified Chinese.'

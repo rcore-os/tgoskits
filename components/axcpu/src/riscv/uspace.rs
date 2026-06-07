@@ -32,8 +32,17 @@ impl UserContext {
         sstatus.set_fs(FS::Initial); // set the FPU to initial state
 
         #[cfg(feature = "xuantie-c9xx")]
-        // enable vector status bits of sstatus
-        Self::set_sstatus(&mut sstatus, 0x3 << 23, false);
+        {
+            // Enable standard RISC-V VS plus the legacy XThead status bits used
+            // by older C9xx cores. K230 C908V reports standard V in QEMU.
+            const SSTATUS_VS_INITIAL: usize = 0x1 << 9;
+            const XTHEAD_LEGACY_VS_MASK: usize = 0x3 << 23;
+            Self::set_sstatus(
+                &mut sstatus,
+                SSTATUS_VS_INITIAL | XTHEAD_LEGACY_VS_MASK,
+                false,
+            );
+        }
 
         Self(TrapFrame {
             regs: GeneralRegisters {

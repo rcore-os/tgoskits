@@ -38,7 +38,6 @@ pub extern "C" fn kernel_entry(
 }
 
 pub(crate) fn mmu_entry() -> ! {
-    super::relocate::reset();
     super::trap::setup();
     super::trap::init_local();
     crate::prime_entry()
@@ -47,7 +46,7 @@ pub(crate) fn mmu_entry() -> ! {
 pub(crate) unsafe extern "C" fn _secondary_entry(arg: usize) -> ! {
     let cpu_meta = unsafe { &*(crate::mem::phys_to_virt(arg) as *const PerCpuMeta) };
     super::power::notify_ap_started(cpu_meta.cpu_id);
-    crate::entry::secondary_entry(cpu_meta);
+    crate::entry::secondary_entry(arg);
     loop {
         core::hint::spin_loop();
     }
