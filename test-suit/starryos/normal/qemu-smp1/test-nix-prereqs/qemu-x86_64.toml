@@ -22,6 +22,7 @@ test_commands = [
     "/usr/bin/starry-test-suit/test-pty-master-close",
     "/usr/bin/test-pty-openpt",
     "/usr/bin/test-unshare-mount-ns",
+    "/usr/bin/starry-test-suit/test-unshare-fs",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = [

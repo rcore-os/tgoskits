@@ -18,11 +18,12 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test_nix.sh"
 success_regex = [
-    "(?m)^NIX_NOSANDBOX_TEST_PASSED\\s*$",
+    "(?m)^NIX_ALL_TESTS_PASSED\\s*$",
 ]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?i)\bfatal\b',
     "(?m)^NIX_NOSANDBOX_TEST_FAILED\\s*$",
+    "(?m)^NIX_NIXPKGS_TEST_FAILED\\s*$",
 ]
 timeout = 1200

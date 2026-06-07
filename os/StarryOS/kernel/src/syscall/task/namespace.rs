@@ -2,7 +2,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_task::current;
 use linux_raw_sys::general::{
-    CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
@@ -10,8 +10,13 @@ use crate::{
     task::AsThread,
 };
 
-const SUPPORTED_NS_FLAGS: u32 =
-    CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWUSER;
+const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
+    | CLONE_NEWPID
+    | CLONE_NEWNS
+    | CLONE_NEWNET
+    | CLONE_NEWIPC
+    | CLONE_NEWUSER
+    | CLONE_FS;
 
 /// unshare(2) — disassociate parts of the process execution context.
 pub fn sys_unshare(flags: u32) -> AxResult<isize> {
@@ -23,6 +28,7 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let want_ns = flags & CLONE_NEWNS != 0;
+    let want_fs = flags & CLONE_FS != 0;
 
     // Phase 1: spinlock-protected nsproxy ops (SpinNoIrq — no sleeping).
     {
@@ -44,11 +50,21 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         }
     }
 
-    // Phase 2: mount-namespace ops require the FS_CONTEXT Mutex
+    // Phase 2: FsContext ops (mount-ns + CLONE_FS) require a Mutex
     // (blocking), which must not be held inside SpinNoIrq.
     if want_ns {
         FS_CONTEXT.lock().unshare_mount_namespace()?;
         proc_data.nsproxy.lock().unshare_mnt();
+    }
+    if want_fs && !want_ns {
+        // CLONE_FS alone: clone the FsContext to break sharing with any
+        // task created via clone(CLONE_FS).  Single lock to avoid
+        // re-entrant acquisition of the task-scoped mutex.
+        let ctx = {
+            let mut guard = FS_CONTEXT.lock();
+            let clone = guard.clone();
+            *guard = clone;
+        };
     }
 
     Ok(0)

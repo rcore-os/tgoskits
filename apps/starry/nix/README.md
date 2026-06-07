@@ -38,10 +38,21 @@ connected once mount namespace isolation is available in StarryOS.
 
 | Script | Mode | Runs? |
 |--------|------|-------|
-| `nix-nosandbox` | `nix-build --option sandbox false` | ✅ CI |
+| `nix-nosandbox` | `builtins.derivation` (no nixpkgs) | ✅ CI |
+| `nix-nixpkgs` | `pkgs.stdenv.mkDerivation` (requires nixpkgs) | ✅ CI |
 | `nix` | `nix-build --option sandbox true` | ❌ blocked (mount ns) |
 
-Both variants:
+`test_nix.sh` runs phases in order: nosandbox gate first (fast, ~30s),
+then nixpkgs (requires network for nixpkgs tarball + stdenv substitutes,
+~5-15min first run, ~600s timeout).
+
+The nixpkgs test uses `builtins.fetchTarball` to fetch a pinned nixpkgs
+revision from GitHub, imports it, and builds a minimal C hello-world with
+`pkgs.stdenv.mkDerivation`. Substitutes are allowed (`--no-substitute` is
+NOT passed) so the stdenv toolchain is downloaded from `cache.nixos.org`
+rather than bootstrapped from source.
+
+Both nosandbox variants:
 - Install prebuilt Nix (apk) → `nix --version` gate → tiny local derivation
 - Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
 - Sandbox detection: `grep` build log for `disabling sandbox` → call `fail()`
@@ -65,8 +76,9 @@ See `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/`.
 apps/starry/nix/
 ├── prebuild.sh          # apk add nix into staging rootfs
 ├── nix.sh               # sandbox-enabled nix-build (blocked, not CI)
-├── nix-nosandbox.sh     # unsandboxed nix-build (CI entry)
-├── test_nix.sh          # unified entry — runs nix-nosandbox only
+├── nix-nosandbox.sh     # builtins.derivation (CI gate, ~30s)
+├── nix-nixpkgs.sh       # pkgs.stdenv.mkDerivation (CI, requires network)
+├── test_nix.sh          # unified entry — runs nosandbox → nixpkgs in order
 ├── build-x86_64-unknown-none.toml
 ├── qemu-x86_64.toml     # 1200s timeout, shell_init_cmd=test_nix.sh
 └── README.md            # this file
