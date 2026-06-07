@@ -133,19 +133,35 @@ struct WaitingLock {
     kind: LockKind,
 }
 
+type PosixLockWaitTable = BTreeMap<Pid, Vec<WaitingLock>>;
+
 struct PosixLockWaitGuard {
     pid: Pid,
     request: WaitingLock,
 }
 
 impl PosixLockWaitGuard {
-    fn new(pid: Pid, request: WaitingLock) -> Self {
-        POSIX_LOCK_WAITS
-            .write()
-            .entry(pid)
-            .or_default()
-            .push(request);
-        Self { pid, request }
+    fn try_new(pid: Pid, request: WaitingLock, owner: &FOwner) -> Result<Option<Self>, LinuxError> {
+        let mut table = FCNTL_LOCKS.write();
+        let Some(entries) = table.get_mut(&request.key) else {
+            return Ok(None);
+        };
+        entries.retain(|e| !e.owner.is_dead());
+        let still_blocked =
+            find_conflict(entries, owner, request.start, request.end, request.kind).is_some();
+        if entries.is_empty() {
+            table.remove(&request.key);
+        }
+        if !still_blocked {
+            return Ok(None);
+        }
+
+        let mut waits = POSIX_LOCK_WAITS.write();
+        if posix_lock_deadlock_would_occur(&table, &waits, pid, request) {
+            return Err(LinuxError::EDEADLK);
+        }
+        waits.entry(pid).or_default().push(request);
+        Ok(Some(Self { pid, request }))
     }
 }
 
@@ -388,9 +404,12 @@ fn push_posix_conflict_pids(
     }
 }
 
-fn posix_lock_deadlock_would_occur(requester: Pid, request: WaitingLock) -> bool {
-    let table = FCNTL_LOCKS.read();
-    let waits = POSIX_LOCK_WAITS.read();
+fn posix_lock_deadlock_would_occur(
+    table: &BTreeMap<InodeKey, Vec<FLockEntry>>,
+    waits: &PosixLockWaitTable,
+    requester: Pid,
+    request: WaitingLock,
+) -> bool {
     let mut stack = Vec::new();
     let mut seen = Vec::new();
 
@@ -609,28 +628,33 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> AxResult<isi
                 // graph edges for conflicts that already cleared.
                 let wq = lock_waiters(key);
                 wq.wait_if(!0u32, None, || {
-                    let mut table = FCNTL_LOCKS.write();
-                    let Some(entries) = table.get_mut(&key) else {
-                        return false;
-                    };
-                    entries.retain(|e| !e.owner.is_dead());
                     let owner = make_owner(ofd, &file);
-                    let still_blocked = find_conflict(entries, &owner, start, end, want).is_some();
-                    if entries.is_empty() {
-                        table.remove(&key);
-                    }
-                    drop(table);
-                    if !still_blocked {
-                        return false;
-                    }
                     if let Some(pid) = waiter_pid {
-                        if posix_lock_deadlock_would_occur(pid, waiting) {
-                            deadlock = true;
+                        match PosixLockWaitGuard::try_new(pid, waiting, &owner) {
+                            Ok(Some(guard)) => wait_guard = Some(guard),
+                            Ok(None) => return false,
+                            Err(LinuxError::EDEADLK) => {
+                                deadlock = true;
+                                return false;
+                            }
+                            Err(_) => unreachable!("try_new only reports EDEADLK"),
+                        }
+                    } else {
+                        let mut table = FCNTL_LOCKS.write();
+                        let Some(entries) = table.get_mut(&key) else {
+                            return false;
+                        };
+                        entries.retain(|e| !e.owner.is_dead());
+                        let still_blocked =
+                            find_conflict(entries, &owner, start, end, want).is_some();
+                        if entries.is_empty() {
+                            table.remove(&key);
+                        }
+                        if !still_blocked {
                             return false;
                         }
-                        wait_guard = Some(PosixLockWaitGuard::new(pid, waiting));
                     }
-                    still_blocked
+                    true
                 })?;
                 drop(wait_guard);
                 if deadlock {
