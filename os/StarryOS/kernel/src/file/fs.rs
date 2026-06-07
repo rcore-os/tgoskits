@@ -14,12 +14,16 @@ use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
+use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat, get_file_like};
 use crate::{
     file::{IoDst, IoSrc},
     pseudofs::Device,
 };
+
+// FusionIO/directFS atomic-write toggle used by MySQL.
+const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
@@ -196,7 +200,14 @@ impl FileLike for File {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        self.inner().backend()?.location().ioctl(cmd, arg)
+        let loc = self.inner().backend()?.location();
+        match cmd {
+            DFS_IOCTL_ATOMIC_WRITE_SET => {
+                let _enabled: u32 = (arg as *const u32).vm_read()?;
+                Ok(0)
+            }
+            _ => loc.ioctl(cmd, arg),
+        }
     }
 
     fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {

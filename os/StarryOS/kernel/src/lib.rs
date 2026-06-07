@@ -33,3 +33,4 @@ mod task;
 mod time;
 mod tracepoint;
 mod trap;
+mod uprobe;

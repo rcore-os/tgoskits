@@ -1,6 +1,6 @@
 use core::{cell::UnsafeCell, ptr::NonNull};
 
-use acpi::{AcpiError, Handler, PhysicalMapping, sdt::spcr::Spcr};
+use acpi::{AcpiError, Handler, PhysicalMapping, address::AddressSpace, sdt::spcr::Spcr};
 use some_serial::{ns16550::Ns16550, *};
 
 use crate::{console::Con, mem::_fixmap_io};
@@ -36,20 +36,45 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
     if let Some(freq) = spsr.uart_clock_frequency() {
         clock = freq.into();
     }
-    let vaddr;
+    let mut vaddr = None;
+    let mut is_mmio = false;
 
     match spsr.interface_type() {
         acpi::sdt::spcr::SpcrInterfaceType::Full16550
         | acpi::sdt::spcr::SpcrInterfaceType::Generic16550 => {
-            vaddr = _fixmap_io(base_address.address as _);
-
-            let mut uart = Ns16550::new_mmio(
-                NonNull::new(vaddr).unwrap(),
-                clock,
-                base_address.access_size as _,
-            );
-            let tx = uart.take_tx().unwrap();
-            set_sender(tx);
+            match base_address.address_space {
+                AddressSpace::SystemIo => {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let mut uart = Ns16550::new_port(base_address.address as u16, clock);
+                        uart.open();
+                        let tx = uart.take_tx().unwrap();
+                        set_sender(tx);
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        println!("SPCR I/O port early console is only supported on x86_64.");
+                        return None;
+                    }
+                }
+                AddressSpace::SystemMemory => {
+                    let mapped = _fixmap_io(base_address.address as _);
+                    vaddr = Some(mapped);
+                    is_mmio = true;
+                    let mut uart = Ns16550::new_mmio(
+                        NonNull::new(mapped).unwrap(),
+                        clock,
+                        base_address.access_size as _,
+                    );
+                    uart.open();
+                    let tx = uart.take_tx().unwrap();
+                    set_sender(tx);
+                }
+                space => {
+                    println!("Unsupported SPCR address space `{space:?}` for early console.");
+                    return None;
+                }
+            };
         }
         t => {
             println!("Unsupported SPCR interface type `{t:?}` for early console.");
@@ -60,10 +85,17 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
     unsafe { crate::console::set_out(&SENDER) };
     unsafe {
         crate::console::DEBUG_BASE = base_address.address as usize;
-        crate::console::DEBUG_IS_MMIO = true;
+        crate::console::DEBUG_IS_MMIO = is_mmio;
     }
 
-    println!("Early console initialized at vaddr {:#x}", vaddr as usize);
+    if let Some(vaddr) = vaddr {
+        println!("Early console initialized at vaddr {:#x}", vaddr as usize);
+    } else {
+        println!(
+            "Early console initialized at I/O port {:#x}",
+            base_address.address
+        );
+    }
 
     Some(())
 }

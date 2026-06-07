@@ -210,7 +210,7 @@ impl FileLike for ExportedGemBuffer {
         "anon_inode:[rknpu-gem]".into()
     }
 
-    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
+    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
         Ok(DeviceMmap::Physical(self.range, None))
     }
 }
@@ -547,7 +547,7 @@ mod tests {
         let exported = ExportedGemBuffer::new(range);
 
         assert!(
-            matches!(exported.device_mmap(0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
         );
     }
 }

@@ -167,7 +167,19 @@ pub fn sys_mmap(
     };
 
     let aligned = addr.align_down(page_size);
-    let end = (addr + length).align_up(page_size);
+    // Guard against `addr + length` (and the page-size round-up that `align_up`
+    // performs internally as `raw_end + page_size - 1`) wrapping past the address
+    // space for pathological requests (e.g. MAP_FIXED with a near-max addr and a
+    // huge length). Linux rejects these with EINVAL up front. `checked_add`
+    // catches the first overflow; the `end < raw_end` check catches the case where
+    // `addr + length` itself didn't overflow but rounding up to the page boundary
+    // did — otherwise the wrapped value would flow into the length computation and
+    // the (non-FIXED) hint search below.
+    let raw_end = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end = raw_end.align_up(page_size);
+    if end < raw_end {
+        return Err(AxError::InvalidInput);
+    }
     let mut length = end - aligned;
 
     let file = if anonymous {
@@ -175,7 +187,18 @@ pub fn sys_mmap(
     } else {
         Some(get_file_like(fd)?)
     };
-    let mut device_mmap_top = file.as_ref().map(|fl| fl.device_mmap(offset as u64));
+    // Only probe `device_mmap` for MAP_SHARED. MAP_PRIVATE always maps
+    // through the file_mmap/CoW path below and never consumes this result, so
+    // calling it would be wasted work — and for fds whose `device_mmap` has
+    // side effects (e.g. a perf-event ringbuf allocation) it would leave the
+    // fd in a half-initialized state that rejects the later real MAP_SHARED
+    // mapping. Probe lazily here, then commit it in the MAP_SHARED arm.
+    let mut device_mmap_top = if matches!(map_type, MmapFlags::SHARED) {
+        file.as_ref()
+            .map(|fl| fl.device_mmap(offset as u64, length as u64))
+    } else {
+        None
+    };
 
     // Validate file_mmap permissions and memfd seals before any destructive
     // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old
@@ -485,8 +508,16 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
-    // man 2 mprotect: addresses without a mapping → ENOMEM.
-    if aspace.find_area(start_addr).is_none() {
+    // man 2 mprotect: if any page in [addr, addr+len) lacks a mapping → ENOMEM.
+    // Linux validates the whole range, not just the first page: an unmapped hole
+    // in the middle of `[mapped][hole][mapped]` must fail instead of silently
+    // protecting only the mapped fragments. `can_access_range` with an empty
+    // access mask is a pure contiguous-coverage check (every area's flags
+    // trivially contain the empty set), so it returns false on the first gap.
+    // We pre-check and leave the mapping untouched on failure, i.e. report
+    // ENOMEM atomically without any half-applied protection — the errno real
+    // programs test for.
+    if !aspace.can_access_range(start_addr, length, MappingFlags::empty()) {
         return Err(AxError::NoMemory);
     }
     if permission_flags.contains(MmapProt::WRITE) {
@@ -869,6 +900,46 @@ pub fn sys_mlock(addr: usize, length: usize) -> AxResult<isize> {
     sys_mlock2(addr, length, 0)
 }
 
-pub fn sys_mlock2(_addr: usize, _length: usize, _flags: u32) -> AxResult<isize> {
+pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
+    // Linux `mlock2` accepts only `flags == 0` or `MLOCK_ONFAULT`; any other bit
+    // is rejected with EINVAL and must produce no populate/fault side effect.
+    const MLOCK_ONFAULT: u32 = 0x01;
+    if flags & !MLOCK_ONFAULT != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if length == 0 {
+        return Ok(0);
+    }
+    let aligned = addr.align_down(PageSize::Size4K);
+    // `checked_add` guards `addr + length`, but `align_up` itself adds
+    // `PAGE_SIZE - 1` internally and can still wrap a near-`usize::MAX` end to a
+    // small value; detect that wrap (end < raw_end) and reject, as Linux rejects
+    // an out-of-range mlock with EINVAL rather than locking a tiny wrapped range.
+    let raw_end = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end = raw_end.align_up(PageSize::Size4K);
+    if end < raw_end {
+        return Err(AxError::InvalidInput);
+    }
+    let size = end - aligned;
+
+    let curr = current();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
+    let start = VirtAddr::from(aligned);
+    if flags & MLOCK_ONFAULT != 0 {
+        // MLOCK_ONFAULT: lock the range but bring pages in lazily (no eager
+        // fault). Still report ENOMEM if the range has an unmapped hole, as
+        // Linux does. An empty access mask makes `can_access_range` a pure
+        // contiguous-coverage check.
+        if !aspace.can_access_range(start, size, MappingFlags::empty()) {
+            return Err(AxError::NoMemory);
+        }
+    } else {
+        // Plain mlock (flags == 0): honor the "fault now" contract by faulting
+        // the whole range in, reporting ENOMEM on any unmapped page. On this
+        // no-swap kernel the faulted pages then stay resident, satisfying mlock's
+        // residency guarantee. `populate_area` is the MAP_POPULATE primitive.
+        aspace.populate_area(start, size, MappingFlags::READ)?;
+    }
     Ok(0)
 }

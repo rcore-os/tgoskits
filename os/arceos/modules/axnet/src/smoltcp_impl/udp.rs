@@ -189,12 +189,14 @@ impl UdpSocket {
             return Ok(PollState {
                 readable: false,
                 writable: false,
+                readiness_version: 0,
             });
         }
         SOCKET_SET.with_socket_mut::<udp::Socket, _, _>(self.handle, |socket| {
             Ok(PollState {
                 readable: socket.can_recv(),
                 writable: socket.can_send(),
+                readiness_version: 0,
             })
         })
     }

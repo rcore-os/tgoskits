@@ -1174,6 +1174,7 @@ async fn build_and_run_c_test(
         None,
         SnapshotPersistence::Discard,
     )?;
+    let cargo = build::load_cargo_config(&request)?;
     let input = cbuild::ArceosCBuildInput {
         app_dir: source_dir.clone(),
         app_name: c_test_app_name(&source_dir, &test.name),
@@ -1182,7 +1183,8 @@ async fn build_and_run_c_test(
         features: build_config.build.features.clone(),
     };
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
-    let qemu = qemu_config;
+    let mut qemu = qemu_config;
+    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
     ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
     arceos
         .app

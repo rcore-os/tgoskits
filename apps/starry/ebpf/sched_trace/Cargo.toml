@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "sched_trace",
+    "sched_trace-common",
+    "sched_trace-ebpf",
+]
+default-members = ["sched_trace", "sched_trace-common"]
+
+[workspace.package]
+license = "MIT OR Apache-2.0"
+edition = "2024"
+
+[workspace.dependencies]
+aya = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-build = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
+
+anyhow = { version = "1", default-features = false }
+cargo_metadata = { version = "0.23.0", default-features = false }
+libc = { version = "0.2.159", default-features = false }
+which = { version = "6.0.0", default-features = false }
+
+[profile.release.package.sched_trace-ebpf]
+debug = 2
+codegen-units = 1

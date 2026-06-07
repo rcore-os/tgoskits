@@ -25,9 +25,23 @@ pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
 }
 
+// `#[inline(never)]` keeps `sysno` reachable as a real call target so a kprobe
+// planted at its symbol actually fires; its first-argument register also holds
+// the raw syscall id, letting a `profile`-style eBPF demo read the syscall
+// number directly off the probed register. In release builds LLVM would
+// otherwise inline it into `handle_syscall` and the planted `int3` would land
+// on a copy that never executes, so the probe would never trigger.
+#[inline(never)]
+pub fn sysno(id: usize) -> Option<Sysno> {
+    let Some(sysno) = Sysno::new(id) else {
+        warn!("Invalid syscall number: {}", id);
+        return None;
+    };
+    Some(sysno)
+}
+
 pub fn handle_syscall(uctx: &mut UserContext) {
-    let Some(sysno) = Sysno::new(uctx.sysno()) else {
-        warn!("Invalid syscall number: {}", uctx.sysno());
+    let Some(sysno) = sysno(uctx.sysno()) else {
         uctx.set_retval(-LinuxError::ENOSYS.code() as _);
         return;
     };
@@ -374,12 +388,21 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4().into(),
             uctx.arg5().into(),
         ),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::epoll_create => sys_epoll_create(uctx.arg0() as _),
         Sysno::epoll_create1 => sys_epoll_create1(uctx.arg0() as _),
         Sysno::epoll_ctl => sys_epoll_ctl(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3().into(),
+        ),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::epoll_wait => sys_epoll_wait(
+            uctx.arg0() as _,
+            uctx.arg1().into(),
+            uctx.arg2() as _,
+            uctx.arg3() as _,
         ),
         Sysno::epoll_pwait => sys_epoll_pwait(
             uctx.arg0() as _,
@@ -579,6 +602,17 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
             uctx.arg4() as _,
+        ),
+        Sysno::set_mempolicy => {
+            sys_set_mempolicy(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::mbind => sys_mbind(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
 
         // task management

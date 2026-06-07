@@ -30,18 +30,12 @@ use virtio_drivers::transport::{
 use crate::virtio::VirtIoHalImpl;
 
 #[cfg(plat_dyn)]
+mod acpi;
+#[cfg(plat_dyn)]
 mod fdt;
-#[cfg(all(
-    plat_dyn,
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
+#[cfg(pci_dyn_acpi_intx_route)]
+pub(crate) use acpi::acpi_irq_for_endpoint;
+#[cfg(pci_dyn_intx_route)]
 pub(crate) use fdt::fdt_irq_for_endpoint;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
@@ -219,21 +213,38 @@ pub fn endpoint_legacy_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<
     if line == 0 || line == u8::MAX {
         return None;
     }
-    Some(pci_legacy_line_to_irq(line))
+    Some(legacy_line_to_irq(line))
 }
 
-const fn pci_legacy_line_to_irq(line: u8) -> usize {
-    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
-        if cfg!(target_arch = "x86_64") {
-            0x20
-        } else {
-            0
-        }
+pub(crate) const fn legacy_line_to_irq(line: u8) -> usize {
+    legacy_line_to_irq_for_platform(line, cfg!(target_arch = "x86_64"), cfg!(plat_dyn))
+}
+
+const fn legacy_line_to_irq_for_platform(line: u8, is_x86_64: bool, is_plat_dyn: bool) -> usize {
+    let base = if is_x86_64 {
+        if is_plat_dyn { 0x30 } else { 0x20 }
     } else {
         0
     };
 
-    PCI_IRQ_BASE + line as usize
+    base + line as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::legacy_line_to_irq_for_platform;
+
+    #[test]
+    fn x86_64_legacy_line_uses_dynamic_ioapic_base_on_plat_dyn() {
+        assert_eq!(legacy_line_to_irq_for_platform(9, true, false), 0x29);
+        assert_eq!(legacy_line_to_irq_for_platform(9, true, true), 0x39);
+    }
+
+    #[test]
+    fn non_x86_64_legacy_line_remains_raw_irq() {
+        assert_eq!(legacy_line_to_irq_for_platform(9, false, false), 9);
+        assert_eq!(legacy_line_to_irq_for_platform(9, false, true), 9);
+    }
 }
 
 pub fn register_legacy_irq_route(bus_start: u8, bus_end: u8, irq: usize) {

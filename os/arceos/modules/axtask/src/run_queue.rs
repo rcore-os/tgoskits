@@ -704,6 +704,18 @@ impl AxRunQueue {
             }
         }
 
+        // `prev_task.state()` must be sampled before the architectural switch:
+        // callers like `exit_current` already set it to `Exited`/`Blocked`,
+        // and that pre-switch state is what `sched:sched_switch` reports.
+        #[cfg(feature = "tracepoint-hooks")]
+        ax_crate_interface::call_interface!(
+            crate::sched_tracepoint::SchedTracepoint::on_sched_switch(
+                prev_task.id().as_u64(),
+                next_task.id().as_u64(),
+                prev_task.state() as u32,
+            )
+        );
+
         unsafe {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();

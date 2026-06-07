@@ -11,6 +11,8 @@ This skill is a normative review specification, not a suggestion list. When it t
 
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
+After reading the full skill, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, duplicate and overlap analysis, validation, blocking findings, submission rules, reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
 ## Goal
@@ -211,7 +213,7 @@ Review the PR against its stated intent, the current base branch, existing proje
 - `starry-test-suit` rules when StarryOS test cases or `qemu-*.toml` files change.
 - `cross-kernel-driver` architecture rules when portable driver crates or driver glue change.
 
-For bug fixes, require a reproduction test that fails before the fix and passes after it unless the environment makes that impossible. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
+For bug fixes (修复 bug), require a regression or reproduction test that fails on the unfixed behavior and passes only after the fix unless concrete evidence shows the environment makes such a test impossible. The reviewer must verify this from the test code, author-provided red/green evidence, or local red/green validation when practical. If the PR fixes a bug but lacks a post-fix-only regression test and no concrete impossibility is documented, treat that as blocking. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
 
 For PRs that add StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
 
@@ -387,7 +389,7 @@ Treat these as blocking unless clearly non-blocking:
 - a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
-- bug fixes lack meaningful reproduction coverage;
+- a bug-fix PR lacks a regression or reproduction test that fails on the unfixed behavior and passes only after the fix, unless concrete evidence shows such a test is impossible;
 - the PR adds, changes, or relies on any `[patch.crates-io]` override, instead of using normal dependency resolution, an upstream fix, a dependency upgrade, or an explicit local boundary adapter;
 - merge conflicts are unresolved, conflict repair resurrects outdated base APIs instead of adapting PR intent to current base, or the repaired head was not revalidated after push;
 - StarryOS app-support PRs place app workflows under `test-suit/starryos/normal` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching normal test-suit case;
@@ -448,7 +450,7 @@ Review body must explain in Chinese:
 - duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
 - conflict handling status when applicable: conflicted files, resolution logic, validation after repair, and whether a repair commit was pushed or the work was intentionally kept as a dry run;
 - for PR-related CI failures, the failing check, failure mode, and expected fix direction;
-- reproduction coverage status for bug fixes;
+- reproduction coverage status for bug fixes, including whether the regression test fails on the unfixed behavior and passes only after the fix;
 - unresolved review conversations that were resolved, and conversations intentionally left open and why;
 - any behavior that remains unimplemented, partial, or should be completed in future work;
 - any known environment limitation.

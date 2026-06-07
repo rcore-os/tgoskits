@@ -208,14 +208,14 @@ fn try_remove_dentry_in_block<B: BlockDevice>(
     parent_inode: &Ext4Inode,
     phys: AbsoluteBN,
     name_bytes: &[u8],
-) -> bool {
+) -> Ext4Result<bool> {
     let superblock = &fs.superblock;
     let mut removed = false;
-    let _ = fs.datablock_cache.modify(block_dev, phys, |data| {
+    fs.datablock_cache.modify(block_dev, phys, |data| {
         removed =
             remove_dentry_in_dir_block(superblock, parent_ino_num, parent_inode, data, name_bytes);
-    });
-    removed
+    })?;
+    Ok(removed)
 }
 
 fn parent_dir_data_blocks<B: BlockDevice>(
@@ -303,7 +303,7 @@ pub(crate) fn remove_named_entry_at<B: BlockDevice>(
     phys: AbsoluteBN,
     name_bytes: &[u8],
 ) -> Ext4Result<()> {
-    if try_remove_dentry_in_block(fs, block_dev, parent_ino, parent_inode, phys, name_bytes) {
+    if try_remove_dentry_in_block(fs, block_dev, parent_ino, parent_inode, phys, name_bytes)? {
         Ok(())
     } else {
         Err(Ext4Error::not_found())

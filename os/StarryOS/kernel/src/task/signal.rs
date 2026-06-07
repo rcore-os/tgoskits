@@ -444,11 +444,11 @@ pub fn with_blocked_signals<R>(
     let sig = &curr.as_thread().signal;
 
     let old_blocked = blocked.map(|set| sig.set_blocked(set));
-    f().inspect(|_| {
-        if let Some(old) = old_blocked {
-            sig.set_blocked(old);
-        }
-    })
+    let result = f();
+    if let Some(old) = old_blocked {
+        sig.set_blocked(old);
+    }
+    result
 }
 
 pub(super) fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: SignalInfo) {

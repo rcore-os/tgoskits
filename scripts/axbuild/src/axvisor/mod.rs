@@ -374,7 +374,6 @@ impl Axvisor {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .tool_mut()
                 .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
@@ -390,14 +389,12 @@ impl Axvisor {
         match board_config_path {
             Some(path) => {
                 self.app
-                    .tool_mut()
                     .read_board_run_config_from_path_for_cargo(cargo, path)
                     .await
             }
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
-                    .tool_mut()
                     .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
             }

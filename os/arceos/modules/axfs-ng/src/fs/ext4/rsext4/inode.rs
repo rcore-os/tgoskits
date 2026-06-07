@@ -588,7 +588,7 @@ impl DirNodeOps for Inode {
         self.lookup_locked(name)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
+    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
         {
@@ -600,6 +600,11 @@ impl DirNodeOps for Inode {
                 return Err(VfsError::NotFound);
             }
             let (_ino, inode) = inode_info.unwrap();
+            match (inode.is_dir(), is_dir) {
+                (true, false) => return Err(VfsError::IsADirectory),
+                (false, true) => return Err(VfsError::NotADirectory),
+                _ => {}
+            }
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
                 if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {

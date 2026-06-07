@@ -7,20 +7,46 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use ostool::{Tool, ToolConfig};
+use ostool::invocation::{Invocation, InvocationOptions};
 use tempfile::tempdir;
 
 use super::*;
 
 fn test_app_context(root: &Path) -> AppContext {
     AppContext {
-        tool: Tool::new(ToolConfig::default()).unwrap(),
+        invocation: test_invocation(root),
         build_config_path: None,
         root: root.to_path_buf(),
         member_dirs: HashMap::from([("axvisor".to_string(), root.join("os/axvisor"))]),
         original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
     }
+}
+
+fn test_invocation(root: &Path) -> Invocation {
+    let manifest_path = root.join("Cargo.toml");
+    if !manifest_path.exists() {
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            &manifest_path,
+            r#"[package]
+name = "test-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+"#,
+        )
+        .unwrap();
+    }
+    Invocation::new(InvocationOptions::new(
+        Some(manifest_path),
+        None,
+        None,
+        false,
+    ))
+    .unwrap()
 }
 
 fn resolve_arceos_build_info_path(

@@ -17,7 +17,7 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TCGETS, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
@@ -57,7 +57,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             if *err == AxError::NotATty {
                 // Applications commonly probe non-terminal/blobk fds with
                 // these ioctls; suppress noise.
-                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
+                if matches!(
+                    cmd,
+                    TIOCGWINSZ | TCGETS | BLKGETSIZE64 | BLKRAGET | BLKSSZGET
+                ) {
                     return;
                 }
                 warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
@@ -382,6 +385,7 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
     if result.is_ok()
         && let Some((path, is_dir)) = deleted
     {
+        // Notify watchers only after the filesystem deletion has succeeded.
         crate::file::inotify::notify_delete_path(&path, is_dir);
     }
     result
@@ -751,6 +755,7 @@ pub fn sys_renameat(
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
+// Rename a path, currently supporting Linux RENAME_NOREPLACE.
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: *const c_char,
@@ -784,6 +789,7 @@ pub fn sys_renameat2(
         }
     }
 
+    // Propagate the filesystem errno directly to match renameat2 callers.
     old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
 }

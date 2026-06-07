@@ -85,7 +85,7 @@ pub use self::io::write;
 #[cfg(feature = "select")]
 pub use self::io_mpx::select;
 #[cfg(feature = "epoll")]
-pub use self::io_mpx::{epoll_create, epoll_ctl, epoll_wait};
+pub use self::io_mpx::{epoll_create, epoll_create1, epoll_ctl, epoll_wait};
 #[cfg(feature = "alloc")]
 pub use self::malloc::{free, malloc};
 #[cfg(feature = "net")]
