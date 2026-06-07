@@ -138,8 +138,10 @@ pub fn sys_mmap(
     if map_flags.contains(MmapFlags::SYNC) {
         return Err(AxError::OperationNotSupported);
     }
+    let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     let map_type = match flags & MmapFlags::TYPE.bits() {
         MAP_SHARED => MmapFlags::SHARED,
+        MAP_SHARED_VALIDATE if !anonymous => MmapFlags::SHARED,
         MAP_PRIVATE => MmapFlags::PRIVATE,
         _ => return Err(AxError::InvalidInput),
     };
@@ -147,7 +149,6 @@ pub fn sys_mmap(
     if !PageSize::Size4K.is_aligned(offset) {
         return Err(AxError::InvalidInput);
     }
-    let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     if !anonymous && fd < 0 {
         return Err(AxError::BadFileDescriptor);
     }
