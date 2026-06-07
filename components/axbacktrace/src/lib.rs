@@ -182,10 +182,17 @@ fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
         // IP does not necessarily mean the FP chain is broken.
         // Skipped frames still count against the depth budget to prevent
         // infinite loops on corrupted FP chains with bad IPs.
+        let next_fp = frame.fp;
+        // Check FP progress before IP filtering: a bad IP can be skipped, but
+        // a non-advancing FP would otherwise keep revisiting the same frame.
+        if next_fp != 0 && next_fp <= fp {
+            break;
+        }
+
         if let Some(ip_range) = ip_range
             && !ip_range.contains(&frame.ip)
         {
-            fp = frame.fp;
+            fp = next_fp;
             depth += 1;
             continue;
         }
@@ -195,12 +202,16 @@ fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
         }
 
         if let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
-            && frame.fp >= large_stack_end
+            && next_fp >= large_stack_end
         {
             break;
         }
 
-        fp = frame.fp;
+        if next_fp == 0 {
+            break;
+        }
+
+        fp = next_fp;
         depth += 1;
     }
 }
@@ -534,6 +545,18 @@ mod tests {
             count < 3
         });
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn unwind_stack_stops_on_non_advancing_frame_pointer() {
+        init_for_tests();
+        let mut frames = [Frame { fp: 0, ip: 0x1111 }, Frame { fp: 0, ip: 0x2222 }];
+        let base = frames.as_mut_ptr();
+        frames[0].fp = unsafe { base.add(1) as usize };
+        frames[1].fp = base as usize;
+
+        let out = unwind_stack(base as usize);
+        assert_eq!(out, [frames[0]]);
     }
 
     #[test]

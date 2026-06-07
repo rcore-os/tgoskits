@@ -170,6 +170,15 @@ pub struct Thread {
     pub fault_dump_signo: AtomicU8,
 
     pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
+
+    /// Whether uid_map has been written for this thread's user namespace.
+    uid_map_written: AtomicBool,
+
+    /// Whether gid_map has been written for this thread's user namespace.
+    gid_map_written: AtomicBool,
+
+    /// Whether setgroups has been set to "deny" for this thread's user namespace.
+    setgroups_deny: AtomicBool,
 }
 
 impl Thread {
@@ -200,6 +209,10 @@ impl Thread {
 
             fault_dump_signo: AtomicU8::new(0),
             kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
+
+            uid_map_written: AtomicBool::new(false),
+            gid_map_written: AtomicBool::new(false),
+            setgroups_deny: AtomicBool::new(false),
         })
     }
 
@@ -359,6 +372,36 @@ impl Thread {
         self.rseq_signature.load(Ordering::SeqCst)
     }
 
+    /// Check if uid_map has been written for this thread's user namespace.
+    pub fn uid_map_written(&self) -> bool {
+        self.uid_map_written.load(Ordering::Relaxed)
+    }
+
+    /// Mark uid_map as written.
+    pub fn set_uid_map_written(&self, val: bool) {
+        self.uid_map_written.store(val, Ordering::Relaxed);
+    }
+
+    /// Check if gid_map has been written for this thread's user namespace.
+    pub fn gid_map_written(&self) -> bool {
+        self.gid_map_written.load(Ordering::Relaxed)
+    }
+
+    /// Mark gid_map as written.
+    pub fn set_gid_map_written(&self, val: bool) {
+        self.gid_map_written.store(val, Ordering::Relaxed);
+    }
+
+    /// Check if setgroups has been set to "deny".
+    pub fn setgroups_deny(&self) -> bool {
+        self.setgroups_deny.load(Ordering::Relaxed)
+    }
+
+    /// Set the setgroups deny flag.
+    pub fn set_setgroups_deny(&self, val: bool) {
+        self.setgroups_deny.store(val, Ordering::Relaxed);
+    }
+
     /// Set the registered rseq area pointer.
     pub fn set_rseq_area(&self, addr: usize) {
         self.rseq_area.store(addr, Ordering::SeqCst);
@@ -511,6 +554,16 @@ pub struct ProcessData {
     /// The virtual memory address space.
     // TODO: scopify
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
+    /// Per-process uprobe manager. Uprobes plant an `int3` in *this* process'
+    /// user text, so (unlike the global kprobe manager) the registry is
+    /// per-address-space. A *sleeping* mutex, because arming/disarming
+    /// manipulates the user address space (page-table query, faulting reads,
+    /// mapping the out-of-line single-step page) which requires sleeping locks;
+    /// the exception-context breakpoint/debug handlers acquire it with
+    /// `try_lock()` (a single CAS, safe in atomic context) instead.
+    pub uprobe_manager: Mutex<crate::kprobe::KprobeManager>,
+    /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
+    pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The resource scope
     pub scope: RwLock<Scope>,
     /// The namespace proxy — aggregates all namespace types for this process.
@@ -679,6 +732,8 @@ impl ProcessData {
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
+            uprobe_manager: Mutex::new(crate::kprobe::KprobeManager::default()),
+            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 

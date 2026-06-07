@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.16...ax-task-v0.5.17) - 2026-06-03
+
+### Added
+
+- *(axtask)* prefer current CPU in select_run_queue for cache affinity ([#1012](https://github.com/rcore-os/tgoskits/pull/1012))
+- *(irq)* introduce shared IRQ framework ([#1065](https://github.com/rcore-os/tgoskits/pull/1065))
+- *(axtask)* replace PREV_TASK Weak<AxTask> with raw pointer ([#996](https://github.com/rcore-os/tgoskits/pull/996))
+- *(axtask)* add task stack guard page support ([#811](https://github.com/rcore-os/tgoskits/pull/811))
+
+### Fixed
+
+- *(axtask)* kick remote CPUs on SMP wakeups ([#926](https://github.com/rcore-os/tgoskits/pull/926))
+- *(ax-task)* preempt on async wake, guard wait queue against double-enqueue ([#912](https://github.com/rcore-os/tgoskits/pull/912))
+- *(signal)* add wake_task after signal delivery and dumpable/no_new_privs fields ([#797](https://github.com/rcore-os/tgoskits/pull/797))
+
+### Other
+
+- *(sched)* add sched-family test suite and fix kernel scheduler sys… ([#986](https://github.com/rcore-os/tgoskits/pull/986))
+- *(deps)* update spin 0.10→0.12, ostool 0.19→0.21 ([#978](https://github.com/rcore-os/tgoskits/pull/978))
+- Revert "fix(ax-task): preempt on async wake, guard wait queue against double-…" ([#939](https://github.com/rcore-os/tgoskits/pull/939))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.15...ax-task-v0.5.16) - 2026-05-22
 
 ### Fixed

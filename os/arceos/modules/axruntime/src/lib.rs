@@ -202,28 +202,29 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     init_allocator();
 
+    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
+
     {
         use core::ops::Range;
 
         unsafe extern "C" {
             safe static _stext: [u8; 0];
             safe static _etext: [u8; 0];
-            safe static _edata: [u8; 0];
         }
 
+        let fp_range_start = kernel_space_start.as_usize();
+        let fp_range_end = fp_range_start.saturating_add(kernel_space_size);
         axbacktrace::init(
             Range {
                 start: _stext.as_ptr() as usize,
                 end: _etext.as_ptr() as usize,
             },
             Range {
-                start: _edata.as_ptr() as usize,
-                end: usize::MAX,
+                start: fp_range_start,
+                end: fp_range_end,
             },
         );
     }
-
-    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
 
     info!(
         "kernel aspace: [{:#x?}, {:#x?})",

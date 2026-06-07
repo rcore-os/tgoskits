@@ -18,9 +18,8 @@ use core::{cell::UnsafeCell, ptr};
 
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
-use axdevice_base::BaseDeviceOps;
-use axvisor_api::memory::phys_to_virt;
+use axdevice_base::{AccessWidth, BaseDeviceOps};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use log::{debug, trace};
 use spin::Once;
 
@@ -28,7 +27,7 @@ use super::{
     registers::*,
     utils::{enable_one_lpi, perform_mmio_read, perform_mmio_write},
 };
-use crate::v3::vgicr::get_lpt;
+use crate::{host, v3::vgicr::get_lpt};
 
 /// Virtual GITS registers.
 #[derive(Default)]
@@ -115,8 +114,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
 
     fn handle_read(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
     ) -> ax_errno::AxResult<usize> {
         let gits_base = self.host_gits_base;
         let reg = addr - self.addr;
@@ -163,8 +162,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
 
     fn handle_write(
         &self,
-        addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
-        width: axaddrspace::device::AccessWidth,
+        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        width: AccessWidth,
         val: usize,
     ) -> ax_errno::AxResult {
         let gits_base = self.host_gits_base;
@@ -245,7 +244,7 @@ pub struct Cmdq {
 impl Drop for Cmdq {
     fn drop(&mut self) {
         trace!("Cmdq dealloc 16 frames: {:?}", self.phy_addr);
-        axvisor_api::memory::dealloc_contiguous_frames(self.phy_addr, 16)
+        host::dealloc_contiguous_frames(self.phy_addr, 16)
     }
 }
 
@@ -256,8 +255,7 @@ pub const QWORD_PER_CMD: usize = BYTES_PER_CMD >> 3; // 8 bytes per qword
 
 impl Cmdq {
     fn new(host_gits_base: HostPhysAddr) -> Self {
-        let phy_addr =
-            axvisor_api::memory::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K).unwrap();
+        let phy_addr = host::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K).unwrap();
         trace!("Cmdq alloc 16 frames: {phy_addr:?}");
         let mut r = Self {
             phy_addr,
@@ -277,9 +275,9 @@ impl Cmdq {
         let cbaser_val = 0xb80000000000040f | self.phy_addr.as_usize();
         let ctlr_addr = self.host_gits_base + GITS_CTRL;
 
-        let cbaser_ptr = phys_to_virt(cbaser_addr).as_mut_ptr_of::<u64>();
-        let cwriter_ptr = phys_to_virt(cwriter_addr).as_mut_ptr_of::<u64>();
-        let ctlr_ptr = phys_to_virt(ctlr_addr).as_mut_ptr_of::<u64>();
+        let cbaser_ptr = host::phys_to_virt(cbaser_addr).as_mut_ptr_of::<u64>();
+        let cwriter_ptr = host::phys_to_virt(cwriter_addr).as_mut_ptr_of::<u64>();
+        let ctlr_ptr = host::phys_to_virt(ctlr_addr).as_mut_ptr_of::<u64>();
 
         unsafe {
             let origin_ctrl = ptr::read_volatile(ctlr_ptr);
@@ -299,8 +297,8 @@ impl Cmdq {
         let dt_baser_addr = self.host_gits_base + GITS_DT_BASER;
         let ct_baser_addr = self.host_gits_base + GITS_CT_BASER;
 
-        let dt_baser_ptr = phys_to_virt(dt_baser_addr).as_mut_ptr_of::<u64>();
-        let ct_baser_ptr = phys_to_virt(ct_baser_addr).as_mut_ptr_of::<u64>();
+        let dt_baser_ptr = host::phys_to_virt(dt_baser_addr).as_mut_ptr_of::<u64>();
+        let ct_baser_ptr = host::phys_to_virt(ct_baser_addr).as_mut_ptr_of::<u64>();
 
         unsafe {
             let dt_baser = ptr::read_volatile(dt_baser_ptr);
@@ -308,11 +306,9 @@ impl Cmdq {
 
             // alloc 64 KiB (16 * 4-KiB frames) each for dt and ct
             let dt_addr =
-                axvisor_api::memory::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K << 4)
-                    .unwrap();
+                host::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K << 4).unwrap();
             let ct_addr =
-                axvisor_api::memory::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K << 4)
-                    .unwrap();
+                host::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K << 4).unwrap();
 
             let dt_baser = dt_baser
                 | (dt_addr.as_usize() as u64 & 0x0000_ffff_ffff_f000)
@@ -430,8 +426,9 @@ impl Cmdq {
         let mut real_cmdq_addr = self.phy_addr + self.readr;
 
         for _cmd_id in 0..cmd_num {
-            let vm_cmdq_ptr = phys_to_virt(vm_cmdq_addr).as_mut_ptr_of::<[u64; QWORD_PER_CMD]>();
-            let mut real_cmdq_ptr = phys_to_virt(real_cmdq_addr).as_mut_ptr_of::<u64>();
+            let vm_cmdq_ptr =
+                host::phys_to_virt(vm_cmdq_addr).as_mut_ptr_of::<[u64; QWORD_PER_CMD]>();
+            let mut real_cmdq_ptr = host::phys_to_virt(real_cmdq_addr).as_mut_ptr_of::<u64>();
 
             unsafe {
                 let v = ptr::read_volatile(vm_cmdq_ptr);
@@ -454,8 +451,8 @@ impl Cmdq {
         let cwriter_addr = self.host_gits_base + GITS_CWRITER;
         let creadr_addr = self.host_gits_base + GITS_CREADR;
 
-        let cwriter_ptr = phys_to_virt(cwriter_addr).as_mut_ptr_of::<u64>();
-        let creadr_ptr = phys_to_virt(creadr_addr).as_mut_ptr_of::<u64>();
+        let cwriter_ptr = host::phys_to_virt(cwriter_addr).as_mut_ptr_of::<u64>();
+        let creadr_ptr = host::phys_to_virt(creadr_addr).as_mut_ptr_of::<u64>();
         // let ctlr_ptr = phys_to_virt(self.host_gits_base + GITS_CTRL).as_mut_ptr_of::<u64>();
         unsafe {
             ptr::write_volatile(cwriter_ptr, self.writer as _);

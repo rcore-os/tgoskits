@@ -19,10 +19,11 @@
 .endm
 
 .macro DEF_TABLE_ENTRY, i
-    .quad .Ltrap_handler_\i
+    .long .Ltrap_handler_\i - trap_handler_table
 .endm
 
 .section .rodata
+.balign 4
 .global trap_handler_table
 trap_handler_table:
 .set i, 0

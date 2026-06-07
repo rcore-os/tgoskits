@@ -1,0 +1,16 @@
+[package]
+name = "kret-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+kret-common = { path = "../kret-common" }
+
+aya-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "kret"
+path = "src/main.rs"

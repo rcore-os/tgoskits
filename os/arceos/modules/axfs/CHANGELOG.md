@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-fs-v0.5.14...ax-fs-v0.5.15) - 2026-06-03
+
+### Added
+
+- *(axvisor)* support x86_64 Linux guest boot (vmx) ([#930](https://github.com/rcore-os/tgoskits/pull/930))
+
+### Fixed
+
+- *(repo)* migrate spin usage to ax-kspin ([#861](https://github.com/rcore-os/tgoskits/pull/861))
+- *(rsext4)* rmdir returns ENOTEMPTY on non-empty dirs, rename rejects cross-type overwrites ([#854](https://github.com/rcore-os/tgoskits/pull/854))
+
+### Other
+
+- Refactor journal recovery and partition scanning logic ([#927](https://github.com/rcore-os/tgoskits/pull/927))
+- *(drivers)* split shared driver stack from ArceOS ([#831](https://github.com/rcore-os/tgoskits/pull/831))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-fs-v0.5.13...ax-fs-v0.5.14) - 2026-05-22
 
 ### Other

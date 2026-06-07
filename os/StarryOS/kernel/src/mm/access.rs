@@ -2,9 +2,10 @@ use alloc::string::String;
 use core::{
     alloc::Layout,
     ffi::c_char,
-    hint::unlikely,
+    hint::{spin_loop, unlikely},
     mem::{MaybeUninit, transmute},
     ptr, slice, str,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -198,6 +199,36 @@ impl<T> UserPtr<T> {
         )?;
         Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
     }
+}
+
+pub fn atomic_update_user_u32(
+    ptr: *mut u32,
+    mut update: impl FnMut(u32) -> AxResult<u32>,
+) -> AxResult<u32> {
+    check_region(
+        VirtAddr::from_ptr_of(ptr),
+        Layout::new::<u32>(),
+        MappingFlags::READ.union(MappingFlags::WRITE),
+    )?;
+
+    let ptr = ptr.cast::<AtomicU32>();
+    access_user_memory(|| {
+        loop {
+            // SAFETY: check_region() validated that the user address is a
+            // writable, properly aligned u32 in the current address space.
+            let old = unsafe { &*ptr }.load(Ordering::SeqCst);
+            let new = update(old)?;
+            match unsafe { &*ptr }.compare_exchange_weak(
+                old,
+                new,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(old),
+                Err(_) => spin_loop(),
+            }
+        }
+    })
 }
 
 /// An immutable pointer to user space memory.
@@ -493,11 +524,21 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
     let aligned_addr = addr.align_down_4k();
     let aligned_length = (addr + data.len()).align_up_4k() - aligned_addr;
 
-    let mut guard = ax_mm::kernel_aspace().lock();
-    let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
-
+    // The kernel address-space lock (`SpinNoIrq`) MUST be acquired *inside* the
+    // `stop_machine` critical section, not before it. `stop_machine` itself
+    // takes a `SpinNoIrq` (`STOP_MACHINE_LOCK`); acquiring `kernel_aspace`
+    // first and then dropping it inside the closure produces a non-LIFO nesting
+    // of two IRQ-saving guards, which crosses their saved IRQ states and leaks
+    // an IRQ-disabled state out of this function. That stranded state later
+    // trips the atomic-context guard (e.g. `clear_proc_shm` on process exit
+    // right after a static-key `disable_key`). Nesting it LIFO here keeps the
+    // IRQ flag balanced — this mirrors the kprobe `set_writeable_for_address`
+    // path.
     crate::stop_machine::stop_machine(
         move || -> AxResult<()> {
+            let mut guard = ax_mm::kernel_aspace().lock();
+            let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+
             guard.protect(
                 aligned_addr,
                 aligned_length,

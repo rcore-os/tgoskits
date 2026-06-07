@@ -3,13 +3,12 @@ https://github.com/arceos-org/arceos,dev,os/arceos,OS,ArceOS
 https://github.com/arceos-hypervisor/axvisor,,os/axvisor,OS,axvisor - ArceOS Hypervisor
 https://github.com/Starry-OS/StarryOS,,os/StarryOS,OS,StarryOS - 教学操作系统
 https://github.com/arceos-hypervisor/aarch64_sysreg,,virtualization/aarch64_sysreg,Hypervisor,
-https://github.com/arceos-hypervisor/axaddrspace,,memory/axaddrspace,Hypervisor,
+https://github.com/arceos-hypervisor/axaddrspace,,virtualization/axaddrspace,Hypervisor,
 https://github.com/arceos-hypervisor/axdevice,,virtualization/axdevice,Hypervisor,
 https://github.com/arceos-hypervisor/axdevice_base,,virtualization/axdevice_base,Hypervisor,
 https://github.com/arceos-hypervisor/axhvc,,virtualization/axhvc,Hypervisor,
 https://github.com/arceos-hypervisor/axklib,,components/axklib,Hypervisor,
 https://github.com/arceos-hypervisor/axvcpu,,virtualization/axvcpu,Hypervisor,
-https://github.com/arceos-hypervisor/axvisor_api,,virtualization/axvisor_api,Hypervisor,
 https://github.com/arceos-hypervisor/axvm,,virtualization/axvm,Hypervisor,
 https://github.com/arceos-hypervisor/axvmconfig,,virtualization/axvmconfig,Hypervisor,
 https://github.com/arceos-hypervisor/x86_vcpu,,virtualization/x86_vcpu,Hypervisor,

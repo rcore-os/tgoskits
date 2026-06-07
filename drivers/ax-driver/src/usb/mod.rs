@@ -233,7 +233,7 @@ fn pci_static_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
         return Some(irq);
     }
     let line = endpoint.interrupt_line();
-    (line != 0 && line != u8::MAX).then_some(line as usize)
+    (line != 0 && line != u8::MAX).then_some(crate::pci::legacy_line_to_irq(line))
 }
 
 #[cfg(all(feature = "xhci-pci", target_os = "none"))]

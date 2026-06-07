@@ -12,6 +12,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
+    mm::atomic_update_user_u32,
     task::{AsThread, FutexKey, FutexKeyMode, futex_table_for, get_task},
     time::TimeValueLike,
 };
@@ -102,9 +103,9 @@ fn futex_atomic_op_in_user(uaddr: *mut u32, encoded_op: u32) -> AxResult<bool> {
     let oparg = futex_wake_op_arg(raw_op, encoded_op);
     let cmparg = sign_extend_12(encoded_op & 0xfff);
 
-    let old_value = uaddr.vm_read()?;
-    let new_value = apply_futex_wake_op(old_value, raw_op, oparg)?;
-    uaddr.vm_write(new_value)?;
+    let old_value = atomic_update_user_u32(uaddr, |old_value| {
+        apply_futex_wake_op(old_value, raw_op, oparg)
+    })?;
     compare_futex_wake_op(old_value, raw_cmp, cmparg)
 }
 
@@ -293,15 +294,12 @@ pub fn sys_futex(
 
             let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode);
             let table2 = futex_table_for(&key2);
-            let wake_second = futex_atomic_op_in_user(uaddr2, value3)?;
 
-            let mut count = 0;
-            if let Some(futex) = futex_table.get(&key) {
-                count += futex.wq.wake(wake_count, u32::MAX);
-            }
-            if wake_second && let Some(futex) = table2.get(&key2) {
-                count += futex.wq.wake(wake2_count, u32::MAX);
-            }
+            let source = futex_table.get_or_insert(&key);
+            let target = table2.get_or_insert(&key2);
+            let count = source.wq.wake_op(wake_count, &target.wq, wake2_count, || {
+                futex_atomic_op_in_user(uaddr2, value3)
+            })?;
 
             if count > 0 {
                 ax_task::yield_now();

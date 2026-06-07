@@ -107,10 +107,9 @@ impl Mountpoint {
                 .collect();
             children_to_bind
                 .retain(|(_, child)| child.upgrade().is_none_or(|child| !child.is_unbindable()));
-            let mut result_children = result.children.lock();
-            for (key, child) in children_to_bind {
-                result_children.insert(key, child);
-            }
+            let result_children: HashMap<ReferenceKey, Weak<Self>> =
+                children_to_bind.into_iter().collect();
+            *result.children.lock() = result_children;
         }
         result
     }
@@ -574,13 +573,15 @@ impl Location {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> VfsResult<Self> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry
             .as_dir()?
-            .create(name, node_type, permission)
+            .create(name, node_type, permission, uid, gid)
             .map(|entry| self.wrap(entry))
     }
 
@@ -661,21 +662,26 @@ impl Location {
     }
 
     pub fn bind_mount(&self, source: &Self, recursive: bool) -> VfsResult<Arc<Mountpoint>> {
-        if source.mountpoint().is_unbindable() {
+        let source_mountpoint = source.mountpoint().clone();
+        if source_mountpoint.is_unbindable() {
             return Err(VfsError::InvalidInput);
         }
 
-        let mut mountpoint = self.entry.as_dir()?.mountpoint.lock();
-        if mountpoint.is_some() {
-            return Err(VfsError::ResourceBusy);
-        }
+        let target_dir = self.entry.as_dir()?;
         let result = Mountpoint::bind(source, self.clone(), recursive);
-        if source.mountpoint().is_shared() {
-            result.join_shared_group(source.mountpoint());
-        } else if source.mountpoint().is_slave() {
+        if source_mountpoint.is_shared() {
+            result.join_shared_group(&source_mountpoint);
+        } else if source_mountpoint.is_slave() {
             result.set_slave();
         }
-        *mountpoint = Some(result.clone());
+        {
+            let mut mountpoint = target_dir.mountpoint.lock();
+            if mountpoint.is_some() {
+                result.set_private();
+                return Err(VfsError::ResourceBusy);
+            }
+            *mountpoint = Some(result.clone());
+        }
         self.mountpoint
             .children
             .lock()

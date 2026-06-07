@@ -21,6 +21,7 @@ use alloc::sync::Arc;
 
 use ax_kspin::RawSpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
     register_kprobe as kprobe_crate_register_kprobe,
@@ -49,13 +50,36 @@ pub struct KernelKprobeOps;
 
 impl KprobeAuxiliaryOps for KernelKprobeOps {
     fn copy_memory(src: *const u8, dst: *mut u8, len: usize, user_pid: Option<i32>) {
-        if let Some(_pid) = user_pid {
-            unsafe {
-                let buf =
-                    core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len);
-                if let Err(e) = starry_vm::vm_read_slice(src, buf) {
-                    warn!("kprobe copy_memory: vm_read_slice failed: {:?}", e);
+        if let Some(pid) = user_pid {
+            // Uprobe arm/disarm reads the target process' original text bytes
+            // while the per-process kprobe manager spin-lock is held (IRQs
+            // disabled), so the faultable user-access path (`vm_read_slice`,
+            // which asserts IRQs enabled) cannot be used. Read through the
+            // *kernel* direct-map alias of the target page's physical frame
+            // instead — the same aliasing `set_writeable_for_address` uses to
+            // write. The text page is already resident (the loader executes the
+            // probed function before arming).
+            let task = crate::task::get_task(pid as _).expect("Failed to get task for uprobe");
+            let aspace = task.as_thread().proc_data.aspace();
+            let mm = aspace.lock();
+            let pt = mm.page_table();
+            let mut copied = 0;
+            while copied < len {
+                let vaddr = VirtAddr::from(src as usize + copied);
+                let Ok((paddr, ..)) = pt.query(vaddr) else {
+                    warn!(
+                        "kprobe copy_memory: user addr {:#x} not mapped",
+                        vaddr.as_usize()
+                    );
+                    return;
+                };
+                let page_off = vaddr.as_usize() & (PAGE_SIZE_4K - 1);
+                let chunk = core::cmp::min(len - copied, PAGE_SIZE_4K - page_off);
+                let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(kvaddr.as_ptr(), dst.add(copied), chunk);
                 }
+                copied += chunk;
             }
         } else {
             unsafe {
@@ -70,8 +94,28 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         user_pid: Option<i32>,
         action: F,
     ) {
-        if user_pid.is_some() {
-            unimplemented!("user space breakpoint insertion not yet supported")
+        if let Some(pid) = user_pid {
+            // User-space probe (uprobe): patch the target process' text by
+            // writing through the *kernel* direct-map alias of the page's
+            // physical frame. The user PTE keeps its read-only/exec flags
+            // untouched (no per-fire `protect` dance needed — uprobe single-step
+            // is out-of-line, see `alloc_user_exec_memory`). This runs at
+            // arm/disarm time (syscall context), so taking the sleeping aspace
+            // lock is fine. The instruction patch (≤ a few bytes) stays within
+            // the resolved page.
+            let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+            let aspace = task.as_thread().proc_data.aspace();
+            let mm = aspace.lock();
+            let vaddr = VirtAddr::from(address);
+            let (paddr, ..) = mm
+                .page_table()
+                .query(vaddr)
+                .expect("uprobe: target address not mapped");
+            let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+            action(kvaddr.as_mut_ptr());
+            crate::mm::flush_tlb_range(vaddr.align_down_4k(), PAGE_SIZE_4K);
+            ax_runtime::hal::cpu::asm::flush_icache_all();
+            return;
         }
         let addr = VirtAddr::from(address);
         let aligned_addr = addr.align_down_4k();
@@ -89,7 +133,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                     .protect(
                         aligned_addr,
                         aligned_length,
-                        original_flags | ax_runtime::hal::paging::MappingFlags::WRITE,
+                        original_flags | MappingFlags::WRITE,
                     )
                     .expect("kprobe: set_writeable: protect failed");
                 crate::mm::flush_tlb_range(aligned_addr, aligned_length);
@@ -117,9 +161,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .map_alloc(
                 vaddr,
                 PAGE_SIZE_4K,
-                ax_runtime::hal::paging::MappingFlags::READ
-                    | ax_runtime::hal::paging::MappingFlags::WRITE
-                    | ax_runtime::hal::paging::MappingFlags::EXECUTE,
+                MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
                 true,
             )
             .expect("kprobe: map_alloc for exec memory failed");
@@ -134,12 +176,46 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .expect("kprobe: unmap exec memory failed");
     }
 
-    fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(_pid: Option<i32>, _action: F) -> *mut u8 {
-        unimplemented!("user exec memory allocation for uprobes not yet supported")
+    fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(pid: Option<i32>, action: F) -> *mut u8 {
+        // Allocate one anonymous, user-executable page in the target process for
+        // out-of-line single-stepping (the displaced original instruction is
+        // copied here so the planted `int3` can stay armed). `action` writes
+        // that instruction through the kernel alias of the freshly-mapped frame.
+        let pid = pid.expect("uprobe: alloc_user_exec_memory needs a pid");
+        let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+        let aspace = task.as_thread().proc_data.aspace();
+        let mut mm = aspace.lock();
+        let range = VirtAddrRange::new(mm.base(), mm.end());
+        let vaddr = mm
+            .find_free_area(mm.base(), PAGE_SIZE_4K, range, PAGE_SIZE_4K)
+            .expect("uprobe: no free user va for exec memory");
+        let backend = crate::mm::Backend::new_alloc(vaddr, PageSize::Size4K, "uprobe-ols");
+        mm.map(
+            vaddr,
+            PAGE_SIZE_4K,
+            MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
+            true,
+            backend,
+        )
+        .expect("uprobe: map user exec memory failed");
+        let (paddr, ..) = mm
+            .page_table()
+            .query(vaddr)
+            .expect("uprobe: exec page not mapped after populate");
+        let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+        action(kvaddr.as_mut_ptr());
+        crate::mm::flush_tlb_range(vaddr, PAGE_SIZE_4K);
+        ax_runtime::hal::cpu::asm::flush_icache_all();
+        vaddr.as_mut_ptr()
     }
 
-    fn free_user_exec_memory(_pid: Option<i32>, _ptr: *mut u8) {
-        unimplemented!("user exec memory deallocation for uprobes not yet supported")
+    fn free_user_exec_memory(pid: Option<i32>, ptr: *mut u8) {
+        let pid = pid.expect("uprobe: free_user_exec_memory needs a pid");
+        let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+        let aspace = task.as_thread().proc_data.aspace();
+        let mut mm = aspace.lock();
+        mm.unmap(VirtAddr::from(ptr as usize), PAGE_SIZE_4K)
+            .expect("uprobe: unmap user exec memory failed");
     }
 
     fn insert_kretprobe_instance_to_task(instance: kprobe::retprobe::RetprobeInstance) {
@@ -157,8 +233,8 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 }
 
-type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
-type KprobePointList = ProbePointList<KernelKprobeOps>;
+pub(crate) type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
+pub(crate) type KprobePointList = ProbePointList<KernelKprobeOps>;
 
 /// Concrete `kprobe::Kprobe` parameterized on the kernel's `RawMutex` and
 /// auxiliary ops, named to match what the perf module expects.
@@ -219,7 +295,7 @@ pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }
 
-fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
+pub(crate) fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
         kprobe::PtRegs {
@@ -348,7 +424,7 @@ fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
     }
 }
 
-fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
+pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
     #[cfg(target_arch = "x86_64")]
     {
         tf.r15 = pt.r15 as u64;
@@ -459,27 +535,34 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
         ptregs_write_back(&pt_regs, tf);
         return true;
     }
-    false
+    // Not a kernel kprobe — it may be a uprobe `int3` planted in the current
+    // process' user text. The uprobe registry is per-process.
+    crate::uprobe::break_uprobe_handler(tf).is_some()
 }
 
-#[allow(dead_code)]
+#[cfg(not(target_arch = "loongarch64"))]
 #[inline(never)]
 fn kprobe_selftest_target() -> i32 {
     42
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 static SELFTEST_HIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(not(target_arch = "loongarch64"))]
 static SELFTEST_RET_HIT: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+#[cfg(not(target_arch = "loongarch64"))]
 fn selftest_pre_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
     SELFTEST_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 fn selftest_ret_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
     SELFTEST_RET_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(not(target_arch = "loongarch64"))]
 pub fn run_selftest() -> bool {
     SELFTEST_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
     SELFTEST_RET_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
@@ -542,5 +625,6 @@ pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
         ptregs_write_back(&pt_regs, tf);
         return true;
     }
-    false
+    // Fall through to the per-process uprobe single-step (out-of-line) handler.
+    crate::uprobe::debug_uprobe_handler(tf).is_some()
 }

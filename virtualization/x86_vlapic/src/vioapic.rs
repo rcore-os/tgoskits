@@ -1,8 +1,8 @@
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::AddrRange;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
 const IOAPIC_BASE: usize = 0xfec0_0000;
 const IOAPIC_SIZE: usize = 0x1000;

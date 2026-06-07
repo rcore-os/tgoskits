@@ -23,18 +23,70 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-mod hal;
+mod arch;
+mod cache;
+mod host;
+mod manager;
+mod percpu;
+mod runtime;
+mod task;
+mod timer;
 mod vcpu;
 mod vm;
 
 pub mod config;
 
+pub use ax_cpumask::CpuMask;
+pub use ax_page_table_entry::MappingFlags;
+pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
+pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
+pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VMId};
+pub(crate) use host::{
+    paging::HostPagingHandler,
+    task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
+};
+pub use manager::{
+    AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
+    inject_current_vcpu_interrupt, register_vm,
+};
+pub use task::{AsVCpuTask, VCpuTask};
 pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
 
-/// Whether the hardware has virtualization support.
-pub fn has_hardware_support() -> bool {
-    vcpu::has_hardware_support()
+/// Check and dispatch pending AxVM timer events on the current CPU.
+pub fn check_timer_events() {
+    timer::check_events();
+}
+
+/// Clean data cache lines covering a host virtual address range.
+pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
+    cache::clean_dcache_range(addr, size);
+}
+
+/// Return the host FDT boot argument physical address.
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
+pub fn host_fdt_bootarg() -> usize {
+    host::arceos::host_fdt_bootarg()
+}
+
+/// Convert a host physical address into a host virtual address.
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
+pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
+    host::arceos::phys_to_virt(paddr)
+}
+
+/// Shut down ArceOS filesystems so guest passthrough can take ownership.
+#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
+pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
+    host::arceos::shutdown_host_filesystems()
 }

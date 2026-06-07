@@ -38,6 +38,9 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma) else {
             return (0, NonNull::dangling());
         };
+        unsafe {
+            core::ptr::write_bytes(vaddr as *mut u8, 0, pages * 0x1000);
+        }
         let paddr = axklib::mem::virt_to_phys(vaddr.into()).as_usize() as VirtIoPhysAddr;
         let ptr = NonNull::new(vaddr as _).expect("DMA allocator returned null");
         (paddr, ptr)

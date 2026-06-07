@@ -138,6 +138,80 @@ impl Write for Logger {
     }
 }
 
+const LOG_BUFFER_SIZE: usize = 2048;
+const LOG_TRUNCATED_WITH_NEWLINE: &str = "\u{1B}[m<log truncated>\n";
+
+struct LogBuffer<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+    truncated: bool,
+}
+
+impl<const N: usize> LogBuffer<N> {
+    const fn new() -> Self {
+        Self {
+            buf: [0; N],
+            len: 0,
+            truncated: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        // SAFETY: LogBuffer only appends complete UTF-8 strings or prefixes
+        // ending at UTF-8 character boundaries.
+        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
+    }
+
+    fn append_truncation_marker(&mut self) {
+        if !self.truncated {
+            return;
+        }
+
+        let marker = LOG_TRUNCATED_WITH_NEWLINE.as_bytes();
+        if N < marker.len() {
+            self.len = 0;
+            return;
+        }
+
+        if self.len + marker.len() > N {
+            let mut keep = self.len.min(N - marker.len());
+            while !self.is_char_boundary(keep) {
+                keep -= 1;
+            }
+            self.len = keep;
+        }
+
+        self.buf[self.len..self.len + marker.len()].copy_from_slice(marker);
+        self.len += marker.len();
+    }
+
+    fn is_char_boundary(&self, index: usize) -> bool {
+        index == 0 || index == self.len || (self.buf[index] & 0b1100_0000) != 0b1000_0000
+    }
+}
+
+impl<const N: usize> Write for LogBuffer<N> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let available = N.saturating_sub(self.len);
+        if s.len() <= available {
+            self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
+            self.len += s.len();
+            return Ok(());
+        }
+
+        self.truncated = true;
+        let end = s
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|&index| index <= available)
+            .last()
+            .unwrap_or(0);
+        self.buf[self.len..self.len + end].copy_from_slice(&s.as_bytes()[..end]);
+        self.len += end;
+        Ok(())
+    }
+}
+
 impl Log for Logger {
     #[inline]
     fn enabled(&self, _metadata: &Metadata) -> bool {
@@ -162,7 +236,7 @@ impl Log for Logger {
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "std")] {
-                __print_impl(with_color!(
+                print_log_fmt(with_color!(
                     ColorCode::White,
                     "[{time} {path}:{line}] {args}\n",
                     time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.6f"),
@@ -177,7 +251,7 @@ impl Log for Logger {
                 if let Some(cpu_id) = cpu_id {
                     if let Some(tid) = tid {
                         // show CPU ID and task ID
-                        __print_impl(with_color!(
+                        print_log_fmt(with_color!(
                             ColorCode::White,
                             "[{:>3}.{:06} {cpu_id}:{tid} {path}:{line}] {args}\n",
                             now.as_secs(),
@@ -190,7 +264,7 @@ impl Log for Logger {
                         ));
                     } else {
                         // show CPU ID only
-                        __print_impl(with_color!(
+                        print_log_fmt(with_color!(
                             ColorCode::White,
                             "[{:>3}.{:06} {cpu_id} {path}:{line}] {args}\n",
                             now.as_secs(),
@@ -203,7 +277,7 @@ impl Log for Logger {
                     }
                 } else {
                     // neither CPU ID nor task ID is shown
-                    __print_impl(with_color!(
+                    print_log_fmt(with_color!(
                         ColorCode::White,
                         "[{:>3}.{:06} {path}:{line}] {args}\n",
                         now.as_secs(),
@@ -220,8 +294,7 @@ impl Log for Logger {
     fn flush(&self) {}
 }
 
-/// Prints the formatted string to the console.
-pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
+fn write_fmt_locked(args: fmt::Arguments) -> fmt::Result {
     use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
@@ -234,6 +307,30 @@ pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
 
     let _guard = LOCK.lock();
     Logger.write_fmt(args)
+}
+
+fn print_log_fmt(args: fmt::Arguments) {
+    if axpanic::oops_in_progress() {
+        Logger.write_fmt(args).unwrap();
+        return;
+    }
+
+    // Log records are internal tracing messages with a clear record boundary, so
+    // they may be truncated to keep Display formatting outside the print lock.
+    // They always include a trailing newline, even when ANSI reset bytes are
+    // formatted after it. Keep that newline after replacing truncated content.
+    let mut buf = LogBuffer::<LOG_BUFFER_SIZE>::new();
+    buf.write_fmt(args).unwrap();
+    buf.append_truncation_marker();
+    write_fmt_locked(format_args!("{}", buf.as_str())).unwrap();
+}
+
+/// Prints the formatted string to the console.
+pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
+    // Direct console output preserves the caller's original bytes and length.
+    // This keeps ax_print!/ax_println! and axstd println! behavior unchanged;
+    // callers that format under this lock must still avoid recursive printing.
+    write_fmt_locked(args)
 }
 
 #[doc(hidden)]
@@ -262,4 +359,27 @@ pub fn set_max_level(level: &str) {
         .ok()
         .unwrap_or(LevelFilter::Off);
     log::set_max_level(lf);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_buffer_truncates_at_utf8_boundary() {
+        let mut buf = LogBuffer::<22>::new();
+        write!(buf, "ab你好xxxxxxxxxxxxxxxx\n").unwrap();
+        buf.append_truncation_marker();
+
+        assert_eq!(buf.as_str(), "ab\u{1B}[m<log truncated>\n");
+    }
+
+    #[test]
+    fn log_buffer_keeps_untruncated_message() {
+        let mut buf = LogBuffer::<32>::new();
+        write!(buf, "short").unwrap();
+        buf.append_truncation_marker();
+
+        assert_eq!(buf.as_str(), "short");
+    }
 }

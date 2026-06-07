@@ -225,6 +225,8 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         _name: &str,
         _node_type: NodeType,
         _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         Err(VfsError::OperationNotPermitted)
     }
@@ -233,7 +235,7 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         Err(VfsError::OperationNotPermitted)
     }
 
-    fn unlink(&self, _name: &str) -> VfsResult<()> {
+    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
     }
 

@@ -14,11 +14,7 @@
 
 use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 use ax_errno::{AxError, AxResult};
-use axaddrspace::{
-    GuestPhysAddr,
-    device::{AccessWidth, SysRegAddr},
-};
-use axvcpu::AxVCpuExitReason;
+use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, SysRegAddr};
 use log::error;
 
 use crate::{
@@ -293,12 +289,12 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
 
 /// Handles IRQ exceptions that occur from the current exception level.
 /// Dispatches IRQs to the appropriate handler provided by the underlying host OS,
-/// which is provided by `axvisor_api::arch::handle_irq()`.
+/// which is provided by the host callback.
 #[unsafe(no_mangle)]
 fn current_el_irq_handler(_tf: &mut TrapFrame) {
     // TODO: consider if returning AxVCpuExitReason::ExternalInterrupt (or another enum variant) is
     // better than directly calling the handler here.
-    axvisor_api::arch::handle_irq()
+    crate::host::handle_irq()
 }
 
 /// Handles synchronous exceptions that occur from the current exception level.

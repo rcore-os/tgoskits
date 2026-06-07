@@ -54,7 +54,7 @@ const WAIT_UNTIL_RETRY_LIMIT: usize = 10_000_000;
 // - mixed-two-task: two-task spin->mutex then mutex->spin
 // - mixed-ms-single: single-task mutex->spin then spin->mutex
 // - mixed-ms-two-task: two-task mutex->spin then spin->mutex
-// - vfs-cache-single: single-task axfs-ng-vfs dentry cache ABBA
+// - vfs-cache-single: single-task axfs-ng-vfs dentry cache regression
 #[cfg(feature = "ax-std")]
 fn lockdep_case() -> &'static str {
     match option_env!("LOCKDEP_CASE") {
@@ -381,6 +381,8 @@ impl DirNodeOps for TestDir {
         _name: &str,
         _node_type: NodeType,
         _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
     ) -> VfsResult<DirEntry> {
         Err(VfsError::Unsupported)
     }
@@ -389,7 +391,7 @@ impl DirNodeOps for TestDir {
         Err(VfsError::Unsupported)
     }
 
-    fn unlink(&self, _name: &str) -> VfsResult<()> {
+    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
         Err(VfsError::Unsupported)
     }
 
@@ -408,7 +410,7 @@ fn vfs_cache_single_task_abba() {
     {
         let _guard = dir.user_data();
         let _child = dir.as_dir().unwrap().lookup("child").unwrap();
-        println!("vfs-cache-single: recorded dentry user_data -> dir cache");
+        println!("vfs-cache-single: exercised dentry user_data -> dir cache");
     }
 
     dir.as_dir()
@@ -418,6 +420,7 @@ fn vfs_cache_single_task_abba() {
         .unwrap()
         .rename("old", dir.as_dir().unwrap(), "new")
         .unwrap();
+    println!("vfs-cache-single: rename completed without cache/user_data inversion");
 }
 
 #[cfg(feature = "ax-std")]

@@ -361,6 +361,7 @@ impl TcpSocket {
             _ => Ok(PollState {
                 readable: false,
                 writable: false,
+                readiness_version: 0,
             }),
         }
     }
@@ -505,6 +506,7 @@ impl TcpSocket {
         Ok(PollState {
             readable: false,
             writable,
+            readiness_version: 0,
         })
     }
 
@@ -515,6 +517,7 @@ impl TcpSocket {
             Ok(PollState {
                 readable: !socket.may_recv() || socket.can_recv(),
                 writable: !socket.may_send() || socket.can_send(),
+                readiness_version: 0,
             })
         })
     }
@@ -525,6 +528,7 @@ impl TcpSocket {
         Ok(PollState {
             readable: LISTEN_TABLE.can_accept(local_addr.port)?,
             writable: false,
+            readiness_version: 0,
         })
     }
 

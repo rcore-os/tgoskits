@@ -87,7 +87,14 @@ impl PerfEventOps for TracepointPerfEvent {
         });
 
         let func: TpCallback = Box::new(|entry: &[u8], data: &(dyn Any + Send + Sync)| {
-            let ctx = data.downcast_ref::<Ctx>().expect("tracepoint Ctx mismatch");
+            // `TraceEventFunc` keeps the payload as `Box<dyn Any + Send + Sync>`
+            // and hands the closure `&self.data`, so the concrete type observed
+            // here is the *box*, not `Ctx` (same as the raw-tracepoint path in
+            // `raw_tracepoint.rs`). Downcast through the box first.
+            let ctx = data
+                .downcast_ref::<Box<dyn Any + Send + Sync>>()
+                .and_then(|boxed| boxed.downcast_ref::<Ctx>())
+                .expect("tracepoint Ctx mismatch");
             // BPF programs expect a mutable context slice; the
             // tracepoint hands us a `&[u8]` carved out of its
             // per-cpu sample buffer, which is single-writer at that

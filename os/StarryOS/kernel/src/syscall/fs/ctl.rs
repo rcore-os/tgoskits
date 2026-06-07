@@ -17,7 +17,7 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TCGETS, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
@@ -57,7 +57,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             if *err == AxError::NotATty {
                 // Applications commonly probe non-terminal/blobk fds with
                 // these ioctls; suppress noise.
-                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
+                if matches!(
+                    cmd,
+                    TIOCGWINSZ | TCGETS | BLKGETSIZE64 | BLKRAGET | BLKSSZGET
+                ) {
                     return;
                 }
                 warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
@@ -148,11 +151,14 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 
     let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
+    let cred = thread.cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
 
-    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
+    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode, uid, gid) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -196,12 +202,17 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
         _ => return Err(AxError::InvalidInput),
     };
 
+    let cred = thread.cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
     let res = with_fs(dirfd, |fs| {
         let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
         let loc = dir.create(
             name,
             node_type,
             NodePermission::from_bits_truncate(perm as u16),
+            uid,
+            gid,
         )?;
 
         // If device node, set rdev via update_metadata
@@ -374,6 +385,7 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
     if result.is_ok()
         && let Some((path, is_dir)) = deleted
     {
+        // Notify watchers only after the filesystem deletion has succeeded.
         crate::file::inotify::notify_delete_path(&path, is_dir);
     }
     result
@@ -420,8 +432,11 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_string(linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
+    let cred = current().as_thread().cred();
+    let uid = cred.fsuid;
+    let gid = cred.fsgid;
     with_fs(new_dirfd, |fs| {
-        fs.symlink(target, linkpath)?;
+        fs.symlink(target, linkpath, uid, gid)?;
         Ok(0)
     })
 }
@@ -740,6 +755,7 @@ pub fn sys_renameat(
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
+// Rename a path, currently supporting Linux RENAME_NOREPLACE.
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: *const c_char,
@@ -773,6 +789,7 @@ pub fn sys_renameat2(
         }
     }
 
+    // Propagate the filesystem errno directly to match renameat2 callers.
     old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
 }
