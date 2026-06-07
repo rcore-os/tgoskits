@@ -60,18 +60,26 @@ pub unsafe trait VmIo {
 }
 
 /// Reads a slice from the virtual memory.
+///
+/// The user pointer need NOT be aligned to `align_of::<T>()`. The underlying
+/// `user_copy` is byte-granular on every arch (x86 `rep movsb`;
+/// aarch64/riscv64/ loongarch64 byte-align the destination first, then
+/// bulk-copy) — exactly like Linux `copy_from_user`, which never requires
+/// user-buffer alignment. The old `is_aligned()` gate wrongly rejected valid
+/// unaligned user buffers.
 pub fn vm_read_slice<T>(ptr: *const T, buf: &mut [MaybeUninit<T>]) -> VmResult {
-    if !ptr.is_aligned() {
-        return Err(VmError::BadAddress);
-    }
     VmImpl::new().read(ptr.addr(), buf.as_bytes_mut())
 }
 
 /// Writes data to the virtual memory.
+///
+/// No pointer-alignment requirement (Linux-parity: `copy_to_user` is
+/// alignment-agnostic; see [`vm_read_slice`]). The old `is_aligned()` gate made
+/// `epoll_pwait` return EFAULT on riscv64/loongarch64: Go's `[]epollevent` is
+/// 4-byte-aligned (`data [8]byte`) while `struct epoll_event` is 8-aligned
+/// (`u64 data`) on non-x86, so the events buffer failed the check and crashed
+/// the Go netpoller (`netpoll failed`).
 pub fn vm_write_slice<T>(ptr: *mut T, buf: &[T]) -> VmResult {
-    if !ptr.is_aligned() {
-        return Err(VmError::BadAddress);
-    }
     // SAFETY: we don't care about validity, since these bytes are only used for
     // writing to the virtual memory.
     let bytes = unsafe { slice::from_raw_parts(buf.as_ptr().cast::<u8>(), size_of_val(buf)) };
