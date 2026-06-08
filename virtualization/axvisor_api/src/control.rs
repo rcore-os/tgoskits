@@ -138,6 +138,9 @@ pub trait ControlIf {
     /// Writes bytes into a vCPU run page owned by the host fd for `session`.
     fn write_vcpu_run_page(session: SessionId, offset: usize, buf: &[u8]) -> AxResult;
 
+    /// Reads bytes from a vCPU run page owned by the host fd for `session`.
+    fn read_vcpu_run_page(session: SessionId, offset: usize, buf: &mut [u8]) -> AxResult;
+
     /// Reads bytes from the current userspace task.
     ///
     /// This is the host-neutral copy-from-user primitive used by KVM ioctls
@@ -153,6 +156,12 @@ pub trait ControlIf {
     /// into its current user address space; `axvisor-core` owns the ABI layout
     /// and command semantics.
     fn write_user(addr: usize, buf: &[u8]) -> AxResult;
+
+    /// Signals an eventfd owned by the current userspace task.
+    ///
+    /// KVM ioeventfd uses this to notify userspace device-model workers when a
+    /// guest MMIO/PIO write hits a registered address.
+    fn signal_eventfd(fd: HostFd) -> AxResult;
 
     /// Acquires pages from the current userspace task and returns their physical backing pages.
     ///

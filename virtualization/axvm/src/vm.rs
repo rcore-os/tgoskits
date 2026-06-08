@@ -574,6 +574,38 @@ impl AxVM {
     ///
     /// ## Returns
     /// * `AxVCpuExitReason` - the exit reason of the vCPU, wrapped in an `AxResult`.
+    pub fn run_vcpu_raw(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
+        let vcpu = self
+            .vcpu(vcpu_id)
+            .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
+
+        vcpu.bind()?;
+
+        let exit_reason = loop {
+            let exit_reason = vcpu.run()?;
+            trace!("{exit_reason:#x?}");
+            match exit_reason {
+                AxVCpuExitReason::NestedPageFault { addr, access_flags } => {
+                    if self.handle_nested_page_fault(addr, access_flags) {
+                        continue;
+                    }
+                    break AxVCpuExitReason::NestedPageFault { addr, access_flags };
+                }
+                exit_reason => break exit_reason,
+            }
+        };
+
+        vcpu.unbind()?;
+        Ok(exit_reason)
+    }
+
+    /// Run a vCPU and handle AxVisor-owned emulated device exits internally.
+    ///
+    /// ## Arguments
+    /// * `vcpu_id` - the id of the vCPU to run.
+    ///
+    /// ## Returns
+    /// * `AxVCpuExitReason` - the exit reason of the vCPU, wrapped in an `AxResult`.
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
         let vcpu = self
             .vcpu(vcpu_id)

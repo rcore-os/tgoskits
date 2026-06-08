@@ -124,6 +124,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         sstatus.set_sie(false);
         sstatus.set_spie(false);
         sstatus.set_spp(sstatus::SPP::Supervisor);
+        sstatus.set_fs(sstatus::FS::Dirty);
         self.regs.guest_regs.sstatus = sstatus.bits();
 
         // Set hstatus.
@@ -307,8 +308,28 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         self.set_kvm_arch_reg(reg_id, value)
     }
 
-    fn inject_interrupt(&mut self, _vector: usize) -> AxResult {
-        unimplemented!("RISCVVCpu::inject_interrupt is not implemented yet");
+    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+        match vector {
+            0 => {
+                let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+                hvip.set_vseip(false);
+                self.regs.virtual_hs_csrs.hvip = hvip.bits();
+                unsafe {
+                    hvip::clear_vseip();
+                }
+                Ok(())
+            }
+            1 => {
+                let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+                hvip.set_vseip(true);
+                self.regs.virtual_hs_csrs.hvip = hvip.bits();
+                unsafe {
+                    hvip::set_vseip();
+                }
+                Ok(())
+            }
+            _ => Err(AxErrorKind::Unsupported.into()),
+        }
     }
 
     fn set_return_value(&mut self, val: usize) {

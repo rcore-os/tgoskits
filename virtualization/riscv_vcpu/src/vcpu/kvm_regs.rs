@@ -27,6 +27,7 @@ const KVM_REG_RISCV_CORE: u64 = 0x02 << 24;
 const KVM_REG_RISCV_CSR: u64 = 0x03 << 24;
 const KVM_REG_RISCV_CSR_GENERAL: u64 = 0x00 << 16;
 const KVM_REG_RISCV_TIMER: u64 = 0x04 << 24;
+const KVM_REG_RISCV_ISA_EXT: u64 = 0x07 << 24;
 const KVM_RISCV_BASE_ISA: u64 = (1 << 0) | (1 << 2) | (1 << 8) | (1 << 12);
 const KVM_REG_RISCV_MODE_S: u64 = 1;
 const KVM_RISCV_TIMER_STATE_OFF: u64 = 0;
@@ -55,6 +56,14 @@ const KVM_REG_RISCV_TIMER_FREQUENCY_INDEX: u64 = 0;
 const KVM_REG_RISCV_TIMER_TIME: u64 = 1;
 const KVM_REG_RISCV_TIMER_COMPARE: u64 = 2;
 const KVM_REG_RISCV_TIMER_STATE: u64 = 3;
+const KVM_RISCV_ISA_EXT_A: u64 = 0;
+const KVM_RISCV_ISA_EXT_C: u64 = 1;
+const KVM_RISCV_ISA_EXT_D: u64 = 2;
+const KVM_RISCV_ISA_EXT_F: u64 = 3;
+const KVM_RISCV_ISA_EXT_I: u64 = 5;
+const KVM_RISCV_ISA_EXT_M: u64 = 6;
+const KVM_RISCV_ISA_EXT_ZICSR: u64 = 20;
+const KVM_RISCV_ISA_EXT_ZIFENCEI: u64 = 21;
 
 const RISCV_REG_IDS: [u64; 53] = [
     riscv_config_reg_id(KVM_REG_RISCV_CONFIG_ISA),
@@ -117,6 +126,7 @@ enum KvmRiscvRegKind {
     Config(u64),
     Core(u64),
     CsrGeneral(u64),
+    IsaExt(u64),
     Timer(u64),
 }
 
@@ -126,6 +136,7 @@ impl RISCVVCpu {
             KvmRiscvRegKind::Config(index) => self.get_kvm_config_reg(index),
             KvmRiscvRegKind::Core(index) => self.get_kvm_core_reg(index),
             KvmRiscvRegKind::CsrGeneral(index) => self.get_kvm_csr_general_reg(index),
+            KvmRiscvRegKind::IsaExt(index) => self.get_kvm_isa_ext_reg(index),
             KvmRiscvRegKind::Timer(index) => self.get_kvm_timer_reg(index),
         }
     }
@@ -139,6 +150,7 @@ impl RISCVVCpu {
             KvmRiscvRegKind::Config(index) => self.set_kvm_config_reg(index, value),
             KvmRiscvRegKind::Core(index) => self.set_kvm_core_reg(index, value),
             KvmRiscvRegKind::CsrGeneral(index) => self.set_kvm_csr_general_reg(index, value),
+            KvmRiscvRegKind::IsaExt(index) => self.set_kvm_isa_ext_reg(index, value),
             KvmRiscvRegKind::Timer(index) => self.set_kvm_timer_reg(index, value),
         }
     }
@@ -231,6 +243,19 @@ impl RISCVVCpu {
         Ok(())
     }
 
+    fn get_kvm_isa_ext_reg(&self, index: u64) -> AxResult<u64> {
+        Ok(u64::from(kvm_isa_ext_supported(index)))
+    }
+
+    fn set_kvm_isa_ext_reg(&mut self, index: u64, value: u64) -> AxResult {
+        match (kvm_isa_ext_supported(index), value) {
+            (true, 0 | 1) => Ok(()),
+            (true, _) => Err(AxError::InvalidInput),
+            (false, 0) => Ok(()),
+            (false, _) => Err(AxError::Unsupported),
+        }
+    }
+
     fn get_kvm_timer_reg(&self, index: u64) -> AxResult<u64> {
         match index {
             KVM_REG_RISCV_TIMER_FREQUENCY_INDEX => Ok(KVM_RISCV_TIMER_FREQUENCY),
@@ -281,6 +306,20 @@ const fn riscv_timer_reg_id(index: u64) -> u64 {
     KVM_REG_RISCV | KVM_REG_SIZE_U64 | KVM_REG_RISCV_TIMER | index
 }
 
+const fn kvm_isa_ext_supported(index: u64) -> bool {
+    matches!(
+        index,
+        KVM_RISCV_ISA_EXT_A
+            | KVM_RISCV_ISA_EXT_C
+            | KVM_RISCV_ISA_EXT_D
+            | KVM_RISCV_ISA_EXT_F
+            | KVM_RISCV_ISA_EXT_I
+            | KVM_RISCV_ISA_EXT_M
+            | KVM_RISCV_ISA_EXT_ZICSR
+            | KVM_RISCV_ISA_EXT_ZIFENCEI
+    )
+}
+
 fn riscv_reg_kind(reg_id: u64) -> AxResult<KvmRiscvRegKind> {
     if reg_id & (KVM_REG_RISCV | KVM_REG_SIZE_U64) != KVM_REG_RISCV | KVM_REG_SIZE_U64 {
         return Err(AxError::Unsupported);
@@ -300,6 +339,7 @@ fn riscv_reg_kind(reg_id: u64) -> AxResult<KvmRiscvRegKind> {
             _ => Err(AxError::Unsupported),
         },
         KVM_REG_RISCV_TIMER => Ok(KvmRiscvRegKind::Timer(index)),
+        KVM_REG_RISCV_ISA_EXT => Ok(KvmRiscvRegKind::IsaExt(index)),
         _ => Err(AxError::Unsupported),
     }
 }
