@@ -89,6 +89,8 @@ pub struct AxVmDevices {
     emu_port_devices: AxEmuPortDevices,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator<usize>>>,
+    /// Interrupt controller (if registered during device init)
+    intc_ops: Option<Arc<dyn axbus::InterruptControllerOps>>,
 }
 
 #[inline]
@@ -126,6 +128,7 @@ impl AxVmDevices {
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
             ivc_channel: None,
+            intc_ops: None,
         };
 
         Self::init(&mut this, &config.emu_configs);
@@ -139,7 +142,9 @@ impl AxVmDevices {
                 EmulatedDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        this.add_mmio_dev(Arc::new(Vgic::new()));
+                        let vgic = Arc::new(Vgic::new());
+                        this.intc_ops = Some(vgic.clone() as Arc<dyn axbus::InterruptControllerOps>);
+                        this.add_mmio_dev(vgic);
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -261,12 +266,13 @@ impl AxVmDevices {
                             .first()
                             .copied()
                             .expect("expect 1 arg for pppt global (context_num)");
-                        this.add_mmio_dev(Arc::new(VPlicGlobal::new(
+                        let vplic = Arc::new(VPlicGlobal::new(
                             config.base_gpa.into(),
                             Some(config.length),
-                            context_num, // Here only 1 core and should be cpu0
-                        )));
-                        // PLIC Partial Passthrough Global.
+                            context_num,
+                        ));
+                        this.intc_ops = Some(vplic.clone() as Arc<dyn axbus::InterruptControllerOps>);
+                        this.add_mmio_dev(vplic);
                         info!(
                             "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
                              length {:#x}",
@@ -351,6 +357,11 @@ impl AxVmDevices {
         } else {
             ax_err!(InvalidInput, "IVC channel not exists")
         }
+    }
+
+    /// Returns the interrupt controller ops if one was registered during init.
+    pub fn interrupt_controller(&self) -> Option<&Arc<dyn axbus::InterruptControllerOps>> {
+        self.intc_ops.as_ref()
     }
 
     /// Add a MMIO device to the device list

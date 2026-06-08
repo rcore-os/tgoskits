@@ -353,9 +353,19 @@ impl AxVM {
         // Build BusRouter from the legacy AxVmDevices (adapter pattern).
         let mut router = BusRouter::new();
         let mut dev_id: u64 = 1;
+        let intc_ops = devices.interrupt_controller().cloned();
         for dev in devices.iter_mmio_dev() {
             let id = DeviceId::from_u64(dev_id); dev_id += 1;
             let adapter = LegacyMmioAdapter::new(id, dev.clone());
+            let adapter = if intc_ops.is_some() && matches!(
+                dev.emu_type(),
+                axdevice_base::EmuDeviceType::InterruptController
+                    | axdevice_base::EmuDeviceType::PPPTGlobal
+            ) {
+                adapter.with_interrupt_controller(intc_ops.clone().unwrap())
+            } else {
+                adapter
+            };
             let _ = router.register(StdArc::new(adapter));
         }
         for dev in devices.iter_sys_reg_dev() {
