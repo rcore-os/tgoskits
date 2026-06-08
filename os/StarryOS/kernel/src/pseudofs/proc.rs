@@ -1223,6 +1223,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
         }),
     );
+    // /proc/filesystems — list of registered filesystem types. Tools like
+    // `mount`/`findmnt` and some container runtimes read it to decide what they
+    // can mount; absence (ENOENT) made those probes fail.
+    root.add(
+        "filesystems",
+        SimpleFile::new_regular(fs.clone(), || {
+            Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
+        }),
+    );
     root.add(
         "stat",
         SimpleFile::new_regular(fs.clone(), || Ok(render_stat())),
@@ -1313,6 +1322,50 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+        });
+
+        // /proc/sys/vm — read-only constants several runtimes probe at startup.
+        // `max_map_count` in particular is read by Elasticsearch/Lucene and some
+        // JVMs as a preflight check; its absence (ENOENT) trips those checks.
+        sys.add("vm", {
+            let mut vm = DirMapping::new();
+            vm.add(
+                "overcommit_memory",
+                SimpleFile::new_regular(fs.clone(), || Ok("0\n")),
+            );
+            vm.add(
+                "max_map_count",
+                SimpleFile::new_regular(fs.clone(), || Ok("65530\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(vm))
+        });
+
+        // /proc/sys/fs — file-descriptor limits some servers read to size tables.
+        sys.add("fs", {
+            let mut fs_sys = DirMapping::new();
+            fs_sys.add(
+                "file-max",
+                SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
+            );
+            fs_sys.add(
+                "nr_open",
+                SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))
+        });
+
+        // /proc/sys/net/core/somaxconn — listen-backlog clamp some servers read.
+        sys.add("net", {
+            let mut net = DirMapping::new();
+            net.add("core", {
+                let mut core = DirMapping::new();
+                core.add(
+                    "somaxconn",
+                    SimpleFile::new_regular(fs.clone(), || Ok("4096\n")),
+                );
+                SimpleDir::new_maker(fs.clone(), Arc::new(core))
+            });
+            SimpleDir::new_maker(fs.clone(), Arc::new(net))
         });
 
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
