@@ -16,6 +16,7 @@ use crate::{
 
 const AX_LIBC_PACKAGE: &str = "ax-libc";
 const PIC_RUSTFLAG: &str = "-Crelocation-model=pic";
+const C_DEFINE_FEATURE_PREFIX: &str = "c-define:";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArceosCBuildInput {
@@ -41,6 +42,7 @@ pub(crate) fn build_c_app(
     cargo.target = request.target.clone();
     cargo.to_bin = false;
     cargo.features = map_c_app_features(&input.features, &cargo.features);
+    let c_features = c_compiler_features(&cargo.features, &input.features);
     let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
 
     let mode = if request.debug { "debug" } else { "release" };
@@ -99,7 +101,7 @@ pub(crate) fn build_c_app(
         mode,
         generated_include_dir: &generated_include_dir,
         include_dir: &include_dir,
-        features: &cargo.features,
+        features: &c_features,
         log: cargo.log,
         dynamic_pie,
     });
@@ -119,7 +121,7 @@ pub(crate) fn build_c_app(
         &rust_lib,
         &libc,
         &app_objects,
-        libgcc(arch, &input.features)?,
+        libgcc(arch, &cargo.features)?,
     )?;
 
     Ok(ArceosCBuildOutput { elf_path })
@@ -404,6 +406,9 @@ fn cflags(input: CFlagsInput<'_>) -> Vec<String> {
     for feature in c_config_features(input.features) {
         flags.push(format!("-DAX_CONFIG_{}", c_define_name(&feature)));
     }
+    for define in c_defines(input.features) {
+        flags.push(format!("-D{define}=1"));
+    }
     flags.push(format!(
         "-DAX_LOG_{}",
         format!("{:?}", input.log.unwrap_or(LogLevel::Warn)).to_uppercase()
@@ -438,6 +443,9 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
     let mut config_features: BTreeSet<_> = features
         .iter()
         .filter_map(|feature| {
+            if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
+                return None;
+            }
             if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
                 return None;
             }
@@ -459,6 +467,25 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
         config_features.insert("smp".to_string());
     }
     config_features
+}
+
+fn c_defines(features: &[String]) -> BTreeSet<String> {
+    features
+        .iter()
+        .filter_map(|feature| feature.strip_prefix(C_DEFINE_FEATURE_PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
+fn c_compiler_features(cargo_features: &[String], case_features: &[String]) -> Vec<String> {
+    let mut features = cargo_features.to_vec();
+    features.extend(
+        case_features
+            .iter()
+            .filter(|feature| feature.starts_with(C_DEFINE_FEATURE_PREFIX))
+            .cloned(),
+    );
+    features
 }
 
 fn has_feature(features: &[String], name: &str) -> bool {
@@ -625,6 +652,9 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
         }
     }
     for feature in case_features {
+        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
+            continue;
+        }
         let normalized = feature
             .strip_prefix("ax-feat/")
             .or_else(|| feature.strip_prefix("ax-std/"))
@@ -742,6 +772,54 @@ mod tests {
     }
 
     #[test]
+    fn c_config_features_skips_case_define_features() {
+        let features = c_config_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]));
+
+        assert_eq!(
+            features.into_iter().collect::<Vec<_>>(),
+            vec!["alloc".to_string()]
+        );
+    }
+
+    #[test]
+    fn c_defines_extracts_case_define_features() {
+        let defines = c_defines(&strings(&[
+            "alloc",
+            "c-define:ARCEOS_C_TEST_CASE_MEM",
+            "c-define:ARCEOS_C_TEST_CASE_NET_HTTP",
+        ]));
+
+        assert_eq!(
+            defines.into_iter().collect::<Vec<_>>(),
+            vec![
+                "ARCEOS_C_TEST_CASE_MEM".to_string(),
+                "ARCEOS_C_TEST_CASE_NET_HTTP".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn c_compiler_features_keep_case_defines_for_cflags() {
+        let features = c_compiler_features(
+            &strings(&["alloc"]),
+            &strings(&["c-define:ARCEOS_C_TEST_CASE_MEM"]),
+        );
+        let flags = cflags(CFlagsInput {
+            workspace_root: std::path::Path::new("/workspace"),
+            arch: "x86_64",
+            mode: "release",
+            generated_include_dir: std::path::Path::new("/generated"),
+            include_dir: std::path::Path::new("/include"),
+            features: &features,
+            log: Some(LogLevel::Info),
+            dynamic_pie: false,
+        });
+
+        assert!(flags.contains(&"-DAX_CONFIG_ALLOC".to_string()));
+        assert!(flags.contains(&"-DARCEOS_C_TEST_CASE_MEM=1".to_string()));
+    }
+
+    #[test]
     fn map_c_app_features_preserves_driver_features() {
         let features = map_c_app_features(
             &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
@@ -753,6 +831,14 @@ mod tests {
         assert!(features.contains(&"ax-driver/plat-static".to_string()));
         assert!(features.contains(&"ax-driver/virtio-net".to_string()));
         assert!(features.contains(&"ax-hal/loongarch64-qemu-virt".to_string()));
+    }
+
+    #[test]
+    fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
+        let features =
+            map_c_app_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]), &[]);
+
+        assert_eq!(features, vec!["alloc".to_string()]);
     }
 
     #[test]

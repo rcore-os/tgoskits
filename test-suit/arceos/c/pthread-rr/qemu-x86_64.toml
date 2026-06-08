@@ -1,6 +1,0 @@
-args = ["-nographic", "-smp", "4"]
-uefi = false
-to_bin = false
-success_regex = ['\(C\)Pthread parallel run OK!']
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 120
