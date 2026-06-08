@@ -23,7 +23,7 @@
 
 use alloc::sync::Arc;
 
-use crate::irq::{IrqMessage, IrqRoutingTable};
+use crate::irq::{IrqMessage, IrqRoutingTable, IrqSink, TriggerMode};
 use crate::r#trait::*;
 use crate::registry::DeviceRegistry;
 
@@ -81,6 +81,20 @@ impl BusRouter {
     }
 
     // ── Interrupt injection ───────────────────────────────────────────
+
+    /// Create an `IrqSink` bound to a specific interrupt line through this
+    /// router. Requires the router to be `Arc`-wrapped so the sink's closures
+    /// can hold a reference.
+    pub fn create_irq_sink(self: &Arc<Self>, line: IrqLine, trigger: TriggerMode) -> IrqSink {
+        let r_inject = Arc::clone(self);
+        let r_deact = Arc::clone(self);
+        IrqSink::new(
+            line,
+            trigger,
+            Arc::new(move |msg| r_inject.inject(msg)),
+            Arc::new(move |line| r_deact.deactivate_irq(line)),
+        )
+    }
 
     /// Inject an interrupt by routing through the `IrqRoutingTable`.
     ///

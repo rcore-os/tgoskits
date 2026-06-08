@@ -266,6 +266,65 @@ pub trait InterruptControllerOps: Send + Sync {
 }
 
 // ============================================================
+// IrqSink — device-side interrupt handle
+// ============================================================
+
+/// A lightweight, clonable handle that device backends hold to signal
+/// interrupts without knowing the architecture or controller topology.
+///
+/// Created by [`BusRouter::create_irq_sink`] after the routing table is
+/// populated. The sink captures the inject/deactivate callbacks as closures,
+/// so the device never needs a reference to the router or the VM.
+#[derive(Clone)]
+pub struct IrqSink {
+    line: IrqLine,
+    trigger: TriggerMode,
+    injector: Arc<dyn Fn(IrqMessage) -> Result<()> + Send + Sync>,
+    deactivator: Arc<dyn Fn(IrqLine) -> Result<()> + Send + Sync>,
+}
+
+impl IrqSink {
+    /// Create a new IrqSink with explicit callbacks.
+    pub fn new(
+        line: IrqLine,
+        trigger: TriggerMode,
+        injector: Arc<dyn Fn(IrqMessage) -> Result<()> + Send + Sync>,
+        deactivator: Arc<dyn Fn(IrqLine) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        Self { line, trigger, injector, deactivator }
+    }
+
+    /// Assert the interrupt (edge: pulse, level: raise).
+    pub fn raise(&self) -> Result<()> {
+        (self.injector)(IrqMessage::Legacy { line: self.line })
+    }
+
+    /// De-assert a level-triggered interrupt.
+    pub fn lower(&self) -> Result<()> {
+        (self.deactivator)(self.line)
+    }
+
+    /// The interrupt line this sink is bound to.
+    pub fn line(&self) -> IrqLine {
+        self.line
+    }
+
+    /// The trigger mode configured for this line.
+    pub fn trigger(&self) -> TriggerMode {
+        self.trigger
+    }
+}
+
+impl core::fmt::Debug for IrqSink {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IrqSink")
+            .field("line", &self.line)
+            .field("trigger", &self.trigger)
+            .finish()
+    }
+}
+
+// ============================================================
 // Resource builder for devices
 // ============================================================
 

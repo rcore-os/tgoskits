@@ -43,6 +43,7 @@ use axaddrspace::{
 use axdevice_base::BaseDeviceOps;
 use alloc::format;
 use crate::send_sync::AssertSendSync;
+use crate::irq::InterruptControllerOps;
 use crate::r#trait::*;
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -108,6 +109,7 @@ pub struct LegacyMmioAdapter {
     name: String,
     inner: AssertSendSync<Arc<dyn BaseDeviceOps<GuestPhysAddrRange>>>,
     resources: Vec<Resource>,
+    intc_ops: Option<AssertSendSync<Arc<dyn InterruptControllerOps>>>,
 }
 
 impl LegacyMmioAdapter {
@@ -119,7 +121,14 @@ impl LegacyMmioAdapter {
             name,
             inner: AssertSendSync(inner),
             resources,
+            intc_ops: None,
         }
+    }
+
+    /// Attach an interrupt controller implementation to this adapter.
+    pub fn with_interrupt_controller(mut self, intc: Arc<dyn InterruptControllerOps>) -> Self {
+        self.intc_ops = Some(AssertSendSync(intc));
+        self
     }
 }
 
@@ -163,6 +172,10 @@ impl VirtualDevice for LegacyMmioAdapter {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
+        self.intc_ops.as_ref().map(|ops| ops.0.as_ref())
     }
 }
 
