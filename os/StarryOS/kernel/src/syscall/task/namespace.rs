@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::mem;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
@@ -7,6 +8,7 @@ use ax_task::current;
 use linux_raw_sys::general::{
     CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
+use scope_local::ActiveScope;
 
 use crate::{
     file::{NsFd, PidFd, get_file_like},
@@ -55,22 +57,35 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 
     // Phase 2: FsContext ops (mount-ns + CLONE_FS) require a Mutex
     // (blocking), which must not be held inside SpinNoIrq.
+    //
+    // Both CLONE_NEWNS and CLONE_FS require the caller's task-local
+    // FS_CONTEXT to be rebound to a private copy before any mutation.
+    // clone(CLONE_FS) shares the same Arc<Mutex<FsContext>> between parent
+    // and child, so operating directly on the shared Arc (e.g. unshare
+    // mount namespace or chdir) would leak to the other sharer.
+    if want_ns || want_fs {
+        let cloned_inner = FS_CONTEXT.lock().clone();
+        let new_fs = Arc::new(Mutex::new(cloned_inner));
+
+        // scope.write() would self-deadlock because on_enter holds a
+        // leaked scope.read() guard for the task's lifetime.  Temporarily
+        // release it, do the rebind, then re-acquire.
+        // SAFETY: the scope is task-private.  The brief window with
+        // ActiveScope pointing to global contains no FS_CONTEXT access.
+        unsafe { curr.as_thread().proc_data.scope.force_read_decrement() };
+        ActiveScope::set_global();
+
+        let mut scope = curr.as_thread().proc_data.scope.write();
+        *FS_CONTEXT.scope_mut(&mut scope) = new_fs;
+        drop(scope);
+
+        let read_guard = curr.as_thread().proc_data.scope.read();
+        unsafe { ActiveScope::set(&read_guard) };
+        mem::forget(read_guard);
+    }
     if want_ns {
         FS_CONTEXT.lock().unshare_mount_namespace()?;
         proc_data.nsproxy.lock().unshare_mnt();
-    }
-    if want_fs && !want_ns {
-        // CLONE_FS alone: Linux requires the caller to obtain a private
-        // fs_struct.  clone(CLONE_FS) shares the same Arc<Mutex<FsContext>>
-        // between parent and child, so cloning only the inner FsContext
-        // inside the shared Arc is not enough — later chdir / root / mount
-        // ops would still affect the sharer.  Create a new Arc containing a
-        // clone of the current FsContext and rebind the task-local
-        // FS_CONTEXT to it.
-        let cloned_inner = FS_CONTEXT.lock().clone();
-        let new_fs = Arc::new(Mutex::new(cloned_inner));
-        let mut scope = curr.as_thread().proc_data.scope.write();
-        *FS_CONTEXT.scope_mut(&mut scope) = new_fs;
     }
 
     Ok(0)

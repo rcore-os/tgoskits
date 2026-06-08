@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -78,6 +79,83 @@ static void prepare_tree(void) {
         FAIL("check parent target marker absence");
 }
 
+/* ── clone(CLONE_FS) + unshare(CLONE_NEWNS) isolation test ──────────── */
+
+#define CLONE_BASE "/tmp/nix-prereq-mnt-ns-cf"
+#define CLONE_SRC CLONE_BASE "/src"
+#define CLONE_DST CLONE_BASE "/dst"
+#define CLONE_MARKER CLONE_SRC "/cf-marker"
+#define CLONE_DONE CLONE_DST "/cf-marker"
+#define CLONE_STACK_SIZE (64 * 1024)
+
+static volatile int clone_ns_child_done;
+
+static int clone_child_ns(void *arg) {
+    (void)arg;
+    if (unshare(CLONE_NEWNS) < 0) _exit(1);
+    if (mount(CLONE_SRC, CLONE_DST, "none", MS_BIND, NULL) < 0) _exit(2);
+    if (access(CLONE_DONE, F_OK) < 0) _exit(3);
+    clone_ns_child_done = 1;
+    _exit(0);
+    return 0;
+}
+
+static void test_clone_fs_unshare_new_ns(void) {
+    printf("\n--- clone(CLONE_FS) + child unshare(CLONE_NEWNS) ---\n");
+
+    clone_ns_child_done = 0;
+
+    mkdir(CLONE_BASE, 0755);
+    mkdir(CLONE_SRC, 0755);
+    mkdir(CLONE_DST, 0755);
+    int fd = open(CLONE_MARKER, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) FAIL("clone: create marker");
+    write_all(fd, "clone ns marker\n", 16, "clone: write marker");
+    close(fd);
+
+    char *stack = mmap(NULL, CLONE_STACK_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (stack == MAP_FAILED) FAIL("clone: mmap stack");
+
+    /*
+     * clone(CLONE_FS | CLONE_VM | SIGCHLD) — parent and child share
+     * Arc<Mutex<FsContext>>, child privatises before unshare(NEWNS).
+     */
+    pid_t pid = clone(clone_child_ns, (void *)(stack + CLONE_STACK_SIZE),
+                      CLONE_FS | CLONE_VM | SIGCHLD, NULL);
+    if (pid < 0) FAIL("clone: clone(CLONE_FS|CLONE_VM|SIGCHLD)");
+
+    while (!clone_ns_child_done) usleep(10000);
+    PASS("clone child unshared NEWNS + bind mount");
+
+    /*
+     * With the fix (namespace.rs force_read_decrement path):
+     * child privatised FsContext before unshare_mount_namespace().
+     * Parent's FsContext is unchanged → parent does NOT see the bind mount.
+     */
+    if (access(CLONE_DONE, F_OK) == 0) {
+        fprintf(stderr, "FAIL | %s:%d | parent sees clone child mount "
+                "(NEWNS on shared FsContext leaked)\n", __FILE__, __LINE__);
+        exit(1);
+    }
+    PASS("parent does not see clone child mount (isolation ok)");
+
+    int status;
+    if (waitpid(pid, &status, 0) < 0) FAIL("clone: waitpid");
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        FAIL("clone: child non-zero exit");
+
+    munmap(stack, CLONE_STACK_SIZE);
+    rmdir(CLONE_DST);
+    unlink(CLONE_MARKER);
+    rmdir(CLONE_SRC);
+    rmdir(CLONE_BASE);
+
+    printf("UNSHARE_MOUNT_NS_CLONE_ISOLATION_PASSED\n");
+}
+
+/* ── original fork-based test ──────────────────────────────────────── */
+
 static void child_body(int ready_fd, int release_fd) {
     if (unshare(CLONE_NEWNS) < 0)
         FAIL("unshare(CLONE_NEWNS)");
@@ -103,6 +181,11 @@ int main(void) {
     printf("  TEST: unshare/setns(CLONE_NEWNS) mount view\n");
     printf("================================================\n");
 
+    /* Scenario 1: clone(CLONE_FS) + child unshare(CLONE_NEWNS) → parent
+       must NOT see child's namespace-local bind mount. */
+    test_clone_fs_unshare_new_ns();
+
+    /* Scenario 2: fork() + child unshare(CLONE_NEWNS) + setns. */
     prepare_tree();
 
     int ready_pipe[2];
