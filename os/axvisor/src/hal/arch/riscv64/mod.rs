@@ -2,7 +2,6 @@ mod api;
 pub mod cache;
 
 use crate::vmm::vm_list::get_vm_by_id;
-use axaddrspace::{GuestPhysAddr, device::AccessWidth};
 use axplat_riscv64_qemu_virt_hv::config::devices::PLIC_PADDR;
 use axvisor_api::vmm::current_vm_id;
 
@@ -14,19 +13,21 @@ pub fn hardware_check() {
 pub fn inject_interrupt(irq_id: usize) {
     debug!("injecting interrupt id: {}", irq_id);
 
-    // Get the instance of the vplic, and then inject virtual interrupt.
-    let vplic = get_vm_by_id(current_vm_id())
-        .unwrap()
-        .get_devices()
-        .find_mmio_dev(GuestPhysAddr::from_usize(PLIC_PADDR))
-        .unwrap();
+    let vm = get_vm_by_id(current_vm_id()).unwrap();
 
-    // Calulate the pending register offset and value.
+    // Write to the vPLIC pending register through the bus router.
+    // This is equivalent to the old path but uses the unified router
+    // instead of the deprecated get_devices().
     let reg_offset = riscv_vplic::PLIC_PENDING_OFFSET + (irq_id / 32) * 4;
-    let addr = GuestPhysAddr::from_usize(PLIC_PADDR + reg_offset);
-    let width = AccessWidth::Dword;
+    let addr = (PLIC_PADDR + reg_offset) as u64;
     let val: u32 = 1 << (irq_id % 32);
 
-    // Use a trick write to set the pending bit.
-    let _ = vplic.handle_write(addr, width, val as _);
+    vm.router().route(
+        axbus::BusKind::Mmio,
+        &axbus::BusAccess::Write {
+            addr,
+            width: axbus::AccessWidth::U32,
+            val: val as u64,
+        },
+    );
 }
