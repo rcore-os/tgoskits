@@ -10,6 +10,7 @@
 
 #define HOST_HTTP_BODY "ArceOS C test suite host fixture\n"
 #define HOST_HTTP_PORT "18080"
+#define HTTP_OK_PREFIX "HTTP/1.1 200 OK"
 
 static const char HTTP_REQUEST[] =
     "GET / HTTP/1.1\r\n"
@@ -25,6 +26,7 @@ int arceos_c_test_net_http(char *reason, size_t reason_len)
     int sock = -1;
     char response[512];
     ssize_t len;
+    size_t total = 0;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -45,16 +47,41 @@ int arceos_c_test_net_http(char *reason, size_t reason_len)
         return -1;
     }
     CHECK_RET(send(sock, HTTP_REQUEST, strlen(HTTP_REQUEST), 0), (ssize_t)strlen(HTTP_REQUEST));
-    len = recv(sock, response, sizeof(response) - 1, 0);
-    if (len <= 0) {
+    while (total < sizeof(response) - 1) {
+        len = recv(sock, response + total, sizeof(response) - 1 - total, 0);
+        if (len < 0) {
+            freeaddrinfo(res);
+            close(sock);
+            test_fail(reason, reason_len, "recv host HTTP fixture failed");
+            return -1;
+        }
+        if (len == 0) {
+            break;
+        }
+        total += (size_t)len;
+    }
+    if (total == 0) {
         freeaddrinfo(res);
         close(sock);
-        test_fail(reason, reason_len, "recv host HTTP fixture returned %ld", (long)len);
+        test_fail(reason, reason_len, "recv host HTTP fixture returned empty response");
         return -1;
     }
-    response[len] = '\0';
-    CHECK_TRUE(strstr(response, "HTTP/1.1 200 OK") != NULL);
-    CHECK_TRUE(strstr(response, HOST_HTTP_BODY) != NULL);
+    response[total] = '\0';
+    if (total < strlen(HTTP_OK_PREFIX) ||
+        memcmp(response, HTTP_OK_PREFIX, strlen(HTTP_OK_PREFIX)) != 0) {
+        freeaddrinfo(res);
+        close(sock);
+        test_fail(reason, reason_len, "missing HTTP 200 status in response: %s", response);
+        return -1;
+    }
+    if (total < strlen(HOST_HTTP_BODY) ||
+        memcmp(response + total - strlen(HOST_HTTP_BODY), HOST_HTTP_BODY,
+               strlen(HOST_HTTP_BODY)) != 0) {
+        freeaddrinfo(res);
+        close(sock);
+        test_fail(reason, reason_len, "missing fixture body in response: %s", response);
+        return -1;
+    }
 
     freeaddrinfo(res);
     close(sock);
