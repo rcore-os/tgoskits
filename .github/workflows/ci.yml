@@ -544,7 +544,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
-            command: cargo xtask axvisor test qemu --arch x86_64
+            command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
@@ -600,7 +600,7 @@ jobs:
               sudo apt-get update
               sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
               sudo usermod -aG kvm $USER
-              sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke"
+              sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm"
             cache_key: ""
             container_image: ""
             limit_to_owner: ""

@@ -21,6 +21,7 @@ pub(crate) struct TestBuildWrapper {
     pub(crate) name: String,
     pub(crate) dir: PathBuf,
     pub(crate) build_config_path: PathBuf,
+    variant: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +104,7 @@ struct IndexedQemuCase {
     display_name: String,
     case_dir: PathBuf,
     qemu_configs: BTreeMap<String, PathBuf>,
+    variant: Option<String>,
     build_group: String,
     build_config_path: PathBuf,
 }
@@ -119,32 +121,6 @@ pub(crate) struct QemuCaseExtraConfig {
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
-}
-
-pub(crate) fn resolve_build_config_path(
-    dir: &Path,
-    target: &str,
-) -> anyhow::Result<Option<PathBuf>> {
-    let path = dir.join(format!("build-{target}.toml"));
-    if path.is_file() {
-        return Ok(Some(path));
-    }
-
-    let legacy_candidates = legacy_build_config_candidates(dir, target);
-    if !legacy_candidates.is_empty() {
-        bail!(
-            "unsupported legacy build config name(s) under {}: {}; expected only \
-             `build-{target}.toml`",
-            dir.display(),
-            legacy_candidates
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-
-    Ok(None)
 }
 
 fn legacy_build_config_candidates(dir: &Path, target: &str) -> Vec<PathBuf> {
@@ -315,6 +291,7 @@ pub(crate) fn nearest_build_wrapper(
                     name: relative_case_name(test_group_dir, dir)?,
                     dir: dir.to_path_buf(),
                     build_config_path: build_config_path.clone(),
+                    variant: None,
                 });
             }
             [] => {}
@@ -372,6 +349,58 @@ fn build_config_paths(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn resolve_build_config_paths(
+    dir: &Path,
+    target: &str,
+) -> anyhow::Result<Vec<(Option<String>, PathBuf)>> {
+    let mut paths = Vec::new();
+    let canonical = dir.join(format!("build-{target}.toml"));
+    if canonical.is_file() {
+        paths.push((None, canonical));
+    }
+
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(variant) = build_config_variant(name, target) else {
+            continue;
+        };
+        paths.push((Some(variant.to_string()), path));
+    }
+
+    if paths.is_empty() {
+        let legacy_candidates = legacy_build_config_candidates(dir, target);
+        if !legacy_candidates.is_empty() {
+            bail!(
+                "unsupported legacy build config name(s) under {}: {}; expected only \
+                 `build-{target}.toml` or `build-{target}-<variant>.toml`",
+                dir.display(),
+                legacy_candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    paths.sort_by(|left, right| left.1.cmp(&right.1));
+    Ok(paths)
+}
+
+fn build_config_variant<'a>(name: &'a str, target: &str) -> Option<&'a str> {
+    let suffix = name
+        .strip_prefix(&format!("build-{target}-"))?
+        .strip_suffix(".toml")?;
+    (!suffix.is_empty()).then_some(suffix)
+}
+
 pub(crate) fn discover_qemu_cases(
     test_suite_dir: &Path,
     arch: &str,
@@ -423,14 +452,14 @@ fn discover_qemu_cases_impl(
         validate_selected_case_name(case_name, suite_name, group_label)?;
     }
 
-    let config_name = qemu_config_name(arch);
     let mut cases = Vec::new();
     let mut selected_case_dirs_without_config = Vec::new();
     for case in discover_qemu_case_index(test_suite_dir, Some(target), selected_case)? {
         if !indexed_case_matches_selected(&case, selected_case) {
             continue;
         }
-        if let Some(qemu_config_path) = case.qemu_configs.get(arch) {
+        let config_key = qemu_config_key_for_wrapper(arch, case.variant.as_deref());
+        if let Some(qemu_config_path) = case.qemu_configs.get(&config_key) {
             cases.push(DiscoveredQemuCase {
                 name: case.name,
                 display_name: case.display_name,
@@ -440,6 +469,7 @@ fn discover_qemu_cases_impl(
                 build_config_path: case.build_config_path,
             });
         } else if selected_case.is_some() {
+            let config_name = qemu_config_name(&config_key);
             selected_case_dirs_without_config
                 .push((case.build_group, case.case_dir.join(&config_name)));
         }
@@ -455,15 +485,14 @@ fn discover_qemu_cases_impl(
                     .join(", ");
                 bail!(
                     "{suite_name} {group_label} test case `{case_name}` exists under matching \
-                     build group(s), but none provide `{config_name}` for arch `{arch}`: \
-                     {searched}"
+                     build group(s), but none provide a qemu config for arch `{arch}`: {searched}"
                 );
             }
 
             bail!(
                 "unknown {suite_name} {group_label} test case `{case_name}` for arch `{arch}` \
                  under {}; cases are discovered from <build_group>/<case> directories with \
-                 matching `{config_name}`",
+                 matching qemu config files",
                 test_suite_dir.display()
             );
         }
@@ -499,15 +528,33 @@ fn discover_qemu_case_index(
         }
 
         let build_config_path = match target {
-            Some(target) => resolve_build_config_path(&dir, target)?,
-            None => build_config_paths(&dir)?.into_iter().next(),
+            Some(target) => {
+                let build_config_paths = resolve_build_config_paths(&dir, target)?;
+                if !build_config_paths.is_empty() {
+                    for (variant, build_config_path) in build_config_paths {
+                        build_wrappers.push(TestBuildWrapper {
+                            name: build_wrapper_name(test_group_dir, &dir, variant.as_deref())?,
+                            dir: dir.clone(),
+                            build_config_path,
+                            variant,
+                        });
+                    }
+                    continue;
+                }
+                None
+            }
+            None => build_config_paths(&dir)?
+                .into_iter()
+                .next()
+                .map(|path| (None, path)),
         };
 
-        if let Some(build_config_path) = build_config_path {
+        if let Some((variant, build_config_path)) = build_config_path {
             build_wrappers.push(TestBuildWrapper {
-                name: relative_case_name(test_group_dir, &dir)?,
+                name: build_wrapper_name(test_group_dir, &dir, variant.as_deref())?,
                 dir,
                 build_config_path,
+                variant,
             });
             continue;
         }
@@ -600,6 +647,13 @@ fn qemu_configs_in_dir(dir: &Path) -> anyhow::Result<Option<BTreeMap<String, Pat
     Ok((!configs.is_empty()).then_some(configs))
 }
 
+fn qemu_config_key_for_wrapper(arch: &str, variant: Option<&str>) -> String {
+    match variant {
+        Some(variant) => format!("{arch}-{variant}"),
+        None => arch.to_string(),
+    }
+}
+
 fn indexed_case_matches_selected(case: &IndexedQemuCase, selected_case: Option<&str>) -> bool {
     let Some(selected_case) = selected_case else {
         return true;
@@ -613,11 +667,13 @@ fn indexed_qemu_case(
     case_dir: PathBuf,
     qemu_configs: BTreeMap<String, PathBuf>,
 ) -> IndexedQemuCase {
+    let name = case_name_for_wrapper_variant(name, build_wrapper.variant.as_deref());
     IndexedQemuCase {
         display_name: format!("{}/{}", build_wrapper.name, name),
         name,
         case_dir,
         qemu_configs,
+        variant: build_wrapper.variant.clone(),
         build_group: build_wrapper.name.clone(),
         build_config_path: build_wrapper.build_config_path.clone(),
     }
@@ -632,8 +688,25 @@ fn indexed_qemu_root_case(
         display_name: build_wrapper.name.clone(),
         case_dir: build_wrapper.dir.clone(),
         qemu_configs,
+        variant: build_wrapper.variant.clone(),
         build_group: build_wrapper.name.clone(),
         build_config_path: build_wrapper.build_config_path.clone(),
+    }
+}
+
+fn build_wrapper_name(
+    test_group_dir: &Path,
+    dir: &Path,
+    variant: Option<&str>,
+) -> anyhow::Result<String> {
+    let name = relative_case_name(test_group_dir, dir)?;
+    Ok(case_name_for_wrapper_variant(name, variant))
+}
+
+fn case_name_for_wrapper_variant(name: String, variant: Option<&str>) -> String {
+    match variant {
+        Some(variant) => format!("{name}-{variant}"),
+        None => name,
     }
 }
 
@@ -1911,14 +1984,64 @@ mod tests {
     }
 
     #[test]
+    fn discover_qemu_cases_matches_target_variant_configs() {
+        let root = tempfile::tempdir().unwrap();
+        let wrapper_dir = root.path().join("suite/qemu");
+        let case_dir = wrapper_dir.join("smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        let svm_build_config = wrapper_dir.join("build-x86_64-unknown-none-svm.toml");
+        let vmx_build_config = wrapper_dir.join("build-x86_64-unknown-none-vmx.toml");
+        let svm_qemu_config = case_dir.join("qemu-x86_64-svm.toml");
+        let vmx_qemu_config = case_dir.join("qemu-x86_64-vmx.toml");
+        fs::write(&svm_build_config, "").unwrap();
+        fs::write(&vmx_build_config, "").unwrap();
+        fs::write(&svm_qemu_config, "").unwrap();
+        fs::write(&vmx_qemu_config, "").unwrap();
+
+        let cases = discover_qemu_cases(
+            &root.path().join("suite"),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "smoke-svm");
+        assert_eq!(cases[0].display_name, "qemu-svm/smoke-svm");
+        assert_eq!(cases[0].qemu_config_path, svm_qemu_config);
+        assert_eq!(cases[0].build_config_path, svm_build_config);
+        assert_eq!(cases[1].name, "smoke-vmx");
+        assert_eq!(cases[1].display_name, "qemu-vmx/smoke-vmx");
+        assert_eq!(cases[1].qemu_config_path, vmx_qemu_config);
+        assert_eq!(cases[1].build_config_path, vmx_build_config);
+
+        let cases = discover_qemu_cases(
+            &root.path().join("suite"),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke-svm"),
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "smoke-svm");
+        assert_eq!(cases[0].qemu_config_path, svm_qemu_config);
+    }
+
+    #[test]
     fn resolve_build_config_accepts_target_specific_name_only() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("build-x86_64-unknown-none.toml");
         fs::write(&path, "target = \"x86_64-unknown-none\"\n").unwrap();
 
         assert_eq!(
-            resolve_build_config_path(root.path(), "x86_64-unknown-none").unwrap(),
-            Some(path)
+            resolve_build_config_paths(root.path(), "x86_64-unknown-none").unwrap(),
+            [(None, path)]
         );
     }
 
@@ -1927,7 +2050,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("build-x86_64.toml"), "").unwrap();
 
-        let err = resolve_build_config_path(root.path(), "x86_64-unknown-none")
+        let err = resolve_build_config_paths(root.path(), "x86_64-unknown-none")
             .unwrap_err()
             .to_string();
 
@@ -1946,8 +2069,8 @@ mod tests {
         fs::write(root.path().join(".build-x86_64.toml"), "features = []\n").unwrap();
 
         assert_eq!(
-            resolve_build_config_path(root.path(), "x86_64-unknown-none").unwrap(),
-            None
+            resolve_build_config_paths(root.path(), "x86_64-unknown-none").unwrap(),
+            []
         );
     }
 
