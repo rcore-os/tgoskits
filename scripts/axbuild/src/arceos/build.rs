@@ -123,22 +123,42 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
     )
 }
 
-pub(crate) fn load_bare_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
     let metadata =
         build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let build_info = load_build_info_with_makefile_features_and_metadata(
+    let mut build_info = load_build_info_with_makefile_features_and_metadata(
         request,
         &makefile_features,
         Some(metadata),
     )?;
+    let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
 
-    build_info.into_bare_cargo_config_with_metadata(
+    build_info.validated_max_cpu_num()?;
+    build_info.prepare_non_dynamic_platform_for(
         &request.package,
         &request.target,
-        request.plat_dyn,
+        plat_dyn,
         metadata,
-    )
+    )?;
+    build_info.resolve_features_with_metadata(
+        &request.package,
+        &request.target,
+        plat_dyn,
+        metadata,
+    );
+    let rustflags = build::toolchain_rustflags(&build_info.env);
+    let args = ArceosBuildInfo::build_cargo_args(&request.target, &rustflags);
+
+    build_info.prepare_log_env();
+    build_info.prepare_max_cpu_num_env()?;
+
+    Ok(build_info.into_base_cargo_config_with_to_bin(
+        request.package.clone(),
+        request.target.clone(),
+        args,
+        false,
+    ))
 }
 
 pub(crate) fn default_build_info_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
@@ -214,14 +234,7 @@ mod tests {
         assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args(
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-            &[],
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
+        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
@@ -242,14 +255,7 @@ mod tests {
         );
         assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args(
-            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-            &[],
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
+        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
@@ -258,15 +264,15 @@ mod tests {
     }
 
     #[test]
-    fn preparing_non_dynamic_aarch64_without_custom_platform_fails() {
+    fn preparing_c_app_non_dynamic_aarch64_without_custom_platform_fails() {
         let metadata = repo_metadata();
-        let result = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
-            .into_bare_cargo_config_with_metadata(
-                "ax-helloworld",
-                "aarch64-unknown-none-softfloat",
-                Some(false),
-                &metadata,
-            );
+        let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
+        let result = build_info.prepare_non_dynamic_platform_for(
+            "ax-helloworld",
+            "aarch64-unknown-none-softfloat",
+            false,
+            &metadata,
+        );
 
         assert!(
             result
@@ -556,22 +562,24 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn bare_cargo_config_remains_available_for_c_builds() {
-        let metadata = repo_metadata();
-        let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
-            .into_bare_cargo_config_with_metadata(
-                "ax-helloworld",
-                "x86_64-unknown-none",
-                Some(false),
-                &metadata,
-            )
-            .unwrap();
-
-        assert!(
-            cargo
-                .target
-                .ends_with("scripts/targets/no-pie/x86_64-unknown-none.json")
+    fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
+        let root = tempdir().unwrap();
+        let build_config = root.path().join("build-x86_64-unknown-none.toml");
+        let build_info = ArceosBuildInfo {
+            features: vec!["ax-std".to_string()],
+            ..ArceosBuildInfo::default_for_target("x86_64-unknown-none")
+        };
+        fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
+        let request = request(
+            "ax-helloworld",
+            "x86_64-unknown-none",
+            Some(false),
+            build_config,
         );
+        let cargo = load_c_app_cargo_config(&request).unwrap();
+
+        assert_eq!(cargo.target, "x86_64-unknown-none");
+        assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
         assert!(
             cargo
                 .args
@@ -623,7 +631,7 @@ AX_IP = "10.0.2.15"
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/x86_64-unknown-none.json")
+                .ends_with("scripts/targets/std/pie/x86_64-unknown-linux-musl.json")
         );
         assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));

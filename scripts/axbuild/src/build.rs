@@ -29,7 +29,7 @@ fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
     })
 }
 
-fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
+pub(crate) fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
     let mut flags = Vec::new();
     let dwarf = env_truthy(env, "DWARF");
     let backtrace = env_truthy(env, "BACKTRACE") || dwarf;
@@ -62,7 +62,6 @@ pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
 }
 
 const TARGET_JSON_ROOT: &str = "scripts/targets";
-const NO_PIE_TARGET_DIR: &str = "no-pie";
 const PIE_TARGET_DIR: &str = "pie";
 pub(crate) const ARCEOS_LINKER_SCRIPT: &str = "linker.x";
 const STD_TARGET_DIR: &str = "std";
@@ -150,7 +149,7 @@ impl BuildInfo {
         )
     }
 
-    fn into_base_cargo_config_with_to_bin(
+    pub(crate) fn into_base_cargo_config_with_to_bin(
         self,
         package: String,
         target: String,
@@ -236,37 +235,6 @@ impl BuildInfo {
         );
         cargo.to_bin = default_to_bin_for_target_config(target, plat_dyn);
         Ok(cargo)
-    }
-
-    pub(crate) fn into_bare_cargo_config_with_metadata(
-        mut self,
-        package: &str,
-        target: &str,
-        plat_dyn_override: Option<bool>,
-        metadata: &Metadata,
-    ) -> anyhow::Result<Cargo> {
-        let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
-        self.validated_max_cpu_num()?;
-        self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
-        self.resolve_features_with_metadata(package, target, plat_dyn, metadata);
-        let cargo_target = cargo_target_json_path(target, plat_dyn)?;
-        let cargo_target = cargo_target.display().to_string();
-        let rustflags = toolchain_rustflags(&self.env);
-        let args = Self::build_cargo_args(&cargo_target, &rustflags);
-        self.env.insert(
-            "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
-            "true".to_string(),
-        );
-
-        self.prepare_log_env();
-        self.prepare_max_cpu_num_env()
-            .expect("max_cpu_num validation should run before cargo config generation");
-        Ok(self.into_base_cargo_config_with_to_bin(
-            package.to_string(),
-            cargo_target,
-            args,
-            default_to_bin_for_target_config(target, plat_dyn),
-        ))
     }
 
     fn resolve_std_features(&mut self) {
@@ -487,18 +455,9 @@ impl BuildInfo {
     }
 
     pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
-        let mut args = vec![
-            "-Z".to_string(),
-            "json-target-spec".to_string(),
-            "-Z".to_string(),
-            "build-std=core,alloc".to_string(),
-        ];
+        let mut args = vec!["-Z".to_string(), "build-std=core,alloc".to_string()];
 
         if !extra_rustflags.is_empty() {
-            // Cargo resolves `target.<name>.rustflags` for a JSON target spec by the
-            // spec file *stem* (e.g. `x86_64-unknown-none`), not the path passed to
-            // `--target`. Using the full path as the key makes cargo silently drop the
-            // entry, so flags like `-Cforce-frame-pointers=yes` never reach rustc.
             let target_key = Path::new(target)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
@@ -532,32 +491,6 @@ impl Default for BuildInfo {
             axconfig_overrides: Vec::new(),
             plat_dyn: false,
         }
-    }
-}
-
-pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Result<PathBuf> {
-    let target_file = match target {
-        "aarch64-unknown-none-softfloat"
-        | "riscv64gc-unknown-none-elf"
-        | "x86_64-unknown-none"
-        | "loongarch64-unknown-none-softfloat" => format!("{target}.json"),
-        _ => bail!("unsupported target triple `{target}`"),
-    };
-
-    if plat_dyn {
-        if !matches!(
-            target,
-            "aarch64-unknown-none-softfloat" | "riscv64gc-unknown-none-elf" | "x86_64-unknown-none"
-        ) {
-            bail!("unsupported PIE target `{target}`");
-        }
-        Ok(Path::new(TARGET_JSON_ROOT)
-            .join(PIE_TARGET_DIR)
-            .join(target_file))
-    } else {
-        Ok(Path::new(TARGET_JSON_ROOT)
-            .join(NO_PIE_TARGET_DIR)
-            .join(target_file))
     }
 }
 
@@ -2543,6 +2476,15 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
+    fn scripts_targets_keep_only_std_specs() {
+        let workspace = crate::context::workspace_root_path().unwrap();
+
+        for removed_dir in ["pie", "no-pie"] {
+            assert!(!workspace.join("scripts/targets").join(removed_dir).exists());
+        }
+    }
+
+    #[test]
     fn std_c_toolchain_env_does_not_require_installed_cross_compiler() {
         let env = std_c_toolchain_env("riscv64gc-unknown-linux-musl", "definitely-missing-musl");
 
@@ -2587,38 +2529,59 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn std_target_specs_keep_none_kernel_fields_with_std_link_policy() {
-        for (bare_target, std_target, plat_dyn) in [
-            ("x86_64-unknown-none", "x86_64-unknown-linux-musl", false),
-            ("x86_64-unknown-none", "x86_64-unknown-linux-musl", true),
+    fn std_target_specs_keep_kernel_fields_with_std_identity() {
+        for (std_target, plat_dyn, llvm_target, arch, pointer_width) in [
             (
-                "aarch64-unknown-none-softfloat",
+                "x86_64-unknown-linux-musl",
+                false,
+                "x86_64-unknown-none-elf",
+                "x86_64",
+                64,
+            ),
+            (
+                "x86_64-unknown-linux-musl",
+                true,
+                "x86_64-unknown-none-elf",
+                "x86_64",
+                64,
+            ),
+            (
                 "aarch64-unknown-linux-musl",
                 false,
+                "aarch64-unknown-none",
+                "aarch64",
+                64,
             ),
             (
-                "aarch64-unknown-none-softfloat",
                 "aarch64-unknown-linux-musl",
                 true,
+                "aarch64-unknown-none",
+                "aarch64",
+                64,
             ),
             (
-                "riscv64gc-unknown-none-elf",
                 "riscv64gc-unknown-linux-musl",
                 false,
+                "riscv64",
+                "riscv64",
+                64,
             ),
             (
-                "riscv64gc-unknown-none-elf",
                 "riscv64gc-unknown-linux-musl",
                 true,
+                "riscv64",
+                "riscv64",
+                64,
             ),
             (
-                "loongarch64-unknown-none-softfloat",
                 "loongarch64-unknown-linux-musl",
                 false,
+                "loongarch64-unknown-none",
+                "loongarch64",
+                64,
             ),
         ] {
             let workspace = crate::context::workspace_root_path().unwrap();
-            let base_path = workspace.join(cargo_target_json_path(bare_target, plat_dyn).unwrap());
             let std_path = workspace.join(std_target_json_path(std_target, plat_dyn));
             assert!(
                 std_path.exists(),
@@ -2626,11 +2589,12 @@ AX_IP = "10.0.2.15"
                 std_path.display()
             );
 
-            let base_spec: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(&base_path).unwrap()).unwrap();
-            let mut std_spec: serde_json::Value =
+            let std_spec: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&std_path).unwrap()).unwrap();
 
+            assert_eq!(std_spec["arch"], arch);
+            assert_eq!(std_spec["llvm-target"], llvm_target);
+            assert_eq!(std_spec["target-pointer-width"], pointer_width);
             assert_eq!(std_spec["os"], "linux");
             assert_eq!(std_spec["env"], "musl");
             assert_eq!(std_spec["target-family"], serde_json::json!(["unix"]));
@@ -2648,36 +2612,11 @@ AX_IP = "10.0.2.15"
                     .and_then(|value| value.as_str())
                     .is_some_and(|description| description.contains("musl identity"))
             );
-            assert_eq!(std_spec["llvm-target"], base_spec["llvm-target"]);
             assert_eq!(std_spec["eh-frame-header"], false);
             assert_eq!(std_spec["relro-level"], "off");
-
-            std_spec.as_object_mut().unwrap().remove("os");
-            std_spec.as_object_mut().unwrap().remove("env");
-            std_spec.as_object_mut().unwrap().remove("target-family");
-            std_spec.as_object_mut().unwrap().remove("has-thread-local");
-            std_spec.as_object_mut().unwrap().remove("tls-model");
-            std_spec["metadata"]["description"] = base_spec["metadata"]["description"].clone();
-            std_spec["metadata"]["std"] = base_spec["metadata"]["std"].clone();
-            std_spec["pre-link-args"] = base_spec["pre-link-args"].clone();
-            {
-                let std_spec = std_spec.as_object_mut().unwrap();
-                if let Some(eh_frame_header) = base_spec.get("eh-frame-header") {
-                    std_spec.insert("eh-frame-header".to_string(), eh_frame_header.clone());
-                } else {
-                    std_spec.remove("eh-frame-header");
-                }
-                if let Some(relro_level) = base_spec.get("relro-level") {
-                    std_spec.insert("relro-level".to_string(), relro_level.clone());
-                } else {
-                    std_spec.remove("relro-level");
-                }
-            }
-
-            assert_eq!(
-                std_spec, base_spec,
-                "std target {std_target} must keep all kernel fields from {bare_target}"
-            );
+            assert_eq!(std_spec["linker"], "rust-lld");
+            assert_eq!(std_spec["linker-flavor"], "gnu-lld");
+            assert_eq!(std_spec["panic-strategy"], "abort");
         }
 
         let loongarch = serde_json::from_str::<serde_json::Value>(
@@ -2961,42 +2900,6 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn cargo_target_json_path_maps_no_pie_targets() {
-        let cases = [
-            "aarch64-unknown-none-softfloat",
-            "riscv64gc-unknown-none-elf",
-            "x86_64-unknown-none",
-            "loongarch64-unknown-none-softfloat",
-        ];
-
-        for target in cases {
-            let path = cargo_target_json_path(target, false).unwrap();
-            assert!(path.ends_with(format!("scripts/targets/no-pie/{target}.json")));
-        }
-    }
-
-    #[test]
-    fn cargo_target_json_path_maps_aarch64_pie_target() {
-        let path = cargo_target_json_path("aarch64-unknown-none-softfloat", true).unwrap();
-
-        assert!(path.ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json"));
-    }
-
-    #[test]
-    fn cargo_target_json_path_maps_riscv64_pie_target() {
-        let path = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap();
-
-        assert!(path.ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json"));
-    }
-
-    #[test]
-    fn cargo_target_json_path_maps_x86_64_dyn_to_pie_target() {
-        let path = cargo_target_json_path("x86_64-unknown-none", true).unwrap();
-
-        assert!(path.ends_with("scripts/targets/pie/x86_64-unknown-none.json"));
-    }
-
-    #[test]
     fn x86_64_defaults_to_dynamic_platform() {
         assert!(supports_platform_dynamic("x86_64-unknown-none"));
         assert!(BuildInfo::default_for_target("x86_64-unknown-none").plat_dyn);
@@ -3012,16 +2915,9 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn build_cargo_args_uses_json_target_spec_and_build_std() {
-        let args = BuildInfo::build_cargo_args(
-            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-            &[],
-        );
+    fn build_cargo_args_uses_builtin_target_and_build_std() {
+        let args = BuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
 
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
@@ -3034,12 +2930,10 @@ AX_IP = "10.0.2.15"
     #[test]
     fn build_cargo_args_uses_target_stem_as_rustflags_key() {
         let args = BuildInfo::build_cargo_args(
-            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            "aarch64-unknown-none-softfloat",
             &["-Cforce-frame-pointers=yes".to_string()],
         );
 
-        // Cargo matches the JSON target by file stem, so the config key must be the
-        // stem (`aarch64-unknown-none-softfloat`) and not the full spec path.
         assert!(args.windows(2).any(|pair| {
             pair[0] == "--config"
                 && pair[1].starts_with("target.aarch64-unknown-none-softfloat.rustflags=")
@@ -3048,62 +2942,9 @@ AX_IP = "10.0.2.15"
         assert!(
             !args
                 .iter()
-                .any(|arg| arg.contains("scripts/targets/no-pie")),
-            "config key must not use the spec path"
+                .any(|arg| arg.starts_with("target.") && arg.contains('/')),
+            "config key must not use a removed spec path"
         );
-    }
-
-    #[test]
-    fn target_specs_embed_only_final_linker_script() {
-        let specs = [
-            include_str!("../../targets/no-pie/aarch64-unknown-none-softfloat.json"),
-            include_str!("../../targets/no-pie/loongarch64-unknown-none-softfloat.json"),
-            include_str!("../../targets/no-pie/riscv64gc-unknown-none-elf.json"),
-            include_str!("../../targets/no-pie/x86_64-unknown-none.json"),
-            include_str!("../../targets/pie/aarch64-unknown-none-softfloat.json"),
-            include_str!("../../targets/pie/riscv64gc-unknown-none-elf.json"),
-            include_str!("../../targets/pie/x86_64-unknown-none.json"),
-        ];
-
-        for spec in specs {
-            assert!(spec.contains("-Tlinker.x"));
-            assert!(!spec.contains("-Taxplat.x"));
-            assert!(!spec.contains("-Truntime.x"));
-        }
-    }
-
-    #[test]
-    fn x86_64_no_pie_target_preserves_pic_codegen_without_pie_link() {
-        let spec: serde_json::Value = serde_json::from_str(include_str!(
-            "../../targets/no-pie/x86_64-unknown-none.json"
-        ))
-        .unwrap();
-
-        assert_eq!(spec["relocation-model"], "pic");
-        assert_eq!(spec.get("position-independent-executables"), None);
-        assert_eq!(spec.get("static-position-independent-executables"), None);
-
-        let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
-        assert!(link_args.iter().any(|arg| arg == "-no-pie"));
-        assert!(!link_args.iter().any(|arg| arg == "-pie"));
-    }
-
-    #[test]
-    fn x86_64_pie_target_uses_final_linker_script() {
-        let spec: serde_json::Value =
-            serde_json::from_str(include_str!("../../targets/pie/x86_64-unknown-none.json"))
-                .unwrap();
-
-        assert_eq!(spec["position-independent-executables"], true);
-        assert_eq!(spec["static-position-independent-executables"], true);
-        assert_eq!(spec["relocation-model"], "pic");
-
-        let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
-        assert!(link_args.iter().any(|arg| arg == "-pie"));
-        assert!(link_args.iter().any(|arg| arg == "-znostart-stop-gc"));
-        assert!(link_args.iter().any(|arg| arg == "-Tlinker.x"));
-        assert!(!link_args.iter().any(|arg| arg == "-Taxplat.x"));
-        assert!(!link_args.iter().any(|arg| arg == "-no-pie"));
     }
 
     #[test]

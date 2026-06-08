@@ -656,11 +656,8 @@ AX_IP = "10.0.2.15"
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
-            StarryBuildInfo::build_cargo_args(
-                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-                &[],
-            ),
+            "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
+            Vec::new(),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -680,7 +677,7 @@ AX_IP = "10.0.2.15"
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
         assert_eq!(
             cargo.target,
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json"
+            "scripts/targets/std/pie/aarch64-unknown-linux-musl.json"
         );
     }
 
@@ -701,11 +698,8 @@ AX_IP = "10.0.2.15"
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
-            StarryBuildInfo::build_cargo_args(
-                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-                &[],
-            ),
+            "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
+            Vec::new(),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -743,7 +737,7 @@ AX_IP = "10.0.2.15"
     fn uimage_load_paddr_uses_dynamic_riscv64_fallback_without_axconfig() {
         let cargo = Cargo {
             env: HashMap::new(),
-            target: "scripts/targets/pie/riscv64gc-unknown-none-elf.json".to_string(),
+            target: "scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json".to_string(),
             package: STARRY_PACKAGE.to_string(),
             bin: None,
             features: vec!["plat-dyn".to_string()],
