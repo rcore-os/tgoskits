@@ -31,6 +31,7 @@ use crate::registry::DeviceRegistry;
 pub struct BusRouter {
     registry: DeviceRegistry,
     irq_table: IrqRoutingTable,
+    default_intc: Option<DeviceId>,
 }
 
 impl BusRouter {
@@ -39,6 +40,7 @@ impl BusRouter {
         Self {
             registry: DeviceRegistry::new(),
             irq_table: IrqRoutingTable::new(),
+            default_intc: None,
         }
     }
 
@@ -50,6 +52,12 @@ impl BusRouter {
     /// Access the interrupt routing table (read-only).
     pub fn irq_table(&self) -> &IrqRoutingTable {
         &self.irq_table
+    }
+
+    /// Set the default interrupt controller used when the routing table
+    /// has no entry for a given legacy IRQ line.
+    pub fn set_default_intc(&mut self, id: DeviceId) {
+        self.default_intc = Some(id);
     }
 
     // ── Device lifecycle ──────────────────────────────────────────────
@@ -104,26 +112,32 @@ impl BusRouter {
     pub fn inject(&self, msg: IrqMessage) -> Result<()> {
         match msg {
             IrqMessage::Legacy { line } => {
-                // Route through the table — copy out entry fields first to
-                // avoid borrowing self.irq_table and self.registries simultaneously.
-                let (ctrl_id, pin, trigger, target) = {
-                    let (_ctrl_id, entry) = self
-                        .irq_table
-                        .lookup_legacy(line)
+                // First try the routing table for an explicit mapping.
+                if let Some((_ctrl_id, entry)) = self.irq_table.lookup_legacy(line) {
+                    let ctrl_id = entry.controller;
+                    let pin = entry.controller_pin;
+                    let trigger = entry.trigger;
+                    let target = entry.target;
+
+                    let ctrl = self
+                        .find_interrupt_controller(ctrl_id)
                         .ok_or(DeviceError::NotFound)?;
-                    (_ctrl_id, entry.controller_pin, entry.trigger, entry.target)
-                };
+                    let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
+                    return ctrl_ops.inject_irq(pin, trigger, target);
+                }
 
-                // Find the controller device (borrows self.registries)
-                let ctrl = self
-                    .find_interrupt_controller(ctrl_id)
-                    .ok_or(DeviceError::NotFound)?;
-                let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
+                // Fallback: use the default interrupt controller with pin = line number.
+                if let Some(default_id) = self.default_intc {
+                    let ctrl = self
+                        .find_interrupt_controller(default_id)
+                        .ok_or(DeviceError::NotFound)?;
+                    let ctrl_ops = ctrl.as_interrupt_controller().ok_or(DeviceError::NotFound)?;
+                    return ctrl_ops.inject_irq(line.0, TriggerMode::Edge, None);
+                }
 
-                ctrl_ops.inject_irq(pin, trigger, target)
+                Err(DeviceError::NotFound)
             }
             IrqMessage::Msi { addr, data } => {
-                // Route by MSI address window
                 let ctrl_id = self
                     .irq_table
                     .lookup_msi(addr)

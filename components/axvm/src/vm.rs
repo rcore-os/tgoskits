@@ -354,19 +354,29 @@ impl AxVM {
         let mut router = BusRouter::new();
         let mut dev_id: u64 = 1;
         let intc_ops = devices.interrupt_controller().cloned();
+        let mut intc_device_id: Option<DeviceId> = None;
         for dev in devices.iter_mmio_dev() {
             let id = DeviceId::from_u64(dev_id); dev_id += 1;
             let adapter = LegacyMmioAdapter::new(id, dev.clone());
-            let adapter = if intc_ops.is_some() && matches!(
+            let is_intc = intc_ops.is_some() && matches!(
                 dev.emu_type(),
                 axdevice_base::EmuDeviceType::InterruptController
                     | axdevice_base::EmuDeviceType::PPPTGlobal
-            ) {
+            );
+            let adapter = if is_intc {
                 adapter.with_interrupt_controller(intc_ops.clone().unwrap())
             } else {
                 adapter
             };
-            let _ = router.register(StdArc::new(adapter));
+            let registered_id = router.register(StdArc::new(adapter));
+            if is_intc {
+                if let Ok(rid) = registered_id {
+                    intc_device_id = Some(rid);
+                }
+            }
+        }
+        if let Some(intc_id) = intc_device_id {
+            router.set_default_intc(intc_id);
         }
         for dev in devices.iter_sys_reg_dev() {
             let id = DeviceId::from_u64(dev_id); dev_id += 1;
