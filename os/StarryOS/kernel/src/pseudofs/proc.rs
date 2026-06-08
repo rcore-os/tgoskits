@@ -204,10 +204,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf, "Virtual Machine\t\t: no");
     let _ = writeln!(buf, "Model Name\t\t: QEMU Virtual Machine");
     let _ = writeln!(buf, "ISA\t\t\t: loongarch32 loongarch64");
-    let _ = writeln!(
-        buf,
-        "Feat\t\t\t: cpucfg lam ual fpu lsx lasx crc32 complex crypto lvz"
-    );
+    let _ = writeln!(buf, "Feat\t\t\t: cpucfg lam ual fpu lsx lasx");
     let _ = writeln!(buf);
 }
 

@@ -298,12 +298,12 @@ fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
 
 #[cfg(target_arch = "loongarch64")]
 fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
+    _exc_info.ecode as u64
 }
 
 #[cfg(target_arch = "loongarch64")]
 fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
+    _exc_info.esubcode as u64
 }
 
 #[cfg(target_arch = "x86_64")]
