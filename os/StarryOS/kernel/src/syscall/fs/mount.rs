@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
+use ax_fs_ng::vfs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
 
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
@@ -260,10 +260,10 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     })?;
 
     let num_blocks = block_dev.num_blocks();
-    let region = ax_fs::BlockRegion::from_num_blocks(num_blocks);
+    let region = ax_fs_ng::BlockRegion::from_num_blocks(num_blocks);
 
     // Create ext4 filesystem from the dynamic block device
-    let fs = ax_fs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
+    let fs = ax_fs_ng::vfs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
         warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
         AxError::Io
     })?;
@@ -423,7 +423,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // Propagate root / cwd to all other tasks whose root_dir or current_dir
     // exactly matches the old root Location — mirroring Linux
     // chroot_fs_refs() in fs/namespace.c.
-    ax_fs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
+    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
 
     Ok(0)
 }

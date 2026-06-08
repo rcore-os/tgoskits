@@ -9,8 +9,10 @@ use alloc::{
 use ax_io::{Read, Write};
 use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
+#[cfg(feature = "vfs")]
+use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    Location, Metadata, Mountpoint, NodePermission, NodeType, VfsError, VfsResult,
+    Location, Metadata, NodePermission, NodeType, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 use spin::Once;
@@ -43,6 +45,7 @@ fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
 
 /// Returns `true` if any live `FsContext` has its `root_dir` or `current_dir`
 /// inside the given `mountpoint`.
+#[cfg(feature = "vfs")]
 pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
     let refs: Vec<Arc<Mutex<FsContext>>> = {
         let mut registry = FS_REGISTRY.lock();

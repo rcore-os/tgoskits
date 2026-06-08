@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
@@ -115,16 +115,16 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
     }
 }
 
-/// File wrapper for `ax_fs::fops::File`.
+/// File wrapper for `ax_fs_ng::fops::File`.
 pub struct File {
-    inner: ax_fs::File,
+    inner: ax_fs_ng::File,
     open_flags: u32,
     nonblock: AtomicBool,
     append: AtomicBool,
 }
 
 impl File {
-    pub fn new(inner: ax_fs::File, open_flags: u32) -> Self {
+    pub fn new(inner: ax_fs_ng::File, open_flags: u32) -> Self {
         Self {
             inner,
             open_flags,
@@ -133,7 +133,7 @@ impl File {
         }
     }
 
-    pub fn inner(&self) -> &ax_fs::File {
+    pub fn inner(&self) -> &ax_fs_ng::File {
         &self.inner
     }
 }
@@ -274,7 +274,7 @@ impl Pollable for File {
     }
 }
 
-/// Directory wrapper for `ax_fs::fops::Directory`.
+/// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
     pub offset: Mutex<u64>,

@@ -88,7 +88,7 @@ pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
 
 pub(crate) fn open_usbfs_file(
     inner: &dyn Any,
-    file: ax_fs::File,
+    file: ax_fs_ng::File,
     open_flags: u32,
 ) -> AxResult<Arc<dyn FileLike>> {
     let ops = inner
@@ -1198,7 +1198,7 @@ impl FileLike for UsbDeviceFile {
         self.base.path()
     }
 
-    fn file_mmap(&self) -> AxResult<(ax_fs::FileBackend, ax_fs::FileFlags)> {
+    fn file_mmap(&self) -> AxResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
         self.base.file_mmap()
     }
 

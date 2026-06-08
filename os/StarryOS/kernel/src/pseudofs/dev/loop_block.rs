@@ -2,7 +2,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::FileBackend;
+use ax_fs_ng::vfs::FileBackend;
 use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::VfsResult;
 
@@ -61,7 +61,7 @@ impl Drop for LoopBlockDevice {
     }
 }
 
-impl ax_fs::FsBlockDevice for LoopBlockDevice {
+impl ax_fs_ng::FsBlockDevice for LoopBlockDevice {
     fn name(&self) -> &str {
         "loop"
     }
@@ -134,7 +134,7 @@ impl ax_fs::FsBlockDevice for LoopBlockDevice {
 }
 
 impl LoopDevice {
-    pub fn as_dyn_block_device(&self) -> VfsResult<Box<dyn ax_fs::FsBlockDevice>> {
+    pub fn as_dyn_block_device(&self) -> VfsResult<Box<dyn ax_fs_ng::FsBlockDevice>> {
         let file = self.file.lock().clone();
         let file = file.ok_or(AxError::from(LinuxError::ENXIO))?;
         let len = file.location().len().unwrap_or(0) as usize;

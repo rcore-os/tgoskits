@@ -14,15 +14,26 @@ extern crate log;
 
 use alloc::boxed::Box;
 
+pub mod api;
 mod block;
+pub mod block_runtime;
+pub mod fops;
 mod fs;
 mod highlevel;
+pub mod os;
+pub mod root;
+pub mod volume;
 
 pub use block::{BlockRegion, FsBlockDevice};
-/// Create a filesystem from a dynamic (boxed) block device.
-#[cfg(feature = "ext4")]
-pub use fs::new_from_dyn as new_filesystem_from_dyn;
+#[cfg(feature = "vfs")]
 pub use highlevel::*;
+#[cfg(feature = "vfs")]
+pub mod vfs {
+    /// Create a filesystem from a dynamic (boxed) block device.
+    #[cfg(feature = "ext4")]
+    pub use crate::fs::new_from_dyn as new_filesystem_from_dyn;
+    pub use crate::highlevel::*;
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilesystemKind {
@@ -44,7 +55,16 @@ pub fn init_filesystem(dev: Box<dyn FsBlockDevice>, region: BlockRegion, descrip
     info!("  filesystem type: {:?}", fs.name());
 
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
-    ROOT_FS_CONTEXT.call_once(|| FsContext::new(mp.root_location()));
+    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(mp.root_location()));
+}
+
+pub fn shutdown_filesystems() -> ax_errno::AxResult {
+    #[cfg(feature = "vfs")]
+    highlevel::sync_all_cached_files(false)?;
+    if let Some(ctx) = highlevel::ROOT_FS_CONTEXT.get() {
+        ctx.root_dir().sync(false)?;
+    }
+    Ok(())
 }
 
 pub fn detect_filesystem(

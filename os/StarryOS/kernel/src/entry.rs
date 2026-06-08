@@ -3,7 +3,7 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task};
@@ -29,7 +29,7 @@ pub fn init(args: &[String], envs: &[String]) {
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 
-    ax_alloc::register_page_reclaim_fn(ax_fs::page_cache_reclaim);
+    ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
     let loc = FS_CONTEXT
         .lock()

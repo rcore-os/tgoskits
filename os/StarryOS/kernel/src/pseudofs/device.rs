@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, task::Context};
 
-use ax_fs::CachedFile;
+use ax_fs_ng::vfs::CachedFile;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,

@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 #[cfg(feature = "fs")]
-use std::fs::{self, File, FileType};
+use std::fs::{self, File, FileType, FileTypeExt, PermissionsExt};
 #[cfg(feature = "fs")]
 use std::io::{self, Read, Write};
 #[cfg(feature = "fs")]
