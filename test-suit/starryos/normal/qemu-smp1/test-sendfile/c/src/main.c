@@ -40,6 +40,30 @@ static void reset_file(const char *path, const char *content) {
     }
 }
 
+static void reset_file_repeated(const char *path, char byte, size_t len) {
+    int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+
+    if (fd < 0) {
+        return;
+    }
+
+    char buf[256];
+    memset(buf, byte, sizeof(buf));
+
+    while (len > 0) {
+        size_t chunk = len < sizeof(buf) ? len : sizeof(buf);
+        ssize_t n = write(fd, buf, chunk);
+        CHECK(n == (ssize_t)chunk);
+        if (n != (ssize_t)chunk) {
+            break;
+        }
+        len -= chunk;
+    }
+
+    CHECK(close(fd) == 0);
+}
+
 static void read_file_content(const char *path, char *buf, size_t size) {
     int fd = open(path, O_RDONLY);
     CHECK(fd >= 0);
@@ -347,6 +371,81 @@ static void test_pipe_input_einval(void) {
     CHECK(close(out_fd) == 0);
 }
 
+static void test_output_pipe_partial_write_count(void) {
+    reset_file_repeated("sf_in_partial_pipe.txt", 'S', 8192);
+
+    int in_fd = open("sf_in_partial_pipe.txt", O_RDONLY);
+    CHECK(in_fd >= 0);
+
+    int pipefd[2] = {-1, -1};
+    CHECK(pipe(pipefd) == 0);
+
+    if (in_fd < 0 || pipefd[0] < 0 || pipefd[1] < 0) {
+        goto out;
+    }
+
+    int flags = fcntl(pipefd[1], F_GETFL);
+    CHECK(flags >= 0);
+    if (flags < 0) {
+        goto out;
+    }
+    if (fcntl(pipefd[1], F_SETFL, flags | O_NONBLOCK) != 0) {
+        CHECK(0);
+        goto out;
+    }
+
+    char fill[512];
+    memset(fill, 'P', sizeof(fill));
+    for (;;) {
+        ssize_t n = write(pipefd[1], fill, sizeof(fill));
+        if (n < 0) {
+            CHECK(errno == EAGAIN || errno == EWOULDBLOCK);
+            break;
+        }
+        CHECK(n > 0);
+        if (n == 0) {
+            goto out;
+        }
+    }
+
+    char drain[256];
+    size_t drained = 0;
+    while (drained < 4097) {
+        size_t want = 4097 - drained;
+        if (want > sizeof(drain)) {
+            want = sizeof(drain);
+        }
+        ssize_t n = read(pipefd[0], drain, want);
+        CHECK(n > 0);
+        if (n <= 0) {
+            goto out;
+        }
+        drained += (size_t)n;
+    }
+
+    off_t off = 0;
+    errno = 0;
+    ssize_t ret = sendfile(pipefd[1], in_fd, &off, 8192);
+
+    printf("output pipe partial write test: ret=%ld errno=%d off=%lld\n",
+           (long)ret, errno, (long long)off);
+
+    CHECK(ret > 0);
+    CHECK(ret < 8192);
+    CHECK(off == ret);
+
+out:
+    if (in_fd >= 0) {
+        CHECK(close(in_fd) == 0);
+    }
+    if (pipefd[0] >= 0) {
+        CHECK(close(pipefd[0]) == 0);
+    }
+    if (pipefd[1] >= 0) {
+        CHECK(close(pipefd[1]) == 0);
+    }
+}
+
 int main(void) {
     test_offset_ptr();
     test_null_offset();
@@ -356,6 +455,7 @@ int main(void) {
     test_in_fd_not_readable_ebadf();
     test_out_fd_not_writable_ebadf();
     test_pipe_input_einval();
+    test_output_pipe_partial_write_count();
 
     printf("DONE: %d pass, %d fail\n", g_pass, g_fail);
     fflush(stdout);

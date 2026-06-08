@@ -727,12 +727,12 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
             *pos += bytes_written as u64;
             user.vm_write(*pos)?;
         }
+        total_written += bytes_written;
+        remaining -= bytes_written;
+
         if bytes_written < bytes_read {
             break;
         }
-
-        total_written += bytes_written;
-        remaining -= bytes_written;
     }
 
     Ok(total_written)
