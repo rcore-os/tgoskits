@@ -19,7 +19,7 @@ use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{
-    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
+    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags,
 };
 use alloc::sync::Arc as StdArc;
 use axbus::{BusRouter, LegacyMmioAdapter, LegacySysRegAdapter, DeviceId};
@@ -52,7 +52,7 @@ pub type AxVMRef = Arc<AxVM>;
 struct AxVMInnerConst {
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Box<[AxVCpuRef]>,
-    router: BusRouter,
+    router: StdArc<BusRouter>,
     ivc_mgr: Option<Mutex<axbus::IVCManager>>,
 }
 
@@ -147,6 +147,14 @@ impl fmt::Display for VMStatus {
 }
 
 const TEMP_MAX_VCPU_NUM: usize = 64;
+
+/// Describes a single bus transaction extracted from a VM exit reason.
+struct BusTransaction {
+    bus: axbus::BusKind,
+    access: axbus::BusAccess,
+    /// For reads: which GPR receives the value. None for writes.
+    dest_gpr: Option<usize>,
+}
 
 /// A Virtual Machine.
 pub struct AxVM {
@@ -374,7 +382,7 @@ impl AxVM {
         self.inner_const.call_once(|| AxVMInnerConst {
             phys_cpu_ls: inner_mut.config.phys_cpu_ls.clone(),
             vcpu_list: vcpu_list.into_boxed_slice(),
-            router,
+            router: StdArc::new(router),
             ivc_mgr,
         });
 
@@ -541,6 +549,79 @@ impl AxVM {
         &self.inner_const().router
     }
 
+    /// Returns this VM's bus router as Arc (for creating IrqSinks).
+    pub fn router_arc(&self) -> &StdArc<BusRouter> {
+        &self.inner_const().router
+    }
+
+    /// Convert an I/O VM exit into a bus transaction descriptor.
+    fn exit_to_bus_txn(reason: &AxVCpuExitReason) -> Option<BusTransaction> {
+        match reason {
+            AxVCpuExitReason::MmioRead { addr, width, reg, .. } => Some(BusTransaction {
+                bus: axbus::BusKind::Mmio,
+                access: axbus::BusAccess::Read {
+                    addr: GuestPhysAddr::as_usize(*addr) as u64,
+                    width: (*width).into(),
+                },
+                dest_gpr: Some(*reg),
+            }),
+            AxVCpuExitReason::MmioWrite { addr, width, data } => Some(BusTransaction {
+                bus: axbus::BusKind::Mmio,
+                access: axbus::BusAccess::Write {
+                    addr: GuestPhysAddr::as_usize(*addr) as u64,
+                    width: (*width).into(),
+                    val: *data,
+                },
+                dest_gpr: None,
+            }),
+            AxVCpuExitReason::IoRead { port, width } => Some(BusTransaction {
+                bus: axbus::BusKind::Pio,
+                access: axbus::BusAccess::Read {
+                    addr: port.0 as u64,
+                    width: (*width).into(),
+                },
+                dest_gpr: Some(Self::pio_read_dest_gpr()),
+            }),
+            AxVCpuExitReason::IoWrite { port, width, data } => Some(BusTransaction {
+                bus: axbus::BusKind::Pio,
+                access: axbus::BusAccess::Write {
+                    addr: port.0 as u64,
+                    width: (*width).into(),
+                    val: *data,
+                },
+                dest_gpr: None,
+            }),
+            AxVCpuExitReason::SysRegRead { addr, reg } => Some(BusTransaction {
+                bus: axbus::BusKind::SysReg,
+                access: axbus::BusAccess::Read {
+                    addr: addr.0 as u64,
+                    width: axbus::AccessWidth::U64,
+                },
+                dest_gpr: Some(*reg),
+            }),
+            AxVCpuExitReason::SysRegWrite { addr, value } => Some(BusTransaction {
+                bus: axbus::BusKind::SysReg,
+                access: axbus::BusAccess::Write {
+                    addr: addr.0 as u64,
+                    width: axbus::AccessWidth::U64,
+                    val: *value,
+                },
+                dest_gpr: None,
+            }),
+            _ => None,
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn pio_read_dest_gpr() -> usize {
+        riscv_vcpu::GprIndex::A0 as usize
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn pio_read_dest_gpr() -> usize {
+        0
+    }
+
     /// (deprecated) Use `router()` instead.
     #[deprecated(note = "use router() instead")]
     pub fn get_devices(&self) -> &AxVmDevices {
@@ -564,109 +645,33 @@ impl AxVM {
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;
             trace!("{exit_reason:#x?}");
-            /// Convert `axaddrspace::AccessWidth` to `axbus::AccessWidth`.
-            /// Exhaustive match: if a new variant is added to either enum, this
-            /// will fail to compile, alerting the developer immediately.
-            let width_map = |w: AccessWidth| -> axbus::AccessWidth {
-                match w {
-                    AccessWidth::Byte => axbus::AccessWidth::U8,
-                    AccessWidth::Word => axbus::AccessWidth::U16,
-                    AccessWidth::Dword => axbus::AccessWidth::U32,
-                    AccessWidth::Qword => axbus::AccessWidth::U64,
+            let handled = if let Some(txn) = Self::exit_to_bus_txn(&exit_reason) {
+                match self.router().route(txn.bus, &txn.access) {
+                    axbus::BusResponse::Success(val) => {
+                        if let Some(gpr) = txn.dest_gpr {
+                            vcpu.set_gpr(gpr, val.unwrap_or(0) as usize);
+                        }
+                    }
+                    ref other => {
+                        warn!(
+                            "VM[{}] bus {:?} @ {:#x}: {}",
+                            self.id(), txn.bus, txn.access.addr(), other
+                        );
+                        if let Some(gpr) = txn.dest_gpr {
+                            vcpu.set_gpr(gpr, 0);
+                        }
+                    }
                 }
-            };
-            let handled = match &exit_reason {
-                AxVCpuExitReason::MmioRead {
-                    addr,
-                    width,
-                    reg,
-                    reg_width: _,
-                    signed_ext: _,
-                } => {
-                    let addr_u64 = GuestPhysAddr::as_usize(*addr) as u64;
-                    let w = width_map(*width);
-                    let val = match self.router().route(
-                        axbus::BusKind::Mmio,
-                        &axbus::BusAccess::Read { addr: addr_u64, width: w },
-                    ) {
-                        axbus::BusResponse::Success(Some(v)) => v as usize,
-                        axbus::BusResponse::Success(None) => 0,
-                        _ => return ax_err!(Io, "MMIO read failed"),
-                    };
-                    vcpu.set_gpr(*reg, val);
-                    true
+                true
+            } else {
+                match &exit_reason {
+                    AxVCpuExitReason::NestedPageFault { addr, access_flags } => self
+                        .inner_mut
+                        .lock()
+                        .address_space
+                        .handle_page_fault(*addr, *access_flags),
+                    _ => false,
                 }
-                AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                    let addr_u64 = GuestPhysAddr::as_usize(*addr) as u64;
-                    let w = width_map(*width);
-                    match self.router().route(
-                        axbus::BusKind::Mmio,
-                        &axbus::BusAccess::Write { addr: addr_u64, width: w, val: *data },
-                    ) {
-                        axbus::BusResponse::Success(_) => {}
-                        _ => return ax_err!(Io, "MMIO write failed"),
-                    };
-                    true
-                }
-                AxVCpuExitReason::IoRead { port, width } => {
-                    let addr_u64 = port.0 as u64;
-                    let w = width_map(*width);
-                    let val = match self.router().route(
-                        axbus::BusKind::Pio,
-                        &axbus::BusAccess::Read { addr: addr_u64, width: w },
-                    ) {
-                        axbus::BusResponse::Success(Some(v)) => v as usize,
-                        axbus::BusResponse::Success(None) => 0,
-                        _ => return ax_err!(Io, "PIO read failed"),
-                    };
-                    #[cfg(not(target_arch = "riscv64"))]
-                    vcpu.set_gpr(0, val);
-                    #[cfg(target_arch = "riscv64")]
-                    vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
-                    true
-                }
-                AxVCpuExitReason::IoWrite { port, width, data } => {
-                    let addr_u64 = port.0 as u64;
-                    let w = width_map(*width);
-                    match self.router().route(
-                        axbus::BusKind::Pio,
-                        &axbus::BusAccess::Write { addr: addr_u64, width: w, val: *data },
-                    ) {
-                        axbus::BusResponse::Success(_) => {}
-                        _ => return ax_err!(Io, "PIO write failed"),
-                    };
-                    true
-                }
-                AxVCpuExitReason::SysRegRead { addr, reg } => {
-                    let addr_u64 = addr.0 as u64;
-                    let val = match self.router().route(
-                        axbus::BusKind::SysReg,
-                        &axbus::BusAccess::Read { addr: addr_u64, width: axbus::AccessWidth::U64 },
-                    ) {
-                        axbus::BusResponse::Success(Some(v)) => v as usize,
-                        axbus::BusResponse::Success(None) => 0,
-                        _ => return ax_err!(Io, "SysReg read failed"),
-                    };
-                    vcpu.set_gpr(*reg, val);
-                    true
-                }
-                AxVCpuExitReason::SysRegWrite { addr, value } => {
-                    let addr_u64 = addr.0 as u64;
-                    match self.router().route(
-                        axbus::BusKind::SysReg,
-                        &axbus::BusAccess::Write { addr: addr_u64, width: axbus::AccessWidth::U64, val: *value },
-                    ) {
-                        axbus::BusResponse::Success(_) => {}
-                        _ => return ax_err!(Io, "SysReg write failed"),
-                    };
-                    true
-                }
-                AxVCpuExitReason::NestedPageFault { addr, access_flags } => self
-                    .inner_mut
-                    .lock()
-                    .address_space
-                    .handle_page_fault(*addr, *access_flags),
-                _ => false,
             };
             if !handled {
                 break exit_reason;
