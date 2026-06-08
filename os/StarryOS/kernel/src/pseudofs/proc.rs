@@ -16,7 +16,6 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -30,7 +29,7 @@ use zerocopy::IntoBytes;
 
 use crate::{
     file::FD_TABLE,
-    mm::BackendFileInfo,
+    mm::{BackendFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs, SpecialFsFile,
@@ -106,12 +105,16 @@ fn render_meminfo() -> String {
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let cached = usages.get(ax_alloc::UsageKind::PageCache);
+    let page_tables = usages.get(ax_alloc::UsageKind::PageTable);
+    let anon_pages = usages.get(ax_alloc::UsageKind::VirtMem);
     let free = total.saturating_sub(used);
 
     let total_kb = total / 1024;
     let free_kb = free / 1024;
     let cached_kb = cached / 1024;
     let available_kb = free_kb + cached_kb;
+    let page_tables_kb = page_tables / 1024;
+    let anon_pages_kb = anon_pages / 1024;
 
     format!(
         "MemTotal:       {total_kb:>10} kB\n\
@@ -124,7 +127,7 @@ fn render_meminfo() -> String {
          SwapFree:                0 kB\n\
          Dirty:                   0 kB\n\
          Writeback:               0 kB\n\
-         AnonPages:               0 kB\n\
+         AnonPages:      {anon_pages_kb:>10} kB\n\
          Mapped:                  0 kB\n\
          Shmem:                   0 kB\n\
          KReclaimable:            0 kB\n\
@@ -132,7 +135,7 @@ fn render_meminfo() -> String {
          SReclaimable:            0 kB\n\
          SUnreclaim:              0 kB\n\
          KernelStack:             0 kB\n\
-         PageTables:              0 kB\n\
+         PageTables:     {page_tables_kb:>10} kB\n\
          NFS_Unstable:            0 kB\n\
          Bounce:                  0 kB\n\
          WritebackTmp:            0 kB\n\
@@ -368,6 +371,7 @@ fn task_status(task: &AxTaskRef) -> String {
     let thread = task.as_thread();
     let cred = thread.cred();
     let num_threads = thread.proc_data.proc.threads().len() as u32;
+    let mem = ProcessMemStats::collect(&thread.proc_data.aspace().lock());
     render_task_status(
         thread.proc_data.proc.pid(),
         thread.tid() as u64,
@@ -375,6 +379,7 @@ fn task_status(task: &AxTaskRef) -> String {
         num_threads,
         task.cpumask(),
         ax_runtime::hal::cpu_num(),
+        &mem,
     )
 }
 
@@ -385,6 +390,7 @@ fn render_task_status(
     num_threads: u32,
     cpumask: AxCpuMask,
     cpu_num: usize,
+    mem: &ProcessMemStats,
 ) -> String {
     let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
     let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
@@ -396,6 +402,7 @@ fn render_task_status(
         num_threads,
         &cpus_allowed,
         &cpus_allowed_list,
+        mem,
     )
 }
 
@@ -407,6 +414,7 @@ fn render_task_status_fields(
     num_threads: u32,
     cpus_allowed: &str,
     cpus_allowed_list: &str,
+    mem: &ProcessMemStats,
 ) -> String {
     // NOTE: `Threads:\t<n>` is REQUIRED by psutil. `Process.num_threads()`
     // does `int(re.compile(br'Threads:\t(\d+)').findall(data)[0])`, which
@@ -421,12 +429,14 @@ fn render_task_status_fields(
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
         Threads:\t{num_threads}\n\
+        {vm_lines}\
         Cpus_allowed:\t{cpus_allowed}\n\
         Cpus_allowed_list:\t{cpus_allowed_list}\n\
         Mems_allowed:\t1\n\
         Mems_allowed_list:\t0",
         cred.uid, cred.euid, cred.suid, cred.fsuid,
         cred.gid, cred.egid, cred.sgid, cred.fsgid,
+        vm_lines = mem.format_status_vm_lines(),
     )
 }
 
@@ -695,12 +705,11 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
 /// `Process.as_dict()`), crashing any `process_iter` (glances / top-likes).
 ///
 /// `size` (VSS) is summed exactly from the mapped areas. `resident` (RSS) is
-/// reported as the full VSS — an honest upper bound rather than a fabricated
-/// figure; StarryOS' file-backed areas are lazily/cache populated, so a precise
-/// per-page page-table walk for every process on every refresh would be far too
-/// expensive under emulation. `shared`/`lib`/`dirty` are 0 (Linux also reports 0
-/// for `lib`/`dirty` since 2.6); `text` and `data` are derived from the areas'
-/// executable / writable flags.
+/// currently the VSS upper bound (see `mm/stats.rs` `FIXME(plan2-rss)`); Plan2
+/// will report real resident pages. `shared` is the virtual size of shared
+/// backends (not Linux mapcount sharing). `lib`/`dirty` are 0 (Linux also
+/// reports 0 for `lib`/`dirty` since 2.6); `text` and `data` are derived from
+/// the areas' executable / writable flags.
 fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
     let task = match task.upgrade() {
         Some(t) => t,
@@ -709,25 +718,7 @@ fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
 
     let aspace_arc = task.as_thread().proc_data.aspace();
     let mm = aspace_arc.lock();
-
-    let mut size_pages: u64 = 0;
-    let mut text_pages: u64 = 0;
-    let mut data_pages: u64 = 0;
-    for area in mm.areas() {
-        let pages = (area.size() / PAGE_SIZE_4K) as u64;
-        size_pages += pages;
-        let flags = area.flags();
-        if flags.contains(MappingFlags::EXECUTE) {
-            text_pages += pages;
-        } else if flags.contains(MappingFlags::WRITE) {
-            data_pages += pages;
-        }
-    }
-
-    // size resident shared text lib data dirty
-    Ok(format!(
-        "{size_pages} {size_pages} 0 {text_pages} 0 {data_pages} 0\n"
-    ))
+    Ok(ProcessMemStats::collect(&mm).format_statm())
 }
 
 fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
@@ -794,6 +785,7 @@ impl SimpleDirOps for ThreadDir {
                         let thread = task.as_thread();
                         let cred = thread.cred();
                         let num_threads = thread.proc_data.proc.threads().len() as u32;
+                        let mem = ProcessMemStats::collect(&thread.proc_data.aspace().lock());
                         Ok(render_task_status(
                             pid,
                             pid as u64,
@@ -801,6 +793,7 @@ impl SimpleDirOps for ThreadDir {
                             num_threads,
                             task.cpumask(),
                             ax_runtime::hal::cpu_num(),
+                            &mem,
                         ))
                     } else {
                         Ok(task_status(&task))
@@ -1303,7 +1296,15 @@ mod tests {
         collect_cpu_presence, format_cpu_presence_hex, format_cpu_presence_list,
         render_task_status_fields,
     };
-    use crate::task::Cred;
+    use crate::{mm::ProcessMemStats, task::Cred};
+
+    fn sample_mem_stats() -> ProcessMemStats {
+        ProcessMemStats {
+            vss_pages: 128,
+            resident_pages: 128,
+            ..Default::default()
+        }
+    }
 
     fn legacy_render_task_status(tgid: u32, pid: u64) -> String {
         format!(
@@ -1325,6 +1326,7 @@ mod tests {
             1,
             &cpus_allowed,
             &cpus_allowed_list,
+            &sample_mem_stats(),
         )
     }
 
@@ -1377,11 +1379,42 @@ mod tests {
         let cpu_presence = collect_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
-        let status =
-            render_task_status_fields(1, 1, &Cred::root(), 3, &cpus_allowed, &cpus_allowed_list);
+        let status = render_task_status_fields(
+            1,
+            1,
+            &Cred::root(),
+            3,
+            &cpus_allowed,
+            &cpus_allowed_list,
+            &sample_mem_stats(),
+        );
 
         assert!(status.contains("Threads:\t3\n"));
         // Tab-separated, exactly as the psutil regex expects (not space).
         assert!(!status.contains("Threads: 3"));
+    }
+
+    #[test]
+    fn status_includes_vm_size_from_mem_stats() {
+        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+        let mem = ProcessMemStats {
+            vss_pages: 128,
+            resident_pages: 128,
+            ..Default::default()
+        };
+        let status = render_task_status_fields(
+            1,
+            1,
+            &Cred::root(),
+            1,
+            &cpus_allowed,
+            &cpus_allowed_list,
+            &mem,
+        );
+
+        assert!(status.contains("VmSize:\t512 kB\n"));
+        assert!(status.contains("VmRSS:\t512 kB\n"));
     }
 }
