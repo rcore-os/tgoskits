@@ -200,6 +200,10 @@ impl AppContext {
         .await
     }
 
+    pub(crate) async fn run_prepared_uboot(&mut self, uboot: UbootConfig) -> anyhow::Result<()> {
+        ostool_uboot::run_uboot(&mut self.invocation, &uboot).await
+    }
+
     pub(crate) async fn uboot(
         &mut self,
         cargo: Cargo,

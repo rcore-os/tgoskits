@@ -40,6 +40,7 @@ pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Optio
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow!("failed to read Starry build config {}: {e}", path.display()))?;
     crate::build::reject_removed_std_field(path, &content)?;
+    crate::build::reject_arceos_app_c_field(path, &content)?;
 
     if let Ok(board_file) = toml::from_str::<board::StarryBoardFile>(&content) {
         return Ok(Some(board_file.target));
@@ -61,6 +62,7 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
             default_starry_build_info_for_target(&request.target)
         })?;
         let content = std::fs::read_to_string(&request.build_info_path)?;
+        crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
         let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
             format!(
                 "failed to parse build info {}",
@@ -95,6 +97,7 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
             default_starry_build_info_for_target(&request.target)
         })?;
         let content = std::fs::read_to_string(&request.build_info_path)?;
+        crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
         let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
             format!(
                 "failed to parse build info {}",
@@ -539,6 +542,31 @@ AX_IP = "10.0.2.15"
 
         assert!(
             err.to_string().contains("uses removed `std` field"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn load_target_from_build_config_rejects_arceos_app_c_field() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        fs::write(
+            &path,
+            r#"
+app-c = "c"
+features = []
+log = "Info"
+
+[env]
+AX_IP = "10.0.2.15"
+"#,
+        )
+        .unwrap();
+
+        let err = load_target_from_build_config(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("uses ArceOS-only `app-c` field"),
             "{err:#}"
         );
     }

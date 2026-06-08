@@ -1199,6 +1199,20 @@ pub(crate) fn reject_removed_std_field(path: &Path, contents: &str) -> anyhow::R
     Ok(())
 }
 
+pub(crate) fn reject_arceos_app_c_field(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if let Ok(table) = toml::from_str::<toml::Table>(contents)
+        && table.contains_key("app-c")
+    {
+        bail!(
+            "build config {} uses ArceOS-only `app-c` field; remove it or use an ArceOS build \
+             command",
+            path.display()
+        );
+    }
+
+    Ok(())
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }

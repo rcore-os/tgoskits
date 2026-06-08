@@ -1,3 +1,4 @@
+app-c = "c"
 features = []
 log = "Info"
 max_cpu_num = 4

@@ -1,10 +1,14 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use cargo_metadata::Metadata;
 use log::warn;
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     build::{self, BuildInfo},
@@ -12,6 +16,30 @@ use crate::{
 };
 
 pub type ArceosBuildInfo = BuildInfo;
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct ArceosBuildConfig {
+    #[serde(flatten, default)]
+    pub(crate) build_info: ArceosBuildInfo,
+    #[serde(rename = "app-c", skip_serializing_if = "Option::is_none")]
+    pub(crate) app_c: Option<PathBuf>,
+}
+
+impl ArceosBuildConfig {
+    fn default_for_target(target: &str) -> Self {
+        Self {
+            build_info: ArceosBuildInfo::default_for_target(target),
+            app_c: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ArceosBuildMode {
+    RustStd,
+    AppC { app_dir: PathBuf, app_name: String },
+}
 
 pub(crate) fn resolve_build_info_path(
     package: &str,
@@ -48,72 +76,96 @@ fn load_build_info_with_makefile_features(
     )
 }
 
+#[cfg(test)]
 fn load_build_info_with_makefile_features_and_metadata(
     request: &ResolvedBuildRequest,
     makefile_features: &[String],
     metadata: Option<&Metadata>,
 ) -> anyhow::Result<ArceosBuildInfo> {
+    Ok(
+        load_build_config_with_makefile_features_and_metadata(
+            request,
+            makefile_features,
+            metadata,
+        )?
+        .build_info,
+    )
+}
+
+fn load_build_config_with_makefile_features_and_metadata(
+    request: &ResolvedBuildRequest,
+    makefile_features: &[String],
+    metadata: Option<&Metadata>,
+) -> anyhow::Result<ArceosBuildConfig> {
     build::ensure_build_info(&request.build_info_path, || {
-        ArceosBuildInfo::default_for_target(&request.target)
+        ArceosBuildConfig::default_for_target(&request.target)
     })?;
     let content = fs::read_to_string(&request.build_info_path)?;
-    let mut build_info: ArceosBuildInfo = toml::from_str(&content).with_context(|| {
+    build::reject_removed_std_field(&request.build_info_path, &content)?;
+    let mut config: ArceosBuildConfig = toml::from_str(&content).with_context(|| {
         format!(
             "failed to parse build info {}",
             request.build_info_path.display()
         )
     })?;
     build::apply_target_defaults_if_plat_dyn_unspecified(
-        &mut build_info,
+        &mut config.build_info,
         &request.target,
         &content,
     );
 
-    if build_info.normalize_legacy_feature_aliases() {
+    if config.build_info.normalize_legacy_feature_aliases() {
         warn!(
             "normalizing legacy feature aliases in build config {}",
             request.build_info_path.display()
         );
-        fs::write(
-            &request.build_info_path,
-            toml::to_string_pretty(&build_info)?,
-        )
-        .with_context(|| {
-            format!(
-                "failed to rewrite normalized build info {}",
-                request.build_info_path.display()
-            )
-        })?;
+        fs::write(&request.build_info_path, toml::to_string_pretty(&config)?).with_context(
+            || {
+                format!(
+                    "failed to rewrite normalized build info {}",
+                    request.build_info_path.display()
+                )
+            },
+        )?;
     }
 
     match metadata {
         Some(metadata) => build::apply_makefile_features_with_metadata(
-            &mut build_info,
+            &mut config.build_info,
             &request.package,
             makefile_features,
             metadata,
         ),
-        None => {
-            build::apply_makefile_features(&mut build_info, &request.package, makefile_features)
-        }
+        None => build::apply_makefile_features(
+            &mut config.build_info,
+            &request.package,
+            makefile_features,
+        ),
     }
 
     if let Some(smp) = request.smp {
-        build_info.max_cpu_num = Some(smp);
+        config.build_info.max_cpu_num = Some(smp);
     }
 
-    Ok(build_info)
+    Ok(config)
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
     let metadata =
         build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let build_info = load_build_info_with_makefile_features_and_metadata(
+    let config = load_build_config_with_makefile_features_and_metadata(
         request,
         &makefile_features,
         Some(metadata),
     )?;
+    if config.app_c.is_some() {
+        bail!(
+            "ArceOS build config {} uses `app-c`; use the C app build path",
+            request.build_info_path.display()
+        );
+    }
+    let build_info = config.build_info;
 
     build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
@@ -127,11 +179,12 @@ pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow:
     let metadata =
         build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let mut build_info = load_build_info_with_makefile_features_and_metadata(
+    let mut build_info = load_build_config_with_makefile_features_and_metadata(
         request,
         &makefile_features,
         Some(metadata),
-    )?;
+    )?
+    .build_info;
     let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
 
     build_info.validated_max_cpu_num()?;
@@ -159,6 +212,87 @@ pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow:
         args,
         false,
     ))
+}
+
+pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosBuildConfig> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read ArceOS build config {}", path.display()))?;
+    build::reject_removed_std_field(path, &content)?;
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse ArceOS build config {}", path.display()))
+}
+
+pub(crate) fn load_arceos_build_mode(path: &Path) -> anyhow::Result<ArceosBuildMode> {
+    let config = load_arceos_build_config(path)?;
+    match config.app_c {
+        Some(app_c) => resolve_app_c_mode(path, &app_c),
+        None => Ok(ArceosBuildMode::RustStd),
+    }
+}
+
+pub(crate) fn resolve_app_c_mode(
+    config_path: &Path,
+    app_c: &Path,
+) -> anyhow::Result<ArceosBuildMode> {
+    let app_dir = resolve_app_c_dir(config_path, app_c)?;
+    let app_name = c_app_name(&app_dir)
+        .with_context(|| format!("failed to derive C app name from {}", app_dir.display()))?;
+
+    Ok(ArceosBuildMode::AppC { app_dir, app_name })
+}
+
+pub(crate) fn resolve_app_c_dir(config_path: &Path, app_c: &Path) -> anyhow::Result<PathBuf> {
+    let app_dir = if app_c.is_absolute() {
+        app_c.to_path_buf()
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(app_c)
+    };
+
+    if !app_dir.is_dir() {
+        bail!(
+            "app-c source directory {} configured by {} does not exist or is not a directory",
+            app_dir.display(),
+            config_path.display()
+        );
+    }
+    if !dir_has_direct_c_source(&app_dir)? {
+        bail!(
+            "app-c source directory {} configured by {} must contain at least one direct .c file",
+            app_dir.display(),
+            config_path.display()
+        );
+    }
+
+    app_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve app-c source directory {}",
+            app_dir.display()
+        )
+    })
+}
+
+fn dir_has_direct_c_source(dir: &Path) -> anyhow::Result<bool> {
+    Ok(fs::read_dir(dir)
+        .with_context(|| format!("failed to read app-c source directory {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "c")))
+}
+
+fn c_app_name(app_dir: &Path) -> Option<String> {
+    let name_dir = if app_dir.file_name().and_then(|name| name.to_str()) == Some("c") {
+        app_dir.parent().unwrap_or(app_dir)
+    } else {
+        app_dir
+    };
+
+    name_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
 }
 
 pub(crate) fn default_build_info_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
@@ -354,6 +488,86 @@ mod tests {
             fs::read_to_string(path)
                 .unwrap()
                 .contains("features = [\"ax-std\"]")
+        );
+    }
+
+    #[test]
+    fn build_config_without_app_c_uses_std_rust_mode() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "features = [\"ax-std\"]\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let mode = load_arceos_build_mode(&path).unwrap();
+
+        assert_eq!(mode, ArceosBuildMode::RustStd);
+    }
+
+    #[test]
+    fn app_c_build_config_resolves_source_dir_relative_to_config() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("case");
+        let source_dir = case_dir.join("c");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+        let path = case_dir.join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let mode = load_arceos_build_mode(&path).unwrap();
+
+        assert_eq!(
+            mode,
+            ArceosBuildMode::AppC {
+                app_dir: source_dir.canonicalize().unwrap(),
+                app_name: "case".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn app_c_build_config_rejects_missing_source_dir() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "app-c = \"missing\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let err = load_arceos_build_mode(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("app-c source directory"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn app_c_build_config_rejects_source_dir_without_c_files() {
+        let root = tempdir().unwrap();
+        let source_dir = root.path().join("c");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("main.rs"), "fn main() {}\n").unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let err = load_arceos_build_mode(&path).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must contain at least one direct .c file"),
+            "{err:#}"
         );
     }
 

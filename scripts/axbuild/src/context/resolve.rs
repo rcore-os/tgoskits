@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow};
 
 use super::{
     ARCEOS_SNAPSHOT_FILE, AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot,
@@ -33,11 +33,24 @@ impl AppContext {
         resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         let snapshot = ArceosCommandSnapshot::load(&self.root)?;
+        let explicit_config_path = cli.config.clone();
+        let config_uses_app_c = explicit_config_path
+            .as_deref()
+            .filter(|path| path.exists())
+            .map(arceos_config_uses_app_c)
+            .transpose()?
+            .unwrap_or(false);
 
         let package = cli
             .package
             .clone()
-            .or_else(|| snapshot.package.clone())
+            .or_else(|| {
+                if config_uses_app_c {
+                    Some("ax-libc".to_string())
+                } else {
+                    snapshot.package.clone()
+                }
+            })
             .ok_or_else(|| {
                 anyhow!(
                     "missing ArceOS package; pass `--package` or set `package` in {}",
@@ -85,7 +98,7 @@ impl AppContext {
                 None
             },
         );
-        let build_info_path = resolve_build_info_path(&package, &target, cli.config.clone())?;
+        let build_info_path = resolve_build_info_path(&package, &target, explicit_config_path)?;
 
         let request = ResolvedBuildRequest {
             package: package.clone(),
@@ -390,6 +403,15 @@ impl AppContext {
             self.root.join(path)
         }
     }
+}
+
+fn arceos_config_uses_app_c(path: &Path) -> anyhow::Result<bool> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read ArceOS build config {}", path.display()))?;
+    crate::build::reject_removed_std_field(path, &contents)?;
+    Ok(toml::from_str::<toml::Table>(&contents)
+        .map(|table| table.contains_key("app-c"))
+        .unwrap_or(false))
 }
 
 pub(crate) fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {

@@ -18,6 +18,12 @@ const AX_LIBC_PACKAGE: &str = "ax-libc";
 const PIC_RUSTFLAG: &str = "-Crelocation-model=pic";
 const C_DEFINE_FEATURE_PREFIX: &str = "c-define:";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArceosCArtifactPaths {
+    pub(crate) target_dir: PathBuf,
+    pub(crate) out_dir: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ArceosCBuildInput {
     pub(crate) app_dir: PathBuf,
@@ -30,6 +36,25 @@ pub(crate) struct ArceosCBuildInput {
 #[derive(Debug, Clone)]
 pub(crate) struct ArceosCBuildOutput {
     pub(crate) elf_path: PathBuf,
+}
+
+pub(crate) fn default_c_app_artifact_paths(
+    workspace_root: &Path,
+    app_name: &str,
+) -> ArceosCArtifactPaths {
+    let target_dir = crate::context::axbuild_tmp_dir(workspace_root)
+        .join("arceos-c")
+        .join("cargo");
+    let out_dir = crate::context::axbuild_tmp_dir(workspace_root)
+        .join("arceos-c")
+        .join("apps")
+        .join(sanitize_name(app_name))
+        .join("out");
+
+    ArceosCArtifactPaths {
+        target_dir,
+        out_dir,
+    }
 }
 
 pub(crate) fn build_c_app(
