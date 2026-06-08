@@ -844,7 +844,7 @@ fn write_symbolized_blocks(
         let adj = ip_adjustment_for_arch(block.arch.as_deref());
         for frame in &block.frames {
             let ip = if adjust_ip && frame.ip > 0 {
-                frame.ip - adj
+                frame.ip.checked_sub(adj).unwrap_or(frame.ip)
             } else {
                 frame.ip
             };
@@ -1215,6 +1215,22 @@ BACKTRACE_END
         let exe = std::env::current_exe().unwrap();
         let symbolizer = HostSymbolizer::new(&exe).unwrap();
         assert!(symbolizer.maybe_symbolize(0).is_none());
+    }
+
+    #[test]
+    fn write_symbolized_blocks_tolerates_adjustment_exceeding_ip() {
+        let exe = std::env::current_exe().unwrap();
+        let symbolizer = HostSymbolizer::new(&exe).unwrap();
+        let blocks = parse_blocks(
+            "BACKTRACE_BEGIN kind=raw arch=riscv64\nBT 0 ip=0x1 fp=0x2\nBACKTRACE_END\n",
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        write_symbolized_blocks(&mut out, &symbolizer, &blocks, None, true, 0).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("BACKTRACE_BLOCK 0 kind=raw arch=riscv64"));
+        assert!(out.contains("BT 0 ip=0x1 fp=0x2"));
     }
 
     #[test]
