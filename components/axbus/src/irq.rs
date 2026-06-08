@@ -434,4 +434,74 @@ mod tests {
             panic!("expected Irq resource");
         }
     }
+
+    #[test]
+    fn test_irq_sink_raise_lower() {
+        use alloc::sync::Arc;
+        use std::sync::Mutex;
+
+        let raised = Arc::new(Mutex::new(Vec::<IrqMessage>::new()));
+        let lowered = Arc::new(Mutex::new(Vec::<IrqLine>::new()));
+
+        let r = raised.clone();
+        let l = lowered.clone();
+
+        let sink = IrqSink::new(
+            IrqLine(5),
+            TriggerMode::Level { high: true },
+            Arc::new(move |msg| { r.lock().unwrap().push(msg); Ok(()) }),
+            Arc::new(move |line| { l.lock().unwrap().push(line); Ok(()) }),
+        );
+
+        assert_eq!(sink.line(), IrqLine(5));
+        assert_eq!(sink.trigger(), TriggerMode::Level { high: true });
+
+        sink.raise().unwrap();
+        sink.raise().unwrap();
+        sink.lower().unwrap();
+
+        let raised = raised.lock().unwrap();
+        assert_eq!(raised.len(), 2);
+        assert!(matches!(raised[0], IrqMessage::Legacy { line: IrqLine(5) }));
+
+        let lowered = lowered.lock().unwrap();
+        assert_eq!(lowered.len(), 1);
+        assert_eq!(lowered[0], IrqLine(5));
+    }
+
+    #[test]
+    fn test_irq_sink_clone() {
+        use alloc::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let count = Arc::new(AtomicU32::new(0));
+        let c = count.clone();
+
+        let sink = IrqSink::new(
+            IrqLine(10),
+            TriggerMode::Edge,
+            Arc::new(move |_| { c.fetch_add(1, Ordering::Relaxed); Ok(()) }),
+            Arc::new(|_| Ok(())),
+        );
+
+        let sink2 = sink.clone();
+        sink.raise().unwrap();
+        sink2.raise().unwrap();
+
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_irq_sink_debug() {
+        use alloc::sync::Arc;
+        let sink = IrqSink::new(
+            IrqLine(7),
+            TriggerMode::Edge,
+            Arc::new(|_| Ok(())),
+            Arc::new(|_| Ok(())),
+        );
+        let dbg = format!("{sink:?}");
+        assert!(dbg.contains("IrqSink"));
+        assert!(dbg.contains("7"));
+    }
 }

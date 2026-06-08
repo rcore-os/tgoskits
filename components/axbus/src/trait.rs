@@ -307,3 +307,67 @@ pub trait DeviceFactory: Send + Sync {
 // Reduce re-export dependency: just enough for the factory trait
 pub use axvmconfig::EmulatedDeviceConfig;
 pub use axdevice_base::EmuDeviceType as EmulatedDeviceType;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axaddrspace::device::AccessWidth as LegacyWidth;
+
+    #[test]
+    fn access_width_from_legacy_roundtrip() {
+        let cases = [
+            (LegacyWidth::Byte, AccessWidth::U8),
+            (LegacyWidth::Word, AccessWidth::U16),
+            (LegacyWidth::Dword, AccessWidth::U32),
+            (LegacyWidth::Qword, AccessWidth::U64),
+        ];
+        for (legacy, bus) in cases {
+            assert_eq!(AccessWidth::from(legacy), bus);
+            assert_eq!(LegacyWidth::from(bus), legacy);
+        }
+    }
+
+    #[test]
+    fn bus_response_is_success() {
+        assert!(BusResponse::Success(Some(42)).is_success());
+        assert!(BusResponse::Success(None).is_success());
+        assert!(!BusResponse::NoDevice { bus: BusKind::Mmio, addr: 0 }.is_success());
+        assert!(!BusResponse::ReadOnly { bus: BusKind::Pio, addr: 0x60 }.is_success());
+        assert!(!BusResponse::InvalidWidth { bus: BusKind::Mmio, addr: 0, width: AccessWidth::U8 }.is_success());
+        assert!(!BusResponse::DeviceError { bus: BusKind::SysReg, addr: 0, msg: "err" }.is_success());
+    }
+
+    #[test]
+    fn bus_response_value() {
+        assert_eq!(BusResponse::Success(Some(0xff)).value(), Some(0xff));
+        assert_eq!(BusResponse::Success(None).value(), None);
+        assert_eq!(BusResponse::NoDevice { bus: BusKind::Mmio, addr: 0 }.value(), None);
+    }
+
+    #[test]
+    fn bus_response_display() {
+        let s = format!("{}", BusResponse::Success(Some(0xab)));
+        assert!(s.contains("0xab"));
+
+        let s = format!("{}", BusResponse::NoDevice { bus: BusKind::Mmio, addr: 0x1000 });
+        assert!(s.contains("Mmio") && s.contains("0x1000"));
+
+        let s = format!("{}", BusResponse::ReadOnly { bus: BusKind::Pio, addr: 0x60 });
+        assert!(s.contains("read-only"));
+
+        let s = format!("{}", BusResponse::DeviceError { bus: BusKind::SysReg, addr: 0x100, msg: "test" });
+        assert!(s.contains("test"));
+    }
+
+    #[test]
+    fn bus_access_helpers() {
+        let read = BusAccess::Read { addr: 0x1000, width: AccessWidth::U32 };
+        assert!(read.is_read());
+        assert_eq!(read.addr(), 0x1000);
+        assert_eq!(read.width(), AccessWidth::U32);
+
+        let write = BusAccess::Write { addr: 0x2000, width: AccessWidth::U8, val: 0xff };
+        assert!(!write.is_read());
+        assert_eq!(write.addr(), 0x2000);
+    }
+}

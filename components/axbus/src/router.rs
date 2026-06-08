@@ -626,4 +626,163 @@ mod tests {
         let resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x5500, width: AccessWidth::U32 });
         assert!(matches!(resp, BusResponse::Success(Some(0xee))));
     }
+
+    // ── Default interrupt controller fallback ────────────────────────────
+
+    #[test]
+    fn test_inject_default_intc_fallback() {
+        let mut router = BusRouter::new();
+        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        router.set_default_intc(intc_id);
+
+        // No explicit routing entry for line 42, but default_intc is set.
+        let result = router.inject(IrqMessage::leg(IrqLine(42)));
+        assert!(result.is_ok());
+
+        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
+        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
+        let guard = mock.last_injected.lock().unwrap();
+        let (pin, trigger, _) = guard.expect("expected inject via default fallback");
+        assert_eq!(pin, 42);
+        assert_eq!(trigger, TriggerMode::Edge);
+    }
+
+    #[test]
+    fn test_inject_explicit_route_takes_priority_over_default() {
+        let mut router = BusRouter::new();
+        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        router.set_default_intc(intc_id);
+
+        // Add an explicit route for line 33 → pin 5
+        router.irq_table_mut().add_legacy(
+            IrqLine(33), intc_id, 5, TriggerMode::Level { high: true }, None, "explicit",
+        );
+
+        let result = router.inject(IrqMessage::leg(IrqLine(33)));
+        assert!(result.is_ok());
+
+        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
+        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
+        let guard = mock.last_injected.lock().unwrap();
+        let (pin, trigger, _) = guard.unwrap();
+        // Explicit route: pin=5, level-high (not pin=33, edge from fallback)
+        assert_eq!(pin, 5);
+        assert_eq!(trigger, TriggerMode::Level { high: true });
+    }
+
+    #[test]
+    fn test_inject_no_default_no_route_returns_error() {
+        let router = BusRouter::new();
+        // No devices, no default, no routes
+        let result = router.inject(IrqMessage::leg(IrqLine(1)));
+        assert!(matches!(result, Err(DeviceError::NotFound)));
+    }
+
+    // ── Read-only register device ───────────────────────────────────────
+
+    #[derive(Debug)]
+    struct ReadOnlyDevice;
+
+    impl VirtualDevice for ReadOnlyDevice {
+        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
+        fn name(&self) -> &str { "read-only-dev" }
+        fn resources(&self) -> &[Resource] {
+            static RES: &[Resource] = &[Resource::Mmio(0x3000..0x4000)];
+            RES
+        }
+        fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
+            match access {
+                BusAccess::Read { .. } => BusResponse::Success(Some(0xdead)),
+                BusAccess::Write { addr, .. } => BusResponse::ReadOnly { bus, addr: *addr },
+            }
+        }
+        fn as_any(&self) -> &dyn Any { self }
+    }
+
+    #[test]
+    fn test_read_only_register_protection() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(ReadOnlyDevice)).unwrap();
+
+        let read_resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x3000, width: AccessWidth::U32 });
+        assert!(matches!(read_resp, BusResponse::Success(Some(0xdead))));
+
+        let write_resp = router.route(BusKind::Mmio, &BusAccess::Write { addr: 0x3000, width: AccessWidth::U32, val: 0 });
+        assert!(matches!(write_resp, BusResponse::ReadOnly { .. }));
+        assert!(!write_resp.is_success());
+    }
+
+    // ── Width-sensitive device ──────────────────────────────────────────
+
+    #[derive(Debug)]
+    struct Width32OnlyDevice;
+
+    impl VirtualDevice for Width32OnlyDevice {
+        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
+        fn name(&self) -> &str { "width32-only" }
+        fn resources(&self) -> &[Resource] {
+            static RES: &[Resource] = &[Resource::Mmio(0x4000..0x5000)];
+            RES
+        }
+        fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
+            if access.width() != AccessWidth::U32 {
+                return BusResponse::InvalidWidth { bus, addr: access.addr(), width: access.width() };
+            }
+            match access {
+                BusAccess::Read { .. } => BusResponse::Success(Some(0xbeef)),
+                BusAccess::Write { .. } => BusResponse::Success(None),
+            }
+        }
+        fn as_any(&self) -> &dyn Any { self }
+    }
+
+    #[test]
+    fn test_access_width_violation() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(Width32OnlyDevice)).unwrap();
+
+        let ok = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x4000, width: AccessWidth::U32 });
+        assert!(matches!(ok, BusResponse::Success(Some(0xbeef))));
+
+        let bad_u8 = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x4000, width: AccessWidth::U8 });
+        assert!(matches!(bad_u8, BusResponse::InvalidWidth { width: AccessWidth::U8, .. }));
+
+        let bad_u64 = router.route(BusKind::Mmio, &BusAccess::Write { addr: 0x4000, width: AccessWidth::U64, val: 0 });
+        assert!(matches!(bad_u64, BusResponse::InvalidWidth { width: AccessWidth::U64, .. }));
+    }
+
+    // ── Bus type isolation for NoDevice ─────────────────────────────────
+
+    #[test]
+    fn test_no_device_carries_bus_and_addr() {
+        let router = BusRouter::new();
+        let resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0xdead, width: AccessWidth::U32 });
+        match resp {
+            BusResponse::NoDevice { bus, addr } => {
+                assert_eq!(bus, BusKind::Mmio);
+                assert_eq!(addr, 0xdead);
+            }
+            _ => panic!("expected NoDevice"),
+        }
+    }
+
+    // ── IrqSink through BusRouter ───────────────────────────────────────
+
+    #[test]
+    fn test_irq_sink_via_router() {
+        let mut router = BusRouter::new();
+        let intc_id = router.register(Arc::new(MockIntc::new(DeviceId::from_u64(0)))).unwrap();
+        router.set_default_intc(intc_id);
+
+        let router = Arc::new(router);
+        let sink = router.create_irq_sink(IrqLine(7), TriggerMode::Edge);
+
+        assert_eq!(sink.line(), IrqLine(7));
+        sink.raise().unwrap();
+
+        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
+        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
+        let guard = mock.last_injected.lock().unwrap();
+        assert!(guard.is_some());
+    }
 }
