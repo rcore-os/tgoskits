@@ -4,34 +4,34 @@
 
 本次改动围绕 `x86_64 native CLI gdb MVP` 做了最小可用链路补齐，重点完善了以下能力：
 
-1. `x86_64` ptrace 寄存器访问能力  
+1. `x86_64` ptrace 寄存器访问能力
    - `PTRACE_GETREGS / SETREGS`
    - `PTRACE_GETREGSET / SETREGSET`
    - `PTRACE_GETSIGINFO`
 
-2. traced stop 主链验证  
+2. traced stop 主链验证
    - `PTRACE_TRACEME`
    - `waitpid(..., WUNTRACED)`
    - `execve -> SIGTRAP` 初始 stop
    - `PTRACE_CONT`
 
-3. software breakpoint 能力  
+3. software breakpoint 能力
    - 写入 `int3`
    - breakpoint 命中后重新 stop
    - 恢复原字节并继续执行
 
-4. `x86_64 PTRACE_SINGLESTEP`  
+4. `x86_64 PTRACE_SINGLESTEP`
    - 支持单步执行一条用户态指令
    - 单步后重新以 `SIGTRAP` 返回给 tracer
 
-5. 更接近真实调试器的断点恢复流程  
+5. 更接近真实调试器的断点恢复流程
    - 回退 `RIP`
    - 恢复原指令
    - single-step 执行原指令
    - 重新插回 breakpoint
    - 再继续执行
 
-6. native gdb batch-mode 测试入口  
+6. native gdb batch-mode 测试入口
    - 用于验证 StarryOS 上 native gdb 对 ptrace 能力的实际消费路径
 
 ## 当前已经做到什么程度
@@ -89,4 +89,3 @@
 而不是：
 
 > 完成完整 Linux ptrace / 完整 gdb 兼容实现。
-

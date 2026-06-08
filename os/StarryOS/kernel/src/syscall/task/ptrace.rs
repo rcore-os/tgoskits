@@ -961,18 +961,28 @@ fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> AxResult<isize>
 
 #[cfg(target_arch = "x86_64")]
 fn ptrace_read_stopped_fp_x86_64(pid: usize) -> AxResult<ax_cpu::FxsaveArea> {
-    let tracee = ptrace_stopped_tracee(pid)?;
-    tracee
-        .ptrace_stop_fp_data()
-        .ok_or_else(|| AxError::from(LinuxError::ESRCH))
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    let (regs, _fcsr) = tracee
+        .ptrace_stop_fp_data_for(tid)
+        .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
+    let mut fp: ax_cpu::FxsaveArea = unsafe { core::mem::zeroed() };
+    let fp_bytes = unsafe {
+        slice::from_raw_parts_mut((&mut fp as *mut ax_cpu::FxsaveArea).cast::<u8>(), 512)
+    };
+    let src = unsafe { slice::from_raw_parts((&regs as *const [u64; 32]).cast::<u8>(), 512) };
+    fp_bytes.copy_from_slice(src);
+    Ok(fp)
 }
 
 #[cfg(target_arch = "x86_64")]
 fn ptrace_write_stopped_fp_x86_64(pid: usize, data: ax_cpu::FxsaveArea) -> AxResult<isize> {
-    let tracee = ptrace_stopped_tracee(pid)?;
-    if !tracee.set_ptrace_stop_fp_data(data) {
-        return Err(AxError::from(LinuxError::ESRCH));
-    }
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
+    let src =
+        unsafe { slice::from_raw_parts((&data as *const ax_cpu::FxsaveArea).cast::<u8>(), 512) };
+    let mut regs = [0u64; 32];
+    let dst = unsafe { slice::from_raw_parts_mut((&mut regs as *mut [u64; 32]).cast::<u8>(), 512) };
+    dst.copy_from_slice(src);
+    tracee.set_ptrace_stop_fp_data_for(tid, (regs, 0));
     Ok(0)
 }
 

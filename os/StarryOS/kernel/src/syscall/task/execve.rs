@@ -342,8 +342,11 @@ pub fn sys_execve(
         has_ldso,
     );
 
-    if proc_data.is_ptrace_attached()
-        || (proc_data.is_ptrace_traceme()
+    // PTRACE_TRACEME always stops on execve (Linux: the tracee sends
+    // SIGTRAP regardless of PTRACE_O_TRACEEXEC; that flag only controls
+    // whether the stop carries PTRACE_EVENT_EXEC).
+    if proc_data.is_ptrace_traceme()
+        || (proc_data.is_ptrace_attached()
             && proc_data.ptrace_options() & PTRACE_O_TRACEEXEC_FLAG != 0)
     {
         proc_data.set_ptrace_exec_stop_pending();
