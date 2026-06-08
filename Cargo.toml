@@ -121,7 +121,7 @@ members = [
     "os/axvisor",
     "scripts/axbuild",
     "test-suit/arceos/rust",
-    "test-suit/arceos/std/qemu-smp1/*",
+    "apps/arceos/std/qemu-smp1/*",
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",

@@ -325,7 +325,7 @@ mod tests {
 
         assert!(should_recreate_runtime_image(
             workspace,
-            Path::new("/workspace/tmp/axbuild/runtime-assets/arceos/std/case/disk.img")
+            Path::new("/workspace/tmp/axbuild/runtime-assets/apps/arceos/std/case/disk.img")
         ));
         assert!(!should_recreate_runtime_image(
             workspace,
