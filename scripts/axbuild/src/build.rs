@@ -2590,6 +2590,7 @@ AX_IP = "10.0.2.15"
     fn std_target_specs_keep_none_kernel_fields_with_std_link_policy() {
         for (bare_target, std_target, plat_dyn) in [
             ("x86_64-unknown-none", "x86_64-unknown-linux-musl", false),
+            ("x86_64-unknown-none", "x86_64-unknown-linux-musl", true),
             (
                 "aarch64-unknown-none-softfloat",
                 "aarch64-unknown-linux-musl",
@@ -2694,6 +2695,7 @@ AX_IP = "10.0.2.15"
     fn std_target_specs_do_not_import_linux_userspace_link_fields() {
         for (target, plat_dyn) in [
             ("x86_64-unknown-linux-musl", false),
+            ("x86_64-unknown-linux-musl", true),
             ("aarch64-unknown-linux-musl", false),
             ("aarch64-unknown-linux-musl", true),
             ("riscv64gc-unknown-linux-musl", false),
@@ -2722,6 +2724,7 @@ AX_IP = "10.0.2.15"
     fn std_target_specs_embed_final_link_policy() {
         let cases = [
             ("x86_64-unknown-linux-musl", false, "_start", "-no-pie"),
+            ("x86_64-unknown-linux-musl", true, "_head", "-pie"),
             ("aarch64-unknown-linux-musl", false, "_start", "-no-pie"),
             ("aarch64-unknown-linux-musl", true, "_head", "-pie"),
             ("riscv64gc-unknown-linux-musl", false, "_start", "-no-pie"),
