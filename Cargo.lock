@@ -3692,10 +3692,7 @@ dependencies = [
 [[package]]
 name = "fdt-edit"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda8ff88f0dd8770b247b17d9e0faf293c52cb5733e2500294ffa93ac1f0b384"
 dependencies = [
- "enum_dispatch",
  "fdt-raw",
  "log",
 ]
@@ -5231,10 +5228,7 @@ dependencies = [
 [[package]]
 name = "lwprintf-rs"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaa1793daa377959c5d73ee413228fe8f8ebfbac58f02b14d662da7d115a0222"
 dependencies = [
- "bindgen 0.72.1",
  "cc",
 ]
 
@@ -5421,10 +5415,6 @@ dependencies = [
 [[package]]
 name = "mmio-api"
 version = "0.2.2"
-dependencies = [
- "derive_more",
- "thiserror 2.0.18",
-]
 
 [[package]]
 name = "multiboot"
@@ -6582,10 +6572,7 @@ name = "rdif-base"
 version = "0.8.1"
 dependencies = [
  "as-any",
- "async-trait",
- "paste",
  "rdif-def",
- "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -6608,9 +6595,6 @@ dependencies = [
 [[package]]
 name = "rdif-def"
 version = "0.2.3"
-dependencies = [
- "thiserror 2.0.18",
-]
 
 [[package]]
 name = "rdif-display"

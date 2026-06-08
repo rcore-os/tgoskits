@@ -20,11 +20,15 @@ pub mod entry;
 
 mod cgroup;
 mod config;
+#[cfg(feature = "ebpf-kmod")]
 mod ebpf;
 mod file;
+#[cfg(feature = "ebpf-kmod")]
 mod kmod;
+#[cfg(feature = "ebpf-kmod")]
 mod kprobe;
 mod mm;
+#[cfg(feature = "ebpf-kmod")]
 mod perf;
 mod pseudofs;
 mod stop_machine;
@@ -32,4 +36,5 @@ mod syscall;
 mod task;
 mod time;
 mod tracepoint;
+#[cfg(feature = "ebpf-kmod")]
 mod trap;

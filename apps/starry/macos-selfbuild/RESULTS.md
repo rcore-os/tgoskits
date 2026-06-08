@@ -32,7 +32,7 @@ cargo build \
   --target aarch64-unknown-none-softfloat \
   -Z build-std=core,alloc,compiler_builtins \
   --target-dir /tmp/starryos-selfbuild-target \
-  --features ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp \
+  --features plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp \
   --release
 ```
 
@@ -52,7 +52,7 @@ ALLOW_SLOW_SELFBUILD=0
 
 The fast reproducible profile is guarded by the guest script. Unless
 `ALLOW_SLOW_SELFBUILD=1` is set for experiments, it refuses the older
-full-device profile containing `plat-dyn`, `ax-driver/virtio-*`,
+full-device profile containing `ax-feat/display`, `ax-driver/virtio-*`,
 `starry-kernel/input`, or `starry-kernel/vsock`. That older profile expands to
 about 386 crates and is the common reason for a run appearing to hang for more
 than an hour.
@@ -70,6 +70,8 @@ machine.
 
 | Case | Time | Notes |
 | --- | --- | --- |
+| `SMP=8`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `657s` | latest validated default reproduction |
+| `SMP=1`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `642s` | latest single-vCPU validation |
 | `SMP=8`, `JOBS=1`, ext4 source/target | `951s` | slow guest baseline |
 | `SMP=8`, `JOBS=8`, ext4 source/target | `917s` | first complete SMP self-build |
 | `SMP=8`, `JOBS=8`, tmp target only | `660s` | moves Cargo target output to `/tmp` |

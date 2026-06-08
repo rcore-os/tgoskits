@@ -2,9 +2,9 @@
 set -eu
 
 marker="${MARKER:-STARRY-MACOS-SELFBUILD}"
-jobs="${JOBS:-8}"
+jobs="${JOBS:-1}"
 rayon_threads="${RAYON_NUM_THREADS:-1}"
-rustc_threads="${RUSTC_THREADS:-}"
+rustc_threads="${RUSTC_THREADS:-1}"
 cargo_bin="${CARGO_BIN:-/usr/bin/cargo}"
 source_dir="${SOURCE_DIR:-/opt/tgoskits}"
 work_dir="${WORK_DIR:-/tmp/starryos-selfbuild-src}"
@@ -18,7 +18,7 @@ build_target="${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
 build_package="${BUILD_PACKAGE:-starryos}"
 build_bin="${BUILD_BIN:-starryos}"
 build_std="${BUILD_STD:-core,alloc,compiler_builtins}"
-features="${FEATURES:-ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp}"
+features="${FEATURES-plat-dyn,ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp}"
 no_default_features="${NO_DEFAULT_FEATURES:-0}"
 allow_slow_selfbuild="${ALLOW_SLOW_SELFBUILD:-0}"
 guest_monitor_interval="${GUEST_MONITOR_INTERVAL_SEC:-60}"
@@ -30,7 +30,7 @@ assert_fast_profile() {
     fi
 
     case ",${features}," in
-        *",plat-dyn,"*|*",ax-feat/display,"*|*",ax-driver/virtio-"*|*",starry-kernel/input,"*|*",starry-kernel/vsock,"*)
+        *",ax-feat/display,"*|*",ax-driver/virtio-"*|*",starry-kernel/input,"*|*",starry-kernel/vsock,"*)
             echo "===${marker}-FAST-PROFILE-ERROR features=${features}==="
             echo "This feature set selects the slow full-device profile seen as about 386 crates."
             echo "Use the default feature-slim profile for reproduction, or set ALLOW_SLOW_SELFBUILD=1 for experiments."
@@ -38,7 +38,7 @@ assert_fast_profile() {
             ;;
     esac
 
-    echo "===${marker}-FAST-PROFILE expected_crates~318 rustc_threads=${rustc_threads:-default}==="
+    echo "===${marker}-FAST-PROFILE expected_crates~348 rustc_threads=${rustc_threads:-default}==="
 }
 
 finish_guest() {
@@ -122,8 +122,16 @@ fi
 
 export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
 export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
-export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
 export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
+
+sanitize_cargo_config() {
+    config_dir="$1"
+    if [ -f "${config_dir}/.cargo/config.toml" ]; then
+        sed -i "s#${source_dir}/vendor#${config_dir}/vendor#g" "${config_dir}/.cargo/config.toml" || true
+        sed -i '/^include[[:space:]]*=/d' "${config_dir}/.cargo/config.toml" || true
+    fi
+}
 
 if [ "$source_tmpfs" = "1" ]; then
     echo "===${marker}-SOURCE-COPY-BEGIN from=${source_dir} to=${work_dir}==="
@@ -134,13 +142,11 @@ if [ "$source_tmpfs" = "1" ]; then
             cp -a "${source_dir}/${path}" "${work_dir}/"
         fi
     done
-    if [ -f "${work_dir}/.cargo/config.toml" ]; then
-        sed -i "s#${source_dir}/vendor#${work_dir}/vendor#g" "${work_dir}/.cargo/config.toml" || true
-        sed -i '/^include[[:space:]]*=/d' "${work_dir}/.cargo/config.toml" || true
-    fi
+    sanitize_cargo_config "$work_dir"
     echo "===${marker}-SOURCE-COPY-END==="
     cd "$work_dir"
 else
+    sanitize_cargo_config "$source_dir"
     cd "$source_dir"
 fi
 
@@ -161,7 +167,7 @@ else
     unset AX_CONFIG_PATH
 fi
 rustflags="${EXTRA_RUSTFLAGS:-}"
-if [ -n "$rustc_threads" ]; then
+if [ -n "$rustc_threads" ] && [ "$rustc_threads" != "auto" ]; then
     rustflags="${rustflags} -Zthreads=${rustc_threads}"
 fi
 export RUSTFLAGS="${rustflags} -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
@@ -193,9 +199,13 @@ echo "===${marker}-ENV-END==="
 assert_fast_profile
 
 set -- "$cargo_bin" "$cargo_subcommand" \
-    -p "$build_package" \
-    --bin "$build_bin" \
-    --target "$build_target"
+    -p "$build_package"
+
+if [ -n "$build_bin" ] && [ "$build_bin" != "none" ]; then
+    set -- "$@" --bin "$build_bin"
+fi
+
+set -- "$@" --target "$build_target"
 
 if [ -n "$build_std" ] && [ "$build_std" != "none" ]; then
     set -- "$@" -Z "build-std=${build_std}"
@@ -232,6 +242,46 @@ if [ "$guest_monitor_interval" != "0" ]; then
         while kill -0 "$cargo_pid" 2>/dev/null; do
             echo "===${marker}-GUEST-PROCS timestamp=$(date +%s) cargo_pid=${cargo_pid}==="
             ps -ef 2>/dev/null || ps 2>/dev/null || true
+            echo "===${marker}-GUEST-PROC-STAT-BEGIN==="
+            for stat in /proc/[0-9]*/stat; do
+                [ -r "$stat" ] || continue
+                read -r pid comm state ppid rest <"$stat" || continue
+                echo "pid=${pid} ppid=${ppid} state=${state} comm=${comm}"
+                case "$comm" in
+                    "(cargo)"|"(rustc)"|"(ld-musl-aarch64.)")
+                        if [ -r "/proc/${pid}/cmdline" ]; then
+                            tr '\000' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true
+                            echo
+                        fi
+                        if [ -r "/proc/${pid}/status" ]; then
+                            sed -n '1,30p' "/proc/${pid}/status" 2>/dev/null || true
+                        fi
+                        if [ -r "/proc/${pid}/wchan" ]; then
+                            printf 'wchan='
+                            cat "/proc/${pid}/wchan" 2>/dev/null || true
+                            echo
+                        fi
+                        if [ -d "/proc/${pid}/task" ]; then
+                            echo "===${marker}-GUEST-TASKS pid=${pid} comm=${comm}==="
+                            for task_stat in /proc/"${pid}"/task/[0-9]*/stat; do
+                                [ -r "$task_stat" ] || continue
+                                read -r tid task_comm task_state task_ppid task_rest <"$task_stat" || continue
+                                echo "tid=${tid} ppid=${task_ppid} state=${task_state} comm=${task_comm}"
+                            done
+                        fi
+                        ;;
+                esac
+            done
+            echo "===${marker}-GUEST-PROC-STAT-END==="
+            if [ -d "/proc/${cargo_pid}/task" ]; then
+                echo "===${marker}-GUEST-CARGO-TASKS-BEGIN==="
+                for stat in /proc/"${cargo_pid}"/task/[0-9]*/stat; do
+                    [ -r "$stat" ] || continue
+                    read -r tid comm state ppid rest <"$stat" || continue
+                    echo "tid=${tid} ppid=${ppid} state=${state} comm=${comm}"
+                done
+                echo "===${marker}-GUEST-CARGO-TASKS-END==="
+            fi
             echo "===${marker}-GUEST-PROCS-END==="
             sleep "$guest_monitor_interval"
         done
@@ -251,14 +301,15 @@ end="$(date +%s)"
 elapsed="$((end - start))"
 echo "===${marker}-END jobs=${jobs} rc=${rc} elapsed=${elapsed}==="
 
-if [ "$profile" = "release" ]; then
+artifact=""
+if [ -n "$build_bin" ] && [ "$build_bin" != "none" ] && [ "$profile" = "release" ]; then
     artifact="${target_dir}/${build_target}/release/${build_bin}"
-else
+elif [ -n "$build_bin" ] && [ "$build_bin" != "none" ]; then
     artifact="${target_dir}/${build_target}/debug/${build_bin}"
 fi
 
 if [ "$rc" = "0" ]; then
-    if [ -f "$artifact" ]; then
+    if [ -n "$artifact" ] && [ -f "$artifact" ]; then
         bytes="$(wc -c <"$artifact" 2>/dev/null || echo unknown)"
         echo "===${marker}-ARTIFACT path=${artifact} bytes=${bytes}==="
     fi

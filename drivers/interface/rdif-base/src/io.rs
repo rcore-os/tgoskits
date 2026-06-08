@@ -1,9 +1,8 @@
+#![allow(async_fn_in_trait)]
+
 use alloc::boxed::Box;
 use core::{fmt::Display, future, task::Poll};
 
-pub use async_trait::async_trait;
-
-#[async_trait]
 pub trait Read {
     /// Read data from the device.
     fn read(&mut self, buf: &mut [u8]) -> Result;
@@ -53,7 +52,6 @@ pub trait Read {
     }
 }
 
-#[async_trait]
 pub trait Write {
     /// Write data to the device.
     fn write(&mut self, buf: &[u8]) -> Result;
@@ -121,38 +119,49 @@ impl Display for Error {
 impl core::error::Error for Error {}
 
 /// Io error kind
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum ErrorKind {
-    #[error("Other error: {0}")]
     Other(Box<dyn core::error::Error>),
-    #[error("Hardware not available")]
     NotAvailable,
-    #[error("Broken pipe")]
     BrokenPipe,
-    #[error("Invalid parameter: {name}")]
-    InvalidParameter { name: &'static str },
-    #[error("Invalid data")]
+    InvalidParameter {
+        name: &'static str,
+    },
     InvalidData,
-    #[error("Timed out")]
     TimedOut,
     /// This operation was interrupted.
     ///
     /// Interrupted operations can typically be retried.
-    #[error("Interrupted")]
     Interrupted,
     /// This operation is unsupported on this platform.
     ///
     /// This means that the operation can never succeed.
-    #[error("Unsupported")]
     Unsupported,
     /// An operation could not be completed, because it failed
     /// to allocate enough memory.
-    #[error("Out of memory")]
     OutOfMemory,
     /// An attempted write could not write any data.
-    #[error("Write zero")]
     WriteZero,
 }
+
+impl Display for ErrorKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Other(e) => write!(f, "Other error: {e}"),
+            Self::NotAvailable => write!(f, "Hardware not available"),
+            Self::BrokenPipe => write!(f, "Broken pipe"),
+            Self::InvalidParameter { name } => write!(f, "Invalid parameter: {name}"),
+            Self::InvalidData => write!(f, "Invalid data"),
+            Self::TimedOut => write!(f, "Timed out"),
+            Self::Interrupted => write!(f, "Interrupted"),
+            Self::Unsupported => write!(f, "Unsupported"),
+            Self::OutOfMemory => write!(f, "Out of memory"),
+            Self::WriteZero => write!(f, "Write zero"),
+        }
+    }
+}
+
+impl core::error::Error for ErrorKind {}
 
 #[cfg(test)]
 mod test {
@@ -161,7 +170,6 @@ mod test {
 
     struct TRead;
 
-    #[async_trait]
     impl Read for TRead {
         fn read(&mut self, buf: &mut [u8]) -> Result {
             const MAX: usize = 2;

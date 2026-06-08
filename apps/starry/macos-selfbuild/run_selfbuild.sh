@@ -16,8 +16,8 @@ or run the final QEMU step directly:
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
-  SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
-  EXPECTED_MAX_CRATES=330
+  SMP=8 JOBS=1 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  EXPECTED_MAX_CRATES=420
   QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
   BOOT_ONLY=1
   EXTRA_RUSTFLAGS='<extra guest rustflags>'
@@ -103,7 +103,7 @@ git_value() {
 kernel="${KERNEL:-$repo_root/target/aarch64-unknown-none-softfloat/release/starryos.bin}"
 rootfs="${ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img}"
 smp="${SMP:-8}"
-jobs="${JOBS:-$smp}"
+jobs="${JOBS:-1}"
 mem="${MEM:-4096M}"
 qemu_accel="${QEMU_ACCEL:-hvf}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
@@ -185,14 +185,14 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "JOBS" "$jobs"
     emit_export "SMP" "$smp"
     emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
-    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-}"
+    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-1}"
     emit_export "SOURCE_TMPFS" "$source_tmpfs"
     emit_export "PROFILE" "${PROFILE:-release}"
     emit_export "BUILD_TARGET" "${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
     emit_export "BUILD_PACKAGE" "${BUILD_PACKAGE:-starryos}"
     emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
     emit_export "BUILD_STD" "${BUILD_STD:-core,alloc,compiler_builtins}"
-    emit_export "FEATURES" "${FEATURES:-ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp}"
+    emit_export "FEATURES" "${FEATURES-plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp}"
     emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-0}"
     emit_export "CARGO_SUBCOMMAND" "${CARGO_SUBCOMMAND:-build}"
     emit_export "CARGO_BIN" "${CARGO_BIN:-/usr/bin/cargo}"
@@ -201,7 +201,7 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "CARGO_TARGET_DIR" "${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
     emit_export "CARGO_PROFILE_RELEASE_LTO" "${CARGO_PROFILE_RELEASE_LTO:-false}"
     emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
-    emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
+    emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
     emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
     emit_export "ALLOW_SLOW_SELFBUILD" "${ALLOW_SLOW_SELFBUILD:-0}"
     emit_export "GUEST_MONITOR_INTERVAL_SEC" "${GUEST_MONITOR_INTERVAL_SEC:-60}"
@@ -262,7 +262,7 @@ host_rc=124
 start_seconds="$SECONDS"
 heartbeat_sec="${HOST_HEARTBEAT_SEC:-30}"
 next_heartbeat="$heartbeat_sec"
-expected_max_crates="${EXPECTED_MAX_CRATES:-330}"
+expected_max_crates="${EXPECTED_MAX_CRATES:-420}"
 crate_count_guarded=0
 
 check_crate_count_guard() {

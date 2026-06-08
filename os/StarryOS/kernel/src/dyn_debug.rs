@@ -1,8 +1,13 @@
+#[cfg(feature = "dynamic_debug")]
 use ax_memory_addr::VirtAddr;
+#[cfg(feature = "dynamic_debug")]
 use ax_task::current;
+#[cfg(feature = "dynamic_debug")]
 use ddebug::{ControlFile, DebugOps};
+#[cfg(feature = "dynamic_debug")]
 pub struct DynamicDebugOps;
 
+#[cfg(feature = "dynamic_debug")]
 impl DebugOps for DynamicDebugOps {
     fn write_kernel_text(addr: *mut u8, data: &[u8]) {
         crate::mm::write_kernel_text(VirtAddr::from_mut_ptr_of(addr), data)
@@ -57,6 +62,7 @@ macro_rules! debug_fn {
 
 /// Initialize dynamic debug subsystem.
 /// This should be called after static keys are initialized, and before any dynamic debug site is hit.
+#[cfg(feature = "dynamic_debug")]
 pub fn dynamic_debug_init() -> ControlFile<DynamicDebugOps> {
     info!("debug_init: initializing dynamic debug sites");
     let ctl = ddebug::dynamic_debug_init::<DynamicDebugOps>();

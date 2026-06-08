@@ -170,13 +170,13 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
 
     // FIXME: add back support for WALL & WCLONE, since ProcessData may drop before
     // Process now.
-    let children = waitable_processes(proc, target, proc.pid());
-    if children.is_empty() {
+    if waitable_processes(proc, target, proc.pid()).is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
+        let children = waitable_processes(proc, target, proc.pid());
         if let Some((child, data, signo)) = children.iter().find_map(|child| {
             get_process_data(child.pid())
                 .ok()
@@ -304,13 +304,13 @@ pub fn sys_waitid(
 
     info!("sys_waitid <= idtype: {idtype}, id: {id}, options: {options:?}");
 
-    let children = waitable_processes(proc, target, proc.pid());
-    if children.is_empty() {
+    if waitable_processes(proc, target, proc.pid()).is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
+        let children = waitable_processes(proc, target, proc.pid());
         if options.contains(WaitIdOptions::WUNTRACED)
             && let Some((child, data, signo)) = children.iter().find_map(|child| {
                 get_process_data(child.pid())

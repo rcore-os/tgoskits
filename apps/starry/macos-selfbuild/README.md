@@ -127,9 +127,9 @@ Run the complete 8-vCPU self-build:
 KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
 ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
 SMP=8 \
-JOBS=8 \
+JOBS=1 \
 RAYON_NUM_THREADS=1 \
-SOURCE_TMPFS=1 \
+SOURCE_TMPFS=0 \
 QEMU_TIMEOUT_SEC=10800 \
 apps/starry/macos-selfbuild/run_selfbuild.sh
 ```
@@ -137,25 +137,25 @@ apps/starry/macos-selfbuild/run_selfbuild.sh
 A successful run prints:
 
 ```text
-===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~318 rustc_threads=default===
-===STARRY-MACOS-SELFBUILD-PASS jobs=8 elapsed=<seconds>===
+===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~348 rustc_threads=1===
+===STARRY-MACOS-SELFBUILD-PASS jobs=1 elapsed=<seconds>===
 ===STARRY-MACOS-SELFBUILD-RUN-END rc=0===
 ```
 
 The fast reproducible profile should show:
 
 ```text
-rustc_threads=
-features=ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp
+rustc_threads=1
+features=plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp
 ```
 
-If the log shows the old full-device feature set with `plat-dyn`,
+If the log shows the old full-device feature set with `ax-feat/display`,
 `ax-driver/virtio-*`, `starry-kernel/input`, or `starry-kernel/vsock`, it is the
 slow experimental profile. The guest now refuses that profile unless
 `ALLOW_SLOW_SELFBUILD=1` is explicitly set.
 
 The host runner also refuses unexpectedly large Cargo totals by default. The
-current fast profile is expected to report about `318` Cargo units. A much larger
+current fast profile is expected to report about `348` Cargo units. A much larger
 total usually means a stale rootfs or slow feature set is being used; refresh the
 rootfs from the current checkout and rerun the command above.
 
@@ -238,8 +238,8 @@ QEMU, and the guest checks it again when `TGOSKITS_COMMIT` is supplied.
 | `BOOT_ONLY` | `0` | Stop after the shell prompt instead of starting Cargo. |
 | `BUILD_TARGET` | `aarch64-unknown-none-softfloat` | Guest Cargo target. |
 | `BUILD_PACKAGE` | `starryos` | Cargo package to build. |
-| `BUILD_BIN` | `starryos` | Cargo binary to build. |
-| `FEATURES` | `ax-feat/defplat,ax-feat/irq,ax-feat/ipi,ax-feat/rtc,cntv-timer,smp` | Feature-slim StarryOS build used by the fast reproducible self-build. |
+| `BUILD_BIN` | `starryos` | Cargo binary to build; set `none` for library package diagnostics. |
+| `FEATURES` | `plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp` | Feature-slim StarryOS build used by the fast reproducible self-build; set it to an empty string for single-crate diagnostics. |
 | `REQUIRE_FRESH_ROOTFS` | `1` | Refuse a rootfs whose embedded source commit does not match the checkout. |
 | `ALLOW_SLOW_SELFBUILD` | `0` | Permit the slow full-device feature profile only for explicit experiments. |
 | `GUEST_MONITOR_INTERVAL_SEC` | `60` | Print guest `ps` snapshots while Cargo runs; set `0` to disable. |

@@ -17,4 +17,4 @@ pub trait Interface: DriverGeneric {
     fn set_rate(&mut self, id: ClockId, rate: u64) -> Result<(), KError>;
 }
 
-def_driver!(Clk, Interface);
+def_driver!(clk, Clk, Interface);

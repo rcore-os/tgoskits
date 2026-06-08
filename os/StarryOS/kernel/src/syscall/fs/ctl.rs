@@ -65,7 +65,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         })
 }
 
-#[ddebug::named]
+#[cfg_attr(feature = "dynamic_debug", ddebug::named)]
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug_fn!("sys_chdir <= path: {path}");
