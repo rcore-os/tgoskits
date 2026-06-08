@@ -51,6 +51,7 @@ test_commands = [
     "/usr/bin/bug-fcntl-ofd-pid-einval",
     "/usr/bin/bug-fcntl-fd-mode-ebadf",
     "/usr/bin/bug-fcntl-setlkw-blocks",
+    "/usr/bin/bug-fcntl-deadlock",
     "/usr/bin/bug-fcntl-len-negative",
     "/usr/bin/bug-flock",
     "/usr/bin/bug-flock-blocks",
