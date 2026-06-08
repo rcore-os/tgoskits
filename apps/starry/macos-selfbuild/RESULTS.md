@@ -12,8 +12,13 @@ accelerator: QEMU HVF
 kernel: StarryOS AArch64 SMP
 rootfs: macOS-native generated self-build ext4 image
 QEMU disk mode: -snapshot
+validated reproduction: SMP=8, JOBS=1
 success marker: STARRY-MACOS-SELFBUILD-PASS
 ```
+
+The validated path boots an 8-vCPU guest but intentionally runs one Cargo job.
+It is a stable full self-build reproduction, not evidence that parallel guest
+compilation with `JOBS=8` is supported.
 
 The git repository contains the runner, checks, source-level fixes, and the
 macOS-native rootfs construction script. The generated rootfs is still kept out
@@ -39,9 +44,9 @@ cargo build \
 with:
 
 ```text
-CARGO_BUILD_JOBS=<JOBS>
+CARGO_BUILD_JOBS=1
 RAYON_NUM_THREADS=1
-RUSTC_THREADS=2
+RUSTC_THREADS=1
 CARGO_INCREMENTAL=0
 CARGO_NET_OFFLINE=true
 RUSTC_BOOTSTRAP=1
@@ -73,20 +78,19 @@ machine.
 | `SMP=8`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `657s` | latest validated default reproduction |
 | `SMP=1`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `642s` | latest single-vCPU validation |
 | `SMP=8`, `JOBS=1`, ext4 source/target | `951s` | slow guest baseline |
-| `SMP=8`, `JOBS=8`, ext4 source/target | `917s` | first complete SMP self-build |
-| `SMP=8`, `JOBS=8`, tmp target only | `660s` | moves Cargo target output to `/tmp` |
-| `SMP=8`, `JOBS=8`, tmp source and target | `642s` | copies source and target output to `/tmp` |
-| `SMP=8`, `JOBS=8`, tmp source/target, no LTO | `515s` | `CARGO_PROFILE_RELEASE_LTO=false` |
-| `SMP=8`, `JOBS=8`, tmp source/target, no LTO, opt0, CGU256 | `427s` | reduces serial optimized codegen cost |
-| `SMP=8`, `JOBS=8`, tuned feature set, no LTO, opt0, CGU256, `RUSTC_THREADS=2` | `331s` | best local full self-build |
+| `SMP=8`, `JOBS=8`, ext4 source/target | `917s` | historical experiment; not the current stable reproduction |
+| `SMP=8`, `JOBS=8`, tmp target only | `660s` | historical experiment; not the current stable reproduction |
+| `SMP=8`, `JOBS=8`, tmp source and target | `642s` | historical experiment; not the current stable reproduction |
+| `SMP=8`, `JOBS=8`, tmp source/target, no LTO | `515s` | historical experiment; not the current stable reproduction |
+| `SMP=8`, `JOBS=8`, tmp source/target, no LTO, opt0, CGU256 | `427s` | historical experiment; not the current stable reproduction |
+| `SMP=8`, `JOBS=8`, tuned feature set, no LTO, opt0, CGU256, `RUSTC_THREADS=2` | `331s` | historical experiment; not the current stable reproduction |
 | host macOS reference | `134s` | host-side lower bound, not inside StarryOS |
 
 Useful ratios:
 
 ```text
-951s / 331s = 2.87x   slow guest baseline to tuned local best
-642s / 331s = 1.94x   tmp source/target baseline to tuned local best
-422s / 331s = 1.28x   tuned JOBS=1 to tuned JOBS=8
+951s / 657s = 1.45x   old slow guest baseline to latest stable reproduction
+642s / 657s = 0.98x   single-vCPU and 8-vCPU single-job runs are effectively similar
 ```
 
 ## Interpretation

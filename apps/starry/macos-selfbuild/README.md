@@ -15,7 +15,12 @@ injects the current TGOSKits source tree.
 - accelerator: QEMU HVF;
 - guest kernel: StarryOS AArch64 SMP kernel;
 - guest workload: StarryOS guest runs Cargo and builds the `starryos` binary;
+- stable build shape: 8-vCPU guest with one Cargo job (`SMP=8 JOBS=1`);
 - pass marker: `===STARRY-MACOS-SELFBUILD-PASS jobs=<N> elapsed=<seconds>===`.
+
+The default reproduction proves that the StarryOS SMP guest can complete a
+self-build while booted with 8 vCPUs. It does not claim that parallel guest
+compilation is currently stable; keep `JOBS=1` for the graded reproduction.
 
 Using AArch64/HVF keeps the guest ISA aligned with the Mac host CPU. This avoids
 the cross-ISA TCG cost of RISC-V-on-macOS experiments and makes the self-build
@@ -66,7 +71,7 @@ memory, close other heavy applications before running the 8-vCPU case; if it is
 memory pressured, first verify the setup with:
 
 ```bash
-SMP=4 JOBS=4 MEM=3072M \
+SMP=4 JOBS=1 MEM=3072M \
 RUST_DIST_SERVER=https://rsproxy.cn \
 STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/ \
 apps/starry/macos-selfbuild/reproduce.sh
@@ -121,7 +126,7 @@ Build the seed StarryOS kernel on macOS:
 apps/starry/macos-selfbuild/build_kernel.sh
 ```
 
-Run the complete 8-vCPU self-build:
+Run the complete 8-vCPU, single-Cargo-job self-build:
 
 ```bash
 KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
