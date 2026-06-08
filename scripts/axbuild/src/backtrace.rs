@@ -72,9 +72,23 @@ pub(crate) fn std_test_elf_path(
     let profile = if debug { "debug" } else { "release" };
     workspace_root
         .join("target")
-        .join(target)
+        .join(std_test_target_dir(target))
         .join(profile)
         .join(package)
+}
+
+fn std_test_target_dir(target: &str) -> &str {
+    if target.starts_with("x86_64-") {
+        "x86_64-unknown-linux-musl"
+    } else if target.starts_with("aarch64-") {
+        "aarch64-unknown-linux-musl"
+    } else if target.starts_with("riscv64") {
+        "riscv64gc-unknown-linux-musl"
+    } else if target.starts_with("loongarch64-") {
+        "loongarch64-unknown-linux-musl"
+    } else {
+        target
+    }
 }
 
 fn case_name_kind_hint(case_name: &str) -> Option<&'static str> {
@@ -1206,7 +1220,21 @@ BACKTRACE_END
         );
         assert_eq!(
             path,
-            PathBuf::from("/ws/target/x86_64-unknown-none/release/arceos-test-suit")
+            PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
+        );
+    }
+
+    #[test]
+    fn std_test_elf_path_maps_arceos_none_target_to_std_target_dir() {
+        let path = std_test_elf_path(
+            Path::new("/ws"),
+            "x86_64-unknown-none",
+            "arceos-test-suit",
+            false,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
         );
     }
 

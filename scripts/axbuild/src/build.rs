@@ -228,8 +228,9 @@ impl BuildInfo {
                 .display()
                 .to_string(),
         );
+        let rustflags = toolchain_rustflags(&cargo.env);
         cargo.extra_config = Some(
-            std_cargo_config_path(&std_target.target_name, &wrapper, plat_dyn)?
+            std_cargo_config_path(&std_target.target_name, &wrapper, plat_dyn, &rustflags)?
                 .display()
                 .to_string(),
         );
@@ -736,10 +737,15 @@ fn axstd_feature_is_available(feature: &str, axstd_features: &[String]) -> bool 
         .any(|axstd_feature| axstd_feature == feature)
 }
 
-fn std_cargo_config_path(target: &str, linker: &Path, plat_dyn: bool) -> anyhow::Result<PathBuf> {
+fn std_cargo_config_path(
+    target: &str,
+    linker: &Path,
+    plat_dyn: bool,
+    extra_rustflags: &[String],
+) -> anyhow::Result<PathBuf> {
     let mode = std_link_mode_suffix(plat_dyn);
     let path = std_build_dir()?.join(format!("config-{target}-{mode}.toml"));
-    let rustflags = std_rustflags_toml(target, plat_dyn);
+    let rustflags = std_rustflags_toml(extra_rustflags);
     write_if_changed(
         &path,
         &format!(
@@ -768,9 +774,12 @@ fn std_link_mode_suffix(plat_dyn: bool) -> &'static str {
     if plat_dyn { "dynamic" } else { "static" }
 }
 
-fn std_rustflags_toml(target: &str, plat_dyn: bool) -> String {
-    let _ = (target, plat_dyn);
-    String::new()
+fn std_rustflags_toml(extra_rustflags: &[String]) -> String {
+    extra_rustflags
+        .iter()
+        .map(|flag| format!("    {},", toml::Value::String(flag.clone())))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn std_fake_lib_dir(target: &str) -> anyhow::Result<PathBuf> {
@@ -2420,6 +2429,27 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
+    fn std_build_config_preserves_backtrace_rustflags_from_env() {
+        let metadata = repo_metadata();
+        let mut info = BuildInfo::default_for_target("x86_64-unknown-none");
+        info.env.insert("DWARF".to_string(), "y".to_string());
+
+        let cargo = info
+            .into_prepared_base_cargo_config_with_metadata(
+                "test-arceos-std-helloworld",
+                "x86_64-unknown-none",
+                None,
+                &metadata,
+            )
+            .unwrap();
+
+        let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+        assert!(config.contains(r#""-Cdebuginfo=2""#));
+        assert!(config.contains(r#""-Cstrip=none""#));
+        assert!(config.contains(r#""-Cforce-frame-pointers=yes""#));
+    }
+
+    #[test]
     fn std_build_target_maps_arceos_targets_to_linux_musl_by_link_mode() {
         let cases = [
             (
@@ -2718,7 +2748,8 @@ AX_IP = "10.0.2.15"
         let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
         let wrapper =
             std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
-        let config = std_cargo_config_path("x86_64-unknown-linux-musl", &wrapper, false).unwrap();
+        let config =
+            std_cargo_config_path("x86_64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
         let config = fs::read_to_string(config).unwrap();
 
         assert!(config.contains("build-std = [\"std\", \"panic_abort\"]"));
@@ -2738,7 +2769,7 @@ AX_IP = "10.0.2.15"
         let wrapper =
             std_linker_wrapper_path("loongarch64-unknown-linux-musl", &fake_dir, false).unwrap();
         let config =
-            std_cargo_config_path("loongarch64-unknown-linux-musl", &wrapper, false).unwrap();
+            std_cargo_config_path("loongarch64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
         let config = fs::read_to_string(config).unwrap();
 
         assert!(!config.contains("--cfg"));
@@ -2753,7 +2784,7 @@ AX_IP = "10.0.2.15"
         let wrapper =
             std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, false).unwrap();
         let app_config =
-            std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, false).unwrap();
+            std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
 
         let config = fs::read_to_string(app_config).unwrap();
         assert!(!config.contains("--cfg"));
@@ -2768,7 +2799,7 @@ AX_IP = "10.0.2.15"
         let wrapper =
             std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, true).unwrap();
         let app_config =
-            std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, true).unwrap();
+            std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, true, &[]).unwrap();
 
         let config = fs::read_to_string(app_config).unwrap();
         assert!(!config.contains("--cfg"));
@@ -2785,9 +2816,11 @@ AX_IP = "10.0.2.15"
         let dynamic_wrapper =
             std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, true).unwrap();
         let static_config =
-            std_cargo_config_path("aarch64-unknown-linux-musl", &static_wrapper, false).unwrap();
+            std_cargo_config_path("aarch64-unknown-linux-musl", &static_wrapper, false, &[])
+                .unwrap();
         let dynamic_config =
-            std_cargo_config_path("aarch64-unknown-linux-musl", &dynamic_wrapper, true).unwrap();
+            std_cargo_config_path("aarch64-unknown-linux-musl", &dynamic_wrapper, true, &[])
+                .unwrap();
 
         assert_ne!(static_wrapper, dynamic_wrapper);
         assert_ne!(static_config, dynamic_config);

@@ -618,7 +618,7 @@ BACKTRACE = "y"
         )
         .unwrap();
         let request = request(
-            "arceos-backtrace",
+            "arceos-test-suit",
             "aarch64-unknown-none-softfloat",
             None,
             path.clone(),

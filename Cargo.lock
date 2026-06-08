@@ -249,34 +249,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-rust"
-version = "0.1.2"
-dependencies = [
- "walkdir",
-]
-
-[[package]]
-name = "arceos-rust-interface"
-version = "1.1.0"
-dependencies = [
- "ax-api",
- "ax-driver",
- "ax-errno 0.6.0",
- "ax-feat",
- "ax-hal",
- "ax-io",
- "ax-kspin",
- "ax-posix-api",
- "ax-runtime",
- "log",
- "rand 0.9.4",
-]
-
-[[package]]
 name = "arceos-std-arce_agent"
 version = "0.2.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
  "env_logger",
  "log",
  "minreq",
@@ -288,42 +264,42 @@ dependencies = [
 name = "arceos-std-helloworld"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-std-httpclient"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-std-httpserver"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-std-io_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-std-thread_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-std-tokio_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
  "tokio",
 ]
 
@@ -1333,12 +1309,18 @@ dependencies = [
 name = "ax-std"
 version = "0.5.16"
 dependencies = [
+ "ax-alloc",
  "ax-api",
+ "ax-driver",
  "ax-errno 0.6.0",
  "ax-feat",
+ "ax-hal",
  "ax-io",
  "ax-kspin",
  "ax-lazyinit",
+ "ax-posix-api",
+ "ax-runtime",
+ "libc",
  "lock_api",
  "spin 0.12.0",
 ]
@@ -7889,6 +7871,7 @@ dependencies = [
  "ax-driver",
  "ax-feat",
  "ax-hal",
+ "ax-std",
  "axbuild",
  "axplat-dyn",
  "clap",
@@ -8169,7 +8152,7 @@ dependencies = [
 name = "test-arceos-std-arce_agent"
 version = "0.2.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
  "env_logger",
  "log",
  "minreq",
@@ -8181,42 +8164,42 @@ dependencies = [
 name = "test-arceos-std-helloworld"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "test-arceos-std-httpclient"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "test-arceos-std-httpserver"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "test-arceos-std-io_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "test-arceos-std-thread_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
 name = "test-arceos-std-tokio_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
  "tokio",
 ]
 

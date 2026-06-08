@@ -117,7 +117,6 @@ members = [
     "os/arceos/tools/deptool",
     "os/arceos/tools/raspi4/chainloader",
     "os/arceos/ulib/*",
-    "os/arceos/ulib/arceos-rust/lib",
     "os/axvisor",
     "scripts/axbuild",
     "test-suit/arceos/rust",
@@ -133,7 +132,6 @@ members = [
 aarch64_sysreg = { version = "0.3.8", path = "virtualization/aarch64_sysreg" }
 arm-scmi-rs = { version = "0.1.3", path = "drivers/firmware/arm-scmi-rs" }
 arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
-arceos-rust = { version = "0.1.2", path = "os/arceos/ulib/arceos-rust", default-features = false }
 arm_vcpu = { version = "0.5.10", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.4.11", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8.0", path = "os/arceos/modules/axalloc", default-features = false }
@@ -177,6 +175,7 @@ ax-lockdep = { version = "0.1.2", path = "components/lockdep" }
 ax-kspin = { version = "0.3.10", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.8", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.16", path = "os/arceos/ulib/axlibc" }
+libc = { version = "0.2", default-features = false }
 ax-linked-list-r4l = { version = "0.5.5", path = "components/linked_list_r4l" }
 ax-log = { version = "0.5.13", path = "os/arceos/modules/axlog" }
 ax-memory-addr = { version = "0.6.9", path = "memory/memory_addr" }

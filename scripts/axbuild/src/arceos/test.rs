@@ -204,7 +204,6 @@ impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
 struct CTestDef {
     name: String,
     build_group: String,
-    case_dir: PathBuf,
     build_config_path: PathBuf,
     qemu_config_path: PathBuf,
 }
@@ -1272,7 +1271,6 @@ fn load_arceos_c_test_suit_qemu_case(
     Ok(CTestDef {
         name: feature.to_string(),
         build_group: ARCEOS_C_TEST_BUILD_GROUP.to_string(),
-        case_dir: root.to_path_buf(),
         build_config_path: arceos_c_test_suit_build_config_path(root, target)?,
         qemu_config_path: arceos_c_test_suit_qemu_config_path(root, arch)?,
     })
@@ -1789,7 +1787,6 @@ mod tests {
 
         assert_eq!(case.name, "mem");
         assert_eq!(case.build_group, ARCEOS_C_TEST_BUILD_GROUP);
-        assert_eq!(case.case_dir, root);
         assert!(
             case.build_config_path
                 .ends_with("build-x86_64-unknown-none.toml")
