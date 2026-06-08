@@ -208,6 +208,8 @@ pub struct SvmVcpu {
     pending_events: VecDeque<PendingEvent>,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic,
+    /// Whether HLT exits should be returned to the VMM instead of used as poll points.
+    hlt_exiting: bool,
     /// The XState of the VCpu. Both host and guest.
     xstate: XState,
 }
@@ -227,6 +229,7 @@ impl SvmVcpu {
             msrpm: MSRPm::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
+            hlt_exiting: false,
             xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
@@ -1522,7 +1525,11 @@ impl AxArchVCpu for SvmVcpu {
                 SvmExitCode::INTR => AxVCpuExitReason::PreemptionTimer,
                 SvmExitCode::HLT => {
                     self.advance_rip(1)?;
-                    AxVCpuExitReason::PreemptionTimer
+                    if self.hlt_exiting {
+                        AxVCpuExitReason::Halt
+                    } else {
+                        AxVCpuExitReason::PreemptionTimer
+                    }
                 }
                 SvmExitCode::PAUSE => {
                     self.advance_rip(2)?;
@@ -1544,6 +1551,11 @@ impl AxArchVCpu for SvmVcpu {
 
     fn unbind(&mut self) -> AxResult {
         self.unbind_from_current_processor()
+    }
+
+    fn set_hlt_exiting(&mut self, enabled: bool) -> AxResult {
+        self.hlt_exiting = enabled;
+        Ok(())
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
