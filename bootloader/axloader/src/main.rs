@@ -13,6 +13,8 @@ mod console;
 #[cfg(target_os = "uefi")]
 mod control;
 #[cfg(target_os = "uefi")]
+mod elf_loader;
+#[cfg(target_os = "uefi")]
 mod entry;
 #[cfg(target_os = "uefi")]
 mod http;
@@ -68,8 +70,30 @@ fn fetch_control_offer() -> bool {
             if let Some(entry_symbol) = offer.entry_symbol.as_deref() {
                 logln!("entry_symbol: {entry_symbol}");
             }
-            logln!("elf_loader_pending: falling back to legacy manifest loader");
-            false
+            match elf_loader::download_and_load(
+                &offer.kernel_url,
+                offer.kernel_size,
+                offer.entry_symbol.as_deref(),
+            ) {
+                Ok(elf) => {
+                    logln!(
+                        "elf_loaded: load={:#x} end={:#x} pages={} entry={:#x}",
+                        elf.load_addr,
+                        elf.load_end,
+                        elf.page_count,
+                        elf.entry_point
+                    );
+                    match entry::exit_boot_services_and_jump(elf.entry_point) {
+                        Ok(()) => logln!("jump_error: entry returned unexpectedly"),
+                        Err(err) => logln!("jump_error: {err:?}"),
+                    }
+                    false
+                }
+                Err(err) => {
+                    logln!("elf_load_error: {err:?}");
+                    false
+                }
+            }
         }
         Err(control::ControlError::NoServerUrl) => false,
         Err(err) => {

@@ -598,7 +598,6 @@ mod tests {
                     assert_eq!(args.board, "Asus-nuc15-x86_64-vmx");
                     assert_eq!(args.output, PathBuf::from("configs/httpboot.toml"));
                     assert!(args.force);
-                    assert!(!args.no_open_console);
                 }
                 httpboot::Command::Check(_) | httpboot::Command::Publish(_) => {
                     panic!("expected httpboot init command")

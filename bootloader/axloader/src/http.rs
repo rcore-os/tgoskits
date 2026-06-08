@@ -99,6 +99,18 @@ pub struct LoadedKernel {
     pub size: usize,
 }
 
+pub fn download_sized_body(url: &str, expected_size: u64) -> Result<Vec<u8>, KernelLoadError> {
+    let expected_size = checked_kernel_size(expected_size)?;
+    crate::logln!("body_download_start: size={}", expected_size);
+    let mut body = vec![0; expected_size];
+    let received = download_body_to_addr(url, body.as_mut_ptr(), expected_size)
+        .map_err(KernelLoadError::Download)?;
+    if received != expected_size {
+        return Err(KernelLoadError::SizeMismatch);
+    }
+    Ok(body)
+}
+
 pub fn download_kernel(
     url: &str,
     load_addr: u64,

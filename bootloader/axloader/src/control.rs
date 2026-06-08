@@ -6,6 +6,8 @@ use core::str;
 use crate::{boards, http, identity};
 
 const CONTROL_BODY_LIMIT: usize = 8192;
+const HELLO_RETRY_LIMIT: usize = 8;
+const HELLO_RETRY_STALL: core::time::Duration = core::time::Duration::from_millis(500);
 const BOOT_OFFER_POLL_LIMIT: usize = 30;
 const BOOT_OFFER_POLL_STALL: core::time::Duration = core::time::Duration::from_secs(1);
 
@@ -47,8 +49,7 @@ pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
         boards::active::BOARD_NAME,
         mac
     );
-    let hello_response = http::post_json_body(&hello_url, &hello_body, CONTROL_BODY_LIMIT)
-        .map_err(ControlError::Http)?;
+    let hello_response = post_hello_with_retry(&hello_url, &hello_body)?;
     let hello_text = str::from_utf8(&hello_response).map_err(|_| ControlError::NonUtf8)?;
     let poll_url =
         json_string_field(hello_text, "poll_url").ok_or(ControlError::MissingField("poll_url"))?;
@@ -72,6 +73,24 @@ pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
     }
 
     Err(ControlError::PollLimit)
+}
+
+fn post_hello_with_retry(url: &str, body: &str) -> Result<alloc::vec::Vec<u8>, ControlError> {
+    let mut last_error = None;
+    for attempt in 1..=HELLO_RETRY_LIMIT {
+        match http::post_json_body(url, body, CONTROL_BODY_LIMIT) {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt < HELLO_RETRY_LIMIT {
+                    uefi::boot::stall(HELLO_RETRY_STALL);
+                }
+            }
+        }
+    }
+    Err(ControlError::Http(
+        last_error.unwrap_or(http::DownloadError::RequestFailed),
+    ))
 }
 
 fn parse_ready_offer(input: &str) -> Result<BootOffer, ControlError> {

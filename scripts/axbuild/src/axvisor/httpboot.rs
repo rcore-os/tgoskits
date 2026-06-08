@@ -64,10 +64,6 @@ pub struct ArgsInit {
     /// Overwrite an existing config file.
     #[arg(long)]
     pub force: bool,
-
-    /// Do not open the serial console after publishing.
-    #[arg(long = "no-open-console")]
-    pub no_open_console: bool,
 }
 
 #[derive(ClapArgs)]
@@ -143,7 +139,7 @@ fn init(axvisor: &Axvisor, args: ArgsInit) -> anyhow::Result<()> {
         );
     }
 
-    let config = render_init_config(&args.board, !args.no_open_console);
+    let config = render_init_config(&args.board);
     fs::write(&output, config).with_context(|| format!("failed to write {}", output.display()))?;
     println!("generated {}", output.display());
     Ok(())
@@ -371,8 +367,8 @@ async fn publish_artifacts_for_session(
     );
     println!("boot_id: {}", artifact.boot_id);
     println!(
-        "session_release: {}",
-        if keep_session { "kept" } else { "requested" }
+        "session_release_on_exit: {}",
+        if keep_session { "no" } else { "yes" }
     );
     Ok(())
 }
@@ -391,11 +387,6 @@ async fn run_httpboot_post_publish(
             .power_on_board(&session.session_id)
             .await
             .context("failed to power on board")?;
-    }
-
-    if !publish_config.open_console {
-        println!("Waiting for board on power or reset...");
-        return Ok(());
     }
 
     let serial_status = client
@@ -422,13 +413,7 @@ async fn run_httpboot_post_publish(
         let ws_url = client.resolve_ws_url(ws_path)?;
         terminal::run_serial_terminal(ws_url).await
     } else {
-        println!("Waiting for board on power or reset...");
-        println!("Board has no serial configuration; keeping session alive until Ctrl+C.");
-        println!("HTTP Boot artifacts are ready. Reset or power on the board now.");
-        tokio::signal::ctrl_c()
-            .await
-            .context("failed to wait for Ctrl+C")?;
-        Ok(())
+        bail!("HTTP Boot requires a serial console, but this board has no serial configuration")
     }
 }
 
@@ -453,7 +438,6 @@ struct PublishConfig {
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
     power_cycle: bool,
-    open_console: bool,
 }
 
 impl PublishConfig {
@@ -477,7 +461,6 @@ impl PublishConfig {
             kernel_load_addr: None,
             entry_point: None,
             power_cycle: false,
-            open_console: false,
         };
 
         let default_path = workspace_root.join(".httpboot.toml");
@@ -511,9 +494,6 @@ impl PublishConfig {
         self.entry_point = file.entry_point.or(self.entry_point.take());
         if let Some(power_cycle) = file.power_cycle {
             self.power_cycle = power_cycle;
-        }
-        if let Some(open_console) = file.open_console {
-            self.open_console = open_console;
         }
     }
 
@@ -550,19 +530,14 @@ struct PublishConfigFile {
     kernel_load_addr: Option<String>,
     entry_point: Option<String>,
     power_cycle: Option<bool>,
-    open_console: Option<bool>,
 }
 
-fn render_init_config(board: &str, open_console: bool) -> String {
-    let mut config = format!(
+fn render_init_config(board: &str) -> String {
+    format!(
         "# Local defaults for `cargo axvisor httpboot`.\n\
          # ostool-server defaults to http://127.0.0.1:2999.\n\n\
          board = \"{board}\"\n"
-    );
-    if open_console {
-        config.push_str("open_console = true\n");
-    }
-    config
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -906,10 +881,10 @@ mod tests {
 
     #[test]
     fn init_config_is_minimal() {
-        let config = render_init_config("Asus-nuc15-x86_64-vmx", true);
+        let config = render_init_config("Asus-nuc15-x86_64-vmx");
 
         assert!(config.contains("board = \"Asus-nuc15-x86_64-vmx\""));
-        assert!(config.contains("open_console = true"));
+        assert!(!config.contains("open_console ="));
         assert!(!config.contains("server ="));
         assert!(!config.contains("port ="));
         assert!(!config.contains("kernel_load_addr ="));
@@ -918,12 +893,11 @@ mod tests {
     }
 
     #[test]
-    fn publish_config_file_enables_post_publish_console() {
+    fn publish_config_file_sets_power_cycle() {
         let file: PublishConfigFile = toml::from_str(
             r#"
             board = "x86-httpboot"
             power_cycle = true
-            open_console = true
             "#,
         )
         .unwrap();
@@ -935,14 +909,12 @@ mod tests {
             kernel_load_addr: None,
             entry_point: None,
             power_cycle: false,
-            open_console: false,
         };
 
         config.merge_file(file);
 
         assert_eq!(config.board_type.as_deref(), Some("x86-httpboot"));
         assert!(config.power_cycle);
-        assert!(config.open_console);
     }
 
     #[test]
