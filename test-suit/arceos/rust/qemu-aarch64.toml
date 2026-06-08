@@ -1,6 +1,10 @@
 args = [
+    "-machine",
+    "virt,gic-version=3",
     "-m",
     "256M",
+    "-cpu",
+    "cortex-a72",
     "-smp",
     "4",
     "-device",

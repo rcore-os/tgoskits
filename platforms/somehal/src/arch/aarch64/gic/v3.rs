@@ -1,4 +1,5 @@
-use alloc::format;
+use alloc::{collections::BTreeMap, format};
+use core::cell::UnsafeCell;
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
 use arm_gic_driver::v3::*;
@@ -7,7 +8,40 @@ use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtIn
 
 use crate::common::ioremap;
 
-static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
+static CPU_IF: StaticCell<BTreeMap<usize, CpuInterfaceSlot>> = StaticCell::uninit();
+
+struct CpuInterfaceSlot {
+    inner: UnsafeCell<Option<CpuInterface>>,
+}
+
+// SAFETY: CPU_IF is initialized once by the BSP with all logical CPU slots
+// preallocated, so the BTreeMap structure is immutable afterwards. Each CPU
+// writes only its own slot during interrupt-controller initialization, and
+// send_ipi reads the current CPU slot only after that CPU has initialized it.
+unsafe impl Sync for CpuInterfaceSlot {}
+
+impl CpuInterfaceSlot {
+    const fn empty() -> Self {
+        Self {
+            inner: UnsafeCell::new(None),
+        }
+    }
+
+    unsafe fn set(&self, cpu_id: usize, cpu_if: CpuInterface) {
+        let slot = unsafe { &mut *self.inner.get() };
+        assert!(
+            slot.is_none(),
+            "GICv3 CPU interface for CPU {cpu_id} is already initialized"
+        );
+        *slot = Some(cpu_if);
+    }
+
+    unsafe fn get(&self, cpu_id: usize) -> &CpuInterface {
+        unsafe { &*self.inner.get() }
+            .as_ref()
+            .unwrap_or_else(|| panic!("GICv3 CPU interface for CPU {cpu_id} is not initialized"))
+    }
+}
 
 pub fn with_gic(f: impl FnOnce(&mut Gic)) {
     let mut gic = super::get_gicd().lock().unwrap();
@@ -49,11 +83,10 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into()) };
     gic.init();
-    let cpu = gic.cpu_interface();
-    CPU_IF.init(cpu);
     super::set_backend(super::GicBackend::V3);
 
-    init_cpu();
+    init_cpu_interface_map();
+    init_cpu_interface(&gic, 0);
 
     dev.register(rdif_intc::Intc::new(gic));
 
@@ -97,7 +130,7 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
         }
         crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::All,
     };
-    CPU_IF.send_sgi(sgi, target);
+    current_cpu_interface().send_sgi(sgi, target);
 }
 
 fn affinity_from_mpidr(mpidr: usize) -> Affinity {
@@ -110,13 +143,40 @@ fn affinity_from_mpidr(mpidr: usize) -> Affinity {
 }
 
 pub fn init_cpu() {
-    unsafe {
-        CPU_IF.update(|cpu| {
-            cpu.init_current_cpu().unwrap();
-            #[cfg(feature = "hv")]
-            cpu.set_eoi_mode(true);
-        });
-    }
+    let cpu_id = someboot::smp::early_current_cpu_idx();
+    with_gic(|gic| init_cpu_interface(gic, cpu_id));
 
     debug!("GICCv3 initialized");
+}
+
+fn init_cpu_interface_map() {
+    let mut cpu_if = BTreeMap::new();
+    for cpu_id in 0..someboot::smp::cpu_count() {
+        cpu_if.insert(cpu_id, CpuInterfaceSlot::empty());
+    }
+    CPU_IF.init(cpu_if);
+}
+
+fn init_cpu_interface(gic: &Gic, cpu_id: usize) {
+    let mut cpu = gic.cpu_interface();
+    cpu.init_current_cpu().unwrap();
+    #[cfg(feature = "hv")]
+    cpu.set_eoi_mode(true);
+
+    // SAFETY: CPU_IF was preallocated during BSP probe. Each CPU initializes
+    // only its own logical CPU slot before it can send SGIs through that slot.
+    unsafe { cpu_interface_slot(cpu_id).set(cpu_id, cpu) };
+}
+
+fn current_cpu_interface() -> &'static CpuInterface {
+    let cpu_id = someboot::smp::early_current_cpu_idx();
+    // SAFETY: send_ipi is only valid after the current CPU has completed
+    // interrupt-controller initialization and stored its CpuInterface.
+    unsafe { cpu_interface_slot(cpu_id).get(cpu_id) }
+}
+
+fn cpu_interface_slot(cpu_id: usize) -> &'static CpuInterfaceSlot {
+    CPU_IF
+        .get(&cpu_id)
+        .unwrap_or_else(|| panic!("GICv3 CPU interface slot for CPU {cpu_id} is not registered"))
 }
