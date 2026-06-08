@@ -8,7 +8,7 @@ use syscalls::Sysno;
 use super::{
     AsThread, SyscallRestartInfo, SyscallTraceState, TimerState, check_signals,
     ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
-    unblock_next_signal,
+    unblock_next_signal, wait_existing_ptrace_stop_current,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
@@ -25,15 +25,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
 
             let thr = curr.as_thread();
-            if thr.proc_data.ptrace_stop_signo().is_some() {
+            if thr.proc_data.ptrace_stop_signo_for(thr.tid()).is_some() {
+                wait_existing_ptrace_stop_current(thr, &mut uctx);
+            } else if thr.tid() == thr.proc_data.proc.pid()
+                && thr.proc_data.ptrace_stop_signo().is_some()
+            {
                 let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
             }
             while !thr.pending_exit() {
-                if thr.proc_data.is_ptrace_singlestep()
+                if thr.proc_data.is_ptrace_singlestep_for(thr.tid())
                     && (thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached())
                 {
                     #[cfg(target_arch = "riscv64")]
-                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, &mut uctx);
+                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, thr.tid(), &mut uctx);
                 }
 
                 let reason = uctx.run();
@@ -46,14 +50,18 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
 
                 match reason {
                     ReturnReason::Syscall => {
-                        let trace_state = thr.proc_data.take_ptrace_syscall_trace();
+                        let tid = thr.tid();
+                        let trace_state = thr.proc_data.take_ptrace_syscall_trace_for(tid);
                         if matches!(trace_state, SyscallTraceState::Entry)
                             && ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
                         {
-                            match thr.proc_data.take_ptrace_syscall_trace() {
-                                SyscallTraceState::Entry | SyscallTraceState::Exit => thr
-                                    .proc_data
-                                    .set_ptrace_syscall_trace_state(SyscallTraceState::Exit),
+                            match thr.proc_data.take_ptrace_syscall_trace_for(tid) {
+                                SyscallTraceState::Entry | SyscallTraceState::Exit => {
+                                    thr.proc_data.set_ptrace_syscall_trace_state_for(
+                                        tid,
+                                        SyscallTraceState::Exit,
+                                    )
+                                }
                                 SyscallTraceState::None => {}
                             }
                         }
@@ -68,8 +76,14 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
 
                         handle_syscall(&mut uctx);
+                        if thr.proc_data.has_ptrace_pending_event_for(tid)
+                            && let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                        {
+                            continue;
+                        }
                         if matches!(
-                            thr.proc_data.take_ptrace_syscall_trace(),
+                            thr.proc_data.take_ptrace_syscall_trace_for(tid),
                             SyscallTraceState::Exit
                         ) {
                             let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
@@ -127,7 +141,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             && (thr.proc_data.is_ptrace_traceme()
                                 || thr.proc_data.is_ptrace_attached())
                         {
-                            let saved_insn = thr.proc_data.take_ptrace_ss_saved_insn();
+                            let saved_insn = thr.proc_data.take_ptrace_ss_saved_insn_for(thr.tid());
                             if let Some((addr, insn)) = saved_insn {
                                 if addr == uctx.ip() {
                                     let aspace = thr.proc_data.aspace();
@@ -139,7 +153,10 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                     #[cfg(target_arch = "riscv64")]
                                     ax_runtime::hal::cpu::asm::flush_icache_all();
                                 } else {
-                                    thr.proc_data.set_ptrace_ss_saved_insn(Some((addr, insn)));
+                                    thr.proc_data.set_ptrace_ss_saved_insn_for(
+                                        thr.tid(),
+                                        Some((addr, insn)),
+                                    );
                                 }
                             }
                             if let Some(_resume_sig) =

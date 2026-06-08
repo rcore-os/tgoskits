@@ -9,9 +9,9 @@
 //! Limitations versus Linux (intentional, see fcntl bug-cases for what is
 //! covered):
 //!   * Mandatory (kernel-enforced) locking is not supported.
-//!   * `EDEADLK` deadlock detection on `F_SETLKW` is not implemented;
-//!     a circular wait will block forever (or until a signal arrives,
-//!     which delivers `EINTR` as POSIX requires).
+//!   * `F_SETLKW` detects POSIX record-lock deadlocks and returns
+//!     `EDEADLK`; OFD waiters are not process-owned and are deliberately
+//!     excluded from that POSIX wait-for graph.
 //!
 //! POSIX release semantics (matching Linux `fs/locks.c`):
 //!   * Process exit drops every POSIX lock the exiting pid still owns,
@@ -31,7 +31,7 @@ use alloc::{
 };
 use core::ffi::c_int;
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::{WaitChannel, current};
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
@@ -119,6 +119,65 @@ static FCNTL_LOCKS: RwLock<BTreeMap<InodeKey, Vec<FLockEntry>>> = RwLock::new(BT
 /// process exit, close-eats-locks, OFD release on last close).
 static LOCK_WAITERS: RwLock<BTreeMap<InodeKey, Arc<WaitQueue>>> = RwLock::new(BTreeMap::new());
 
+/// POSIX `F_SETLKW` requests that are actually parked on a wait queue.
+/// These entries form the dynamic wait-for graph used for Linux-compatible
+/// `EDEADLK` detection. OFD waits are excluded because they are not owned by
+/// a process pid.
+static POSIX_LOCK_WAITS: RwLock<BTreeMap<Pid, Vec<WaitingLock>>> = RwLock::new(BTreeMap::new());
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WaitingLock {
+    key: InodeKey,
+    start: i64,
+    end: i64,
+    kind: LockKind,
+}
+type PosixLockWaitTable = BTreeMap<Pid, Vec<WaitingLock>>;
+
+struct PosixLockWaitGuard {
+    pid: Pid,
+    request: WaitingLock,
+}
+
+impl PosixLockWaitGuard {
+    fn try_new(pid: Pid, request: WaitingLock, owner: &FOwner) -> Result<Option<Self>, LinuxError> {
+        let mut table = FCNTL_LOCKS.write();
+        let Some(entries) = table.get_mut(&request.key) else {
+            return Ok(None);
+        };
+        entries.retain(|e| !e.owner.is_dead());
+        let still_blocked =
+            find_conflict(entries, owner, request.start, request.end, request.kind).is_some();
+        if entries.is_empty() {
+            table.remove(&request.key);
+        }
+        if !still_blocked {
+            return Ok(None);
+        }
+
+        let mut waits = POSIX_LOCK_WAITS.write();
+        if posix_lock_deadlock_would_occur(&table, &waits, pid, request) {
+            return Err(LinuxError::EDEADLK);
+        }
+        waits.entry(pid).or_default().push(request);
+        Ok(Some(Self { pid, request }))
+    }
+}
+
+impl Drop for PosixLockWaitGuard {
+    fn drop(&mut self) {
+        let mut waits = POSIX_LOCK_WAITS.write();
+        let Some(requests) = waits.get_mut(&self.pid) else {
+            return;
+        };
+        if let Some(index) = requests.iter().position(|request| *request == self.request) {
+            requests.swap_remove(index);
+        }
+        if requests.is_empty() {
+            waits.remove(&self.pid);
+        }
+    }
+}
 #[derive(Debug)]
 struct FlockEntry {
     addr: OfdAddr,
@@ -324,8 +383,77 @@ fn find_conflict<'a>(
     })
 }
 
-// ─── per-inode wait queue (F_SETLKW backbone) ──────────────────────────
+fn push_posix_conflict_pids(
+    entries: &[FLockEntry],
+    requester: Pid,
+    start: i64,
+    end: i64,
+    kind: LockKind,
+    out: &mut Vec<Pid>,
+) {
+    for entry in entries {
+        if !ranges_overlap(entry.start, entry.end, start, end) || !kinds_conflict(entry.kind, kind)
+        {
+            continue;
+        }
+        let FOwner::Posix { pid } = &entry.owner else {
+            continue;
+        };
+        let pid = *pid;
+        if pid != requester && !out.contains(&pid) {
+            out.push(pid);
+        }
+    }
+}
 
+fn posix_lock_deadlock_would_occur(
+    table: &BTreeMap<InodeKey, Vec<FLockEntry>>,
+    waits: &PosixLockWaitTable,
+    requester: Pid,
+    request: WaitingLock,
+) -> bool {
+    let mut stack = Vec::new();
+    let mut seen = Vec::new();
+
+    if let Some(entries) = table.get(&request.key) {
+        push_posix_conflict_pids(
+            entries,
+            requester,
+            request.start,
+            request.end,
+            request.kind,
+            &mut stack,
+        );
+    }
+
+    while let Some(blocker) = stack.pop() {
+        if blocker == requester {
+            return true;
+        }
+        if seen.contains(&blocker) {
+            continue;
+        }
+        seen.push(blocker);
+
+        let Some(blocker_waits) = waits.get(&blocker) else {
+            continue;
+        };
+        for blocked_request in blocker_waits {
+            if let Some(entries) = table.get(&blocked_request.key) {
+                push_posix_conflict_pids(
+                    entries,
+                    blocker,
+                    blocked_request.start,
+                    blocked_request.end,
+                    blocked_request.kind,
+                    &mut stack,
+                );
+            }
+        }
+    }
+
+    false
+}
 /// Get-or-create the wait queue for a single inode. We never garbage
 /// collect entries from `LOCK_WAITERS`: a wait queue carries no per-task
 /// state once it is empty, and waiters always re-check conflict after
@@ -479,26 +607,58 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> AxResult<isi
                 if !wait {
                     return Err(AxError::WouldBlock);
                 }
+                let want = kind.unwrap();
+                let waiting = WaitingLock {
+                    key,
+                    start,
+                    end,
+                    kind: want,
+                };
+                let waiter_pid = (!ofd).then(current_pid);
+                let mut wait_guard = None;
+                let mut deadlock = false;
+
                 // Park on the inode's wait queue. The condition re-checks
                 // conflict while holding only the wq mutex (which itself
                 // takes FCNTL_LOCKS internally) so there is no chance of
                 // missing a wakeup that lands between our outer attempt
-                // and the sleep.
+                // and the sleep. POSIX waiters are registered only after
+                // this re-check says they will really sleep, avoiding stale
+                // graph edges for conflicts that already cleared.
                 let wq = lock_waiters(key);
                 wq.wait_if_with_wchan(WaitChannel::FileLockWait, !0u32, None, || {
-                    let mut table = FCNTL_LOCKS.write();
-                    let Some(entries) = table.get_mut(&key) else {
-                        return false;
-                    };
-                    entries.retain(|e| !e.owner.is_dead());
                     let owner = make_owner(ofd, &file);
-                    let still_blocked =
-                        find_conflict(entries, &owner, start, end, kind.unwrap()).is_some();
-                    if entries.is_empty() {
-                        table.remove(&key);
+                    if let Some(pid) = waiter_pid {
+                        match PosixLockWaitGuard::try_new(pid, waiting, &owner) {
+                            Ok(Some(guard)) => wait_guard = Some(guard),
+                            Ok(None) => return false,
+                            Err(LinuxError::EDEADLK) => {
+                                deadlock = true;
+                                return false;
+                            }
+                            Err(_) => unreachable!("try_new only reports EDEADLK"),
+                        }
+                    } else {
+                        let mut table = FCNTL_LOCKS.write();
+                        let Some(entries) = table.get_mut(&key) else {
+                            return false;
+                        };
+                        entries.retain(|e| !e.owner.is_dead());
+                        let still_blocked =
+                            find_conflict(entries, &owner, start, end, want).is_some();
+                        if entries.is_empty() {
+                            table.remove(&key);
+                        }
+                        if !still_blocked {
+                            return false;
+                        }
                     }
-                    still_blocked
+                    true
                 })?;
+                drop(wait_guard);
+                if deadlock {
+                    return Err(AxError::from(LinuxError::EDEADLK));
+                }
                 // Loop and retry.
             }
         }

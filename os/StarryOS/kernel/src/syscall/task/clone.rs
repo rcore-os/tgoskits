@@ -383,20 +383,20 @@ impl CloneArgs {
         } else {
             super::ptrace::PTRACE_EVENT_FORK
         };
-        let trace_clone = super::ptrace::ptrace_notify_clone(parent_pid, tid as Pid, ptrace_event);
-        if trace_clone
-            && !flags.contains(CloneFlags::THREAD)
-            && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid()
-        {
-            new_proc_data.set_ptrace_tracer_pid(tracer_pid);
-            new_proc_data.set_ptrace_attached();
-            new_proc_data.set_ptrace_stop(starry_signal::Signo::SIGSTOP, &new_uctx);
+        let trace_clone =
+            super::ptrace::ptrace_notify_clone(parent_pid, parent_tid, tid as Pid, ptrace_event);
+        if trace_clone && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid() {
+            if !flags.contains(CloneFlags::THREAD) {
+                new_proc_data.set_ptrace_tracer_pid(tracer_pid);
+                new_proc_data.set_ptrace_attached();
+            }
+            new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 
-        if trace_clone {
+        if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
                 None,
                 parent_tid,
@@ -413,15 +413,7 @@ impl CloneArgs {
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();
-            if super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid) {
-                let _ = crate::task::send_signal_to_thread(
-                    None,
-                    parent_tid,
-                    Some(starry_signal::SignalInfo::new_kernel(
-                        starry_signal::Signo::SIGTRAP,
-                    )),
-                );
-            }
+            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid);
         }
 
         Ok(tid as _)

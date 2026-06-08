@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(starry-kernel)* support `FUTEX_WAKE_OP` in Starry futex syscall handling.
 - *(starry-kernel)* port LKM loader + cargo xtask starry kmod build ([#851](https://github.com/rcore-os/tgoskits/pull/851))
 - *(starryos)* expose K230 KPU device ([#1054](https://github.com/rcore-os/tgoskits/pull/1054))
 - *(starry-kernel)* implement child subreaper ([#1050](https://github.com/rcore-os/tgoskits/pull/1050))

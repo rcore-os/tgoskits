@@ -77,6 +77,9 @@
 #ifndef PTRACE_O_TRACEVFORKDONE
 #define PTRACE_O_TRACEVFORKDONE 0x00000020
 #endif
+#ifndef __WALL
+#define __WALL 0x40000000
+#endif
 
 #define PTRACE_EVENT_FORK 1
 #define PTRACE_EVENT_CLONE 3
@@ -304,6 +307,17 @@ static int check_singlestep_stops_before_target_side_effect(pid_t pid,
     if (set_regs(pid, regs) != 0) {
         return fail("setregset control-flow singlestep target");
     }
+    memset(regs, 0, sizeof(*regs));
+    if (get_regs(pid, regs) != 0) {
+        return fail("getregset after setting control-flow singlestep target");
+    }
+    if (regs->pc != pc || regs->a0 != a0 || regs->a1 != a1 || regs->a2 != 0
+        || regs->a3 != a3 || regs->s0 != s0) {
+        printf("FAIL: setregset control-flow readback pc=%#lx a0=%#lx a1=%#lx a2=%#lx "
+               "a3=%#lx s0=%#lx\n",
+               regs->pc, regs->a0, regs->a1, regs->a2, regs->a3, regs->s0);
+        return 1;
+    }
 
     if (ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL) != 0) {
         return fail("singlestep control-flow instruction");
@@ -316,7 +330,8 @@ static int check_singlestep_stops_before_target_side_effect(pid_t pid,
         return fail("getregset after control-flow singlestep");
     }
     if (regs->a2 != 0) {
-        printf("FAIL: singlestep ran target side effect early, a2=%#lx\n", regs->a2);
+        printf("FAIL: singlestep ran target side effect early, pc=%#lx s0=%#lx a2=%#lx\n",
+               regs->pc, regs->s0, regs->a2);
         return 1;
     }
 
@@ -554,15 +569,38 @@ static int test_fpregs(void)
     return 0;
 }
 
-static volatile int attach_child_reached = 0;
+static void wait_for_release_then_exit(int fd, int exit_code)
+{
+    char c;
+    while (read(fd, &c, 1) < 0 && errno == EINTR) {
+    }
+    close(fd);
+    _exit(exit_code);
+}
+
+static int release_child(int fd)
+{
+    char c = 'R';
+    if (write(fd, &c, 1) != 1) {
+        return fail("write release pipe");
+    }
+    close(fd);
+    return 0;
+}
 
 static int test_attach(void)
 {
     printf("test 4: PTRACE_ATTACH\n");
 
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        return fail("pipe");
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("release pipe");
     }
 
     pid_t pid = fork();
@@ -571,23 +609,23 @@ static int test_attach(void)
     }
 
     if (pid == 0) {
-        close(pipefd[0]);
-        attach_child_reached = 1;
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
         char c = 'A';
-        write(pipefd[1], &c, 1);
-        close(pipefd[1]);
-
-        for (volatile int i = 0; i < 10000000; i++) {
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(100);
         }
-        _exit(42);
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 42);
     }
 
-    close(pipefd[1]);
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
     char c;
-    if (read(pipefd[0], &c, 1) != 1) {
+    if (read(ready_pipe[0], &c, 1) != 1) {
         return fail("read pipe from child");
     }
-    close(pipefd[0]);
+    close(ready_pipe[0]);
 
     if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) != 0) {
         return fail("ptrace attach");
@@ -612,6 +650,9 @@ static int test_attach(void)
 
     if (ptrace(PTRACE_DETACH, pid, NULL, NULL) != 0) {
         return fail("detach");
+    }
+    if (release_child(release_pipe[1]) != 0) {
+        return 1;
     }
 
     if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)
@@ -653,7 +694,7 @@ static int test_setoptions(void)
         return 1;
     }
 
-    if (ptrace(PTRACE_SETOPTIONS, pid, (void *)(long)PTRACE_O_TRACEFORK, NULL) != 0) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACEFORK) != 0) {
         return fail("setoptions");
     }
 
@@ -778,9 +819,15 @@ static int test_waitid_attach(void)
 {
     printf("test 7: waitid(WSTOPPED) after ATTACH\n");
 
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        return fail("pipe");
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0) {
+        return fail("ready pipe");
+    }
+    if (pipe(release_pipe) != 0) {
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        return fail("release pipe");
     }
 
     pid_t pid = fork();
@@ -789,21 +836,23 @@ static int test_waitid_attach(void)
     }
 
     if (pid == 0) {
-        close(pipefd[0]);
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
         char c = 'x';
-        write(pipefd[1], &c, 1);
-        close(pipefd[1]);
-        for (volatile int i = 0; i < 10000000; i++) {
+        if (write(ready_pipe[1], &c, 1) != 1) {
+            _exit(100);
         }
-        _exit(0);
+        close(ready_pipe[1]);
+        wait_for_release_then_exit(release_pipe[0], 0);
     }
 
-    close(pipefd[1]);
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
     char c;
-    if (read(pipefd[0], &c, 1) != 1) {
+    if (read(ready_pipe[0], &c, 1) != 1) {
         return fail("read pipe");
     }
-    close(pipefd[0]);
+    close(ready_pipe[0]);
 
     if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) != 0) {
         return fail("attach");
@@ -818,8 +867,15 @@ static int test_waitid_attach(void)
     if (ptrace(PTRACE_DETACH, pid, NULL, NULL) != 0) {
         return fail("detach");
     }
+    if (release_child(release_pipe[1]) != 0) {
+        return 1;
+    }
     int wstatus = 0;
-    waitpid(pid, &wstatus, 0);
+    if (waitpid(pid, &wstatus, 0) != pid || !WIFEXITED(wstatus)
+        || WEXITSTATUS(wstatus) != 0) {
+        printf("FAIL: after waitid detach, status=%#x\n", wstatus);
+        return 1;
+    }
     return 0;
 }
 
@@ -846,7 +902,7 @@ static int test_syscall_trace(void)
         printf("FAIL: initial stop\n");
         return 1;
     }
-    if (ptrace(PTRACE_SETOPTIONS, pid, (void *)(long)PTRACE_O_TRACESYSGOOD, NULL) != 0) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACESYSGOOD) != 0) {
         return fail("setoptions TRACESYSGOOD");
     }
 
@@ -1207,7 +1263,7 @@ static int test_traceexit_event(void)
         return 1;
     }
 
-    if (ptrace(PTRACE_SETOPTIONS, pid, (void *)(long)PTRACE_O_TRACEEXIT, NULL) != 0) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACEEXIT) != 0) {
         return fail("setoptions TRACEEXIT");
     }
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
@@ -1305,7 +1361,7 @@ static int test_traceclone_thread_event(void)
         return 1;
     }
 
-    if (ptrace(PTRACE_SETOPTIONS, pid, (void *)(long)PTRACE_O_TRACECLONE, NULL) != 0) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACECLONE) != 0) {
         return fail("setoptions TRACECLONE");
     }
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
@@ -1335,6 +1391,15 @@ static int test_traceclone_thread_event(void)
         return 1;
     }
 
+    if (waitpid((pid_t)event_msg, &status, __WALL) != (pid_t)event_msg
+        || !WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) {
+        printf("FAIL: expected traced clone tid %lu initial SIGSTOP, status=%#x\n", event_msg,
+               status);
+        return 1;
+    }
+    if (ptrace(PTRACE_CONT, (pid_t)event_msg, NULL, NULL) != 0) {
+        return fail("cont traceclone child tid");
+    }
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
         return fail("cont after traceclone event");
     }
@@ -1378,7 +1443,7 @@ static int test_tracevforkdone_event(void)
         return 1;
     }
 
-    if (ptrace(PTRACE_SETOPTIONS, pid, (void *)(long)PTRACE_O_TRACEVFORKDONE, NULL) != 0) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACEVFORKDONE) != 0) {
         return fail("setoptions TRACEVFORKDONE");
     }
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
@@ -1487,7 +1552,7 @@ static int test_sigkill_event_stopped_tracee(void)
         printf("FAIL: initial event-kill stop status=%#x\n", status);
         return 1;
     }
-    if (ptrace(PTRACE_SETOPTIONS, pid, (void *)(long)PTRACE_O_TRACEFORK, NULL) != 0) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACEFORK) != 0) {
         return fail("setoptions event-kill TRACEFORK");
     }
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
