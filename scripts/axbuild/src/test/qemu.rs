@@ -953,6 +953,7 @@ fn ensure_uefi_drive_bus(qemu: &mut QemuConfig) {
             && let Some(machine) = qemu.args.get_mut(index + 1)
         {
             remove_machine_option(machine, "sata=off");
+            remove_machine_option(machine, "i8042=off");
         }
     }
 }
@@ -1561,14 +1562,7 @@ mod tests {
 
         assert_eq!(
             qemu.args,
-            [
-                "-machine",
-                "q35,smbus=off,i8042=off",
-                "-net",
-                "none",
-                "-vga",
-                "none"
-            ]
+            ["-machine", "q35,smbus=off", "-net", "none", "-vga", "none"]
         );
     }
 
@@ -1595,14 +1589,7 @@ mod tests {
 
         assert_eq!(
             qemu.args,
-            [
-                "-machine",
-                "q35,smbus=off,i8042=off",
-                "-net",
-                "none",
-                "-vga",
-                "none"
-            ]
+            ["-machine", "q35,smbus=off", "-net", "none", "-vga", "none"]
         );
     }
 

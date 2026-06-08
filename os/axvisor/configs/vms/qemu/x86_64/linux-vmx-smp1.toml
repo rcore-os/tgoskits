@@ -27,9 +27,8 @@ kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
-# Linux direct boot has no firmware-provided default command line; keep these
-# parameters explicit so the guest can find serial console, virtio rootfs, and
-# legacy QEMU/MPTable devices.
+# Linux direct boot needs an explicit cmdline; keep no_timer_check from the old
+# default to avoid PIT/HPET calibration stalls when Linux marks the TSC unstable.
 cmdline = "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0 dumb"
 
 ## The path of the disk image.

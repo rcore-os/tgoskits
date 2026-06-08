@@ -670,7 +670,10 @@ impl VmxVcpu {
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
         let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
-        for feature in [CpuCtrl2::VIRTUALIZE_APIC] {
+        for feature in [
+            CpuCtrl2::VIRTUALIZE_APIC,
+            CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY,
+        ] {
             if secondary_control_bits_allowed(feature.bits()) {
                 val |= feature;
             }
