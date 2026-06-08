@@ -77,6 +77,12 @@ pub struct MmapResult {
     pub len: usize,
 }
 
+/// Optional stream read callback for a control endpoint.
+pub type ControlReadFn = fn(SessionId, &mut [u8]) -> AxResult<usize>;
+
+/// Optional stream write callback for a control endpoint.
+pub type ControlWriteFn = fn(SessionId, &[u8]) -> AxResult<usize>;
+
 /// Operations implemented by `axvisor-core` for a registered control endpoint.
 #[derive(Clone, Copy)]
 pub struct ControlOps {
@@ -92,9 +98,9 @@ pub struct ControlOps {
     /// value, or a userspace pointer.
     pub ioctl: fn(SessionId, u32, usize) -> AxResult<isize>,
     /// Optional stream read operation.
-    pub read: Option<fn(SessionId, &mut [u8]) -> AxResult<usize>>,
+    pub read: Option<ControlReadFn>,
     /// Optional stream write operation.
-    pub write: Option<fn(SessionId, &[u8]) -> AxResult<usize>>,
+    pub write: Option<ControlWriteFn>,
     /// Optional readiness query.
     pub poll: Option<fn(SessionId) -> AxResult<ControlEvents>>,
     /// Optional memory mapping operation.
