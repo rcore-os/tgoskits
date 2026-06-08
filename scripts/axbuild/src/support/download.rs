@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fmt, fs,
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -13,6 +13,11 @@ use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
 const DOWNLOAD_LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60 * 2);
 const DOWNLOAD_LOCK_WAIT: Duration = Duration::from_millis(100);
+const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
+#[cfg(not(test))]
+const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
 
 pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
@@ -45,7 +50,23 @@ pub(crate) async fn download_file(
     url: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    download_file_inner(client, url, path, true).await
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        match download_file_inner(client, url, path, true).await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < DOWNLOAD_MAX_ATTEMPTS && retryable_download_error(&err) => {
+                let delay = download_retry_delay(attempt);
+                eprintln!(
+                    "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} for {url} failed: {err}; \
+                     retrying in {:.1}s",
+                    delay.as_secs_f32()
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("download retry loop always returns")
 }
 
 async fn download_file_inner(
@@ -90,7 +111,7 @@ async fn download_file_inner(
         }
 
         if !status.is_success() {
-            return Err(anyhow!("failed to download {url}: HTTP {status}"));
+            return Err(download_status_error(url, status));
         }
 
         let initial_size = if resume { resume_from } else { 0 };
@@ -157,7 +178,7 @@ async fn download_file_inner(
     }
 
     if !status.is_success() {
-        return Err(anyhow!("failed to download {url}: HTTP {status}"));
+        return Err(download_status_error(url, status));
     }
 
     let initial_size = if resume { resume_from } else { 0 };
@@ -201,6 +222,51 @@ async fn download_file_inner(
     })?;
     progress.finish_with_message(format!("downloaded {}", path.display()));
     Ok(())
+}
+
+#[derive(Debug)]
+struct DownloadStatusError {
+    url: String,
+    status: StatusCode,
+}
+
+impl fmt::Display for DownloadStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to download {}: HTTP {}", self.url, self.status)
+    }
+}
+
+impl std::error::Error for DownloadStatusError {}
+
+fn download_status_error(url: &str, status: StatusCode) -> anyhow::Error {
+    DownloadStatusError {
+        url: url.to_owned(),
+        status,
+    }
+    .into()
+}
+
+fn retryable_download_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<DownloadStatusError>()
+            .is_some_and(|err| retryable_status(err.status))
+            || cause.downcast_ref::<reqwest::Error>().is_some_and(|err| {
+                err.status().is_some_and(retryable_status)
+                    || err.is_timeout()
+                    || err.is_connect()
+                    || err.is_request()
+                    || err.is_body()
+            })
+    })
+}
+
+fn retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn download_retry_delay(attempt: usize) -> Duration {
+    DOWNLOAD_RETRY_BASE_DELAY * (1 << attempt.saturating_sub(1).min(3))
 }
 
 fn lock_path(path: &Path) -> PathBuf {
@@ -347,7 +413,7 @@ impl Drop for PathLock {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, VecDeque},
         sync::{
             Arc, Mutex, OnceLock,
             atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -394,6 +460,7 @@ pub(crate) mod test_support {
     struct MockRoute {
         body: Vec<u8>,
         range_mode: MockRangeMode,
+        failing_statuses: Mutex<VecDeque<StatusCode>>,
         requests: AtomicUsize,
         last_range_header: Mutex<Option<String>>,
     }
@@ -414,12 +481,22 @@ pub(crate) mod test_support {
         body: Vec<u8>,
         range_mode: MockRangeMode,
     ) -> MockHandle {
+        register_download_with_failures(path, body, range_mode, Vec::new())
+    }
+
+    pub(crate) fn register_download_with_failures(
+        path: &str,
+        body: Vec<u8>,
+        range_mode: MockRangeMode,
+        failing_statuses: Vec<StatusCode>,
+    ) -> MockHandle {
         let id = NEXT_ROUTE_ID.fetch_add(1, Ordering::SeqCst);
         let path = path.trim_start_matches('/');
         let url = format!("mock://axbuild-test/{id}/{path}");
         let route = Arc::new(MockRoute {
             body,
             range_mode,
+            failing_statuses: Mutex::new(failing_statuses.into()),
             requests: AtomicUsize::new(0),
             last_range_header: Mutex::new(None),
         });
@@ -452,6 +529,15 @@ pub(crate) mod test_support {
             route.requests.fetch_add(1, Ordering::SeqCst);
             let range_header = (resume_from > 0).then(|| format!("bytes={resume_from}-"));
             *route.last_range_header.lock().unwrap() = range_header.clone();
+
+            if let Some(status) = route.failing_statuses.lock().unwrap().pop_front() {
+                return MockResponse {
+                    status,
+                    content_length: Some(0),
+                    body: Vec::new(),
+                };
+            }
+
             let offset = range_header
                 .as_deref()
                 .and_then(|header| header.strip_prefix("bytes="))
@@ -596,11 +682,55 @@ mod tests {
         assert_eq!(server.request_count(), 2);
     }
 
+    #[tokio::test]
+    async fn download_file_retries_transient_http_status() {
+        let server =
+            TestServer::start_with_failures(b"abcdef".to_vec(), vec![StatusCode::GATEWAY_TIMEOUT])
+                .await;
+        let workspace = tempdir().unwrap();
+        let output_path = workspace.path().join("rootfs.img.tar.gz");
+
+        let client = http_client().unwrap();
+        download_file(&client, &server.url(), &output_path)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn download_file_does_not_retry_permanent_http_status() {
+        let server =
+            TestServer::start_with_failures(b"abcdef".to_vec(), vec![StatusCode::NOT_FOUND]).await;
+        let workspace = tempdir().unwrap();
+        let output_path = workspace.path().join("rootfs.img.tar.gz");
+
+        let client = http_client().unwrap();
+        let err = download_file(&client, &server.url(), &output_path)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("HTTP 404 Not Found"));
+        assert_eq!(server.request_count(), 1);
+    }
+
     struct TestServer {
         handle: test_support::MockHandle,
     }
 
     impl TestServer {
+        async fn start_with_failures(body: Vec<u8>, statuses: Vec<StatusCode>) -> Self {
+            Self {
+                handle: test_support::register_download_with_failures(
+                    "rootfs.img.tar.gz",
+                    body,
+                    test_support::MockRangeMode::Ignore,
+                    statuses,
+                ),
+            }
+        }
+
         async fn start_with_invalid_range(body: Vec<u8>) -> Self {
             Self::start_inner(body, RangeMode::RejectInvalid).await
         }
