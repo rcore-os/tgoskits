@@ -77,7 +77,7 @@ passthrough_addresses = [
   # Linux probes a q35/ICH system MMIO page at 0xfed8_03c0 after the PIT/HLT path is fixed.
   [0xfed8_0000, 0x1000],
   # QEMU q35 assigns the virtio PCI 64-bit MMIO BAR above 4G.
-  [0x70_0000_0000, 0x10_0000],
+  [0x3800_0000_0000, 0x10_0000],
 ]
 
 # Devices that are not desired to be passed through to the guest

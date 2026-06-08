@@ -916,7 +916,7 @@ pub(crate) fn apply_dynamic_x86_64_qemu_boot(qemu: &mut QemuConfig, cargo: &Carg
     keep_qemu_default_devices_for_uefi(qemu);
     disable_unneeded_default_x86_64_devices(qemu);
     disable_dynamic_x86_64_five_level_paging(qemu);
-    enable_dynamic_x86_64_nested_vmx_features(qemu);
+    enable_dynamic_x86_64_nested_virtualization_features(qemu, cargo);
     apply_drive_snapshot_without_global_snapshot(qemu);
     apply_dynamic_x86_64_qemu_debug_args(qemu);
 }
@@ -997,15 +997,28 @@ fn disable_dynamic_x86_64_five_level_paging(qemu: &mut QemuConfig) {
     }
 }
 
-fn enable_dynamic_x86_64_nested_vmx_features(qemu: &mut QemuConfig) {
+fn enable_dynamic_x86_64_nested_virtualization_features(qemu: &mut QemuConfig, cargo: &Cargo) {
     for index in 0..qemu.args.len() {
         if qemu.args.get(index).is_some_and(|arg| arg == "-cpu")
             && let Some(cpu) = qemu.args.get_mut(index + 1)
         {
-            for feature in ["vmx-ept", "vmx-unrestricted-guest", "vmx-flexpriority"] {
+            for feature in dynamic_x86_64_nested_virtualization_features(cargo) {
                 enable_qemu_cpu_feature(cpu, feature);
             }
         }
+    }
+}
+
+fn dynamic_x86_64_nested_virtualization_features(cargo: &Cargo) -> &'static [&'static str] {
+    if cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "svm" | "axvm/svm" | "x86_vcpu/svm" | "x86-vcpu/svm"
+        )
+    }) {
+        &["svm", "npt", "nrip-save"]
+    } else {
+        &["vmx-ept", "vmx-unrestricted-guest", "vmx-flexpriority"]
     }
 }
 
@@ -1623,6 +1636,37 @@ mod tests {
                 "host,+x2apic,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
                 "-machine",
                 "q35",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_enables_svm_nested_features_for_svm_backend() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/pie/x86_64-unknown-none.json".to_string(),
+            features: vec!["dyn-plat".to_string(), "svm".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-cpu".to_string(), "host".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-cpu",
+                "host,-la57,+svm,+npt,+nrip-save",
                 "-net",
                 "none",
                 "-vga",
