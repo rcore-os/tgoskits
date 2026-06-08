@@ -16,7 +16,7 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
-kprobe_test = []
+kprobe_test = ["dep:kprobe"]
 ext4 = ["ax-fs-ng/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 ipi = ["ax-feat/ipi"]
@@ -31,7 +31,14 @@ plat-dyn = [
     "ax-driver/usb",
 ]
 vsock = ["ax-feat/vsock"]
-dynamic_debug = ["ipi"]
+dynamic_debug = ["ax-feat/ipi", "dep:ddebug"]
+ebpf-kmod = [
+    "dep:kbpf-basic",
+    "dep:kmod",
+    "dep:kmod-loader",
+    "dep:kprobe",
+    "dep:rbpf",
+]
 sg2002 = [
     "dep:ax-dma",
     "dep:sg2002-tpu",
@@ -146,10 +153,10 @@ xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
-ddebug = "0.5"
-kprobe = { workspace = true }
-kmod = { version = "0.3", package = "kmod-tools" }
-kmod-loader = "0.3.1"
+ddebug = { version = "0.5", optional = true }
+kprobe = { workspace = true, optional = true }
+kmod = { version = "0.3", package = "kmod-tools", optional = true }
+kmod-loader = { version = "0.3.1", optional = true }
 lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
@@ -158,8 +165,8 @@ sg200x-bsp = { workspace = true, optional = true }
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
 ksym = "0.6"
-kbpf-basic = "0.6"
-rbpf = { version = "0.4", default-features = false }
+kbpf-basic = { version = "0.6", optional = true }
+rbpf = { version = "0.4", default-features = false, optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

@@ -19,4 +19,4 @@ pub trait Interface: DriverGeneric {
     }
 }
 
-def_driver!(Intc, Interface);
+def_driver!(intc, Intc, Interface);

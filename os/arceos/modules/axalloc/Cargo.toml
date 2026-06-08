@@ -10,7 +10,7 @@ license.workspace = true
 [features]
 default = []
 global-allocator = []
-tlsf = []
+tlsf = ["dep:rlsf"]
 buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
 tracking = ["dep:ax-percpu", "dep:axbacktrace"]
 
@@ -19,7 +19,7 @@ all-features = true
 rustdoc-args = ["--cfg", "doc_cfg"]
 
 [dependencies]
-rlsf = "0.2"
+rlsf = { version = "0.2", optional = true }
 ax-errno.workspace = true
 ax-kspin.workspace = true
 ax-memory-addr.workspace = true

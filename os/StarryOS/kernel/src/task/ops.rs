@@ -424,6 +424,22 @@ fn wake_robust_futex(proc_data: &ProcessData, address: usize) {
     futex.wq.wake(1, u32::MAX);
 }
 
+fn wake_clear_child_tid_futex(proc_data: &ProcessData, address: usize) {
+    let key = FutexKey::new_for_process_teardown(proc_data, address);
+    let table = futex_table_for_process(proc_data, &key);
+    if let Some(futex) = table.get(&key) {
+        futex.wq.wake(1, u32::MAX);
+    }
+
+    if !matches!(key, FutexKey::Private { .. }) {
+        let private_key = FutexKey::Private { address };
+        let private_table = futex_table_for_process(proc_data, &private_key);
+        if let Some(futex) = private_table.get(&private_key) {
+            futex.wq.wake(1, u32::MAX);
+        }
+    }
+}
+
 fn handle_futex_death(
     thr: &Thread,
     entry: *mut RobustList,
@@ -550,12 +566,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_for_process_teardown(&thr.proc_data, clear_child_tid as usize);
-        let table = futex_table_for_process(&thr.proc_data, &key);
-        let guard = table.get(&key);
-        if let Some(futex) = guard {
-            futex.wq.wake(1, u32::MAX);
-        }
+        wake_clear_child_tid_futex(&thr.proc_data, clear_child_tid as usize);
         ax_task::yield_now();
     }
 
