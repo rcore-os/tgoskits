@@ -80,7 +80,7 @@ cargo xtask arceos <subcommand> [options]
 
 **QEMU 额外参数**：`--qemu-config`、`--rootfs`
 
-**测试参数**：`--test-group`、`--test-case`、`--package`、`--list`
+**测试参数**：`--test-group`、`--test-case`、`--list`
 
 `--plat-dyn` 控制是否使用动态平台加载（仅 aarch64 支持），`--smp` 设置对称多处理器核数。ArceOS 测试支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组。
 

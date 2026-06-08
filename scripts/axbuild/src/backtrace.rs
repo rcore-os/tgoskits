@@ -1201,12 +1201,12 @@ BACKTRACE_END
         let path = arceos_rust_elf_path(
             Path::new("/ws"),
             "x86_64-unknown-none",
-            "arceos-backtrace-raw-normal",
+            "arceos-test-suit",
             false,
         );
         assert_eq!(
             path,
-            PathBuf::from("/ws/target/x86_64-unknown-none/release/arceos-backtrace-raw-normal")
+            PathBuf::from("/ws/target/x86_64-unknown-none/release/arceos-test-suit")
         );
     }
 

@@ -120,13 +120,7 @@ members = [
     "os/arceos/ulib/arceos-rust/lib",
     "os/axvisor",
     "scripts/axbuild",
-    "test-suit/arceos/rust/backtrace*",
-    "test-suit/arceos/rust/display",
-    "test-suit/arceos/rust/exception",
-    "test-suit/arceos/rust/fs/*",
-    "test-suit/arceos/rust/memtest",
-    "test-suit/arceos/rust/net/*",
-    "test-suit/arceos/rust/task/*",
+    "test-suit/arceos/rust",
     "test-suit/arceos/std/qemu-smp1/*",
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
@@ -138,29 +132,8 @@ members = [
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.8", path = "virtualization/aarch64_sysreg" }
 arm-scmi-rs = { version = "0.1.3", path = "drivers/firmware/arm-scmi-rs" }
-arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
-arceos-backtrace-raw-basic = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-raw-basic" }
-arceos-backtrace-raw-badfp = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-raw-badfp" }
-arceos-backtrace-raw-normal = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-raw-normal" }
-arceos-backtrace = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace" }
-arceos-display = { version = "0.3.1", path = "test-suit/arceos/rust/display" }
-arceos-exception = { version = "0.3.1", path = "test-suit/arceos/rust/exception" }
-arceos-fs-shell = { version = "0.3.1", path = "test-suit/arceos/rust/fs/shell" }
-arceos-ipi = { version = "0.3.0", path = "test-suit/arceos/rust/task/ipi" }
-arceos-irq = { version = "0.3.1", path = "test-suit/arceos/rust/task/irq" }
-arceos-lockdep = { version = "0.3.1", path = "test-suit/arceos/rust/task/lockdep" }
-arceos-memtest = { version = "0.3.1", path = "test-suit/arceos/rust/memtest" }
-arceos-net-echoserver = { version = "0.3.1", path = "test-suit/arceos/rust/net/echoserver" }
-arceos-net-httpclient = { version = "0.3.1", path = "test-suit/arceos/rust/net/httpclient" }
-arceos-net-httpserver = { version = "0.3.1", path = "test-suit/arceos/rust/net/httpserver" }
-arceos-net-udpserver = { version = "0.3.1", path = "test-suit/arceos/rust/net/udpserver" }
-arceos-parallel = { version = "0.3.1", path = "test-suit/arceos/rust/task/parallel" }
-arceos-priority = { version = "0.3.1", path = "test-suit/arceos/rust/task/priority" }
+arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
 arceos-rust = { version = "0.1.2", path = "os/arceos/ulib/arceos-rust", default-features = false }
-arceos-sleep = { version = "0.3.1", path = "test-suit/arceos/rust/task/sleep" }
-arceos-tls = { version = "0.3.1", path = "test-suit/arceos/rust/task/tls" }
-arceos-wait-queue = { version = "0.3.1", path = "test-suit/arceos/rust/task/wait_queue" }
-arceos-yield = { version = "0.3.1", path = "test-suit/arceos/rust/task/yield" }
 arm_vcpu = { version = "0.5.10", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.4.11", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8.0", path = "os/arceos/modules/axalloc", default-features = false }
