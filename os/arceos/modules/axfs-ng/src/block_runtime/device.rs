@@ -452,13 +452,16 @@ impl BlockDeviceHandle {
                     match progress {
                         PollProgress::Pending | PollProgress::Complete => {}
                         PollProgress::Repoll => {
-                            let completed_key = match self.pending.lock().request(key) {
+                            let submitted = self
+                                .pending
+                                .lock()
+                                .request(key)
+                                .map(|request| request.submitted_request());
+                            let completed_key = match submitted {
                                 Some(request) => {
-                                    let result = self.poll_request(
-                                        request.submitted_request().queue_id,
-                                        request.submitted_request().request_id,
-                                    );
-                                    self.finish_poll(key, result).is_some()
+                                    let result =
+                                        self.poll_request(request.queue_id, request.request_id);
+                                    self.finish_poll(key, result).unwrap_or(false)
                                 }
                                 None => false,
                             };

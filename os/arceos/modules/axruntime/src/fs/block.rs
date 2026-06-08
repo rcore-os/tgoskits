@@ -270,6 +270,9 @@ type RegisteredBlockDevice = Arc<BlockDeviceHandle>;
 #[cfg(feature = "irq")]
 type RegisteredBlockDevice = (Arc<BlockDeviceHandle>, Vec<&'static BlockIrqState>);
 
+#[cfg(feature = "irq")]
+type OwnedBlockIrqStates = Vec<Box<BlockIrqState>>;
+
 fn build_block_device(
     mut block: ax_driver::block::RawBlockDevice,
     device_index: usize,
@@ -297,22 +300,26 @@ fn build_block_device(
     .map_err(ax_fs_ng::block_runtime::map_blk_err_to_ax_err)?;
 
     #[cfg(feature = "irq")]
-    let irq_states = register_irq_handlers(&mut block, device.clone(), device_index)
-        .and_then(|states| {
+    let irq_states =
+        match register_irq_handlers(&mut block, device.clone(), device_index).and_then(|states| {
             block.enable_irq();
-            block
-                .interface()
-                .is_irq_enabled()
-                .then_some(states)
-                .ok_or(ax_errno::AxError::Unsupported)
-        })
-        .unwrap_or_else(|err| {
-            warn!(
-                "submit/poll filesystem block device {name} falls back to polling without IRQ: \
-                 {err:?}"
-            );
-            Vec::new()
-        });
+            if block.interface().is_irq_enabled() {
+                Ok(activate_irq_states(states))
+            } else {
+                Err((ax_errno::AxError::Unsupported, states))
+            }
+        }) {
+            Ok(states) => states,
+            Err((err, states)) => {
+                block.interface().disable_irq();
+                drop(states);
+                warn!(
+                    "submit/poll filesystem block device {name} falls back to polling without \
+                     IRQ: {err:?}"
+                );
+                Vec::new()
+            }
+        };
 
     info!("registered submit/poll filesystem block device {name}");
     #[cfg(feature = "irq")]
@@ -326,16 +333,16 @@ fn register_irq_handlers(
     block: &mut ax_driver::block::RawBlockDevice,
     device: Arc<BlockDeviceHandle>,
     device_index: usize,
-) -> ax_errno::AxResult<Vec<&'static BlockIrqState>> {
+) -> Result<OwnedBlockIrqStates, (ax_errno::AxError, OwnedBlockIrqStates)> {
     let irq_sources = block.interface().irq_sources();
     if irq_sources.is_empty() {
-        return Err(ax_errno::AxError::Unsupported);
+        return Err((ax_errno::AxError::Unsupported, Vec::new()));
     }
 
     let mut states = Vec::new();
     for source in irq_sources {
         let Some((irq_num, handler)) = block.take_irq_handler(source.id) else {
-            return Err(ax_errno::AxError::Unsupported);
+            return Err((ax_errno::AxError::Unsupported, states));
         };
         let mut state = Box::new(BlockIrqState {
             handler,
@@ -344,12 +351,26 @@ fn register_irq_handlers(
             irq_handle: Once::new(),
         });
         let data = NonNull::from(state.as_mut()).cast();
-        let handle = axklib::irq::request_shared(irq_num, handle_block_irq, data)?;
-        axklib::irq::enable(handle)?;
+        let handle = match axklib::irq::request_shared(irq_num, handle_block_irq, data) {
+            Ok(handle) => handle,
+            Err(err) => return Err((err, states)),
+        };
+        if let Err(err) = axklib::irq::enable(handle) {
+            let _ = axklib::irq::free(handle);
+            return Err((err, states));
+        }
         state.irq_handle.call_once(|| handle);
-        states.push(Box::leak(state) as &'static BlockIrqState);
+        states.push(state);
     }
     Ok(states)
+}
+
+#[cfg(feature = "irq")]
+fn activate_irq_states(states: OwnedBlockIrqStates) -> Vec<&'static BlockIrqState> {
+    states
+        .into_iter()
+        .map(|state| Box::leak(state) as &'static BlockIrqState)
+        .collect()
 }
 
 fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {

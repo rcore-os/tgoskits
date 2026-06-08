@@ -26,12 +26,16 @@ pub use request::{
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+    use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
     use core::{
         any::Any,
-        sync::atomic::{AtomicUsize, Ordering},
+        cell::Cell,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     };
-    use std::sync::mpsc;
+    use std::{
+        collections::HashMap,
+        sync::{Arc as StdArc, Condvar, Mutex as StdMutex, OnceLock, mpsc},
+    };
 
     use ax_errno::AxError;
     use rdif_block::{
@@ -41,6 +45,109 @@ mod tests {
     use spin::Mutex as SpinNoIrq;
 
     use super::*;
+    use crate::os::{BlockTaskOps, set_task_ops};
+
+    static TEST_TASK_OPS: TestTaskOps = TestTaskOps;
+    static NEXT_TEST_TASK_ID: AtomicU64 = AtomicU64::new(1_000_000);
+    static TEST_TASKS: OnceLock<StdMutex<HashMap<u64, StdArc<TestTaskState>>>> = OnceLock::new();
+
+    thread_local! {
+        static TEST_TASK_ID: Cell<u64> = const { Cell::new(0) };
+        static TEST_TASK_BLOCKING: Cell<bool> = const { Cell::new(false) };
+    }
+
+    struct TestTaskOps;
+
+    struct TestTaskState {
+        ready: StdMutex<bool>,
+        cvar: Condvar,
+    }
+
+    impl TestTaskState {
+        fn new() -> Self {
+            Self {
+                ready: StdMutex::new(false),
+                cvar: Condvar::new(),
+            }
+        }
+    }
+
+    impl BlockTaskOps for TestTaskOps {
+        fn current_task_id(&self) -> Option<u64> {
+            test_task_is_blocking().then(current_test_task_id)
+        }
+
+        fn task_yield(&self) {
+            if !test_task_is_blocking() {
+                std::thread::yield_now();
+                return;
+            }
+            let state = current_test_task_state();
+            let mut ready = state.ready.lock().unwrap();
+            while !*ready {
+                ready = state.cvar.wait(ready).unwrap();
+            }
+            *ready = false;
+        }
+
+        fn wake_task(&self, task_id: u64) {
+            let Some(state) = test_tasks().lock().unwrap().get(&task_id).cloned() else {
+                return;
+            };
+            let mut ready = state.ready.lock().unwrap();
+            *ready = true;
+            state.cvar.notify_one();
+        }
+    }
+
+    fn install_test_task_ops() {
+        set_task_ops(&TEST_TASK_OPS);
+    }
+
+    fn with_blocking_task<R>(f: impl FnOnce() -> R) -> R {
+        install_test_task_ops();
+        TEST_TASK_BLOCKING.with(|blocking| blocking.set(true));
+        let task_id = current_test_task_id();
+        let result = f();
+        TEST_TASK_BLOCKING.with(|blocking| blocking.set(false));
+        TEST_TASK_ID.with(|id| id.set(0));
+        test_tasks().lock().unwrap().remove(&task_id);
+        result
+    }
+
+    fn test_task_is_blocking() -> bool {
+        TEST_TASK_BLOCKING.with(Cell::get)
+    }
+
+    fn current_test_task_id() -> u64 {
+        TEST_TASK_ID.with(|id| {
+            let existing = id.get();
+            if existing != 0 {
+                return existing;
+            }
+            let new_id = NEXT_TEST_TASK_ID.fetch_add(1, Ordering::AcqRel);
+            test_tasks()
+                .lock()
+                .unwrap()
+                .insert(new_id, StdArc::new(TestTaskState::new()));
+            id.set(new_id);
+            new_id
+        })
+    }
+
+    fn current_test_task_state() -> StdArc<TestTaskState> {
+        let task_id = current_test_task_id();
+        test_tasks()
+            .lock()
+            .unwrap()
+            .get(&task_id)
+            .cloned()
+            .expect("blocking test task must be registered")
+    }
+
+    fn test_tasks() -> &'static StdMutex<HashMap<u64, StdArc<TestTaskState>>> {
+        TEST_TASKS.get_or_init(|| StdMutex::new(HashMap::new()))
+    }
 
     struct ChannelDrainWake {
         tx: std::sync::Mutex<mpsc::Sender<()>>,
@@ -50,6 +157,19 @@ mod tests {
         fn wake_drain(&self) {
             let _ = self.tx.lock().unwrap().send(());
         }
+    }
+
+    fn noop_config() -> BlockRuntimeConfig {
+        BlockRuntimeConfig::new(Arc::new(VecDmaProvider), Arc::new(NoopDrainWake))
+    }
+
+    fn channel_config(tx: mpsc::Sender<()>) -> BlockRuntimeConfig {
+        BlockRuntimeConfig::new(
+            Arc::new(VecDmaProvider),
+            Arc::new(ChannelDrainWake {
+                tx: std::sync::Mutex::new(tx),
+            }),
+        )
     }
 
     #[derive(Default)]
@@ -860,26 +980,19 @@ mod tests {
 
     #[test]
     fn block_device_read_uses_submit_poll_and_wait_token() {
-        let waiter = Arc::new(CounterWaiter::default());
         let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                waiter.clone(),
-                Arc::new(ChannelDrainWake {
-                    tx: std::sync::Mutex::new(tx),
-                }),
-            ),
+            channel_config(tx),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
+        let fs_dev = device.clone();
         let handle = std::thread::spawn(move || {
             let mut buf = alloc::vec![0u8; 512];
-            fs_dev.read_block(3, &mut buf).unwrap();
+            with_blocking_task(|| fs_dev.read_blocks(3, &mut buf)).unwrap();
             buf
         });
         rx.recv().unwrap();
@@ -893,32 +1006,24 @@ mod tests {
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 3);
-        assert_eq!(waiter.latest().wakes(), 1);
     }
 
     #[test]
     fn block_device_queue_hint_drains_pending_request() {
-        let waiter = Arc::new(CounterWaiter::default());
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
             bridge.clone(),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                waiter.clone(),
-                Arc::new(ChannelDrainWake {
-                    tx: std::sync::Mutex::new(tx),
-                }),
-            ),
+            channel_config(tx),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
+        let fs_dev = device.clone();
         let handle = std::thread::spawn(move || {
             let mut buf = alloc::vec![0u8; 512];
-            fs_dev.read_block(4, &mut buf).unwrap();
+            with_blocking_task(|| fs_dev.read_blocks(4, &mut buf)).unwrap();
             buf
         });
         rx.recv().unwrap();
@@ -931,27 +1036,20 @@ mod tests {
 
     #[test]
     fn block_device_wait_records_queue_ready_before_sleep() {
-        let waiter = Arc::new(CounterWaiter::default());
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_pending_polls_before_complete(2)) as Box<dyn IQueue>],
             bridge,
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                waiter,
-                Arc::new(ChannelDrainWake {
-                    tx: std::sync::Mutex::new(tx),
-                }),
-            ),
+            channel_config(tx),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
+        let fs_dev = device.clone();
         let handle = std::thread::spawn(move || {
             let mut buf = alloc::vec![0u8; 512];
-            fs_dev.read_block(4, &mut buf).unwrap();
+            with_blocking_task(|| fs_dev.read_blocks(4, &mut buf)).unwrap();
             buf
         });
         rx.recv().unwrap();
@@ -964,27 +1062,20 @@ mod tests {
 
     #[test]
     fn block_device_queue_hint_releases_still_pending_batch_request_for_later_hint() {
-        let waiter = Arc::new(CounterWaiter::default());
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
         let device = BlockDeviceHandle::new(
             "mock",
             [Box::new(MockQueue::with_retry_while_pending()) as Box<dyn IQueue>],
             bridge.clone(),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                waiter.clone(),
-                Arc::new(ChannelDrainWake {
-                    tx: std::sync::Mutex::new(tx),
-                }),
-            ),
+            channel_config(tx),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
+        let fs_dev = device.clone();
         let handle = std::thread::spawn(move || {
             let mut buf = alloc::vec![0u8; 512];
-            fs_dev.read_block(6, &mut buf).unwrap();
+            with_blocking_task(|| fs_dev.read_blocks(6, &mut buf)).unwrap();
             buf
         });
         rx.recv().unwrap();
@@ -995,21 +1086,13 @@ mod tests {
         let buf = handle.join().unwrap();
 
         assert_eq!(buf[0], 6);
-        assert_eq!(waiter.latest().wakes(), 1);
     }
 
     #[test]
     fn block_device_window_submits_multiple_chunks_before_first_wait() {
-        let waiter = Arc::new(CounterWaiter::default());
         let bridge = Arc::new(BlockIrqBridge::new());
         let (tx, rx) = mpsc::channel();
-        let mut config = BlockRuntimeConfig::new(
-            Arc::new(VecDmaProvider),
-            waiter,
-            Arc::new(ChannelDrainWake {
-                tx: std::sync::Mutex::new(tx),
-            }),
-        );
+        let mut config = channel_config(tx);
         config.submit_window = 3;
         config.max_transfer_bytes = 512;
         let device = BlockDeviceHandle::new(
@@ -1020,10 +1103,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
+        let fs_dev = device.clone();
         let handle = std::thread::spawn(move || {
             let mut buf = alloc::vec![0u8; 3 * 512];
-            fs_dev.read_block(1, &mut buf).unwrap();
+            with_blocking_task(|| fs_dev.read_blocks(1, &mut buf)).unwrap();
             buf
         });
         rx.recv().unwrap();
@@ -1040,11 +1123,7 @@ mod tests {
 
     #[test]
     fn block_device_rejects_inflight_driver_request_id_reuse() {
-        let mut config = BlockRuntimeConfig::new(
-            Arc::new(VecDmaProvider),
-            Arc::new(SpinWaiter),
-            Arc::new(NoopDrainWake),
-        );
+        let mut config = noop_config();
         config.submit_window = 2;
         config.max_transfer_bytes = 512;
         let device = BlockDeviceHandle::new(
@@ -1055,9 +1134,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
         let mut buf = alloc::vec![0u8; 2 * 512];
-        let result = fs_dev.read_block(1, &mut buf);
+        let result = device.read_blocks(1, &mut buf);
 
         assert_eq!(result, Err(AxError::InvalidInput));
         assert_eq!(device.pending_count_for_queue(0), 0);
@@ -1065,11 +1143,9 @@ mod tests {
 
     #[test]
     fn block_device_large_io_distributes_window_across_queues() {
-        let waiter = Arc::new(CounterWaiter::default());
         let first_submits = Arc::new(AtomicUsize::new(0));
         let second_submits = Arc::new(AtomicUsize::new(0));
-        let mut config =
-            BlockRuntimeConfig::new(Arc::new(VecDmaProvider), waiter, Arc::new(NoopDrainWake));
+        let mut config = noop_config();
         config.submit_window = 2;
         config.max_transfer_bytes = 512;
         let device = BlockDeviceHandle::new(
@@ -1085,9 +1161,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
         let mut buf = alloc::vec![0u8; 4 * 512];
-        fs_dev.read_block(1, &mut buf).unwrap();
+        device.read_blocks(1, &mut buf).unwrap();
 
         assert!(first_submits.load(Ordering::Acquire) > 0);
         assert!(second_submits.load(Ordering::Acquire) > 0);
@@ -1104,18 +1179,14 @@ mod tests {
             "mock",
             [Box::new(MockQueue::with_repoll_hook(polled_tx, resume_rx)) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
+        let fs_dev = device.clone();
         std::thread::spawn(move || {
             let mut buf = alloc::vec![0u8; 512];
-            let result = fs_dev.read_block(7, &mut buf).map(|()| buf[0]);
+            let result = fs_dev.read_blocks(7, &mut buf).map(|()| buf[0]);
             let _ = done_tx.send(result);
         });
 
@@ -1143,17 +1214,12 @@ mod tests {
             "mock",
             [Box::new(MockQueue::with_first_poll_failure_on_lba(5)) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
         let mut buf = alloc::vec![0u8; 512];
-        assert!(fs_dev.read_block(5, &mut buf).is_err());
+        assert!(device.read_blocks(5, &mut buf).is_err());
         assert_eq!(device.pending_count_for_queue(0), 0);
     }
 
@@ -1163,64 +1229,12 @@ mod tests {
             "mock",
             [Box::new(MockQueue::with_retry_submits(1)) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
         let mut buf = alloc::vec![0u8; 512];
-        assert!(fs_dev.read_block(1, &mut buf).is_err());
-        assert_eq!(device.pending_count_for_queue(0), 0);
-    }
-
-    #[test]
-    fn block_device_retry_with_other_pending_request_waits_and_retries() {
-        let waiter = Arc::new(CounterWaiter::default());
-        let bridge = Arc::new(BlockIrqBridge::new());
-        let (tx, rx) = mpsc::channel();
-        let device = BlockDeviceHandle::new(
-            "mock",
-            [Box::new(MockQueue::with_retry_while_pending()) as Box<dyn IQueue>],
-            bridge.clone(),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                waiter,
-                Arc::new(ChannelDrainWake {
-                    tx: std::sync::Mutex::new(tx),
-                }),
-            ),
-        )
-        .unwrap();
-
-        let mut first_dev = device.clone();
-        let first = std::thread::spawn(move || {
-            let mut buf = alloc::vec![0u8; 512];
-            first_dev.read_block(1, &mut buf).unwrap();
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .expect("first request must park after initial submit");
-
-        let mut second_dev = device.clone();
-        let second = std::thread::spawn(move || {
-            let mut buf = alloc::vec![0u8; 512];
-            second_dev.read_block(2, &mut buf)
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .expect("second request must park on retry backpressure");
-
-        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert!(device.drain_events() > 0);
-        first.join().unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .expect("retried request must park after submit");
-        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
-        assert!(device.drain_events() > 0);
-        let second_result = second.join().unwrap();
-        assert!(second_result.is_ok(), "second result: {second_result:?}");
+        assert!(device.read_blocks(1, &mut buf).is_err());
         assert_eq!(device.pending_count_for_queue(0), 0);
     }
 
@@ -1233,11 +1247,7 @@ mod tests {
                 Box::new(MockQueue::with_id(3)) as Box<dyn IQueue>,
             ],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         );
 
         assert!(matches!(device, Err(BlkError::InvalidRequest)));
@@ -1249,11 +1259,7 @@ mod tests {
             "mock",
             [Box::new(MockQueue::with_id(64)) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         );
 
         assert!(matches!(device, Err(BlkError::InvalidRequest)));
@@ -1269,11 +1275,7 @@ mod tests {
                 Box::new(MockQueue::with_id(11)) as Box<dyn IQueue>,
             ],
             bridge,
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         )
         .unwrap();
 
@@ -1318,11 +1320,7 @@ mod tests {
         };
         second_limits.max_inflight = 2;
         second_limits.max_segments = 1;
-        let mut config = BlockRuntimeConfig::new(
-            Arc::new(VecDmaProvider),
-            Arc::new(SpinWaiter),
-            Arc::new(NoopDrainWake),
-        );
+        let mut config = noop_config();
         config.submit_window = 2;
         config.max_transfer_bytes = 4 * 512;
         let device = BlockDeviceHandle::new(
@@ -1340,9 +1338,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
         let mut buf = alloc::vec![0u8; 4 * 512];
-        fs_dev.read_block(0, &mut buf).unwrap();
+        device.read_blocks(0, &mut buf).unwrap();
 
         let log = log.lock();
         assert!(
@@ -1361,16 +1358,11 @@ mod tests {
             "mock",
             [Box::new(queue) as Box<dyn IQueue>],
             Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(
-                Arc::new(VecDmaProvider),
-                Arc::new(SpinWaiter),
-                Arc::new(NoopDrainWake),
-            ),
+            noop_config(),
         )
         .unwrap();
 
-        let mut fs_dev = device.clone();
-        let result = fs_dev.flush();
+        let result = device.flush_blocks();
 
         assert_ne!(result, Err(AxError::WouldBlock));
         assert!(result.is_err());

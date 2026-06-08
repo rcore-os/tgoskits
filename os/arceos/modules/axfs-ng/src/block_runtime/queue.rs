@@ -5,6 +5,7 @@ use rdif_block::{BlkError, CompletionHint, RequestId, RequestStatus};
 use spin::Mutex as SpinNoIrq;
 
 use super::{DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey};
+use crate::os::wake_task;
 
 struct ClaimedQueueBatch {
     queue_id: usize,
@@ -192,9 +193,8 @@ impl<'a, P: RequestPoller> CompletionDrain<'a, P> {
                 Ok(RequestStatus::Complete) => self.pending.lock().complete(key, Ok(())),
                 Err(err) => self.pending.lock().complete(key, Err(err)),
             };
-            if let Some(token) = wake {
-                token.mark_ready();
-                token.wake();
+            if let Some(task_id) = wake {
+                wake_task(task_id);
             }
             return !matches!(result, Ok(RequestStatus::Pending));
         }
@@ -224,9 +224,8 @@ impl CompletionSink for DrainCompletionSink<'_> {
 impl DrainCompletionSink<'_> {
     fn complete_runtime(&mut self, runtime_key: RequestKey, result: Result<(), BlkError>) {
         let token = self.pending.lock().complete(runtime_key, result);
-        if let Some(token) = token {
-            token.mark_ready();
-            token.wake();
+        if let Some(task_id) = token {
+            wake_task(task_id);
         }
         self.terminal.push(runtime_key);
         self.completed += 1;
