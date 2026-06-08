@@ -287,15 +287,15 @@ impl DeviceRegistry {
                 // (SysReg ranges are typically sparse)
                 for (_, dev) in self.slotmap.iter() {
                     let resp = dev.handle_access(bus, access);
-                    if !matches!(resp, BusResponse::NoDevice) {
+                    if !matches!(resp, BusResponse::NoDevice { .. }) {
                         return resp;
                     }
                 }
-                return BusResponse::NoDevice;
+                return BusResponse::NoDevice { bus, addr: access.addr() };
             }
             _ => match self.lookup(bus, access.addr()) {
                 Some(d) => d,
-                None => return BusResponse::NoDevice,
+                None => return BusResponse::NoDevice { bus, addr: access.addr() },
             },
         };
         dev.handle_access(bus, access)
@@ -495,7 +495,7 @@ mod tests {
                     (BusKind::SysReg, BusAccess::Read { addr, .. }) if *addr == 0x1000 => {
                         BusResponse::Success(Some(1))
                     }
-                    _ => BusResponse::NoDevice,
+                    _ => BusResponse::NoDevice { bus, addr: access.addr() },
                 }
             }
             fn as_any(&self) -> &dyn Any { self }
@@ -506,7 +506,7 @@ mod tests {
             BusKind::SysReg,
             &BusAccess::Read { addr: 0x9999, width: AccessWidth::U32 },
         );
-        assert!(matches!(resp, BusResponse::NoDevice));
+        assert!(matches!(resp, BusResponse::NoDevice { .. }));
         // matching address → Success
         let resp = reg.handle_access(
             BusKind::SysReg,

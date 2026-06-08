@@ -214,7 +214,7 @@ mod tests {
                 width: AccessWidth::U32,
             },
         );
-        assert!(matches!(resp, BusResponse::NoDevice));
+        assert!(matches!(resp, BusResponse::NoDevice { .. }));
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
                     width: AccessWidth::U32,
                 },
             ),
-            BusResponse::NoDevice
+            BusResponse::NoDevice { .. }
         ));
     }
 
@@ -278,7 +278,7 @@ mod tests {
             BusKind::Pio,
             &BusAccess::Read { addr: 0x1500, width: AccessWidth::U32 },
         );
-        assert!(matches!(resp, BusResponse::NoDevice));
+        assert!(matches!(resp, BusResponse::NoDevice { .. }));
     }
 
     // ── Multi-resource device ────────────────────────────────────────────
@@ -511,10 +511,10 @@ mod tests {
         assert!(matches!(resp, BusResponse::Success(Some(0xcc))));
 
         let resp_miss = router.route(BusKind::SysReg, &BusAccess::Read { addr: 0x999, width: AccessWidth::U64 });
-        // The adapter returns InvalidAccess because the mock device returns
+        // The adapter returns DeviceError because the mock device returns
         // Err for addresses outside its handled range — the adapter can't
         // distinguish "no device" from "device error" through the AxResult.
-        assert!(matches!(resp_miss, BusResponse::InvalidAccess));
+        assert!(matches!(resp_miss, BusResponse::DeviceError { .. }));
     }
 
     // ── MSI positive test ──────────────────────────────────────────────

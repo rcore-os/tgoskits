@@ -97,6 +97,28 @@ pub enum AccessWidth {
     U64 = 8,
 }
 
+impl From<axaddrspace::device::AccessWidth> for AccessWidth {
+    fn from(w: axaddrspace::device::AccessWidth) -> Self {
+        match w {
+            axaddrspace::device::AccessWidth::Byte => Self::U8,
+            axaddrspace::device::AccessWidth::Word => Self::U16,
+            axaddrspace::device::AccessWidth::Dword => Self::U32,
+            axaddrspace::device::AccessWidth::Qword => Self::U64,
+        }
+    }
+}
+
+impl From<AccessWidth> for axaddrspace::device::AccessWidth {
+    fn from(w: AccessWidth) -> Self {
+        match w {
+            AccessWidth::U8 => Self::Byte,
+            AccessWidth::U16 => Self::Word,
+            AccessWidth::U32 => Self::Dword,
+            AccessWidth::U64 => Self::Qword,
+        }
+    }
+}
+
 // ============================================================
 // 2. Bus access / response protocol
 // ============================================================
@@ -145,10 +167,44 @@ impl BusAccess {
 pub enum BusResponse {
     /// Access completed successfully, optionally returning data (for reads).
     Success(Option<u64>),
-    /// No device claimed the address.
-    NoDevice,
-    /// Address/width is valid but the access semantics violated.
-    InvalidAccess,
+    /// No device claimed the address on the given bus.
+    NoDevice { bus: BusKind, addr: u64 },
+    /// The access width is not supported by the device at this address.
+    InvalidWidth { bus: BusKind, addr: u64, width: AccessWidth },
+    /// Attempted write to a read-only register.
+    ReadOnly { bus: BusKind, addr: u64 },
+    /// Device-specific error (e.g., legacy backend failure).
+    DeviceError { bus: BusKind, addr: u64, msg: &'static str },
+}
+
+impl BusResponse {
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+
+    pub fn value(&self) -> Option<u64> {
+        match self {
+            Self::Success(v) => *v,
+            _ => None,
+        }
+    }
+}
+
+impl core::fmt::Display for BusResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Success(Some(v)) => write!(f, "ok({v:#x})"),
+            Self::Success(None) => write!(f, "ok"),
+            Self::NoDevice { bus, addr } => write!(f, "no device on {bus:?} @ {addr:#x}"),
+            Self::InvalidWidth { bus, addr, width } => {
+                write!(f, "invalid width {width:?} on {bus:?} @ {addr:#x}")
+            }
+            Self::ReadOnly { bus, addr } => write!(f, "read-only {bus:?} @ {addr:#x}"),
+            Self::DeviceError { bus, addr, msg } => {
+                write!(f, "device error on {bus:?} @ {addr:#x}: {msg}")
+            }
+        }
+    }
 }
 
 // ============================================================

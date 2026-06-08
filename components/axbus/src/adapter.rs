@@ -136,7 +136,7 @@ impl VirtualDevice for LegacyMmioAdapter {
         &self.resources
     }
 
-    fn handle_access(&self, _bus: BusKind, access: &BusAccess) -> BusResponse {
+    fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
         let gpa = GuestPhysAddr::from(access.addr() as usize);
         let width = match access.width() {
             AccessWidth::U8 => LegacyWidth::Byte,
@@ -149,13 +149,13 @@ impl VirtualDevice for LegacyMmioAdapter {
             BusAccess::Read { .. } => {
                 match self.inner.0.handle_read(gpa, width) {
                     Ok(val) => BusResponse::Success(Some(val as u64)),
-                    Err(_) => BusResponse::InvalidAccess,
+                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy mmio read error" },
                 }
             }
             BusAccess::Write { val, .. } => {
                 match self.inner.0.handle_write(gpa, width, *val as usize) {
                     Ok(_) => BusResponse::Success(None),
-                    Err(_) => BusResponse::InvalidAccess,
+                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy mmio write error" },
                 }
             }
         }
@@ -203,20 +203,20 @@ impl VirtualDevice for LegacySysRegAdapter {
         &self.resources
     }
 
-    fn handle_access(&self, _bus: BusKind, access: &BusAccess) -> BusResponse {
+    fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
         // SysReg accesses are always 64-bit (Qword).
         let sysreg = SysRegAddr(access.addr() as usize);
         match access {
             BusAccess::Read { .. } => {
                 match self.inner.0.handle_read(sysreg, LegacyWidth::Qword) {
                     Ok(val) => BusResponse::Success(Some(val as u64)),
-                    Err(_) => BusResponse::InvalidAccess,
+                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy sysreg read error" },
                 }
             }
             BusAccess::Write { val, .. } => {
                 match self.inner.0.handle_write(sysreg, LegacyWidth::Qword, *val as usize) {
                     Ok(_) => BusResponse::Success(None),
-                    Err(_) => BusResponse::InvalidAccess,
+                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy sysreg write error" },
                 }
             }
         }
@@ -264,7 +264,7 @@ impl VirtualDevice for LegacyPortAdapter {
         &self.resources
     }
 
-    fn handle_access(&self, _bus: BusKind, access: &BusAccess) -> BusResponse {
+    fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
         let port = Port(access.addr() as u16);
         let width = match access.width() {
             AccessWidth::U8 => LegacyWidth::Byte,
@@ -276,13 +276,13 @@ impl VirtualDevice for LegacyPortAdapter {
             BusAccess::Read { .. } => {
                 match self.inner.0.handle_read(port, width) {
                     Ok(val) => BusResponse::Success(Some(val as u64)),
-                    Err(_) => BusResponse::InvalidAccess,
+                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy port read error" },
                 }
             }
             BusAccess::Write { val, .. } => {
                 match self.inner.0.handle_write(port, width, *val as usize) {
                     Ok(_) => BusResponse::Success(None),
-                    Err(_) => BusResponse::InvalidAccess,
+                    Err(_) => BusResponse::DeviceError { bus, addr: access.addr(), msg: "legacy port write error" },
                 }
             }
         }
