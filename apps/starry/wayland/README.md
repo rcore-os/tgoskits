@@ -26,6 +26,8 @@ Run the Starry app test through `xtask`:
 ```bash
 cargo xtask starry app qemu -t wayland --arch riscv64
 cargo xtask starry app qemu -t wayland --arch x86_64
+cargo xtask starry app qemu -t wayland --arch aarch64
+cargo xtask starry app qemu -t wayland --arch loongarch64
 ```
 
 The successful output contains both markers:
@@ -35,12 +37,15 @@ WAYLAND_TEST_RESULT PASSED
 WAYLAND_TEST_PASSED
 ```
 
-The guest script is [`wayland-test.sh`](wayland-test.sh). It installs
-`weston`, `weston-backend-drm`, and `weston-shell-desktop` from Alpine apk,
-checks that `/dev/dri/card0` is present, checks for `/dev/input/event*`, starts
-Weston with the DRM/pixman backend, waits for `/tmp/wayland-*`, connects a
-client when `weston-info` is available, scans the Weston log for obvious
-startup errors, and shuts the compositor down cleanly.
+The app prebuild step downloads the heavy `llvm21-libs` APK dependency closure
+on the host and injects those APKs into the rootfs overlay. The guest script is
+[`wayland-test.sh`](wayland-test.sh). It installs any prefetched APKs first,
+then installs `weston`, `weston-backend-drm`, and `weston-shell-desktop` from
+Alpine apk with bounded HTTP mirror fallback, checks that `/dev/dri/card0` is
+present, checks for `/dev/input/event*`, starts Weston with the DRM/pixman
+backend, waits for `/tmp/wayland-*`, connects a client when `weston-info` is
+available, scans the Weston log for obvious startup errors, and shuts the
+compositor down cleanly.
 
 The automated test exercises these kernel paths:
 
@@ -57,13 +62,16 @@ The automated test exercises these kernel paths:
 The manual flow intentionally avoids the app test's `shell_init_cmd`; it boots
 the same kernel and Alpine rootfs directly so you can type commands at the
 StarryOS shell and interact with GTK through VNC. The guest-side Weston and GTK
-commands are the same for both architectures. Only the host-side QEMU launch
-command differs.
+commands are the same for the direct riscv64 and x86_64 flows. Only the
+host-side QEMU launch command differs. For aarch64, use the helper documented
+in the aarch64 note below.
 
-### Step 1: Build the Kernel and Rootfs
+### Step 1: Build the Kernel and Provisioned Rootfs
 
 Run the automated test once for the architecture you want to reproduce. This
-creates the kernel image and rootfs image used by the direct QEMU commands.
+creates the kernel image and rootfs image used by the direct QEMU commands. It
+also installs the prefetched Weston dependency closure into that rootfs, so the
+manual session does not need guest networking.
 
 ```bash
 export PATH="/opt/homebrew/opt/e2fsprogs/sbin:$PATH"
@@ -107,9 +115,7 @@ qemu-system-riscv64 \
   -device virtio-keyboard-pci \
   -device virtio-mouse-pci \
   -device virtio-blk-pci,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=tmp/wayland-manual/riscv64.img \
-  -device virtio-net-pci,netdev=net0 \
-  -netdev user,id=net0
+  -drive id=disk0,if=none,format=raw,file=tmp/wayland-manual/riscv64.img
 ```
 
 For x86_64, use `xtask` to launch QEMU because the current dynamic x86_64
@@ -129,8 +135,6 @@ args = [
   "-device", "virtio-mouse-pci",
   "-device", "virtio-blk-pci,drive=disk0",
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/wayland-manual/x86_64.img",
-  "-device", "virtio-net-pci,netdev=net0",
-  "-netdev", "user,id=net0",
 ]
 uefi = true
 to_bin = true
@@ -161,16 +165,47 @@ Some VNC clients prefer `127.0.0.1:${VNC_PORT}` when entering the address
 manually. The double-colon form is the explicit TCP-port form used by many
 command-line VNC tools.
 
-### Step 5: Install User-Space Packages in the Guest
+### Step 5: Verify User-Space Packages
 
-At the `root@starry:` prompt:
+If Step 1 completed successfully, the copied rootfs already contains Weston and
+its runtime dependencies. At the `root@starry:` prompt:
 
 ```sh
-apk add weston weston-backend-drm weston-shell-desktop gtk4.0-demo
+command -v weston
+ls /usr/lib/libweston-*/drm-backend.so
+ls /usr/lib/weston/desktop-shell.so
 ```
 
-This installs Weston, the DRM backend plugin, the desktop shell plugin, GTK4,
-Mesa, libdrm, libinput, and their runtime dependencies.
+Install `gtk4-demo` only if it is not already present in the manual image:
+
+```sh
+if ! command -v gtk4-demo >/dev/null 2>&1; then
+apk_branch="$(sed -n 's#.*/\(v[0-9][0-9.]*\)/main#\1#p' /etc/apk/repositories | head -1)"
+[ -n "$apk_branch" ] || apk_branch=v3.22
+
+for mirror in \
+  http://mirrors.huaweicloud.com/alpine \
+  http://dl-cdn.alpinelinux.org/alpine \
+  http://mirrors.aliyun.com/alpine \
+  http://mirrors.tuna.tsinghua.edu.cn/alpine \
+  http://mirrors.cernet.edu.cn/alpine
+do
+  printf '%s/%s/main\n%s/%s/community\n' \
+    "$mirror" "$apk_branch" "$mirror" "$apk_branch" >/etc/apk/repositories
+  apk add --no-cache weston weston-backend-drm weston-shell-desktop gtk4.0-demo font-dejavu && break
+done
+fi
+```
+
+The install loop is only for a rootfs that does not already contain the manual
+GTK demo packages and a kernel/QEMU launch that has working guest networking.
+The standard Wayland app build is intentionally offline and does not attach a
+virtio-net device. The loop installs Weston, the DRM backend plugin, the
+desktop shell plugin, GTK4, Mesa, libdrm, libinput, a usable GTK font, and their
+runtime dependencies.
+The HTTP mirrors intentionally avoid guest TLS certificate trust failures when
+the emulated RTC starts at an invalid date. If one mirror stalls or returns a
+truncated package, rerun the loop; the next mirror will be tried.
 
 ### Step 6: Start Weston
 
@@ -201,6 +236,8 @@ ls -l /tmp/wayland-*
 
 ```sh
 export WAYLAND_DISPLAY="$(basename "$(ls /tmp/wayland-* | head -1)")"
+export GDK_BACKEND=wayland
+export GSK_RENDERER=cairo
 gtk4-demo &
 ps | grep gtk4-demo
 ```
@@ -232,28 +269,46 @@ poweroff
 
 ## aarch64 Note
 
-The aarch64 Wayland run is currently blocked before the guest shell by a
-separate StarryOS kernel issue in `ax_net_ng::init_network()` on the
-`plat_dyn = true` path. That hang prevents both the automated app script and
-the Cocoa helper from reaching the Weston/GTK steps. The problem is not in the
-Wayland app case itself.
+The automated Wayland app test does not require guest networking: the heavy
+APK dependency closure is prefetched on the host and injected into the rootfs
+overlay before boot. With that offline setup the aarch64 app test follows the
+same `cargo xtask starry app qemu -t wayland --arch aarch64` flow as the other
+architectures.
 
-The experimental Cocoa helper is kept at [`run-hvf.sh`](run-hvf.sh):
+The Cocoa/VNC helper is kept at [`run-hvf.sh`](run-hvf.sh). It uses the same
+host-prefetched APK cache approach for Weston and `gtk4-demo`, expands the
+manual rootfs, provisions it offline on first run, and then reuses the
+provisioned image on later runs:
 
 ```bash
-./apps/starry/wayland/run-hvf.sh
+./apps/starry/wayland/run-hvf.sh --no-build --provision-only
+STARRY_VNC=9 ./apps/starry/wayland/run-hvf.sh --no-build --vnc-only
 ```
 
-It can be used once the aarch64 network initialization hang is fixed.
+Use `--reprovision` to discard and recreate
+`tmp/axbuild/rootfs/rootfs-aarch64-wayland.img`. Set
+`STARRY_WAYLAND_ROOTFS_MB` if the default 4096 MiB manual image is not suitable.
+The helper requires host `debugfs`, `e2fsck`, `resize2fs`, `python3`, and
+`qemu-system-aarch64`; on macOS with Homebrew, the script adds the usual
+Homebrew paths automatically.
+The normal helper path does not attach a guest virtio-net device because the
+Wayland build config is intentionally offline and does not enable network
+drivers.
+Use `--vnc-only` when you want to drive the serial console from the terminal and
+view the GUI through VNC without Cocoa taking terminal focus.
 
 ## Kernel-Side Dependencies
 
 This app requires:
 
 - DRM `/dev/dri/card0` support with dumb buffer allocation.
-- virtio GPU, keyboard, mouse, block, and network devices in the QEMU config.
+- virtio GPU, keyboard, mouse, and block devices in the QEMU config.
 - evdev `/dev/input/event*` support for libinput.
 - `memfd_create` and file-descriptor passing over Unix sockets for Wayland SHM.
 - `eventfd` for the compositor event loop.
 - udev seed data under `/run/udev/data/` for libinput device discovery.
 - `starry-kernel/input` and `ax-feat/display` in the app build config.
+
+The optional manual package-install flow additionally needs a kernel/QEMU launch
+with working guest networking if the packages are not already present in the
+copied rootfs.

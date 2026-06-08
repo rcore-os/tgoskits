@@ -21,6 +21,92 @@ fail() {
     exit 1
 }
 
+run_with_timeout() {
+    timeout_secs="$1"
+    shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_secs" "$@"
+        return $?
+    fi
+
+    "$@" &
+    cmd_pid=$!
+    elapsed=0
+    while kill -0 "$cmd_pid" >/dev/null 2>&1; do
+        if [ "$elapsed" -ge "$timeout_secs" ]; then
+            echo "WAYLAND_PREP command timed out after ${timeout_secs}s: $*"
+            kill "$cmd_pid" >/dev/null 2>&1 || true
+            sleep 1
+            kill -9 "$cmd_pid" >/dev/null 2>&1 || true
+            wait "$cmd_pid" >/dev/null 2>&1 || true
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    wait "$cmd_pid"
+}
+
+write_apk_repositories() {
+    mirror="$1"
+    branch="$(sed -n 's#.*/\(v[0-9][0-9.]*\)/main#\1#p' /etc/apk/repositories 2>/dev/null | head -1)"
+    if [ -z "$branch" ]; then
+        branch="v3.22"
+    fi
+
+    cat >/etc/apk/repositories <<EOF
+${mirror}/${branch}/main
+${mirror}/${branch}/community
+EOF
+}
+
+install_weston_packages() {
+    packages="weston weston-backend-drm weston-shell-desktop"
+    mirrors="
+http://mirrors.huaweicloud.com/alpine
+http://dl-cdn.alpinelinux.org/alpine
+http://mirrors.aliyun.com/alpine
+http://mirrors.tuna.tsinghua.edu.cn/alpine
+http://mirrors.cernet.edu.cn/alpine
+"
+
+    if [ -n "${STARRY_APK_MIRROR:-}" ]; then
+        mirrors="${STARRY_APK_MIRROR}
+${mirrors}"
+    fi
+
+    set -- /usr/local/wayland-apks/*.apk
+    if [ -e "$1" ]; then
+        echo "WAYLAND_PREP installing prefetched APKs from /usr/local/wayland-apks"
+        if run_with_timeout 420 apk add --allow-untrusted --no-network "$@"; then
+            echo "WAYLAND_PREP prefetched APKs installed"
+            return 0
+        else
+            echo "WAYLAND_PREP prefetched APK install failed; falling back to network repositories"
+        fi
+    fi
+
+    for mirror in $mirrors; do
+        echo "WAYLAND_PREP trying apk mirror: $mirror"
+        write_apk_repositories "$mirror"
+        for attempt in 1; do
+            echo "WAYLAND_PREP apk add attempt $attempt via $mirror"
+            run_with_timeout 240 apk add --no-cache $packages
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+                return 0
+            fi
+            echo "WAYLAND_PREP apk add failed via $mirror attempt $attempt rc=$rc"
+            rm -rf /var/cache/apk/* 2>/dev/null || true
+            sleep 2
+        done
+    done
+
+    return 1
+}
+
 cleanup() {
     if [ -n "$weston_pid" ]; then
         kill "$weston_pid" >/dev/null 2>&1 || true
@@ -43,13 +129,7 @@ trap on_exit EXIT
 
 # ---- Install weston ----
 echo "WAYLAND_PREP installing weston..."
-apk add weston 2>&1 || fail "apk add weston failed"
-
-# Install DRM backend (separate Alpine package)
-apk add weston-backend-drm 2>&1 || true
-
-# Install desktop shell if not bundled
-apk add weston-shell-desktop 2>&1 || true
+install_weston_packages 2>&1 || fail "apk add weston packages failed after mirror retries"
 
 # Debug: list available backends and shells
 echo "WAYLAND_PREP available backends:"
