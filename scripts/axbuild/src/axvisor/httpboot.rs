@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command as StdCommand,
     time::Duration,
 };
 
@@ -15,6 +16,7 @@ use crate::{
     axvisor::{ArgsBuild, Axvisor},
     backtrace,
     context::SnapshotPersistence,
+    support::process::ProcessExt,
 };
 
 #[derive(ClapArgs)]
@@ -242,6 +244,7 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
                 request.arch
             );
         }
+        build_httpboot_loader(axvisor.app.workspace_root(), target, &client.base_url)?;
     }
     let session = client.create_session(board_type).await?;
     let session_guard = SessionGuard {
@@ -274,6 +277,35 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
     run_result?;
     release_result?;
     Ok(())
+}
+
+fn build_httpboot_loader(
+    workspace_root: &Path,
+    target: axloader::BootloaderTarget,
+    server_url: &Url,
+) -> anyhow::Result<()> {
+    let mut command = StdCommand::new("cargo");
+    command
+        .current_dir(workspace_root)
+        .env(
+            "BOOTLOADER_HTTP_SERVER_URL",
+            server_url.as_str().trim_end_matches('/'),
+        )
+        .args([
+            "build",
+            "-p",
+            "axloader",
+            "--target",
+            target.uefi_target,
+            "--features",
+            &format!("board-{}", target.board),
+            "--bin",
+            "axloader",
+            "--release",
+        ]);
+    command
+        .exec()
+        .with_context(|| format!("failed to build HTTP Boot loader for `{}`", target.board))
 }
 
 fn ensure_explicit_publish_inputs(args: &ArgsPublish) -> anyhow::Result<()> {

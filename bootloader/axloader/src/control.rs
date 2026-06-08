@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::{format, string::String};
 use core::str;
 
-use crate::{boards, http, identity};
+use crate::{boards, discovery, http, identity};
 
 const CONTROL_BODY_LIMIT: usize = 8192;
 const HELLO_RETRY_LIMIT: usize = 8;
@@ -34,10 +34,10 @@ pub struct BootOffer {
 }
 
 pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
-    let server_url = option_env!("BOOTLOADER_HTTP_SERVER_URL").ok_or(ControlError::NoServerUrl)?;
-    let server_url = trim_trailing_slash(server_url);
     let mac = identity::mac_address_string().map_err(ControlError::Identity)?;
     crate::logln!("loader_mac: {mac}");
+    let server_url = server_url(&mac)?;
+    crate::logln!("server_url: {server_url}");
 
     let hello_url = format!("{server_url}/api/v1/httpboot/loaders/hello");
     let hello_body = format!(
@@ -121,6 +121,16 @@ fn parse_ready_offer(input: &str) -> Result<BootOffer, ControlError> {
 
 fn trim_trailing_slash(input: &str) -> &str {
     input.strip_suffix('/').unwrap_or(input)
+}
+
+fn server_url(mac: &str) -> Result<String, ControlError> {
+    match discovery::discover_server(mac) {
+        Ok(url) => return Ok(url),
+        Err(err) => crate::logln!("discovery_error: {err:?}"),
+    }
+
+    let server_url = option_env!("BOOTLOADER_HTTP_SERVER_URL").ok_or(ControlError::NoServerUrl)?;
+    Ok(trim_trailing_slash(server_url).into())
 }
 
 fn json_string_field<'a>(input: &'a str, key: &str) -> Option<&'a str> {

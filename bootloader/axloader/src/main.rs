@@ -13,6 +13,8 @@ mod console;
 #[cfg(target_os = "uefi")]
 mod control;
 #[cfg(target_os = "uefi")]
+mod discovery;
+#[cfg(target_os = "uefi")]
 mod elf_loader;
 #[cfg(target_os = "uefi")]
 mod entry;
