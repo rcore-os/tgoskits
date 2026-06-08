@@ -10,8 +10,8 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/gdbserver-smoke.sh"
-success_regex = ["GDBSERVER_SMOKE_DONE"]
+shell_init_cmd = "/usr/bin/gdb -q -batch -x /usr/bin/gdb-native-threads.gdb /usr/bin/gdb-native-thread-target"
+success_regex = ["GDB_NATIVE_THREADS_DONE"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
@@ -19,7 +19,6 @@ fail_regex = [
     'Python Exception',
     'Python initialization failed',
     'Cannot insert breakpoint',
-    'Remote communication error',
     'ptrace: Function not implemented',
     'No stack',
     'Program received signal SIGSEGV',

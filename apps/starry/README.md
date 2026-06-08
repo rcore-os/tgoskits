@@ -87,13 +87,23 @@ Stress configs are available through explicit QEMU config variants; see
 ## GDB Smoke
 
 The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
-rootfs overlay with GDB, GDBServer, and two tiny target programs.
+rootfs overlay with GDB, GDBServer, and tiny debugger smoke targets.
 
 ```bash
-cargo xtask starry app run -t gdb-smoke --arch riscv64
-cargo xtask starry app run -t gdb-smoke --arch riscv64 \
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
   --qemu-config qemu-riscv64-gdbserver.toml
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-threads.toml
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-stress.toml
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-gdbserver-manual.toml
 ```
+
+When using the long-lived Docker container for a `*-manual.toml` entry, run the
+same command through `docker exec -it tgoskits-dev ...` so the QEMU serial
+console stays interactive.
 
 ## MariaDB
 

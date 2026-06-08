@@ -2,6 +2,7 @@
 
 #include <elf.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <sched.h>
 #include <stdint.h>
@@ -98,6 +99,50 @@ static int fail(const char *msg)
 {
     printf("FAIL: %s: errno=%d (%s)\n", msg, errno, strerror(errno));
     return 1;
+}
+
+static int remote_read_word(pid_t pid, uintptr_t addr, unsigned long *out)
+{
+    struct iovec local = {.iov_base = out, .iov_len = sizeof(*out)};
+    struct iovec remote = {.iov_base = (void *)addr, .iov_len = sizeof(*out)};
+    ssize_t bytes = process_vm_readv(pid, &local, 1, &remote, 1, 0);
+    if (bytes != (ssize_t)sizeof(*out)) {
+        errno = bytes < 0 ? errno : EIO;
+        return -1;
+    }
+    return 0;
+}
+
+static int remote_write_word(pid_t pid, uintptr_t addr, unsigned long word)
+{
+    struct iovec local = {.iov_base = &word, .iov_len = sizeof(word)};
+    struct iovec remote = {.iov_base = (void *)addr, .iov_len = sizeof(word)};
+    ssize_t bytes = process_vm_writev(pid, &local, 1, &remote, 1, 0);
+    if (bytes != (ssize_t)sizeof(word)) {
+        errno = bytes < 0 ? errno : EIO;
+        return -1;
+    }
+    return 0;
+}
+
+static int proc_mem_read_word(int fd, uintptr_t addr, unsigned long *out)
+{
+    ssize_t bytes = pread(fd, out, sizeof(*out), (off_t)addr);
+    if (bytes != (ssize_t)sizeof(*out)) {
+        errno = bytes < 0 ? errno : EIO;
+        return -1;
+    }
+    return 0;
+}
+
+static int proc_mem_write_word(int fd, uintptr_t addr, unsigned long word)
+{
+    ssize_t bytes = pwrite(fd, &word, sizeof(word), (off_t)addr);
+    if (bytes != (ssize_t)sizeof(word)) {
+        errno = bytes < 0 ? errno : EIO;
+        return -1;
+    }
+    return 0;
 }
 
 int main(void)
@@ -255,29 +300,67 @@ int main(void)
     if (ptrace(PTRACE_POKEDATA, pid, (void *)addrs.text_addr, (void *)breakpoint_word) != 0) {
         return fail("ptrace poke breakpoint");
     }
+    if (ptrace(PTRACE_POKEDATA, pid, (void *)addrs.text_addr, (void *)text_word) != 0) {
+        return fail("ptrace restore text before process_vm");
+    }
+
+    unsigned long vm_text_word = 0;
+    if (remote_read_word(pid, addrs.text_addr, &vm_text_word) != 0 ||
+        vm_text_word != (unsigned long)text_word) {
+        return fail("process_vm_readv text");
+    }
+    if (remote_write_word(pid, addrs.text_addr, breakpoint_word) != 0) {
+        return fail("process_vm_writev breakpoint");
+    }
+    if (remote_write_word(pid, addrs.text_addr, (unsigned long)text_word) != 0) {
+        return fail("process_vm_writev restore before proc mem");
+    }
+
+    char mem_path[64];
+    snprintf(mem_path, sizeof(mem_path), "/proc/%d/mem", pid);
+    int mem_fd = open(mem_path, O_RDWR);
+    if (mem_fd < 0) {
+        return fail("open proc mem");
+    }
+    unsigned long proc_mem_text_word = 0;
+    if (proc_mem_read_word(mem_fd, addrs.text_addr, &proc_mem_text_word) != 0 ||
+        proc_mem_text_word != (unsigned long)text_word) {
+        close(mem_fd);
+        return fail("proc mem pread text");
+    }
+    if (proc_mem_write_word(mem_fd, addrs.text_addr, breakpoint_word) != 0) {
+        close(mem_fd);
+        return fail("proc mem pwrite breakpoint");
+    }
 
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
+        close(mem_fd);
         return fail("ptrace cont to breakpoint");
     }
     if (waitpid(pid, &status, WUNTRACED) != pid || !WIFSTOPPED(status)
         || WSTOPSIG(status) != SIGTRAP) {
         printf("FAIL: expected breakpoint SIGTRAP, status=%#x\n", status);
+        close(mem_fd);
         return 1;
     }
 
     memset(&regs, 0, sizeof(regs));
     iov.iov_len = sizeof(regs);
     if (ptrace(PTRACE_GETREGSET, pid, (void *)NT_PRSTATUS, &iov) != 0) {
+        close(mem_fd);
         return fail("ptrace getregset at breakpoint");
     }
     if (regs.pc != addrs.text_addr) {
         printf("FAIL: expected breakpoint pc=%#lx, got %#lx\n",
                (unsigned long)addrs.text_addr, regs.pc);
+        close(mem_fd);
         return 1;
     }
-    if (ptrace(PTRACE_POKEDATA, pid, (void *)addrs.text_addr, (void *)text_word) != 0) {
-        return fail("ptrace restore text");
+    if (proc_mem_write_word(mem_fd, addrs.text_addr, (unsigned long)text_word) != 0) {
+        close(mem_fd);
+        return fail("proc mem pwrite restore text");
     }
+    close(mem_fd);
     regs.pc = addrs.text_addr;
     iov.iov_len = sizeof(regs);
     if (ptrace(PTRACE_SETREGSET, pid, (void *)NT_PRSTATUS, &iov) != 0) {
