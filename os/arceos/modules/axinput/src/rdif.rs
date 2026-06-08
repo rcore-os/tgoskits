@@ -2,7 +2,9 @@ use alloc::{boxed::Box, string::String};
 
 use rdif_input::{InputError as RdifInputError, Interface};
 
-use crate::{AbsInfo, Event, EventType, InputDevice, InputDeviceId, InputError, InputResult};
+use crate::{
+    AbsInfo, Event, EventType, InputDevice, InputDeviceId, InputError, InputIrqEvent, InputResult,
+};
 
 pub struct RdifInputDevice {
     name: String,
@@ -37,6 +39,10 @@ impl InputDevice for RdifInputDevice {
         self.device.unique_id()
     }
 
+    fn irq_num(&self) -> Option<usize> {
+        self.device.irq_num()
+    }
+
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> InputResult<bool> {
         self.device
             .get_event_bits(ty.into(), out)
@@ -59,6 +65,26 @@ impl InputDevice for RdifInputDevice {
             .get_abs_info(axis)
             .map(Into::into)
             .map_err(map_input_error)
+    }
+
+    fn enable_irq(&mut self) {
+        self.device.enable_irq();
+    }
+
+    fn disable_irq(&mut self) {
+        self.device.disable_irq();
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.device.is_irq_enabled()
+    }
+
+    fn handle_irq(&mut self) -> InputIrqEvent {
+        let event = self.device.handle_irq();
+        InputIrqEvent {
+            handled: event.handled,
+            input_ready: event.input_ready,
+        }
     }
 }
 

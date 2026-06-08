@@ -56,6 +56,26 @@ impl DisplayDevice for RdifDisplayDevice {
         }
         Ok(())
     }
+
+    fn irq_num(&self) -> Option<usize> {
+        self.device.irq_num()
+    }
+
+    fn enable_irq(&mut self) {
+        self.device.enable_irq();
+    }
+
+    fn disable_irq(&mut self) {
+        self.device.disable_irq();
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.device.is_irq_enabled()
+    }
+
+    fn handle_irq(&mut self) -> bool {
+        self.device.handle_irq().handled
+    }
 }
 
 impl From<rdif_display::PixelFormat> for PixelFormat {
