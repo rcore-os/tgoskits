@@ -27,4 +27,4 @@ fi
 #     exit 1
 # fi
 
-echo "NIX_ALL_TESTS_PASSED"
+echo "NIX_NOSANDBOX_COMPLETE"

@@ -1,123 +1,110 @@
-# Tasks: CLONE_FS unshare 支持 + Nix 回归测试
+# Tasks: StarryOS Nix Smoke — PR Review Fixes
 
 **Input**: Design documents from `/specs/002-starryos-nix-smoke/`
 
-**Prerequisites**: plan.md (required), spec.md (required), research.md
+**Prerequisites**: plan.md ✅, spec.md ✅, research.md ✅, data-model.md ✅, contracts/ ✅, quickstart.md ✅
 
-**Goal**: 在 `sys_unshare` 中添加 `CLONE_FS` 支持，修复 Nix 下载子系统阻塞，并在 test-nix-prereqs 中补充语义回归测试。
+**Branch**: `002-starryos-nix-smoke` | **PR**: #1125 review `@ZR233` (ID 4446698115)
 
-**Tests**: C 回归测试 — 标记 "nixpkgs 测试可能用到"。
+**Organization**: Tasks are grouped by fix area. All 4 fix areas are independent and can proceed in parallel.
 
-**Organization**: Tasks are grouped by user story per plan.md.
-
-## Format: `[ID] [P?] [Story] Description`
+## Format: `[ID] [P?] [Story?] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Maps to user story from spec.md:
-  - US2 — Run Nix and capture failures (CLONE_FS 修复直接解除 Nix 下载阻塞)
-  - US3 — Convert kernel gaps into focused regression tests (test-unshare-fs)
-  - US4 — Preserve local investigation notes and upstream context (silicalet/)
+- **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
+- Include exact file paths in descriptions
 
 ---
 
-## Phase 1: Setup — 基线确认
+## Phase 1: Setup (Shared Infrastructure)
 
-**Purpose**: 确认当前 head 干净，gate 均通过。
+**Purpose**: Verify current state and establish baseline
 
-- [X] T001 Confirm `cargo fmt --check` passes on current head
-- [X] T002 [P] Confirm `cargo xtask clippy --package starry-kernel` passes (0 warnings)
-- [X] T003 [P] Confirm test-nix-prereqs 12/12 PASSED before changes via container:
-  ```bash
-  podman run --rm --userns=keep-id \
-    -v $PWD:/workspace -w /workspace \
-    -v $PWD/.ci-cache/cargo:/tmp/cargo \
-    -v $PWD/.ci-cache/rustup:/tmp/rustup \
-    -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup \
-    ghcr.io/rcore-os/tgoskits-container:latest \
-    cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
-  ```
-
-**Checkpoint**: 基线确认，12/12 通过。
+- [x] T001 Verify current branch `002-starryos-nix-smoke` is clean with `git status` and `git log --oneline -5`
+- [x] T002 [P] Run `cargo xtask clippy --package starry-kernel` to establish baseline (expected: 13/13 PASS)
+- [x] T003 [P] Run `cargo fmt --check` to confirm no formatting drift before changes
 
 ---
 
-## Phase 2: US2 — CLONE_FS 内核修复 (Priority: P1) 🎯 MVP
+## Phase 2: Fix 1 — `unshare(CLONE_FS)` Kernel Fix (US3)
 
-**Goal**: `sys_unshare` 接受 `CLONE_FS` (0x200)，Nix 下载子系统不再报 EINVAL。
+**Goal**: Fix `unshare(CLONE_FS)` to rebind task-local `FS_CONTEXT` to a new `Arc<Mutex<FsContext>>` instead of mutating the shared Arc inner value, matching Linux semantics.
 
-**Independent Test**:
-```bash
-# Container: nixpkgs test 的 fetchTarball 下载线程不再崩溃
-# 端到端验证: 见 US3 回归测试
-```
+**Independent Test**: Run `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` and verify `UNSHARE_FS_CLONE_ISOLATION_PASSED` appears.
 
-### Implementation for US2
+**Source**: plan.md R1, research.md R1, data-model.md, contracts/fix-unshare-fs.md
 
-- [X] T004 [US2] Add `CLONE_FS` to `SUPPORTED_NS_FLAGS` in `os/StarryOS/kernel/src/syscall/task/namespace.rs` line 13-14
-- [X] T005 [US2] Add Phase 2 `CLONE_FS` branch in `sys_unshare()` in `os/StarryOS/kernel/src/syscall/task/namespace.rs`:
-  - Clone current `FsContext` via `FS_CONTEXT.lock().clone()` to break sharing
-  - Place before or alongside existing `CLONE_NEWNS` branch (line 49-52)
-- [X] T006 [US2] Run `cargo fmt` on `os/StarryOS/kernel/src/syscall/task/namespace.rs`
-- [X] T007 [US2] Run `cargo xtask clippy --package starry-kernel` — 0 warnings required
-- [X] T008 [US2] Verify nix-nosandbox still PASSES (no regression):
-  ```bash
-  podman run ... cargo xtask starry app qemu -t nix --arch x86_64
-  # Expected: nix-nosandbox PASSED (nix-nixpkgs still expected FAIL — wait for CLONE_FS followups)
-  ```
+### Implementation for Fix 1
 
-**Checkpoint**: CLONE_FS 编译通过 + fmt/clippy clean + nosandbox 无回归。
+- [x] T004 [US3] Rewrite `unshare(CLONE_FS)` in `os/StarryOS/kernel/src/syscall/task/namespace.rs` to use `FS_CONTEXT.scope_mut(&mut scope)` to rebind to new `Arc::new(Mutex::new(cloned_inner))` instead of mutating shared Arc inner
+- [x] T005 [US3] Run `cargo fmt` on `os/StarryOS/kernel/src/syscall/task/namespace.rs`
+- [x] T006 [US3] Run `cargo xtask clippy --package starry-kernel` and verify 13/13 PASS
+- [x] T007 [US3] Build StarryOS kernel with `cargo xtask starry build --arch x86_64` to confirm compilation
+
+**Checkpoint**: Kernel compiles cleanly with the `unshare(CLONE_FS)` fix.
 
 ---
 
-## Phase 3: US3 — test-unshare-fs 回归测试 (Priority: P1)
+## Phase 3: Fix 2 — `test-unshare-fs` Test Rewrite (US3)
 
-**Goal**: 在 test-nix-prereqs 中添加 C 回归测试，验证 `unshare(CLONE_FS)` 语义正确性。测试注释中标注 "nixpkgs 测试可能用到"。
+**Goal**: Rewrite `test-unshare-fs` to use `clone(CLONE_FS | CLONE_VM | SIGCHLD)` instead of `fork()`, verifying that (a) after clone with CLONE_FS, child's `chdir` is visible to parent (FS sharing), and (b) after child calls `unshare(CLONE_FS)`, child's `chdir` is NOT visible to parent (isolation).
 
-**Independent Test**:
-```bash
-cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
-# Expected: 13/13 PASSED (新增 test-unshare-fs)
-```
+**Independent Test**: Run `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` and verify both `UNSHARE_FS_BASIC_PASSED` and `UNSHARE_FS_CLONE_ISOLATION_PASSED` appear.
 
-### Tests for US3 (write FIRST, ensure RED before CLONE_FS fix)
+**Source**: plan.md R2, research.md R2, contracts/focused-regression.md
 
-- [X] T009 [P] [US3] Create test directory `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/test-unshare-fs/c/`
-- [X] T010 [P] [US3] Write `CMakeLists.txt` in `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/test-unshare-fs/c/CMakeLists.txt` (reference existing test-open-unlink-write pattern)
-- [X] T011 [US3] Write `src/main.c` in `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/test-unshare-fs/c/src/main.c`:
-  - **Scenario 1 (共享+断开)**: Parent `clone(CLONE_FS)` → child shares parent FsContext → child `unshare(CLONE_FS)` → child gets independent FsContext → both chdir different paths → verify isolation
-  - **Scenario 2 (已独立=nop)**: `unshare(CLONE_FS)` on already-independent task → returns 0, cwd unchanged
-  - **Scenario 3 (非法标志)**: `unshare(0xDEAD)` → returns EINVAL
-  - Top comment: `nixpkgs 测试可能用到 — unshare(CLONE_FS) 是 Nix fetchTarball 下载线程的前置依赖`
+### Implementation for Fix 2
 
-### Implementation for US3
+- [x] T008 [US3] Rewrite `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/test-unshare-fs/c/src/main.c` to use `clone(CLONE_FS | CLONE_VM | SIGCHLD)` with heap-allocated stack, testing shared-cwd phase then isolated-cwd phase
+- [x] T009 [US3] Verify test by running `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` and checking for `UNSHARE_FS_CLONE_ISOLATION_PASSED` in output
 
-- [X] T012 [US3] Register test binary in `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/qemu-x86_64.toml`: add `test-unshare-fs` to `test_commands` (+1 entry, total 13)
-- [X] T013 [US3] Run `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` in container — verify RED (fails on CLONE_FS before kernel fix applied, GREEN after)
-- [X] T014 [US3] After kernel fix (T004-T005): re-run test-nix-prereqs → verify 13/13 PASSED
-
-**Checkpoint**: 13/13 回归测试通过（含新增 test-unshare-fs）。
+**Checkpoint**: Test correctly validates `unshare(CLONE_FS)` isolation behavior with `clone(CLONE_FS)`.
 
 ---
 
-## Phase 4: Broad Regression — syscall suite (Priority: P2)
+## Phase 4: Fix 3 — `nix-nosandbox.sh` Builder Fix (US2)
 
-**Purpose**: 确认 CLONE_FS 修复不影响其他 syscall/unshare 路径。
+**Goal**: Fix the Nix derivation builder in `nix-nosandbox.sh` to use absolute paths (`/bin/mkdir`) and fail-fast operators (`&&` instead of `;`) so that build failures propagate correctly.
 
-- [X] T015 Run `cargo xtask starry test qemu --arch x86_64 -c syscall` in container:
-  ```bash
-  podman run ... cargo xtask starry test qemu --arch x86_64 -c syscall
-  ```
-  Expected: PASSED, no new regressions.
+**Independent Test**: Run `cargo xtask starry app qemu -t nix --arch x86_64` and verify `NIX_LOCAL_BUILD_NOSANDBOX_OK` appears without `sh: mkdir: not found`.
 
-**Checkpoint**: syscall 全量回归通过。
+**Source**: plan.md R3, research.md R3, data-model.md, contracts/fix-builder-mkdir.md
+
+### Implementation for Fix 3
+
+- [x] T010 [US2] Fix builder args in `apps/starry/nix/nix-nosandbox.sh`: change `mkdir -p ...; echo BUILDER_STARTED` to `/bin/mkdir -p ... && echo BUILDER_STARTED`, and apply `&&` to all subsequent builder commands
+- [x] T011 [US2] Verify fix by running `cargo xtask starry app qemu -t nix --arch x86_64` and checking for `NIX_LOCAL_BUILD_NOSANDBOX_OK` without `sh: mkdir: not found`
+
+**Checkpoint**: Builder fails fast on errors, no false PASS from `mkdir` failure.
 
 ---
 
-## Phase 5: US4 — silicalet/ 过程笔记 (Priority: P2)
+## Phase 5: Fix 4 — README/PR nixpkgs Documentation (US5)
 
-- [X] T016 [US4] Update `silicalet/002-nix-smoke.md`: record CLONE_FS fix decision, implementation status, validation results, and follow-up items (nixpkgs test still blocked by other unshare calls in Nix)
+**Goal**: Update `apps/starry/nix/README.md` to honestly state that nixpkgs/stdenv.mkDerivation testing is not planned at this stage, with clear reasoning. Update PR #1125 body to match.
 
-**Checkpoint**: 过程笔记覆盖修复始末。
+**Independent Test**: Read `apps/starry/nix/README.md` and confirm it clearly states nixpkgs is deferred, with the reason (requires mount namespace isolation for fetchTarball/substitute downloads).
+
+**Source**: plan.md R4, research.md R4, contracts/doc-nixpkgs-deferral.md
+
+### Implementation for Fix 4
+
+- [x] T012 [US5] Update `apps/starry/nix/README.md` to state nixpkgs testing is "not planned at this stage", explain the reason (requires mount namespace isolation), and fix the test content table to show accurate status
+- [x] T013 [US5] Update PR #1125 body via `gh pr edit 1125 --body "..."` to align with the README changes (Chinese body per project convention)
+
+**Checkpoint**: README and PR body accurately reflect current scope — no misleading nixpkgs coverage claims.
+
+---
+
+## Phase 6: Polish & Cross-Cutting Concerns
+
+**Purpose**: Final validation, regression check, and cleanup
+
+- [x] T014 Run `cargo fmt` on all changed files and verify no formatting issues
+- [x] T015 Run `cargo xtask clippy --package starry-kernel` and verify 13/13 PASS
+- [x] T016 Run full grouped regression: `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` and verify all expected markers appear
+- [x] T017 Run app-level validation: `cargo xtask starry app qemu -t nix --arch x86_64` and verify `NIX_LOCAL_BUILD_NOSANDBOX_OK`
+- [x] T018 Run `git diff --stat` to review all changed files match the expected set: `namespace.rs`, `test-unshare-fs/c/src/main.c`, `nix-nosandbox.sh`, `README.md`
 
 ---
 
@@ -125,76 +112,80 @@ cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
 
 ### Phase Dependencies
 
-```
-Phase 1 (Setup)
-    │
-    ▼
-Phase 2 (US2: CLONE_FS fix) ──────────────────────┐
-    │                                               │
-    ▼                                               │
-Phase 3 (US3: test-unshare-fs) ── T009-T011 FIRST  │
-    │    (write test, verify RED)                   │
-    │    then apply T004-T005 kernel fix             │
-    │    then verify GREEN (T013-T014)              │
-    │                                               │
-    ▼                                               │
-Phase 4 (syscall regression) ◄──────────────────────┘
-    │
-    ▼
-Phase 5 (US4: silicalet notes)
-```
+- **Setup (Phase 1)**: No dependencies — can start immediately
+- **Fix 1 (Phase 2)**: No dependencies on other fixes — can start immediately
+- **Fix 2 (Phase 3)**: Depends on Fix 1 (Phase 2) — test must run against fixed kernel
+- **Fix 3 (Phase 4)**: No dependencies on other fixes — can start immediately
+- **Fix 4 (Phase 5)**: No dependencies on other fixes — can start immediately
+- **Polish (Phase 6)**: Depends on all fixes being complete
 
-### Within Each Phase
-
-| Phase | Sequential Chain | Parallel Tasks |
-|-------|------------------|---------------|
-| Phase 1 | None | T001, T002, T003 all [P] |
-| Phase 2 | T004→T005(sequential) → T006→T007→T008 | None (same file) |
-| Phase 3 | T009, T010, T011 all [P] → T012 → T013 → T014 | T009, T010, T011 |
-| Phase 4 | T015 alone | None |
-| Phase 5 | T016 alone | None |
-
-### TDD Order (Critical)
+### Fix Area Dependencies
 
 ```
-T009, T010, T011 (write test — verify RED)
-    │  test calls unshare(CLONE_FS), expects success
-    │  without kernel fix → test FAILS (EINVAL)
-    ▼
-T004, T005 (kernel fix — CLONE_FS in SUPPORTED_NS_FLAGS + unshare branch)
+Phase 1: Setup
     │
-    ▼
-T013, T014 (re-run test — verify GREEN)
-    │  test now PASSES — unshare(CLONE_FS) returns 0
+    ├── Phase 2: Fix 1 (unshare CLONE_FS) ──→ Phase 3: Fix 2 (test rewrite)
+    │                                              │
+    ├── Phase 4: Fix 3 (builder mkdir) ────────────┤
+    │                                              │
+    └── Phase 5: Fix 4 (README nixpkgs) ───────────┤
+                                                   │
+                                          Phase 6: Polish
+```
+
+### Parallel Opportunities
+
+- **Phase 1**: T002 and T003 can run in parallel
+- **Phase 2 + Phase 4 + Phase 5**: Fix 1, Fix 3, and Fix 4 are independent and can proceed in parallel
+- **Phase 3**: Must wait for Phase 2 (Fix 1) to complete before running the rewritten test
+- **Phase 6**: T014, T015 can run in parallel; T016, T017 can run in parallel after
+
+---
+
+## Parallel Example: Fix 1 + Fix 3 + Fix 4
+
+```bash
+# These three fix areas are independent — launch in parallel:
+Task: "Rewrite unshare(CLONE_FS) in namespace.rs" (Fix 1)
+Task: "Fix builder args in nix-nosandbox.sh" (Fix 3)
+Task: "Update README.md nixpkgs documentation" (Fix 4)
 ```
 
 ---
 
 ## Implementation Strategy
 
-### MVP First (Phase 2 + Phase 3 test-only)
+### MVP First (Fix 1 + Fix 2)
 
-1. T001-T003: Baseline确认
-2. T009-T011: 先写回归测试（RED — CLONE_FS 未支持）
-3. T004-T007: 内核修复（GREEN — CLONE_FS 返回 0）
-4. T012-T014: 回归测试验证（13/13 PASSED）
-5. **STOP** — MVP 完成
+1. Complete Phase 1: Setup
+2. Complete Phase 2: Fix 1 (unshare CLONE_FS kernel fix)
+3. Complete Phase 3: Fix 2 (test rewrite)
+4. **STOP and VALIDATE**: Run `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs`
+5. Verify `UNSHARE_FS_CLONE_ISOLATION_PASSED`
 
-### Full Delivery
+### Incremental Delivery
 
-6. T015: syscall 全量回归
-7. T016: silicalet 笔记
-8. 全部 gate 通过 → 就绪提交
+1. Complete Setup → baseline established
+2. Add Fix 1 + Fix 2 → kernel fix + test → validate
+3. Add Fix 3 → builder fix → validate app-level
+4. Add Fix 4 → documentation → review
+5. Polish → full regression + clippy + fmt
+
+### Single Developer Strategy
+
+1. Complete Setup (Phase 1)
+2. Fix 1 (Phase 2) → Fix 2 (Phase 3) sequentially (dependency chain)
+3. Fix 3 (Phase 4) and Fix 4 (Phase 5) in any order
+4. Polish (Phase 6) last
 
 ---
 
 ## Notes
 
-- [P] tasks = different files, no dependencies on other in-progress tasks
-- [US2] label = CLONE_FS 内核修复（解除 Nix 下载阻塞）
-- [US3] label = test-unshare-fs 回归测试
-- [US4] label = silicalet/ 过程笔记
-- Kernel code change: `os/StarryOS/kernel/src/syscall/task/namespace.rs`
-- Test change: `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/`
-- All validation: container with `.ci-cache/` mounts per Constitution Rule III
-- TDD order is CRITICAL: test must fail RED before kernel fix applied
+- [P] tasks = different files, no dependencies
+- Fix 1 and Fix 2 form a dependency chain (kernel fix → test rewrite)
+- Fix 3 and Fix 4 are fully independent of Fix 1/2
+- All validation commands use `cargo xtask` per project convention
+- Container-based CI validation uses `podman` with `.ci-cache/` mounts
+- PR body must be in Chinese per project convention
+- All changes must pass `cargo fmt` and `cargo xtask clippy --package starry-kernel`

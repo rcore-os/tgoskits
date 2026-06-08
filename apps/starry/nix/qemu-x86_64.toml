@@ -18,7 +18,7 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test_nix.sh"
 success_regex = [
-    "(?m)^NIX_ALL_TESTS_PASSED\\s*$",
+    "(?m)^NIX_NOSANDBOX_COMPLETE\\s*$",
 ]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
