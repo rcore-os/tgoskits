@@ -27,7 +27,7 @@ use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
 use starry_process::Process;
 use starry_signal::{
-    SignalInfo, Signo,
+    SignalInfo, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
@@ -201,11 +201,20 @@ impl Thread {
     ///
     /// If `parent_cred` is `Some`, the thread inherits the parent's credentials;
     /// otherwise it starts with root credentials (used for the init process).
-    pub fn new(tid: u32, proc_data: Arc<ProcessData>, parent_cred: Option<Arc<Cred>>) -> Box<Self> {
+    pub fn new(
+        tid: u32,
+        proc_data: Arc<ProcessData>,
+        parent_cred: Option<Arc<Cred>>,
+        signal_mask: SignalSet,
+    ) -> Box<Self> {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
             tid: AtomicU32::new(tid),
-            signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
+            signal: ThreadSignalManager::new_with_blocked(
+                tid,
+                proc_data.signal.clone(),
+                signal_mask,
+            ),
             proc_data,
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
