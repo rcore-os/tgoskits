@@ -11,9 +11,13 @@ mod boards;
 #[cfg(target_os = "uefi")]
 mod console;
 #[cfg(target_os = "uefi")]
+mod control;
+#[cfg(target_os = "uefi")]
 mod entry;
 #[cfg(target_os = "uefi")]
 mod http;
+#[cfg(target_os = "uefi")]
+mod identity;
 #[cfg(target_os = "uefi")]
 mod uefi_boot;
 
@@ -37,7 +41,7 @@ fn efi_main() -> Status {
         logln!("board: {}", boards::active::BOARD_NAME);
         logln!("arch: {}", boards::active::ARCH_NAME);
         logln!("output: {}", boards::active::OUTPUT_FILE);
-        if fetch_manifest() {
+        if fetch_control_offer() || fetch_manifest() {
             return Status::SUCCESS;
         }
         if round < BOOT_ROUND_RETRY_LIMIT {
@@ -47,6 +51,32 @@ fn efi_main() -> Status {
     }
     logln!("error: HTTP Boot retry limit reached");
     Status::SUCCESS
+}
+
+#[cfg(target_os = "uefi")]
+fn fetch_control_offer() -> bool {
+    match control::fetch_boot_offer() {
+        Ok(offer) => {
+            logln!(
+                "boot_offer: boot_id={} arch={} format={} kernel_size={}",
+                offer.boot_id,
+                offer.arch,
+                offer.image_format,
+                offer.kernel_size
+            );
+            logln!("kernel_url: {}", offer.kernel_url);
+            if let Some(entry_symbol) = offer.entry_symbol.as_deref() {
+                logln!("entry_symbol: {entry_symbol}");
+            }
+            logln!("elf_loader_pending: falling back to legacy manifest loader");
+            false
+        }
+        Err(control::ControlError::NoServerUrl) => false,
+        Err(err) => {
+            logln!("control_boot_error: {err:?}");
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "uefi")]

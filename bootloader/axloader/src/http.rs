@@ -51,6 +51,24 @@ pub fn download_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError
     retry_http(|| download_body_once(url, max_len))
 }
 
+pub fn get_json_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
+    let mut client = HttpClient::new()?;
+    let response = retry_http(|| client.get(url, max_len))?;
+    if response.status != HttpStatusCode::STATUS_200_OK {
+        return Err(DownloadError::UnexpectedStatus);
+    }
+    Ok(response.body)
+}
+
+pub fn post_json_body(url: &str, body: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
+    let mut client = HttpClient::new()?;
+    let response = retry_http(|| client.post_json(url, body, max_len))?;
+    if response.status != HttpStatusCode::STATUS_200_OK {
+        return Err(DownloadError::UnexpectedStatus);
+    }
+    Ok(response.body)
+}
+
 fn download_body_once(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
     let handles =
         boot::find_handles::<HttpBinding>().map_err(|_| DownloadError::HttpUnavailable)?;
@@ -343,6 +361,21 @@ impl HttpClient {
         Ok(response.body)
     }
 
+    fn get(&mut self, url: &str, max_len: usize) -> Result<HttpResponse, DownloadError> {
+        self.request_get(url, None)?;
+        self.response_first(max_len)
+    }
+
+    fn post_json(
+        &mut self,
+        url: &str,
+        body: &str,
+        max_len: usize,
+    ) -> Result<HttpResponse, DownloadError> {
+        self.request_post(url, body)?;
+        self.response_first(max_len)
+    }
+
     fn request_get(&mut self, url: &str, range: Option<&str>) -> Result<(), DownloadError> {
         let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
         let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
@@ -374,6 +407,56 @@ impl HttpClient {
         message.data.request = &mut request;
         message.header_count = headers.len();
         message.header = headers.as_mut_ptr();
+
+        let mut token = HttpToken {
+            status: Status::NOT_READY,
+            message: &mut message,
+            ..Default::default()
+        };
+
+        let protocol = self.protocol.as_mut().unwrap();
+        protocol
+            .request(&mut token)
+            .map_err(|_| DownloadError::RequestFailed)?;
+        wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::RequestFailed)
+    }
+
+    fn request_post(&mut self, url: &str, body: &str) -> Result<(), DownloadError> {
+        let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
+        let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
+        let mut host = String::from(host);
+        host.push('\0');
+        let mut content_type = String::from("application/json");
+        content_type.push('\0');
+        let mut content_length = String::new();
+        push_usize(&mut content_length, body.len());
+        content_length.push('\0');
+
+        let mut request = HttpRequestData {
+            method: HttpMethod::POST,
+            url: url16.as_ptr().cast::<u16>(),
+        };
+        let mut headers = [
+            HttpHeader {
+                field_name: c"Host".as_ptr().cast::<u8>(),
+                field_value: host.as_ptr(),
+            },
+            HttpHeader {
+                field_name: c"Content-Type".as_ptr().cast::<u8>(),
+                field_value: content_type.as_ptr(),
+            },
+            HttpHeader {
+                field_name: c"Content-Length".as_ptr().cast::<u8>(),
+                field_value: content_length.as_ptr(),
+            },
+        ];
+
+        let mut message = HttpMessage::default();
+        message.data.request = &mut request;
+        message.header_count = headers.len();
+        message.header = headers.as_mut_ptr();
+        message.body_length = body.len();
+        message.body = body.as_ptr().cast::<c_void>().cast_mut();
 
         let mut token = HttpToken {
             status: Status::NOT_READY,
