@@ -16,6 +16,7 @@ default = []
 
 [dependencies]
 axaddrspace = { workspace = true }
+axbus = { workspace = true }
 axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }
 ax-errno = { workspace = true }

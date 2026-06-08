@@ -4,6 +4,7 @@
 
 use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
+use axbus::InterruptControllerOps;
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use bitmaps::Bitmap;
 
@@ -347,6 +348,37 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 unimplemented!("Unsupported vPlicGlobal read for reg {reg:#x}")
             }
         }
+    }
+}
+
+/// InterruptControllerOps implementation for VPlicGlobal.
+///
+/// Allows the bus router to inject/deactivate interrupts through the
+/// standard trait without knowing RISC-V PLIC internals.
+impl InterruptControllerOps for VPlicGlobal {
+    fn inject_irq(
+        &self,
+        pin: u32,
+        _trigger: axbus::TriggerMode,
+        _target: Option<axbus::IrqTarget>,
+    ) -> axbus::Result<()> {
+        let irq_id = pin as usize;
+        if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
+            return Err(axbus::DeviceError::InvalidResource);
+        }
+        self.pending_irqs.lock().set(irq_id, true);
+        self.sync_all_guest_contexts_vseip()
+            .map_err(|_| axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed")))
+    }
+
+    fn deactivate_irq(&self, pin: u32) -> axbus::Result<()> {
+        let irq_id = pin as usize;
+        if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
+            return Err(axbus::DeviceError::InvalidResource);
+        }
+        self.pending_irqs.lock().set(irq_id, false);
+        self.sync_all_guest_contexts_vseip()
+            .map_err(|_| axbus::DeviceError::BackendError(alloc::string::String::from("sync_vseip failed")))
     }
 }
 

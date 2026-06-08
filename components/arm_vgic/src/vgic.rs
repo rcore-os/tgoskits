@@ -112,3 +112,19 @@ impl Vgic {
     /// Placeholder method for unused operations.
     pub fn nothing(&self, _value: u32) {}
 }
+
+impl axbus::InterruptControllerOps for Vgic {
+    fn inject_irq(
+        &self,
+        pin: u32,
+        _trigger: axbus::TriggerMode,
+        _target: Option<axbus::IrqTarget>,
+    ) -> axbus::Result<()> {
+        crate::api_reexp::hardware_inject_virtual_interrupt(pin as _);
+        Ok(())
+    }
+
+    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<()> {
+        Ok(())
+    }
+}

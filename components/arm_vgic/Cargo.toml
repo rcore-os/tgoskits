@@ -23,6 +23,7 @@ vgicv3 = []
 
 [dependencies]
 axaddrspace = { workspace = true }
+axbus = { workspace = true }
 axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }
 aarch64-cpu = "11.0"
