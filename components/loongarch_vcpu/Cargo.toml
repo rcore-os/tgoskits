@@ -19,4 +19,5 @@ spin = "0.10"
 ax-errno = { workspace = true }
 ax-percpu = { workspace = true }
 axaddrspace = { workspace = true }
+axbus = { workspace = true }
 axvcpu = { workspace = true }

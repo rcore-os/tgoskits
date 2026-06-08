@@ -135,3 +135,56 @@ pub fn inject_interrupt(vector: usize) {
         }
     }
 }
+
+/// LoongArch CSR-based interrupt controller adapter.
+///
+/// Wraps the CSR write logic (GINTC/GCSR_ESTAT) into InterruptControllerOps
+/// so the IRQ router can dispatch interrupts without architecture coupling.
+#[derive(Debug)]
+pub struct LoongArchCsrIntc;
+
+impl axbus::InterruptControllerOps for LoongArchCsrIntc {
+    fn inject_irq(
+        &self,
+        pin: u32,
+        _trigger: axbus::TriggerMode,
+        _target: Option<axbus::IrqTarget>,
+    ) -> axbus::Result<()> {
+        let vector = pin as usize;
+        if vector > INT_IPI {
+            return Err(axbus::DeviceError::InvalidResource);
+        }
+        inject_interrupt(vector);
+        Ok(())
+    }
+
+    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<()> {
+        Ok(())
+    }
+}
+
+impl axbus::VirtualDevice for LoongArchCsrIntc {
+    fn id(&self) -> axbus::DeviceId {
+        axbus::DeviceId::from_u64(0)
+    }
+
+    fn name(&self) -> &str {
+        "loongarch-csr-intc"
+    }
+
+    fn resources(&self) -> &[axbus::Resource] {
+        &[]
+    }
+
+    fn handle_access(&self, bus: axbus::BusKind, access: &axbus::BusAccess) -> axbus::BusResponse {
+        axbus::BusResponse::NoDevice { bus, addr: access.addr() }
+    }
+
+    fn as_interrupt_controller(&self) -> Option<&dyn axbus::InterruptControllerOps> {
+        Some(self)
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}

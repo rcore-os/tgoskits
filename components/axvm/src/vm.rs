@@ -378,6 +378,13 @@ impl AxVM {
         if let Some(intc_id) = intc_device_id {
             router.set_default_intc(intc_id);
         }
+        #[cfg(target_arch = "loongarch64")]
+        if intc_device_id.is_none() {
+            let intc_id = router.register(StdArc::new(
+                loongarch_vcpu::LoongArchCsrIntc,
+            )).expect("failed to register LoongArch CSR intc");
+            router.set_default_intc(intc_id);
+        }
         for dev in devices.iter_sys_reg_dev() {
             let id = DeviceId::from_u64(dev_id); dev_id += 1;
             let adapter = LegacySysRegAdapter::new(id, dev.clone());
