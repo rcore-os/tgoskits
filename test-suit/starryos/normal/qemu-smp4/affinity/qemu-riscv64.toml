@@ -13,6 +13,7 @@ shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/test_proc_status_affinity",
     "/usr/bin/bug-sched-affinity-pid",
+    "/usr/bin/bug-sched-affinity-migrate",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
