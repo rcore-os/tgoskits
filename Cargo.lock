@@ -473,6 +473,7 @@ dependencies = [
  "ax-errno",
  "ax-memory-addr",
  "axaddrspace",
+ "axbus",
  "axdevice_base",
  "axvisor_api",
  "bitmaps",
@@ -1983,6 +1984,7 @@ dependencies = [
  "riscv_vcpu",
  "spin 0.10.0",
  "x86_vcpu",
+ "x86_vlapic",
 ]
 
 [[package]]
@@ -4927,6 +4929,7 @@ dependencies = [
  "ax-errno",
  "ax-percpu",
  "axaddrspace",
+ "axbus",
  "axvcpu",
  "log",
  "spin 0.10.0",
@@ -6563,6 +6566,7 @@ version = "0.4.8"
 dependencies = [
  "ax-errno",
  "axaddrspace",
+ "axbus",
  "axdevice_base",
  "axvisor_api",
  "bitmaps",
@@ -9554,6 +9558,7 @@ dependencies = [
  "ax-errno",
  "ax-memory-addr",
  "axaddrspace",
+ "axbus",
  "axdevice_base",
  "axvisor_api",
  "bit",

@@ -121,6 +121,70 @@ impl BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic {
     }
 }
 
+/// VM-level x86 interrupt controller adapter for the BusRouter.
+///
+/// The actual per-vCPU LAPIC state lives in `EmulatedLocalApic` inside each
+/// vCPU struct. This adapter bridges the `InterruptControllerOps` trait so
+/// the IRQ router can inject interrupts without architecture coupling.
+/// Internally delegates to `axvisor_api::vmm::inject_interrupt`.
+#[derive(Debug)]
+pub struct X86IntcAdapter {
+    vm_id: VMId,
+}
+
+impl X86IntcAdapter {
+    /// Create a new adapter for the given VM.
+    pub fn new(vm_id: VMId) -> Self {
+        Self { vm_id }
+    }
+}
+
+impl axbus::InterruptControllerOps for X86IntcAdapter {
+    fn inject_irq(
+        &self,
+        pin: u32,
+        _trigger: axbus::TriggerMode,
+        target: Option<axbus::IrqTarget>,
+    ) -> axbus::Result<()> {
+        let vcpu_id = match target {
+            Some(axbus::IrqTarget::Cpu(id)) => id as VCpuId,
+            _ => 0,
+        };
+        axvisor_api::vmm::inject_interrupt(self.vm_id, vcpu_id, pin as _);
+        Ok(())
+    }
+
+    fn deactivate_irq(&self, _pin: u32) -> axbus::Result<()> {
+        Ok(())
+    }
+}
+
+impl axbus::VirtualDevice for X86IntcAdapter {
+    fn id(&self) -> axbus::DeviceId {
+        axbus::DeviceId::from_u64(0)
+    }
+
+    fn name(&self) -> &str {
+        "x86-intc-adapter"
+    }
+
+    fn resources(&self) -> &[axbus::Resource] {
+        &[]
+    }
+
+    fn handle_access(&self, bus: axbus::BusKind, access: &axbus::BusAccess) -> axbus::BusResponse {
+        axbus::BusResponse::NoDevice { bus, addr: access.addr() }
+    }
+
+    fn as_interrupt_controller(&self) -> Option<&dyn axbus::InterruptControllerOps> {
+        Some(self)
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
+
 impl BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::InterruptController

@@ -21,5 +21,6 @@ bit = "0.1.1"
 ax-memory-addr = { workspace = true }
 ax-errno = { workspace = true }
 axaddrspace = { workspace = true }
+axbus = { workspace = true }
 axdevice_base = { workspace = true }
 axvisor_api = { workspace = true }

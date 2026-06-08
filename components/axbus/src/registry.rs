@@ -279,6 +279,17 @@ impl DeviceRegistry {
         self.slotmap.is_empty()
     }
 
+    /// Check whether the range `[start, end)` overlaps any MMIO interval
+    /// already in the registry. Returns the conflicting interval if found.
+    pub fn check_mmio_overlap(&self, start: u64, end: u64) -> Option<(u64, u64)> {
+        if let Some((&prev_start, &(prev_end, _))) = self.mmio_tree.intervals.range(..end).next_back() {
+            if prev_end > start && prev_start < end {
+                return Some((prev_start, prev_end));
+            }
+        }
+        None
+    }
+
     /// Route a bus access to the appropriate device and return the response.
     pub fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
         let dev = match bus {
@@ -529,5 +540,65 @@ mod tests {
         assert!(reg.lookup(BusKind::Mmio, 0x1fff).is_some());
         // at end (exclusive, should not match)
         assert!(reg.lookup(BusKind::Mmio, 0x2000).is_none());
+    }
+
+    // ── check_mmio_overlap tests ────────────────────────────────────────
+
+    #[test]
+    fn test_check_mmio_overlap_hit() {
+        let mut reg = DeviceRegistry::new();
+        let dev = Arc::new(DummyDevice {
+            id: DeviceId::from_u64(0),
+            resources: vec![Resource::Mmio(0x1000..0x2000)],
+        });
+        reg.register(dev).unwrap();
+
+        let conflict = reg.check_mmio_overlap(0x1800, 0x2800);
+        assert_eq!(conflict, Some((0x1000, 0x2000)));
+    }
+
+    #[test]
+    fn test_check_mmio_overlap_miss() {
+        let mut reg = DeviceRegistry::new();
+        let dev = Arc::new(DummyDevice {
+            id: DeviceId::from_u64(0),
+            resources: vec![Resource::Mmio(0x1000..0x2000)],
+        });
+        reg.register(dev).unwrap();
+
+        assert!(reg.check_mmio_overlap(0x3000, 0x4000).is_none());
+    }
+
+    #[test]
+    fn test_check_mmio_overlap_adjacent() {
+        let mut reg = DeviceRegistry::new();
+        let dev = Arc::new(DummyDevice {
+            id: DeviceId::from_u64(0),
+            resources: vec![Resource::Mmio(0x1000..0x2000)],
+        });
+        reg.register(dev).unwrap();
+
+        // [0x2000, 0x3000) is adjacent, not overlapping
+        assert!(reg.check_mmio_overlap(0x2000, 0x3000).is_none());
+    }
+
+    #[test]
+    fn test_check_mmio_overlap_empty_registry() {
+        let reg = DeviceRegistry::new();
+        assert!(reg.check_mmio_overlap(0x0, 0x10000).is_none());
+    }
+
+    #[test]
+    fn test_check_mmio_overlap_contained() {
+        let mut reg = DeviceRegistry::new();
+        let dev = Arc::new(DummyDevice {
+            id: DeviceId::from_u64(0),
+            resources: vec![Resource::Mmio(0x1000..0x2000)],
+        });
+        reg.register(dev).unwrap();
+
+        // Query range fully contains the device range
+        let conflict = reg.check_mmio_overlap(0x0, 0x10000);
+        assert_eq!(conflict, Some((0x1000, 0x2000)));
     }
 }

@@ -146,7 +146,17 @@ impl AxVmDevices {
                         this.intc_ops = Some(vgic.clone() as Arc<dyn axbus::InterruptControllerOps>);
                         this.add_mmio_dev(vgic);
                     }
-                    #[cfg(not(target_arch = "aarch64"))]
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let vm_id = config
+                            .cfg_list
+                            .first()
+                            .copied()
+                            .unwrap_or(0);
+                        let adapter = Arc::new(x86_vlapic::X86IntcAdapter::new(vm_id));
+                        this.intc_ops = Some(adapter as Arc<dyn axbus::InterruptControllerOps>);
+                    }
+                    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
                     {
                         warn!(
                             "emu type: {} is not supported on this platform",

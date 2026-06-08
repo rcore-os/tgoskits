@@ -236,7 +236,12 @@ impl DeviceFactory for VPlicGlobalFactory {
 
 // ── x86_64 vLAPIC ──────────────────────────────────────────
 
-/// Factory for x86 virtual LAPIC (MMIO + SysReg).
+/// Placeholder factory for x86 vLAPIC.
+///
+/// The per-vCPU `EmulatedLocalApic` is created inside VmxVcpu/SvmVcpu, not
+/// from config. The VM-level `X86IntcAdapter` is registered via
+/// `AxVmDevices::init()` when `EmulatedDeviceType::InterruptController` is
+/// encountered on x86_64.
 pub struct VLapicFactory;
 
 impl DeviceFactory for VLapicFactory {

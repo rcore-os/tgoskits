@@ -385,6 +385,15 @@ impl AxVM {
             )).expect("failed to register LoongArch CSR intc");
             router.set_default_intc(intc_id);
         }
+        #[cfg(target_arch = "x86_64")]
+        if intc_device_id.is_none() {
+            if let Some(ref ops) = intc_ops {
+                let intc_id = router.register(StdArc::new(
+                    x86_vlapic::X86IntcAdapter::new(self.id()),
+                )).expect("failed to register x86 intc adapter");
+                router.set_default_intc(intc_id);
+            }
+        }
         for dev in devices.iter_sys_reg_dev() {
             let id = DeviceId::from_u64(dev_id); dev_id += 1;
             let adapter = LegacySysRegAdapter::new(id, dev.clone());
@@ -394,6 +403,18 @@ impl AxVM {
             let id = DeviceId::from_u64(dev_id); dev_id += 1;
             let adapter = axbus::LegacyPortAdapter::new(id, dev.clone());
             let _ = router.register(StdArc::new(adapter));
+        }
+
+        // Check passthrough device ranges against emulated device MMIO ranges.
+        for &(gpa, len) in &pt_dev_region {
+            let start = gpa as u64;
+            let end = start + len as u64;
+            if let Some((emu_start, emu_end)) = router.check_passthrough_overlap(start, end) {
+                warn!(
+                    "passthrough range [{:#x}, {:#x}) overlaps emulated device [{:#x}, {:#x})",
+                    start, end, emu_start, emu_end
+                );
+            }
         }
 
         // Build IVCManager from the first IVCChannel emulated device config.

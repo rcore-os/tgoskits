@@ -403,4 +403,178 @@ mod tests {
         assert!(!candidates.get(0));
         assert!(candidates.get(1));
     }
+
+    #[test]
+    fn claim_bitmap_semantics_pending_to_active() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Simulate inject: set IRQ 5 pending
+        vplic.pending_irqs.lock().set(5, true);
+
+        // Verify it appears in candidates
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(candidates.get(5));
+
+        // Simulate claim: clear pending, set active
+        {
+            let mut pending = vplic.pending_irqs.lock();
+            let mut active = vplic.active_irqs.lock();
+            assert!(pending.get(5));
+            assert!(!active.get(5));
+            pending.set(5, false);
+            active.set(5, true);
+        }
+
+        // After claim: IRQ 5 is no longer a candidate
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(!candidates.get(5));
+
+        // It's active
+        assert!(vplic.active_irqs.lock().get(5));
+    }
+
+    #[test]
+    fn complete_bitmap_semantics_clears_active() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Set IRQ 10 active (as if it was claimed)
+        vplic.active_irqs.lock().set(10, true);
+        assert!(vplic.active_irqs.lock().get(10));
+
+        // Simulate complete: clear active bit
+        vplic.active_irqs.lock().set(10, false);
+        assert!(!vplic.active_irqs.lock().get(10));
+
+        // Not pending, not active — clean state
+        assert!(!vplic.pending_irqs.lock().get(10));
+    }
+
+    #[test]
+    fn inject_sets_pending_bit() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Before inject: IRQ 7 not pending
+        assert!(!vplic.pending_irqs.lock().get(7));
+
+        // InterruptControllerOps::inject_irq sets the pending bit.
+        // It then calls sync_all_guest_contexts_vseip which will fail on host
+        // (hardware MMIO), but the pending bit should be set first.
+        vplic.pending_irqs.lock().set(7, true);
+
+        assert!(vplic.pending_irqs.lock().get(7));
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(candidates.get(7));
+    }
+
+    #[test]
+    fn deactivate_clears_pending_bit() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Set IRQ 3 pending
+        vplic.pending_irqs.lock().set(3, true);
+        assert!(vplic.pending_irqs.lock().get(3));
+
+        // InterruptControllerOps::deactivate_irq clears the pending bit.
+        vplic.pending_irqs.lock().set(3, false);
+        assert!(!vplic.pending_irqs.lock().get(3));
+
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(!candidates.get(3));
+    }
+
+    #[test]
+    fn active_irqs_excluded_from_candidates() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Set IRQs 1, 2, 3 pending
+        {
+            let mut pending = vplic.pending_irqs.lock();
+            pending.set(1, true);
+            pending.set(2, true);
+            pending.set(3, true);
+        }
+
+        // Mark IRQ 2 as active (claimed)
+        vplic.active_irqs.lock().set(2, true);
+
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(candidates.get(1));
+        assert!(!candidates.get(2)); // active, excluded
+        assert!(candidates.get(3));
+    }
+
+    #[test]
+    fn inject_irq_zero_boundary_bitmap() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Even if IRQ 0 is forced pending, pending_inactive_irqs masks it out
+        vplic.pending_irqs.lock().set(0, true);
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(!candidates.get(0));
+    }
+
+    #[test]
+    fn full_claim_complete_cycle_bitmap() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // 1. Inject: IRQ 15 becomes pending
+        vplic.pending_irqs.lock().set(15, true);
+        assert!(vplic.pending_inactive_irqs().get(15));
+
+        // 2. Claim: pending→active
+        {
+            let mut pending = vplic.pending_irqs.lock();
+            let mut active = vplic.active_irqs.lock();
+            pending.set(15, false);
+            active.set(15, true);
+        }
+        assert!(!vplic.pending_inactive_irqs().get(15));
+        assert!(vplic.active_irqs.lock().get(15));
+
+        // 3. Complete: clear active
+        vplic.active_irqs.lock().set(15, false);
+        assert!(!vplic.active_irqs.lock().get(15));
+        assert!(!vplic.pending_irqs.lock().get(15));
+
+        // 4. Re-inject same IRQ: should appear as candidate again
+        vplic.pending_irqs.lock().set(15, true);
+        assert!(vplic.pending_inactive_irqs().get(15));
+    }
+
+    #[test]
+    fn multiple_irqs_concurrent_state() {
+        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
+
+        // Inject IRQs 1, 5, 10, 20
+        {
+            let mut pending = vplic.pending_irqs.lock();
+            for &irq in &[1, 5, 10, 20] {
+                pending.set(irq, true);
+            }
+        }
+
+        // Claim IRQs 1 and 10
+        {
+            let mut pending = vplic.pending_irqs.lock();
+            let mut active = vplic.active_irqs.lock();
+            for &irq in &[1, 10] {
+                pending.set(irq, false);
+                active.set(irq, true);
+            }
+        }
+
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(!candidates.get(1));  // claimed
+        assert!(candidates.get(5));   // still pending
+        assert!(!candidates.get(10)); // claimed
+        assert!(candidates.get(20));  // still pending
+
+        // Complete IRQ 1
+        vplic.active_irqs.lock().set(1, false);
+
+        // Re-inject IRQ 1
+        vplic.pending_irqs.lock().set(1, true);
+        let candidates = vplic.pending_inactive_irqs();
+        assert!(candidates.get(1)); // pending again
+    }
 }

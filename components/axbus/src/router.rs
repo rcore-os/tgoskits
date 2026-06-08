@@ -185,6 +185,12 @@ impl BusRouter {
     pub fn total_devices(&self) -> usize {
         self.registry.len()
     }
+
+    /// Check whether a passthrough device range `[start, end)` overlaps any
+    /// emulated device MMIO region. Returns the conflicting interval if found.
+    pub fn check_passthrough_overlap(&self, start: u64, end: u64) -> Option<(u64, u64)> {
+        self.registry.check_mmio_overlap(start, end)
+    }
 }
 
 #[cfg(test)]
@@ -784,5 +790,263 @@ mod tests {
         let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
         let guard = mock.last_injected.lock().unwrap();
         assert!(guard.is_some());
+    }
+
+    // ── Passthrough / emulated overlap detection ───────────────────────
+
+    #[test]
+    fn test_passthrough_emulated_overlap_detected() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(TestDevice)).unwrap();
+        // TestDevice occupies MMIO 0x1000..0x2000
+        let conflict = router.check_passthrough_overlap(0x1800, 0x2800);
+        assert!(conflict.is_some());
+        let (start, end) = conflict.unwrap();
+        assert_eq!(start, 0x1000);
+        assert_eq!(end, 0x2000);
+    }
+
+    #[test]
+    fn test_passthrough_no_overlap() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(TestDevice)).unwrap();
+        assert!(router.check_passthrough_overlap(0x3000, 0x4000).is_none());
+    }
+
+    #[test]
+    fn test_passthrough_adjacent_no_overlap() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(TestDevice)).unwrap();
+        // TestDevice is [0x1000, 0x2000), passthrough is [0x2000, 0x3000)
+        assert!(router.check_passthrough_overlap(0x2000, 0x3000).is_none());
+    }
+
+    #[test]
+    fn test_passthrough_overlap_covers_entire_device() {
+        let mut router = BusRouter::new();
+        router.register(Arc::new(TestDevice)).unwrap();
+        // Passthrough range fully contains the device range
+        let conflict = router.check_passthrough_overlap(0x0, 0x10000);
+        assert!(conflict.is_some());
+    }
+
+    // ── Rapid successive IRQ injection ─────────────────────────────────
+
+    #[derive(Debug)]
+    struct CountingIntc {
+        resources: Vec<Resource>,
+        inject_count: std::sync::atomic::AtomicU32,
+    }
+
+    impl VirtualDevice for CountingIntc {
+        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
+        fn name(&self) -> &str { "counting-intc" }
+        fn resources(&self) -> &[Resource] { &self.resources }
+        fn handle_access(&self, _bus: BusKind, _access: &BusAccess) -> BusResponse {
+            BusResponse::Success(None)
+        }
+        fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
+            Some(self)
+        }
+        fn as_any(&self) -> &dyn Any { self }
+    }
+
+    impl InterruptControllerOps for CountingIntc {
+        fn inject_irq(&self, _pin: u32, _trigger: TriggerMode, _target: Option<IrqTarget>) -> Result<()> {
+            self.inject_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        fn deactivate_irq(&self, _pin: u32) -> Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn test_rapid_successive_irq_injection() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(CountingIntc {
+            resources: vec![Resource::Mmio(0xf000_0000..0xf010_0000)],
+            inject_count: std::sync::atomic::AtomicU32::new(0),
+        });
+        let intc_id = router.register(intc.clone()).unwrap();
+        router.set_default_intc(intc_id);
+
+        for i in 0..100u32 {
+            let result = router.inject(IrqMessage::leg(IrqLine(i)));
+            assert!(result.is_ok(), "injection #{i} failed");
+        }
+
+        assert_eq!(intc.inject_count.load(std::sync::atomic::Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn test_inject_same_line_repeatedly() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(CountingIntc {
+            resources: vec![Resource::Mmio(0xf000_0000..0xf010_0000)],
+            inject_count: std::sync::atomic::AtomicU32::new(0),
+        });
+        let intc_id = router.register(intc.clone()).unwrap();
+        router.set_default_intc(intc_id);
+
+        for _ in 0..50 {
+            assert!(router.inject(IrqMessage::leg(IrqLine(42))).is_ok());
+        }
+
+        assert_eq!(intc.inject_count.load(std::sync::atomic::Ordering::Relaxed), 50);
+    }
+
+    // ── x86-style intc adapter interface compliance ────────────────────
+
+    #[derive(Debug)]
+    struct MockX86Intc {
+        last_injected: std::sync::Mutex<Option<(u32, Option<IrqTarget>)>>,
+    }
+
+    impl VirtualDevice for MockX86Intc {
+        fn id(&self) -> DeviceId { DeviceId::from_u64(0) }
+        fn name(&self) -> &str { "mock-x86-intc" }
+        fn resources(&self) -> &[Resource] { &[] }
+        fn handle_access(&self, bus: BusKind, access: &BusAccess) -> BusResponse {
+            BusResponse::NoDevice { bus, addr: access.addr() }
+        }
+        fn as_interrupt_controller(&self) -> Option<&dyn InterruptControllerOps> {
+            Some(self)
+        }
+        fn as_any(&self) -> &dyn Any { self }
+    }
+
+    impl InterruptControllerOps for MockX86Intc {
+        fn inject_irq(&self, pin: u32, _trigger: TriggerMode, target: Option<IrqTarget>) -> Result<()> {
+            *self.last_injected.lock().unwrap() = Some((pin, target));
+            Ok(())
+        }
+        fn deactivate_irq(&self, _pin: u32) -> Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn test_x86_intc_adapter_inject() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockX86Intc {
+            last_injected: std::sync::Mutex::new(None),
+        });
+        let intc_id = router.register(intc.clone()).unwrap();
+        router.set_default_intc(intc_id);
+
+        assert!(router.inject(IrqMessage::leg(IrqLine(0x20))).is_ok());
+
+        let guard = intc.last_injected.lock().unwrap();
+        let (pin, _) = guard.unwrap();
+        assert_eq!(pin, 0x20);
+    }
+
+    #[test]
+    fn test_x86_intc_adapter_deactivate_noop() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockX86Intc {
+            last_injected: std::sync::Mutex::new(None),
+        });
+        let intc_id = router.register(intc.clone()).unwrap();
+
+        router.irq_table_mut().add_legacy(
+            IrqLine(10), intc_id, 10, TriggerMode::Level { high: true }, None, "test",
+        );
+
+        assert!(router.deactivate_irq(IrqLine(10)).is_ok());
+    }
+
+    #[test]
+    fn test_x86_intc_no_mmio_resources_still_routable() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockX86Intc {
+            last_injected: std::sync::Mutex::new(None),
+        });
+        let intc_id = router.register(intc.clone()).unwrap();
+        assert_eq!(router.total_devices(), 1);
+
+        // No MMIO resources — bus access returns NoDevice
+        let resp = router.route(BusKind::Mmio, &BusAccess::Read { addr: 0x1000, width: AccessWidth::U32 });
+        assert!(matches!(resp, BusResponse::NoDevice { .. }));
+
+        // But IRQ injection works via default intc
+        router.set_default_intc(intc_id);
+        assert!(router.inject(IrqMessage::leg(IrqLine(5))).is_ok());
+    }
+
+    // ── IPI routing with different targets ─────────────────────────────
+
+    #[test]
+    fn test_ipi_routing_different_targets() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockIntc::new(DeviceId::from_u64(0)));
+        let intc_id = router.register(intc.clone()).unwrap();
+
+        // Route lines with specific CPU targets
+        router.irq_table_mut().add_legacy(
+            IrqLine(0), intc_id, 0, TriggerMode::Edge, Some(IrqTarget::Cpu(0)), "ipi-cpu0",
+        );
+        router.irq_table_mut().add_legacy(
+            IrqLine(1), intc_id, 1, TriggerMode::Edge, Some(IrqTarget::Cpu(1)), "ipi-cpu1",
+        );
+
+        router.inject(IrqMessage::leg(IrqLine(0))).unwrap();
+        {
+            let guard = intc.last_injected.lock().unwrap();
+            let (pin, _, target) = guard.unwrap();
+            assert_eq!(pin, 0);
+            assert_eq!(target, Some(IrqTarget::Cpu(0)));
+        }
+
+        router.inject(IrqMessage::leg(IrqLine(1))).unwrap();
+        {
+            let guard = intc.last_injected.lock().unwrap();
+            let (pin, _, target) = guard.unwrap();
+            assert_eq!(pin, 1);
+            assert_eq!(target, Some(IrqTarget::Cpu(1)));
+        }
+    }
+
+    #[test]
+    fn test_ipi_broadcast_target_global() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockIntc::new(DeviceId::from_u64(0)));
+        let intc_id = router.register(intc.clone()).unwrap();
+
+        router.irq_table_mut().add_legacy(
+            IrqLine(255), intc_id, 255, TriggerMode::Edge, Some(IrqTarget::Global), "broadcast",
+        );
+
+        router.inject(IrqMessage::leg(IrqLine(255))).unwrap();
+
+        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
+        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
+        let guard = mock.last_injected.lock().unwrap();
+        let (pin, _, target) = guard.unwrap();
+        assert_eq!(pin, 255);
+        assert_eq!(target, Some(IrqTarget::Global));
+    }
+
+    // ── Timer IRQ injection via router ─────────────────────────────────
+
+    #[test]
+    fn test_timer_irq_injection_via_router() {
+        let mut router = BusRouter::new();
+        let intc = Arc::new(MockIntc::new(DeviceId::from_u64(0)));
+        let intc_id = router.register(intc.clone()).unwrap();
+
+        // Simulate a timer IRQ line routed through the controller
+        let timer_irq = IrqLine(27);
+        router.irq_table_mut().add_legacy(
+            timer_irq, intc_id, 27, TriggerMode::Edge, Some(IrqTarget::Cpu(0)), "vtimer",
+        );
+
+        // Timer expires → inject via router
+        router.inject(IrqMessage::leg(timer_irq)).unwrap();
+
+        let ctrl = router.find_interrupt_controller(intc_id).unwrap();
+        let mock = ctrl.as_any().downcast_ref::<MockIntc>().unwrap();
+        let guard = mock.last_injected.lock().unwrap();
+        let (pin, trigger, target) = guard.unwrap();
+        assert_eq!(pin, 27);
+        assert_eq!(trigger, TriggerMode::Edge);
+        assert_eq!(target, Some(IrqTarget::Cpu(0)));
     }
 }
