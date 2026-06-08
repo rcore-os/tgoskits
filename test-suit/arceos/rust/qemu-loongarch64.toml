@@ -27,5 +27,5 @@ fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_TEST_FAIL"]
 
 [host_http_server]
 bind = "127.0.0.1"
-port = 18080
+port = 18183
 body = "ArceOS rust test suite host fixture\n"

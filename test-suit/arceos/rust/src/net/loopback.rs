@@ -4,7 +4,15 @@ use std::{
     println,
 };
 
-const HOST_HTTP: &str = "10.0.2.2:18080";
+#[cfg(target_arch = "x86_64")]
+const HOST_HTTP: &str = "10.0.2.2:18180";
+#[cfg(target_arch = "aarch64")]
+const HOST_HTTP: &str = "10.0.2.2:18181";
+#[cfg(target_arch = "riscv64")]
+const HOST_HTTP: &str = "10.0.2.2:18182";
+#[cfg(target_arch = "loongarch64")]
+const HOST_HTTP: &str = "10.0.2.2:18183";
+
 const HOST_HTTP_BODY: &str = "ArceOS rust test suite host fixture\n";
 const HTTP_REQUEST: &str = "GET / HTTP/1.1\r\nHost: axbuild.local\r\nAccept: */*\r\n\r\n";
 const SERVER_SMOKE_PORT: u16 = 5555;

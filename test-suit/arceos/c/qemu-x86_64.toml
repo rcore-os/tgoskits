@@ -15,5 +15,5 @@ timeout = 120
 
 [host_http_server]
 bind = "127.0.0.1"
-port = 18080
+port = 18280
 body = "ArceOS C test suite host fixture\n"

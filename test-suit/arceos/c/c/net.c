@@ -9,7 +9,19 @@
 #include <unistd.h>
 
 #define HOST_HTTP_BODY "ArceOS C test suite host fixture\n"
+
+#if defined(__x86_64__)
+#define HOST_HTTP_PORT "18280"
+#elif defined(__aarch64__)
+#define HOST_HTTP_PORT "18281"
+#elif defined(__riscv) && __riscv_xlen == 64
+#define HOST_HTTP_PORT "18282"
+#elif defined(__loongarch64)
+#define HOST_HTTP_PORT "18283"
+#else
 #define HOST_HTTP_PORT "18080"
+#endif
+
 #define HTTP_OK_PREFIX "HTTP/1.1 200 OK"
 
 static const char HTTP_REQUEST[] =
