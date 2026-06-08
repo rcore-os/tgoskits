@@ -236,10 +236,10 @@ fn release(session: api_control::SessionId) -> AxResult {
         let Some(removed) = sessions.remove(&session) else {
             return ax_err!(NotFound);
         };
-        if let Session::Vcpu(vcpu) = &removed {
-            if let Some(Session::Vm(vm)) = sessions.get_mut(&vcpu.vm_session) {
-                vm.vcpu_ids.remove(&vcpu.vcpu_id);
-            }
+        if let Session::Vcpu(vcpu) = &removed
+            && let Some(Session::Vm(vm)) = sessions.get_mut(&vcpu.vm_session)
+        {
+            vm.vcpu_ids.remove(&vcpu.vcpu_id);
         }
         removed
     };
@@ -951,8 +951,7 @@ fn map_acquired_user_memory(
 
     let flags =
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER;
-    let mut mapped_pages = 0;
-    for (page_index, page_hpa) in acquired.pages.iter().enumerate() {
+    for (mapped_pages, (page_index, page_hpa)) in acquired.pages.iter().enumerate().enumerate() {
         let page_gpa = region.guest_phys_addr as usize + page_index * PAGE_SIZE_USIZE;
         if let Err(err) = vm.map_region(
             GuestPhysAddr::from(page_gpa),
@@ -967,7 +966,6 @@ fn map_acquired_user_memory(
             }
             return Err(err);
         }
-        mapped_pages += 1;
     }
 
     Ok(())
