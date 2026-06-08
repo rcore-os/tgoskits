@@ -545,110 +545,6 @@ struct ThreadDir {
     procfs_pid: Option<Pid>,
 }
 
-struct ProcMemFile {
-    task: WeakAxTaskRef,
-}
-
-struct ProcMemSegment {
-    start: VirtAddr,
-    size: usize,
-}
-
-impl ProcMemFile {
-    fn access(
-        &self,
-        offset: u64,
-        len: usize,
-        access_flags: MappingFlags,
-    ) -> VfsResult<(AxTaskRef, Vec<ProcMemSegment>)> {
-        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
-        let start_addr = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
-        let start = VirtAddr::from_usize(start_addr);
-        let end = start_addr.checked_add(len).ok_or(VfsError::InvalidInput)?;
-        let end = VirtAddr::from_usize(end);
-
-        let aspace_arc = task.as_thread().proc_data.aspace();
-        let mut aspace = aspace_arc.lock();
-        let frags = aspace.areas_in_range(start, len);
-        if frags.is_empty() || frags[0].0 != start {
-            return Err(VfsError::NoMemory);
-        }
-
-        let mut covered = start;
-        let mut segments = alloc::vec::Vec::new();
-        for (frag_start, frag_size, _flags, _backend) in frags {
-            if frag_start != covered {
-                break;
-            }
-            let frag_end = frag_start + frag_size;
-            let page_start = frag_start.align_down_4k();
-            let page_end = frag_end.align_up_4k();
-            aspace
-                .populate_area(page_start, page_end - page_start, access_flags)
-                .map_err(|_| VfsError::NoMemory)?;
-            segments.push(ProcMemSegment {
-                start: frag_start,
-                size: frag_size,
-            });
-            covered = frag_end;
-            if covered >= end {
-                break;
-            }
-        }
-
-        if segments.is_empty() {
-            return Err(VfsError::NoMemory);
-        }
-
-        Ok((task, segments))
-    }
-}
-
-impl DirectRwFsFileOps for ProcMemFile {
-    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let (task, segments) = self.access(offset, buf.len(), MappingFlags::READ)?;
-        let aspace_arc = task.as_thread().proc_data.aspace();
-        let aspace = aspace_arc.lock();
-        let mut copied = 0usize;
-        for seg in segments {
-            let to_copy = seg.size.min(buf.len() - copied);
-            aspace
-                .read(seg.start, &mut buf[copied..copied + to_copy])
-                .map_err(|_| VfsError::NoMemory)?;
-            copied += to_copy;
-            if copied >= buf.len() {
-                break;
-            }
-        }
-        Ok(copied)
-    }
-
-    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let (task, segments) = self.access(offset, buf.len(), MappingFlags::WRITE)?;
-        let aspace_arc = task.as_thread().proc_data.aspace();
-        let aspace = aspace_arc.lock();
-        let mut written = 0usize;
-        for seg in segments {
-            let to_write = seg.size.min(buf.len() - written);
-            aspace
-                .write(seg.start, &buf[written..written + to_write])
-                .map_err(|_| VfsError::NoMemory)?;
-            written += to_write;
-            if written >= buf.len() {
-                break;
-            }
-        }
-        ax_runtime::hal::cpu::asm::flush_icache_all();
-        Ok(written)
-    }
-}
-
 fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
     let mut output = String::new();
 
@@ -884,14 +780,6 @@ impl SimpleDirOps for ThreadDir {
                 .into()
             }
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
-            "mem" => SpecialFsFile::new_regular_with_perm(
-                fs,
-                ProcMemFile {
-                    task: Arc::downgrade(&task),
-                },
-                NodePermission::from_bits_truncate(0o600),
-            )
-            .into(),
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
