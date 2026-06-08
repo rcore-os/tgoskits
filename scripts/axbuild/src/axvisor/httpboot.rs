@@ -5,12 +5,8 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use axloader::{
-    ElfImageReport, hex, inspect_elf, known_target, validate_manifest_address,
-    write_flat_binary_from_elf,
-};
+use axloader::{ElfImageReport, hex, inspect_elf, known_target, validate_manifest_address};
 use clap::{Args as ClapArgs, Subcommand};
-use httpboot_protocol::HttpBootArtifactResponse;
 use ostool::board::{load_board_global_config_with_notice, terminal};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -18,7 +14,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::{
     axvisor::{ArgsBuild, Axvisor},
     backtrace,
-    context::{SnapshotPersistence, axbuild_tmp_dir},
+    context::SnapshotPersistence,
 };
 
 #[derive(ClapArgs)]
@@ -87,7 +83,7 @@ pub struct ArgsPublish {
     #[arg(long, value_name = "PATH")]
     pub elf: Option<PathBuf>,
 
-    /// Output path for the generated flat kernel image.
+    /// Deprecated: flat kernel image output was used by legacy manifest publishing.
     #[arg(long = "kernel-bin", value_name = "PATH")]
     pub kernel_bin: Option<PathBuf>,
 
@@ -112,11 +108,11 @@ pub struct ArgsPublish {
     #[arg(long = "remote-name", value_name = "NAME")]
     pub remote_name: Option<String>,
 
-    /// Override manifest.kernel_load_addr.
+    /// Deprecated: the discovery loader reads load addresses from the ELF.
     #[arg(long = "kernel-load-addr", value_name = "HEX")]
     pub kernel_load_addr: Option<String>,
 
-    /// Override manifest.entry_point.
+    /// Deprecated: the discovery loader reads the entry point from the ELF.
     #[arg(long = "entry-point", value_name = "HEX")]
     pub entry_point: Option<String>,
 
@@ -233,12 +229,6 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
     };
 
     let report = inspect_elf(&elf_path)?;
-    let kernel_bin = args.kernel_bin.unwrap_or_else(|| {
-        axbuild_tmp_dir(axvisor.app.workspace_root())
-            .join("httpboot")
-            .join("axvisor-x86_64-kernel.bin")
-    });
-    write_flat_binary_from_elf(&elf_path, &report, &kernel_bin)?;
 
     let client = HttpBootApiClient::new(&publish_config.server, publish_config.port)?;
     let board_type = publish_config.board_type.as_deref().ok_or_else(|| {
@@ -275,7 +265,6 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
         &session,
         &publish_config,
         &elf_path,
-        &kernel_bin,
         &report,
         args.keep_session,
     )
@@ -316,7 +305,6 @@ async fn publish_artifacts_for_session(
     session: &SessionCreatedResponse,
     publish_config: &PublishConfig,
     elf_path: &Path,
-    kernel_bin: &Path,
     report: &ElfImageReport,
     keep_session: bool,
 ) -> anyhow::Result<()> {
@@ -333,7 +321,7 @@ async fn publish_artifacts_for_session(
         .remote_name
         .clone()
         .or(profile.kernel_file.clone())
-        .unwrap_or_else(|| "kernel.bin".to_string());
+        .unwrap_or_else(|| "kernel.elf".to_string());
     let kernel_load_addr = publish_config
         .kernel_load_addr
         .clone()
@@ -358,24 +346,30 @@ async fn publish_artifacts_for_session(
     validate_manifest_address("entry_point", &entry_point, report.entry_paddr)?;
 
     let kernel_bytes =
-        fs::read(kernel_bin).with_context(|| format!("failed to read {}", kernel_bin.display()))?;
+        fs::read(elf_path).with_context(|| format!("failed to read {}", elf_path.display()))?;
     let artifact = client
-        .upload_http_boot_artifact(
+        .upload_http_boot_kernel(
             &session.session_id,
             &remote_name,
-            kernel_load_addr,
-            entry_point,
             arch,
+            "elf64",
+            report
+                .httpboot_entry_symbol
+                .is_some()
+                .then_some("httpboot_entry"),
             kernel_bytes,
         )
         .await
-        .with_context(|| format!("failed to upload HTTP Boot artifact `{remote_name}`"))?;
+        .with_context(|| format!("failed to upload HTTP Boot kernel `{remote_name}`"))?;
 
     println!("elf: {}", elf_path.display());
-    println!("kernel_bin: {}", kernel_bin.display());
     println!("kernel_size: {}", hex(artifact.kernel_size));
     println!("kernel_url: {}", artifact.kernel_url);
-    println!("manifest_url: {}", artifact.manifest_url);
+    println!(
+        "kernel_sha256: {}",
+        artifact.kernel_sha256.as_deref().unwrap_or("-")
+    );
+    println!("boot_id: {}", artifact.boot_id);
     println!(
         "session_release: {}",
         if keep_session { "kept" } else { "requested" }
@@ -479,7 +473,7 @@ impl PublishConfig {
             board_type: None,
             server,
             port,
-            remote_name: Some("kernel.bin".to_string()),
+            remote_name: Some("kernel.elf".to_string()),
             kernel_load_addr: None,
             entry_point: None,
             power_cycle: false,
@@ -675,26 +669,30 @@ impl HttpBootApiClient {
         self.decode_empty(response).await
     }
 
-    async fn upload_http_boot_artifact(
+    async fn upload_http_boot_kernel(
         &self,
         session_id: &str,
         remote_name: &str,
-        kernel_load_addr: String,
-        entry_point: String,
         arch: String,
+        image_format: &str,
+        entry_symbol: Option<&str>,
         bytes: Vec<u8>,
-    ) -> anyhow::Result<HttpBootArtifactResponse> {
+    ) -> anyhow::Result<KernelPublishResponse> {
+        let mut request = self
+            .client
+            .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/kernel")))
+            .header("X-HttpBoot-Remote-Name", remote_name)
+            .header("X-HttpBoot-Arch", arch)
+            .header("X-HttpBoot-Image-Format", image_format);
+        if let Some(entry_symbol) = entry_symbol {
+            request = request.header("X-HttpBoot-Entry-Symbol", entry_symbol);
+        }
         self.decode_json(
-            self.client
-                .put(self.endpoint(&format!("/api/v1/sessions/{session_id}/http-boot/artifact")))
-                .header("X-HttpBoot-Remote-Name", remote_name)
-                .header("X-HttpBoot-Kernel-Load-Addr", kernel_load_addr)
-                .header("X-HttpBoot-Entry-Point", entry_point)
-                .header("X-HttpBoot-Arch", arch)
+            request
                 .body(bytes)
                 .send()
                 .await
-                .with_context(|| format!("failed to upload HTTP Boot artifact `{remote_name}`"))?,
+                .with_context(|| format!("failed to upload HTTP Boot kernel `{remote_name}`"))?,
         )
         .await
     }
@@ -818,6 +816,14 @@ struct UefiHttpProfile {
 }
 
 #[derive(Debug, Deserialize)]
+struct KernelPublishResponse {
+    boot_id: String,
+    kernel_url: String,
+    kernel_size: u64,
+    kernel_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SerialStatusResponse {
     available: bool,
     connected: bool,
@@ -925,7 +931,7 @@ mod tests {
             board_type: None,
             server: "127.0.0.1".to_string(),
             port: 2999,
-            remote_name: Some("kernel.bin".to_string()),
+            remote_name: Some("kernel.elf".to_string()),
             kernel_load_addr: None,
             entry_point: None,
             power_cycle: false,
@@ -937,6 +943,21 @@ mod tests {
         assert_eq!(config.board_type.as_deref(), Some("x86-httpboot"));
         assert!(config.power_cycle);
         assert!(config.open_console);
+    }
+
+    #[test]
+    fn publish_config_defaults_to_elf_remote_name() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        let config = PublishConfig::with_server_defaults(
+            None,
+            workspace.path(),
+            "10.3.10.229".to_string(),
+            2999,
+        )
+        .unwrap();
+
+        assert_eq!(config.remote_name.as_deref(), Some("kernel.elf"));
     }
 
     #[test]
