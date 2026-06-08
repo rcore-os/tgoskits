@@ -1,5 +1,7 @@
+use alloc::sync::Arc;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
+use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::general::{
     CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
@@ -57,11 +59,17 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         proc_data.nsproxy.lock().unshare_mnt();
     }
     if want_fs && !want_ns {
-        // CLONE_FS alone: clone the FsContext to break sharing with any
-        // task created via clone(CLONE_FS).  Single lock to avoid
-        // re-entrant acquisition of the task-scoped mutex.
-        let mut guard = FS_CONTEXT.lock();
-        *guard = guard.clone();
+        // CLONE_FS alone: Linux requires the caller to obtain a private
+        // fs_struct.  clone(CLONE_FS) shares the same Arc<Mutex<FsContext>>
+        // between parent and child, so cloning only the inner FsContext
+        // inside the shared Arc is not enough — later chdir / root / mount
+        // ops would still affect the sharer.  Create a new Arc containing a
+        // clone of the current FsContext and rebind the task-local
+        // FS_CONTEXT to it.
+        let cloned_inner = FS_CONTEXT.lock().clone();
+        let new_fs = Arc::new(Mutex::new(cloned_inner));
+        let mut scope = curr.as_thread().proc_data.scope.write();
+        *FS_CONTEXT.scope_mut(&mut scope) = new_fs;
     }
 
     Ok(0)

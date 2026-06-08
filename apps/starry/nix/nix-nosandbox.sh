@@ -31,7 +31,7 @@ derivation {
   name = "nix-nosandbox";
   system = builtins.currentSystem;
   builder = "/bin/sh";
-  args = [ "-c" "mkdir -p /tmp/nix-nosandbox; echo BUILDER_STARTED > /tmp/nix-nosandbox/builder.log; echo OUT=$out >> /tmp/nix-nosandbox/builder.log; echo NIX_LOCAL_BUILD_NOSANDBOX_OK > $out" ];
+  args = [ "-c" "/bin/mkdir -p /tmp/nix-nosandbox && echo BUILDER_STARTED > /tmp/nix-nosandbox/builder.log && echo OUT=$out >> /tmp/nix-nosandbox/builder.log && echo NIX_LOCAL_BUILD_NOSANDBOX_OK > $out" ];
 }
 EOF
 echo 'NIX_NOSANDBOX_INFO: tiny local unsandboxed nix-build timeout is 120s'

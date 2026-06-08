@@ -39,20 +39,26 @@ connected once mount namespace isolation is available in StarryOS.
 | Script | Mode | Runs? |
 |--------|------|-------|
 | `nix-nosandbox` | `builtins.derivation` (no nixpkgs) | ✅ CI |
-| `nix-nixpkgs` | `pkgs.stdenv.mkDerivation` (requires nixpkgs) | ✅ CI |
+| `nix-nixpkgs` | `pkgs.stdenv.mkDerivation` (requires nixpkgs) | ❌ deferred (see below) |
 | `nix` | `nix-build --option sandbox true` | ❌ blocked (mount ns) |
 
-`test_nix.sh` runs phases in order: nosandbox gate first (fast, ~30s),
-then nixpkgs (requires network for nixpkgs tarball + stdenv substitutes,
-~5-15min first run, ~600s timeout).
+`test_nix.sh` runs only the `nix-nosandbox` phase. The sandbox test (`nix.sh`)
+is blocked until mount namespace isolation is ready.
 
-The nixpkgs test uses `builtins.fetchTarball` to fetch a pinned nixpkgs
-revision from GitHub, imports it, and builds a minimal C hello-world with
-`pkgs.stdenv.mkDerivation`. Substitutes are allowed (`--no-substitute` is
-NOT passed) so the stdenv toolchain is downloaded from `cache.nixos.org`
-rather than bootstrapped from source.
+### nixpkgs / `stdenv.mkDerivation` — not planned at this stage
 
-Both nosandbox variants:
+Per project discussion on PR #1125 and teacher guidance, nixpkgs testing
+is deferred. `stdenv.mkDerivation` requires:
+
+- **Mount namespace isolation** (`unshare(CLONE_NEWNS)`) for the Nix download
+  subsystem, which fetches nixpkgs tarballs and substitutes during build;
+- A working `builtins.fetchTarball` that can download and unpack pinned
+  nixpkgs revisions from GitHub through Nix's download worker threads.
+
+These require kernel-level namespace support that is not yet available in
+StarryOS. The `nix-nixpkgs` script source is committed for reference but
+is intentionally excluded from `test_nix.sh`. Re-enable when mount namespace
+isolation lands.
 - Install prebuilt Nix (apk) → `nix --version` gate → tiny local derivation
 - Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
 - Sandbox detection: `grep` build log for `disabling sandbox` → call `fail()`

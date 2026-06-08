@@ -1,77 +1,60 @@
-# Implementation Plan: CLONE_FS unshare 支持 (Phase 1/N)
+# Implementation Plan: StarryOS Nix Smoke — PR Review Fixes
 
-**Branch**: `002-starryos-nix-smoke` | **Date**: 2026-06-08 | **Spec**: [spec.md](./spec.md)
+**Branch**: `002-starryos-nix-smoke` | **Date**: 2026-06-08 | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `/specs/002-starryos-nix-smoke/spec.md`
-
-## Incremental Delivery Strategy
-
-本 spec 描述的完整 Nix smoke 验证流程（选工作流 → 跑 Nix → 捕获失败 → 分类 → 逐个修复 → 回归测试 → 笔记 → 交付）通过多个增量 Phase 交付。每个 Phase 解决一个独立的 Nix 阻塞点。
-
-| Phase | 内容 | 覆盖的 FR | 状态 |
-|-------|------|-----------|------|
-| **Phase 1** (本文档) | `CLONE_FS` unshare 支持 + 回归测试 | FR-006, FR-008, FR-011~FR-014 | 🔧 实施中 |
-| Phase 2 | 其他 unshare 阻塞点 (CLONE_NEWNS 等) — 调查后确定 | FR-003~FR-005, FR-006 | 📋 待规划 |
-| Phase 3 | nixpkgs 端到端 smoke (`nix build nixpkgs#hello`) | FR-001, FR-002, FR-009, SC-001, SC-003 | 📋 待规划 |
-| Phase 4 | 收尾: 状态总结、候选 PR 内容、交付 | FR-010, US5, SC-005, SC-007 | 📋 待规划 |
-
-**当前 Phase 1 范围**：
-- ✅ FR-006: 为 CLONE_FS 行为缺口产生回归测试
-- ✅ FR-008: 修复验证与 app-test 分离
-- ✅ FR-011~FR-014: silicalet 笔记、上游同步
-- ❌ FR-001~FR-005, FR-007, FR-009, FR-015: 属于后续 Phase
-- ❌ US1, US5: 属于后续 Phase
-- ❌ SC-001, SC-003: 属于后续 Phase
+**Input**: PR #1125 review feedback from `@ZR233` (review ID 4446698115) + user-specified fix priorities.
 
 ## Summary
 
-在 `sys_unshare` 中添加 `CLONE_FS` 支持，使 Nix 下载子系统可正常工作。
-同时在 `test-nix-prereqs` 中补充回归测试，标记为 "nixpkgs 可能用到"。
-此修复是 nixpkgs smoke 测试的前置条件。
+Address 4 blocking issues identified in the latest PR #1125 review:
+
+1. **`unshare(CLONE_FS)`** currently mutates the shared `Arc<Mutex<FsContext>>` inner value instead of rebinding the task-local to a private copy — doesn't match Linux semantics.
+2. **`test-unshare-fs`** uses `fork()` which doesn't share `FS_CONTEXT` in this kernel, so the test can't verify the fix even if it passes.
+3. **`sh: mkdir: not found`** in builder script — `nix-nosandbox.sh` builder uses bare `mkdir` without absolute path, and uses `;` instead of `&&` so failure doesn't propagate.
+4. **README/PR description** claims nixpkgs coverage that `test_nix.sh` intentionally skips — needs to honestly state nixpkgs is not planned at this stage.
 
 ## Technical Context
 
-**Language/Version**: Rust nightly-2026-05-28, edition 2024
+**Language/Version**: Rust nightly-2026-05-28, C (musl-gcc for user-space tests)
 
-**Primary Dependencies**: starry-kernel, ax-fs-ng, axnsproxy
+**Primary Dependencies**: StarryOS kernel (`os/StarryOS/kernel`), axfs-ng-vfs (`components/axfs-ng-vfs`), ax-task (`os/arceos/modules/axtask`), scope-local (`components/scope-local`)
 
-**Storage**: N/A
+**Storage**: rsext4 (`components/rsext4`), in-memory tmpfs
 
-**Testing**: C regression tests (CMake + test_framework.h) under `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/`
+**Testing**: `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` for grouped regression, `cargo xtask starry app qemu -t nix --arch x86_64` for app-level validation
 
-**Target Platform**: StarryOS x86_64 QEMU
+**Target Platform**: StarryOS x86_64 QEMU (Alpine rootfs with BusyBox)
 
-**Project Type**: OS kernel + test-suit
+**Project Type**: OS kernel + system-level test suite
 
-**Performance Goals**: N/A — correctness fix, no perf change
-
-**Constraints**: Must pass `cargo fmt --check`, `cargo xtask clippy --since origin/dev`, no `[patch.crates-io]`
-
-**Scale/Scope**: ~2 kernel files changed, 1 new C regression test added to existing test-nix-prereqs grouped case
+**Constraints**:
+- `CLONE_FS` unshare must match Linux: caller gets private `fs_struct`, changes don't affect sharer
+- Builder args must fail-fast on error (use `&&` not `;`)
+- README/PR must not claim coverage that scripts intentionally skip
+- All changes must pass `cargo fmt`, `cargo xtask clippy --package starry-kernel`
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-| Rule | Status | Evidence |
-|------|--------|----------|
-| I. Code Style (`cargo fmt`) | ✅ | Will run `cargo fmt` on changed files |
-| II. Clippy (no warnings, no allow) | ✅ | Will run `cargo xtask clippy --package starry-kernel` |
-| III. Build/Test via `cargo xtask` | ✅ | `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` |
-| IV. Driver Layer Isolation | N/A | No driver changes |
-| V. PR Standards (title/body) | 🔧 | Plan only — PR body for implementation |
-| VI. Code Ownership | N/A | No new code owners needed |
-| No `[patch.crates-io]` | ✅ | Confirmed absent |
+| Principle | Status | Evidence |
+|-----------|--------|----------|
+| I. Code Style | ✅ N/A | All edits are to .rs/.c/.sh files; `cargo fmt` and `cargo xtask clippy` must pass before commit |
+| II. Strict Lint | ✅ MUST VERIFY | `cargo xtask clippy --package starry-kernel` (13 checks) must pass after namespace.rs change |
+| III. Unified Build/Test | ✅ MUST VERIFY | CI-like Podman path: `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs`, `cargo xtask starry app qemu -t nix --arch x86_64` |
+| IV. Driver Architecture | ✅ N/A | No driver changes |
+| V. PR Standards | ✅ MUST FOLLOW | PR body in Chinese, title in English Convention Commits |
+| VI. Code Ownership | ✅ N/A | No ownership boundary changes |
 
-**Container validation path**:
+**Validation commands**:
 ```bash
-podman run --rm --userns=keep-id \
-  -v $PWD:/workspace -w /workspace \
-  -v $PWD/.ci-cache/cargo:/tmp/cargo \
-  -v $PWD/.ci-cache/rustup:/tmp/rustup \
-  -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup \
+# Container path (preferred)
+env -u LD_PRELOAD podman run --rm --userns=keep-id \
+  -v "$PWD:/workspace" -v "$PWD/.ci-cache/cargo:/tmp/cargo" \
+  -v "$PWD/.ci-cache/rustup:/tmp/rustup" -v "$PWD/.ci-cache/tmp:/tmp/ci-tmp" \
+  -w /workspace -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup -e TMPDIR=/tmp/ci-tmp \
   ghcr.io/rcore-os/tgoskits-container:latest \
-  cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
+  bash -lc 'cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs'
 ```
 
 ## Project Structure
@@ -85,65 +68,80 @@ specs/002-starryos-nix-smoke/
 ├── data-model.md        # Phase 1 output
 ├── quickstart.md        # Phase 1 output
 ├── contracts/           # Phase 1 output
-└── tasks.md             # Phase 2 output (/speckit-tasks)
+└── tasks.md             # Phase 2 output (speckit-tasks)
 ```
 
-### Source Code (repository root)
+### Source Code (affected files)
 
 ```text
-# Kernel fix
-os/StarryOS/kernel/src/syscall/task/
-└── namespace.rs         # +CLONE_FS to SUPPORTED_NS_FLAGS, +unshare_fs branch
-
-# Regression test
+os/StarryOS/kernel/src/syscall/task/namespace.rs    # unshare(CLONE_FS) fix
 test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/
-├── qemu-x86_64.toml     # +1 test_commands entry
-└── test-unshare-fs/
-    └── c/
-        ├── CMakeLists.txt
-        └── src/main.c   # NEW: unshare(CLONE_FS) + fs isolation verification
-
-# App smoke (no changes needed — nixpkgs test already depends on this fix)
+  test-unshare-fs/c/src/main.c                       # Rewrite: fork→clone(CLONE_FS)
 apps/starry/nix/
-└── nix-nixpkgs.sh       # existing, expects CLONE_FS to work
+  nix-nosandbox.sh                                   # Fix builder args (mkdir + fail-fast)
+  test_nix.sh                                        # Clarify nixpkgs skip reason
+  README.md                                          # Align with actual test coverage
 ```
-
-**Structure Decision**: Kernel fix stays in `syscall/task/namespace.rs` where `sys_unshare` lives. Regression test follows the grouped `test-nix-prereqs` pattern as a C subcase under `test-unshare-fs/`. The `test-nix-prereqs/qemu-x86_64.toml` already lists 12 test_commands; this adds a 13th.
 
 ## Complexity Tracking
 
-> No constitution violations to justify.
+No constitution violations. All fixes are minimal, targeted changes within existing patterns.
 
 ---
 
-## Phase 0: Research — CLONE_FS Semantics
+## Phase 0: Research
 
-### Decision 1: CLONE_FS behaviour for StarryOS
+### R1: Linux `unshare(CLONE_FS)` semantics
 
-**Decision**: `unshare(CLONE_FS)` creates an independent `FsContext` copy for the calling task.
+**Decision**: Linux `unshare(CLONE_FS)` requires the caller to obtain a private `fs_struct`. After `clone(CLONE_FS)`, parent and child share the same `struct fs_struct` (refcounted). `unshare(CLONE_FS)` creates a new private copy for the caller, breaking the share.
 
-**Rationale**: On Linux, `unshare(CLONE_FS)` disassociates filesystem attributes (root, cwd, umask) shared via `clone(CLONE_FS)`. In StarryOS:
-- By default, each task already has an independent `FsContext` (clone without CLONE_FS auto-forks)
-- `clone(CLONE_FS)` causes child to `clone_from(&FS_CONTEXT)` (share parent's FsContext)
-- So `unshare(CLONE_FS)` reverses this: clone the current FsContext to break sharing
+**Rationale**: Per `man 2 unshare`: "CLONE_FS — Reverse the effect of the clone(2) CLONE_FS flag. Unshare the filesystem attributes so that the calling process has a private copy of its filesystem information." The current implementation clones the inner `FsContext` but keeps the shared `Arc`, which means both tasks still observe each other's `chdir`/`chroot`/mount changes.
 
 **Alternatives considered**:
-- No-op: rejected — tasks created with clone(CLONE_FS) would still share FsContext after unshare
-- Only add flag validation: rejected — must implement actual unshare semantics
+- Keep cloning inner `FsContext` inside shared `Arc` — REJECTED, doesn't match Linux behavior
+- Mark `FS_CONTEXT` as dirty and lazily re-clone on next access — REJECTED, over-engineered for current scope
 
-### Decision 2: Implementation approach
+**Implementation**: Use `FS_CONTEXT.scope_mut(&mut scope)` to rebind the task-local to a new `Arc::new(Mutex::new(cloned_inner))`.
 
-**Decision**: Add CLONE_FS to `SUPPORTED_NS_FLAGS` and add a Phase 2 branch that clones FsContext.
+**Files**: `os/StarryOS/kernel/src/syscall/task/namespace.rs` lines 59-65
 
-**Rationale**: The existing code already separates Phase 1 (spinlock nsproxy ops) and Phase 2 (FsContext ops). CLONE_FS fits in Phase 2 alongside CLONE_NEWNS.
+### R2: `test-unshare-fs` test gap
 
-**Alternative considered**: Adding a separate Phase 3 — unnecessary; both are FsContext-level mutations.
+**Decision**: Rewrite the test to use `clone(CLONE_FS | CLONE_VM | SIGCHLD)` with a heap-allocated stack, then verify: (a) after clone with CLONE_FS, child's `chdir` is visible to parent (proving FS sharing), (b) after child calls `unshare(CLONE_FS)`, child's `chdir` is NOT visible to parent (proving isolation).
 
-### Decision 3: Regression test design
+**Rationale**: The current test uses `fork()` which in this StarryOS implementation creates a new `FsContext` clone (see `clone.rs` line 338), so cwd is already isolated. The test passes but proves nothing about `CLONE_FS` sharing/unshare.
 
-**Decision**: A two-process test: parent `clone(CLONE_FS)` to share FsContext, child calls `unshare(CLONE_FS)`, then both independently change cwd and verify the other is unaffected.
+**Implementation**: Full rewrite of `test-unshare-fs/c/src/main.c`.
 
-**Rationale**: This proves that `unshare(CLONE_FS)` actually breaks FsContext sharing. A simpler test (just unshare + check return code) wouldn't verify semantic correctness.
+### R3: `sh: mkdir: not found` in builder
+
+**Decision**: In `nix-nosandbox.sh`, change the derivation builder args from `;` to `&&` for fail-fast, and use absolute paths for shell utilities.
+
+**Rationale**: Nix's derivation builder runs `/bin/sh -c` without a guaranteed PATH. BusyBox's `mkdir` may not be found if PATH isn't set. Using `&&` ensures any step failure propagates. Since the guest rootfs is Alpine with BusyBox, all basic utilities live under `/bin/`.
+
+**Current problem**:
+```sh
+args = [ "-c" "mkdir -p /tmp/nix-nosandbox; echo BUILDER_STARTED > ..." ];
+```
+`mkdir` fails → `sh: mkdir: not found` → but `;` continues → `echo BUILDER_STARTED` runs → false PASS.
+
+**Fix**:
+```sh
+args = [ "-c" "/bin/mkdir -p /tmp/nix-nosandbox && echo BUILDER_STARTED > ..." ];
+```
+Now `mkdir` failure → `&&` stops → build fails → correctly classified as failure.
+
+### R4: README/PR nixpkgs documentation
+
+**Decision**: Update `apps/starry/nix/README.md` to clearly state:
+- `test_nix.sh` intentionally skips `nix-nixpkgs` (not just commented out for debugging)
+- nixpkgs/stdenv.mkDerivation testing is not planned at this stage per project discussion
+- The reason: requires mount namespace isolation for fetchTarball/substitute downloads
+- Update the test content table to show accurate status
+
+Also update PR #1125 body to match.
+
+**Implementation**: Edit `apps/starry/nix/README.md` and update PR body via `gh pr edit`.
 
 ---
 
@@ -151,96 +149,52 @@ apps/starry/nix/
 
 ### Data Model
 
-No new entities. The fix touches two existing structures:
+No new entities. Changes affect existing structures:
 
-| Entity | Change |
-|--------|--------|
-| `SUPPORTED_NS_FLAGS` (namespace.rs:13) | Add `CLONE_FS` bit |
-| `sys_unshare()` (namespace.rs:17) | Add CLONE_FS branch → clone FsContext |
-| `FsContext` (axfs-ng/highlevel/fs.rs) | Already has `Clone` impl — no changes |
+- `FsContext`: existing struct in `components/axfs-ng-vfs/src/mount.rs`. Has `clone()` via `#[derive(Clone)]`.
+- `FS_CONTEXT`: existing task-local `Arc<Mutex<FsContext>>` in `os/arceos/modules/axfs-ng/src/highlevel/fs.rs`.
+- `NsProxy`: existing struct in `os/StarryOS/axnsproxy/`. No changes needed.
+
+State transition for `unshare(CLONE_FS)`:
+```
+Before: task.FS_CONTEXT == parent.FS_CONTEXT (same Arc, refcount >= 2)
+  ↓ unshare(CLONE_FS)
+After:  task.FS_CONTEXT == new Arc(Mutex(clone(inner)))
+        parent.FS_CONTEXT unchanged
+```
 
 ### Contracts
 
-#### Contract: unshare(CLONE_FS).md
+**`sys_unshare(CLONE_FS)` behavior contract**:
+- **Precondition**: CLONE_FS flag is set, CLONE_NEWNS is not set
+- **Postcondition**: Caller's FS_CONTEXT is a new private `Arc<Mutex<FsContext>>` with cloned inner state. Cwd/root/umask match pre-call values but subsequent changes don't affect tasks that shared the original Arc.
+- **Error**: Returns 0 on success.
 
-```text
-# unshare(CLONE_FS) Interface Contract
+**`test_nix.sh` contract update**:
+- **Current behavior**: Runs `nix-nosandbox` only; `nix-nixpkgs` is explicitly skipped.
+- **Exit code**: 0 if nosandbox passes; non-zero if nosandbox fails.
+- **Result marker**: `NIX_ALL_TESTS_PASSED` printed after nosandbox success only.
 
-## sys_unshare(flags = CLONE_FS)
+### Quickstart
 
-Returns: Ok(0) on success, Err(EINVAL) if flags contain unsupported bits.
-
-Pre-condition: Task has a valid FsContext.
-
-Post-condition: Calling task's FsContext is independent — root_dir and current_dir
-mutations do not affect any other task.
-
-## clone(CLONE_FS)
-
-When CLONE_FS is set: child shares parent's FsContext (clone_from).
-unshare(CLONE_FS) must reverse this.
-
-## Regression: test-unshare-fs
-
-1. Parent clone(CLONE_FS) → child shares parent FsContext
-2. Child unshare(CLONE_FS) → child gets independent FsContext
-3. Parent chdir("/tmp"), child chdir("/nix") → verify each has own cwd
-4. Verify fchdir back to original and stat both paths
-```
-
-### CI-Like Validation
-
-Per Constitution Rule III, all validation MUST use the CI container path.
-Host-only shortcuts are recorded as fallback only.
-
-#### Mandatory validation gates
-
+**To verify `unshare(CLONE_FS)` fix**:
 ```bash
-# ── Gate 1: Formatting ──
-cargo fmt --check os/StarryOS/kernel/src/syscall/task/namespace.rs
-
-# ── Gate 2: Clippy (container) ──
-podman run --rm --userns=keep-id \
-  -v $PWD:/workspace -w /workspace \
-  -v $PWD/.ci-cache/cargo:/tmp/cargo \
-  -v $PWD/.ci-cache/rustup:/tmp/rustup \
-  -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup \
-  ghcr.io/rcore-os/tgoskits-container:latest \
-  cargo xtask clippy --package starry-kernel
-
-# ── Gate 3: test-nix-prereqs (container, 12→13 tests) ──
-podman run --rm --userns=keep-id \
-  -v $PWD:/workspace -w /workspace \
-  -v $PWD/.ci-cache/cargo:/tmp/cargo \
-  -v $PWD/.ci-cache/rustup:/tmp/rustup \
-  -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup \
-  ghcr.io/rcore-os/tgoskits-container:latest \
-  cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
-
-# ── Gate 4: syscall regression (container, covers wider unshare impact) ──
-podman run --rm --userns=keep-id \
-  -v $PWD:/workspace -w /workspace \
-  -v $PWD/.ci-cache/cargo:/tmp/cargo \
-  -v $PWD/.ci-cache/rustup:/tmp/rustup \
-  -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup \
-  ghcr.io/rcore-os/tgoskits-container:latest \
-  cargo xtask starry test qemu --arch x86_64 -c syscall
-```
-
-#### Expected results
-
-| Gate | Target | Expected |
-|------|--------|----------|
-| fmt | `namespace.rs` | clean |
-| clippy | `starry-kernel` | 0 warnings |
-| test-nix-prereqs | 13 grouped C tests | 13/13 PASSED |
-| syscall | full syscall suite | PASSED (no regressions) |
-
-#### Host fallback (if container unavailable)
-
-```bash
-# Record reason in silicalet/; prefer container if possible.
-cargo fmt --check
-cargo xtask clippy --package starry-kernel
 cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
+# Look for: UNSHARE_FS_CLONE_ISOLATION_PASSED
+```
+
+**To verify builder fix**:
+```bash
+cargo xtask starry app qemu -t nix --arch x86_64
+# Look for: NIX_LOCAL_BUILD_NOSANDBOX_OK (no "sh: mkdir: not found")
+```
+
+**To run in CI-like container**:
+```bash
+env -u LD_PRELOAD podman run --rm --userns=keep-id \
+  -v "$PWD:/workspace" -v "$PWD/.ci-cache/cargo:/tmp/cargo" \
+  -v "$PWD/.ci-cache/rustup:/tmp/rustup" -v "$PWD/.ci-cache/tmp:/tmp/ci-tmp" \
+  -w /workspace -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup -e TMPDIR=/tmp/ci-tmp \
+  ghcr.io/rcore-os/tgoskits-container:latest \
+  bash -lc 'cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs'
 ```
