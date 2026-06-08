@@ -31,14 +31,6 @@ pub mod ctypes_gen {
     include!(concat!(env!("OUT_DIR"), "/ctypes_gen.rs"));
 }
 
-#[cfg(not(feature = "use-hermit-types"))]
-pub use self::ctypes_gen as ctypes;
-
-#[cfg(feature = "use-hermit-types")]
-mod hermit_abi;
-
-#[cfg(feature = "use-hermit-types")]
-pub use hermit_abi::hermit_types as ctypes;
 #[cfg(feature = "fd")]
 pub use imp::fd_ops::{sys_close, sys_dup, sys_dup2, sys_fcntl};
 #[cfg(feature = "fs")]
@@ -73,3 +65,5 @@ pub use imp::{
     task::{sys_exit, sys_getpid, sys_sched_yield},
     time::{sys_clock_gettime, sys_nanosleep},
 };
+
+pub use self::ctypes_gen as ctypes;

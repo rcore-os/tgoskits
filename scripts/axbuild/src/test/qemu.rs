@@ -1058,7 +1058,6 @@ fn cargo_target_is_dynamic_x86_64(target: &str) -> bool {
     target.ends_with("x86_64-unknown-none")
         || target.ends_with("x86_64-unknown-none.json")
         || target.ends_with("x86_64-unknown-linux-musl.json")
-        || target.ends_with("x86_64-unknown-hermit")
 }
 
 fn dynamic_platform_feature(feature: &str) -> bool {
@@ -1069,7 +1068,6 @@ fn dynamic_platform_feature(feature: &str) -> bool {
             | "ax-std/plat-dyn"
             | "ax-hal/plat-dyn"
             | "ax-libc/plat-dyn"
-            | "arceos-rust/plat-dyn"
             | "dyn-plat"
             | "starry-kernel/plat-dyn"
     )
@@ -1464,34 +1462,6 @@ mod tests {
             target: "scripts/targets/std/pie/x86_64-unknown-linux-musl.json".to_string(),
             features: vec!["plat-dyn".to_string()],
             to_bin: true,
-            ..Default::default()
-        };
-        let mut qemu = QemuConfig {
-            uefi: false,
-            to_bin: false,
-            ..Default::default()
-        };
-
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
-
-        assert!(qemu.uefi);
-        assert!(qemu.to_bin);
-    }
-
-    #[test]
-    fn dynamic_x86_64_hermit_cargo_uses_uefi_bin_qemu_boot() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
-        let env = [(
-            "ARCEOS_RUST_FEATURES".to_string(),
-            "arceos-rust/plat-dyn".to_string(),
-        )]
-        .into();
-        let cargo = Cargo {
-            target: "x86_64-unknown-hermit".to_string(),
-            env,
-            features: Vec::new(),
-            to_bin: false,
             ..Default::default()
         };
         let mut qemu = QemuConfig {
