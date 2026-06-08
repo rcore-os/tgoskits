@@ -580,6 +580,7 @@ impl AxVM {
             .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
 
         vcpu.bind()?;
+        vcpu.set_hlt_exiting(true)?;
 
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;
@@ -612,6 +613,7 @@ impl AxVM {
             .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
 
         vcpu.bind()?;
+        vcpu.set_hlt_exiting(false)?;
 
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;

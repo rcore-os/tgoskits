@@ -76,6 +76,11 @@ pub trait AxArchVCpu: Sized {
     /// hypervisor intervention.
     fn run(&mut self) -> AxResult<AxVCpuExitReason>;
 
+    /// Configures whether guest HLT instructions should cause a VM exit.
+    fn set_hlt_exiting(&mut self, _enabled: bool) -> AxResult {
+        Ok(())
+    }
+
     /// Binds the VCpu to the current physical CPU for execution.
     ///
     /// This method performs any necessary architecture-specific initialization

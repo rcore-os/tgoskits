@@ -277,6 +277,11 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         })
     }
 
+    /// Configures whether guest HLT instructions should cause a VM exit.
+    pub fn set_hlt_exiting(&self, enabled: bool) -> AxResult {
+        self.get_arch_vcpu().set_hlt_exiting(enabled)
+    }
+
     /// Bind the VCpu to the current physical CPU.
     pub fn bind(&self) -> AxResult {
         self.manipulate_arch_vcpu(VCpuState::Free, VCpuState::Ready, |arch_vcpu| {

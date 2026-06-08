@@ -652,7 +652,6 @@ impl VmxVcpu {
         let mut primary_set =
             (CpuCtrl::USE_IO_BITMAPS | CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS)
                 .bits();
-        primary_set |= CpuCtrl::HLT_EXITING.bits();
         if apicv_supported {
             primary_set |= CpuCtrl::USE_TPR_SHADOW.bits();
         }
@@ -1667,7 +1666,10 @@ impl AxArchVCpu for VmxVcpu {
                             ],
                         }
                     }
-                    VmxExitReason::HLT => AxVCpuExitReason::Halt,
+                    VmxExitReason::HLT => {
+                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                        AxVCpuExitReason::Halt
+                    }
                     VmxExitReason::IO_INSTRUCTION => {
                         let io_info = self.io_exit_info().unwrap();
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
@@ -1783,6 +1785,18 @@ impl AxArchVCpu for VmxVcpu {
     fn unbind(&mut self) -> AxResult {
         self.launched = false;
         self.unbind_from_current_processor()
+    }
+
+    fn set_hlt_exiting(&mut self, enabled: bool) -> AxResult {
+        use super::vmcs::controls::PrimaryControls as CpuCtrl;
+        let hlt_exiting = CpuCtrl::HLT_EXITING.bits();
+        vmcs::set_control(
+            VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS,
+            Msr::IA32_VMX_TRUE_PROCBASED_CTLS,
+            VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS.read()?,
+            if enabled { hlt_exiting } else { 0 },
+            if enabled { 0 } else { hlt_exiting },
+        )
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
