@@ -53,11 +53,10 @@ mod mp;
 #[cfg(any(feature = "irq", feature = "paging"))]
 mod klib;
 
-#[cfg(any(feature = "fs", test))]
-mod block;
 mod devices;
 #[cfg(feature = "irq")]
 pub mod irq;
+mod fs;
 mod registers;
 
 #[cfg(all(feature = "net", feature = "fs"))]
@@ -298,13 +297,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _),
     );
 
-    cfg_if::cfg_if! {
-        if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
-            block::init_dyn_fs(ax_hal::dtb::get_chosen_bootargs());
-        } else if #[cfg(all(feature = "fs", not(feature = "plat-dyn")))] {
-            block::init_static_fs();
-        }
-    }
+    fs::init(ax_hal::boot::bootargs());
 
     #[cfg(all(feature = "display", feature = "plat-dyn"))]
     devices::init_dyn_display();
@@ -549,4 +542,12 @@ fn init_tls() {
     let main_tls = ax_hal::tls::TlsArea::alloc();
     unsafe { ax_hal::asm::write_thread_pointer(main_tls.tls_ptr() as usize) };
     core::mem::forget(main_tls);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fs_init_accepts_bootargs_without_fs_feature() {
+        crate::fs::init(Some("root=/dev/vda"));
+    }
 }
