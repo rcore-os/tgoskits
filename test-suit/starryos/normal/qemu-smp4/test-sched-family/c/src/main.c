@@ -49,6 +49,28 @@ static int has_cap_sys_nice(void)
     return ok;
 }
 
+static long fill_online_cpu_mask(cpu_set_t *mask)
+{
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nprocs < 1)
+        nprocs = 1;
+
+    CPU_ZERO(mask);
+    for (long cpu = 0; cpu < nprocs && cpu < CPU_SETSIZE; cpu++) {
+        CPU_SET((int)cpu, mask);
+    }
+    return nprocs;
+}
+
+static int contains_online_cpus(const cpu_set_t *mask, long nprocs)
+{
+    for (long cpu = 0; cpu < nprocs && cpu < CPU_SETSIZE; cpu++) {
+        if (!CPU_ISSET((int)cpu, mask))
+            return 0;
+    }
+    return 1;
+}
+
 /*
  *   test-sched-family 对比测试:
  *   Linux/WSL 行为 vs StarryOS 行为
@@ -61,17 +83,16 @@ int main(void)
     // 测试 sched_setaffinity() / sched_getaffinity 在当前线程上的正常行为
     {
 
-        // 常规用例：将当前线程绑定到 CPU 0，并验证 getaffinity 返回正确的结果
-       {
+        // 常规用例：将当前线程绑定到所有在线 CPU，并验证 getaffinity 返回正确的结果
+        {
             cpu_set_t mask, readback;
+            long nprocs = fill_online_cpu_mask(&mask);
 
-            CPU_ZERO(&mask);
-            CPU_SET(0, &mask);
             memset(&readback, 0, sizeof(readback));
-            CHECK_RET(sched_setaffinity(0, sizeof(mask), &mask), 0, "setaffinity current pid to cpu0");
+            CHECK_RET(sched_setaffinity(0, sizeof(mask), &mask), 0, "setaffinity current pid to online CPUs");
             CHECK_RET(sched_getaffinity(0, sizeof(readback), &readback), 0, "getaffinity current pid");
-            CHECK(CPU_ISSET(0, &readback), "getaffinity result contains cpu0");
-        } 
+            CHECK(contains_online_cpus(&readback, nprocs), "getaffinity result contains online CPUs");
+        }
 
         // EFAULT: supplied memory address was invalid
         {

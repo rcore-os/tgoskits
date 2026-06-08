@@ -82,9 +82,9 @@ cargo xtask arceos build --package ax-helloworld --target riscv64gc-unknown-none
 
 ## 3. 测试入口
 
-当单个示例已经可以稳定启动后，下一步通常是切到测试套件入口做批量验证。ArceOS 的测试支持 Rust 与 C 两条路径，并允许按类型或包名做筛选。
+当单个示例已经可以稳定启动后，下一步通常是切到测试套件入口做批量验证。ArceOS 的测试支持 Rust 与 C 两条路径，并允许按测试组或测试用例做筛选。
 
-ArceOS 的测试入口支持 Rust/C 混合测试、单独 Rust 测试、单独 C 测试和包过滤：
+ArceOS 的测试入口支持 Rust/C 混合测试、单独 Rust 测试、单独 C 测试和用例过滤：
 
 ```bash
 # 全部测试（Rust + C）
@@ -96,8 +96,8 @@ cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --only-rust
 # 仅 C
 cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --only-c
 
-# 指定单个 Rust 测试包
-cargo xtask arceos test qemu --target aarch64-unknown-none-softfloat -p arceos-affinity
+# 指定单个 Rust 测试用例
+cargo xtask arceos test qemu --target aarch64-unknown-none-softfloat --test-group rust --test-case task-affinity
 ```
 
 详细说明见：[ArceOS 测试套件设计](/docs/build/test/arceos)

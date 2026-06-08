@@ -91,7 +91,7 @@ ArceOS 某些包在运行前需要额外的宿主端资产准备（`ensure_packa
 
 | 包名 | 准备内容 |
 |------|---------|
-| `arceos-fs-shell` | 自动生成 64M FAT32 磁盘镜像 `test-suit/arceos/rust/fs/shell/disk.img`（通过 `truncate` + `mkfs.fat`） |
+| `arceos-test-suit` | Rust 测试集启用 `fs-basic` 或 `all` 时，自动生成 64M FAT32 临时磁盘镜像 `tmp/axbuild/runtime-assets/arceos/rust/disk.img`（通过 `truncate` + `mkfs.fat`） |
 | 其他 | 无额外准备 |
 
 资产准备在构建和运行之前执行，仅在文件不存在时触发创建，已有文件直接复用。

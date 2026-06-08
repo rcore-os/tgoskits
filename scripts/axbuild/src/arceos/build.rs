@@ -454,7 +454,7 @@ AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
-        let request = request("arceos-sleep", "riscv64gc-unknown-none-elf", None, path);
+        let request = request("arceos-test-suit", "riscv64gc-unknown-none-elf", None, path);
 
         let build_info = load_build_info(&request).unwrap();
 

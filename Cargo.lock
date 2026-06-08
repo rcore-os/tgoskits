@@ -249,181 +249,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-affinity"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-backtrace"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "axbacktrace",
-]
-
-[[package]]
-name = "arceos-backtrace-raw-badfp"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "axbacktrace",
-]
-
-[[package]]
-name = "arceos-backtrace-raw-basic"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "axbacktrace",
-]
-
-[[package]]
-name = "arceos-backtrace-raw-normal"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "axbacktrace",
-]
-
-[[package]]
-name = "arceos-display"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "embedded-graphics",
-]
-
-[[package]]
-name = "arceos-exception"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-fs-shell"
-version = "0.3.1"
-dependencies = [
- "ax-crate-interface",
- "ax-driver",
- "ax-fs-ramfs",
- "ax-fs-vfs",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-ipi"
-version = "0.3.0"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-irq"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-lockdep"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-kspin",
- "ax-std",
- "axfs-ng-vfs",
-]
-
-[[package]]
-name = "arceos-memtest"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "rand 0.8.6",
-]
-
-[[package]]
-name = "arceos-net-echoserver"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-net-httpclient"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-io",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-net-httpserver"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-net-udpserver"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-parallel"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
- "rand 0.8.6",
-]
-
-[[package]]
-name = "arceos-priority"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
 name = "arceos-rust"
 version = "0.1.2"
 dependencies = [
@@ -445,23 +270,6 @@ dependencies = [
  "ax-runtime",
  "log",
  "rand 0.9.4",
-]
-
-[[package]]
-name = "arceos-sleep"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-stack-guard-page"
-version = "0.3.1"
-dependencies = [
- "ax-hal",
- "ax-std",
 ]
 
 [[package]]
@@ -520,39 +328,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-tls"
+name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
  "ax-driver",
  "ax-hal",
+ "ax-kspin",
  "ax-std",
-]
-
-[[package]]
-name = "arceos-wait-queue"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-wait-queue-remote-wake"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-yield"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
+ "axbacktrace",
+ "axfs-ng-vfs",
+ "embedded-graphics",
+ "rand 0.8.6",
 ]
 
 [[package]]

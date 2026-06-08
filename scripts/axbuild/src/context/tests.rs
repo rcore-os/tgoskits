@@ -384,7 +384,7 @@ qemu_config = "configs/snapshot-qemu.toml"
         &app,
         BuildCliArgs {
             config: Some(PathBuf::from("/tmp/build-riscv64.toml")),
-            package: Some("arceos-display".into()),
+            package: Some("arceos-test-suit".into()),
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
             plat_dyn: None,
@@ -396,7 +396,7 @@ qemu_config = "configs/snapshot-qemu.toml"
     )
     .unwrap();
 
-    assert_eq!(request.package, "arceos-display");
+    assert_eq!(request.package, "arceos-test-suit");
     assert_eq!(request.plat_dyn, None);
     assert_eq!(request.smp, None);
     assert_eq!(request.qemu_config, None);
