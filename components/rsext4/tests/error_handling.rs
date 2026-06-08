@@ -49,10 +49,10 @@ impl BlockDevice for ErrorMockDevice {
             return Err(Ext4Error::io());
         }
 
-        if let Some(fail_block) = self.fail_on_specific_block {
-            if block_id == fail_block {
-                return Err(Ext4Error::corrupted());
-            }
+        if let Some(fail_block) = self.fail_on_specific_block
+            && block_id == fail_block
+        {
+            return Err(Ext4Error::corrupted());
         }
 
         let start = block_id.as_usize()? * self.block_size as usize;
@@ -72,10 +72,10 @@ impl BlockDevice for ErrorMockDevice {
             return Err(Ext4Error::io());
         }
 
-        if let Some(fail_block) = self.fail_on_specific_block {
-            if block_id == fail_block {
-                return Err(Ext4Error::corrupted());
-            }
+        if let Some(fail_block) = self.fail_on_specific_block
+            && block_id == fail_block
+        {
+            return Err(Ext4Error::corrupted());
         }
 
         if let Some(limit) = self.fail_after_bytes {

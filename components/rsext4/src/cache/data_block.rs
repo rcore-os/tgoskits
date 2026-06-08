@@ -386,6 +386,100 @@ impl DataBlockCache {
         self.modify(block_dev, block_num, f)
     }
 
+    /// Writes a contiguous initialized data-block run directly and refreshes
+    /// any cached entries that overlap the run.
+    pub fn write_run<B: BlockDevice>(
+        &self,
+        block_dev: &mut Jbd2Dev<B>,
+        start_block: AbsoluteBN,
+        count: u32,
+        data: &[u8],
+    ) -> Ext4Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let required = self
+            .block_size
+            .checked_mul(count as usize)
+            .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+        if data.len() < required {
+            return Err(Ext4Error::buffer_too_small(data.len(), required));
+        }
+
+        block_dev.write_blocks(&data[..required], start_block, count, false)?;
+
+        let mut inner = self.inner.lock();
+        let block_size = inner.block_size;
+        for off in 0..count {
+            let block_num = start_block.checked_add(off)?;
+            if inner.cache.contains_key(&block_num) {
+                let start = off as usize * block_size;
+                let new_counter = inner.access_counter + 1;
+                inner.access_counter = new_counter;
+
+                let cached = inner
+                    .cache
+                    .get_mut(&block_num)
+                    .ok_or(Ext4Error::corrupted())?;
+                cached
+                    .data
+                    .copy_from_slice(&data[start..start + block_size]);
+                cached.dirty = false;
+                cached.last_access = new_counter;
+                cached.generation += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reads a contiguous initialized data-block run and overlays any cached
+    /// entries that overlap the run. Dirty cache entries therefore remain the
+    /// source of truth even when the disk still contains older data.
+    pub fn read_run<B: BlockDevice>(
+        &self,
+        block_dev: &mut Jbd2Dev<B>,
+        start_block: AbsoluteBN,
+        count: u32,
+        dst: &mut [u8],
+    ) -> Ext4Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let required = self
+            .block_size
+            .checked_mul(count as usize)
+            .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+        if dst.len() < required {
+            return Err(Ext4Error::buffer_too_small(dst.len(), required));
+        }
+
+        block_dev.read_blocks(&mut dst[..required], start_block, count)?;
+
+        let mut inner = self.inner.lock();
+        let block_size = inner.block_size;
+        for off in 0..count {
+            let block_num = start_block.checked_add(off)?;
+            if inner.cache.contains_key(&block_num) {
+                let start = off as usize * block_size;
+                let new_counter = inner.access_counter + 1;
+                inner.access_counter = new_counter;
+
+                let cached = inner
+                    .cache
+                    .get_mut(&block_num)
+                    .ok_or(Ext4Error::corrupted())?;
+                dst[start..start + block_size].copy_from_slice(&cached.data);
+                cached.last_access = new_counter;
+                cached.generation += 1;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Evicts one cached block.
     pub fn evict<B: BlockDevice>(
         &self,
@@ -686,6 +780,30 @@ mod tests {
 
         cache.invalidate(AbsoluteBN::new(100));
         assert_eq!(cache.stats().total_entries, 0);
+    }
+
+    #[test]
+    fn read_run_overlays_dirty_cached_blocks() {
+        let cache = DataBlockCache::new(8, BLOCK_SIZE);
+        let mut device = TestBlockDevice::new(1024);
+        let disk_start = AbsoluteBN::new(100).as_usize().unwrap() * BLOCK_SIZE;
+        device.data[disk_start..disk_start + BLOCK_SIZE * 2].fill(0xaa);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        cache
+            .modify_new(&mut jbd2_dev, AbsoluteBN::new(101), |data| {
+                data.fill(0xbb);
+            })
+            .expect("create dirty cached block");
+
+        let mut dst = alloc::vec![0; BLOCK_SIZE * 2];
+        cache
+            .read_run(&mut jbd2_dev, AbsoluteBN::new(100), 2, &mut dst)
+            .expect("read contiguous run");
+
+        assert_eq!(dst[..BLOCK_SIZE], [0xaa; BLOCK_SIZE]);
+        assert_eq!(dst[BLOCK_SIZE..], [0xbb; BLOCK_SIZE]);
+        assert_eq!(cache.stats().dirty_entries, 1);
     }
 
     #[test]

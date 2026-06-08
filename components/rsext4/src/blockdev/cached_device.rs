@@ -171,7 +171,25 @@ impl<B: BlockDevice> BlockDev<B> {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
 
-        self.dev.write(buffer, block_id, count)
+        self.dev.write(buffer, block_id, count)?;
+
+        for off in 0..count {
+            let target = block_id.checked_add(off)?;
+            for entry in self.entries.iter_mut() {
+                if !entry.is_empty() && entry.block_id == Some(target) {
+                    let start = off as usize * block_size;
+                    entry
+                        .buffer
+                        .as_mut_slice()
+                        .copy_from_slice(&buffer[start..start + block_size]);
+                    entry.dirty = false;
+                    entry.referenced = true;
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns the active buffer (read-only view of the last accessed block).

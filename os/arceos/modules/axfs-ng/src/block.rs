@@ -4,6 +4,8 @@ use alloc::boxed::Box;
 use ax_errno::AxError;
 use ax_errno::AxResult;
 
+use crate::block_runtime::BlockDeviceHandle;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockRegion {
     pub start_lba: u64,
