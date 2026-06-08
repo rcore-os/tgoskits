@@ -791,11 +791,14 @@ fn gc_entry() {
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
     let rq = select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task);
-    migrated_task.set_cpu_id(rq.inner.cpu_id as _);
+    let cpu_id = rq.inner.cpu_id;
+    migrated_task.set_cpu_id(cpu_id as _);
     rq.inner
         .scheduler
         .lock()
-        .put_prev_task(migrated_task, false)
+        .put_prev_task(migrated_task, false);
+    #[cfg(all(feature = "smp", feature = "ipi"))]
+    kick_remote_cpu(cpu_id);
 }
 
 /// Clear the `on_cpu` field of previous task running on this CPU.
