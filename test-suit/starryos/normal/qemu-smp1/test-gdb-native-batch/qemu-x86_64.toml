@@ -9,22 +9,13 @@ args = [
 uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/run-gdb-native-batch.sh"
-success_regex = ["GDB_NATIVE_BATCH_DONE"]
+shell_init_cmd = "/usr/bin/test-gdb-native-batch-tracer"
+success_regex = ['DONE: \d+ pass, 0 fail']
 fail_regex = [
-    '(?i)\\bpanic(?:ked)?\\b',
+    '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
+    'Segmentation fault',
     '#GP',
     'General protection',
-    'Segmentation fault',
-    'Function not implemented',
-    "Couldn't get CS register",
-    'Out of memory',
-    'gdb: not found',
-    'Python Exception',
-    'Python initialization failed',
-    'Cannot insert breakpoint',
-    'ptrace: Function not implemented',
-    'No stack',
 ]
-timeout = 300
+timeout = 120
