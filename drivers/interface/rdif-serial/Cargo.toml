@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-serial"
 repository.workspace = true
-version = "0.7.2"
+version = "0.7.3"
 
 [dependencies]
 bitflags = "2.8"

@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "ramdisk"
 repository.workspace = true
-version = "0.1.2"
+version = "0.1.3"
 
 [dependencies]
 rdif-block = { workspace = true }

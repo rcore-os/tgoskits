@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.13...starryos-v0.5.14) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+- *(starry)* enable self-compilation on riscv64 with 12GB RAM ([#881](https://github.com/rcore-os/tgoskits/pull/881))
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.12...starryos-v0.5.13) - 2026-06-03
 
 ### Added
