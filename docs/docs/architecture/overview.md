@@ -70,7 +70,7 @@ ArceOS 是组件化 Unikernel，同时充当三个角色：独立运行时、示
 - 17 个内核模块（`os/arceos/modules/`）
 - 3 个 API crate（`os/arceos/api/`）
 - 2 个用户库（`os/arceos/ulib/`）
-- 8 个示例应用（`os/arceos/examples/`）
+- 9 个 Rust std 应用（`apps/arceos/`）
 
 → 详细架构见 [ArceOS 架构](./arceos)
 

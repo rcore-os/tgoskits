@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn resolves_dynamic_platform_features_and_args() {
         let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
-        build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", true);
+        build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat", true);
 
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn resolves_non_dynamic_aarch64_to_defplat_without_static_default() {
         let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
-        build_info.resolve_features("ax-helloworld", "aarch64-unknown-none-softfloat", false);
+        build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat", false);
 
         assert!(build_info.features.contains(&"ax-hal/defplat".to_string()));
         assert!(
@@ -402,7 +402,7 @@ mod tests {
         let metadata = repo_metadata();
         let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
         let result = build_info.prepare_non_dynamic_platform_for(
-            "ax-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             false,
             &metadata,
@@ -437,18 +437,19 @@ mod tests {
 
     #[test]
     fn resolve_build_info_path_uses_package_directory() {
-        let path = resolve_build_info_path("ax-helloworld", "aarch64-unknown-none-softfloat", None)
-            .unwrap();
+        let path =
+            resolve_build_info_path("arceos-helloworld", "aarch64-unknown-none-softfloat", None)
+                .unwrap();
 
         assert!(path.ends_with(
-            "tmp/axbuild/config/ax-helloworld/build-aarch64-unknown-none-softfloat.toml"
+            "tmp/axbuild/config/arceos-helloworld/build-aarch64-unknown-none-softfloat.toml"
         ));
     }
 
     #[test]
     fn resolve_build_info_path_prefers_explicit_path() {
         let path = resolve_build_info_path(
-            "ax-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             Some(PathBuf::from("/tmp/custom-build.toml")),
         )
@@ -478,7 +479,7 @@ mod tests {
     fn load_build_info_creates_missing_default_file() {
         let root = tempdir().unwrap();
         let path = root.path().join(".build-target.toml");
-        let request = request("ax-helloworld", "target", None, path.clone());
+        let request = request("arceos-helloworld", "target", None, path.clone());
 
         let build_info = load_build_info(&request).unwrap();
 
@@ -586,7 +587,7 @@ AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
-        let request = request("ax-helloworld", "target", None, path.clone());
+        let request = request("arceos-helloworld", "target", None, path.clone());
 
         let build_info = load_build_info(&request).unwrap();
 
@@ -664,7 +665,7 @@ plat_dyn = false
         )
         .unwrap();
         let request = request(
-            "ax-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             None,
             path,
@@ -760,7 +761,7 @@ AX_IP = "10.0.2.15"
             ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
         }
         .into_prepared_base_cargo_config_with_metadata(
-            "ax-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             None,
             &metadata,
@@ -785,7 +786,7 @@ AX_IP = "10.0.2.15"
         };
         fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
         let request = request(
-            "ax-helloworld",
+            "arceos-helloworld",
             "x86_64-unknown-none",
             Some(false),
             build_config,
@@ -806,7 +807,7 @@ AX_IP = "10.0.2.15"
     fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
         let root = tempdir().unwrap();
         let request = request(
-            "ax-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             Some(true),
             root.path().join(".build.toml"),
@@ -834,7 +835,7 @@ AX_IP = "10.0.2.15"
         let metadata = repo_metadata();
         let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
             .into_prepared_base_cargo_config_with_metadata(
-                "ax-helloworld",
+                "arceos-helloworld",
                 "x86_64-unknown-none",
                 None,
                 &metadata,

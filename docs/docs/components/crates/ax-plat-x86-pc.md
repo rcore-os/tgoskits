@@ -175,7 +175,7 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp"] }
 - 对启动路径中的结构布局和符号契约，优先考虑编译期断言和最小样例验证。
 
 ### 集成测试
-- `ax-helloworld-myplat` 和系统级 smoke test：验证 Multiboot 启动、串口、IOAPIC/LAPIC 和 secondary path。
+- `arceos-helloworld-myplat` 和系统级 smoke test：验证 Multiboot 启动、串口、IOAPIC/LAPIC 和 secondary path。
 - 启用 `rtc` 时验证 wall time 路径。
 
 ### 覆盖率
@@ -241,7 +241,7 @@ graph LR
     current --> ax_kspin["ax-kspin"]
     current --> ax_lazyinit["ax-lazyinit"]
     current --> ax-percpu["ax-percpu"]
-    arceos_helloworld_myplat["ax-helloworld-myplat"] --> current
+    arceos_helloworld_myplat["arceos-helloworld-myplat"] --> current
     ax-hal["ax-hal"] --> current
 ```
 
@@ -268,19 +268,19 @@ graph LR
 - `percpu_macros`
 
 ### 3.3 被依赖情况
-- `ax-helloworld-myplat`
+- `arceos-helloworld-myplat`
 - `ax-hal`
 
 ### 被依赖情况
 - `arceos-affinity`
-- `ax-helloworld`
-- `ax-httpclient`
-- `ax-httpserver`
+- `arceos-helloworld`
+- `arceos-httpclient`
+- `arceos-httpserver`
 - `arceos-irq`
 - `arceos-memtest`
 - `arceos-parallel`
 - `arceos-priority`
-- `ax-shell`
+- `arceos-shell`
 - `arceos-sleep`
 - `arceos-wait-queue`
 - `arceos-yield`
@@ -332,7 +332,7 @@ ax-plat-x86-pc = { workspace = true }
 
 ## 跨项目定位
 ### ArceOS
-`ax-plat-x86-pc` 不在 ArceOS 目录内部，但被 `ax-helloworld-myplat`、`ax-hal` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+`ax-plat-x86-pc` 不在 ArceOS 目录内部，但被 `arceos-helloworld-myplat`、`ax-hal` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
 
 ### StarryOS
 `ax-plat-x86-pc` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。

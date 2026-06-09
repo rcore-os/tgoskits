@@ -9,7 +9,10 @@ use clap::{Args, Subcommand};
 use log::warn;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
-use crate::context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence};
+use crate::{
+    context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
+    test::host_http::HostHttpServerGuard,
+};
 
 const DEFAULT_TEST_DISK_IMAGE_SIZE: &str = "64M";
 
@@ -78,6 +81,19 @@ pub mod build;
 pub mod cbuild;
 pub mod rootfs;
 pub mod test;
+
+fn start_qemu_host_http_server(
+    request: &ResolvedBuildRequest,
+) -> anyhow::Result<Option<HostHttpServerGuard>> {
+    request
+        .qemu_config
+        .as_deref()
+        .map(crate::test::qemu::load_qemu_case_host_http_server)
+        .transpose()?
+        .flatten()
+        .map(|config| HostHttpServerGuard::start(&config, &request.package))
+        .transpose()
+}
 
 // ---------------------------------------------------------------------------
 // CLI types
@@ -289,6 +305,7 @@ impl ArceOS {
         if let Some(qemu) = qemu.as_ref() {
             ensure_qemu_runtime_assets(self.app.workspace_root(), qemu)?;
         }
+        let _host_http_server = start_qemu_host_http_server(&request)?;
         self.app.qemu(cargo, request.build_info_path, qemu).await
     }
 
@@ -367,6 +384,7 @@ impl ArceOS {
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)
             .await?;
+        let _host_http_server = start_qemu_host_http_server(&request)?;
         self.app.run_prepared_qemu(qemu, None).await
     }
 
@@ -412,6 +430,8 @@ fn c_app_internal_request(request: &ResolvedBuildRequest) -> ResolvedBuildReques
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -444,5 +464,37 @@ mod tests {
             workspace,
             Path::new("/workspace/test-suit/arceos/rust/fs/shell/disk.img")
         ));
+    }
+
+    #[test]
+    fn qemu_request_starts_host_http_server_from_config() {
+        let root = tempdir().unwrap();
+        let qemu_config = root.path().join("qemu-x86_64.toml");
+        std::fs::write(
+            &qemu_config,
+            r#"
+args = []
+
+[host_http_server]
+port = 0
+body = "fixture"
+"#,
+        )
+        .unwrap();
+        let request = ResolvedBuildRequest {
+            package: "arceos-httpclient".to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: Some(true),
+            smp: Some(1),
+            debug: false,
+            build_info_path: root.path().join("build.toml"),
+            qemu_config: Some(qemu_config),
+            uboot_config: None,
+        };
+
+        let guard = start_qemu_host_http_server(&request).unwrap();
+
+        assert!(guard.is_some());
     }
 }

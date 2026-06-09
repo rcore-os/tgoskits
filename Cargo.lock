@@ -249,7 +249,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-std-arce_agent"
+name = "arceos-arce_agent"
 version = "0.2.0"
 dependencies = [
  "ax-std",
@@ -261,46 +261,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-std-helloworld"
+name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-httpclient"
+name = "arceos-helloworld-myplat"
+version = "0.3.1"
+dependencies = [
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-x86-pc",
+ "ax-std",
+ "cfg-if",
+]
+
+[[package]]
+name = "arceos-httpclient"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-httpserver"
+name = "arceos-httpserver"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-io_test"
+name = "arceos-io_test"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-thread_test"
-version = "0.1.0"
+name = "arceos-shell"
+version = "0.3.1"
 dependencies = [
  "ax-std",
-]
-
-[[package]]
-name = "arceos-std-tokio_test"
-version = "0.1.0"
-dependencies = [
- "ax-std",
- "tokio",
 ]
 
 [[package]]
@@ -315,6 +317,21 @@ dependencies = [
  "axfs-ng-vfs",
  "embedded-graphics",
  "rand 0.8.6",
+]
+
+[[package]]
+name = "arceos-thread_test"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-tokio_test"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+ "tokio",
 ]
 
 [[package]]
@@ -834,45 +851,6 @@ name = "ax-handler-table"
 version = "0.3.7"
 
 [[package]]
-name = "ax-helloworld"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "ax-helloworld-myplat"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-x86-pc",
- "ax-std",
- "cfg-if",
-]
-
-[[package]]
-name = "ax-httpclient"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "ax-httpserver"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
 name = "ax-input"
 version = "0.5.15"
 dependencies = [
@@ -1294,15 +1272,6 @@ name = "ax-sched"
 version = "0.5.6"
 dependencies = [
  "ax-linked-list-r4l",
-]
-
-[[package]]
-name = "ax-shell"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
 ]
 
 [[package]]
@@ -8146,61 +8115,6 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
-]
-
-[[package]]
-name = "test-arceos-std-arce_agent"
-version = "0.2.0"
-dependencies = [
- "ax-std",
- "env_logger",
- "log",
- "minreq",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "test-arceos-std-helloworld"
-version = "0.1.0"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "test-arceos-std-httpclient"
-version = "0.1.0"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "test-arceos-std-httpserver"
-version = "0.1.0"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "test-arceos-std-io_test"
-version = "0.1.0"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "test-arceos-std-thread_test"
-version = "0.1.0"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "test-arceos-std-tokio_test"
-version = "0.1.0"
-dependencies = [
- "ax-std",
- "tokio",
 ]
 
 [[package]]
