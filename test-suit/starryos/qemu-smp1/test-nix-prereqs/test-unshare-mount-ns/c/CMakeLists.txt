@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(test-unshare-mount-ns C)
+set(EXE test-unshare-mount-ns)
+file(GLOB SRC src/main.c)
+add_executable(${EXE} ${SRC})
+target_include_directories(${EXE} PRIVATE src)
+install(TARGETS ${EXE} DESTINATION usr/bin)

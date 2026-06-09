@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-pipe-poll-close C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+add_executable(test-pipe-poll-close src/main.c)
+target_include_directories(test-pipe-poll-close PRIVATE src)
+target_compile_options(test-pipe-poll-close PRIVATE -Wall -Wextra -Werror)
+
+install(TARGETS test-pipe-poll-close RUNTIME DESTINATION usr/bin/starry-test-suit)
