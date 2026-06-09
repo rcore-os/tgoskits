@@ -16,7 +16,10 @@ use crate::{
         ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
         resolve_starry_arch_and_target, validate_supported_target,
     },
-    test::{board as board_test, case, case::TestQemuCase, qemu as qemu_test},
+    test::{
+        board as board_test, case, case::TestQemuCase, host_http::HostHttpServerGuard,
+        qemu as qemu_test,
+    },
 };
 
 const STARRY_TEST_SUITE_OS: &str = "starryos";
@@ -805,6 +808,7 @@ impl Starry {
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
+        let _host_http_server = start_qemu_case_host_http_server(case)?;
         case::run_qemu_with_prepared_case_assets(
             &mut self.app,
             cargo,
@@ -850,6 +854,15 @@ impl Starry {
 
         Ok(())
     }
+}
+
+fn start_qemu_case_host_http_server(
+    case: &TestQemuCase,
+) -> anyhow::Result<Option<HostHttpServerGuard>> {
+    case.host_http_server
+        .as_ref()
+        .map(|config| HostHttpServerGuard::start(config, &case.name))
+        .transpose()
 }
 
 fn ensure_host_symbolize_output_matches(
@@ -2125,6 +2138,125 @@ mod tests {
                 system_path.display()
             );
         }
+    }
+
+    #[test]
+    fn apk_curl_equivalence_is_in_system_grouped_qemu_case() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
+        let subcase_dir = system_dir.join("apk-curl-equivalence");
+        let cmake_path = subcase_dir.join("c/CMakeLists.txt");
+        let prebuild_path = subcase_dir.join("c/prebuild.sh");
+        let script_path = subcase_dir.join("c/src/apk-curl-equivalence.sh");
+
+        let cmake = fs::read_to_string(&cmake_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+        let prebuild = fs::read_to_string(&prebuild_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", prebuild_path.display()));
+        let script = fs::read_to_string(&script_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", script_path.display()));
+
+        assert!(
+            cmake.contains("set(CURL_BIN")
+                && cmake.contains("install(PROGRAMS \"${CURL_BIN}\"")
+                && cmake.contains("DESTINATION usr/bin/starry-test-suit")
+                && cmake.contains("RENAME apk-curl-equivalence"),
+            "{} must install curl and the apk-curl equivalence script into the grouped runner",
+            cmake_path.display()
+        );
+        assert!(
+            prebuild.contains("apk add") && prebuild.contains("curl"),
+            "{} must install curl into the staging rootfs",
+            prebuild_path.display()
+        );
+        assert!(
+            !subcase_dir.join("qemu-x86_64.toml").exists(),
+            "{} must not carry its own qemu config; qemu-smp1/system owns runtime config",
+            subcase_dir.display()
+        );
+        assert!(
+            script.contains("APK_CURL_EQUIVALENCE_TEST_PASSED")
+                && script.contains("APK_CURL_EQUIVALENCE_TEST_FAILED")
+                && script.contains("curl --connect-timeout")
+                && script.contains("10.0.2.2")
+                && script.contains("20971520")
+                && script.contains("sha256sum -c")
+                && script
+                    .contains("48b6fb8f1c2fec38d030604889d674722c4af237733c913b698400b59c9294b4"),
+            "{} must download the local 20MiB HTTP fixture, write it to disk, then read it back \
+             and compare sha256",
+            script_path.display()
+        );
+
+        for (arch, port) in [
+            ("x86_64", 18380_i64),
+            ("aarch64", 18381_i64),
+            ("riscv64", 18382_i64),
+            ("loongarch64", 18383_i64),
+        ] {
+            let config_path = system_dir.join(format!("qemu-{arch}.toml"));
+            let content = fs::read_to_string(&config_path).unwrap();
+            let config: toml::Value = toml::from_str(&content).unwrap();
+            let host_http_server = config
+                .get("host_http_server")
+                .and_then(toml::Value::as_table)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} must start a local host HTTP fixture for apk-curl-equivalence",
+                        config_path.display()
+                    )
+                });
+
+            assert_eq!(
+                host_http_server.get("bind").and_then(toml::Value::as_str),
+                Some("127.0.0.1")
+            );
+            assert_eq!(
+                host_http_server
+                    .get("port")
+                    .and_then(toml::Value::as_integer),
+                Some(port)
+            );
+            assert_eq!(
+                host_http_server
+                    .get("body_size")
+                    .and_then(toml::Value::as_integer),
+                Some(20 * 1024 * 1024)
+            );
+            assert_eq!(
+                host_http_server
+                    .get("body_byte")
+                    .and_then(toml::Value::as_integer),
+                Some(i64::from(b'a'))
+            );
+        }
+    }
+
+    #[test]
+    fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(&case_dir).unwrap();
+        let test_case = TestQemuCase {
+            name: "qemu-smp1/system".to_string(),
+            display_name: "qemu-smp1/system".to_string(),
+            case_dir: case_dir.clone(),
+            qemu_config_path: case_dir.join("qemu-x86_64.toml"),
+            test_commands: Vec::new(),
+            host_symbolize_success_regex: Vec::new(),
+            host_http_server: Some(case::HostHttpServerConfig {
+                bind: "127.0.0.1".to_string(),
+                port: 0,
+                body: "fixture".to_string(),
+                body_size: Some(4),
+                body_byte: b'Z',
+            }),
+            subcases: Vec::new(),
+        };
+
+        let guard = start_qemu_case_host_http_server(&test_case).unwrap();
+
+        assert!(guard.is_some());
     }
 
     #[test]

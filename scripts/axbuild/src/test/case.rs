@@ -71,6 +71,10 @@ pub(crate) struct HostHttpServerConfig {
     pub(crate) port: u16,
     #[serde(default = "default_host_http_body")]
     pub(crate) body: String,
+    #[serde(default)]
+    pub(crate) body_size: Option<usize>,
+    #[serde(default = "default_host_http_body_byte")]
+    pub(crate) body_byte: u8,
 }
 
 fn default_host_http_bind() -> String {
@@ -79,6 +83,10 @@ fn default_host_http_bind() -> String {
 
 fn default_host_http_body() -> String {
     "ArceOS local HTTP fixture\n".to_string()
+}
+
+fn default_host_http_body_byte() -> u8 {
+    b'a'
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
