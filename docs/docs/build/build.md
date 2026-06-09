@@ -15,7 +15,7 @@ sidebar_label: "构建过程"
 
 ```mermaid
 flowchart TD
-    A["cargo xtask arceos build<br/>--package ax-helloworld"] --> B[1. 初始化 AppContext]
+    A["cargo xtask arceos build<br/>--package arceos-std-helloworld"] --> B[1. 初始化 AppContext]
     B --> C["2. 参数解析"]
     C --> C1["Snapshot 不存在 → 空 Snapshot<br/>CLI 参数 + 子系统默认值"]
     C1 --> C2["创建并写回 Snapshot<br/>(tmp/axbuild/.arceos.toml)"]

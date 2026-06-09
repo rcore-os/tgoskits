@@ -21,7 +21,7 @@ entry_point = 0x8000
 # The location of image: "memory" | "fs".
 image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "/path/ax-helloworld-x86_64.bin"
+kernel_path = "/path/arceos-std-helloworld-x86_64.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.

@@ -83,7 +83,7 @@ Then use the unified `cargo xtask` entry point to run the three system paths:
 
 ```bash
 # ArceOS: run Hello World
-cargo xtask arceos qemu --package ax-helloworld --arch aarch64
+cargo xtask arceos qemu --package arceos-std-helloworld --arch aarch64
 
 # StarryOS: prepare rootfs before the first run
 cargo xtask starry rootfs --arch aarch64

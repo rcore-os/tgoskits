@@ -200,7 +200,7 @@ ax-task = { workspace = true }
 系统级验证更重要：
 
 - `test-suit/arceos/task/*` 是最直接的回归入口。
-- `ax-helloworld` 可验证最小 bring-up。
+- `arceos-std-helloworld` 可验证最小 bring-up。
 - StarryOS 线程/进程路径能验证 `task-ext` 和复杂阻塞语义。
 - Axvisor 的 vCPU 任务路径能验证 `TaskExt` 与 `WaitQueue` 的复用场景。
 

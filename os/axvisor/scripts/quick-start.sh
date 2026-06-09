@@ -394,7 +394,7 @@ setup_qemu_x86_64_arceos_uefi() {
         for candidate in \
             "$(pwd)/tmp/images/arceos-x86_64-uefi.bin" \
             "$(pwd)/tmp/images/arceos-x86_64.bin" \
-            "$(pwd)/tmp/images/ax-helloworld-x86_64.bin"; do
+            "$(pwd)/tmp/images/arceos-std-helloworld-x86_64.bin"; do
             if [ -f "$candidate" ]; then
                 kernel_path="$candidate"
                 break
