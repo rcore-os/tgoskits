@@ -35,7 +35,7 @@ impl ImageConfig {
     }
 
     pub fn get_config_file_path(base_dir: &Path) -> PathBuf {
-        base_dir.join(IMAGE_CONFIG_FILENAME)
+        crate::context::axbuild_tmp_dir(base_dir).join(IMAGE_CONFIG_FILENAME)
     }
 
     pub fn read_config(base_dir: &Path) -> anyhow::Result<Self> {
@@ -59,6 +59,10 @@ impl ImageConfig {
 
     pub fn write_config(base_dir: &Path, config: &Self) -> anyhow::Result<()> {
         let path = Self::get_config_file_path(base_dir);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| anyhow!("Failed to create image config directory: {e}"))?;
+        }
         fs::write(path, toml::to_string(config)?)
             .map_err(|e| anyhow!("Failed to write image config file: {e}"))
     }
@@ -133,6 +137,10 @@ mod tests {
         let config = ImageConfig::read_config(dir.path()).unwrap();
 
         assert_eq!(config, ImageConfig::new_default());
+        assert_eq!(
+            ImageConfig::get_config_file_path(dir.path()),
+            dir.path().join("tmp/axbuild/.image.toml")
+        );
         assert!(ImageConfig::get_config_file_path(dir.path()).exists());
     }
 
