@@ -119,8 +119,8 @@ flowchart TD
 
 | 改动位置 | 第一步验证 | 第二步验证 |
 | --- | --- | --- |
-| `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-std-helloworld --arch riscv64` |
-| `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-std-helloworld --arch riscv64` | 需要功能时换成 `arceos-std-httpserver --net` 或 `arceos-std-shell --blk` |
+| `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
+| `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 需要功能时换成 `arceos-httpserver --net` 或 `arceos-shell --blk` |
 | `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo starry test qemu --target riscv64` |
 | `virtualization/axvm`、`virtualization/axvcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
 
@@ -288,9 +288,9 @@ my_component = { path = "components/my_component" }
 最常用的三个验证入口：
 
 ```bash
-cargo xtask arceos run --package arceos-std-helloworld --arch riscv64
-cargo xtask arceos run --package arceos-std-httpserver --arch riscv64 --net
-cargo xtask arceos run --package arceos-std-shell --arch riscv64 --blk
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
+cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
+cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 ```
 
 各层适用场景：

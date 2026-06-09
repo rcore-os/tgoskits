@@ -165,7 +165,7 @@ StarryOS Main 配置使用 `--hardware true`：
 {
   "label": "TGOS: Build ArceOS debug image",
   "command": "cargo",
-  "args": ["xtask", "arceos", "build", "--debug", "--package", "arceos-std-helloworld", "--arch", "aarch64"]
+  "args": ["xtask", "arceos", "build", "--debug", "--package", "arceos-helloworld", "--arch", "aarch64"]
 }
 ```
 

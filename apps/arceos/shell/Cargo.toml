@@ -1,5 +1,5 @@
 [package]
-name = "arceos-std-shell"
+name = "arceos-shell"
 version = "0.3.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true

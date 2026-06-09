@@ -191,7 +191,7 @@ ax-hal = { workspace = true }
 ### 集成测试
 更关键的是系统级验证：
 
-- ArceOS 最小启动路径，例如 `arceos-std-helloworld`。
+- ArceOS 最小启动路径，例如 `arceos-helloworld`。
 - 依赖 `paging`、`irq`、`smp` 的场景，如 `ax-mm`、`ax-task` 相关测试。
 - StarryOS 与 Axvisor 的最小 bring-up 路径，验证 HAL 改动没有破坏上层复用。
 

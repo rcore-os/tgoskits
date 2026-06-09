@@ -249,7 +249,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-std-arce_agent"
+name = "arceos-arce_agent"
 version = "0.2.0"
 dependencies = [
  "ax-std",
@@ -261,14 +261,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-std-helloworld"
+name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-helloworld-myplat"
+name = "arceos-helloworld-myplat"
 version = "0.3.1"
 dependencies = [
  "ax-plat-loongarch64-qemu-virt",
@@ -278,46 +278,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-std-httpclient"
+name = "arceos-httpclient"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-httpserver"
+name = "arceos-httpserver"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-io_test"
+name = "arceos-io_test"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-shell"
+name = "arceos-shell"
 version = "0.3.1"
 dependencies = [
  "ax-std",
-]
-
-[[package]]
-name = "arceos-std-thread_test"
-version = "0.1.0"
-dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "arceos-std-tokio_test"
-version = "0.1.0"
-dependencies = [
- "ax-std",
- "tokio",
 ]
 
 [[package]]
@@ -332,6 +317,21 @@ dependencies = [
  "axfs-ng-vfs",
  "embedded-graphics",
  "rand 0.8.6",
+]
+
+[[package]]
+name = "arceos-thread_test"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-tokio_test"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+ "tokio",
 ]
 
 [[package]]

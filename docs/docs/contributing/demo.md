@@ -403,14 +403,14 @@ cargo test -p tgmath --test integration
 
 ```bash
 # ArceOS 最小验证
-cargo arceos qemu --package arceos-std-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
 ```
 
 如果改动涉及特定功能（网络、块设备等），换对应示例：
 
 ```bash
 # 带网络的验证
-cargo arceos qemu --package arceos-std-httpclient --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.4 第四步：运行统一测试

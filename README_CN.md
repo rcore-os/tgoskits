@@ -83,7 +83,7 @@ qemu-system-loongarch64 --version
 
 ```bash
 # ArceOS: 运行 Hello World
-cargo xtask arceos qemu --package arceos-std-helloworld --arch aarch64
+cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
 
 # StarryOS: 首次运行前准备 rootfs
 cargo xtask starry rootfs --arch aarch64

@@ -1,5 +1,5 @@
 [package]
-name = "arceos-std-helloworld"
+name = "arceos-helloworld"
 version = "0.1.0"
 edition.workspace = true
 authors = ["eternalcomet <mydragonos@outlook.com>"]

@@ -1,5 +1,5 @@
 [package]
-name = "arceos-std-helloworld-myplat"
+name = "arceos-helloworld-myplat"
 version = "0.3.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true

@@ -20,8 +20,8 @@ All builds, runs, and tests go through `cargo xtask` (implemented in `scripts/ax
 
 ```bash
 # ArceOS
-cargo xtask arceos qemu --package arceos-std-helloworld --arch aarch64
-cargo xtask arceos build --package arceos-std-helloworld --arch riscv64
+cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
 
 # StarryOS (prepare rootfs once first)
 cargo xtask starry rootfs --arch aarch64

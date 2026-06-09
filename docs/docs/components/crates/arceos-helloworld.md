@@ -1,19 +1,19 @@
-# `arceos-std-httpserver`
+# `arceos-helloworld`
 
-> 路径：`apps/arceos/httpserver`
+> 路径：`apps/arceos/helloworld`
 > 类型：二进制 crate
 > 分层：ArceOS 层 / ArceOS 示例程序
 > 版本：`0.3.0`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
-`arceos-std-httpserver` 的核心定位是：Simple HTTP server. Benchmark with Apache HTTP server benchmarking tool: ab -n 5000 -c 20 http://X.X.X.X:5555/
+`arceos-helloworld` 的核心定位是：ArceOS 示例程序
 
 ## 架构设计
 - 目录角色：ArceOS 示例程序
 - crate 形态：二进制 crate
 - 工作区位置：子工作区 `os/arceos`
 - feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `LOCAL_IP`、`LOCAL_PORT`、`CONTENT`。
+- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 模块结构
 - 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
@@ -22,7 +22,7 @@
 - 该 crate 是入口/编排型二进制，复杂度主要来自初始化顺序、配置注入和对下层模块的串接。
 
 ## 核心功能
-- 功能定位：Simple HTTP server. Benchmark with Apache HTTP server benchmarking tool: ab -n 5000 -c 20 http://X.X.X.X:5555/
+- 功能定位：ArceOS 示例程序
 - 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
 - 典型使用场景：主要作为仓库中的专用支撑 crate 被上层组件调用。
 - 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
@@ -30,7 +30,7 @@
 ## 依赖关系
 ```mermaid
 graph LR
-    current["arceos-std-httpserver"]
+    current["arceos-helloworld"]
     current --> ax-std["ax-std"]
 ```
 
@@ -63,12 +63,12 @@ graph LR
 ## 开发指南
 ### 接入方式
 ```toml
-# `arceos-std-httpserver` 是二进制/编排入口，通常不作为库依赖。
+# `arceos-helloworld` 是二进制/编排入口，通常不作为库依赖。
 # 更常见的接入方式是直接执行命令，而不是在 Cargo.toml 中引用。
 ```
 
 ```bash
-cargo run --manifest-path "apps/arceos/httpserver/Cargo.toml"
+cargo run --manifest-path "apps/arceos/helloworld/Cargo.toml"
 ```
 
 ### 初始化
@@ -94,10 +94,10 @@ cargo run --manifest-path "apps/arceos/httpserver/Cargo.toml"
 
 ## 跨项目定位
 ### ArceOS
-`arceos-std-httpserver` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 示例程序。
+`arceos-helloworld` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 示例程序。
 
 ### StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-std-httpserver` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前未检测到 StarryOS 工程本体对 `arceos-helloworld` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
 
 ### Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-std-httpserver` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前未检测到 Axvisor 工程本体对 `arceos-helloworld` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。

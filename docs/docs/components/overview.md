@@ -133,10 +133,10 @@ flowchart TB
 | `ax-fs-vfs` | 组件层 | `components/axfs_crates/axfs_vfs` | 1 | 4 | [查看](crates/ax-fs-vfs) |
 | `ax-hal` | ArceOS 层 | `os/arceos/modules/axhal` | 13 | 15 | [查看](crates/ax-hal) |
 | `ax-handler-table` | 组件层 | `components/handler_table` | 0 | 1 | [查看](crates/ax-handler-table) |
-| `arceos-std-helloworld` | ArceOS 层 | `apps/arceos/helloworld` | 1 | 0 | [查看](crates/arceos-std-helloworld) |
-| `arceos-std-helloworld-myplat` | ArceOS 层 | `apps/arceos/helloworld-myplat` | 8 | 0 | [查看](crates/arceos-std-helloworld-myplat) |
-| `arceos-std-httpclient` | ArceOS 层 | `apps/arceos/httpclient` | 1 | 0 | [查看](crates/arceos-std-httpclient) |
-| `arceos-std-httpserver` | ArceOS 层 | `apps/arceos/httpserver` | 1 | 0 | [查看](crates/arceos-std-httpserver) |
+| `arceos-helloworld` | ArceOS 层 | `apps/arceos/helloworld` | 1 | 0 | [查看](crates/arceos-helloworld) |
+| `arceos-helloworld-myplat` | ArceOS 层 | `apps/arceos/helloworld-myplat` | 8 | 0 | [查看](crates/arceos-helloworld-myplat) |
+| `arceos-httpclient` | ArceOS 层 | `apps/arceos/httpclient` | 1 | 0 | [查看](crates/arceos-httpclient) |
+| `arceos-httpserver` | ArceOS 层 | `apps/arceos/httpserver` | 1 | 0 | [查看](crates/arceos-httpserver) |
 | `ax-input` | ArceOS 层 | `os/arceos/modules/axinput` | 3 | 3 | [查看](crates/ax-input) |
 | `ax-int-ratio` | 组件层 | `components/int_ratio` | 0 | 3 | [查看](crates/ax-int-ratio) |
 | `ax-io` | 组件层 | `components/axio` | 1 | 9 | [查看](crates/ax-io) |
@@ -163,7 +163,7 @@ flowchart TB
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |
 | `ax-sched` | 组件层 | `components/axsched` | 1 | 1 | [查看](crates/ax-sched) |
-| `arceos-std-shell` | ArceOS 层 | `apps/arceos/shell` | 1 | 0 | [查看](crates/arceos-std-shell) |
+| `arceos-shell` | ArceOS 层 | `apps/arceos/shell` | 1 | 0 | [查看](crates/arceos-shell) |
 | `ax-std` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](crates/ax-std) |
 | `ax-sync` | ArceOS 层 | `os/arceos/modules/axsync` | 2 | 9 | [查看](crates/ax-sync) |
 | `ax-task` | ArceOS 层 | `os/arceos/modules/axtask` | 13 | 8 | [查看](crates/ax-task) |

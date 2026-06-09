@@ -1,44 +1,40 @@
-# `arceos-std-helloworld-myplat`
+# `arceos-shell`
 
-> 路径：`apps/arceos/helloworld-myplat`
+> 路径：`apps/arceos/shell`
 > 类型：二进制 crate
 > 分层：ArceOS 层 / ArceOS 示例程序
 > 版本：`0.3.0`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
-`arceos-std-helloworld-myplat` 的核心定位是：ArceOS 示例程序
+`arceos-shell` 的核心定位是：ArceOS 示例程序
 
 ## 架构设计
 - 目录角色：ArceOS 示例程序
 - crate 形态：二进制 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `loongarch64-qemu-virt`、`x86-pc` 控制编译期静态平台装配；AArch64 和 RISC-V QEMU 默认测试路径走动态平台。
-- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
+- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
+- 关键数据结构：可直接观察到的关键数据结构/对象包括 `CmdHandler`、`LF`、`CR`、`DL`、`BS`。
 
 ### 模块结构
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- `cmd`：内部子模块
 
 ### 核心机制
 - 该 crate 是入口/编排型二进制，复杂度主要来自初始化顺序、配置注入和对下层模块的串接。
 
 ## 核心功能
 - 功能定位：ArceOS 示例程序
-- 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
+- 对外接口：从源码可见的主要公开入口包括 `run_cmd`。
 - 典型使用场景：主要作为仓库中的专用支撑 crate 被上层组件调用。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()` -> `run_cmd()`。
 
 ## 依赖关系
 ```mermaid
 graph LR
-    current["arceos-std-helloworld-myplat"]
-    current --> ax_plat_loongarch64_qemu_virt["ax-plat-loongarch64-qemu-virt"]
-    current --> ax_plat_x86_pc["ax-plat-x86-pc"]
+    current["arceos-shell"]
     current --> ax-std["ax-std"]
 ```
 
 ### 直接依赖
-- `ax-plat-loongarch64-qemu-virt`
-- `ax-plat-x86-pc`
 - `ax-std`
 
 ### 间接依赖
@@ -53,7 +49,7 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
-- 另外还有 `62` 个同类项未在此展开
+- 另外还有 `66` 个同类项未在此展开
 
 ### 3.3 被依赖情况
 - 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
@@ -62,17 +58,17 @@ graph LR
 - 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
 
 ### 外部依赖
-- `cfg-if`
+- 当前依赖集合几乎完全来自仓库内本地 crate。
 
 ## 开发指南
 ### 接入方式
 ```toml
-# `arceos-std-helloworld-myplat` 是二进制/编排入口，通常不作为库依赖。
+# `arceos-shell` 是二进制/编排入口，通常不作为库依赖。
 # 更常见的接入方式是直接执行命令，而不是在 Cargo.toml 中引用。
 ```
 
 ```bash
-cargo run --manifest-path "apps/arceos/helloworld-myplat/Cargo.toml"
+cargo run --manifest-path "apps/arceos/shell/Cargo.toml"
 ```
 
 ### 初始化
@@ -81,7 +77,7 @@ cargo run --manifest-path "apps/arceos/helloworld-myplat/Cargo.toml"
 3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
 
 ### API 使用
-- 该 crate 更偏编排、配置或内部 glue 逻辑，关键使用点通常体现在 feature、命令或入口函数上。
+- 优先关注函数入口：`run_cmd`。
 
 ## 测试
 ### 测试覆盖
@@ -98,10 +94,10 @@ cargo run --manifest-path "apps/arceos/helloworld-myplat/Cargo.toml"
 
 ## 跨项目定位
 ### ArceOS
-`arceos-std-helloworld-myplat` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 示例程序。
+`arceos-shell` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 示例程序。
 
 ### StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-std-helloworld-myplat` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前未检测到 StarryOS 工程本体对 `arceos-shell` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
 
 ### Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-std-helloworld-myplat` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前未检测到 Axvisor 工程本体对 `arceos-shell` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。

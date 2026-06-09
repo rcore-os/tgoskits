@@ -22,7 +22,7 @@ entry_point = 0x0020_0040
 # load from memory.
 image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "/path/to/arceos-std-helloworld.bin"
+kernel_path = "/path/to/arceos-helloworld.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x0020_0000
 # The load address of the device tree blob (DTB).

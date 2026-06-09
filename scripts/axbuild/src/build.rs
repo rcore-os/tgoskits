@@ -2197,7 +2197,7 @@ mod tests {
             ..BuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
-            "arceos-std-helloworld",
+            "arceos-helloworld",
             "x86_64-unknown-none",
             None,
             &metadata,
@@ -2332,7 +2332,7 @@ AX_IP = "10.0.2.15"
             ..BuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
-            "arceos-std-helloworld",
+            "arceos-helloworld",
             "x86_64-unknown-none",
             None,
             &metadata,
@@ -2364,7 +2364,7 @@ AX_IP = "10.0.2.15"
             ..BuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
-            "arceos-std-httpclient",
+            "arceos-httpclient",
             "aarch64-unknown-none-softfloat",
             None,
             &metadata,
@@ -2400,7 +2400,7 @@ AX_IP = "10.0.2.15"
             ..BuildInfo::default_for_target("aarch64-unknown-none-softfloat")
         }
         .into_prepared_base_cargo_config_with_metadata(
-            "arceos-std-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             None,
             &metadata,
@@ -2436,7 +2436,7 @@ AX_IP = "10.0.2.15"
 
         let cargo = info
             .into_prepared_base_cargo_config_with_metadata(
-                "arceos-std-helloworld",
+                "arceos-helloworld",
                 "x86_64-unknown-none",
                 None,
                 &metadata,
@@ -2910,7 +2910,7 @@ AX_IP = "10.0.2.15"
             ..BuildInfo::default_for_target("x86_64-unknown-none")
         }
         .into_prepared_base_cargo_config_with_metadata(
-            "arceos-std-helloworld",
+            "arceos-helloworld",
             "x86_64-unknown-none",
             None,
             &metadata,
@@ -3050,7 +3050,7 @@ AX_IP = "10.0.2.15"
 
         apply_makefile_features_with_prefix_family(
             &mut info,
-            "arceos-std-app",
+            "arceos-app",
             &[String::from("lockdep")],
             Err(anyhow::anyhow!("std test packages do not depend on ax-std")),
         );
@@ -3093,7 +3093,7 @@ AX_IP = "10.0.2.15"
         let mut info = BuildInfo::default();
 
         info.resolve_features_with_prefix_family(
-            "arceos-std-helloworld",
+            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             false,
             Ok(AxFeaturePrefixFamily::AxStd),

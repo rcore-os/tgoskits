@@ -482,7 +482,7 @@ body = "fixture"
         )
         .unwrap();
         let request = ResolvedBuildRequest {
-            package: "arceos-std-httpclient".to_string(),
+            package: "arceos-httpclient".to_string(),
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: Some(true),

@@ -1,19 +1,19 @@
-# `arceos-std-httpclient`
+# `arceos-helloworld-myplat`
 
-> 路径：`apps/arceos/httpclient`
+> 路径：`apps/arceos/helloworld-myplat`
 > 类型：二进制 crate
 > 分层：ArceOS 层 / ArceOS 示例程序
 > 版本：`0.3.0`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
-`arceos-std-httpclient` 的核心定位是：ArceOS 示例程序
+`arceos-helloworld-myplat` 的核心定位是：ArceOS 示例程序
 
 ## 架构设计
 - 目录角色：ArceOS 示例程序
 - crate 形态：二进制 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `dns` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `DEST`、`REQUEST`。
+- feature 视角：主要通过 `loongarch64-qemu-virt`、`x86-pc` 控制编译期静态平台装配；AArch64 和 RISC-V QEMU 默认测试路径走动态平台。
+- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 模块结构
 - 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
@@ -30,11 +30,15 @@
 ## 依赖关系
 ```mermaid
 graph LR
-    current["arceos-std-httpclient"]
+    current["arceos-helloworld-myplat"]
+    current --> ax_plat_loongarch64_qemu_virt["ax-plat-loongarch64-qemu-virt"]
+    current --> ax_plat_x86_pc["ax-plat-x86-pc"]
     current --> ax-std["ax-std"]
 ```
 
 ### 直接依赖
+- `ax-plat-loongarch64-qemu-virt`
+- `ax-plat-x86-pc`
 - `ax-std`
 
 ### 间接依赖
@@ -49,7 +53,7 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
-- 另外还有 `66` 个同类项未在此展开
+- 另外还有 `62` 个同类项未在此展开
 
 ### 3.3 被依赖情况
 - 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
@@ -58,17 +62,17 @@ graph LR
 - 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
 
 ### 外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+- `cfg-if`
 
 ## 开发指南
 ### 接入方式
 ```toml
-# `arceos-std-httpclient` 是二进制/编排入口，通常不作为库依赖。
+# `arceos-helloworld-myplat` 是二进制/编排入口，通常不作为库依赖。
 # 更常见的接入方式是直接执行命令，而不是在 Cargo.toml 中引用。
 ```
 
 ```bash
-cargo run --manifest-path "apps/arceos/httpclient/Cargo.toml"
+cargo run --manifest-path "apps/arceos/helloworld-myplat/Cargo.toml"
 ```
 
 ### 初始化
@@ -94,10 +98,10 @@ cargo run --manifest-path "apps/arceos/httpclient/Cargo.toml"
 
 ## 跨项目定位
 ### ArceOS
-`arceos-std-httpclient` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 示例程序。
+`arceos-helloworld-myplat` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 示例程序。
 
 ### StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-std-httpclient` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前未检测到 StarryOS 工程本体对 `arceos-helloworld-myplat` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
 
 ### Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-std-httpclient` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前未检测到 Axvisor 工程本体对 `arceos-helloworld-myplat` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
