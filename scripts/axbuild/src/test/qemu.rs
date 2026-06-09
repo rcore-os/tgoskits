@@ -1176,7 +1176,8 @@ pub(crate) fn cargo_uses_dynamic_x86_64_platform(cargo: &Cargo) -> bool {
 }
 
 fn cargo_target_is_dynamic_x86_64(target: &str) -> bool {
-    target.ends_with("x86_64-unknown-none") || target.ends_with("x86_64-unknown-linux-musl.json")
+    let target = target.strip_suffix(".json").unwrap_or(target);
+    target.ends_with("x86_64-unknown-none") || target.ends_with("x86_64-unknown-linux-musl")
 }
 
 fn dynamic_platform_feature(feature: &str) -> bool {
