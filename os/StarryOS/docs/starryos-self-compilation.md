@@ -122,7 +122,7 @@ QEMU riscv64 (-m 8G)
 
 ## 测试配置
 
-### 测试用例 (`test-suit/starryos/normal/qemu-selfhost/selfhost-full-kernel/`)
+### 测试用例 (`test-suit/starryos/qemu-selfhost/selfhost-full-kernel/`)
 
 测试用例位于独立的 `qemu-selfhost` 构建组中，避免因缺少 Debian rootfs 镜像（8GB）而阻塞标准 CI。
 
