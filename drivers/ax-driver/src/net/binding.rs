@@ -47,17 +47,7 @@ pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
         endpoint.interrupt_pin(),
         endpoint.interrupt_line(),
         || {
-            #[cfg(all(
-                plat_dyn,
-                target_os = "none",
-                any(
-                    feature = "intel-net",
-                    feature = "ixgbe",
-                    feature = "realtek-rtl8125",
-                    feature = "virtio-net",
-                    feature = "xhci-pci",
-                )
-            ))]
+            #[cfg(pci_dyn_acpi_intx_route)]
             {
                 let interrupt_pin = endpoint.interrupt_pin();
                 if interrupt_pin != 0 {
@@ -74,17 +64,7 @@ pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
             None
         },
         || {
-            #[cfg(all(
-                plat_dyn,
-                target_os = "none",
-                any(
-                    feature = "intel-net",
-                    feature = "ixgbe",
-                    feature = "realtek-rtl8125",
-                    feature = "virtio-net",
-                    feature = "xhci-pci",
-                )
-            ))]
+            #[cfg(pci_dyn_intx_route)]
             {
                 let interrupt_pin = endpoint.interrupt_pin();
                 if interrupt_pin != 0 {

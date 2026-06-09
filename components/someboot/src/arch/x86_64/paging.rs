@@ -44,24 +44,28 @@ impl page_table_generic::PageTableEntry for Entry {
         if config.lower {
             bits |= PTE_USER;
         }
-        if config.dirty {
+        // Non-leaf page table pointers must not inherit leaf mapping flags
+        // from the template used by the generic mapper.
+        let is_leaf = !config.is_dir || config.huge;
+        if is_leaf && config.dirty {
             bits |= PTE_DIRTY;
         }
-        if config.global {
+        if is_leaf && config.global {
             bits |= PTE_GLOBAL;
         }
         if config.is_dir && config.huge {
             bits |= PTE_HUGE;
         }
-        match config.mem_attr {
-            MemAttributes::Device | MemAttributes::Uncached => {
-                bits |= PTE_CACHE_DISABLE | PTE_WRITE_THROUGH;
+        if is_leaf {
+            match config.mem_attr {
+                MemAttributes::Device | MemAttributes::Uncached => {
+                    bits |= PTE_CACHE_DISABLE | PTE_WRITE_THROUGH;
+                }
+                _ => {}
             }
-            _ => {}
         }
         // For x86_64, NX on non-leaf entries blocks execution for the whole
         // covered range. Only apply NX on leaf mappings (PTE or huge page).
-        let is_leaf = !config.is_dir || config.huge;
         if is_leaf && !config.executable {
             bits |= PTE_NO_EXECUTE;
         }
@@ -314,9 +318,19 @@ fn setup_page_table() -> anyhow::Result<()> {
 
     let root = table.root_paddr();
     crate::mem::mmu::set_boot_table(table);
+    // The boot page tables contain NX leaf mappings. Enable NXE before
+    // loading them, otherwise x86_64 treats the NX bit as reserved.
+    enable_no_execute();
     super::trap::set_cr3(root);
     enable_page_features();
     Ok(())
+}
+
+fn enable_no_execute() {
+    unsafe {
+        let efer = rdmsr(IA32_EFER) | IA32_EFER_NXE;
+        wrmsr(IA32_EFER, efer);
+    }
 }
 
 fn enable_page_features() {
@@ -326,9 +340,6 @@ fn enable_page_features() {
 
         let cr4 = controlregs::cr4() | Cr4::CR4_ENABLE_GLOBAL_PAGES;
         controlregs::cr4_write(cr4);
-
-        let efer = rdmsr(IA32_EFER) | IA32_EFER_NXE;
-        wrmsr(IA32_EFER, efer);
     }
 }
 

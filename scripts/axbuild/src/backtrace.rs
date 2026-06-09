@@ -62,7 +62,7 @@ pub fn execute(command: Command) -> anyhow::Result<()> {
 
 const HOST_SYMBOLIZE_HEADER: &str = "=== host backtrace symbolize ===";
 
-/// Resolved ELF path for an ArceOS Rust test package built via the workspace `target/` dir.
+/// Resolved ELF path for an ArceOS Rust package built via the workspace `target/` dir.
 pub(crate) fn arceos_rust_elf_path(
     workspace_root: &Path,
     target: &str,
@@ -75,6 +75,30 @@ pub(crate) fn arceos_rust_elf_path(
         .join(target)
         .join(profile)
         .join(package)
+}
+
+/// Resolved ELF path for an ArceOS std test package built via the workspace `target/` dir.
+pub(crate) fn std_test_elf_path(
+    workspace_root: &Path,
+    target: &str,
+    package: &str,
+    debug: bool,
+) -> PathBuf {
+    arceos_rust_elf_path(workspace_root, std_test_target_dir(target), package, debug)
+}
+
+fn std_test_target_dir(target: &str) -> &str {
+    if target.starts_with("x86_64-") {
+        "x86_64-unknown-linux-musl"
+    } else if target.starts_with("aarch64-") {
+        "aarch64-unknown-linux-musl"
+    } else if target.starts_with("riscv64") {
+        "riscv64gc-unknown-linux-musl"
+    } else if target.starts_with("loongarch64-") {
+        "loongarch64-unknown-linux-musl"
+    } else {
+        target
+    }
 }
 
 fn case_name_kind_hint(case_name: &str) -> Option<&'static str> {
@@ -1198,7 +1222,16 @@ BACKTRACE_END
 
     #[test]
     fn arceos_rust_elf_path_uses_release_profile() {
-        let path = arceos_rust_elf_path(
+        let path = arceos_rust_elf_path(Path::new("/ws"), "x86_64-unknown-none", "app", false);
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-none/release/app")
+        );
+    }
+
+    #[test]
+    fn std_test_elf_path_uses_release_profile() {
+        let path = std_test_elf_path(
             Path::new("/ws"),
             "x86_64-unknown-none",
             "arceos-test-suit",
@@ -1206,7 +1239,21 @@ BACKTRACE_END
         );
         assert_eq!(
             path,
-            PathBuf::from("/ws/target/x86_64-unknown-none/release/arceos-test-suit")
+            PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
+        );
+    }
+
+    #[test]
+    fn std_test_elf_path_maps_arceos_none_target_to_std_target_dir() {
+        let path = std_test_elf_path(
+            Path::new("/ws"),
+            "x86_64-unknown-none",
+            "arceos-test-suit",
+            false,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
         );
     }
 

@@ -4,7 +4,7 @@
 # Usage:
 #   run_all.sh --arch <arch> [--update-golden]
 #
-# Discovers scenarios by enumerating `test-suit/starryos/visual/*/` and
+# Discovers scenarios by enumerating `apps/starry/visual/scenarios/*/` and
 # invokes `run_scenario.sh` on each. Mirrors the existing
 # `cargo xtask starry test qemu --target <arch>` pattern: a single
 # command runs every case, individual PASS/FAIL lines land in the
@@ -29,7 +29,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-SCENARIO_ROOT="$REPO_ROOT/test-suit/starryos/visual"
+SCENARIO_ROOT="$REPO_ROOT/apps/starry/visual/scenarios"
 
 # Ensure the kernel + rootfs the scenarios depend on actually exist. If
 # a run is fresh from CI we may need to build them first. For now the

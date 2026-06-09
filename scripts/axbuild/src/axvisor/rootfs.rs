@@ -15,7 +15,7 @@ use anyhow::anyhow;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Axvisor, build};
-use crate::{context::ResolvedAxvisorRequest, rootfs};
+use crate::{context::ResolvedAxvisorRequest, rootfs, test::qemu as qemu_test};
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
     let request = axvisor.prepare_request(
@@ -26,13 +26,16 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
     )?;
     axvisor.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request)?;
-    let explicit_rootfs = args.rootfs.map(|rootfs| {
-        crate::rootfs::store::resolve_explicit_rootfs(
-            axvisor.app.workspace_root(),
-            &request.arch,
-            rootfs,
-        )
-    });
+    let explicit_rootfs = args
+        .rootfs
+        .map(|rootfs| {
+            crate::image::storage::resolve_explicit_rootfs(
+                axvisor.app.workspace_root(),
+                &request.arch,
+                rootfs,
+            )
+        })
+        .transpose()?;
     ensure_qemu_rootfs_ready(
         &request,
         axvisor.app.workspace_root(),
@@ -66,6 +69,7 @@ pub(super) async fn load_patched_qemu_config(
         axvisor.app.workspace_root(),
         explicit_rootfs,
     )?;
+    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
     Ok(qemu)
 }
 
@@ -76,7 +80,7 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = managed_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    rootfs::store::ensure_optional_managed_rootfs(
+    crate::image::storage::ensure_optional_managed_rootfs(
         workspace_root,
         &request.arch,
         rootfs_path.as_deref(),
@@ -108,7 +112,9 @@ pub(crate) fn qemu_rootfs_path(
 
     infer_rootfs_path(&request.vmconfigs)?
         .map(Ok)
-        .unwrap_or_else(|| rootfs::store::default_rootfs_path(workspace_root, &request.arch))
+        .unwrap_or_else(|| {
+            crate::image::storage::default_rootfs_path(workspace_root, &request.arch)
+        })
 }
 
 /// Patches a QEMU config with a concrete Axvisor rootfs path.
@@ -127,14 +133,11 @@ pub(crate) fn managed_rootfs_path(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<Option<PathBuf>> {
     if let Some(explicit_rootfs) = explicit_rootfs {
-        if explicit_rootfs.starts_with(rootfs::store::rootfs_dir(workspace_root)) {
-            return Ok(Some(explicit_rootfs.to_path_buf()));
-        }
-        return Ok(None);
+        return crate::image::storage::resolve_managed_rootfs_path(workspace_root, explicit_rootfs);
     }
 
     if infer_rootfs_path(&request.vmconfigs)?.is_none() {
-        return Ok(Some(rootfs::store::default_rootfs_path(
+        return Ok(Some(crate::image::storage::default_rootfs_path(
             workspace_root,
             &request.arch,
         )?));
@@ -175,6 +178,20 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    fn managed_rootfs_path_for_test(root: &Path, image_name: &str) -> PathBuf {
+        root.join(".tgos-images").join(image_name).join(image_name)
+    }
+
+    fn write_test_image_config(root: &Path) {
+        let config = crate::image::config::ImageConfig {
+            local_storage: root.join(".tgos-images"),
+            registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
+            auto_sync: true,
+            auto_sync_threshold: 60,
+        };
+        crate::image::config::ImageConfig::write_config(root, &config).unwrap();
+    }
 
     fn request(root: &Path, vmconfigs: Vec<PathBuf>) -> ResolvedAxvisorRequest {
         ResolvedAxvisorRequest {
@@ -261,6 +278,8 @@ kernel_path = "{}"
     #[test]
     fn patch_qemu_rootfs_uses_unified_rootfs_by_default() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
         let mut qemu = QemuConfig {
             args: vec!["id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string()],
             ..Default::default()
@@ -272,9 +291,7 @@ kernel_path = "{}"
             qemu.args,
             vec![format!(
                 "id=disk0,if=none,format=raw,file={}",
-                root.path()
-                    .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img")
-                    .display()
+                rootfs.display()
             )]
         );
     }
@@ -282,6 +299,8 @@ kernel_path = "{}"
     #[test]
     fn patch_qemu_rootfs_inserts_drive_arg_when_template_omits_it() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
         let mut qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
@@ -300,12 +319,7 @@ kernel_path = "{}"
                 "-device".to_string(),
                 "virtio-blk-device,drive=disk0".to_string(),
                 "-drive".to_string(),
-                format!(
-                    "id=disk0,if=none,format=raw,file={}",
-                    root.path()
-                        .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img")
-                        .display()
-                ),
+                format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
                 "-append".to_string(),
                 "root=/dev/vda rw init=/bin/sh".to_string(),
             ]
@@ -315,6 +329,7 @@ kernel_path = "{}"
     #[test]
     fn managed_rootfs_path_uses_default_unified_rootfs_when_vmconfig_has_no_rootfs() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let vmconfig = root.path().join("vm.toml");
         fs::write(
             &vmconfig,
@@ -327,10 +342,10 @@ kernel_path = "/tmp/qemu-aarch64"
 
         assert_eq!(
             managed_rootfs_path(&request(root.path(), vec![vmconfig]), root.path(), None).unwrap(),
-            Some(
-                root.path()
-                    .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img")
-            )
+            Some(managed_rootfs_path_for_test(
+                root.path(),
+                "rootfs-aarch64-alpine.img"
+            ))
         );
     }
 
@@ -362,9 +377,8 @@ kernel_path = "{}"
     #[test]
     fn managed_rootfs_path_keeps_explicit_managed_rootfs() {
         let root = tempdir().unwrap();
-        let explicit = root
-            .path()
-            .join("tmp/axbuild/rootfs/rootfs-aarch64-debian.img");
+        write_test_image_config(root.path());
+        let explicit = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-debian.img");
 
         assert_eq!(
             managed_rootfs_path(

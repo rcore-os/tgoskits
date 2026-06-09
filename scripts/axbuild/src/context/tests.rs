@@ -218,7 +218,7 @@ fn axvisor_snapshot_load_returns_default_when_missing() {
 fn snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = ArceosCommandSnapshot {
-        package: Some("ax-helloworld".into()),
+        package: Some("arceos-helloworld".into()),
         arch: Some("aarch64".into()),
         target: Some("target".into()),
         plat_dyn: Some(true),
@@ -334,7 +334,7 @@ fn prepare_request_uses_snapshot_and_default_target() {
         root.path(),
         ARCEOS_SNAPSHOT_FILE,
         r#"
-package = "ax-helloworld"
+package = "arceos-helloworld"
 
 [qemu]
 qemu_config = "configs/qemu.toml"
@@ -347,7 +347,7 @@ qemu_config = "configs/qemu.toml"
     let (request, snapshot) =
         prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
 
-    assert_eq!(request.package, "ax-helloworld");
+    assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(request.arch, DEFAULT_ARCEOS_ARCH);
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.plat_dyn, None);
@@ -424,7 +424,7 @@ fn prepare_request_resolves_arceos_target_from_arch() {
         &app,
         BuildCliArgs {
             config: None,
-            package: Some("ax-helloworld".into()),
+            package: Some("arceos-helloworld".into()),
             arch: Some("x86_64".into()),
             target: None,
             plat_dyn: None,
@@ -512,7 +512,7 @@ fn prepare_request_cli_target_drops_stale_arceos_runtime_paths() {
         root.path(),
         ARCEOS_SNAPSHOT_FILE,
         r#"
-package = "ax-helloworld"
+package = "arceos-helloworld"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"
 
@@ -872,6 +872,58 @@ target = "aarch64-unknown-none-softfloat"
             "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
+}
+
+#[test]
+fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
+    let root = tempdir().unwrap();
+    let explicit = root
+        .path()
+        .join("test-suit/axvisor/normal/qemu/build-x86_64-unknown-none.toml");
+    fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+    fs::write(
+        &explicit,
+        r#"
+target = "x86_64-unknown-none"
+env = {}
+features = []
+log = "Info"
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
+        r#"
+arch = "x86_64"
+target = "x86_64-unknown-none"
+vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: Some(explicit.clone()),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            vmconfigs: vec![],
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.build_info_path, explicit);
+    assert!(request.vmconfigs.is_empty());
+    assert!(snapshot.vmconfigs.is_empty());
 }
 
 #[test]

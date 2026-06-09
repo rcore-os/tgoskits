@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-open-creat-dangling-no-create C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-open-creat-dangling-no-create src/main.c)
+target_compile_options(bug-open-creat-dangling-no-create PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-open-creat-dangling-no-create RUNTIME DESTINATION usr/bin/starry-test-suit)

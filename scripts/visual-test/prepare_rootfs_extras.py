@@ -136,7 +136,7 @@ def main() -> None:
     args = parser.parse_args()
 
     repo_root = args.repo_root or Path(__file__).resolve().parents[2]
-    scenario_dir = repo_root / "test-suit" / "starryos" / "visual" / args.scenario
+    scenario_dir = repo_root / "apps" / "starry" / "visual" / "scenarios" / args.scenario
     manifest = scenario_dir / "rootfs_extras.packages"
     output = scenario_dir / "rootfs_extras"
 

@@ -19,14 +19,12 @@ dev-log = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
-rknpu = ["dep:ax-driver", "ax-driver/rknpu"]
+rknpu = ["ax-driver/rknpu"]
+std-compat = []
 k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [
+    "dep:axplat-dyn",
     "ax-feat/plat-dyn",
-    "dep:ax-driver",
-    "ax-driver/usb",
-    "dep:crab-usb",
-    "dep:rdrive",
 ]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ax-feat/ipi"]
@@ -68,7 +66,7 @@ ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.7.0", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
-ax-driver = { workspace = true, optional = true }
+ax-driver = { workspace = true, features = ["usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
@@ -77,8 +75,8 @@ ax-task.workspace = true
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
-crab-usb = { workspace = true, optional = true }
-rdrive = { workspace = true, optional = true }
+crab-usb.workspace = true
+rdrive.workspace = true
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }

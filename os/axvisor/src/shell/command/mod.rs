@@ -479,7 +479,7 @@ pub fn prompt_string() -> String {
     #[cfg(feature = "fs")]
     {
         match std::env::current_dir() {
-            Ok(dir) => format!("axvisor:{dir}$ "),
+            Ok(dir) => format!("axvisor:{}$ ", dir.display()),
             Err(_) => "axvisor:$ ".to_string(),
         }
     }

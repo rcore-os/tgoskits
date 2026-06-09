@@ -1,0 +1,6 @@
+args = ["-machine", "virt", "-cpu", "rv64", "-m", "512M", "-smp", "1", "-nographic", "-device", "virtio-blk-pci,drive=disk0", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/apps/arceos/io_test/disk.img", "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["=== 所有测试完成 ==="]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Error \\{"]
+timeout = 120

@@ -1,9 +1,9 @@
 //! Special devices
 
 mod card0;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+#[cfg(feature = "rknpu")]
 mod card1;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+#[cfg(feature = "rknpu")]
 mod dma_heap;
 mod drm;
 #[cfg(feature = "input")]
@@ -22,9 +22,7 @@ pub use r#loop::LoopDevice;
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
-mod rknpu_card;
-#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+#[cfg(feature = "rknpu")]
 mod rknpu_drm;
 mod rtc;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
@@ -367,7 +365,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
-    #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
+    #[cfg(feature = "rknpu")]
     {
         // DMA heap devices (rknpu only)
         let mut dma_heap_dir = DirMapping::new();

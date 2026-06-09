@@ -636,7 +636,7 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 
 本次用户态验证集中在：
 
-- `test-suit/starryos/normal/qemu-smp1/util-linux/c/src/main.c`
+- `test-suit/starryos/qemu-smp1/system/util-linux/c/src/main.c`
 
 它覆盖的核心点是：
 

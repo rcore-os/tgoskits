@@ -430,7 +430,7 @@ fn qemu_app_config_rootfs_path(
     qemu_config_path: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     let qemu = read_qemu_app_config(qemu_config_path)?;
-    Ok(qemu_app_managed_rootfs_paths(workspace_root, &qemu)
+    Ok(qemu_app_managed_rootfs_paths(workspace_root, &qemu)?
         .into_iter()
         .next())
 }
@@ -445,21 +445,13 @@ fn read_qemu_app_config(qemu_config_path: &Path) -> anyhow::Result<ostool::run::
 fn qemu_app_managed_rootfs_paths(
     workspace_root: &Path,
     qemu: &ostool::run::qemu::QemuConfig,
-) -> Vec<PathBuf> {
-    let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
+) -> anyhow::Result<Vec<PathBuf>> {
     crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
-        .map(|path| resolve_qemu_app_config_path(workspace_root, path))
-        .filter(|path| path.starts_with(&managed_rootfs_dir))
+        .filter_map(|path| {
+            crate::image::storage::resolve_managed_rootfs_path(workspace_root, &path).transpose()
+        })
         .collect()
-}
-
-fn resolve_qemu_app_config_path(workspace_root: &Path, path: PathBuf) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix("${workspace}/") {
-        return workspace_root.join(rest);
-    }
-    path
 }
 
 fn optional_file(path: PathBuf) -> Option<PathBuf> {
@@ -662,11 +654,11 @@ async fn prepare_qemu_app_rootfs(
 ) -> anyhow::Result<PathBuf> {
     let rootfs_path = match configured_rootfs {
         Some(path) => path.to_path_buf(),
-        None => crate::rootfs::store::default_rootfs_path(workspace_root, arch)?,
+        None => crate::image::storage::default_rootfs_path(workspace_root, arch)?,
     };
     if app.prebuild_path.is_none() {
         if let Some(configured) = configured_rootfs {
-            crate::rootfs::store::ensure_optional_managed_rootfs(
+            crate::image::storage::ensure_optional_managed_rootfs(
                 workspace_root,
                 arch,
                 Some(configured),
@@ -1438,6 +1430,31 @@ plat_dyn = false
     }
 
     #[test]
+    fn selected_qemu_case_allows_ignored_nested_app_when_explicit() {
+        let root = tempdir().unwrap();
+        write_case_file(
+            root.path(),
+            "k230-qemu/qemu-k230/kpu-smoke",
+            "qemu-riscv64.toml",
+            "args = []\n",
+        );
+        fs::write(root.path().join("apps/.ignore"), "apps/starry/k230-qemu\n").unwrap();
+        let args = ArgsAppQemu {
+            all: false,
+            test_case: Some("k230-qemu/qemu-k230/kpu-smoke".to_string()),
+            caps: Vec::new(),
+            arch: Some("riscv64".to_string()),
+            qemu_config: None,
+            debug: false,
+        };
+
+        let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
+        let names = apps.into_iter().map(|app| app.name).collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["k230-qemu/qemu-k230/kpu-smoke"]);
+    }
+
+    #[test]
     fn qemu_case_fields_load_grouped_commands_and_subcases() {
         let root = tempdir().unwrap();
         write_case_file(
@@ -1479,16 +1496,17 @@ plat_dyn = false
     #[test]
     fn qemu_case_fields_load_configured_managed_rootfs() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let rootfs_path = root
             .path()
-            .join("tmp/axbuild/rootfs/rootfs-aarch64-debian.img");
+            .join(".tgos-images/rootfs-aarch64-debian.img/rootfs-aarch64-debian.img");
         write_case_file(
             root.path(),
             "qemu/apt",
             "qemu-aarch64.toml",
             r#"args = [
   "-drive",
-  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-debian.img",
+  "id=disk0,if=none,format=raw,file=${workspace}/.tgos-images/rootfs-aarch64-debian.img/rootfs-aarch64-debian.img",
 ]
 uefi = false
 to_bin = true
@@ -1507,6 +1525,16 @@ fail_regex = []
             load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
         assert_eq!(fields.rootfs_path, Some(rootfs_path));
+    }
+
+    fn write_test_image_config(workspace_root: &Path) {
+        let config = crate::image::config::ImageConfig {
+            local_storage: workspace_root.join(".tgos-images"),
+            registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
+            auto_sync: true,
+            auto_sync_threshold: 60,
+        };
+        crate::image::config::ImageConfig::write_config(workspace_root, &config).unwrap();
     }
 
     #[test]

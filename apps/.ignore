@@ -5,3 +5,7 @@ apps/starry/llama-cpp
 apps/starry/deepseek-tui
 apps/starry/gdb-smoke
 apps/starry/mariadb
+apps/starry/stress
+apps/starry/k230-qemu
+apps/starry/visual
+apps/starry/claw-code-regression

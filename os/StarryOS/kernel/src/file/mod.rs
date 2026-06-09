@@ -307,7 +307,7 @@ pub fn close_file_like(fd: c_int) -> AxResult {
         release_locks_on_close(f);
         return Ok(());
     }
-    Ok(())
+    Err(AxError::BadFileDescriptor)
 }
 
 pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {

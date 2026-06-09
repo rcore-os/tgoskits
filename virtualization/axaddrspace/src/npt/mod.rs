@@ -57,6 +57,11 @@ impl<H: PagingHandler> NestedPageTable<H> {
             3 => {
                 #[cfg(not(target_arch = "x86_64"))]
                 {
+                    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+                    let res =
+                        NestedPageTableL3::try_new_with_root(4, ax_memory_addr::PAGE_SIZE_4K * 4)
+                            .map_err(|_| ax_err_type!(NoMemory))?;
+                    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
                     let res = NestedPageTableL3::try_new().map_err(|_| ax_err_type!(NoMemory))?;
                     Ok(NestedPageTable::L3(res))
                 }
@@ -66,6 +71,10 @@ impl<H: PagingHandler> NestedPageTable<H> {
                 }
             }
             4 => {
+                #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+                let res = NestedPageTableL4::try_new_with_root(4, ax_memory_addr::PAGE_SIZE_4K * 4)
+                    .map_err(|_| ax_err_type!(NoMemory))?;
+                #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
                 let res = NestedPageTableL4::try_new().map_err(|_| ax_err_type!(NoMemory))?;
                 Ok(NestedPageTable::L4(res))
             }

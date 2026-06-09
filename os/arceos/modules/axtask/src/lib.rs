@@ -20,6 +20,7 @@
 //!   the `multitask` and `preempt` features if it is enabled.
 //! - `sched-cfs`: Use the [Completely Fair Scheduler][3]. It also enables the
 //!   the `multitask` and `preempt` features if it is enabled.
+//! - `host-test`: Use host-safe fallbacks for unit tests.
 //!
 //! [1]: ax_sched::FifoScheduler
 //! [2]: ax_sched::RRScheduler

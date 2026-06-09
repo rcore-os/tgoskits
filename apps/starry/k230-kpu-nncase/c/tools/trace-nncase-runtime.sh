@@ -36,12 +36,12 @@ fi
 
 if [ ! -e "$KERNEL" ]; then
     echo "trace-nncase-runtime: missing kernel: $KERNEL" >&2
-    echo "Run: cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime" >&2
+    echo "Run: cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64" >&2
     exit 1
 fi
 if [ ! -e "$ROOTFS" ]; then
     echo "trace-nncase-runtime: missing case rootfs under $CASE_QEMU_DIR" >&2
-    echo "Run: cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime" >&2
+    echo "Run: cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64" >&2
     exit 1
 fi
 

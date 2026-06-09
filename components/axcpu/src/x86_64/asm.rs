@@ -9,22 +9,12 @@ use x86_64::instructions::interrupts;
 /// Allows the current CPU to respond to interrupts.
 #[inline]
 pub fn enable_irqs() {
-    #[cfg(not(target_os = "none"))]
-    {
-        warn!("enable_irqs: not implemented");
-    }
-    #[cfg(target_os = "none")]
     interrupts::enable()
 }
 
 /// Makes the current CPU to ignore interrupts.
 #[inline]
 pub fn disable_irqs() {
-    #[cfg(not(target_os = "none"))]
-    {
-        warn!("disable_irqs: not implemented");
-    }
-    #[cfg(target_os = "none")]
     interrupts::disable()
 }
 
@@ -39,11 +29,7 @@ pub fn irqs_enabled() -> bool {
 /// It must be called with interrupts enabled, otherwise it will never return.
 #[inline]
 pub fn wait_for_irqs() {
-    if cfg!(target_os = "none") {
-        unsafe { asm!("hlt") }
-    } else {
-        core::hint::spin_loop()
-    }
+    unsafe { asm!("hlt") }
 }
 
 /// Halt the current CPU.

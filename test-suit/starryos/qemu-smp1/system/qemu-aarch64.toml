@@ -1,0 +1,71 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+    "-device",
+    "qemu-xhci,id=xhci,msi=off,msix=off",
+    "-audiodev",
+    "none,id=audio0",
+    "-device",
+    "usb-audio,bus=xhci.0,audiodev=audio0",
+    "-drive",
+    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-busybox.img",
+    "-device",
+    "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+found=0
+failed=0
+system_fail_marker=STARRY_SYSTEM_TEST_FAILED
+group_fail_marker=STARRY_GROUPED_TEST_FAILED
+for bin in /usr/bin/starry-test-suit/*; do
+    [ -f "$bin" ] && [ -x "$bin" ] || continue
+    found=1
+    echo "STARRY_SYSTEM_TEST_BEGIN: $bin"
+    if "$bin"; then
+        echo "STARRY_SYSTEM_TEST_PASSED: $bin"
+    else
+        echo "$system_fail_marker: $bin"
+        failed=1
+    fi
+done
+if [ "$found" -ne 1 ]; then
+    echo "$group_fail_marker: no system tests found"
+    exit 1
+fi
+if [ "$failed" -ne 0 ]; then
+    echo "$group_fail_marker: one or more system tests failed"
+    exit 1
+fi
+echo "STARRY_GROUPED_TESTS_PASSED"
+''',
+]
+success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 1800
+
+[host_http_server]
+bind = "127.0.0.1"
+port = 18381
+body_size = 20971520
+body_byte = 97

@@ -139,7 +139,9 @@ cfg_task! {
             wq.0.notify_all(true);
         } else {
             for _ in 0..count {
-                wq.0.notify_one(true);
+                if !wq.0.notify_one(true) {
+                    break;
+                }
             }
         }
     }

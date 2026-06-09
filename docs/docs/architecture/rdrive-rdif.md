@@ -407,5 +407,5 @@ rg "rdrive::get_|rdrive::get_one|rdrive::get_list" os/arceos/modules os/StarryOS
 - StarryOS QEMU smoke。
 - ext4 rootfs 启动与读写。
 - `net-ng` / DHCP。
-- `qemu-aarch64-plat-dyn` 动态平台。
+- aarch64 QEMU 动态平台配置。
 - Axvisor QEMU / GIC / `rdif-intc` 路径。

@@ -193,6 +193,13 @@ pub fn enable_lsx() {
     loongArch64::register::euen::set_sxe(true);
 }
 
+/// Enables LASX extension by setting `EUEN.ASXE`.
+///
+/// - `EUEN`: <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#extended-component-unit-enable>
+pub fn enable_lasx() {
+    loongArch64::register::euen::set_asxe(true);
+}
+
 #[cfg(feature = "uspace")]
 core::arch::global_asm!(include_asm_macros!(), include_str!("user_copy.S"));
 

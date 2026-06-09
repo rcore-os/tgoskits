@@ -2,8 +2,6 @@
 //! build flows.
 //!
 //! Main responsibilities:
-//! - Manage naming, path resolution, download, caching, and extraction for
-//!   workspace-managed rootfs images in [`store`]
 //! - Extract rootfs contents and inject overlay trees back into images in
 //!   [`inject`]
 //! - Patch QEMU arguments so a selected rootfs image is attached correctly in
@@ -15,5 +13,3 @@ pub(crate) mod inject;
 pub(crate) mod qemu;
 /// Runtime dependency synchronization helpers for rootfs overlay trees.
 pub(crate) mod runtime;
-/// Managed rootfs image lookup, naming, caching, download, and extraction.
-pub(crate) mod store;

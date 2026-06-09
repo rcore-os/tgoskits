@@ -39,7 +39,6 @@ fn main() {
     let has_plat_static = has_feature("plat-static");
     let has_plat_dyn = has_feature("plat-dyn");
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_has_cvsd = matches!(target_arch.as_str(), "riscv32" | "riscv64");
 
     if has_plat_dyn {
@@ -50,10 +49,10 @@ fn main() {
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
     }
-    if has_plat_dyn && target_os == "none" && has_any_feature(PCI_DYN_INTX_ROUTE_FEATURES) {
+    if has_plat_dyn && has_any_feature(PCI_DYN_INTX_ROUTE_FEATURES) {
         enable_cfg_flag("pci_dyn_intx_route");
     }
-    if has_plat_dyn && target_os == "none" && has_any_feature(PCI_DYN_ACPI_INTX_ROUTE_FEATURES) {
+    if has_plat_dyn && has_any_feature(PCI_DYN_ACPI_INTX_ROUTE_FEATURES) {
         enable_cfg_flag("pci_dyn_acpi_intx_route");
     }
     if has_any_feature(&["ahci", "bcm2835-sdhci"]) || (has_feature("cvsd") && target_has_cvsd) {

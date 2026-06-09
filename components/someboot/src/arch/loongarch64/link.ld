@@ -13,6 +13,7 @@ OUTPUT_ARCH(loongarch)
 ENTRY(kernel_entry)
 PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
+	tls PT_TLS FLAGS(4);	/* R__ */
 	note PT_NOTE FLAGS(4);	/* R__ */
 }
 
@@ -84,15 +85,16 @@ SECTIONS
         *(.sdata)
         . = ALIGN(PAGE_SIZE);
     }
-    _edata = .;
-    __kernel_load_end = .;
-    __bss_start = .; 
-
     .tdata : {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
-    }
+    } :text :tls
+
+    . = ALIGN(8);
+    _edata = .;
+    __kernel_load_end = .;
+    __bss_start = .;
 
     .tbss : {
         _stbss = .;
@@ -100,8 +102,9 @@ SECTIONS
         *(.init.bss)
         *(.tcommon)
         _etbss = .;
-    }
+    } :text :tls
  
+    . = ALIGN(8);
     .sbss :  { 
         *(.dynsbss) *(.sbss) *(.scommon) 
     } 
@@ -158,4 +161,3 @@ SECTIONS
         *(.eh_frame)
     }
 }
-

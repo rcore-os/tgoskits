@@ -37,12 +37,91 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: >-
+    ${{
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+      && format('ci-{0}-{1}', github.workflow, github.ref)
+      || format('ci-{0}-{1}', github.workflow, github.run_id)
+    }}
   queue: max
 
 jobs:
+  cancel_stale_runs:
+    name: Cancel stale CI runs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Cancel older queued or running runs
+        if: github.event_name == 'pull_request' || github.ref != 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_NUMBER: ${{ github.run_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          set -uo pipefail
+
+          statuses=(queued in_progress waiting requested)
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            selector='select(
+              .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
+              and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
+            )'
+          else
+            selector='select(
+              .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
+              and .head_branch == env.REF_NAME
+              and .event != "pull_request"
+              and .event != "pull_request_target"
+            )'
+          fi
+
+          cancel_run() {
+            local run_id="$1"
+            local run_number="$2"
+            local run_url="$3"
+
+            if gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null; then
+              echo "Canceled stale CI run #${run_number}: ${run_url}"
+            else
+              echo "::warning::Failed to cancel stale CI run #${run_number}: ${run_url}"
+            fi
+          }
+
+          for status in "${statuses[@]}"; do
+            runs="$(
+              gh api \
+                --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?status=${status}&per_page=100" \
+                --jq ".workflow_runs[] | ${selector} | [.id, .run_number, .html_url] | @tsv" 2>api-error.log
+            )"
+            gh_status=$?
+
+            if [ "$gh_status" -ne 0 ]; then
+              while IFS= read -r line; do
+                echo "::warning::Failed to query stale CI runs with status '${status}': ${line}"
+              done < api-error.log
+              rm -f api-error.log
+              continue
+            fi
+            rm -f api-error.log
+
+            while IFS=$'\t' read -r run_id run_number run_url; do
+              if [ -n "$run_id" ]; then
+                cancel_run "$run_id" "$run_number" "$run_url"
+              fi
+            done <<< "$runs"
+          done
+
   detect_changes:
     name: Detect changed paths
+    needs: cancel_stale_runs
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -217,13 +296,13 @@ jobs:
             container_image: base
             fetch_depth: "1"
           - name: Run sync-lint
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
             command: cargo xtask sync-lint --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
             cache_key: ""
             container_image: base
             fetch_depth: full
+            upload_xtask_bin_artifact: true
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -250,6 +329,8 @@ jobs:
           || matrix.container_image
         }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
+      xtask_bin_artifact_name: tg-xtask-bin
 
   test_checks:
     name: ${{ matrix.name }}
@@ -301,47 +382,52 @@ jobs:
           - name: Test axvisor loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask axvisor test qemu --arch loongarch64
+            command: target/debug/tg-xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry riscv64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch riscv64
+            command: target/debug/tg-xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry aarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch aarch64
+            command: target/debug/tg-xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch loongarch64
+            command: target/debug/tg-xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry x86_64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch x86_64
+            command: target/debug/tg-xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test arceos x86_64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
@@ -429,7 +515,7 @@ jobs:
           # - name: Stress starry aarch64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch aarch64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch aarch64
           #   cache_key: test-starry-stress-aarch64
           #   container_image: base
           #   apk_region: us
@@ -438,7 +524,7 @@ jobs:
           # - name: Stress starry riscv64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch riscv64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch riscv64
           #   cache_key: test-starry-stress-riscv64
           #   container_image: base
           #   apk_region: us
@@ -447,7 +533,7 @@ jobs:
           # - name: Stress starry loongarch64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch loongarch64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch loongarch64
           #   cache_key: test-starry-stress-loongarch64
           #   container_image: base
           #   apk_region: us
@@ -456,7 +542,7 @@ jobs:
           # - name: Stress starry x86_64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch x86_64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch x86_64
           #   cache_key: test-starry-stress-x86_64
           #   container_image: base
           #   apk_region: us
@@ -465,7 +551,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
-            command: cargo xtask axvisor test qemu --arch x86_64
+            command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
@@ -518,10 +604,18 @@ jobs:
                 exit 0
               fi
 
+              rustup component add llvm-tools
               sudo apt-get update
               sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
               sudo usermod -aG kvm $USER
-              sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke"
+              sg kvm -c '
+                set -eux
+                rust_host="$(rustc -vV | awk "/^host:/ { print \$2 }")"
+                llvm_tools_dir="$(rustc --print sysroot)/lib/rustlib/${rust_host}/bin"
+                export PATH="${llvm_tools_dir}:${PATH}"
+                command -v rust-objcopy
+                cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+              '
             cache_key: ""
             container_image: ""
             limit_to_owner: ""
@@ -598,6 +692,15 @@ jobs:
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
+      download_xtask_bin_artifact: >-
+        ${{
+          matrix.download_xtask_bin_artifact
+          || (
+            matrix.self_hosted_owner != ''
+            && github.repository_owner != matrix.self_hosted_owner
+          )
+        }}
+      xtask_bin_artifact_name: tg-xtask-bin
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 

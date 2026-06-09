@@ -43,8 +43,8 @@ cargo fmt --all
 # 运行 clippy
 cargo clippy --all-targets --all-features
 
-# 运行测试
-cargo test --all-features
+# 运行 Linux host 测试
+cargo test --features host-test,non-zero-vma
 
 # 生成文档
 cargo doc --no-deps

@@ -1,0 +1,16 @@
+[package]
+name = "arceos-io_test"
+version = "0.1.0"
+edition.workspace = true
+authors = ["eternalcomet <mydragonos@outlook.com>"]
+publish = false
+
+[features]
+default = []
+arceos = ["dep:ax-std", "ax-std/fs"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true }
+
+[package.metadata.axstd]
+features = ["log-level-off"]

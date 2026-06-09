@@ -39,12 +39,14 @@ flowchart TB
 | `pull_request` | 同上 |
 | `workflow_dispatch` | 手动触发，仅用于发布容器镜像（`base` / `axvisor-lvz` / `both`），不执行 CI 检查 |
 
-同一 `ref` 上新的触发会取消正在运行的旧任务（`concurrency.cancel-in-progress: true`）。
+`dev` 分支的 `push` 和手动触发使用 `concurrency.queue: max` 串行排队运行，避免多个 dev CI 同时占用 runner。其他分支、`main` 分支、PR 以及非 `dev` 手动触发不会进入 dev 队列；新 run 会在最早的 `cancel_stale_runs` 阶段取消同一分支或同一 PR 上仍在 queued/running 的旧 CI run。
 
 ## 执行流水线
 
 ```text
-detect_changes
+cancel_stale_runs
+  |
+  `-- detect_changes
   |
   +-- [ci_checks == true]
   |     `-- static_checks (fmt || sync-lint)    fail-fast: true

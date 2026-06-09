@@ -45,6 +45,7 @@ k230 = [
 plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
+std-compat = ["starry-kernel/std-compat"]
 vf2 = ["ax-hal/riscv64-visionfive2"]
 
 [[bin]]
@@ -57,12 +58,13 @@ path = "xtask/main.rs"
 
 [dependencies]
 ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
+ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
-[target.'cfg(any(windows,unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow = "1.0"
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }

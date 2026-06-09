@@ -12,6 +12,7 @@ license = "Apache-2.0"
 [features]
 # To use in the multi-core environment
 smp = []
+host-test = ["ax-kernel-guard/host-test"]
 lockdep = ["dep:ax-lockdep"]
 # Expose raw spin locks implementing `lock_api::RawMutex`.
 lock_api = ["dep:lock_api"]

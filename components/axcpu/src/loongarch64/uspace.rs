@@ -11,6 +11,10 @@ use loongArch64::register::{
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
 use crate::{TrapFrame, trap::PageFaultFlags};
 
+const ECODE_LSX_DISABLED: usize = 0x10;
+const ECODE_LASX_DISABLED: usize = 0x11;
+const ECODE_BINARY_TRANSLATION_DISABLED: usize = 0x14;
+
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -54,6 +58,8 @@ impl UserContext {
         let estat = estat::read();
         let badv = badv::read().vaddr();
         let badi = badi::read().inst();
+        let ecode = estat.ecode();
+        let esubcode = estat.esubcode();
 
         let ret = match estat.cause() {
             Trap::Interrupt(_) => {
@@ -77,7 +83,27 @@ impl UserContext {
             | Trap::Exception(Exception::PageNonExecutableFault) => {
                 ReturnReason::PageFault(va!(badv), PageFaultFlags::EXECUTE | PageFaultFlags::USER)
             }
-            Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, badv, badi }),
+            Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo {
+                e,
+                badv,
+                badi,
+                ecode,
+                esubcode,
+            }),
+            Trap::Unknown
+                if matches!(
+                    ecode,
+                    ECODE_LSX_DISABLED | ECODE_LASX_DISABLED | ECODE_BINARY_TRANSLATION_DISABLED
+                ) =>
+            {
+                ReturnReason::Exception(ExceptionInfo {
+                    e: Exception::InstructionNotExist,
+                    badv,
+                    badi,
+                    ecode,
+                    esubcode,
+                })
+            }
             _ => ReturnReason::Unknown,
         };
 
@@ -109,16 +135,26 @@ pub struct ExceptionInfo {
     pub badv: usize,
     /// The instruction causing the fault (from `badi`).
     pub badi: u32,
+    /// The raw exception code from `estat`.
+    pub ecode: usize,
+    /// The raw exception subcode from `estat`.
+    pub esubcode: usize,
 }
 
 impl ExceptionInfo {
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
+        if matches!(
+            self.ecode,
+            ECODE_LSX_DISABLED | ECODE_LASX_DISABLED | ECODE_BINARY_TRANSLATION_DISABLED
+        ) {
+            return ExceptionKind::IllegalInstruction;
+        }
         match self.e {
             Exception::Breakpoint => ExceptionKind::Breakpoint,
-            Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal => {
-                ExceptionKind::IllegalInstruction
-            }
+            Exception::InstructionNotExist
+            | Exception::InstructionPrivilegeIllegal
+            | Exception::FloatingPointUnavailable => ExceptionKind::IllegalInstruction,
             Exception::AddressNotAligned => ExceptionKind::Misaligned,
             _ => ExceptionKind::Other,
         }

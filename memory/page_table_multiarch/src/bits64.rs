@@ -32,6 +32,8 @@ const fn p1_index(vaddr: usize) -> usize {
 /// When the [`PageTable64`] itself is dropped.
 pub struct PageTable64<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> {
     root_paddr: PhysAddr,
+    root_frames: usize,
+    root_allocated_with_frames: bool,
     #[cfg(feature = "copy-from")]
     borrowed_entries: bitmaps::Bitmap<ENTRY_COUNT>,
     _phantom: PhantomData<(M, PTE, H)>,
@@ -45,6 +47,29 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         let root_paddr = Self::alloc_table()?;
         Ok(Self {
             root_paddr,
+            root_frames: 1,
+            root_allocated_with_frames: false,
+            #[cfg(feature = "copy-from")]
+            borrowed_entries: bitmaps::Bitmap::new(),
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Creates a new page table with a root table allocation satisfying the
+    /// given frame count and alignment.
+    ///
+    /// This is useful for hardware page table formats whose root table has
+    /// stricter allocation requirements than intermediate tables, while the
+    /// common 64-bit page table walker still uses 4K tables internally.
+    pub fn try_new_with_root(root_frames: usize, root_align: usize) -> PagingResult<Self> {
+        if root_frames == 1 && root_align == PAGE_SIZE_4K {
+            return Self::try_new();
+        }
+        let root_paddr = Self::alloc_root_table(root_frames, root_align)?;
+        Ok(Self {
+            root_paddr,
+            root_frames,
+            root_allocated_with_frames: true,
             #[cfg(feature = "copy-from")]
             borrowed_entries: bitmaps::Bitmap::new(),
             _phantom: PhantomData,
@@ -112,6 +137,19 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         if let Some(paddr) = H::alloc_frame() {
             let ptr = H::phys_to_virt(paddr).as_mut_ptr();
             unsafe { core::ptr::write_bytes(ptr, 0, PAGE_SIZE_4K) };
+            Ok(paddr)
+        } else {
+            Err(PagingError::NoMemory)
+        }
+    }
+
+    fn alloc_root_table(root_frames: usize, root_align: usize) -> PagingResult<PhysAddr> {
+        if root_frames == 0 || root_align < PAGE_SIZE_4K || !root_align.is_power_of_two() {
+            return Err(PagingError::NoMemory);
+        }
+        if let Some(paddr) = H::alloc_frames(root_frames, root_align) {
+            let ptr = H::phys_to_virt(paddr).as_mut_ptr();
+            unsafe { core::ptr::write_bytes(ptr, 0, PAGE_SIZE_4K * root_frames) };
             Ok(paddr)
         } else {
             Err(PagingError::NoMemory)
@@ -307,7 +345,11 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64<
                 self.dealloc_tree(entry.paddr(), 1);
             }
         }
-        H::dealloc_frame(self.root_paddr());
+        if self.root_allocated_with_frames {
+            H::dealloc_frames(self.root_paddr(), self.root_frames);
+        } else {
+            H::dealloc_frame(self.root_paddr());
+        }
     }
 }
 

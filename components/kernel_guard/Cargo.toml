@@ -11,6 +11,7 @@ license = "Apache-2.0"
 
 [features]
 preempt = []
+host-test = []
 default = []
 
 [dependencies]
