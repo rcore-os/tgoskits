@@ -37,12 +37,91 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: >-
+    ${{
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+      && format('ci-{0}-{1}', github.workflow, github.ref)
+      || format('ci-{0}-{1}', github.workflow, github.run_id)
+    }}
   queue: max
 
 jobs:
+  cancel_stale_runs:
+    name: Cancel stale CI runs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Cancel older queued or running runs
+        if: github.event_name == 'pull_request' || github.ref != 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_NUMBER: ${{ github.run_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          set -uo pipefail
+
+          statuses=(queued in_progress waiting requested)
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            selector='select(
+              .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
+              and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
+            )'
+          else
+            selector='select(
+              .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
+              and .head_branch == env.REF_NAME
+              and .event != "pull_request"
+              and .event != "pull_request_target"
+            )'
+          fi
+
+          cancel_run() {
+            local run_id="$1"
+            local run_number="$2"
+            local run_url="$3"
+
+            if gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null; then
+              echo "Canceled stale CI run #${run_number}: ${run_url}"
+            else
+              echo "::warning::Failed to cancel stale CI run #${run_number}: ${run_url}"
+            fi
+          }
+
+          for status in "${statuses[@]}"; do
+            runs="$(
+              gh api \
+                --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?status=${status}&per_page=100" \
+                --jq ".workflow_runs[] | ${selector} | [.id, .run_number, .html_url] | @tsv" 2>api-error.log
+            )"
+            gh_status=$?
+
+            if [ "$gh_status" -ne 0 ]; then
+              while IFS= read -r line; do
+                echo "::warning::Failed to query stale CI runs with status '${status}': ${line}"
+              done < api-error.log
+              rm -f api-error.log
+              continue
+            fi
+            rm -f api-error.log
+
+            while IFS=$'\t' read -r run_id run_number run_url; do
+              if [ -n "$run_id" ]; then
+                cancel_run "$run_id" "$run_number" "$run_url"
+              fi
+            done <<< "$runs"
+          done
+
   detect_changes:
     name: Detect changed paths
+    needs: cancel_stale_runs
     runs-on: ubuntu-latest
     permissions:
       contents: read
