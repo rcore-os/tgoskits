@@ -1106,7 +1106,6 @@ dependencies = [
 name = "ax-plat-macros"
 version = "0.3.7"
 dependencies = [
- "ax-crate-interface",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1352,7 +1351,6 @@ version = "0.5.13"
 dependencies = [
  "assert_matches",
  "ax-errno 0.6.0",
- "ax-kspin",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
@@ -1431,7 +1429,6 @@ name = "axdevice"
 version = "0.4.12"
 dependencies = [
  "arm_vgic",
- "ax-crate-interface",
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
@@ -3115,6 +3112,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
+name = "driver-tests"
+version = "0.1.0"
+dependencies = [
+ "ax-kspin",
+ "eth-intel",
+ "fdt-edit",
+ "num-align",
+ "nvme-driver",
+ "pcie",
+ "rdif-block",
+ "rdif-intc",
+ "rdif-serial",
+ "rdrive",
+ "rockchip-soc",
+ "some-serial",
+ "spin 0.12.0",
+]
+
+[[package]]
 name = "dtor"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3337,10 +3353,8 @@ name = "eth-intel"
 version = "0.1.4"
 dependencies = [
  "dma-api",
- "fdt-edit",
  "log",
  "mmio-api",
- "pcie",
  "rdif-eth",
  "thiserror 2.0.18",
 ]
@@ -5415,13 +5429,10 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 name = "nvme-driver"
 version = "0.5.1"
 dependencies = [
- "byte-unit",
  "dma-api",
- "fdt-edit",
  "log",
  "mbarrier",
  "mmio-api",
- "pcie",
  "rdif-block",
  "spin 0.12.0",
  "tock-registers 0.10.1",
@@ -6134,7 +6145,6 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramdisk"
 version = "0.1.3"
 dependencies = [
- "dma-api",
  "rdif-block",
  "spin 0.12.0",
 ]
@@ -6503,8 +6513,6 @@ dependencies = [
  "paste",
  "pcie",
  "rdif-base",
- "rdif-clk",
- "rdif-intc",
  "rdif-pcie",
  "rdrive-macros",
  "spin 0.12.0",
@@ -6844,15 +6852,12 @@ dependencies = [
 name = "rockchip-soc"
 version = "0.3.2"
 dependencies = [
- "ax-kspin",
  "bitflags 2.13.0",
  "dma-api",
  "enum_dispatch",
  "fdt-edit",
  "log",
  "mbarrier",
- "num-align",
- "spin 0.12.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
@@ -7563,15 +7568,11 @@ dependencies = [
 name = "some-serial"
 version = "0.5.1"
 dependencies = [
- "ax-kspin",
  "bitflags 2.13.0",
  "enum_dispatch",
- "fdt-edit",
  "heapless 0.9.3",
  "log",
- "rdif-intc",
  "rdif-serial",
- "rdrive",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "x86",
@@ -9043,6 +9044,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtualization-tests"
+version = "0.1.0"
+dependencies = [
+ "ax-crate-interface",
+ "ax-errno 0.6.0",
+ "ax-memory-addr",
+ "axdevice",
+ "axdevice_base",
+ "axvm-types",
+ "x86_vlapic",
+]
+
+[[package]]
 name = "virtue"
 version = "0.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9859,7 +9873,6 @@ version = "0.5.12"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.0",
- "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
  "axvcpu",

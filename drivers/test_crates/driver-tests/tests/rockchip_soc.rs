@@ -5,7 +5,7 @@
 extern crate alloc;
 extern crate bare_test;
 
-mod pin;
+mod rockchip_soc_pin;
 
 #[bare_test::tests]
 mod tests {
@@ -15,7 +15,7 @@ mod tests {
     use rockchip_soc::{Cru, SocType};
     use spin::Once;
 
-    use crate::pin::test_pin;
+    use crate::rockchip_soc_pin::test_pin;
 
     static INIT: Once<Mutex<Cru>> = Once::new();
 

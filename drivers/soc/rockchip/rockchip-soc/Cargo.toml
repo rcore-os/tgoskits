@@ -21,11 +21,6 @@ mbarrier = "0.1"
 thiserror = {version = "2", default-features = false}
 tock-registers = "0.10"
 
-[target.'cfg(not(any(windows, unix)))'.dev-dependencies]
-ax-kspin.workspace = true
-num-align = "0.1.0"
-spin = { workspace = true }
-
 # bare-test integration test is temporarily disabled.
 # [[test]]
 # harness = false

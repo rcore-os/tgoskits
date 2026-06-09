@@ -36,7 +36,6 @@ axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 
 [dev-dependencies]
-ax-kspin = { workspace = true }
 memoffset = "0.9"
 
 [features]

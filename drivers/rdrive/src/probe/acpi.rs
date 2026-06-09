@@ -149,6 +149,34 @@ impl Default for AcpiRouting {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting};
+
+    #[test]
+    fn ioapic_routes_map_gsi_to_stable_vector() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        let irq = routing
+            .resolve_gsi(16)
+            .expect("gsi 16 should be handled by the IOAPIC");
+        assert_eq!(irq.gsi, 16);
+        assert_eq!(irq.controller_id, 0);
+        assert_eq!(irq.controller_address, 0xfec0_0000);
+        assert_eq!(irq.controller_input, 16);
+        assert_eq!(irq.vector, 0x40);
+        assert_eq!(irq.trigger, AcpiIrqTrigger::Level);
+        assert_eq!(irq.polarity, AcpiIrqPolarity::ActiveLow);
+        assert!(routing.resolve_gsi(24).is_none());
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiPciIrqRoute {
     pub address: PciAddress,
