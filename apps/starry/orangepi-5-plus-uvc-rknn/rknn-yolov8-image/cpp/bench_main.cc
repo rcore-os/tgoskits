@@ -27,6 +27,9 @@ struct Options {
     int min_confidence = 25;
     bool profile = false;
     bool profile_frames = false;
+    bool set_core_mask = true;
+    rknn_core_mask core_mask = RKNN_NPU_CORE_0_1_2;
+    const char *core_mask_name = "0_1_2";
     const char *model_path = "model/yolov8.rknn";
     const char *label_path = "model/coco_80_labels_list.txt";
 };
@@ -80,6 +83,7 @@ static void print_usage(const char *argv0)
     printf("  --infer-every <N>              infer every Nth captured frame [default: 1]\n");
     printf("  --report-interval-sec <SECS>   progress interval, 0 disables [default: 5]\n");
     printf("  --min-confidence <PCT>         detection threshold percentage [default: 25]\n");
+    printf("  --core-mask <MASK>             RKNN NPU core mask: none, auto, 0, 1, 2, 0_1, 0_1_2, all [default: 0_1_2]\n");
     printf("  --profile                      print final RKNN stage timing summary\n");
     printf("  --profile-frames               print one RKNN_PROFILE line per inference\n");
 }
@@ -132,6 +136,36 @@ static bool parse_nonnegative_int_arg(const char *name, const char *value, int *
     return true;
 }
 
+static bool parse_core_mask_arg(const char *value, Options *options)
+{
+    if (strcmp(value, "none") == 0) {
+        options->set_core_mask = false;
+        options->core_mask_name = "none";
+        return true;
+    }
+    options->set_core_mask = true;
+    options->core_mask_name = value;
+    if (strcmp(value, "auto") == 0) {
+        options->core_mask = RKNN_NPU_CORE_AUTO;
+    } else if (strcmp(value, "0") == 0) {
+        options->core_mask = RKNN_NPU_CORE_0;
+    } else if (strcmp(value, "1") == 0) {
+        options->core_mask = RKNN_NPU_CORE_1;
+    } else if (strcmp(value, "2") == 0) {
+        options->core_mask = RKNN_NPU_CORE_2;
+    } else if (strcmp(value, "0_1") == 0) {
+        options->core_mask = RKNN_NPU_CORE_0_1;
+    } else if (strcmp(value, "0_1_2") == 0) {
+        options->core_mask = RKNN_NPU_CORE_0_1_2;
+    } else if (strcmp(value, "all") == 0) {
+        options->core_mask = RKNN_NPU_CORE_ALL;
+    } else {
+        printf("invalid value for --core-mask: %s\n", value);
+        return false;
+    }
+    return true;
+}
+
 static bool parse_args(int argc, char **argv, Options *options)
 {
     for (int i = 1; i < argc; ++i) {
@@ -175,6 +209,9 @@ static bool parse_args(int argc, char **argv, Options *options)
                 printf("invalid value for %s: %s\n", arg, value);
                 return false;
             }
+            ++i;
+        } else if (strcmp(arg, "--core-mask") == 0 && value != NULL) {
+            if (!parse_core_mask_arg(value, options)) return false;
             ++i;
         } else if (strcmp(arg, "--profile") == 0) {
             options->profile = true;
@@ -389,7 +426,7 @@ int main(int argc, char **argv)
 
     printf("YOLOv8 UVC RKNN Benchmark\n");
     printf("=========================\n");
-    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d profile=%d profile_frames=%d\n",
+    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d core_mask=%s profile=%d profile_frames=%d\n",
            options.model_path,
            options.label_path,
            options.device,
@@ -400,6 +437,7 @@ int main(int argc, char **argv)
            options.infer_every,
            options.report_interval_sec,
            options.min_confidence,
+           options.core_mask_name,
            options.profile ? 1 : 0,
            options.profile_frames ? 1 : 0);
 
@@ -421,6 +459,17 @@ int main(int argc, char **argv)
            app_ctx.model_width,
            app_ctx.model_height,
            app_ctx.model_channel);
+    if (options.set_core_mask) {
+        ret = rknn_set_core_mask(app_ctx.rknn_ctx, options.core_mask);
+        printf("bench-rknn: set_core_mask=%s ret=%d\n", options.core_mask_name, ret);
+        if (ret != RKNN_SUCC) {
+            release_yolov8_model(&app_ctx);
+            deinit_post_process();
+            return 1;
+        }
+    } else {
+        printf("bench-rknn: set_core_mask=none\n");
+    }
 
     UvcCaptureSession capture;
     UvcCaptureOptions capture_options;
