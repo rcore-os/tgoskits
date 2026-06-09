@@ -521,7 +521,7 @@ impl Starry {
             );
         }
         let default_rootfs_path =
-            crate::image::rootfs::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
+            crate::image::storage::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
         self.app.set_debug_mode(request.debug)?;
 
         let total = cases.len();
@@ -764,12 +764,12 @@ impl Starry {
                 })?;
             qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
             let rootfs_path =
-                Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path);
+                Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path)?;
             rootfs_paths.insert(rootfs_path.clone());
             rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
                 self.app.workspace_root(),
                 &qemu,
-            ));
+            )?);
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -807,7 +807,7 @@ impl Starry {
                 )
                 .await?;
             } else {
-                crate::image::rootfs::ensure_optional_managed_rootfs(
+                crate::image::storage::ensure_optional_managed_rootfs(
                     self.app.workspace_root(),
                     &request.arch,
                     Some(rootfs_path),
@@ -822,19 +822,22 @@ impl Starry {
         workspace_root: &Path,
         qemu: &QemuConfig,
         default_rootfs_path: &Path,
-    ) -> PathBuf {
-        Self::qemu_case_managed_rootfs_paths(workspace_root, qemu)
+    ) -> anyhow::Result<PathBuf> {
+        Ok(Self::qemu_case_managed_rootfs_paths(workspace_root, qemu)?
             .into_iter()
             .next()
-            .unwrap_or_else(|| default_rootfs_path.to_path_buf())
+            .unwrap_or_else(|| default_rootfs_path.to_path_buf()))
     }
 
-    fn qemu_case_managed_rootfs_paths(workspace_root: &Path, qemu: &QemuConfig) -> Vec<PathBuf> {
-        let managed_rootfs_dir = crate::image::rootfs::rootfs_dir(workspace_root);
-        crate::rootfs::qemu::drive_file_paths(qemu)
+    fn qemu_case_managed_rootfs_paths(
+        workspace_root: &Path,
+        qemu: &QemuConfig,
+    ) -> anyhow::Result<Vec<PathBuf>> {
+        let managed_rootfs_dir = crate::image::storage::rootfs_dir(workspace_root)?;
+        Ok(crate::rootfs::qemu::drive_file_paths(qemu)
             .into_iter()
             .filter(|path| path.starts_with(&managed_rootfs_dir))
-            .collect()
+            .collect())
     }
 
     fn qemu_case_requirements(qemu: &QemuConfig) -> anyhow::Result<StarryQemuCaseRequirements> {
@@ -1658,7 +1661,7 @@ mod tests {
             assert!(
                 args.iter().any(|arg| {
                     arg.contains(&format!("rootfs-{arch}-alpine.img"))
-                        && arg.contains("tmp/axbuild/rootfs")
+                        && arg.contains(".tgos-images")
                 }),
                 "{} must use the managed Alpine rootfs for {arch}",
                 config_path.display()
@@ -1811,7 +1814,7 @@ mod tests {
             assert!(
                 args.iter().any(|arg| {
                     arg.contains(&format!("rootfs-{arch}-alpine.img"))
-                        && arg.contains("tmp/axbuild/rootfs")
+                        && arg.contains(".tgos-images")
                 }),
                 "{} must use the managed Alpine rootfs for {arch}",
                 config_path.display()
@@ -2568,9 +2571,10 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_uses_drive_file_arg() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let managed_rootfs = root
             .path()
-            .join("tmp/axbuild/rootfs/rootfs-riscv64-debian.img");
+            .join(".tgos-images/rootfs-riscv64-debian.img/rootfs-riscv64-debian.img");
         let qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
@@ -2587,7 +2591,8 @@ mod tests {
         };
 
         let rootfs =
-            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
+            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"))
+                .unwrap();
 
         assert_eq!(rootfs, managed_rootfs);
     }
@@ -2595,9 +2600,10 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let managed_rootfs = root
             .path()
-            .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
+            .join(".tgos-images/rootfs-aarch64-busybox.img/rootfs-aarch64-busybox.img");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -2610,7 +2616,8 @@ mod tests {
         };
 
         let rootfs =
-            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
+            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"))
+                .unwrap();
 
         assert_eq!(rootfs, managed_rootfs);
     }
@@ -2618,12 +2625,13 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_collects_all_managed_drive_files() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let boot_rootfs = root
             .path()
-            .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img");
+            .join(".tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img");
         let usb_rootfs = root
             .path()
-            .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
+            .join(".tgos-images/rootfs-aarch64-busybox.img/rootfs-aarch64-busybox.img");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -2637,7 +2645,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rootfs_paths = Starry::qemu_case_managed_rootfs_paths(root.path(), &qemu);
+        let rootfs_paths = Starry::qemu_case_managed_rootfs_paths(root.path(), &qemu).unwrap();
 
         assert_eq!(rootfs_paths, vec![boot_rootfs, usb_rootfs]);
     }
@@ -2645,6 +2653,7 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_ignores_non_managed_drive_file_arg() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -2659,7 +2668,8 @@ mod tests {
         };
 
         let rootfs =
-            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
+            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"))
+                .unwrap();
 
         assert_eq!(rootfs, PathBuf::from("/tmp/default.img"));
     }
@@ -2667,12 +2677,24 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_defaults_without_drive_file_arg() {
         let root = tempdir().unwrap();
+        write_test_image_config(root.path());
         let qemu = QemuConfig::default();
 
         let rootfs =
-            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
+            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"))
+                .unwrap();
 
         assert_eq!(rootfs, PathBuf::from("/tmp/default.img"));
+    }
+
+    fn write_test_image_config(workspace_root: &Path) {
+        let config = crate::image::config::ImageConfig {
+            local_storage: workspace_root.join(".tgos-images"),
+            registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
+            auto_sync: true,
+            auto_sync_threshold: 60,
+        };
+        crate::image::config::ImageConfig::write_config(workspace_root, &config).unwrap();
     }
 
     #[test]

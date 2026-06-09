@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use flate2::read::GzDecoder;
 use indicatif::ProgressBar;
 use tar::Archive;
@@ -156,6 +156,13 @@ impl Storage {
         Ok(extract_dir)
     }
 
+    pub async fn pull_rootfs_image(&self, spec: ImageSpecRef<'_>) -> anyhow::Result<PathBuf> {
+        let image = self.resolve_image(spec)?;
+        ensure_rootfs_image_name(&image.name)?;
+        let extract_dir = self.pull_image(spec, None, true).await?;
+        find_extracted_rootfs_image(&extract_dir, &image.name)
+    }
+
     pub(crate) fn resolve_image<'a>(
         &'a self,
         spec: ImageSpecRef<'_>,
@@ -202,6 +209,117 @@ impl Storage {
 
         Self::write_registry_to_path(path, image_registry)
     }
+}
+
+/// Returns the default managed rootfs image filename for a given architecture.
+pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
+    crate::context::default_rootfs_image_for_arch(arch)
+}
+
+/// Returns the local storage directory used for image-managed files.
+pub(crate) fn rootfs_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
+    Ok(ImageConfig::read_config(workspace_root)?.local_storage)
+}
+
+/// Resolves a user-facing rootfs argument into the image storage path.
+///
+/// Bare values such as `alpine` or `debian` are expanded into the managed
+/// `rootfs-<arch>-<distro>.img` naming scheme. Paths with a directory component
+/// are treated as explicit user-managed paths.
+pub(crate) fn resolve_rootfs_path(
+    workspace_root: &Path,
+    arch: &str,
+    rootfs: PathBuf,
+) -> anyhow::Result<PathBuf> {
+    let is_bare = rootfs
+        .parent()
+        .map(|p| p.as_os_str().is_empty())
+        .unwrap_or(true);
+
+    if !is_bare {
+        return Ok(rootfs);
+    }
+
+    let keyword = rootfs.to_string_lossy();
+    let distro = match keyword.as_ref() {
+        "alpine" => Some("alpine"),
+        "busybox" => Some("busybox"),
+        "debian" => Some("debian"),
+        _ => None,
+    };
+
+    let image_name = if let Some(distro) = distro {
+        format!("rootfs-{arch}-{distro}.img")
+    } else {
+        keyword.into_owned()
+    };
+
+    rootfs_image_path(workspace_root, &image_name)
+}
+
+pub(crate) fn resolve_explicit_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    rootfs: PathBuf,
+) -> anyhow::Result<PathBuf> {
+    resolve_rootfs_path(workspace_root, arch, rootfs)
+}
+
+pub(crate) fn default_rootfs_path(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
+    let image_name = default_rootfs_image(arch)
+        .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
+    rootfs_image_path(workspace_root, image_name)
+}
+
+pub(crate) async fn ensure_rootfs_for_arch(
+    workspace_root: &Path,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
+    let image_name = default_rootfs_image(arch)
+        .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
+    let storage = Storage::new_from_config(&ImageConfig::read_config(workspace_root)?).await?;
+    storage
+        .pull_rootfs_image(ImageSpecRef::parse(image_name))
+        .await
+}
+
+pub(crate) async fn ensure_managed_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    if default_rootfs_image(arch).is_none() || !path.starts_with(rootfs_dir(workspace_root)?) {
+        return Ok(());
+    }
+
+    let image_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("invalid managed rootfs path `{}`", path.display()))?;
+    ensure_rootfs_image_name(image_name)?;
+    let storage = Storage::new_from_config(&ImageConfig::read_config(workspace_root)?).await?;
+    let prepared = storage
+        .pull_rootfs_image(ImageSpecRef::parse(image_name))
+        .await?;
+    if prepared != path {
+        bail!(
+            "managed rootfs path mismatch: requested {}, prepared {}",
+            path.display(),
+            prepared.display()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) async fn ensure_optional_managed_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    path: Option<&Path>,
+) -> anyhow::Result<()> {
+    if let Some(path) = path {
+        ensure_managed_rootfs(workspace_root, arch, path).await?;
+    }
+    Ok(())
 }
 
 pub(crate) fn image_archive_filename(image: &ImageEntry, spec: ImageSpecRef<'_>) -> String {
@@ -362,6 +480,47 @@ fn unpack_archive(
     archive
         .unpack(extract_dir)
         .with_context(|| format!("failed to extract into {}", extract_dir.display()))
+}
+
+fn rootfs_image_path(workspace_root: &Path, image_name: &str) -> anyhow::Result<PathBuf> {
+    ensure_rootfs_image_name(image_name)?;
+    let config = ImageConfig::read_config(workspace_root)?;
+    let spec = ImageSpecRef::parse(image_name);
+    Ok(config
+        .local_storage
+        .join(image_extract_dir_name(spec))
+        .join(image_name))
+}
+
+fn ensure_rootfs_image_name(image_name: &str) -> anyhow::Result<()> {
+    if image_name.starts_with("rootfs-") && image_name.ends_with(".img") {
+        return Ok(());
+    }
+    bail!("image `{image_name}` is not a managed rootfs image")
+}
+
+fn find_extracted_rootfs_image(extract_dir: &Path, image_name: &str) -> anyhow::Result<PathBuf> {
+    let mut stack = vec![extract_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)
+            .with_context(|| format!("failed to read extracted image dir {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.file_name().and_then(|name| name.to_str()) == Some(image_name) {
+                return Ok(path);
+            }
+        }
+    }
+
+    bail!(
+        "extracted image dir {} did not contain expected rootfs image `{image_name}`",
+        extract_dir.display()
+    )
 }
 
 #[cfg(test)]
@@ -630,6 +789,121 @@ url = "https://example.com/{image_name}.tar.gz"
 
         assert_eq!(fs::read(extracted.join("rootfs.img")).unwrap(), b"rootfs");
         assert!(dir.path().join("rootfs.img.tar.xz").exists());
+    }
+
+    #[tokio::test]
+    async fn pull_rootfs_image_returns_extracted_rootfs_file() {
+        let image_name = "rootfs-riscv64-alpine.img";
+        let archive = make_tar_xz(&[(image_name, b"rootfs")]);
+        let sha256 = sha256_hex(&archive);
+        let archive_url =
+            test_support::register_bytes(format!("{image_name}.tar.xz").as_str(), archive);
+        let dir = tempdir().unwrap();
+        let storage = Storage {
+            path: dir.path().to_path_buf(),
+            image_registry: ImageRegistry {
+                images: vec![ImageEntry {
+                    name: image_name.to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                    description: "Alpine rootfs".to_string(),
+                    sha256,
+                    arch: "riscv64".to_string(),
+                    url: archive_url.url().to_string(),
+                }],
+            },
+        };
+
+        let rootfs = storage
+            .pull_rootfs_image(ImageSpecRef::parse(image_name))
+            .await
+            .unwrap();
+
+        assert_eq!(rootfs, dir.path().join(image_name).join(image_name));
+        assert_eq!(fs::read(rootfs).unwrap(), b"rootfs");
+        assert_eq!(archive_url.request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn pull_rootfs_image_skips_download_when_archive_matches() {
+        let image_name = "rootfs-riscv64-alpine.img";
+        let archive = make_tar_xz(&[(image_name, b"rootfs")]);
+        let sha256 = sha256_hex(&archive);
+        let archive_url =
+            test_support::register_bytes(format!("{image_name}.tar.xz").as_str(), archive.clone());
+        let dir = tempdir().unwrap();
+        let storage = Storage {
+            path: dir.path().to_path_buf(),
+            image_registry: ImageRegistry {
+                images: vec![ImageEntry {
+                    name: image_name.to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                    description: "Alpine rootfs".to_string(),
+                    sha256,
+                    arch: "riscv64".to_string(),
+                    url: archive_url.url().to_string(),
+                }],
+            },
+        };
+
+        let rootfs = storage
+            .pull_rootfs_image(ImageSpecRef::parse(image_name))
+            .await
+            .unwrap();
+        fs::write(&rootfs, b"patched rootfs").unwrap();
+        let rootfs_again = storage
+            .pull_rootfs_image(ImageSpecRef::parse(image_name))
+            .await
+            .unwrap();
+
+        assert_eq!(rootfs_again, rootfs);
+        assert_eq!(fs::read(rootfs_again).unwrap(), b"patched rootfs");
+        assert_eq!(archive_url.request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn ensure_rootfs_for_arch_uses_image_storage_path() {
+        let image_name = "rootfs-loongarch64-alpine.img";
+        let archive = make_tar_xz(&[(image_name, b"rootfs")]);
+        let sha256 = sha256_hex(&archive);
+        let archive_url =
+            test_support::register_bytes(format!("{image_name}.tar.xz").as_str(), archive);
+        let workspace = tempdir().unwrap();
+        let config = ImageConfig {
+            local_storage: workspace.path().join("image-cache"),
+            registry: "https://example.com/registry.toml".to_string(),
+            auto_sync: false,
+            auto_sync_threshold: 60,
+        };
+        ImageConfig::write_config(workspace.path(), &config).unwrap();
+        let registry = ImageRegistry {
+            images: vec![ImageEntry {
+                name: image_name.to_string(),
+                version: "0.0.1".to_string(),
+                released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                description: "Alpine rootfs".to_string(),
+                sha256,
+                arch: "loongarch64".to_string(),
+                url: archive_url.url().to_string(),
+            }],
+        };
+        fs::create_dir_all(&config.local_storage).unwrap();
+        fs::write(
+            config.local_storage.join(REGISTRY_FILENAME),
+            toml::to_string(&registry).unwrap(),
+        )
+        .unwrap();
+
+        let rootfs = ensure_rootfs_for_arch(workspace.path(), "loongarch64")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rootfs,
+            config.local_storage.join(image_name).join(image_name)
+        );
+        assert_eq!(fs::read(rootfs).unwrap(), b"rootfs");
     }
 
     #[tokio::test]

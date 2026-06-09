@@ -546,10 +546,6 @@ pub(crate) mod test_support {
         register_bytes(path, body)
     }
 
-    pub(crate) fn register_text_url(url: &str, body: Vec<u8>) -> MockHandle {
-        register_url(url, body, MockRangeMode::Ignore)
-    }
-
     pub(crate) fn register_download(
         path: &str,
         body: Vec<u8>,
@@ -655,7 +651,7 @@ pub(crate) mod test_support {
     }
 
     fn is_mock_url(url: &str) -> bool {
-        url.starts_with("mock://") || routes().lock().unwrap().contains_key(url)
+        url.starts_with("mock://")
     }
 
     fn route(url: &str) -> anyhow::Result<Arc<MockRoute>> {
@@ -669,24 +665,6 @@ pub(crate) mod test_support {
 
     fn routes() -> &'static Mutex<HashMap<String, Arc<MockRoute>>> {
         ROUTES.get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
-    fn register_url(url: &str, body: Vec<u8>, range_mode: MockRangeMode) -> MockHandle {
-        let route = Arc::new(MockRoute {
-            body,
-            range_mode,
-            failing_statuses: Mutex::new(VecDeque::new()),
-            requests: AtomicUsize::new(0),
-            last_range_header: Mutex::new(None),
-        });
-        routes()
-            .lock()
-            .unwrap()
-            .insert(url.to_string(), route.clone());
-        MockHandle {
-            url: url.to_string(),
-            route,
-        }
     }
 }
 

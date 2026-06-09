@@ -6,7 +6,6 @@ use crate::{context::AppContext, support::download::file_sha256};
 
 pub mod config;
 pub mod registry;
-pub mod rootfs;
 pub mod spec;
 pub mod storage;
 
@@ -84,7 +83,7 @@ pub struct ArgsPull {
     #[arg(long)]
     pub arch: Option<String>,
 
-    /// Output directory for generic extracted images. Managed rootfs images always use tmp/axbuild/rootfs.
+    /// Output directory for generic extracted images. Managed rootfs images use local image storage.
     #[arg(short, long)]
     pub output_dir: Option<PathBuf>,
 
@@ -163,13 +162,7 @@ async fn pull_image(
             let mut config = ImageConfig::read_config(workspace_root)?;
             overrides.apply_on(&mut config);
             let storage = Storage::new_from_config(&config).await?;
-            match rootfs::ensure_rootfs_by_spec_from_storage(
-                workspace_root,
-                &storage,
-                ImageSpecRef::parse(image),
-            )
-            .await
-            {
+            match storage.pull_rootfs_image(ImageSpecRef::parse(image)).await {
                 Ok(path) => path,
                 Err(rootfs_err) => storage
                     .pull_image(ImageSpecRef::parse(image), None, true)
@@ -202,12 +195,11 @@ async fn pull_image(
         (None, Some(arch)) if args.output_dir.is_none() && !args.no_extract => {
             let mut config = ImageConfig::read_config(workspace_root)?;
             overrides.apply_on(&mut config);
-            let image = rootfs::default_rootfs_image(arch).ok_or_else(|| {
+            let image = storage::default_rootfs_image(arch).ok_or_else(|| {
                 anyhow::anyhow!("no managed rootfs image available for arch `{arch}`")
             })?;
             let storage = Storage::new_from_config(&config).await?;
-            rootfs::ensure_rootfs_by_spec_from_storage(workspace_root, &storage, image.into())
-                .await?
+            storage.pull_rootfs_image(image.into()).await?
         }
         (None, Some(_)) => {
             anyhow::bail!(
@@ -303,7 +295,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "image",
             "check",
-            "tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+            ".tgos-images/rootfs-riscv64-alpine.img/rootfs-riscv64-alpine.img",
             "--sha256",
             "abc",
         ])
@@ -313,7 +305,9 @@ mod tests {
             Command::Check(args) => {
                 assert_eq!(
                     args.image,
-                    PathBuf::from("tmp/axbuild/rootfs/rootfs-riscv64-alpine.img")
+                    PathBuf::from(
+                        ".tgos-images/rootfs-riscv64-alpine.img/rootfs-riscv64-alpine.img"
+                    )
                 );
                 assert_eq!(args.sha256.as_deref(), Some("abc"));
             }
