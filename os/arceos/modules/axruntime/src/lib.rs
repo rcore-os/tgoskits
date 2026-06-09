@@ -338,6 +338,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
+    #[cfg(all(feature = "irq", feature = "ipi"))]
+    ax_ipi::wait_for_all_cpus_ready();
+
     ax_app_entry();
 
     #[cfg(feature = "multitask")]

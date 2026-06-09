@@ -815,7 +815,11 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
     while ack_count.load(Ordering::Acquire) != remote_cpu_count {
         core::hint::spin_loop();
         if ax_hal::time::monotonic_time_nanos() - start > MAX_WAIT_NS {
-            panic!("task stack guard page TLB shootdown timeout");
+            let acked = ack_count.load(Ordering::Acquire);
+            panic!(
+                "task stack guard page TLB shootdown timeout: CPU {current_cpu} got \
+                 {acked}/{remote_cpu_count} ack(s) for vaddr={vaddr:#x}"
+            );
         }
     }
 }

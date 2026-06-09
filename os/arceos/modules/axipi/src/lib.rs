@@ -31,6 +31,8 @@ const IPI_CPU_READY: u8 = 2;
 static IPI_CPU_STATE: [AtomicU8; ax_config::plat::MAX_CPU_NUM] =
     [const { AtomicU8::new(IPI_CPU_NOT_READY) }; ax_config::plat::MAX_CPU_NUM];
 
+static IPI_READY_CPUS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 /// Initialize the per-CPU IPI event queue.
 pub fn init() {
     IPI_EVENT_QUEUE.with_current(|ipi_queue| {
@@ -47,6 +49,15 @@ pub fn mark_current_cpu_ready() {
     IPI_CPU_STATE[cpu_id].store(IPI_CPU_BECOMING_READY, Ordering::Release);
     ax_hal::asm::flush_tlb(None);
     IPI_CPU_STATE[cpu_id].store(IPI_CPU_READY, Ordering::Release);
+    IPI_READY_CPUS.fetch_add(1, Ordering::Release);
+}
+
+/// Waits until every online CPU has completed [`mark_current_cpu_ready`].
+pub fn wait_for_all_cpus_ready() {
+    let cpu_num = ax_hal::cpu_num();
+    while IPI_READY_CPUS.load(Ordering::Acquire) < cpu_num {
+        core::hint::spin_loop();
+    }
 }
 
 /// Returns whether `cpu_id` is ready to receive and handle queued IPI callbacks.
@@ -77,7 +88,7 @@ pub fn wait_until_cpu_ready(cpu_id: usize) -> bool {
 
 /// Executes a callback on the specified destination CPU via IPI.
 pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
-    info!("Send IPI event to CPU {dest_cpu}");
+    debug!("Send IPI event to CPU {dest_cpu}");
     if dest_cpu == this_cpu_id() {
         // Execute callback on current CPU immediately
         callback.into().call();

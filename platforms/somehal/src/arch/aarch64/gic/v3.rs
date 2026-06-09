@@ -136,12 +136,7 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
 }
 
 fn affinity_from_mpidr(mpidr: usize) -> Affinity {
-    Affinity {
-        aff0: (mpidr & 0xff) as u8,
-        aff1: ((mpidr >> 8) & 0xff) as u8,
-        aff2: ((mpidr >> 16) & 0xff) as u8,
-        aff3: ((mpidr >> 32) & 0xff) as u8,
-    }
+    Affinity::from_mpidr(mpidr as u64)
 }
 
 pub fn init_cpu(cpu_idx: usize) {
