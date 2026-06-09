@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -7,7 +7,7 @@ use ax_fs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
     mm::vm_load_string,
-    pseudofs::MemoryFs,
+    pseudofs::{MemoryFs, overlay::OverlayOptions},
     task::{AsThread, tasks},
 };
 
@@ -29,6 +29,44 @@ const MS_SHARED: i32 = 1 << 20;
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+fn parse_overlay_options(data: *const c_void) -> AxResult<(Vec<String>, String, String)> {
+    if data.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    let data = vm_load_string(data.cast())?;
+    let mut lowerdir = None;
+    let mut upperdir = None;
+    let mut workdir = None;
+
+    for item in data.split(',') {
+        let Some((key, value)) = item.split_once('=') else {
+            continue;
+        };
+        match key {
+            "lowerdir" => lowerdir = Some(value),
+            "upperdir" => upperdir = Some(value),
+            "workdir" => workdir = Some(value),
+            _ => {}
+        }
+    }
+
+    let lower_dirs = lowerdir
+        .ok_or(AxError::InvalidInput)?
+        .split(':')
+        .filter(|path| !path.is_empty())
+        .map(String::from)
+        .collect::<Vec<_>>();
+    if lower_dirs.is_empty() {
+        return Err(AxError::InvalidInput);
+    }
+
+    Ok((
+        lower_dirs,
+        upperdir.ok_or(AxError::InvalidInput)?.into(),
+        workdir.ok_or(AxError::InvalidInput)?.into(),
+    ))
+}
 
 fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
     fd.downcast_ref::<File>()
@@ -66,7 +104,7 @@ pub fn sys_mount(
     target: *const c_char,
     fs_type: *const c_char,
     flags: i32,
-    _data: *const c_void,
+    data: *const c_void,
 ) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
@@ -154,6 +192,26 @@ pub fn sys_mount(
         #[cfg(feature = "ext4")]
         "ext4" => {
             mount_ext4(&source, &target, (flags & MS_RDONLY) != 0)?;
+        }
+        "overlay" => {
+            let (lower_paths, upper_path, work_path) = parse_overlay_options(data)?;
+            let ctx = FS_CONTEXT.lock();
+            let mut lower_dirs = Vec::new();
+            for lower in lower_paths {
+                lower_dirs.push(ctx.resolve(lower)?);
+            }
+            let upper_dir = ctx.resolve(upper_path)?;
+            let work_dir = ctx.resolve(work_path)?;
+            let fs = crate::pseudofs::overlay::new_overlayfs(OverlayOptions {
+                lower_dirs,
+                upper_dir,
+                work_dir,
+            })?;
+            let target = ctx.resolve(target)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
         }
         _ => return Err(AxError::NoSuchDevice),
     }

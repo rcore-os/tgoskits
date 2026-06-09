@@ -17,7 +17,6 @@ const fn pad_mnt_root(root: &str) -> [c_char; 256] {
 }
 
 /// Per-process mount namespace.
-///
 /// Isolates the set of filesystem mount points seen by a process.
 /// In the root namespace `root` starts as `"/"`.
 pub struct MntNamespace {
