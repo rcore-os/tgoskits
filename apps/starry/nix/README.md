@@ -83,8 +83,8 @@ apps/starry/nix/
 ├── prebuild.sh          # apk add nix into staging rootfs
 ├── nix.sh               # sandbox-enabled nix-build (blocked, not CI)
 ├── nix-nosandbox.sh     # builtins.derivation (CI gate, ~30s)
-├── nix-nixpkgs.sh       # pkgs.stdenv.mkDerivation (CI, requires network)
-├── test_nix.sh          # unified entry — runs nosandbox → nixpkgs in order
+├── nix-nixpkgs.sh       # stdenv.mkDerivation (deferred, requires mount ns)
+├── test_nix.sh          # nosandbox only (nixpkgs intentionally skipped)
 ├── build-x86_64-unknown-none.toml
 ├── qemu-x86_64.toml     # 1200s timeout, shell_init_cmd=test_nix.sh
 └── README.md            # this file
