@@ -158,7 +158,7 @@ fn collect_overlay_debugfs_commands(
         .with_context(|| format!("failed to read {}", current_dir.display()))?;
     entries.sort_by_key(|left| left.file_name());
 
-    // First pass:  directories and regular files (symlinks need their targets to
+    // First pass: directories and regular files (symlinks need their targets to
     // exist first, because debugfs `symlink` validates the target).
     for entry in &entries {
         let file_name = PathBuf::from(entry.file_name());
