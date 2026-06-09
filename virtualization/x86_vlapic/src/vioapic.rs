@@ -189,10 +189,15 @@ impl EmulatedIoApic {
                 }
                 let entry = &mut state.redirection_table[index];
                 if (reg - IOREDTBL_BASE) & 1 == 0 {
-                    let remote_irr = *entry & REDIRECTION_ENTRY_REMOTE_IRR;
-                    *entry = (*entry & !0xffff_ffff)
-                        | ((value as u64) & !REDIRECTION_ENTRY_REMOTE_IRR)
-                        | remote_irr;
+                    let old_low = *entry & !REDIRECTION_ENTRY_REMOTE_IRR & 0xffff_ffff;
+                    let new_low = (value as u64) & !REDIRECTION_ENTRY_REMOTE_IRR;
+                    let remote_irr = if old_low == new_low {
+                        *entry & REDIRECTION_ENTRY_REMOTE_IRR
+                    } else {
+                        state.pending_level[index] = false;
+                        0
+                    };
+                    *entry = (*entry & !0xffff_ffff) | new_low | remote_irr;
                     if *entry & REDIRECTION_ENTRY_MASKED != 0 {
                         state.pending_level[index] = false;
                     }

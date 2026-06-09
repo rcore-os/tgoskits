@@ -62,8 +62,8 @@ pub fn execute(command: Command) -> anyhow::Result<()> {
 
 const HOST_SYMBOLIZE_HEADER: &str = "=== host backtrace symbolize ===";
 
-/// Resolved ELF path for an ArceOS std test package built via the workspace `target/` dir.
-pub(crate) fn std_test_elf_path(
+/// Resolved ELF path for an ArceOS Rust package built via the workspace `target/` dir.
+pub(crate) fn arceos_rust_elf_path(
     workspace_root: &Path,
     target: &str,
     package: &str,
@@ -72,9 +72,19 @@ pub(crate) fn std_test_elf_path(
     let profile = if debug { "debug" } else { "release" };
     workspace_root
         .join("target")
-        .join(std_test_target_dir(target))
+        .join(target)
         .join(profile)
         .join(package)
+}
+
+/// Resolved ELF path for an ArceOS std test package built via the workspace `target/` dir.
+pub(crate) fn std_test_elf_path(
+    workspace_root: &Path,
+    target: &str,
+    package: &str,
+    debug: bool,
+) -> PathBuf {
+    arceos_rust_elf_path(workspace_root, std_test_target_dir(target), package, debug)
 }
 
 fn std_test_target_dir(target: &str) -> &str {
@@ -1208,6 +1218,15 @@ BACKTRACE_END
         )
         .unwrap();
         assert_eq!(infer_kind_filter("mixed", &blocks), None);
+    }
+
+    #[test]
+    fn arceos_rust_elf_path_uses_release_profile() {
+        let path = arceos_rust_elf_path(Path::new("/ws"), "x86_64-unknown-none", "app", false);
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-none/release/app")
+        );
     }
 
     #[test]

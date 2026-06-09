@@ -875,6 +875,58 @@ target = "aarch64-unknown-none-softfloat"
 }
 
 #[test]
+fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
+    let root = tempdir().unwrap();
+    let explicit = root
+        .path()
+        .join("test-suit/axvisor/normal/qemu/build-x86_64-unknown-none.toml");
+    fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+    fs::write(
+        &explicit,
+        r#"
+target = "x86_64-unknown-none"
+env = {}
+features = []
+log = "Info"
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
+        r#"
+arch = "x86_64"
+target = "x86_64-unknown-none"
+vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: Some(explicit.clone()),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            vmconfigs: vec![],
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.build_info_path, explicit);
+    assert!(request.vmconfigs.is_empty());
+    assert!(snapshot.vmconfigs.is_empty());
+}
+
+#[test]
 fn starry_snapshot_load_returns_default_when_missing() {
     let root = tempdir().unwrap();
     let snapshot = StarryCommandSnapshot::load(root.path()).unwrap();
