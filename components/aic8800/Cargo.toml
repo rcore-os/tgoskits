@@ -1,0 +1,35 @@
+[package]
+name = "aic8800"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "AIC8800 WiFi driver for ArceOS (SDIO, firmware, WPA2, network device)"
+
+[features]
+default = []
+speed-test = ["dep:ax-net"]
+
+[dependencies]
+log = { workspace = true }
+
+sdio-host = { workspace = true }
+sdhci-cv1800 = { workspace = true }
+wifi-host = { workspace = true }
+
+ax-sync = { workspace = true }
+ax-task = { workspace = true, features = ["multitask"] }
+ax-hal = { workspace = true, features = ["irq"] }
+ax-config = { workspace = true }
+axpoll = { workspace = true }
+ax-kspin = { workspace = true }
+
+rdif-eth = { workspace = true }
+rd-net = { workspace = true }
+
+ax-net = { workspace = true, optional = true }
+
+hmac = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+digest = { version = "0.10", default-features = false }
+aes = { version = "0.8", default-features = false }
+pbkdf2 = { version = "0.12", default-features = false }
