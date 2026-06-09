@@ -1,13 +1,12 @@
 extern crate alloc;
 
 use alloc::{string::String, vec, vec::Vec};
-use core::{ffi::c_void, num::NonZeroUsize, ptr, ptr::NonNull, time::Duration};
+use core::{ffi::c_void, ptr, time::Duration};
 
 use uefi::{
     Handle, Status,
-    boot::{self, AllocateType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
-    mem::memory_map::MemoryType,
-    proto::network::http::{Http, HttpBinding, HttpHelper},
+    boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
+    proto::network::http::{Http, HttpBinding},
 };
 use uefi_raw::protocol::network::http::{
     HttpHeader, HttpMessage, HttpMethod, HttpRequestData, HttpResponseData, HttpStatusCode,
@@ -18,7 +17,6 @@ const MAX_KERNEL_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
 const KERNEL_RANGE_CHUNK_SIZE: usize = 1024;
 const HTTP_RETRY_LIMIT: usize = 8;
 const HTTP_RETRY_STALL: Duration = Duration::from_millis(250);
-const UEFI_PAGE_SIZE: usize = 4096;
 const KERNEL_PROGRESS_STEP_PERCENT: usize = 1;
 const KERNEL_PROGRESS_BAR_WIDTH: usize = 50;
 
@@ -39,16 +37,8 @@ pub enum DownloadError {
 pub enum KernelLoadError {
     ZeroSize,
     SizeTooLarge,
-    LoadAddressTooLarge,
-    LoadAddressNotAligned,
-    PageCountOverflow,
-    AllocateFailed,
     Download(DownloadError),
     SizeMismatch,
-}
-
-pub fn download_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
-    retry_http(|| download_body_once(url, max_len))
 }
 
 pub fn get_json_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
@@ -69,36 +59,6 @@ pub fn post_json_body(url: &str, body: &str, max_len: usize) -> Result<Vec<u8>, 
     Ok(response.body)
 }
 
-fn download_body_once(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
-    let handles =
-        boot::find_handles::<HttpBinding>().map_err(|_| DownloadError::HttpUnavailable)?;
-    let handle = handles
-        .first()
-        .copied()
-        .ok_or(DownloadError::NoHttpBinding)?;
-
-    let mut http = HttpHelper::new(handle).map_err(|_| DownloadError::HttpUnavailable)?;
-    http.configure()
-        .map_err(|_| DownloadError::ConfigureFailed)?;
-    http.request_get(url)
-        .map_err(|_| DownloadError::RequestFailed)?;
-
-    let response = http
-        .response_first(true)
-        .map_err(|_| DownloadError::ResponseFailed)?;
-    if response.body.len() > max_len {
-        return Err(DownloadError::BodyTooLarge);
-    }
-
-    Ok(response.body)
-}
-
-pub struct LoadedKernel {
-    pub ptr: NonNull<u8>,
-    pub page_count: usize,
-    pub size: usize,
-}
-
 pub fn download_sized_body(url: &str, expected_size: u64) -> Result<Vec<u8>, KernelLoadError> {
     let expected_size = checked_kernel_size(expected_size)?;
     crate::logln!("body_download_start: size={}", expected_size);
@@ -109,49 +69,6 @@ pub fn download_sized_body(url: &str, expected_size: u64) -> Result<Vec<u8>, Ker
         return Err(KernelLoadError::SizeMismatch);
     }
     Ok(body)
-}
-
-pub fn download_kernel(
-    url: &str,
-    load_addr: u64,
-    expected_size: u64,
-) -> Result<LoadedKernel, KernelLoadError> {
-    let expected_size = checked_kernel_size(expected_size)?;
-    let page_count = kernel_page_count(load_addr, expected_size)?;
-    crate::logln!(
-        "kernel_download_start: load={:#x} pages={} size={}",
-        load_addr,
-        page_count,
-        expected_size
-    );
-    let target = boot::allocate_pages(
-        AllocateType::Address(load_addr),
-        MemoryType::LOADER_DATA,
-        page_count,
-    )
-    .map_err(|_| KernelLoadError::AllocateFailed)?;
-
-    let received = match download_body_to_addr(url, target.as_ptr(), expected_size) {
-        Ok(received) => received,
-        Err(err) => {
-            unsafe {
-                let _ = boot::free_pages(target, page_count);
-            }
-            return Err(KernelLoadError::Download(err));
-        }
-    };
-    if received != expected_size {
-        unsafe {
-            let _ = boot::free_pages(target, page_count);
-        }
-        return Err(KernelLoadError::SizeMismatch);
-    }
-
-    Ok(LoadedKernel {
-        ptr: target,
-        page_count,
-        size: expected_size,
-    })
 }
 
 fn download_body_to_addr(
@@ -277,10 +194,6 @@ fn print_fixed_2(value: usize, unit: usize) {
         crate::log!("0");
     }
     crate::log!("{}", hundredths);
-}
-
-pub fn retry_limit() -> usize {
-    HTTP_RETRY_LIMIT
 }
 
 fn retry_http<T>(mut op: impl FnMut() -> Result<T, DownloadError>) -> Result<T, DownloadError> {
@@ -610,20 +523,4 @@ fn checked_kernel_size(expected_size: u64) -> Result<usize, KernelLoadError> {
         return Err(KernelLoadError::SizeTooLarge);
     }
     Ok(expected_size as usize)
-}
-
-fn kernel_page_count(load_addr: u64, expected_size: usize) -> Result<usize, KernelLoadError> {
-    if load_addr as usize as u64 != load_addr {
-        return Err(KernelLoadError::LoadAddressTooLarge);
-    }
-    if load_addr as usize % UEFI_PAGE_SIZE != 0 {
-        return Err(KernelLoadError::LoadAddressNotAligned);
-    }
-
-    expected_size
-        .checked_add(UEFI_PAGE_SIZE - 1)
-        .map(|size| size / UEFI_PAGE_SIZE)
-        .and_then(NonZeroUsize::new)
-        .map(NonZeroUsize::get)
-        .ok_or(KernelLoadError::PageCountOverflow)
 }

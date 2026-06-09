@@ -22,8 +22,9 @@ const ETHERNET_HEADER_LEN: usize = 14;
 const DISCOVERY_PROTOCOL_VERSION: u16 = 1;
 const DISCOVERY_ADVERTISE_TYPE: &str = "ostool_httpboot_advertise";
 const DISCOVERY_SOLICIT_TYPE: &str = "ostool_httpboot_solicit";
-const DISCOVERY_ROUNDS: usize = 5;
-const DISCOVERY_STALL: Duration = Duration::from_millis(500);
+const DISCOVERY_ATTEMPTS: usize = 12;
+const DISCOVERY_RECEIVE_POLLS: usize = 10;
+const DISCOVERY_POLL_STALL: Duration = Duration::from_millis(100);
 const RAW_PACKET_LIMIT: usize = 1536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +57,7 @@ fn discover_server_with_snp(mac: &str) -> Result<String, DiscoveryError> {
     let handles =
         boot::find_handles::<SimpleNetwork>().map_err(|_| DiscoveryError::NoSimpleNetwork)?;
     let solicit = solicit_body(mac);
+    let mut last_error = DiscoveryError::OpenFailed;
     for handle in handles.iter().copied() {
         let snp = match unsafe {
             boot::open_protocol::<SimpleNetwork>(
@@ -72,11 +74,14 @@ fn discover_server_with_snp(mac: &str) -> Result<String, DiscoveryError> {
         };
         match discover_with_snp(&snp, station_ip, subnet_mask, solicit.as_bytes()) {
             Ok(url) => return Ok(url),
-            Err(err) => crate::logln!("discovery_snp_handle_error: {err:?}"),
+            Err(err) => {
+                crate::logln!("discovery_snp_handle_error: {err:?}");
+                last_error = err;
+            }
         }
     }
 
-    Err(DiscoveryError::OpenFailed)
+    Err(last_error)
 }
 
 fn discover_with_snp(
@@ -88,47 +93,79 @@ fn discover_with_snp(
     ensure_snp_initialized(snp)?;
     let source_mac = snp.mode().current_address.octets();
     let source_mac = first_six(&source_mac);
-    let broadcast_ip = subnet_broadcast(station_ip, subnet_mask);
+    let mut receive = [0u8; RAW_PACKET_LIMIT];
+    let subnet_broadcast = subnet_broadcast(station_ip, subnet_mask);
+    let limited_broadcast = Ipv4Addr::BROADCAST;
+    let mut last_send_failed = false;
+
+    for attempt in 1..=DISCOVERY_ATTEMPTS {
+        crate::logln!("discovery_snp_attempt: {attempt}/{DISCOVERY_ATTEMPTS}");
+        let subnet_sent =
+            send_solicit(snp, source_mac, station_ip, subnet_broadcast, solicit).is_ok();
+        if subnet_sent {
+            crate::logln!("discovery_snp_solicit_sent: dst={subnet_broadcast}:{DISCOVERY_PORT}");
+        }
+
+        let limited_sent = if limited_broadcast == subnet_broadcast {
+            true
+        } else {
+            send_solicit(snp, source_mac, station_ip, limited_broadcast, solicit).is_ok()
+        };
+        if limited_sent && limited_broadcast != subnet_broadcast {
+            crate::logln!("discovery_snp_solicit_sent: dst={limited_broadcast}:{DISCOVERY_PORT}");
+        }
+
+        if !subnet_sent && !limited_sent {
+            last_send_failed = true;
+            crate::logln!("discovery_snp_send_failed");
+        }
+
+        for _ in 0..DISCOVERY_RECEIVE_POLLS {
+            if let Some(url) = receive_advertise(snp, &mut receive) {
+                crate::logln!("discovery_snp_advertise: base_url={url}");
+                return Ok(url.into());
+            }
+            boot::stall(DISCOVERY_POLL_STALL);
+        }
+    }
+
+    if last_send_failed {
+        Err(DiscoveryError::SendFailed)
+    } else {
+        Err(DiscoveryError::NoAdvertise)
+    }
+}
+
+fn send_solicit(
+    snp: &SimpleNetwork,
+    source_mac: [u8; 6],
+    station_ip: Ipv4Addr,
+    dest_ip: Ipv4Addr,
+    solicit: &[u8],
+) -> Result<(), DiscoveryError> {
     let mut frame = [0u8; RAW_PACKET_LIMIT];
     let frame_len = write_udp_broadcast_frame(
         &mut frame,
         source_mac,
         station_ip,
-        broadcast_ip,
+        dest_ip,
         DISCOVERY_PORT,
         DISCOVERY_PORT,
         solicit,
     )
     .ok_or(DiscoveryError::SendFailed)?;
     snp.transmit(0, &frame[..frame_len], None, None, Some(IPV4_ETHERTYPE))
-        .map_err(|_| DiscoveryError::SendFailed)?;
-    crate::logln!("discovery_snp_solicit_sent: dst={broadcast_ip}:{DISCOVERY_PORT}");
+        .map_err(|_| DiscoveryError::SendFailed)
+}
 
-    let mut receive = [0u8; RAW_PACKET_LIMIT];
-    for round in 1..=DISCOVERY_ROUNDS {
-        crate::logln!("discovery_snp_wait: {round}/{DISCOVERY_ROUNDS}");
-        for _ in 0..8 {
-            match snp.receive(&mut receive, None, None, None, None) {
-                Ok(len) => {
-                    if let Some(body) = udp_payload_from_frame(&receive[..len], DISCOVERY_PORT)
-                        && let Ok(text) = str::from_utf8(body)
-                    {
-                        if let Some(url) = parse_advertise(text) {
-                            crate::logln!("discovery_snp_advertise: base_url={url}");
-                            return Ok(url.into());
-                        }
-                    }
-                }
-                Err(err)
-                    if err.status() == Status::NOT_READY || err.status() == Status::TIMEOUT => {}
-                Err(_) => {}
-            }
-            boot::stall(Duration::from_millis(50));
-        }
-        boot::stall(DISCOVERY_STALL);
+fn receive_advertise<'a>(snp: &SimpleNetwork, receive: &'a mut [u8]) -> Option<&'a str> {
+    match snp.receive(receive, None, None, None, None) {
+        Ok(len) => udp_payload_from_frame(&receive[..len], DISCOVERY_PORT)
+            .and_then(|body| str::from_utf8(body).ok())
+            .and_then(parse_advertise),
+        Err(err) if err.status() == Status::NOT_READY || err.status() == Status::TIMEOUT => None,
+        Err(_) => None,
     }
-
-    Err(DiscoveryError::NoAdvertise)
 }
 
 fn ipv4_config() -> Option<(Ipv4Addr, Ipv4Addr)> {
