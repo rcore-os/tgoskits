@@ -546,7 +546,7 @@ impl Starry {
             && test_case.test_commands.is_empty()
             && test_case.subcases.is_empty()
         {
-            let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+            let rootfs_path = crate::image::rootfs::resolve_explicit_rootfs(
                 self.app.workspace_root(),
                 &request.arch,
                 case.rootfs_path,
@@ -583,7 +583,7 @@ impl Starry {
                 .qemu(cargo, request.build_info_path, Some(qemu))
                 .await;
         }
-        let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+        let rootfs_path = crate::image::rootfs::resolve_explicit_rootfs(
             self.app.workspace_root(),
             &request.arch,
             case.rootfs_path,

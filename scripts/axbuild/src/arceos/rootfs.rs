@@ -18,7 +18,7 @@ pub(crate) fn resolve_explicit_rootfs(
     arch: &str,
     rootfs: PathBuf,
 ) -> PathBuf {
-    crate::rootfs::store::resolve_rootfs_path(workspace_root, arch, rootfs)
+    crate::image::rootfs::resolve_rootfs_path(workspace_root, arch, rootfs)
 }
 
 /// Ensures a managed ArceOS rootfs image is available before launch.
@@ -27,7 +27,7 @@ pub(crate) async fn ensure_rootfs_ready(
     arch: &str,
     rootfs: &Path,
 ) -> anyhow::Result<()> {
-    crate::rootfs::store::ensure_managed_rootfs(workspace_root, arch, rootfs).await
+    crate::image::rootfs::ensure_managed_rootfs(workspace_root, arch, rootfs).await
 }
 
 /// Patches a QEMU config so it boots with the selected ArceOS rootfs image.

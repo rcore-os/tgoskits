@@ -5,18 +5,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use flate2::read::GzDecoder;
 use indicatif::ProgressBar;
-use sha2::{Digest, Sha256};
 use tar::Archive;
+use xz2::read::XzDecoder;
 
 use super::{
     config::{ImageConfig, fallback_registry_url},
     registry::{ImageEntry, ImageRegistry},
     spec::ImageSpecRef,
 };
-use crate::support::download::{acquire_path_lock, download_file, http_client};
+use crate::support::download::{download_file_verified_sha256, http_client};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
 const LAST_SYNC_FILENAME: &str = ".last_sync";
@@ -134,7 +134,7 @@ impl Storage {
         fs::create_dir_all(output_dir)
             .with_context(|| format!("failed to create {}", output_dir.display()))?;
 
-        let archive_path = output_dir.join(image_archive_filename(spec));
+        let archive_path = output_dir.join(image_archive_filename(image, spec));
         self.ensure_archive(image, &archive_path).await?;
 
         if !extract {
@@ -156,66 +156,21 @@ impl Storage {
         Ok(extract_dir)
     }
 
-    fn resolve_image<'a>(&'a self, spec: ImageSpecRef<'_>) -> anyhow::Result<&'a ImageEntry> {
+    pub(crate) fn resolve_image<'a>(
+        &'a self,
+        spec: ImageSpecRef<'_>,
+    ) -> anyhow::Result<&'a ImageEntry> {
         self.image_registry.find(spec).ok_or_else(|| {
             anyhow!(
-                "image not found: {}. Use `cargo axvisor image ls` to view available images",
+                "image not found: {}. Use `cargo xtask image ls` to view available images",
                 spec
             )
         })
     }
 
     async fn ensure_archive(&self, image: &ImageEntry, archive_path: &Path) -> anyhow::Result<()> {
-        let _lock = acquire_path_lock(archive_path).await?;
-        if archive_path.exists() {
-            match image_verify_sha256(archive_path, &image.sha256) {
-                Ok(true) => {
-                    println!("image already exists and passed checksum verification");
-                    return Ok(());
-                }
-                Ok(false) => {
-                    println!("existing image checksum mismatch, re-downloading...");
-                }
-                Err(err) => {
-                    println!("failed to verify existing image: {err}, re-downloading...");
-                }
-            }
-            fs::remove_file(archive_path)
-                .with_context(|| format!("failed to remove {}", archive_path.display()))?;
-        }
-
-        let part_path = part_path_for(archive_path);
-        if part_path.exists() {
-            fs::remove_file(&part_path)
-                .with_context(|| format!("failed to remove {}", part_path.display()))?;
-        }
-
         let client = http_client()?;
-        let download_result = download_file(&client, &image.url, &part_path).await;
-        if let Err(err) = download_result {
-            let _ = fs::remove_file(&part_path);
-            return Err(err);
-        }
-
-        match image_verify_sha256(&part_path, &image.sha256) {
-            Ok(true) => {}
-            Ok(false) => {
-                let _ = fs::remove_file(&part_path);
-                bail!("downloaded image checksum mismatch for {}", image.url);
-            }
-            Err(err) => {
-                let _ = fs::remove_file(&part_path);
-                return Err(err);
-            }
-        }
-
-        fs::rename(&part_path, archive_path).with_context(|| {
-            format!(
-                "failed to move downloaded archive {} to {}",
-                part_path.display(),
-                archive_path.display()
-            )
-        })?;
+        download_file_verified_sha256(&client, &image.url, archive_path, &image.sha256).await?;
         println!("image archive verified at {}", archive_path.display());
         Ok(())
     }
@@ -249,11 +204,11 @@ impl Storage {
     }
 }
 
-pub(crate) fn image_archive_filename(spec: ImageSpecRef<'_>) -> String {
-    match spec.version {
+pub(crate) fn image_archive_filename(image: &ImageEntry, spec: ImageSpecRef<'_>) -> String {
+    archive_filename_from_url(&image.url).unwrap_or_else(|| match spec.version {
         Some(version) => format!("{}-{}.tar.gz", spec.name, version),
         None => format!("{}.tar.gz", spec.name),
-    }
+    })
 }
 
 pub(crate) fn image_extract_dir_name(spec: ImageSpecRef<'_>) -> String {
@@ -261,15 +216,6 @@ pub(crate) fn image_extract_dir_name(spec: ImageSpecRef<'_>) -> String {
         Some(version) => format!("{}-{}", spec.name, version),
         None => spec.name.to_string(),
     }
-}
-
-fn part_path_for(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| format!("{name}.part"))
-        .unwrap_or_else(|| "download.part".to_string());
-    path.with_file_name(name)
 }
 
 fn registry_filepath(storage_path: &Path) -> PathBuf {
@@ -297,26 +243,6 @@ fn write_last_sync_time(storage_path: &Path) -> anyhow::Result<()> {
     let now = current_unix_timestamp()?;
     fs::write(last_sync_filepath(storage_path), now.to_string())
         .map_err(|e| anyhow!("Failed to write last sync file: {e}"))
-}
-
-fn image_verify_sha256(file_path: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
-    let mut file = fs::File::open(file_path)
-        .with_context(|| format!("failed to open {}", file_path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 8192];
-
-    loop {
-        let bytes_read = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to read {}", file_path.display()))?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    let actual_sha256 = format!("{:x}", hasher.finalize());
-    Ok(actual_sha256 == expected_sha256)
 }
 
 fn extracted_archive_matches(extract_dir: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
@@ -361,13 +287,13 @@ async fn extract_archive(
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let archive_file = fs::File::open(&archive_path_for_task)
+        let mut archive_file = fs::File::open(&archive_path_for_task)
             .with_context(|| format!("failed to open {}", archive_path_for_task.display()))?;
-        let decoder = GzDecoder::new(archive_file);
-        let mut archive = Archive::new(decoder);
-        archive.unpack(&extract_dir_for_task).with_context(|| {
-            format!("failed to extract into {}", extract_dir_for_task.display())
-        })?;
+        unpack_archive(
+            &archive_path_for_task,
+            &mut archive_file,
+            &extract_dir_for_task,
+        )?;
         fs::write(
             extract_dir_for_task.join(EXTRACTED_SHA256_FILENAME),
             expected_sha256,
@@ -396,14 +322,57 @@ async fn extract_archive(
     }
 }
 
+fn archive_filename_from_url(url: &str) -> Option<String> {
+    let path = url.split_once('?').map_or(url, |(path, _)| path);
+    let name = path.rsplit('/').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn unpack_archive(
+    archive_path: &Path,
+    archive_file: &mut fs::File,
+    extract_dir: &Path,
+) -> anyhow::Result<()> {
+    let mut magic = [0_u8; 6];
+    let read_len = archive_file
+        .read(&mut magic)
+        .with_context(|| format!("failed to read {}", archive_path.display()))?;
+    use std::io::{Seek, SeekFrom};
+    archive_file
+        .seek(SeekFrom::Start(0))
+        .with_context(|| format!("failed to seek {}", archive_path.display()))?;
+
+    if read_len >= 2 && magic[..2] == [0x1f, 0x8b] {
+        let decoder = GzDecoder::new(archive_file);
+        let mut archive = Archive::new(decoder);
+        return archive
+            .unpack(extract_dir)
+            .with_context(|| format!("failed to extract into {}", extract_dir.display()));
+    }
+
+    if read_len >= 6 && magic == [0xfd, b'7', b'z', b'X', b'Z', 0x00] {
+        let decoder = XzDecoder::new(archive_file);
+        let mut archive = Archive::new(decoder);
+        return archive
+            .unpack(extract_dir)
+            .with_context(|| format!("failed to extract into {}", extract_dir.display()));
+    }
+
+    let mut archive = Archive::new(archive_file);
+    archive
+        .unpack(extract_dir)
+        .with_context(|| format!("failed to extract into {}", extract_dir.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
 
+    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{axvisor::image::registry::RegistrySource, support::download::test_support};
+    use crate::{image::registry::RegistrySource, support::download::test_support};
 
     fn sample_registry() -> &'static str {
         r#"
@@ -438,20 +407,53 @@ url = "https://example.com/linux-0.0.1.tar.gz"
         encoder.finish().unwrap()
     }
 
+    fn make_tar_xz(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = xz2::write::XzEncoder::new(Vec::new(), 6);
+        let mut builder = tar::Builder::new(encoder);
+        for (name, contents) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name).unwrap();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, *contents).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
     fn sha256_hex(bytes: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         format!("{:x}", hasher.finalize())
     }
 
+    fn image_entry(name: &str, version: &str, url: &str) -> ImageEntry {
+        ImageEntry {
+            name: name.to_string(),
+            version: version.to_string(),
+            released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+            description: "Linux guest".to_string(),
+            sha256: "abc".to_string(),
+            arch: "aarch64".to_string(),
+            url: url.to_string(),
+        }
+    }
+
     #[test]
-    fn names_follow_legacy_layout() {
+    fn names_follow_registry_url_with_default_fallback() {
+        let xz_image = image_entry("linux", "0.0.1", "https://example.com/linux.tar.xz");
         assert_eq!(
-            image_archive_filename(ImageSpecRef::parse("linux")),
+            image_archive_filename(&xz_image, ImageSpecRef::parse("linux")),
+            "linux.tar.xz"
+        );
+
+        let fallback_image = image_entry("linux", "0.0.1", "https://example.com/");
+        assert_eq!(
+            image_archive_filename(&fallback_image, ImageSpecRef::parse("linux")),
             "linux.tar.gz"
         );
         assert_eq!(
-            image_archive_filename(ImageSpecRef::parse("linux:0.0.1")),
+            image_archive_filename(&fallback_image, ImageSpecRef::parse("linux:0.0.1")),
             "linux-0.0.1.tar.gz"
         );
         assert_eq!(
@@ -516,8 +518,14 @@ url = "https://example.com/{image_name}.tar.gz"
         )
         .unwrap();
         fs::write(
-            dir.path()
-                .join(image_archive_filename(ImageSpecRef::parse(image_name))),
+            dir.path().join(image_archive_filename(
+                &image_entry(
+                    image_name,
+                    "0.0.1",
+                    format!("https://example.com/{image_name}.tar.gz").as_str(),
+                ),
+                ImageSpecRef::parse(image_name),
+            )),
             archive_bytes,
         )
         .unwrap();
@@ -590,8 +598,38 @@ url = "https://example.com/{image_name}.tar.gz"
 
         assert_eq!(extracted, dir.path().join("qemu_x86_64_nimbos"));
         assert_eq!(fs::read(extracted.join("rootfs.img")).unwrap(), b"rootfs");
-        assert!(dir.path().join("qemu_x86_64_nimbos.tar.gz").exists());
-        assert!(!dir.path().join("qemu_x86_64_nimbos.tar.gz.part").exists());
+        assert!(dir.path().join("archive.tar.gz").exists());
+        assert!(!dir.path().join("archive.tar.gz.part").exists());
+    }
+
+    #[tokio::test]
+    async fn pull_downloads_and_extracts_xz_image() {
+        let archive = make_tar_xz(&[("rootfs.img", b"rootfs")]);
+        let sha256 = sha256_hex(&archive);
+        let archive_url = test_support::register_bytes("rootfs.img.tar.xz", archive.clone());
+        let dir = tempdir().unwrap();
+        let storage = Storage {
+            path: dir.path().to_path_buf(),
+            image_registry: ImageRegistry {
+                images: vec![ImageEntry {
+                    name: "rootfs-riscv64-alpine.img".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                    description: "Alpine rootfs".to_string(),
+                    sha256,
+                    arch: "riscv64".to_string(),
+                    url: archive_url.url().to_string(),
+                }],
+            },
+        };
+
+        let extracted = storage
+            .pull_image(ImageSpecRef::parse("rootfs-riscv64-alpine.img"), None, true)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(extracted.join("rootfs.img")).unwrap(), b"rootfs");
+        assert!(dir.path().join("rootfs.img.tar.xz").exists());
     }
 
     #[tokio::test]
@@ -655,7 +693,7 @@ url = "https://example.com/{image_name}.tar.gz"
             .unwrap();
 
         assert_eq!(extracted, output.join("linux"));
-        assert!(output.join("linux.tar.gz").exists());
+        assert!(output.join("archive.tar.gz").exists());
         assert_eq!(
             fs::read(output.join("linux/rootfs.img")).unwrap(),
             b"rootfs"

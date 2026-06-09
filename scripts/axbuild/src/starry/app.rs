@@ -446,7 +446,7 @@ fn qemu_app_managed_rootfs_paths(
     workspace_root: &Path,
     qemu: &ostool::run::qemu::QemuConfig,
 ) -> Vec<PathBuf> {
-    let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
+    let managed_rootfs_dir = crate::image::rootfs::rootfs_dir(workspace_root);
     crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
         .map(|path| resolve_qemu_app_config_path(workspace_root, path))
@@ -662,11 +662,11 @@ async fn prepare_qemu_app_rootfs(
 ) -> anyhow::Result<PathBuf> {
     let rootfs_path = match configured_rootfs {
         Some(path) => path.to_path_buf(),
-        None => crate::rootfs::store::default_rootfs_path(workspace_root, arch)?,
+        None => crate::image::rootfs::default_rootfs_path(workspace_root, arch)?,
     };
     if app.prebuild_path.is_none() {
         if let Some(configured) = configured_rootfs {
-            crate::rootfs::store::ensure_optional_managed_rootfs(
+            crate::image::rootfs::ensure_optional_managed_rootfs(
                 workspace_root,
                 arch,
                 Some(configured),

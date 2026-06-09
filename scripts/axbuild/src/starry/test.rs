@@ -521,7 +521,7 @@ impl Starry {
             );
         }
         let default_rootfs_path =
-            crate::rootfs::store::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
+            crate::image::rootfs::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
         self.app.set_debug_mode(request.debug)?;
 
         let total = cases.len();
@@ -807,7 +807,7 @@ impl Starry {
                 )
                 .await?;
             } else {
-                crate::rootfs::store::ensure_optional_managed_rootfs(
+                crate::image::rootfs::ensure_optional_managed_rootfs(
                     self.app.workspace_root(),
                     &request.arch,
                     Some(rootfs_path),
@@ -830,7 +830,7 @@ impl Starry {
     }
 
     fn qemu_case_managed_rootfs_paths(workspace_root: &Path, qemu: &QemuConfig) -> Vec<PathBuf> {
-        let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
+        let managed_rootfs_dir = crate::image::rootfs::rootfs_dir(workspace_root);
         crate::rootfs::qemu::drive_file_paths(qemu)
             .into_iter()
             .filter(|path| path.starts_with(&managed_rootfs_dir))

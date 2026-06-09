@@ -15,7 +15,7 @@ use anyhow::anyhow;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Axvisor, build};
-use crate::{context::ResolvedAxvisorRequest, rootfs};
+use crate::{context::ResolvedAxvisorRequest, image::rootfs as image_rootfs, rootfs};
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
     let request = axvisor.prepare_request(
@@ -27,7 +27,7 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
     axvisor.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request)?;
     let explicit_rootfs = args.rootfs.map(|rootfs| {
-        crate::rootfs::store::resolve_explicit_rootfs(
+        crate::image::rootfs::resolve_explicit_rootfs(
             axvisor.app.workspace_root(),
             &request.arch,
             rootfs,
@@ -76,7 +76,7 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = managed_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    rootfs::store::ensure_optional_managed_rootfs(
+    image_rootfs::ensure_optional_managed_rootfs(
         workspace_root,
         &request.arch,
         rootfs_path.as_deref(),
@@ -108,7 +108,7 @@ pub(crate) fn qemu_rootfs_path(
 
     infer_rootfs_path(&request.vmconfigs)?
         .map(Ok)
-        .unwrap_or_else(|| rootfs::store::default_rootfs_path(workspace_root, &request.arch))
+        .unwrap_or_else(|| image_rootfs::default_rootfs_path(workspace_root, &request.arch))
 }
 
 /// Patches a QEMU config with a concrete Axvisor rootfs path.
@@ -127,14 +127,14 @@ pub(crate) fn managed_rootfs_path(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<Option<PathBuf>> {
     if let Some(explicit_rootfs) = explicit_rootfs {
-        if explicit_rootfs.starts_with(rootfs::store::rootfs_dir(workspace_root)) {
+        if explicit_rootfs.starts_with(image_rootfs::rootfs_dir(workspace_root)) {
             return Ok(Some(explicit_rootfs.to_path_buf()));
         }
         return Ok(None);
     }
 
     if infer_rootfs_path(&request.vmconfigs)?.is_none() {
-        return Ok(Some(rootfs::store::default_rootfs_path(
+        return Ok(Some(image_rootfs::default_rootfs_path(
             workspace_root,
             &request.arch,
         )?));

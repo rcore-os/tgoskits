@@ -1,14 +1,15 @@
 use std::{
     fmt, fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{StatusCode, header};
+use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
 const DOWNLOAD_LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60 * 2);
@@ -45,7 +46,56 @@ pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::R
         .with_context(|| format!("failed to read response body from {url}"))
 }
 
+#[cfg(test)]
 pub(crate) async fn download_file(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let _lock = acquire_path_lock(path).await?;
+    download_file_with_retries(client, url, path).await
+}
+
+pub(crate) async fn download_file_verified_sha256(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    let _lock = acquire_path_lock(path).await?;
+    if path.exists() {
+        match verify_file_sha256(path, expected_sha256) {
+            Ok(true) => {
+                println!("file already exists and passed checksum verification");
+                return Ok(());
+            }
+            Ok(false) => {
+                println!("existing file checksum mismatch, re-downloading...");
+            }
+            Err(err) => {
+                println!("failed to verify existing file: {err}, re-downloading...");
+            }
+        }
+        tokio_fs::remove_file(path)
+            .await
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+
+    download_file_with_retries(client, url, path).await?;
+    match verify_file_sha256(path, expected_sha256) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let _ = tokio_fs::remove_file(path).await;
+            bail!("downloaded file checksum mismatch for {url}");
+        }
+        Err(err) => {
+            let _ = tokio_fs::remove_file(path).await;
+            Err(err)
+        }
+    }
+}
+
+async fn download_file_with_retries(
     client: &reqwest::Client,
     url: &str,
     path: &Path,
@@ -69,13 +119,35 @@ pub(crate) async fn download_file(
     unreachable!("download retry loop always returns")
 }
 
+pub(crate) fn file_sha256(path: &Path) -> anyhow::Result<String> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(crate) fn verify_file_sha256(path: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
+    Ok(file_sha256(path)? == expected_sha256)
+}
+
 async fn download_file_inner(
     client: &reqwest::Client,
     url: &str,
     path: &Path,
     retry_on_invalid_range: bool,
 ) -> anyhow::Result<()> {
-    let _lock = acquire_path_lock(path).await?;
     let part_path = part_path(path);
     let resume_from = tokio_fs::metadata(&part_path)
         .await
@@ -95,7 +167,6 @@ async fn download_file_inner(
         let status = response.status;
         if retry_on_invalid_range && resume_from > 0 && status == StatusCode::RANGE_NOT_SATISFIABLE
         {
-            drop(_lock);
             tokio_fs::remove_file(&part_path).await.with_context(|| {
                 format!("failed to remove invalid partial {}", part_path.display())
             })?;
@@ -162,7 +233,6 @@ async fn download_file_inner(
 
     let status = response.status();
     if retry_on_invalid_range && resume_from > 0 && status == StatusCode::RANGE_NOT_SATISFIABLE {
-        drop(_lock);
         tokio_fs::remove_file(&part_path)
             .await
             .with_context(|| format!("failed to remove invalid partial {}", part_path.display()))?;
@@ -476,6 +546,10 @@ pub(crate) mod test_support {
         register_bytes(path, body)
     }
 
+    pub(crate) fn register_text_url(url: &str, body: Vec<u8>) -> MockHandle {
+        register_url(url, body, MockRangeMode::Ignore)
+    }
+
     pub(crate) fn register_download(
         path: &str,
         body: Vec<u8>,
@@ -581,7 +655,7 @@ pub(crate) mod test_support {
     }
 
     fn is_mock_url(url: &str) -> bool {
-        url.starts_with("mock://")
+        url.starts_with("mock://") || routes().lock().unwrap().contains_key(url)
     }
 
     fn route(url: &str) -> anyhow::Result<Arc<MockRoute>> {
@@ -595,6 +669,24 @@ pub(crate) mod test_support {
 
     fn routes() -> &'static Mutex<HashMap<String, Arc<MockRoute>>> {
         ROUTES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn register_url(url: &str, body: Vec<u8>, range_mode: MockRangeMode) -> MockHandle {
+        let route = Arc::new(MockRoute {
+            body,
+            range_mode,
+            failing_statuses: Mutex::new(VecDeque::new()),
+            requests: AtomicUsize::new(0),
+            last_range_header: Mutex::new(None),
+        });
+        routes()
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), route.clone());
+        MockHandle {
+            url: url.to_string(),
+            route,
+        }
     }
 }
 

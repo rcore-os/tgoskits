@@ -19,7 +19,8 @@ use super::{Starry, apk, build};
 pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, patch_rootfs};
 use crate::{
     context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
-    rootfs::{inject, store},
+    image::rootfs as image_rootfs,
+    rootfs::inject,
     test::qemu as qemu_test,
 };
 
@@ -50,7 +51,7 @@ pub(super) async fn qemu_with_explicit_rootfs(
     request: ResolvedStarryRequest,
     rootfs: PathBuf,
 ) -> anyhow::Result<()> {
-    let rootfs = crate::rootfs::store::resolve_explicit_rootfs(
+    let rootfs = crate::image::rootfs::resolve_explicit_rootfs(
         starry.app.workspace_root(),
         &request.arch,
         rootfs,
@@ -133,7 +134,7 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
-    let rootfs = store::ensure_rootfs_for_arch(workspace_root, arch).await?;
+    let rootfs = image_rootfs::ensure_rootfs_for_arch(workspace_root, arch).await?;
     let _lock = crate::support::download::acquire_path_lock(&rootfs).await?;
     ensure_apk_region_in_rootfs(&rootfs)?;
     Ok(rootfs)
@@ -146,7 +147,8 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    store::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path)).await
+    image_rootfs::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path))
+        .await
 }
 
 pub(crate) fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
@@ -266,7 +268,7 @@ pub(crate) fn qemu_rootfs_path(
         return Ok(explicit.to_path_buf());
     }
 
-    store::default_rootfs_path(workspace_root, &request.arch)
+    image_rootfs::default_rootfs_path(workspace_root, &request.arch)
 }
 
 /// Patches a QEMU config with a concrete Starry rootfs path.

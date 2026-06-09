@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml";
 pub const DEFAULT_FALLBACK_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.25.toml";
+    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.6.toml";
 pub const IMAGE_CONFIG_FILENAME: &str = ".image.toml";
 const DEFAULT_AUTO_SYNC_THRESHOLD: u64 = 60 * 60 * 24 * 7;
-const LOCAL_STORAGE_ENV: &str = "AXVISOR_IMAGE_LOCAL_STORAGE";
+const LOCAL_STORAGE_ENV: &str = "TGOS_IMAGE_LOCAL_STORAGE";
+const FALLBACK_REGISTRY_ENV: &str = "TGOS_IMAGE_REGISTRY_FALLBACK_URL";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ImageConfig {
@@ -26,7 +27,7 @@ pub struct ImageConfig {
 impl ImageConfig {
     pub fn new_default() -> Self {
         Self {
-            local_storage: std::env::temp_dir().join(".axvisor-images"),
+            local_storage: std::env::temp_dir().join(".tgos-images"),
             registry: DEFAULT_REGISTRY_URL.to_string(),
             auto_sync: true,
             auto_sync_threshold: DEFAULT_AUTO_SYNC_THRESHOLD,
@@ -49,9 +50,7 @@ impl ImageConfig {
             toml::from_str(&s).map_err(|e| anyhow!("Invalid image config file: {e}"))?
         };
 
-        if let Ok(local_storage) = std::env::var(LOCAL_STORAGE_ENV)
-            && !local_storage.trim().is_empty()
-        {
+        if let Some(local_storage) = non_empty_env(LOCAL_STORAGE_ENV) {
             config.local_storage = PathBuf::from(local_storage);
         }
 
@@ -66,8 +65,14 @@ impl ImageConfig {
 }
 
 pub(crate) fn fallback_registry_url() -> String {
-    std::env::var("AXVISOR_REGISTRY_FALLBACK_URL")
-        .unwrap_or_else(|_| DEFAULT_FALLBACK_REGISTRY_URL.to_string())
+    non_empty_env(FALLBACK_REGISTRY_ENV)
+        .unwrap_or_else(|| DEFAULT_FALLBACK_REGISTRY_URL.to_string())
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -141,5 +146,13 @@ mod tests {
         let config = ImageConfig::read_config(dir.path()).unwrap();
 
         assert_eq!(config.local_storage, override_path);
+    }
+
+    #[test]
+    fn fallback_registry_url_prefers_new_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = TempEnvVar::set(FALLBACK_REGISTRY_ENV, "https://example.com/new.toml");
+
+        assert_eq!(fallback_registry_url(), "https://example.com/new.toml");
     }
 }
