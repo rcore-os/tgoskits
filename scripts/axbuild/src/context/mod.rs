@@ -556,18 +556,40 @@ fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
 fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Some(commit) = pinned_qemu_lvz_commit(workspace_root) {
-        let cache_root = env::var_os("AXVISOR_QEMU_LVZ_CACHE")
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/axvisor/qemu-lvz"))
-            });
-        if let Some(cache_root) = cache_root {
+    let cache_root = env::var_os("AXVISOR_QEMU_LVZ_CACHE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/axvisor/qemu-lvz"))
+        });
+    if let Some(cache_root) = cache_root {
+        candidates.push(cache_root.join("latest").join("bin"));
+        if let Some(commit) = pinned_qemu_lvz_commit(workspace_root) {
             candidates.push(cache_root.join(commit).join("bin"));
         }
+        candidates.extend(cached_loongarch_qemu_dirs(&cache_root));
     }
 
     candidates
+}
+
+fn cached_loongarch_qemu_dirs(cache_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(cache_root) else {
+        return Vec::new();
+    };
+
+    let mut dirs: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.file_name().is_some_and(|name| name == "src") {
+                return None;
+            }
+            let bin_dir = path.join("bin");
+            is_loongarch_qemu_dir(&bin_dir).then_some(bin_dir)
+        })
+        .collect();
+    dirs.sort();
+    dirs
 }
 
 fn pinned_qemu_lvz_commit(workspace_root: &Path) -> Option<String> {

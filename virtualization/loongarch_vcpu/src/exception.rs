@@ -1,5 +1,8 @@
 use alloc::boxed::Box;
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ax_errno::AxResult;
 use axvcpu::{AxVCpuExitReason, GuestPhysAddr, MappingFlags, VCpuId, VMId};
@@ -27,6 +30,47 @@ const INT_IPI: usize = 12;
 const TIMER_BIT: usize = 1 << INT_TIMER;
 const IPI_BIT: usize = 1 << INT_IPI;
 const HWI_MASK: usize = ((1 << (INT_HWI7 + 1)) - 1) & !((1 << INT_HWI0) - 1);
+const CPUCFG2_CRYPTO: usize = 1 << 9;
+const CSR_CRMD: usize = 0x0;
+const CSR_PRMD: usize = 0x1;
+const CSR_EUEN: usize = 0x2;
+const CSR_MISC: usize = 0x3;
+const CSR_ECFG: usize = 0x4;
+const CSR_ESTAT: usize = 0x5;
+const CSR_ERA: usize = 0x6;
+const CSR_BADV: usize = 0x7;
+const CSR_BADI: usize = 0x8;
+const CSR_EENTRY: usize = 0xc;
+const CSR_TLBIDX: usize = 0x10;
+const CSR_TLBEHI: usize = 0x11;
+const CSR_TLBELO0: usize = 0x12;
+const CSR_TLBELO1: usize = 0x13;
+const CSR_ASID: usize = 0x18;
+const CSR_PGDL: usize = 0x19;
+const CSR_PGDH: usize = 0x1a;
+const CSR_PGD: usize = 0x1b;
+const CSR_PWCL: usize = 0x1c;
+const CSR_PWCH: usize = 0x1d;
+const CSR_STLBPS: usize = 0x1e;
+const CSR_RAVCFG: usize = 0x1f;
+const CSR_CPUID: usize = 0x20;
+const CSR_PRCFG1: usize = 0x21;
+const CSR_PRCFG2: usize = 0x22;
+const CSR_PRCFG3: usize = 0x23;
+const CSR_TID: usize = 0x40;
+const CSR_LLBCTL: usize = 0x60;
+const CSR_TLBRENTRY: usize = 0x88;
+const CSR_TLBRBADV: usize = 0x89;
+const CSR_TLBRERA: usize = 0x8a;
+const CSR_TLBRSAVE: usize = 0x8b;
+const CSR_TLBRELO0: usize = 0x8c;
+const CSR_TLBRELO1: usize = 0x8d;
+const CSR_TLBREHI: usize = 0x8e;
+const CSR_TLBRPRMD: usize = 0x8f;
+const CSR_DMW0: usize = 0x180;
+const CSR_DMW1: usize = 0x181;
+const CSR_DMW2: usize = 0x182;
+const CSR_DMW3: usize = 0x183;
 const CSR_TICLR_TI: usize = 0x1;
 const CSR_TCFG_EN: usize = 1 << 0;
 const CSR_TCFG_PERIODIC: usize = 1 << 1;
@@ -43,9 +87,29 @@ const CSR_TLBREHI_PS_MASK: usize = 0x3f;
 const CSR_TLBREHI_VPPN_MASK: usize = 0x0000_ffff_ffff_e000;
 const DEFAULT_TLB_PAGE_SHIFT: usize = 12;
 const GUEST_RAM_START: usize = 0x0008_0000;
+const GUEST_HIGH_RAM_START: usize = 0x8000_0000;
+const GUEST_HIGH_RAM_END: usize = 0xb000_0000;
 const QEMU_VIRT_MMIO_START: usize = 0x1000_0000;
 const QEMU_VIRT_MMIO_END: usize = 0x8000_0000;
 const GUEST_RAM_END: usize = QEMU_VIRT_MMIO_START;
+const EIOINTC_ISR_BASE: usize = 0x1800;
+const EIOINTC_ISR_REG_COUNT: usize = 4;
+const EIOINTC_ISR_END: usize = EIOINTC_ISR_BASE + EIOINTC_ISR_REG_COUNT * 8;
+const MAX_IOCSR_VMS: usize = 16;
+const MAX_IOCSR_CPUS: usize = 16;
+const LOONGARCH_IOCSR_IPI_STATUS: usize = 0x1000;
+const LOONGARCH_IOCSR_IPI_EN: usize = 0x1004;
+const LOONGARCH_IOCSR_IPI_SET: usize = 0x1008;
+const LOONGARCH_IOCSR_IPI_CLEAR: usize = 0x100c;
+const LOONGARCH_IOCSR_IPI_SEND: usize = 0x1040;
+const IOCSR_SEND_CPU_SHIFT: usize = 16;
+const IOCSR_SEND_CPU_MASK: usize = 0x3ff;
+const IOCSR_IPI_ACTION_MASK: usize = 0x1f;
+
+static IOCSR_IPI_STATUS_WORDS: [AtomicUsize; MAX_IOCSR_VMS * MAX_IOCSR_CPUS] =
+    [const { AtomicUsize::new(0) }; MAX_IOCSR_VMS * MAX_IOCSR_CPUS];
+static IOCSR_IPI_ENABLE_WORDS: [AtomicUsize; MAX_IOCSR_VMS * MAX_IOCSR_CPUS] =
+    [const { AtomicUsize::new(0) }; MAX_IOCSR_VMS * MAX_IOCSR_CPUS];
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +182,92 @@ fn is_guest_direct_mapped_va(addr: usize) -> bool {
 
 fn is_known_guest_physical_addr(addr: usize) -> bool {
     (GUEST_RAM_START..GUEST_RAM_END).contains(&addr)
+        || (GUEST_HIGH_RAM_START..GUEST_HIGH_RAM_END).contains(&addr)
         || (QEMU_VIRT_MMIO_START..QEMU_VIRT_MMIO_END).contains(&addr)
+}
+
+fn is_eiointc_isr_addr(addr: usize) -> bool {
+    (EIOINTC_ISR_BASE..EIOINTC_ISR_END).contains(&addr) && addr.is_multiple_of(8)
+}
+
+fn host_eiointc_has_pending() -> bool {
+    for reg in 0..EIOINTC_ISR_REG_COUNT {
+        let addr = EIOINTC_ISR_BASE + reg * 8;
+        let value: usize;
+        unsafe {
+            core::arch::asm!("iocsrrd.d {}, {}", out(reg) value, in(reg) addr);
+        }
+        if value != 0 {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn iocsr_vcpu_index(vm_id: VMId, vcpu_id: VCpuId) -> Option<usize> {
+    if vm_id < MAX_IOCSR_VMS && vcpu_id < MAX_IOCSR_CPUS {
+        Some(vm_id * MAX_IOCSR_CPUS + vcpu_id)
+    } else {
+        None
+    }
+}
+
+fn read_guest_iocsr(vm_id: VMId, vcpu_id: VCpuId, addr: usize) -> Option<usize> {
+    let index = iocsr_vcpu_index(vm_id, vcpu_id)?;
+    match addr {
+        LOONGARCH_IOCSR_IPI_STATUS => Some(IOCSR_IPI_STATUS_WORDS[index].load(Ordering::Acquire)),
+        LOONGARCH_IOCSR_IPI_EN => Some(IOCSR_IPI_ENABLE_WORDS[index].load(Ordering::Acquire)),
+        LOONGARCH_IOCSR_IPI_SET | LOONGARCH_IOCSR_IPI_CLEAR | LOONGARCH_IOCSR_IPI_SEND => Some(0),
+        _ => None,
+    }
+}
+
+fn write_guest_iocsr(
+    ctx: &mut LoongArchContextFrame,
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+    addr: usize,
+    value: usize,
+) -> Option<AxVCpuExitReason> {
+    let index = iocsr_vcpu_index(vm_id, vcpu_id)?;
+    match addr {
+        LOONGARCH_IOCSR_IPI_STATUS => Some(AxVCpuExitReason::Nothing),
+        LOONGARCH_IOCSR_IPI_EN => {
+            IOCSR_IPI_ENABLE_WORDS[index].store(value, Ordering::Release);
+            Some(AxVCpuExitReason::Nothing)
+        }
+        LOONGARCH_IOCSR_IPI_SET => {
+            IOCSR_IPI_STATUS_WORDS[index].fetch_or(value, Ordering::AcqRel);
+            ctx.gcsr_estat |= IPI_BIT;
+            Some(AxVCpuExitReason::Nothing)
+        }
+        LOONGARCH_IOCSR_IPI_CLEAR => {
+            let new_status =
+                IOCSR_IPI_STATUS_WORDS[index].fetch_and(!value, Ordering::AcqRel) & !value;
+            if new_status == 0 {
+                ctx.gcsr_estat &= !IPI_BIT;
+            }
+            Some(AxVCpuExitReason::Nothing)
+        }
+        LOONGARCH_IOCSR_IPI_SEND => {
+            let target_cpu = (value >> IOCSR_SEND_CPU_SHIFT) & IOCSR_SEND_CPU_MASK;
+            let action = value & IOCSR_IPI_ACTION_MASK;
+            if target_cpu == vcpu_id {
+                IOCSR_IPI_STATUS_WORDS[index].fetch_or(1usize << action, Ordering::AcqRel);
+                ctx.gcsr_estat |= IPI_BIT;
+            } else {
+                log::debug!(
+                    "LoongArch guest IOCSR IPI_SEND ignored for unsupported target_cpu={} \
+                     action={}",
+                    target_cpu,
+                    action
+                );
+            }
+            Some(AxVCpuExitReason::Nothing)
+        }
+        _ => None,
+    }
 }
 
 fn should_inject_guest_virtual_fault(
@@ -260,7 +409,7 @@ fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReas
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
     let cpucfg_idx = ctx.x[rj];
-    let value = if cpucfg_idx > 20 {
+    let mut value = if cpucfg_idx > 20 {
         0
     } else {
         let result: usize;
@@ -269,6 +418,9 @@ fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReas
         }
         result
     };
+    if cpucfg_idx == 2 {
+        value &= !CPUCFG2_CRYPTO;
+    }
     ctx.set_gpr(rd, value);
     advance_guest_pc(ctx);
     AxVCpuExitReason::Nothing
@@ -285,19 +437,7 @@ fn emulate_csrx(
     let rj = extract_field(ins, 5, 5);
     let csr = extract_field(ins, 10, 14);
 
-    match csr {
-        CSR_TCFG | CSR_TVAL | CSR_TICLR => {
-            emulate_timer_csr(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer_token)
-        }
-        _ => {
-            match rj {
-                0 => log::info!("LoongArch GSPR csrrd emulation: csr={:#x}", csr),
-                _ => log::info!("LoongArch GSPR csrwr/csrxchg emulation: csr={:#x}", csr),
-            }
-            ctx.set_gpr(rd, 0);
-        }
-    }
-
+    emulate_guest_csr(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer_token);
     advance_guest_pc(ctx);
     AxVCpuExitReason::Nothing
 }
@@ -307,12 +447,146 @@ const CSR_TCFG: usize = 0x41;
 const CSR_TVAL: usize = 0x42;
 const CSR_TICLR: usize = 0x44;
 
-fn read_guest_timer_csr(ctx: &LoongArchContextFrame, csr: usize) -> usize {
+fn read_guest_csr(ctx: &LoongArchContextFrame, csr: usize) -> usize {
     match csr {
+        CSR_CRMD => ctx.gcsr_crmd,
+        CSR_PRMD => ctx.gcsr_prmd,
+        CSR_EUEN => ctx.gcsr_euen,
+        CSR_MISC => ctx.gcsr_misc,
+        CSR_ECFG => ctx.gcsr_ectl,
+        CSR_ESTAT => ctx.gcsr_estat,
+        CSR_ERA => ctx.gcsr_era,
+        CSR_BADV => ctx.gcsr_badv,
+        CSR_BADI => ctx.gcsr_badi,
+        CSR_EENTRY => ctx.gcsr_eentry,
+        CSR_TLBIDX => ctx.gcsr_tlbidx,
+        CSR_TLBEHI => ctx.gcsr_tlbehi,
+        CSR_TLBELO0 => ctx.gcsr_tlbelo0,
+        CSR_TLBELO1 => ctx.gcsr_tlbelo1,
+        CSR_ASID => ctx.gcsr_asid,
+        CSR_PGDL => ctx.gcsr_pgdl,
+        CSR_PGDH => ctx.gcsr_pgdh,
+        CSR_PGD => guest_pgd(ctx),
+        CSR_PWCL => ctx.gcsr_pwcl,
+        CSR_PWCH => ctx.gcsr_pwch,
+        CSR_STLBPS => ctx.gcsr_stlbps,
+        CSR_RAVCFG => ctx.gcsr_ravcfg,
+        CSR_CPUID => ctx.gcsr_cpuid,
+        CSR_PRCFG1 => ctx.gcsr_prcfg1,
+        CSR_PRCFG2 => ctx.gcsr_prcfg2,
+        CSR_PRCFG3 => ctx.gcsr_prcfg3,
+        0x30 => ctx.gcsr_save0,
+        0x31 => ctx.gcsr_save1,
+        0x32 => ctx.gcsr_save2,
+        0x33 => ctx.gcsr_save3,
+        0x34 => ctx.gcsr_save4,
+        0x35 => ctx.gcsr_save5,
+        0x36 => ctx.gcsr_save6,
+        0x37 => ctx.gcsr_save7,
+        0x38 => ctx.gcsr_save8,
+        0x39 => ctx.gcsr_save9,
+        0x3a => ctx.gcsr_save10,
+        0x3b => ctx.gcsr_save11,
+        0x3c => ctx.gcsr_save12,
+        0x3d => ctx.gcsr_save13,
+        0x3e => ctx.gcsr_save14,
+        0x3f => ctx.gcsr_save15,
+        CSR_TID => ctx.gcsr_tid,
         CSR_TCFG => ctx.gcsr_tcfg,
         CSR_TVAL => ctx.gcsr_tval,
         CSR_TICLR => ctx.gcsr_ticlr,
+        CSR_LLBCTL => ctx.gcsr_llbctl,
+        CSR_TLBRENTRY => ctx.gcsr_tlbrentry,
+        CSR_TLBRBADV => ctx.gcsr_tlbrbadv,
+        CSR_TLBRERA => ctx.gcsr_tlbrera,
+        CSR_TLBRSAVE => ctx.gcsr_tlbrsave,
+        CSR_TLBRELO0 => ctx.gcsr_tlbrelo0,
+        CSR_TLBRELO1 => ctx.gcsr_tlbrelo1,
+        CSR_TLBREHI => ctx.gcsr_tlbrehi,
+        CSR_TLBRPRMD => ctx.gcsr_tlbrprmd,
+        CSR_DMW0 => ctx.gcsr_dmw0,
+        CSR_DMW1 => ctx.gcsr_dmw1,
+        CSR_DMW2 => ctx.gcsr_dmw2,
+        CSR_DMW3 => ctx.gcsr_dmw3,
         _ => 0,
+    }
+}
+
+fn write_guest_csr(
+    ctx: &mut LoongArchContextFrame,
+    csr: usize,
+    value: usize,
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+    guest_timer_token: &mut Option<usize>,
+) {
+    match csr {
+        CSR_CRMD => ctx.gcsr_crmd = value,
+        CSR_PRMD => ctx.gcsr_prmd = value,
+        CSR_EUEN => ctx.gcsr_euen = value,
+        CSR_MISC => ctx.gcsr_misc = value,
+        CSR_ECFG => ctx.gcsr_ectl = value,
+        CSR_ESTAT => {
+            ctx.gcsr_estat = (ctx.gcsr_estat & !0x3) | (value & 0x3);
+        }
+        CSR_ERA => ctx.gcsr_era = value,
+        CSR_BADV => ctx.gcsr_badv = value,
+        CSR_BADI => ctx.gcsr_badi = value,
+        CSR_EENTRY => ctx.gcsr_eentry = value,
+        CSR_TLBIDX => ctx.gcsr_tlbidx = value,
+        CSR_TLBEHI => ctx.gcsr_tlbehi = value,
+        CSR_TLBELO0 => ctx.gcsr_tlbelo0 = value,
+        CSR_TLBELO1 => ctx.gcsr_tlbelo1 = value,
+        CSR_ASID => ctx.gcsr_asid = value,
+        CSR_PGDL => ctx.gcsr_pgdl = value,
+        CSR_PGDH => ctx.gcsr_pgdh = value,
+        CSR_PGD => ctx.gcsr_pgd = value,
+        CSR_PWCL => ctx.gcsr_pwcl = value,
+        CSR_PWCH => ctx.gcsr_pwch = value,
+        CSR_STLBPS => ctx.gcsr_stlbps = value,
+        CSR_RAVCFG => ctx.gcsr_ravcfg = value,
+        CSR_CPUID => ctx.gcsr_cpuid = value,
+        CSR_PRCFG1 => ctx.gcsr_prcfg1 = value,
+        CSR_PRCFG2 => ctx.gcsr_prcfg2 = value,
+        CSR_PRCFG3 => ctx.gcsr_prcfg3 = value,
+        0x30 => ctx.gcsr_save0 = value,
+        0x31 => ctx.gcsr_save1 = value,
+        0x32 => ctx.gcsr_save2 = value,
+        0x33 => ctx.gcsr_save3 = value,
+        0x34 => ctx.gcsr_save4 = value,
+        0x35 => ctx.gcsr_save5 = value,
+        0x36 => ctx.gcsr_save6 = value,
+        0x37 => ctx.gcsr_save7 = value,
+        0x38 => ctx.gcsr_save8 = value,
+        0x39 => ctx.gcsr_save9 = value,
+        0x3a => ctx.gcsr_save10 = value,
+        0x3b => ctx.gcsr_save11 = value,
+        0x3c => ctx.gcsr_save12 = value,
+        0x3d => ctx.gcsr_save13 = value,
+        0x3e => ctx.gcsr_save14 = value,
+        0x3f => ctx.gcsr_save15 = value,
+        CSR_TID => ctx.gcsr_tid = value,
+        CSR_TCFG | CSR_TVAL | CSR_TICLR => {
+            write_guest_timer_csr(ctx, csr, value, vm_id, vcpu_id, guest_timer_token)
+        }
+        CSR_LLBCTL => ctx.gcsr_llbctl = value,
+        CSR_TLBRENTRY => ctx.gcsr_tlbrentry = value,
+        CSR_TLBRBADV => ctx.gcsr_tlbrbadv = value,
+        CSR_TLBRERA => ctx.gcsr_tlbrera = value,
+        CSR_TLBRSAVE => ctx.gcsr_tlbrsave = value,
+        CSR_TLBRELO0 => ctx.gcsr_tlbrelo0 = value,
+        CSR_TLBRELO1 => ctx.gcsr_tlbrelo1 = value,
+        CSR_TLBREHI => ctx.gcsr_tlbrehi = value,
+        CSR_TLBRPRMD => ctx.gcsr_tlbrprmd = value,
+        CSR_DMW0 => ctx.gcsr_dmw0 = value,
+        CSR_DMW1 => ctx.gcsr_dmw1 = value,
+        CSR_DMW2 => ctx.gcsr_dmw2 = value,
+        CSR_DMW3 => ctx.gcsr_dmw3 = value,
+        _ => log::debug!(
+            "LoongArch GSPR CSR write ignored: csr={:#x}, value={:#x}",
+            csr,
+            value
+        ),
     }
 }
 
@@ -391,7 +665,7 @@ fn write_guest_timer_csr(
     }
 }
 
-fn emulate_timer_csr(
+fn emulate_guest_csr(
     ctx: &mut LoongArchContextFrame,
     rd: usize,
     rj: usize,
@@ -400,7 +674,7 @@ fn emulate_timer_csr(
     vcpu_id: VCpuId,
     guest_timer_token: &mut Option<usize>,
 ) {
-    let old_value = read_guest_timer_csr(ctx, csr);
+    let old_value = read_guest_csr(ctx, csr);
     let mut return_value = old_value;
 
     if rj != 0 {
@@ -411,15 +685,7 @@ fn emulate_timer_csr(
             return_value &= mask;
             (old_value & !mask) | (ctx.x[rd] & mask)
         };
-        write_guest_timer_csr(ctx, csr, new_value, vm_id, vcpu_id, guest_timer_token);
-        log::debug!(
-            "Timer CSR emulation: csr={:#x} <- {:#x} (old={:#x})",
-            csr,
-            new_value,
-            old_value
-        );
-    } else {
-        log::debug!("Timer CSR emulation: csr={:#x} -> {:#x}", csr, old_value);
+        write_guest_csr(ctx, csr, new_value, vm_id, vcpu_id, guest_timer_token);
     }
 
     ctx.set_gpr(rd, return_value);
@@ -449,7 +715,12 @@ fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason
     AxVCpuExitReason::Idle
 }
 
-fn emulate_iocsr(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {
+fn emulate_iocsr(
+    ctx: &mut LoongArchContextFrame,
+    ins: usize,
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+) -> AxVCpuExitReason {
     let ty = extract_field(ins, 10, 3);
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
@@ -457,45 +728,95 @@ fn emulate_iocsr(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReaso
 
     match ty {
         0 => {
-            let value: usize;
-            unsafe {
-                core::arch::asm!("iocsrrd.b {}, {}", out(reg) value, in(reg) rj_value);
-            }
+            let value = read_guest_iocsr(vm_id, vcpu_id, rj_value).unwrap_or_else(|| {
+                let value: usize;
+                unsafe {
+                    core::arch::asm!("iocsrrd.b {}, {}", out(reg) value, in(reg) rj_value);
+                }
+                value
+            });
             ctx.set_gpr(rd, (value as i8) as isize as usize);
         }
         1 => {
-            let value: usize;
-            unsafe {
-                core::arch::asm!("iocsrrd.h {}, {}", out(reg) value, in(reg) rj_value);
-            }
+            let value = read_guest_iocsr(vm_id, vcpu_id, rj_value).unwrap_or_else(|| {
+                let value: usize;
+                unsafe {
+                    core::arch::asm!("iocsrrd.h {}, {}", out(reg) value, in(reg) rj_value);
+                }
+                value
+            });
             ctx.set_gpr(rd, (value as i16) as isize as usize);
         }
         2 => {
-            let value: usize;
-            unsafe {
-                core::arch::asm!("iocsrrd.w {}, {}", out(reg) value, in(reg) rj_value);
-            }
+            let value = read_guest_iocsr(vm_id, vcpu_id, rj_value).unwrap_or_else(|| {
+                let value: usize;
+                unsafe {
+                    core::arch::asm!("iocsrrd.w {}, {}", out(reg) value, in(reg) rj_value);
+                }
+                value
+            });
             ctx.set_gpr(rd, (value as i32) as isize as usize);
         }
         3 => {
-            let value: usize;
-            unsafe {
-                core::arch::asm!("iocsrrd.d {}, {}", out(reg) value, in(reg) rj_value);
-            }
+            let value = read_guest_iocsr(vm_id, vcpu_id, rj_value).unwrap_or_else(|| {
+                let value: usize;
+                unsafe {
+                    core::arch::asm!("iocsrrd.d {}, {}", out(reg) value, in(reg) rj_value);
+                }
+                value
+            });
             ctx.set_gpr(rd, value);
         }
-        4 => unsafe {
-            core::arch::asm!("iocsrwr.b {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
-        },
-        5 => unsafe {
-            core::arch::asm!("iocsrwr.h {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
-        },
-        6 => unsafe {
-            core::arch::asm!("iocsrwr.w {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
-        },
-        7 => unsafe {
-            core::arch::asm!("iocsrwr.d {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
-        },
+        4 => {
+            if let Some(reason) =
+                write_guest_iocsr(ctx, vm_id, vcpu_id, rj_value, ctx.x[rd] as u8 as usize)
+            {
+                advance_guest_pc(ctx);
+                return reason;
+            } else {
+                unsafe {
+                    core::arch::asm!("iocsrwr.b {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
+                }
+            }
+        }
+        5 => {
+            if let Some(reason) =
+                write_guest_iocsr(ctx, vm_id, vcpu_id, rj_value, ctx.x[rd] as u16 as usize)
+            {
+                advance_guest_pc(ctx);
+                return reason;
+            } else {
+                unsafe {
+                    core::arch::asm!("iocsrwr.h {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
+                }
+            }
+        }
+        6 => {
+            if let Some(reason) =
+                write_guest_iocsr(ctx, vm_id, vcpu_id, rj_value, ctx.x[rd] as u32 as usize)
+            {
+                advance_guest_pc(ctx);
+                return reason;
+            } else {
+                unsafe {
+                    core::arch::asm!("iocsrwr.w {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
+                }
+            }
+        }
+        7 => {
+            if let Some(reason) = write_guest_iocsr(ctx, vm_id, vcpu_id, rj_value, ctx.x[rd]) {
+                advance_guest_pc(ctx);
+                return reason;
+            } else {
+                let is_eiointc_complete = is_eiointc_isr_addr(rj_value);
+                unsafe {
+                    core::arch::asm!("iocsrwr.d {}, {}", in(reg) ctx.x[rd], in(reg) rj_value);
+                }
+                if is_eiointc_complete && !host_eiointc_has_pending() {
+                    ctx.gcsr_estat &= !HWI_MASK;
+                }
+            }
+        }
         _ => panic!("invalid LoongArch IOCSR opcode type: {ty}"),
     }
 
@@ -539,7 +860,7 @@ fn emulate_gspr(
         return emulate_csrx(ctx, ins, vm_id, vcpu_id, guest_timer_token);
     }
     if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
-        return emulate_iocsr(ctx, ins);
+        return emulate_iocsr(ctx, ins, vm_id, vcpu_id);
     }
 
     panic!(

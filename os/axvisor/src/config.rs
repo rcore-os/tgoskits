@@ -14,7 +14,10 @@
 
 use alloc::{format, sync::Arc};
 use core::alloc::Layout;
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxResult, ax_err_type};
@@ -39,7 +42,10 @@ use crate::images::ImageLoader;
 #[cfg(target_arch = "x86_64")]
 const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
@@ -133,7 +139,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    ))]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
@@ -200,7 +209,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         ));
     }
 
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    ))]
     if release_host_filesystem {
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
@@ -263,14 +275,20 @@ fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
     None
 }
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
     config.kernel.image_location.as_deref() == Some("fs")
         && (!config.devices.passthrough_devices.is_empty()
             || !config.devices.passthrough_addresses.is_empty())
 }
 
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "fs",
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
 }

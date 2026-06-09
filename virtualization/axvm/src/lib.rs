@@ -90,7 +90,10 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
 }
 
 /// Shut down ArceOS filesystems so guest passthrough can take ownership.
-#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "fs", feature = "host-fs"),
+    any(target_arch = "x86_64", target_arch = "loongarch64")
+))]
 pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
     host::arceos::shutdown_host_filesystems()
 }

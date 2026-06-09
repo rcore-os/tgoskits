@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Build and install the pinned QEMU-LVZ used by LoongArch64 AxVisor runs.
+# Build and install QEMU-LVZ used by LoongArch64 AxVisor runs.
 
 set -euo pipefail
 
@@ -16,12 +16,12 @@ fi
 source "$VERSION_FILE"
 
 : "${QEMU_LVZ_REPO:?missing QEMU_LVZ_REPO in $VERSION_FILE}"
-: "${QEMU_LVZ_COMMIT:?missing QEMU_LVZ_COMMIT in $VERSION_FILE}"
 : "${QEMU_LVZ_TARGET_LIST:?missing QEMU_LVZ_TARGET_LIST in $VERSION_FILE}"
 
 CACHE_ROOT="${AXVISOR_QEMU_LVZ_CACHE:-$HOME/.cache/axvisor/qemu-lvz}"
-SRC_DIR="$CACHE_ROOT/src/$QEMU_LVZ_COMMIT"
-INSTALL_DIR="$CACHE_ROOT/$QEMU_LVZ_COMMIT"
+VERSION_KEY="${QEMU_LVZ_COMMIT:-latest}"
+SRC_DIR="$CACHE_ROOT/src/$VERSION_KEY"
+INSTALL_DIR="$CACHE_ROOT/$VERSION_KEY"
 QEMU_BIN="$INSTALL_DIR/bin/qemu-system-loongarch64"
 PYTHON_VENV="$CACHE_ROOT/python-venv"
 
@@ -32,7 +32,7 @@ case "${1:-}" in
         cat <<EOF
 Usage: $0 [--print-path]
 
-Build and install the pinned QEMU-LVZ into:
+Build and install QEMU-LVZ into:
   $INSTALL_DIR
 
 Options:
@@ -102,7 +102,7 @@ prepare_python() {
 }
 
 if [[ -x "$QEMU_BIN" ]]; then
-    info "Pinned QEMU-LVZ already installed: $QEMU_BIN"
+    info "Cached QEMU-LVZ already installed: $QEMU_BIN"
 else
     base_python="$(host_python)" || {
         echo "[ERROR] python3 not found. Install python3 or set AXVISOR_QEMU_LVZ_PYTHON." >&2
@@ -113,12 +113,17 @@ else
     mkdir -p "$CACHE_ROOT/src"
 
     if [[ ! -d "$SRC_DIR/.git" ]]; then
-        info "Cloning QEMU-LVZ $QEMU_LVZ_COMMIT"
+        info "Cloning QEMU-LVZ $VERSION_KEY"
         git_run clone "$QEMU_LVZ_REPO" "$SRC_DIR"
     fi
 
-    git_run -C "$SRC_DIR" fetch --depth 1 origin "$QEMU_LVZ_COMMIT"
-    git_run -C "$SRC_DIR" checkout --detach "$QEMU_LVZ_COMMIT"
+    if [[ -n "${QEMU_LVZ_COMMIT:-}" ]]; then
+        git_run -C "$SRC_DIR" fetch --depth 1 origin "$QEMU_LVZ_COMMIT"
+        git_run -C "$SRC_DIR" checkout --detach "$QEMU_LVZ_COMMIT"
+    else
+        git_run -C "$SRC_DIR" fetch --depth 1 origin
+        git_run -C "$SRC_DIR" checkout --detach FETCH_HEAD
+    fi
 
     mkdir -p "$INSTALL_DIR"
 

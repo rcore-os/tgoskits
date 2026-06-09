@@ -426,6 +426,8 @@ impl AxVM {
                 crate::vcpu::AxVCpuSetupConfig {
                     passthrough_interrupt: passthrough,
                     passthrough_timer: passthrough,
+                    boot_args: inner_mut.config.cpu_config.boot_args,
+                    boot_stack_top: inner_mut.config.cpu_config.boot_stack_top,
                 }
             };
             #[cfg(not(any(

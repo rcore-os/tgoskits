@@ -23,6 +23,7 @@ const EFI_MEMORY_DESCRIPTOR_VERSION: u32 = 1;
 const EFI_LOADER_DATA: u32 = 2;
 const EFI_CONVENTIONAL_MEMORY: u32 = 7;
 const EFI_MEMORY_DESC_SIZE: usize = 40;
+const DMA_IDENTITY_RAM_END: usize = 0x1000_0000;
 
 pub fn setup_bootinfo(vm: AxVMRef, crate_config: &AxVMCrateConfig) -> AxResult {
     let bootargs = crate_config
@@ -61,7 +62,11 @@ pub fn setup_bootinfo(vm: AxVMRef, crate_config: &AxVMCrateConfig) -> AxResult {
 
     let vm_regions = vm.memory_regions();
     let regions = efi_memory_regions(&vm_regions, crate_config);
-    let map_size = regions.len() * EFI_MEMORY_DESC_SIZE;
+    let efi_region_count = regions
+        .iter()
+        .filter(|region| region.gpa.as_usize() < DMA_IDENTITY_RAM_END)
+        .count();
+    let map_size = efi_region_count * EFI_MEMORY_DESC_SIZE;
     let mut boot_memmap = Vec::new();
     write_u64(&mut boot_memmap, map_size as u64);
     write_u64(&mut boot_memmap, EFI_MEMORY_DESC_SIZE as u64);
@@ -71,10 +76,15 @@ pub fn setup_bootinfo(vm: AxVMRef, crate_config: &AxVMCrateConfig) -> AxResult {
     write_u64(&mut boot_memmap, map_size as u64);
     for region in &regions {
         let gpa = region.gpa.as_usize() as u64;
+        if region.gpa.as_usize() >= DMA_IDENTITY_RAM_END {
+            continue;
+        }
         let pages = (region.size() as u64).div_ceil(4096);
-        let mem_type = match region.gpa.as_usize() {
-            BOOTINFO_GPA | DTB_GPA => EFI_LOADER_DATA,
-            _ => EFI_CONVENTIONAL_MEMORY,
+        let mem_type = if region.gpa.as_usize() == BOOTINFO_GPA || region.gpa.as_usize() == DTB_GPA
+        {
+            EFI_LOADER_DATA
+        } else {
+            EFI_CONVENTIONAL_MEMORY
         };
         write_efi_memory_desc(&mut boot_memmap, gpa, pages, mem_type);
     }

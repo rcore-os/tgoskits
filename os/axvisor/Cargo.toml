@@ -62,6 +62,7 @@ log = "0.4"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
 fdt-parser = "0.4"
 hashbrown = "0.14"
+ruzstd = { version = "0.8", default-features = false, features = ["hash"] }
 
 # System dependent modules provided by ArceOS.
 ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }

@@ -21,24 +21,23 @@ entry_point = 0x0020_0000
 # The location of image: "memory" | "fs".
 image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "/guest/linux/qemu-loongarch64"
+kernel_path = "/guest/linux/linux-qemu"
 # The ELF LOAD paddr is used by the LoongArch loader; this is a fallback for flat images.
 kernel_load_addr = 0x0020_0000
 # The file path of the device tree blob (DTB).
-dtb_path = "/guest/linux/linux-rootfs-smp1.dtb"
+# When omitted, AxVisor generates a guest DTB from the host FDT.
+# dtb_path = "/guest/linux/linux-rootfs-smp1.dtb"
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x0010_0000
 # Kernel command line. Rootfs mode intentionally uses virtio-blk /dev/vda.
-cmdline = "root=/dev/vda rootfstype=ext4 rootwait rw init=/init console=ttyS0 earlycon=uart,mmio,0x1fe001e0 keep_bootcon nokaslr loglevel=8 ignore_loglevel pci=nomsi swiotlb=1024 initcall_blacklist=raid6_select_algo,ixgbe_init_module,i8042_init,inet6_init"
+cmdline = "root=/dev/vda rootfstype=ext4 rootwait rw init=/bin/sh console=ttyS0 earlycon=uart,mmio,0x1fe001e0 nokaslr loglevel=8 ignore_loglevel swiotlb=1024 initcall_blacklist=raid6_select_algo,ixgbe_init_module,i8042_init,inet6_init"
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
   [0x0008_0000, 0x0018_0000, 0x7, 2], # Low bootinfo/DTB RAM 512K-2M MAP_RESERVED
-  [0x0020_0000, 0x03e0_0000, 0x7, 2], # System RAM 2-64M MAP_RESERVED
-  [0x0400_0000, 0x0200_0000, 0x7, 2], # System RAM 64-96M MAP_RESERVED
-  [0x0600_0000, 0x0200_0000, 0x7, 2], # System RAM 96-128M MAP_RESERVED
-  [0x0800_0000, 0x0200_0000, 0x7, 2], # System RAM 128-160M MAP_RESERVED
+  [0x0020_0000, 0x0fe0_0000, 0x7, 2], # Low System RAM 2-256M MAP_RESERVED
+  [0x8000_0000, 0x2000_0000, 0x7, 0], # High System RAM kept mapped but hidden from Linux memory map
 ]
 
 #

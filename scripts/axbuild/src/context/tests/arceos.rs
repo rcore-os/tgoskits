@@ -216,23 +216,16 @@ fn find_loongarch_qemu_dir_prefers_explicit_env_override() {
 }
 
 #[test]
-fn find_loongarch_qemu_dir_uses_pinned_cache() {
+fn find_loongarch_qemu_dir_uses_latest_cache() {
     let _lock = ENV_LOCK.lock().unwrap();
     let home = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let commit = "1234567890abcdef";
     let qemu_dir = home
         .path()
         .join(".cache/axvisor/qemu-lvz")
-        .join(commit)
+        .join("latest")
         .join("bin");
 
-    fs::create_dir_all(workspace.path().join("os/axvisor/scripts")).unwrap();
-    fs::write(
-        workspace.path().join("os/axvisor/scripts/qemu-lvz.version"),
-        format!("QEMU_LVZ_COMMIT={commit}\n"),
-    )
-    .unwrap();
     fs::create_dir_all(&qemu_dir).unwrap();
     fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
 
@@ -244,19 +237,30 @@ fn find_loongarch_qemu_dir_uses_pinned_cache() {
 }
 
 #[test]
-fn find_loongarch_qemu_dir_honors_custom_pinned_cache_root() {
+fn find_loongarch_qemu_dir_honors_custom_latest_cache_root() {
     let _lock = ENV_LOCK.lock().unwrap();
     let cache = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let commit = "abcdef1234567890";
-    let qemu_dir = cache.path().join(commit).join("bin");
+    let qemu_dir = cache.path().join("latest").join("bin");
 
-    fs::create_dir_all(workspace.path().join("os/axvisor/scripts")).unwrap();
-    fs::write(
-        workspace.path().join("os/axvisor/scripts/qemu-lvz.version"),
-        format!("QEMU_LVZ_COMMIT={commit}\n"),
-    )
-    .unwrap();
+    fs::create_dir_all(&qemu_dir).unwrap();
+    fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
+    let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
+    let _home = TempEnvVar::unset("HOME");
+    let _cache = TempEnvVar::set("AXVISOR_QEMU_LVZ_CACHE", cache.path());
+
+    assert_eq!(find_loongarch_qemu_dir(workspace.path()), Some(qemu_dir));
+}
+
+#[test]
+fn find_loongarch_qemu_dir_uses_existing_cached_version() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let cache = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let qemu_dir = cache.path().join("abcdef1234567890").join("bin");
+
     fs::create_dir_all(&qemu_dir).unwrap();
     fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
 

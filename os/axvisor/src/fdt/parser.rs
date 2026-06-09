@@ -484,6 +484,13 @@ fn parse_loongarch_pci_interrupt_map(
     let child_address_cells = node_address_cells(node);
     let child_interrupt_cells = node_interrupt_cells(node);
     let child_cells = child_address_cells + child_interrupt_cells;
+    if child_cells == 0 {
+        warn!(
+            "LoongArch PCI interrupt-map in node {} has invalid child cell count",
+            node.name()
+        );
+        return;
+    }
     let mut index = 0usize;
 
     while index + child_cells < interrupt_map.len() {
@@ -496,7 +503,8 @@ fn parse_loongarch_pci_interrupt_map(
             );
             break;
         };
-        let parent_interrupt_cells = node_interrupt_cells(parent_node);
+        let parent_interrupt_cells =
+            pci_interrupt_map_parent_cells(&interrupt_map, child_cells, parent_node);
         let entry_cells = child_cells + 1 + parent_interrupt_cells;
         if index + entry_cells > interrupt_map.len() {
             warn!(
@@ -521,6 +529,26 @@ fn parse_loongarch_pci_interrupt_map(
 }
 
 #[cfg(target_arch = "loongarch64")]
+fn pci_interrupt_map_parent_cells(
+    interrupt_map: &[u32],
+    child_cells: usize,
+    parent_node: &Node<'_>,
+) -> usize {
+    let default_parent_cells = node_interrupt_cells(parent_node);
+    let default_entry_cells = child_cells + 1 + default_parent_cells;
+    let one_cell_entry_cells = child_cells + 2;
+
+    if default_parent_cells > 1
+        && interrupt_map.len() % default_entry_cells != 0
+        && interrupt_map.len() % one_cell_entry_cells == 0
+    {
+        1
+    } else {
+        default_parent_cells
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
 pub fn parse_loongarch_guest_irq_routes(vm_cfg: &AxVMConfig, dtb: &[u8]) -> AxResult {
     let fdt = Fdt::from_bytes(dtb).map_err(|e| {
         ax_err_type!(
@@ -532,6 +560,7 @@ pub fn parse_loongarch_guest_irq_routes(vm_cfg: &AxVMConfig, dtb: &[u8]) -> AxRe
     let mut phandle_nodes = BTreeMap::new();
     let mut eiointc = None;
     let mut pch_pic = None;
+    let mut pch_msi_nodes = Vec::new();
 
     for node in &all_nodes {
         if let Some(phandle) = node_phandle(node) {
@@ -542,6 +571,9 @@ pub fn parse_loongarch_guest_irq_routes(vm_cfg: &AxVMConfig, dtb: &[u8]) -> AxRe
         }
         if has_compatible_part(node, "pch-pic") {
             pch_pic = Some(node.clone());
+        }
+        if has_compatible(node, "loongson,pch-msi-1.0") {
+            pch_msi_nodes.push(node.clone());
         }
     }
 
@@ -616,9 +648,22 @@ pub fn parse_loongarch_guest_irq_routes(vm_cfg: &AxVMConfig, dtb: &[u8]) -> AxRe
         );
     }
 
+    for node in pch_msi_nodes {
+        let base_vec = property_u32(&node, "loongson,msi-base-vec").unwrap_or(0) as usize;
+        let num_vecs = property_u32(&node, "loongson,msi-num-vecs").unwrap_or(0) as usize;
+        for physical_irq in base_vec..base_vec.saturating_add(num_vecs) {
+            add_loongarch_irq_route(&mut routes, physical_irq, eiointc_guest_vector, node.name());
+        }
+    }
+
     let routes = routes.into_iter().collect::<Vec<_>>();
     info!(
-        "VM[{}] LoongArch guest IRQ routes parsed from DTB: {:?}",
+        "VM[{}] parsed {} LoongArch guest IRQ route(s) from DTB",
+        vm_cfg.id(),
+        routes.len()
+    );
+    debug!(
+        "VM[{}] LoongArch guest IRQ routes: {:?}",
         vm_cfg.id(),
         routes
     );

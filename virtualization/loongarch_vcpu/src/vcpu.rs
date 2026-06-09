@@ -125,6 +125,8 @@ pub struct LoongArchVCpuCreateConfig {
 pub struct LoongArchVCpuSetupConfig {
     pub passthrough_interrupt: bool,
     pub passthrough_timer: bool,
+    pub boot_args: [usize; 3],
+    pub boot_stack_top: usize,
 }
 
 impl AxArchVCpu for LoongArchVCpu {
@@ -168,6 +170,14 @@ impl AxArchVCpu for LoongArchVCpu {
     }
 
     fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+        if config.boot_args != [0; 3] {
+            self.ctx.set_argument(config.boot_args[0]);
+            self.ctx.set_a1(config.boot_args[1]);
+            self.ctx.set_a2(config.boot_args[2]);
+            if config.boot_stack_top != 0 {
+                self.ctx.set_gpr(3, config.boot_stack_top);
+            }
+        }
         self.init_hv(config);
         Ok(())
     }

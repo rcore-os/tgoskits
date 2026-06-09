@@ -1541,6 +1541,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
+ "ruzstd",
  "spin 0.12.0",
  "syn 2.0.117",
  "tokio",

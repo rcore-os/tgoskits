@@ -11,21 +11,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Axvisor, build};
 use crate::{context::ResolvedAxvisorRequest, rootfs, test::qemu as qemu_test};
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
-    let request = axvisor.prepare_request(
+    let mut request = axvisor.prepare_request(
         (&args.build).into(),
         args.qemu_config,
         None,
         crate::context::SnapshotPersistence::Store,
     )?;
     axvisor.app.set_debug_mode(request.debug)?;
-    let cargo = build::load_cargo_config(&request)?;
     let explicit_rootfs = args
         .rootfs
         .map(|rootfs| {
@@ -42,12 +41,77 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         explicit_rootfs.as_deref(),
     )
     .await?;
+    prepare_loongarch_linux_memory_vmconfigs(
+        &mut request,
+        axvisor.app.workspace_root(),
+        explicit_rootfs.as_deref(),
+    )?;
+    let cargo = build::load_cargo_config(&request)?;
     let qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
     axvisor
         .app
         .qemu(cargo, request.build_info_path, Some(qemu))
         .await
+}
+
+fn prepare_loongarch_linux_memory_vmconfigs(
+    request: &mut ResolvedAxvisorRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<()> {
+    if request.arch != "loongarch64" || request.vmconfigs.is_empty() {
+        return Ok(());
+    }
+
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    let out_dir = workspace_root.join("tmp/axbuild/axvisor/loongarch64");
+    let kernel_path = out_dir.join("linux-qemu");
+    let mut prepared_vmconfigs = Vec::with_capacity(request.vmconfigs.len());
+
+    for vmconfig in &request.vmconfigs {
+        let content = fs::read_to_string(vmconfig)
+            .map_err(|e| anyhow!("failed to read vm config {}: {e}", vmconfig.display()))?;
+        let value: toml::Value = toml::from_str(&content)
+            .map_err(|e| anyhow!("failed to parse vm config {}: {e}", vmconfig.display()))?;
+        let guest_kernel = value
+            .get("kernel")
+            .and_then(|kernel| kernel.get("kernel_path"))
+            .and_then(|path| path.as_str());
+
+        if guest_kernel != Some("/guest/linux/linux-qemu") {
+            prepared_vmconfigs.push(vmconfig.clone());
+            continue;
+        }
+
+        rootfs::inject::extract_file(&rootfs_path, "/guest/linux/linux-qemu", &kernel_path)
+            .with_context(|| {
+                format!(
+                    "failed to prepare LoongArch Linux kernel from {}",
+                    rootfs_path.display()
+                )
+            })?;
+
+        let prepared_vmconfig = out_dir.join(
+            vmconfig
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("linux-rootfs-smp1.toml")),
+        );
+        fs::create_dir_all(&out_dir)
+            .with_context(|| format!("failed to create {}", out_dir.display()))?;
+        let patched = content
+            .replace("image_location = \"fs\"", "image_location = \"memory\"")
+            .replace(
+                "kernel_path = \"/guest/linux/linux-qemu\"",
+                &format!("kernel_path = \"{}\"", kernel_path.display()),
+            );
+        fs::write(&prepared_vmconfig, patched)
+            .with_context(|| format!("failed to write {}", prepared_vmconfig.display()))?;
+        prepared_vmconfigs.push(prepared_vmconfig);
+    }
+
+    request.vmconfigs = prepared_vmconfigs;
+    Ok(())
 }
 
 pub(super) async fn load_patched_qemu_config(

@@ -26,20 +26,14 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-qemu_lvz_version_value() {
-    local key="$1"
-    local version_file="scripts/qemu-lvz.version"
-    if [[ -f "$version_file" ]]; then
-        sed -n "s/^${key}=//p" "$version_file" | tail -n 1
-    fi
-}
-
 qemu_lvz_cache_binary() {
-    local commit
-    commit="$(qemu_lvz_version_value QEMU_LVZ_COMMIT)"
-    if [[ -n "$commit" ]]; then
-        printf '%s\n' "${AXVISOR_QEMU_LVZ_CACHE:-$HOME/.cache/axvisor/qemu-lvz}/$commit/bin/qemu-system-loongarch64"
+    local cache_root="${AXVISOR_QEMU_LVZ_CACHE:-$HOME/.cache/axvisor/qemu-lvz}"
+    local latest="$cache_root/latest/bin/qemu-system-loongarch64"
+    if [[ -x "$latest" ]]; then
+        printf '%s\n' "$latest"
+        return 0
     fi
+    find "$cache_root" -mindepth 3 -maxdepth 3 -path '*/bin/qemu-system-loongarch64' -type f -executable 2>/dev/null | sort | head -n 1
 }
 
 # Execute command and display it
@@ -317,7 +311,7 @@ run_qemu_riscv64_arceos() {
 setup_qemu_loongarch64() {
     info "=== QEMU LoongArch64 Preparation ==="
 
-    run_cmd mkdir -p tmp/{configs,images/qemu_loongarch64_linux}
+    run_cmd mkdir -p tmp/configs
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
@@ -325,30 +319,6 @@ setup_qemu_loongarch64() {
 
     info "Preparing Linux guest rootfs config file..."
     run_cmd cp configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml tmp/configs/
-    run_cmd cp configs/vms/qemu/loongarch64/linux-rootfs-smp1.dts tmp/configs/
-
-    local guest_dir="${AXVISOR_LOONGARCH64_GUEST_DIR:-$(cd ../../.. && pwd)/axvisor-guest/IMAGES/qemu/loongarch64/linux}"
-    if [ -f "$guest_dir/qemu-loongarch64" ]; then
-        info "Using LoongArch Linux guest artifacts from: $guest_dir"
-        run_cmd cp "$guest_dir/qemu-loongarch64" tmp/images/qemu_loongarch64_linux/
-        if [ -f "$guest_dir/rootfs.img" ]; then
-            run_cmd cp "$guest_dir/rootfs.img" tmp/images/qemu_loongarch64_linux/
-        fi
-    else
-        warn "LoongArch Linux guest artifacts not found in: $guest_dir"
-        warn "Build them first in axvisor-guest, or set AXVISOR_LOONGARCH64_GUEST_DIR."
-    fi
-
-    if ! command -v dtc &> /dev/null; then
-        error "dtc is required to build linux-rootfs-smp1.dtb"
-        exit 1
-    fi
-    run_cmd dtc -I dts -O dtb -o tmp/configs/linux-rootfs-smp1.dtb tmp/configs/linux-rootfs-smp1.dts
-    run_cmd cp tmp/configs/linux-rootfs-smp1.dtb tmp/images/qemu_loongarch64_linux/
-
-    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/linux-rootfs-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_loongarch64_linux/qemu-loongarch64"|g' tmp/configs/linux-rootfs-smp1.toml
-    run_cmd sed -i 's|^dtb_path = .*|dtb_path = "linux-rootfs-smp1.dtb"|g' tmp/configs/linux-rootfs-smp1.toml
 
     info "Preparing QEMU config file..."
     run_cmd cp configs/qemu/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
@@ -359,7 +329,7 @@ setup_qemu_loongarch64() {
     if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
         info "Using explicit LoongArch QEMU override: ${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
     elif [[ -n "$cached_qemu" && -x "$cached_qemu" ]]; then
-        info "Detected pinned QEMU-LVZ cache at $cached_qemu"
+        info "Detected cached QEMU-LVZ at $cached_qemu"
     elif command -v qemu-system-loongarch64 &> /dev/null; then
         warn "Using qemu-system-loongarch64 from PATH. Stock QEMU usually lacks LoongArch virtualization extensions; prefer QEMU-LVZ."
     else
@@ -423,25 +393,13 @@ ensure_loongarch64_host_rootfs() {
 ensure_loongarch64_guest_rootfs() {
     local workspace_root="$1"
     local rootfs="$workspace_root/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img"
-    local source_rootfs="${AXVISOR_LOONGARCH64_ROOTFS:-$(pwd)/tmp/images/qemu_loongarch64_linux/rootfs.img}"
 
-    run_cmd mkdir -p "$(dirname "$rootfs")"
-
-    if [[ -f "$source_rootfs" ]]; then
-        info "Using LoongArch Linux guest rootfs image: $source_rootfs"
-        if [[ "$(realpath -m "$source_rootfs")" != "$(realpath -m "$rootfs")" ]]; then
-            run_cmd cp "$source_rootfs" "$rootfs"
-        fi
+    if [[ -f "$rootfs" ]]; then
+        info "Using cached LoongArch managed rootfs: $rootfs"
         return 0
     fi
 
-    error "LoongArch Linux rootfs image not found."
-    echo "Expected one of:"
-    echo "  $source_rootfs"
-    echo "  AXVISOR_LOONGARCH64_ROOTFS=/path/to/rootfs.img"
-    echo ""
-    echo "Build or provide rootfs.img in AXVISOR_LOONGARCH64_GUEST_DIR before using --linux."
-    exit 1
+    info "LoongArch managed rootfs is missing; cargo xtask will download the latest tgosimages rootfs."
 }
 
 run_qemu_loongarch64_linux() {
@@ -452,7 +410,6 @@ run_qemu_loongarch64_linux() {
     workspace_root="$(cd ../.. && pwd)"
 
     ensure_loongarch64_guest_rootfs "$workspace_root"
-    run_cmd sed -i 's|virtio-blk-pci,drive=disk0|virtio-blk-pci,drive=disk0,disable-modern=on|g' tmp/configs/qemu-loongarch64-runtime.toml
 
     run_axvisor_qemu_with_loongarch64_qemu \
         --config "$(pwd)/tmp/configs/qemu-loongarch64-linux.toml" \

@@ -88,7 +88,10 @@ impl AxvmManager {
         axvm::get_vm_by_id(vm_id)
     }
 
-    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
             return;
@@ -100,7 +103,10 @@ impl AxvmManager {
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 
-    #[cfg(not(all(feature = "fs", target_arch = "x86_64")))]
+    #[cfg(not(all(
+        feature = "fs",
+        any(target_arch = "x86_64", target_arch = "loongarch64")
+    )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.

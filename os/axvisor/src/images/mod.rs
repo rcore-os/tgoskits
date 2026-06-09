@@ -28,7 +28,11 @@ mod linux;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch_elf;
 #[cfg(target_arch = "loongarch64")]
+mod loongarch_image;
+#[cfg(target_arch = "loongarch64")]
 mod loongarch_linux;
+#[cfg(target_arch = "loongarch64")]
+mod loongarch_zboot;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 #[cfg(target_arch = "x86_64")]
@@ -175,7 +179,11 @@ impl ImageLoader {
 
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+            #[cfg(any(
+                target_arch = "aarch64",
+                target_arch = "riscv64",
+                target_arch = "loongarch64"
+            ))]
             {
                 if let Some(dtb_src) = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8) {
                     crate::fdt::update_fdt(
@@ -187,13 +195,6 @@ impl ImageLoader {
                 } else {
                     return ax_err!(InvalidData, "Guest DTB pointer is null");
                 }
-            }
-            #[cfg(target_arch = "loongarch64")]
-            {
-                let dtb_load_gpa = self
-                    .dtb_load_gpa
-                    .ok_or_else(|| ax_err_type!(NotFound, "DTB load address is missing"))?;
-                load_vm_image_from_memory(_dtb_slice, dtb_load_gpa, self.vm.clone())?;
             }
         } else {
             #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
@@ -321,6 +322,11 @@ impl ImageLoader {
 
     fn load_kernel_from_memory(&self, kernel: &[u8]) -> AxResult {
         #[cfg(target_arch = "loongarch64")]
+        if let Some(image) = loongarch_zboot::decompress(kernel)? {
+            return self.load_kernel_from_memory(&image.payload);
+        }
+
+        #[cfg(target_arch = "loongarch64")]
         if let Some(info) = loongarch_elf::try_load(kernel, self.vm.clone())? {
             self.vm.with_config(|config| {
                 config.cpu_config.bsp_entry = info.entry;
@@ -328,6 +334,19 @@ impl ImageLoader {
             });
             info!(
                 "LoongArch ELF kernel entry set to {:#x}",
+                info.entry.as_usize()
+            );
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "loongarch64")]
+        if let Some(info) = loongarch_image::try_load(kernel, self.vm.clone())? {
+            self.vm.with_config(|config| {
+                config.cpu_config.bsp_entry = info.entry;
+                config.cpu_config.ap_entry = info.entry;
+            });
+            info!(
+                "LoongArch Linux Image entry set to {:#x}",
                 info.entry.as_usize()
             );
             return Ok(());
@@ -758,7 +777,11 @@ pub mod fs {
         let vm_config = crate::config::build_axvm_config(&loader.config);
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+            #[cfg(any(
+                target_arch = "aarch64",
+                target_arch = "riscv64",
+                target_arch = "loongarch64"
+            ))]
             {
                 let dtb_src = core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8)
                     .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
@@ -768,13 +791,6 @@ pub mod fs {
                     loader.vm.clone(),
                     &loader.config,
                 )?;
-            }
-            #[cfg(target_arch = "loongarch64")]
-            {
-                let dtb_load_gpa = loader
-                    .dtb_load_gpa
-                    .ok_or_else(|| ax_err_type!(NotFound, "DTB load address is missing"))?;
-                load_vm_image_from_memory(_dtb_slice, dtb_load_gpa, loader.vm.clone())?;
             }
         }
 
