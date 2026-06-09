@@ -115,19 +115,17 @@ cargo xtask starry test board --board licheerv-nano-sg2002 --server <ip> --port 
 
 ## 2. 测试入口
 
-StarryOS 除了单次启动外，更常见的验证方式是直接进入测试套件。这里的命令会读取 `test-suit/starryos` 下的用例配置，并按分组运行。
-
-StarryOS 的 QEMU 测试分为 `normal` 和 `stress` 两组：
+StarryOS 除了单次启动外，更常见的验证方式是直接进入测试套件。这里的命令会读取 `test-suit/starryos` 下的用例配置并运行；迁出的压力测试通过 Starry app 命令显式选择。
 
 ```bash
-# 全部 normal 测试
+# 全部 test-suit QEMU 测试
 cargo xtask starry test qemu --target riscv64gc-unknown-none-elf
 
 # 压力测试
-cargo xtask starry test qemu --target riscv64gc-unknown-none-elf --stress
+cargo xtask starry app qemu -t stress/git --arch riscv64
 
 # 仅运行指定用例
-cargo xtask starry test qemu --target aarch64-unknown-none-softfloat -c smoke
+cargo xtask starry test qemu --target aarch64-unknown-none-softfloat -c qemu-smp1/system
 
 # 其他架构
 cargo xtask starry test qemu --target x86_64-unknown-none
