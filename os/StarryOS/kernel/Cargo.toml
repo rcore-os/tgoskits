@@ -35,6 +35,14 @@ sg2002 = [
     "dep:sg200x-bsp",
     "dep:tock-registers",
 ]
+sg2002-wifi = [
+    "sg2002",
+    "dep:aic8800",
+    "dep:sdhci-cv1800",
+    "dep:sdio-host",
+    "dep:rd-net",
+    "dep:axklib",
+]
 stack-guard-page = ["ax-feat/stack-guard-page"]
 
 [dependencies]
@@ -75,6 +83,10 @@ ax-task.workspace = true
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
+aic8800 = { workspace = true, optional = true }
+sdhci-cv1800 = { workspace = true, optional = true }
+sdio-host = { workspace = true, optional = true }
+rd-net = { workspace = true, optional = true }
 crab-usb.workspace = true
 rdrive.workspace = true
 

@@ -39,6 +39,9 @@ pub fn init(args: &[String], envs: &[String]) {
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 
+    #[cfg(feature = "sg2002-wifi")]
+    crate::wifi::probe_wifi();
+
     ax_alloc::register_page_reclaim_fn(ax_fs::page_cache_reclaim);
 
     let loc = FS_CONTEXT

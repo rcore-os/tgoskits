@@ -34,3 +34,5 @@ mod time;
 mod tracepoint;
 mod trap;
 mod uprobe;
+#[cfg(feature = "sg2002-wifi")]
+mod wifi;
