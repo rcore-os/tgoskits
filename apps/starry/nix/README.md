@@ -7,6 +7,7 @@ install→startup→build→artifact chain.
 
 ```bash
 cargo xtask starry app qemu -t nix --arch x86_64
+cargo xtask starry app qemu -t nix --arch aarch64
 ```
 
 ## No-Sandbox Only
@@ -70,6 +71,7 @@ isolation, etc.) are covered separately by **test-nix-prereqs**:
 
 ```bash
 cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs
+cargo xtask starry test qemu --arch aarch64 -c test-nix-prereqs
 ```
 
 That grouped case contains focused C-language regression tests independent of
@@ -86,7 +88,9 @@ apps/starry/nix/
 ├── nix-nixpkgs.sh       # stdenv.mkDerivation (deferred, requires mount ns)
 ├── test_nix.sh          # nosandbox only (nixpkgs intentionally skipped)
 ├── build-x86_64-unknown-none.toml
+├── build-aarch64-unknown-none-softfloat.toml
 ├── qemu-x86_64.toml     # 1200s timeout, shell_init_cmd=test_nix.sh
+├── qemu-aarch64.toml
 └── README.md            # this file
 ```
 
