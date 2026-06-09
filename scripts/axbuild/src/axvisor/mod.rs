@@ -631,10 +631,6 @@ mod tests {
             "2999",
             "--remote-name",
             "kernel.bin",
-            "--kernel-load-addr",
-            "0x200000",
-            "--entry-point",
-            "0x200000",
             "--vmconfigs",
             "tmp/vm1.toml",
         ])
@@ -657,8 +653,6 @@ mod tests {
                     assert_eq!(args.server.as_deref(), Some("127.0.0.1"));
                     assert_eq!(args.port, Some(2999));
                     assert_eq!(args.remote_name.as_deref(), Some("kernel.bin"));
-                    assert_eq!(args.kernel_load_addr.as_deref(), Some("0x200000"));
-                    assert_eq!(args.entry_point.as_deref(), Some("0x200000"));
                     assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
                 }
                 httpboot::Command::Init(_) => panic!("expected httpboot publish command"),

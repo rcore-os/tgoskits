@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use axloader::{ElfImageReport, hex, inspect_elf, known_target, validate_manifest_address};
+use axloader::{ElfImageReport, hex, inspect_elf, known_target};
 use clap::{Args as ClapArgs, Subcommand};
 use ostool::board::{load_board_global_config_with_notice, terminal};
 use reqwest::{Client, StatusCode, Url};
@@ -105,14 +105,6 @@ pub struct ArgsPublish {
     /// Remote kernel filename under the board current HTTP Boot directory.
     #[arg(long = "remote-name", value_name = "NAME")]
     pub remote_name: Option<String>,
-
-    /// Deprecated: the discovery loader reads load addresses from the ELF.
-    #[arg(long = "kernel-load-addr", value_name = "HEX")]
-    pub kernel_load_addr: Option<String>,
-
-    /// Deprecated: the discovery loader reads the entry point from the ELF.
-    #[arg(long = "entry-point", value_name = "HEX")]
-    pub entry_point: Option<String>,
 
     /// Keep the board session after publishing, useful when the next command needs ownership.
     #[arg(long)]
@@ -350,28 +342,10 @@ async fn publish_artifacts_for_session(
         .clone()
         .or(profile.kernel_file.clone())
         .unwrap_or_else(|| "kernel.elf".to_string());
-    let kernel_load_addr = publish_config
-        .kernel_load_addr
-        .clone()
-        .or(profile.kernel_load_addr.clone())
-        .unwrap_or_else(|| hex(report.load_addr));
-    let entry_point = publish_config.entry_point.clone().unwrap_or_else(|| {
-        if report.httpboot_entry_symbol.is_some() {
-            hex(report.entry_paddr)
-        } else {
-            profile
-                .entry_point
-                .clone()
-                .unwrap_or_else(|| hex(report.entry_paddr))
-        }
-    });
     let arch = profile.boot_arch.as_deref().unwrap_or("x86_64").to_string();
     if arch != "x86_64" {
         bail!("HTTP Boot board arch is `{arch}`, expected `x86_64`");
     }
-
-    validate_manifest_address("kernel_load_addr", &kernel_load_addr, report.load_addr)?;
-    validate_manifest_address("entry_point", &entry_point, report.entry_paddr)?;
 
     let kernel_bytes =
         fs::read(elf_path).with_context(|| format!("failed to read {}", elf_path.display()))?;
@@ -467,8 +441,6 @@ struct PublishConfig {
     server: String,
     port: u16,
     remote_name: Option<String>,
-    kernel_load_addr: Option<String>,
-    entry_point: Option<String>,
     power_cycle: bool,
 }
 
@@ -490,8 +462,6 @@ impl PublishConfig {
             server,
             port,
             remote_name: Some("kernel.elf".to_string()),
-            kernel_load_addr: None,
-            entry_point: None,
             power_cycle: false,
         };
 
@@ -522,8 +492,6 @@ impl PublishConfig {
             self.port = port;
         }
         self.remote_name = file.remote_name.or(self.remote_name.take());
-        self.kernel_load_addr = file.kernel_load_addr.or(self.kernel_load_addr.take());
-        self.entry_point = file.entry_point.or(self.entry_point.take());
         if let Some(power_cycle) = file.power_cycle {
             self.power_cycle = power_cycle;
         }
@@ -542,25 +510,18 @@ impl PublishConfig {
         if let Some(remote_name) = args.remote_name.clone() {
             self.remote_name = Some(remote_name);
         }
-        if let Some(kernel_load_addr) = args.kernel_load_addr.clone() {
-            self.kernel_load_addr = Some(kernel_load_addr);
-        }
-        if let Some(entry_point) = args.entry_point.clone() {
-            self.entry_point = Some(entry_point);
-        }
         self
     }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PublishConfigFile {
     board: Option<String>,
     board_type: Option<String>,
     server: Option<String>,
     port: Option<u16>,
     remote_name: Option<String>,
-    kernel_load_addr: Option<String>,
-    entry_point: Option<String>,
     power_cycle: Option<bool>,
 }
 
@@ -818,8 +779,6 @@ enum RemoteBootConfig {
 struct UefiHttpProfile {
     boot_arch: Option<String>,
     kernel_file: Option<String>,
-    kernel_load_addr: Option<String>,
-    entry_point: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -938,8 +897,6 @@ mod tests {
             server: "127.0.0.1".to_string(),
             port: 2999,
             remote_name: Some("kernel.elf".to_string()),
-            kernel_load_addr: None,
-            entry_point: None,
             power_cycle: false,
         };
 
@@ -947,6 +904,23 @@ mod tests {
 
         assert_eq!(config.board_type.as_deref(), Some("x86-httpboot"));
         assert!(config.power_cycle);
+    }
+
+    #[test]
+    fn publish_config_file_rejects_legacy_fields() {
+        let error = toml::from_str::<PublishConfigFile>(
+            r#"
+            board = "x86-httpboot"
+            kernel_load_addr = "0x200000"
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `kernel_load_addr`")
+        );
     }
 
     #[test]
@@ -983,8 +957,6 @@ mod tests {
             server: None,
             port: None,
             remote_name: None,
-            kernel_load_addr: None,
-            entry_point: None,
             keep_session: false,
         };
 
@@ -1011,8 +983,6 @@ mod tests {
             server: None,
             port: None,
             remote_name: None,
-            kernel_load_addr: None,
-            entry_point: None,
             keep_session: false,
         };
 
@@ -1039,8 +1009,6 @@ mod tests {
             server: None,
             port: None,
             remote_name: None,
-            kernel_load_addr: None,
-            entry_point: None,
             keep_session: false,
         };
 
@@ -1066,8 +1034,6 @@ mod tests {
             server: None,
             port: None,
             remote_name: None,
-            kernel_load_addr: None,
-            entry_point: None,
             keep_session: false,
         };
 
