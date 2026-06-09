@@ -1,10 +1,11 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "uefi", no_std)]
+#![cfg_attr(target_os = "uefi", no_main)]
 
+#[cfg(target_os = "uefi")]
 extern crate alloc;
 
 #[cfg(not(target_os = "uefi"))]
-compile_error!("axloader board builds require a *-unknown-uefi target and one board-* feature");
+fn main() {}
 
 #[cfg(target_os = "uefi")]
 mod boards;
