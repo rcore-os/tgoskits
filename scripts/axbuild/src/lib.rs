@@ -74,7 +74,7 @@ enum Commands {
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
-        command: axvisor::Command,
+        command: Box<axvisor::Command>,
     },
     /// ArceOS build commands
     Arceos {
@@ -102,7 +102,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Config { command } => config::execute(command),
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
-        Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
+        Commands::Axvisor { command } => Axvisor::new()?.execute(*command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,
     }

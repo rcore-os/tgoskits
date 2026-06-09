@@ -247,15 +247,15 @@ async fn publish(axvisor: &mut Axvisor, args: ArgsPublish) -> anyhow::Result<()>
              `--httpboot-config PATH`, or override with `--board BOARD`"
         )
     })?;
-    if let Some(target) = known_target(board_type) {
-        if target.arch.name() != request.arch {
-            bail!(
-                "HTTP Boot target `{}` expects arch `{}`, got `{}`",
-                target.board,
-                target.arch.name(),
-                request.arch
-            );
-        }
+    if let Some(target) = known_target(board_type)
+        && target.arch.name() != request.arch
+    {
+        bail!(
+            "HTTP Boot target `{}` expects arch `{}`, got `{}`",
+            target.board,
+            target.arch.name(),
+            request.arch
+        );
     }
     let session = client.create_session(board_type).await?;
     let session_guard = SessionGuard {
