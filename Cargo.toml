@@ -200,7 +200,6 @@ axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.1", path = "components/axklib" }
 axplat-dyn = { version = "0.7.1", path = "platforms/axplat-dyn", default-features = false }
 ax-plat-riscv64-visionfive2 = { version = "0.1.6", path = "platforms/ax-plat-riscv64-visionfive2" }
-ax-plat-x86-qemu-q35 = { version = "0.4.10", path = "platforms/ax-plat-x86-qemu-q35", default-features = false }
 axpoll = { version = "0.3.11", path = "components/axpoll" }
 axvcpu = { version = "0.6.1", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.10", path = "os/axvisor" }

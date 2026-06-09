@@ -1551,11 +1551,7 @@ fn ax_hal_platform_feature_name<'a>(
 fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
     matches!(
         platform,
-        "x86-pc"
-            | "riscv64-sg2002"
-            | "riscv64-visionfive2"
-            | "loongarch64-qemu-virt"
-            | "x86-qemu-q35"
+        "x86-pc" | "riscv64-sg2002" | "riscv64-visionfive2" | "loongarch64-qemu-virt"
     )
 }
 
@@ -1836,12 +1832,7 @@ fn myplat_dependency_matches_arch(dep_name: &str, arch: &str) -> bool {
 
 fn myplat_dependency_prefixes_for_arch(arch: &str) -> &'static [&'static str] {
     match arch {
-        "x86_64" => &[
-            "axplat-x86-",
-            "axplat-x86_64-",
-            "ax-plat-x86-",
-            "ax-plat-x86_64-",
-        ],
+        "x86_64" => &["axplat-x86-", "axplat-x86_64-", "ax-plat-x86-"],
         "aarch64" => &["axplat-aarch64-", "ax-plat-aarch64-"],
         "riscv64" => &["axplat-riscv64-", "ax-plat-riscv64-"],
         "loongarch64" => &["axplat-loongarch64-", "ax-plat-loongarch64-"],

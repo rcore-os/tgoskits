@@ -44,7 +44,7 @@ flowchart TB
     subgraph sg_plat["平台层"]
         direction LR
         p1["axplat-dyn"]
-        p2["ax-plat-x86-qemu-q35"]
+        p2["ax-plat-x86-pc"]
     end
     subgraph sg_comp["组件层 (92 crates)"]
         direction LR
@@ -176,7 +176,6 @@ flowchart TB
 | `axhvc` | 组件层 | `virtualization/axhvc` | 1 | 1 | [查看](crates/axhvc) |
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
 | `axplat-dyn` | 平台层 | `platforms/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
-| `ax-plat-x86-qemu-q35` | 平台层 | `platforms/ax-plat-x86-qemu-q35` | 7 | 1 | [查看](crates/axplat-x86-qemu-q35) |
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](crates/axpoll) |
 | `axvcpu` | 组件层 | `virtualization/axvcpu` | 5 | 5 | [查看](crates/axvcpu) |
 | `axvisor` | Axvisor 层 | `os/axvisor` | 27 | 0 | [查看](crates/axvisor) |

@@ -392,7 +392,7 @@ platforms/ax-plat-riscv64-sg2002/
 |------|------|
 | `platforms/` | 工作区内 `ax-plat-*` 平台 crate |
 | `platforms/axplat-dyn/` | 动态平台加载（设备树驱动） |
-| `platforms/ax-plat-x86-qemu-q35/` | x86_64 QEMU Q35 独立平台 |
+| `platforms/ax-plat-x86-pc/` | x86_64 PC 静态平台 |
 
 已有平台：
 

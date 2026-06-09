@@ -146,7 +146,7 @@ graph LR
 ### 3.3 间接消费者
 - 通过 `ax-hal` 运行在 Standard PC 环境上的 ArceOS 样例与测试。
 - StarryOS 的 x86 平台 bring-up。
-- Axvisor 的依赖图中可能出现该包，但主 x86 平台更偏向 `ax-plat-x86-qemu-q35`。
+- Axvisor x86_64 已转向动态平台路径，不再通过本 crate 或旧 Q35 静态平台作为主平台。
 
 ## 开发指南
 ### 接入方式
@@ -191,7 +191,7 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp"] }
 StarryOS 在 x86 默认平台路径中也会复用这条 `axplat` 实现。因此它在 StarryOS 中承担的是板级 bring-up 与平台设施角色，而不是 Linux 兼容语义层。
 
 ### Axvisor
-Axvisor 的主 x86 manifest 更明确地偏向 `ax-plat-x86-qemu-q35`，因此 `ax-plat-x86-pc` 在 Axvisor 中更适合作为“通用 PC / Multiboot 参考实现”来理解，而不是其当前主平台实现。
+Axvisor x86_64 已使用动态平台；`ax-plat-x86-pc` 仍主要服务 ArceOS / StarryOS 的 x86 PC 静态平台路径。
 # `ax-plat-x86-pc` 技术文档
 
 > 路径：`platforms/ax-plat-x86-pc`

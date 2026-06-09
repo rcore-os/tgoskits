@@ -56,7 +56,6 @@ const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
     ("riscv64-sg2002", &["riscv64"]),
     ("riscv64-visionfive2", &["riscv64"]),
     ("x86-pc", &["x86_64"]),
-    ("x86-qemu-q35", &["x86_64"]),
 ];
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {

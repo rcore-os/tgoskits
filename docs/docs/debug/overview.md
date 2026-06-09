@@ -94,7 +94,7 @@ sidebar_label: "概述"
 
 当前所有 6 个预置调试配置（ArceOS/Axvisor/StarryOS × Main/Boot）**仅支持 AArch64**。调试目标路径、QEMU 命令参数和 GDB stub 端口均围绕 `aarch64-unknown-none-softfloat` target 硬编码。
 
-工作区虽然包含 RISC-V（`riscv_vcpu`、`riscv_plic`、`riscv_vplic`）和 x86（`x86_vcpu`、`x86_vlapic`、`x86-qemu-q35`）相关组件，但当前没有对应的调试配置。添加新架构支持需要：
+工作区虽然包含 RISC-V（`riscv_vcpu`、`riscv_plic`、`riscv_vplic`）和 x86（`x86_vcpu`、`x86_vlapic`、`ax-plat-x86-pc`）相关组件，但当前没有对应的调试配置。添加新架构支持需要：
 
 1. 在 `launch.json` 中新增配置组（调整 target triple 路径、二进制名、断点位置）
 2. 在 `tasks.json` 中新增对应的 Build / Start / Prepare / Stop 任务链
