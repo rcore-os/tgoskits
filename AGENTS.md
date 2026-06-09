@@ -16,6 +16,8 @@
 - Use `reassign-pr-reviewers` when the user wants to assign or rebalance GitHub PR reviewers for `rcore-os/tgoskits` from a discussion, ownership matrix, open PR scope, or existing review-request state, including preserving bot requests and handling collaborator permission limits.
 - `board-uboot-fsck-repair`: project-local skill at `.claude/skills/board-uboot-fsck-repair/SKILL.md`
 - Use `board-uboot-fsck-repair` when a physical board Linux rootfs needs ext4 recovery through U-Boot, initramfs fsck reports unrepaired corruption, OrangePi-5-Plus needs `extraboardargs=fsckfix`, or Starry board write tests must be bracketed by Linux fsck/boot checks.
+- `board-linux-starry-debug`: project-local skill at `.claude/skills/board-linux-starry-debug/SKILL.md`
+- Use `board-linux-starry-debug` when a physical-board workflow needs Linux-side deployment or inspection before running StarryOS or ArceOS, including `board connect` IP discovery, SSH/rsync while holding a board lease, explicit `sync` before rebooting into StarryOS, diagnosing StarryOS `not found` for files copied into the Linux rootfs, or comparing Linux-visible and StarryOS-visible board rootfs state.
 - `crates-io-owner`: project-local skill at `.claude/skills/crates-io-owner/SKILL.md`
 - Use `crates-io-owner` when the user wants to add or verify `github:rcore-os:crates-io` for branch-added crates, asks which new crates still need the crates.io team owner, or explicitly wants `cargo owner` used instead of `Cargo.toml` metadata.
 

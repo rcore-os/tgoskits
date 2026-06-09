@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-该示例用于在 OrangePi 5 Plus 上运行 UVC 摄像头采集、RKNN YOLOv8 目标检测和网页实时预览。
+该示例用于在 OrangePi 5 Plus 上运行 UVC 摄像头采集、RKNN YOLOv8 目标检测、网页实时预览，以及 60 秒无网页服务的采集加推理 benchmark。
 
 主要功能：
 
@@ -11,6 +11,7 @@
 3. 在串口输出 `YOLO_INFER` 和 `YOLO_RESULT`，包含推理耗时、类别、置信度和检测框。
 4. 在图像上绘制检测框，并由 StarryOS 自己发布 HTTP MJPEG 网页。
 5. 在同一局域网电脑上通过浏览器查看实时画面和识别结果。
+6. 使用 `rknn_yolov8_bench` 跑 60 秒摄像头采集和 RKNN 推理，最后输出帧率、推理延迟和内存占用。
 
 ## Linux 根文件系统部署
 
@@ -37,6 +38,7 @@ apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarc
 ```text
 /rknn_yolov8_image/rknn_yolov8_stream
 /rknn_yolov8_image/rknn_yolov8_image
+/rknn_yolov8_image/rknn_yolov8_bench
 /rknn_yolov8_image/lib/librknnrt.so
 /rknn_yolov8_image/lib/librga.so
 /rknn_yolov8_image/model/yolov8.rknn
@@ -245,6 +247,59 @@ http://<StarryOS-IP>:8080/
   --duration-sec 10 \
   --infer-every 30 \
   --max-inferences 3
+```
+
+## Benchmark 运行
+
+`rknn_yolov8_bench` 不启动 HTTP 服务，也不绘制或发布 JPEG。它只运行 UVC 摄像头采集、MJPEG/YUYV 解码和 RKNN YOLOv8 推理，默认持续 60 秒：
+
+```bash
+cd /rknn_yolov8_image
+export LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-}
+./rknn_yolov8_bench \
+  --model model/yolov8.rknn \
+  --label model/coco_80_labels_list.txt \
+  --device 0 \
+  --width 320 \
+  --height 240 \
+  --fps 30 \
+  --duration-sec 60 \
+  --infer-every 1 \
+  --report-interval-sec 5 \
+  --min-confidence 25
+```
+
+Linux 侧部署后可以先跑 8 秒短测：
+
+```bash
+sudo -E ./rknn_yolov8_bench \
+  --model model/yolov8.rknn \
+  --label model/coco_80_labels_list.txt \
+  --device 0 \
+  --width 320 \
+  --height 240 \
+  --fps 30 \
+  --duration-sec 8 \
+  --infer-every 1 \
+  --report-interval-sec 2 \
+  --min-confidence 25
+```
+
+StarryOS 板端 benchmark 使用单独的 board 配置：
+
+```bash
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-bench.toml \
+  -b OrangePi-5-Plus
+```
+
+如果开发板通过非默认共享服务租用，再按实际服务地址追加 `--server` 和 `--port`。
+
+结束时会输出一行机器可解析的摘要，以及完成标记：
+
+```text
+UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=... infer_fps=... bytes=... throughput_mib_s=... dropped_latest=... decode_errors=... inference_errors=... decode_ms_avg=... decode_ms_p50=... decode_ms_p95=... infer_ms_avg=... infer_ms_p50=... infer_ms_p95=... detections=... vm_size_kb=... vm_rss_kb=... vm_hwm_kb=... mem_total_kb=... mem_free_kb=... mem_available_kb=...
+UVC_RKNN_BENCH_DONE
 ```
 
 ## 运行效果

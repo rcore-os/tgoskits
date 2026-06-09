@@ -663,7 +663,9 @@ impl Starry {
         let mut board_config = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        board_config.shell_init_cmd = Some(case.init_cmd);
+        if board_config.shell_init_cmd.is_none() {
+            board_config.shell_init_cmd = Some(case.init_cmd);
+        }
         self.app
             .board(
                 cargo,

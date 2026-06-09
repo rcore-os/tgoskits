@@ -17,6 +17,7 @@ The board rootfs must contain:
 - `/usr/bin/uvc-fps`
 - `/rknn_yolov8_image/rknn_yolov8_image`
 - `/rknn_yolov8_image/rknn_yolov8_stream`
+- `/rknn_yolov8_image/rknn_yolov8_bench`
 - `/rknn_yolov8_image/lib/librknnrt.so`
 - `/rknn_yolov8_image/lib/librga.so`
 - `/rknn_yolov8_image/model/yolov8.rknn`
@@ -53,6 +54,19 @@ ssh orangepi@${BOARD_IP} '
     ./rknn_yolov8_stream --model model/yolov8.rknn --label model/coco_80_labels_list.txt \
       --device 0 --width 320 --height 240 --fps 30 --duration-sec 8 --infer-every 2 --max-inferences 3 \
       --http-port 8080 --http-fps 15 --jpeg-quality 80
+'
+```
+
+Linux-side 60-second benchmark smoke can be shortened during setup:
+
+```bash
+ssh orangepi@${BOARD_IP} '
+  cd /rknn_yolov8_image &&
+  export LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH &&
+  printf "%s\n" orangepi | sudo -E -S \
+    ./rknn_yolov8_bench --model model/yolov8.rknn --label model/coco_80_labels_list.txt \
+      --device 0 --width 320 --height 240 --fps 30 --duration-sec 8 --infer-every 1 \
+      --report-interval-sec 2 --min-confidence 25
 '
 ```
 
@@ -105,13 +119,30 @@ cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
   --board-config configs/board-orangepi-5-plus-long-run.toml
 ```
 
-For the current shared board, pass the concrete board lease endpoint:
+For the local board service, pass the concrete board type:
 
 ```bash
 cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
-  -b OrangePi-5-Plus-robot \
-  --server 10.30.12.60 \
-  --port 2999
+  -b OrangePi-5-Plus
+```
+
+Run the StarryOS benchmark example on the local board service:
+
+```bash
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-bench.toml \
+  -b OrangePi-5-Plus
+```
+
+If the board is leased through a non-default shared service, add the matching
+`--server` and `--port` values to either command.
+
+The benchmark command does not start the HTTP stream. It runs camera capture and
+RKNN inference for 60 seconds, then prints one machine-readable summary line:
+
+```text
+UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=... infer_fps=... bytes=... throughput_mib_s=... dropped_latest=... decode_errors=... inference_errors=... decode_ms_avg=... decode_ms_p50=... decode_ms_p95=... infer_ms_avg=... infer_ms_p50=... infer_ms_p95=... detections=... vm_size_kb=... vm_rss_kb=... vm_hwm_kb=... mem_total_kb=... mem_free_kb=... mem_available_kb=...
+UVC_RKNN_BENCH_DONE
 ```
 
 The same bounded smoke-test command is also stored in
