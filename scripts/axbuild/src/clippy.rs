@@ -396,9 +396,6 @@ impl ClippyCheck {
                 feature.clone(),
             ],
         };
-        if matches!(self.deps_mode, ClippyDepsMode::NoDeps) {
-            args.insert(1, "--no-deps".into());
-        }
         if self.package == AXSTD_STD_PACKAGE
             && matches!(&self.kind, ClippyCheckKind::Feature(feature) if feature == AXSTD_STD_DEFAULT_FEATURE)
         {
@@ -410,6 +407,9 @@ impl ClippyCheck {
                 "--features".into(),
                 AXSTD_STD_CLIPPY_FEATURES.into(),
             ];
+        }
+        if matches!(self.deps_mode, ClippyDepsMode::NoDeps) {
+            args.insert(1, "--no-deps".into());
         }
         if let Some(target) = &self.target {
             args.extend(["--target".into(), target.clone()]);
@@ -1651,6 +1651,34 @@ mod tests {
         assert_eq!(
             check.cargo_args(),
             vec!["clippy", "-p", "alpha", "--", "-D", "warnings"]
+        );
+    }
+
+    #[test]
+    fn axstd_default_feature_no_deps_check_keeps_no_deps_flag() {
+        let check = ClippyCheck {
+            package: AXSTD_STD_PACKAGE.into(),
+            kind: ClippyCheckKind::Feature(AXSTD_STD_DEFAULT_FEATURE.into()),
+            deps_mode: ClippyDepsMode::NoDeps,
+            target: None,
+            env: Vec::new(),
+            axconfig_override: None,
+        };
+
+        assert_eq!(
+            check.cargo_args(),
+            vec![
+                "clippy",
+                "--no-deps",
+                "-p",
+                AXSTD_STD_PACKAGE,
+                "--no-default-features",
+                "--features",
+                AXSTD_STD_CLIPPY_FEATURES,
+                "--",
+                "-D",
+                "warnings",
+            ]
         );
     }
 
