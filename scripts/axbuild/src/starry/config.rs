@@ -166,7 +166,7 @@ plat_dyn = true
             config: None,
             qemu: StarryQemuSnapshot {
                 qemu_config: Some(PathBuf::from(
-                    "test-suit/starryos/normal/smoke/qemu-riscv64.toml",
+                    "test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml",
                 )),
             },
             uboot: StarryUbootSnapshot {
@@ -202,7 +202,7 @@ plat_dyn = true
         assert_eq!(
             snapshot.qemu.qemu_config,
             Some(PathBuf::from(
-                "test-suit/starryos/normal/smoke/qemu-riscv64.toml"
+                "test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml"
             ))
         );
         assert_eq!(
