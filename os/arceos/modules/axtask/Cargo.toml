@@ -51,7 +51,8 @@ sched-cfs = ["multitask", "preempt"]
 sched-fifo = ["multitask"]
 sched-rr = ["multitask", "preempt"]
 
-test = ["ax-percpu?/sp-naive"]
+host-test = ["ax-kspin?/host-test", "ax-percpu?/sp-naive"]
+test = ["host-test"]
 
 [dependencies]
 ax-alloc = {workspace = true, optional = true}

@@ -58,7 +58,7 @@ int main(void)
                   "io_pgetevents with nr 0 returns 0");
         CHECK_ERR(syscall(SYS_io_pgetevents, ctx, 2, 1, &event, NULL, 0), EINVAL,
                   "io_pgetevents rejects min_nr greater than nr");
-        CHECK_ERR(syscall(SYS_io_pgetevents, ctx, -1, 1, &event, NULL, 0), EINVAL,
+        CHECK_ERR(syscall(SYS_io_pgetevents, ctx, (long)-1, 1, &event, NULL, 0), EINVAL,
                   "io_pgetevents rejects negative min_nr");
 
         struct iocb cb;

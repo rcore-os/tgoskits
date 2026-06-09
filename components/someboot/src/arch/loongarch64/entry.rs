@@ -42,8 +42,13 @@ pub unsafe extern "C" fn kernel_entry(
 
 "
 	la.pcrel	$t0, __bss_start		# clear .bss
+	la.pcrel	$t1, __bss_stop
+1:
+	bgeu		$t0, $t1, 2f
 	st.d		$zero, $t0, 0
-	la.pcrel	$t1, __bss_stop - {LONGSIZE}
+	addi.d		$t0, $t0, {LONGSIZE}
+	b		1b
+2:
 ",
 
 "

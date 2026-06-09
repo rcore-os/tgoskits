@@ -15,14 +15,17 @@ use crate::support::process::run_cargo_status_with_env;
 const DEFAULT_FEATURE: &str = "default";
 const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
 const AXCONFIG_FILE: &str = "axconfig.toml";
-const ARCEOS_RUST_PACKAGE: &str = "arceos-rust";
-const ARCEOS_RUST_CLIPPY_TARGET: &str = "x86_64-unknown-none";
+const AXSTD_STD_PACKAGE: &str = "ax-std";
+const AXSTD_STD_DEFAULT_FEATURE: &str = "default";
+const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,x86-pc,fs,multitask,irq,net";
+const AXSTD_STD_CLIPPY_TARGET: &str = "x86_64-unknown-none";
 const DOCS_RS_METADATA: &str = "docs.rs";
 const DOCS_METADATA: &str = "docs";
 const RS_METADATA: &str = "rs";
 const TARGETS_METADATA: &str = "targets";
 const AXBUILD_METADATA: &str = "axbuild";
 const CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA: &str = "clippy-feature-axconfig-overrides";
+const AX_HAL_PACKAGE: &str = "ax-hal";
 
 const UNSUPPORTED_CLIPPY_PACKAGES: &[(&str, &str)] = &[
     (
@@ -45,6 +48,15 @@ const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
         "loongarch64-unknown-none",
         "loongarch64-unknown-none-softfloat",
     ),
+];
+
+const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
+    ("plat-dyn", &["aarch64", "loongarch64", "riscv64", "x86_64"]),
+    ("loongarch64-qemu-virt", &["loongarch64"]),
+    ("riscv64-sg2002", &["riscv64"]),
+    ("riscv64-visionfive2", &["riscv64"]),
+    ("x86-pc", &["x86_64"]),
+    ("x86-qemu-q35", &["x86_64"]),
 ];
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
@@ -387,6 +399,18 @@ impl ClippyCheck {
         if matches!(self.deps_mode, ClippyDepsMode::NoDeps) {
             args.insert(1, "--no-deps".into());
         }
+        if self.package == AXSTD_STD_PACKAGE
+            && matches!(&self.kind, ClippyCheckKind::Feature(feature) if feature == AXSTD_STD_DEFAULT_FEATURE)
+        {
+            args = vec![
+                "clippy".into(),
+                "-p".into(),
+                self.package.clone(),
+                "--no-default-features".into(),
+                "--features".into(),
+                AXSTD_STD_CLIPPY_FEATURES.into(),
+            ];
+        }
         if let Some(target) = &self.target {
             args.extend(["--target".into(), target.clone()]);
         }
@@ -453,6 +477,76 @@ fn normalize_clippy_target(target: &str) -> &str {
         .unwrap_or(target)
 }
 
+fn clippy_target_arch(target: &str) -> Option<&'static str> {
+    if target.starts_with("aarch64-") {
+        Some("aarch64")
+    } else if target.starts_with("loongarch64-") {
+        Some("loongarch64")
+    } else if target.starts_with("riscv64") {
+        Some("riscv64")
+    } else if target.starts_with("x86_64-") {
+        Some("x86_64")
+    } else {
+        None
+    }
+}
+
+fn ax_hal_platform_target_arches(feature: &str) -> Option<&'static [&'static str]> {
+    AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES
+        .iter()
+        .find_map(|(platform_feature, target_arches)| {
+            (*platform_feature == feature).then_some(*target_arches)
+        })
+}
+
+fn ax_hal_feature_dependency(feature_dependency: &str) -> Option<&str> {
+    feature_dependency
+        .strip_prefix("ax-hal/")
+        .or_else(|| feature_dependency.strip_prefix("ax-hal?/"))
+}
+
+fn ax_hal_platform_constraints<'a>(
+    package: &'a Package,
+    feature: &'a str,
+) -> Vec<&'static [&'static str]> {
+    let mut constraints = Vec::new();
+    if package.name == AX_HAL_PACKAGE
+        && let Some(target_arches) = ax_hal_platform_target_arches(feature)
+    {
+        constraints.push(target_arches);
+    }
+
+    if let Some(feature_dependencies) = package.features.get(feature) {
+        constraints.extend(
+            feature_dependencies
+                .iter()
+                .filter_map(|feature_dependency| ax_hal_feature_dependency(feature_dependency))
+                .filter_map(ax_hal_platform_target_arches),
+        );
+    }
+
+    constraints
+}
+
+fn feature_supported_on_clippy_target(
+    package: &Package,
+    feature: &str,
+    target: Option<&str>,
+) -> bool {
+    let constraints = ax_hal_platform_constraints(package, feature);
+    if constraints.is_empty() {
+        return true;
+    }
+    let Some(target) = target else {
+        return false;
+    };
+    clippy_target_arch(target).is_some_and(|arch| {
+        constraints
+            .iter()
+            .all(|target_arches| target_arches.contains(&arch))
+    })
+}
+
 fn clippy_skip_reason(package: &Package) -> Option<&str> {
     UNSUPPORTED_CLIPPY_PACKAGES
         .iter()
@@ -476,20 +570,16 @@ fn skip_unsupported_packages(packages: Vec<SelectedClippyPackage>) -> Vec<Select
         .collect()
 }
 
-fn clippy_env(package: &Package, metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
-    if package.name == ARCEOS_RUST_PACKAGE {
-        return arceos_rust_clippy_env(metadata);
-    }
-
+fn clippy_env(package: &Package) -> Vec<(String, String)> {
     let Some(manifest_dir) = package.manifest_path.parent() else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let axconfig = manifest_dir.join(AXCONFIG_FILE);
     if !axconfig.exists() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
-    Ok(vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())])
+    vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())]
 }
 
 fn package_axconfig_path(package: &Package) -> Option<PathBuf> {
@@ -567,11 +657,25 @@ fn with_axconfig_env_override(
     env
 }
 
-fn arceos_rust_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
+fn axstd_std_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     let mut envs = HashMap::new();
-    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, false, metadata)
-        .context("failed to prepare arceos-rust clippy config")?;
+    crate::build::prepare_std_build_env(&mut envs, AXSTD_STD_CLIPPY_TARGET, false, metadata)
+        .context("failed to prepare ax-std std clippy config")?;
     Ok(envs.into_iter().collect())
+}
+
+fn feature_clippy_env(
+    package: &Package,
+    feature: &str,
+    base_env: Vec<(String, String)>,
+    axconfig_override: Option<&ClippyAxconfigOverride>,
+    metadata: &Metadata,
+) -> anyhow::Result<Vec<(String, String)>> {
+    if package.name == AXSTD_STD_PACKAGE && feature == AXSTD_STD_DEFAULT_FEATURE {
+        return axstd_std_clippy_env(metadata);
+    }
+
+    Ok(with_axconfig_env_override(base_env, axconfig_override))
 }
 
 fn expand_clippy_checks(
@@ -583,20 +687,22 @@ fn expand_clippy_checks(
 
     for selected in packages {
         let package = &selected.package;
-        let features: BTreeSet<_> = package
+        let mut features: BTreeSet<_> = package
             .features
             .keys()
             .filter(|feature| feature.as_str() != DEFAULT_FEATURE)
             .cloned()
             .collect();
+        if package.name == AXSTD_STD_PACKAGE {
+            features.insert(AXSTD_STD_DEFAULT_FEATURE.to_string());
+        }
         let targets = docs_rs_targets(package);
         let target_iter = if targets.is_empty() {
             vec![None]
         } else {
             targets.into_iter().map(Some).collect()
         };
-        let env = clippy_env(package, metadata)
-            .with_context(|| format!("failed to prepare clippy env for `{}`", package.name))?;
+        let env = clippy_env(package);
         let axconfig_overrides = feature_axconfig_overrides(package);
 
         for target in target_iter {
@@ -610,6 +716,9 @@ fn expand_clippy_checks(
             });
 
             for feature in &features {
+                if !feature_supported_on_clippy_target(package, feature, target.as_deref()) {
+                    continue;
+                }
                 let axconfig_override = axconfig_overrides.get(feature).and_then(|overrides| {
                     clippy_axconfig_override(
                         package,
@@ -619,12 +728,25 @@ fn expand_clippy_checks(
                         &workspace_root,
                     )
                 });
+                let feature_env = feature_clippy_env(
+                    package,
+                    feature,
+                    env.clone(),
+                    axconfig_override.as_ref(),
+                    metadata,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to prepare clippy env for `{}` feature `{feature}`",
+                        package.name
+                    )
+                })?;
                 checks.push(ClippyCheck {
                     package: package.name.to_string(),
                     kind: ClippyCheckKind::Feature(feature.clone()),
                     deps_mode: selected.deps_mode.clone(),
                     target: target.clone(),
-                    env: with_axconfig_env_override(env.clone(), axconfig_override.as_ref()),
+                    env: feature_env,
                     axconfig_override,
                 });
             }
@@ -1648,6 +1770,106 @@ mod tests {
     }
 
     #[test]
+    fn ax_hal_platform_features_are_filtered_by_target_arch() {
+        let checks = expand(&[pkg(
+            "ax-hal",
+            "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
+            &[
+                ("irq", &[]),
+                ("loongarch64-qemu-virt", &[]),
+                ("x86-pc", &[]),
+            ],
+            Some(&["loongarch64-unknown-none", "x86_64-unknown-none"]),
+        )]);
+
+        let has_feature_on_target = |feature: &str, target: &str| {
+            checks.iter().any(|check| {
+                matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
+                    && check.target.as_deref() == Some(target)
+            })
+        };
+
+        assert!(has_feature_on_target(
+            "irq",
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(has_feature_on_target("irq", "x86_64-unknown-none"));
+        assert!(has_feature_on_target(
+            "loongarch64-qemu-virt",
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(!has_feature_on_target(
+            "loongarch64-qemu-virt",
+            "x86_64-unknown-none"
+        ));
+        assert!(has_feature_on_target("x86-pc", "x86_64-unknown-none"));
+        assert!(!has_feature_on_target(
+            "x86-pc",
+            "loongarch64-unknown-none-softfloat"
+        ));
+    }
+
+    #[test]
+    fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
+        let checks = expand(&[pkg(
+            "ax-hal",
+            "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
+            &[("irq", &[]), ("plat-dyn", &[]), ("x86-pc", &[])],
+            None,
+        )]);
+
+        assert!(checks.iter().any(|check| {
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "irq")
+        }));
+        assert!(!checks.iter().any(|check| {
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "plat-dyn")
+        }));
+        assert!(!checks.iter().any(|check| {
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "x86-pc")
+        }));
+    }
+
+    #[test]
+    fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
+        let checks = expand(&[pkg(
+            "platform-forwarder",
+            "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
+            &[
+                ("irq", &["ax-hal/irq"]),
+                ("loongarch64-qemu-virt", &["ax-hal/loongarch64-qemu-virt"]),
+                ("x86-pc", &["ax-hal/x86-pc"]),
+            ],
+            Some(&["loongarch64-unknown-none", "x86_64-unknown-none"]),
+        )]);
+
+        let has_feature_on_target = |feature: &str, target: &str| {
+            checks.iter().any(|check| {
+                matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
+                    && check.target.as_deref() == Some(target)
+            })
+        };
+
+        assert!(has_feature_on_target(
+            "irq",
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(has_feature_on_target("irq", "x86_64-unknown-none"));
+        assert!(has_feature_on_target(
+            "loongarch64-qemu-virt",
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(!has_feature_on_target(
+            "loongarch64-qemu-virt",
+            "x86_64-unknown-none"
+        ));
+        assert!(has_feature_on_target("x86-pc", "x86_64-unknown-none"));
+        assert!(!has_feature_on_target(
+            "x86-pc",
+            "loongarch64-unknown-none-softfloat"
+        ));
+    }
+
+    #[test]
     fn nested_docs_rs_targets_expand_base_checks() {
         let checks = expand(&[pkg_with_metadata(
             "alpha",
@@ -1851,16 +2073,14 @@ mod tests {
     }
 
     #[test]
-    fn arceos_rust_config_is_passed_as_clippy_env() {
-        const ARCEOS_RUST_CONFIG_ENV: &str = "ARCEOS_RUST_CONFIG";
-
+    fn axstd_default_config_is_passed_as_clippy_env() {
         let metadata = crate::build::workspace_metadata().unwrap();
         let package = metadata
             .packages
             .iter()
-            .find(|package| package.name == ARCEOS_RUST_PACKAGE)
+            .find(|package| package.name == AXSTD_STD_PACKAGE)
             .cloned()
-            .expect("arceos-rust package should be in workspace metadata");
+            .expect("ax-std package should be in workspace metadata");
 
         let checks = expand_clippy_checks(
             &[SelectedClippyPackage {
@@ -1872,14 +2092,42 @@ mod tests {
         .unwrap();
 
         assert!(
-            checks[0].env.iter().any(|(key, value)| {
-                key == ARCEOS_RUST_CONFIG_ENV
-                    && value.ends_with(
-                        "tmp/axbuild/axconfig/arceos-rust/x86_64-unknown-none/.axconfig.toml",
-                    )
-            }),
-            "expected {ARCEOS_RUST_CONFIG_ENV} in {:?}",
+            checks[0].env.is_empty(),
+            "base ax-std clippy check should not use std-build env: {:?}",
             checks[0].env
+        );
+
+        let std_check = checks
+            .iter()
+            .find(|check| {
+                matches!(
+                    &check.kind,
+                    ClippyCheckKind::Feature(feature) if feature == AXSTD_STD_DEFAULT_FEATURE
+                )
+            })
+            .expect("ax-std default clippy check should exist");
+
+        assert!(
+            std_check.env.iter().any(|(key, value)| {
+                key == AX_CONFIG_PATH_ENV
+                    && value
+                        .ends_with("tmp/axbuild/axconfig/ax-std/x86_64-unknown-none/.axconfig.toml")
+            }),
+            "expected {AX_CONFIG_PATH_ENV} in {:?}",
+            std_check.env
+        );
+        assert!(
+            !std_check.env.iter().any(|(key, _)| key == "RUSTFLAGS"),
+            "std ax-std clippy check should not inject custom RUSTFLAGS: {:?}",
+            std_check.env
+        );
+        assert!(
+            std_check
+                .cargo_args()
+                .windows(2)
+                .any(|window| window == ["--features", AXSTD_STD_CLIPPY_FEATURES]),
+            "expected expanded ax-std std features in {:?}",
+            std_check.cargo_args()
         );
     }
 

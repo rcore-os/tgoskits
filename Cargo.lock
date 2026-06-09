@@ -249,34 +249,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-rust"
-version = "0.1.2"
-dependencies = [
- "walkdir",
-]
-
-[[package]]
-name = "arceos-rust-interface"
-version = "1.1.0"
-dependencies = [
- "ax-api",
- "ax-driver",
- "ax-errno 0.6.0",
- "ax-feat",
- "ax-hal",
- "ax-io",
- "ax-kspin",
- "ax-posix-api",
- "ax-runtime",
- "log",
- "rand 0.9.4",
-]
-
-[[package]]
-name = "arceos-std-arce_agent"
+name = "arceos-arce_agent"
 version = "0.2.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
  "env_logger",
  "log",
  "minreq",
@@ -285,46 +261,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-std-helloworld"
+name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-httpclient"
-version = "0.1.0"
+name = "arceos-helloworld-myplat"
+version = "0.3.1"
 dependencies = [
- "arceos-rust",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-x86-pc",
+ "ax-std",
+ "cfg-if",
 ]
 
 [[package]]
-name = "arceos-std-httpserver"
+name = "arceos-httpclient"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-io_test"
+name = "arceos-httpserver"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-thread_test"
+name = "arceos-io_test"
 version = "0.1.0"
 dependencies = [
- "arceos-rust",
+ "ax-std",
 ]
 
 [[package]]
-name = "arceos-std-tokio_test"
-version = "0.1.0"
+name = "arceos-shell"
+version = "0.3.1"
 dependencies = [
- "arceos-rust",
- "tokio",
+ "ax-std",
 ]
 
 [[package]]
@@ -339,6 +317,21 @@ dependencies = [
  "axfs-ng-vfs",
  "embedded-graphics",
  "rand 0.8.6",
+]
+
+[[package]]
+name = "arceos-thread_test"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-tokio_test"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+ "tokio",
 ]
 
 [[package]]
@@ -858,45 +851,6 @@ name = "ax-handler-table"
 version = "0.3.7"
 
 [[package]]
-name = "ax-helloworld"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "ax-helloworld-myplat"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-plat-loongarch64-qemu-virt",
- "ax-plat-x86-pc",
- "ax-std",
- "cfg-if",
-]
-
-[[package]]
-name = "ax-httpclient"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "ax-httpserver"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
 name = "ax-input"
 version = "0.5.15"
 dependencies = [
@@ -1321,24 +1275,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-shell"
-version = "0.3.1"
-dependencies = [
- "ax-driver",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
 name = "ax-std"
 version = "0.5.16"
 dependencies = [
+ "ax-alloc",
  "ax-api",
+ "ax-driver",
  "ax-errno 0.6.0",
  "ax-feat",
+ "ax-hal",
  "ax-io",
  "ax-kspin",
  "ax-lazyinit",
+ "ax-posix-api",
+ "ax-runtime",
+ "libc",
  "lock_api",
  "spin 0.12.0",
 ]
@@ -7889,6 +7840,7 @@ dependencies = [
  "ax-driver",
  "ax-feat",
  "ax-hal",
+ "ax-std",
  "axbuild",
  "axplat-dyn",
  "clap",
@@ -8163,61 +8115,6 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
-]
-
-[[package]]
-name = "test-arceos-std-arce_agent"
-version = "0.2.0"
-dependencies = [
- "arceos-rust",
- "env_logger",
- "log",
- "minreq",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "test-arceos-std-helloworld"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "test-arceos-std-httpclient"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "test-arceos-std-httpserver"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "test-arceos-std-io_test"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "test-arceos-std-thread_test"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "test-arceos-std-tokio_test"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
- "tokio",
 ]
 
 [[package]]

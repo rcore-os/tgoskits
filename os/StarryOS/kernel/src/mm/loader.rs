@@ -460,12 +460,10 @@ impl ElfCacheEntry {
 ///
 /// Per-arch policy:
 /// - **loongarch64**: report the baseline the kernel actually provides. The
-///   platform enables LSX (128-bit vectors) at boot via `enable_lsx()`
-///   (`EUEN.SXE`), so we set `CPUCFG | LAM | UAL | FPU | LSX`. This is required:
-///   numpy on Alpine loongarch is built with an LSX baseline and refuses to
-///   import unless `HWCAP_LOONGARCH_LSX` (bit 4) is set. LASX (256-bit, bit 5)
-///   is intentionally *not* set because the kernel does not enable `EUEN.ASXE`;
-///   claiming it could trap when userspace executes 256-bit ops.
+///   platform enables LSX (128-bit vectors) and LASX (256-bit vectors) at boot
+///   via `EUEN.SXE`/`EUEN.ASXE`, and the task/signal save paths preserve all 256
+///   vector bits. Therefore we set `CPUCFG | LAM | UAL | FPU | LSX | LASX`.
+///   This matters for feature-dispatching libraries such as OpenSSL and numpy.
 /// - **riscv64**: report the baseline ISA bits expected by Linux-compatible
 ///   user space (`IMAFDC`).
 /// - **x86_64 / aarch64**: 0. x86 uses CPUID; aarch64 ASIMD/NEON is mandatory.
@@ -478,11 +476,13 @@ const fn hwcap_value() -> usize {
         const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
         const HWCAP_LOONGARCH_FPU: usize = 1 << 3;
         const HWCAP_LOONGARCH_LSX: usize = 1 << 4;
+        const HWCAP_LOONGARCH_LASX: usize = 1 << 5;
         HWCAP_LOONGARCH_CPUCFG
             | HWCAP_LOONGARCH_LAM
             | HWCAP_LOONGARCH_UAL
             | HWCAP_LOONGARCH_FPU
             | HWCAP_LOONGARCH_LSX
+            | HWCAP_LOONGARCH_LASX
     }
     #[cfg(target_arch = "riscv64")]
     {

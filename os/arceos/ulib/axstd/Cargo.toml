@@ -14,11 +14,18 @@ authors = [
 description = "ArceOS user library with an interface similar to rust std"
 license.workspace = true
 
+[lib]
+name = "ax_std"
+crate-type = ["rlib", "staticlib"]
+
 [features]
-default = []
+default = ["alloc", "tls", "fd"]
+
+# libc compatibility surface used when ax-std is linked as fake libc for Rust std.
+std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-feat/smp", "ax-kspin/smp"]
+smp = ["ax-feat/smp", "ax-kspin/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-feat/fp-simd"]
@@ -30,24 +37,27 @@ uspace = ["ax-feat/uspace"]
 hv = ["ax-feat/hv"]
 
 # Interrupts
-irq = ["ax-api/irq", "ax-feat/irq"]
+irq = ["ax-api/irq", "ax-feat/irq", "ax-posix-api/irq"]
 ipi = ["ax-api/ipi", "ax-feat/ipi"]
 
 # Custom or default platforms
 ext-ld = ["ax-feat/ext-ld"]
-myplat = ["ax-feat/myplat"]
-defplat = ["ax-feat/defplat"]
-plat-dyn = ["ax-feat/plat-dyn"]
+myplat = ["alloc", "tls", "fd", "ax-feat/myplat"]
+defplat = ["alloc", "tls", "fd", "ax-feat/defplat"]
+plat-dyn = ["alloc", "tls", "fd", "ax-feat/plat-dyn"]
+x86-pc = ["alloc", "tls", "fd", "ax-hal/x86-pc"]
+aarch64-qemu-virt = ["alloc", "tls", "fd"]
+loongarch64-qemu-virt = ["alloc", "tls", "fd", "ax-hal/loongarch64-qemu-virt"]
 
 # Memory
-alloc = ["ax-api/alloc", "ax-feat/alloc", "ax-io/alloc"]
+alloc = ["ax-api/alloc", "ax-feat/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["ax-feat/paging", "alloc"]
 dma = ["ax-api/dma", "ax-feat/dma"]
 tls = ["ax-feat/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-feat/multitask"]
-lockdep = ["ax-feat/lockdep"]
+multitask = ["ax-api/multitask", "ax-feat/multitask", "ax-posix-api/multitask"]
+lockdep = ["ax-feat/lockdep", "ax-posix-api/lockdep"]
 task-ext = ["ax-feat/task-ext"]
 sched-fifo = ["ax-feat/sched-fifo"]
 sched-rr = ["ax-feat/sched-rr"]
@@ -55,13 +65,37 @@ sched-cfs = ["ax-feat/sched-cfs"]
 stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
 
 # File system
-fs = ["ax-api/fs", "ax-feat/fs"]
-ext4fs = ["ax-api/fs", "ax-feat/fs"]
-fatfs = ["ax-api/fs", "ax-feat/fs"]
+fs = [
+    "ax-api/fs",
+    "ax-feat/fs",
+    "ax-posix-api/fs",
+    "ax-driver/plat-static",
+    "ax-driver/virtio-blk",
+    "fd",
+]
+ext4fs = ["fs"]
+fatfs = ["fs"]
 
 # Networking
-net = ["ax-api/net", "ax-feat/net"]
+net = [
+    "ax-api/net",
+    "ax-feat/net",
+    "ax-posix-api/net",
+    "ax-driver/plat-static",
+    "ax-driver/virtio-net",
+    "fd",
+]
 dns = []
+
+# libc compatibility surface used when ax-std is linked as fake libc for Rust std.
+fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
+
+# Driver feature forwards used by std-aware apps that depend on `axstd` directly.
+virtio-blk = ["ax-driver/virtio-blk"]
+virtio-net = ["ax-driver/virtio-net"]
+virtio-gpu = ["ax-driver/virtio-gpu"]
+virtio-input = ["ax-driver/virtio-input"]
+virtio-socket = ["ax-driver/virtio-socket"]
 
 # Display
 display = ["ax-api/display", "ax-feat/display"]
@@ -78,10 +112,16 @@ dwarf = ["ax-feat/dwarf"]
 
 [dependencies]
 ax-api.workspace = true
+ax-alloc.workspace = true
+ax-driver.workspace = true
 ax-errno.workspace = true
 ax-feat.workspace = true
+ax-hal.workspace = true
 ax-io.workspace = true
 ax-kspin.workspace = true
 ax-lazyinit.workspace = true
+ax-posix-api.workspace = true
+ax-runtime.workspace = true
+libc.workspace = true
 lock_api.workspace = true
 spin.workspace = true

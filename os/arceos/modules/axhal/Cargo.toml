@@ -63,6 +63,7 @@ hv = [
 axvisor-linker = []
 
 # Custom or default platforms
+host-test = []
 myplat = []
 plat-dyn = ["axplat-dyn"]
 x86-pc = ["dep:ax-plat-x86-pc"]
@@ -92,15 +93,13 @@ log.workspace = true
 ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }
 ax-percpu = { workspace = true, features = ["non-zero-vma"] }
+axplat-dyn = { workspace = true, default-features = false, optional = true }
 rdrive.workspace = true
 spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-plat-x86-pc = { workspace = true, optional = true }
 ax-plat-x86-qemu-q35 = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "none")'.dependencies]
-axplat-dyn = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-plat-riscv64-sg2002 = { workspace = true, optional = true }

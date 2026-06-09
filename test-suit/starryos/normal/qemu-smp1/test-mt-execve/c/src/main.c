@@ -174,6 +174,46 @@ static void *nonleader_pending_sig_exec_thread(void *arg)
     return NULL;
 }
 
+static void *assert_thread_inherits_blocked_sigusr1(void *arg)
+{
+    (void)arg;
+    sigset_t now;
+    sigemptyset(&now);
+    if (sigprocmask(SIG_SETMASK, NULL, &now) != 0) {
+        fprintf(stderr, "FAIL: child thread sigprocmask query: %s\n",
+                strerror(errno));
+        return (void *)43L;
+    }
+    if (!sigismember(&now, SIGUSR1)) {
+        fprintf(stderr,
+                "FAIL: pthread child did not inherit blocked SIGUSR1 mask\n");
+        return (void *)44L;
+    }
+    return NULL;
+}
+
+static void assert_pthread_inherits_blocked_sigusr1(void)
+{
+    pthread_t th;
+    if (pthread_create(&th, NULL, assert_thread_inherits_blocked_sigusr1,
+                       NULL) != 0) {
+        fprintf(stderr, "FAIL: spawn signal-mask inheritance thread\n");
+        _exit(2);
+    }
+
+    void *result = NULL;
+    if (pthread_join(th, &result) != 0) {
+        fprintf(stderr, "FAIL: join signal-mask inheritance thread\n");
+        _exit(2);
+    }
+    if (result != NULL) {
+        fprintf(stderr,
+                "FAIL: signal-mask inheritance thread returned %ld\n",
+                (long)result);
+        _exit(2);
+    }
+}
+
 /* Phase 4 spam-thread body. Tries a bad-path execve in a tight loop so
  * it holds the per-process exec serializer briefly each iteration. The
  * goal is to maximize the chance that the racing "good execve" thread
@@ -746,6 +786,7 @@ int main(int argc, char *argv[])
                     strerror(errno));
             _exit(2);
         }
+        assert_pthread_inherits_blocked_sigusr1();
 
         /* Process-directed signal lands in the shared pending set
          * (POSIX) and so doesn't depend on which thread eventually

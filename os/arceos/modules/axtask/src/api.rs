@@ -255,11 +255,6 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
 
             // Migrate the current task to the correct CPU using the migration task.
             current_run_queue::<NoPreemptIrqSave>().migrate_current(migration_task);
-
-            assert!(
-                cpumask.get(ax_hal::percpu::this_cpu_id()),
-                "Migration failed"
-            );
         }
         true
     }

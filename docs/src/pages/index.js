@@ -305,11 +305,11 @@ function HeroTerminal() {
   const sessions = useMemo(() => [
     {
       os: 'ArceOS',
-      command: 'cargo xtask arceos qemu --package ax-helloworld --arch aarch64',
+      command: 'cargo xtask arceos qemu --package arceos-helloworld --arch aarch64',
       output: [
-        'Building ArceOS package ax-helloworld',
+        'Building ArceOS package arceos-helloworld',
         'Launching qemu-system-aarch64 on the virt platform',
-        'Booting app: ax-helloworld',
+        'Booting app: arceos-helloworld',
         'Hello, world!',
       ],
     },
@@ -564,7 +564,7 @@ function SystemsSection() {
 function WorkflowSection() {
   const steps = [
     { index: '01', title: '理解仓库分层', desc: '阅读 overview 与 repo 文档，建立组件层、系统层和平台层的心智模型。', to: '/docs/introduction/overview', linkLabel: '项目概览', command: 'docs/introduction/overview' },
-    { index: '02', title: '跑通 QEMU 构建', desc: '选择目标系统，用 xtask 一条命令完成编译、镜像生成和虚拟平台运行。', to: '/docs/quickstart/overview', linkLabel: '快速开始', command: 'cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf' },
+    { index: '02', title: '跑通 QEMU 构建', desc: '选择目标系统，用 xtask 一条命令完成编译、镜像生成和虚拟平台运行。', to: '/docs/quickstart/overview', linkLabel: '快速开始', command: 'cargo xtask arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf' },
     { index: '03', title: '参与开发与验证', desc: '进入具体系统指南，了解目录约定、构建命令和验证策略后开始贡献。', to: '/docs/architecture/overview', linkLabel: '架构与验证', command: 'cargo xtask clippy && cargo xtask test' },
   ];
 

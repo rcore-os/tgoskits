@@ -9,7 +9,6 @@ use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use regex::Regex;
-use serde::Deserialize;
 
 use super::{ArceOS, build, cbuild, ensure_qemu_runtime_assets};
 use crate::{
@@ -205,7 +204,6 @@ impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
 struct CTestDef {
     name: String,
     build_group: String,
-    case_dir: PathBuf,
     build_config_path: PathBuf,
     qemu_config_path: PathBuf,
 }
@@ -218,12 +216,6 @@ impl qemu_test::BuildConfigRef for CTestDef {
     fn build_config_path(&self) -> &Path {
         &self.build_config_path
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct CTestBuildConfig {
-    #[serde(flatten)]
-    build: build::ArceosBuildInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -843,7 +835,7 @@ async fn run_rust_qemu_case(
         );
     }
 
-    let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
+    let elf = crate::backtrace::std_test_elf_path(&workspace, target, package, debug);
     let stream_session = if auto_symbolize {
         crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
     } else {
@@ -1279,7 +1271,6 @@ fn load_arceos_c_test_suit_qemu_case(
     Ok(CTestDef {
         name: feature.to_string(),
         build_group: ARCEOS_C_TEST_BUILD_GROUP.to_string(),
-        case_dir: root.to_path_buf(),
         build_config_path: arceos_c_test_suit_build_config_path(root, target)?,
         qemu_config_path: arceos_c_test_suit_qemu_config_path(root, arch)?,
     })
@@ -1301,36 +1292,22 @@ fn arceos_c_test_suit_qemu_config_path(root: &Path, arch: &str) -> anyhow::Resul
     bail!("ArceOS C test suite must provide {}", path.display())
 }
 
-fn load_c_test_build_config(path: &Path) -> anyhow::Result<CTestBuildConfig> {
-    toml::from_str(&fs::read_to_string(path)?)
-        .with_context(|| format!("failed to parse C build config {}", path.display()))
+fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosBuildConfig> {
+    let config = build::load_arceos_build_config(path)
+        .with_context(|| format!("failed to parse C build config {}", path.display()))?;
+    if config.app_c.is_none() {
+        bail!(
+            "ArceOS C qemu test build config {} must set `app-c = \"c\"` or another C source \
+             directory",
+            path.display()
+        );
+    }
+    Ok(config)
 }
 
 fn load_c_test_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
     toml::from_str(&fs::read_to_string(path)?)
         .with_context(|| format!("failed to parse C qemu config {}", path.display()))
-}
-
-fn resolve_c_test_source_dir(case_dir: &Path) -> anyhow::Result<PathBuf> {
-    let source_dir = case_dir.join("c");
-    if source_dir.is_dir() && dir_has_c_source(&source_dir)? {
-        return source_dir
-            .canonicalize()
-            .with_context(|| format!("failed to resolve C source dir {}", source_dir.display()));
-    }
-
-    bail!(
-        "ArceOS C qemu test case {} must contain a c/ source asset directory with .c files",
-        case_dir.display()
-    )
-}
-
-fn dir_has_c_source(dir: &Path) -> anyhow::Result<bool> {
-    Ok(fs::read_dir(dir)
-        .with_context(|| format!("failed to read {}", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "c")))
 }
 
 fn c_test_artifact_index(test: &CTestDef) -> usize {
@@ -1417,6 +1394,14 @@ async fn build_and_run_c_test(
     let workspace_root = arceos.app.workspace_root().to_path_buf();
     let build_config = load_c_test_build_config(&test.build_config_path)?;
     let qemu_config = load_c_test_qemu_config(&test.qemu_config_path)?;
+    let mode = build::load_arceos_build_mode(&test.build_config_path)?;
+    let build::ArceosBuildMode::AppC { app_dir, app_name } = mode else {
+        bail!(
+            "ArceOS C qemu test build config {} must set `app-c = \"c\"` or another C source \
+             directory",
+            test.build_config_path.display()
+        );
+    };
     let artifacts = c_test_artifact_paths(
         &workspace_root,
         &test.build_group,
@@ -1438,14 +1423,15 @@ async fn build_and_run_c_test(
         None,
         SnapshotPersistence::Discard,
     )?;
-    let cargo = build::load_cargo_config(&request)?;
+    let cargo = build::load_c_app_cargo_config(&request)?;
     let input = c_test_build_input(
-        &test.case_dir,
+        app_dir,
+        app_name,
         artifacts.target_dir,
         artifacts.out_dir,
         &test.name,
-        build_config.build.features.clone(),
-    )?;
+        build_config.build_info.features.clone(),
+    );
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
     let mut qemu = qemu_config;
     qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
@@ -1462,21 +1448,21 @@ async fn build_and_run_c_test(
 }
 
 fn c_test_build_input(
-    case_dir: &Path,
+    app_dir: PathBuf,
+    app_name: String,
     target_dir: PathBuf,
     out_dir: PathBuf,
     feature: &str,
     mut features: Vec<String>,
-) -> anyhow::Result<cbuild::ArceosCBuildInput> {
-    let source_dir = resolve_c_test_source_dir(case_dir)?;
+) -> cbuild::ArceosCBuildInput {
     features.push(format!("c-define:{}", c_test_feature_define(feature)));
-    Ok(cbuild::ArceosCBuildInput {
-        app_dir: source_dir,
-        app_name: ARCEOS_C_TEST_BUILD_GROUP.to_string(),
+    cbuild::ArceosCBuildInput {
+        app_dir,
+        app_name,
         target_dir,
         out_dir,
         features,
-    })
+    }
 }
 
 fn c_test_feature_define(feature: &str) -> String {
@@ -1758,23 +1744,18 @@ mod tests {
     #[test]
     fn arceos_c_build_input_adds_selected_feature_define() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("c")).unwrap();
-        std::fs::write(
-            dir.path().join("c/main.c"),
-            "int main(void) { return 0; }\n",
-        )
-        .unwrap();
+        let app_dir = dir.path().join("c");
         let input = c_test_build_input(
-            dir.path(),
+            app_dir.clone(),
+            ARCEOS_C_TEST_BUILD_GROUP.to_string(),
             PathBuf::from("/tmp/target"),
             PathBuf::from("/tmp/out"),
             "pthread-basic",
             vec!["alloc".to_string()],
-        )
-        .unwrap();
+        );
 
         assert_eq!(input.app_name, ARCEOS_C_TEST_BUILD_GROUP);
-        assert!(input.app_dir.ends_with("c"));
+        assert_eq!(input.app_dir, app_dir);
         assert!(
             input
                 .features
@@ -1806,7 +1787,6 @@ mod tests {
 
         assert_eq!(case.name, "mem");
         assert_eq!(case.build_group, ARCEOS_C_TEST_BUILD_GROUP);
-        assert_eq!(case.case_dir, root);
         assert!(
             case.build_config_path
                 .ends_with("build-x86_64-unknown-none.toml")
@@ -1820,14 +1800,26 @@ mod tests {
         let path = dir.path().join("build-x86_64-unknown-none.toml");
         std::fs::write(
             &path,
-            "features = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = 4\n\n[env]\n",
+            "app-c = \"c\"\nfeatures = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = \
+             4\n\n[env]\n",
         )
         .unwrap();
 
         let config = load_c_test_build_config(&path).unwrap();
-        assert_eq!(config.build.features, vec!["alloc", "paging"]);
-        assert_eq!(config.build.log, build::LogLevel::Trace);
-        assert_eq!(config.build.max_cpu_num, Some(4));
+        assert_eq!(config.app_c, Some(PathBuf::from("c")));
+        assert_eq!(config.build_info.features, vec!["alloc", "paging"]);
+        assert_eq!(config.build_info.log, build::LogLevel::Trace);
+        assert_eq!(config.build_info.max_cpu_num, Some(4));
+    }
+
+    #[test]
+    fn load_c_test_build_config_rejects_missing_app_c() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("build-x86_64-unknown-none.toml");
+        std::fs::write(&path, "features = [\"alloc\"]\nlog = \"Info\"\n\n[env]\n").unwrap();
+
+        let err = load_c_test_build_config(&path).unwrap_err();
+        assert!(err.to_string().contains("must set `app-c = \"c\"`"));
     }
 
     #[test]

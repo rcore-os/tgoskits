@@ -1,4 +1,4 @@
-#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(not(feature = "umod"), no_std)]
 extern crate alloc;
 #[macro_use]
 extern crate log;

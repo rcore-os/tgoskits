@@ -265,7 +265,7 @@ int main(void)
 
     CHECK_ERR(syscall(SYS_io_submit, 0, 1, NULL), EINVAL,
               "io_submit rejects invalid context");
-    CHECK_ERR(syscall(SYS_io_submit, ctx, -1, NULL), EINVAL,
+    CHECK_ERR(syscall(SYS_io_submit, ctx, (long)-1, NULL), EINVAL,
               "io_submit rejects negative nr");
     CHECK_ERR(syscall(SYS_io_submit, ctx, 1, (void *)(uintptr_t)1), EFAULT,
               "io_submit rejects invalid iocb pointer array");

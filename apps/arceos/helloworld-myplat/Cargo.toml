@@ -1,0 +1,27 @@
+[package]
+name = "arceos-helloworld-myplat"
+version = "0.3.1"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+license.workspace = true
+publish = false
+
+[features]
+default = []
+arceos = ["dep:ax-std"]
+x86-pc = ["dep:ax-plat-x86-pc"]
+loongarch64-qemu-virt = ["dep:ax-plat-loongarch64-qemu-virt"]
+
+[dependencies]
+cfg-if.workspace = true
+ax-std = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+ax-plat-x86-pc = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
+
+[package.metadata.axstd]
+features = ["log-level-debug"]

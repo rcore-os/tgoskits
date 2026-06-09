@@ -1,28 +1,23 @@
 extern crate alloc;
 
-#[cfg(target_os = "none")]
 use core::time::Duration;
 
-#[cfg(target_os = "none")]
 use crab_usb::USBHost;
-#[cfg(target_os = "none")]
 use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
 use rdrive::DriverGeneric;
 
-#[cfg(all(feature = "rockchip-dwc-xhci", target_os = "none"))]
+#[cfg(feature = "rockchip-dwc-xhci")]
 mod dwc;
-#[cfg(all(feature = "xhci-mmio", target_os = "none"))]
+#[cfg(feature = "xhci-mmio")]
 mod xhci_mmio;
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(feature = "xhci-pci")]
 mod xhci_pci;
 
 pub type UsbHostDevice = rdrive::Device<PlatformUsbHost>;
 pub type UsbHostDeviceGuard = rdrive::DeviceGuard<PlatformUsbHost>;
 
-#[cfg(target_os = "none")]
 struct UsbKernel;
 
-#[cfg(target_os = "none")]
 impl DmaOp for UsbKernel {
     fn page_size(&self) -> usize {
         axklib::dma::op().page_size()
@@ -119,36 +114,25 @@ impl DmaOp for UsbKernel {
     }
 }
 
-#[cfg(target_os = "none")]
 impl crab_usb::KernelOp for UsbKernel {
     fn delay(&self, duration: Duration) {
         axklib::time::busy_wait(duration);
     }
 }
 
-#[cfg(target_os = "none")]
 static USB_KERNEL: UsbKernel = UsbKernel;
 
-#[cfg(target_os = "none")]
 pub fn usb_kernel() -> &'static dyn crab_usb::KernelOp {
     &USB_KERNEL
 }
 
-#[cfg(target_os = "none")]
 pub struct PlatformUsbHost {
     name: &'static str,
     irq_num: Option<usize>,
     host: USBHost,
 }
 
-#[cfg(not(target_os = "none"))]
-pub struct PlatformUsbHost {
-    name: &'static str,
-    irq_num: Option<usize>,
-}
-
 impl PlatformUsbHost {
-    #[cfg(target_os = "none")]
     fn new(name: &'static str, host: USBHost, irq_num: Option<usize>) -> Self {
         Self {
             name,
@@ -157,17 +141,10 @@ impl PlatformUsbHost {
         }
     }
 
-    #[cfg(not(target_os = "none"))]
-    fn new_stub(name: &'static str, irq_num: Option<usize>) -> Self {
-        Self { name, irq_num }
-    }
-
-    #[cfg(target_os = "none")]
     pub fn host(&self) -> &USBHost {
         &self.host
     }
 
-    #[cfg(target_os = "none")]
     pub fn host_mut(&mut self) -> &mut USBHost {
         &mut self.host
     }
@@ -184,26 +161,16 @@ impl DriverGeneric for PlatformUsbHost {
 }
 
 pub trait PlatformDeviceUsbHost {
-    #[cfg(target_os = "none")]
     fn register_usb_host(self, name: &'static str, host: USBHost, irq_num: Option<usize>);
-
-    #[cfg(not(target_os = "none"))]
-    fn register_usb_host_stub(self, name: &'static str, irq_num: Option<usize>);
 }
 
 impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
-    #[cfg(target_os = "none")]
     fn register_usb_host(self, name: &'static str, host: USBHost, irq_num: Option<usize>) {
         self.register(PlatformUsbHost::new(name, host, irq_num));
     }
-
-    #[cfg(not(target_os = "none"))]
-    fn register_usb_host_stub(self, name: &'static str, irq_num: Option<usize>) {
-        self.register(PlatformUsbHost::new_stub(name, irq_num));
-    }
 }
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(feature = "xhci-pci")]
 pub(crate) fn align_up_4k(size: usize) -> usize {
     const MASK: usize = 0xfff;
     (size + MASK) & !MASK
@@ -226,7 +193,7 @@ fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
     }
 }
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(feature = "xhci-pci")]
 fn pci_static_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
     let interrupt_pin = endpoint.interrupt_pin();
     if let Some(irq) = crate::pci::legacy_irq_for_endpoint(endpoint.address(), interrupt_pin) {
@@ -236,11 +203,11 @@ fn pci_static_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
     (line != 0 && line != u8::MAX).then_some(crate::pci::legacy_line_to_irq(line))
 }
 
-#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+#[cfg(feature = "xhci-pci")]
 pub(crate) fn pci_irq_or_error(
     endpoint: &rdrive::probe::pci::EndpointRc,
 ) -> Result<usize, rdrive::probe::OnProbeError> {
-    #[cfg(plat_dyn)]
+    #[cfg(pci_dyn_intx_route)]
     if let Some(irq) =
         crate::pci::fdt_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())?
     {

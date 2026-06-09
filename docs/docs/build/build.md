@@ -15,7 +15,7 @@ sidebar_label: "构建过程"
 
 ```mermaid
 flowchart TD
-    A["cargo xtask arceos build<br/>--package ax-helloworld"] --> B[1. 初始化 AppContext]
+    A["cargo xtask arceos build<br/>--package arceos-helloworld"] --> B[1. 初始化 AppContext]
     B --> C["2. 参数解析"]
     C --> C1["Snapshot 不存在 → 空 Snapshot<br/>CLI 参数 + 子系统默认值"]
     C1 --> C2["创建并写回 Snapshot<br/>(tmp/axbuild/.arceos.toml)"]
@@ -302,7 +302,7 @@ flowchart TD
 
 ### 编译期文件写入（write_if_changed）
 
-axbuild 在生成构建辅助文件（如 ArceOS std 的 `.cargo/config.toml` 和 `loongarch64-unknown-hermit.json`）时使用 `write_if_changed` 模式：写入前先读取已有内容，内容相同时跳过写入。这避免了因时间戳更新导致 cargo 不必要的重建——cargo 的增量编译依赖文件 mtime 判断是否需要重新编译，`write_if_changed` 确保只有真正变化的配置才会触发重建。
+axbuild 在生成构建辅助文件（如 ArceOS std 的 `.cargo/config.toml`、fake libc 预构建脚本和 linker wrapper）时使用 `write_if_changed` 模式：写入前先读取已有内容，内容相同时跳过写入。这避免了因时间戳更新导致 cargo 不必要的重建——cargo 的增量编译依赖文件 mtime 判断是否需要重新编译，`write_if_changed` 确保只有真正变化的配置才会触发重建。
 
 ### 环境变量作用域保护（EnvRestoreGuard）
 
