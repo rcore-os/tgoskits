@@ -22,6 +22,8 @@ extern crate log;
 extern crate log;
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("features `vmx` and `svm` are mutually exclusive");

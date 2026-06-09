@@ -17,10 +17,6 @@ mmio-api.workspace = true
 rdif-eth.workspace = true
 thiserror = { version = "2", default-features = false }
 
-[dev-dependencies]
-fdt-edit.workspace = true
-pcie.workspace = true
-
 [lib]
 test = false
 

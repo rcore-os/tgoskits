@@ -19,11 +19,6 @@ rdif-block.workspace = true
 spin.workspace = true
 tock-registers = "0.10"
 
-[dev-dependencies]
-byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }
-fdt-edit.workspace = true
-pcie.workspace = true
-
 [lib]
 test = false
 

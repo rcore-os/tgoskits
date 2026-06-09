@@ -221,44 +221,16 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 /// ```rust
 /// #![feature(used_with_arg)]
 ///
-/// use rdrive::{
-///     PlatformDevice, driver::*, module_driver, probe::OnProbeError, register::FdtInfo,
-/// };
-///
-/// struct ClkDriver {}
-///
-/// impl DriverGeneric for ClkDriver {
-///     fn name(&self) -> &str {
-///         "ClkDriver"
-///     }
-/// }
-///
-/// impl rdif_clk::Interface for ClkDriver {
-///     fn perper_enable(&mut self) {}
-///     fn get_rate(&self, _id: rdif_clk::ClockId) -> Result<u64, rdrive::KError> {
-///         Ok(1000000)
-///     }
-///     fn set_rate(&mut self, _id: rdif_clk::ClockId, _rate: u64) -> Result<(), rdrive::KError> {
-///         Ok(())
-///     }
-/// }
-///
-/// // Define probe function
-/// fn probe_clk(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
-///     // Implement specific device probing logic
-///     dev.register(rdif_clk::Clk::new(ClkDriver {}));
-///     Ok(())
-/// }
+/// use rdrive::{module_driver, register::*};
 ///
 /// // Use macro to generate driver registration module
 /// module_driver! {
-///     name: "CLK Driver",
+///     name: "Example Driver",
 ///     level: ProbeLevel::PostKernel,
-///     priority: ProbePriority::CLK,
-///     probe_kinds: &[ProbeKind::Fdt {
-///         compatibles: &["fixed-clock"],
-///         // Use `probe_clk` above; this usage is because doctests cannot find the parent module.
-///         on_probe: |fdt, dev|{
+///     priority: ProbePriority::DEFAULT,
+///     probe_kinds: &[ProbeKind::Static {
+///         on_probe: |dev| {
+///             dev.register(rdrive::driver::Empty);
 ///             Ok(())
 ///         },
 ///     }],

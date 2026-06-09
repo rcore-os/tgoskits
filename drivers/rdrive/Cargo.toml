@@ -25,9 +25,5 @@ rdif-base = { workspace = true }
 rdrive-macros.workspace = true
 rdif-pcie = { workspace = true }
 
-[dev-dependencies]
-rdif-intc.workspace = true
-rdif-clk.workspace = true
-
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86.workspace = true

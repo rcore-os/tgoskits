@@ -57,6 +57,7 @@ members = [
     "components/ctor_bare/ctor_bare_macros",
     "memory/*",
     "virtualization/*",
+    "virtualization/test_crates/virtualization-tests",
     "components/percpu/percpu",
     "components/percpu/percpu_macros",
 
@@ -73,6 +74,7 @@ members = [
     "drivers/rtc/*",
     "drivers/serial/*",
     "drivers/soc/rockchip/*",
+    "drivers/test_crates/*",
     "drivers/tpu/*",
     "drivers/usb/test_crates/*",
     "drivers/usb/usb-device/hid/*",
@@ -113,6 +115,9 @@ members = [
     "tools/qperf",
     "tools/qperf/analyzer",
     "xtask",
+]
+exclude = [
+    "virtualization/test_crates",
 ]
 
 [workspace.dependencies]

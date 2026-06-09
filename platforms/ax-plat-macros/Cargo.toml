@@ -14,7 +14,5 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
-[dev-dependencies]
-ax-crate-interface = { workspace = true }
 [lib]
 proc-macro = true

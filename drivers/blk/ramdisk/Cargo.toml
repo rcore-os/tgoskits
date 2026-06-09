@@ -12,6 +12,3 @@ version = "0.1.3"
 [dependencies]
 rdif-block = { workspace = true }
 spin = { workspace = true }
-
-[dev-dependencies]
-dma-api = { workspace = true }
