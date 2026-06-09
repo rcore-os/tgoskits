@@ -1,6 +1,6 @@
 [package]
 name = "loongarch_vcpu"
-version = "0.5.4"
+version = "0.5.5"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 description = "LoongArch VCPU implementation for ArceOS Hypervisor"

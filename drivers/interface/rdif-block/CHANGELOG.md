@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.8.0...rdif-block-v0.8.1) - 2026-06-09
+
+### Other
+
+- updated the following local packages: rdif-base, dma-api
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.7.1...rdif-block-v0.8.0) - 2026-06-03
 
 ### Other
