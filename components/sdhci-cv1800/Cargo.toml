@@ -1,0 +1,11 @@
+[package]
+name = "sdhci-cv1800"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+sdio-host = { workspace = true }
+ax-task = { workspace = true }
+axpoll = { workspace = true }
+log = { workspace = true }
