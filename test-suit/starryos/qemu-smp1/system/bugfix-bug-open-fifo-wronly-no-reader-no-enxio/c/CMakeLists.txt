@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-open-fifo-wronly-no-reader-no-enxio C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-open-fifo-wronly-no-reader-no-enxio src/main.c)
+target_compile_options(bug-open-fifo-wronly-no-reader-no-enxio PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-open-fifo-wronly-no-reader-no-enxio RUNTIME DESTINATION usr/bin/starry-test-suit)
