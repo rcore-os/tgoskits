@@ -1,13 +1,12 @@
 extern crate alloc;
 
 use alloc::{string::String, vec, vec::Vec};
-use core::{ffi::c_void, num::NonZeroUsize, ptr, ptr::NonNull, time::Duration};
+use core::{ffi::c_void, ptr, time::Duration};
 
 use uefi::{
     Handle, Status,
-    boot::{self, AllocateType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
-    mem::memory_map::MemoryType,
-    proto::network::http::{Http, HttpBinding, HttpHelper},
+    boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
+    proto::network::http::{Http, HttpBinding},
 };
 use uefi_raw::protocol::network::http::{
     HttpHeader, HttpMessage, HttpMethod, HttpRequestData, HttpResponseData, HttpStatusCode,
@@ -18,7 +17,6 @@ const MAX_KERNEL_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
 const KERNEL_RANGE_CHUNK_SIZE: usize = 1024;
 const HTTP_RETRY_LIMIT: usize = 8;
 const HTTP_RETRY_STALL: Duration = Duration::from_millis(250);
-const UEFI_PAGE_SIZE: usize = 4096;
 const KERNEL_PROGRESS_STEP_PERCENT: usize = 1;
 const KERNEL_PROGRESS_BAR_WIDTH: usize = 50;
 
@@ -39,89 +37,38 @@ pub enum DownloadError {
 pub enum KernelLoadError {
     ZeroSize,
     SizeTooLarge,
-    LoadAddressTooLarge,
-    LoadAddressNotAligned,
-    PageCountOverflow,
-    AllocateFailed,
     Download(DownloadError),
     SizeMismatch,
 }
 
-pub fn download_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
-    retry_http(|| download_body_once(url, max_len))
-}
-
-fn download_body_once(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
-    let handles =
-        boot::find_handles::<HttpBinding>().map_err(|_| DownloadError::HttpUnavailable)?;
-    let handle = handles
-        .first()
-        .copied()
-        .ok_or(DownloadError::NoHttpBinding)?;
-
-    let mut http = HttpHelper::new(handle).map_err(|_| DownloadError::HttpUnavailable)?;
-    http.configure()
-        .map_err(|_| DownloadError::ConfigureFailed)?;
-    http.request_get(url)
-        .map_err(|_| DownloadError::RequestFailed)?;
-
-    let response = http
-        .response_first(true)
-        .map_err(|_| DownloadError::ResponseFailed)?;
-    if response.body.len() > max_len {
-        return Err(DownloadError::BodyTooLarge);
+pub fn get_json_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
+    let mut client = HttpClient::new()?;
+    let response = retry_http(|| client.get(url, max_len))?;
+    if response.status != HttpStatusCode::STATUS_200_OK {
+        return Err(DownloadError::UnexpectedStatus);
     }
-
     Ok(response.body)
 }
 
-pub struct LoadedKernel {
-    pub ptr: NonNull<u8>,
-    pub page_count: usize,
-    pub size: usize,
+pub fn post_json_body(url: &str, body: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
+    let mut client = HttpClient::new()?;
+    let response = retry_http(|| client.post_json(url, body, max_len))?;
+    if response.status != HttpStatusCode::STATUS_200_OK {
+        return Err(DownloadError::UnexpectedStatus);
+    }
+    Ok(response.body)
 }
 
-pub fn download_kernel(
-    url: &str,
-    load_addr: u64,
-    expected_size: u64,
-) -> Result<LoadedKernel, KernelLoadError> {
+pub fn download_sized_body(url: &str, expected_size: u64) -> Result<Vec<u8>, KernelLoadError> {
     let expected_size = checked_kernel_size(expected_size)?;
-    let page_count = kernel_page_count(load_addr, expected_size)?;
-    crate::logln!(
-        "kernel_download_start: load={:#x} pages={} size={}",
-        load_addr,
-        page_count,
-        expected_size
-    );
-    let target = boot::allocate_pages(
-        AllocateType::Address(load_addr),
-        MemoryType::LOADER_DATA,
-        page_count,
-    )
-    .map_err(|_| KernelLoadError::AllocateFailed)?;
-
-    let received = match download_body_to_addr(url, target.as_ptr(), expected_size) {
-        Ok(received) => received,
-        Err(err) => {
-            unsafe {
-                let _ = boot::free_pages(target, page_count);
-            }
-            return Err(KernelLoadError::Download(err));
-        }
-    };
+    crate::logln!("body_download_start: size={}", expected_size);
+    let mut body = vec![0; expected_size];
+    let received = download_body_to_addr(url, body.as_mut_ptr(), expected_size)
+        .map_err(KernelLoadError::Download)?;
     if received != expected_size {
-        unsafe {
-            let _ = boot::free_pages(target, page_count);
-        }
         return Err(KernelLoadError::SizeMismatch);
     }
-
-    Ok(LoadedKernel {
-        ptr: target,
-        page_count,
-        size: expected_size,
-    })
+    Ok(body)
 }
 
 fn download_body_to_addr(
@@ -249,10 +196,6 @@ fn print_fixed_2(value: usize, unit: usize) {
     crate::log!("{}", hundredths);
 }
 
-pub fn retry_limit() -> usize {
-    HTTP_RETRY_LIMIT
-}
-
 fn retry_http<T>(mut op: impl FnMut() -> Result<T, DownloadError>) -> Result<T, DownloadError> {
     let mut last_error = None;
     for attempt in 1..=HTTP_RETRY_LIMIT {
@@ -343,6 +286,21 @@ impl HttpClient {
         Ok(response.body)
     }
 
+    fn get(&mut self, url: &str, max_len: usize) -> Result<HttpResponse, DownloadError> {
+        self.request_get(url, None)?;
+        self.response_first(max_len)
+    }
+
+    fn post_json(
+        &mut self,
+        url: &str,
+        body: &str,
+        max_len: usize,
+    ) -> Result<HttpResponse, DownloadError> {
+        self.request_post(url, body)?;
+        self.response_first(max_len)
+    }
+
     fn request_get(&mut self, url: &str, range: Option<&str>) -> Result<(), DownloadError> {
         let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
         let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
@@ -374,6 +332,56 @@ impl HttpClient {
         message.data.request = &mut request;
         message.header_count = headers.len();
         message.header = headers.as_mut_ptr();
+
+        let mut token = HttpToken {
+            status: Status::NOT_READY,
+            message: &mut message,
+            ..Default::default()
+        };
+
+        let protocol = self.protocol.as_mut().unwrap();
+        protocol
+            .request(&mut token)
+            .map_err(|_| DownloadError::RequestFailed)?;
+        wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::RequestFailed)
+    }
+
+    fn request_post(&mut self, url: &str, body: &str) -> Result<(), DownloadError> {
+        let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
+        let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
+        let mut host = String::from(host);
+        host.push('\0');
+        let mut content_type = String::from("application/json");
+        content_type.push('\0');
+        let mut content_length = String::new();
+        push_usize(&mut content_length, body.len());
+        content_length.push('\0');
+
+        let mut request = HttpRequestData {
+            method: HttpMethod::POST,
+            url: url16.as_ptr().cast::<u16>(),
+        };
+        let mut headers = [
+            HttpHeader {
+                field_name: c"Host".as_ptr().cast::<u8>(),
+                field_value: host.as_ptr(),
+            },
+            HttpHeader {
+                field_name: c"Content-Type".as_ptr().cast::<u8>(),
+                field_value: content_type.as_ptr(),
+            },
+            HttpHeader {
+                field_name: c"Content-Length".as_ptr().cast::<u8>(),
+                field_value: content_length.as_ptr(),
+            },
+        ];
+
+        let mut message = HttpMessage::default();
+        message.data.request = &mut request;
+        message.header_count = headers.len();
+        message.header = headers.as_mut_ptr();
+        message.body_length = body.len();
+        message.body = body.as_ptr().cast::<c_void>().cast_mut();
 
         let mut token = HttpToken {
             status: Status::NOT_READY,
@@ -515,20 +523,4 @@ fn checked_kernel_size(expected_size: u64) -> Result<usize, KernelLoadError> {
         return Err(KernelLoadError::SizeTooLarge);
     }
     Ok(expected_size as usize)
-}
-
-fn kernel_page_count(load_addr: u64, expected_size: usize) -> Result<usize, KernelLoadError> {
-    if load_addr as usize as u64 != load_addr {
-        return Err(KernelLoadError::LoadAddressTooLarge);
-    }
-    if load_addr as usize % UEFI_PAGE_SIZE != 0 {
-        return Err(KernelLoadError::LoadAddressNotAligned);
-    }
-
-    expected_size
-        .checked_add(UEFI_PAGE_SIZE - 1)
-        .map(|size| size / UEFI_PAGE_SIZE)
-        .and_then(NonZeroUsize::new)
-        .map(NonZeroUsize::get)
-        .ok_or(KernelLoadError::PageCountOverflow)
 }

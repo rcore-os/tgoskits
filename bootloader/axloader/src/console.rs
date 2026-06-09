@@ -3,7 +3,6 @@ use core::fmt::{self, Write};
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {{
-        uefi::print!($($arg)*);
         $crate::console::serial_print(format_args!($($arg)*));
     }};
 }
@@ -11,7 +10,6 @@ macro_rules! log {
 #[macro_export]
 macro_rules! logln {
     ($($arg:tt)*) => {{
-        uefi::println!($($arg)*);
         $crate::console::serial_println(format_args!($($arg)*));
     }};
 }
