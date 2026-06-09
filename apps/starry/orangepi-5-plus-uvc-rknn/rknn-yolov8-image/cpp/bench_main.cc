@@ -25,6 +25,8 @@ struct Options {
     int infer_every = 1;
     int report_interval_sec = 5;
     int min_confidence = 25;
+    bool profile = false;
+    bool profile_frames = false;
     const char *model_path = "model/yolov8.rknn";
     const char *label_path = "model/coco_80_labels_list.txt";
 };
@@ -36,6 +38,19 @@ struct MemoryStats {
     long mem_total_kb = -1;
     long mem_free_kb = -1;
     long mem_available_kb = -1;
+};
+
+struct ProfileSamples {
+    std::vector<double> total_ms;
+    std::vector<double> malloc_ms;
+    std::vector<double> letterbox_ms;
+    std::vector<double> inputs_set_ms;
+    std::vector<double> run_ms;
+    std::vector<double> outputs_get_ms;
+    std::vector<double> rknn_perf_run_ms;
+    std::vector<double> postprocess_ms;
+    std::vector<double> outputs_release_ms;
+    int perf_run_query_errors = 0;
 };
 
 static volatile sig_atomic_t g_running = 1;
@@ -65,6 +80,8 @@ static void print_usage(const char *argv0)
     printf("  --infer-every <N>              infer every Nth captured frame [default: 1]\n");
     printf("  --report-interval-sec <SECS>   progress interval, 0 disables [default: 5]\n");
     printf("  --min-confidence <PCT>         detection threshold percentage [default: 25]\n");
+    printf("  --profile                      print final RKNN stage timing summary\n");
+    printf("  --profile-frames               print one RKNN_PROFILE line per inference\n");
 }
 
 static bool parse_int_arg(const char *name, const char *value, int *out)
@@ -159,12 +176,34 @@ static bool parse_args(int argc, char **argv, Options *options)
                 return false;
             }
             ++i;
+        } else if (strcmp(arg, "--profile") == 0) {
+            options->profile = true;
+        } else if (strcmp(arg, "--profile-frames") == 0) {
+            options->profile = true;
+            options->profile_frames = true;
         } else {
             printf("unknown or incomplete argument: %s\n", arg);
             return false;
         }
     }
     return true;
+}
+
+static bool env_truthy(const char *name)
+{
+    const char *value = getenv(name);
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static void apply_env_options(Options *options)
+{
+    if (env_truthy("RKNN_BENCH_PROFILE")) {
+        options->profile = true;
+    }
+    if (env_truthy("RKNN_BENCH_PROFILE_FRAMES")) {
+        options->profile = true;
+        options->profile_frames = true;
+    }
 }
 
 static long parse_kb_line(const char *line, const char *key)
@@ -272,6 +311,69 @@ static double average_ms(const std::vector<double> &samples)
     return total / (double)samples.size();
 }
 
+static void add_profile_sample(ProfileSamples *samples, const rknn_inference_profile_t *profile)
+{
+    samples->total_ms.push_back(profile->total_ms);
+    samples->malloc_ms.push_back(profile->malloc_ms);
+    samples->letterbox_ms.push_back(profile->letterbox_ms);
+    samples->inputs_set_ms.push_back(profile->inputs_set_ms);
+    samples->run_ms.push_back(profile->run_ms);
+    samples->outputs_get_ms.push_back(profile->outputs_get_ms);
+    samples->postprocess_ms.push_back(profile->postprocess_ms);
+    samples->outputs_release_ms.push_back(profile->outputs_release_ms);
+    if (profile->perf_run_query_ret == RKNN_SUCC && profile->rknn_perf_run_ms >= 0.0) {
+        samples->rknn_perf_run_ms.push_back(profile->rknn_perf_run_ms);
+    } else {
+        samples->perf_run_query_errors++;
+    }
+}
+
+static void print_profile_line(uint64_t frame_id, int ret, const rknn_inference_profile_t *profile, int detections)
+{
+    printf("RKNN_PROFILE frame=%llu ret=%d total_ms=%.2f malloc_ms=%.2f letterbox_ms=%.2f inputs_set_ms=%.2f run_ms=%.2f outputs_get_ms=%.2f rknn_perf_run_ms=%.2f perf_run_query_ret=%d postprocess_ms=%.2f outputs_release_ms=%.2f detections=%d\n",
+           (unsigned long long)frame_id,
+           ret,
+           profile->total_ms,
+           profile->malloc_ms,
+           profile->letterbox_ms,
+           profile->inputs_set_ms,
+           profile->run_ms,
+           profile->outputs_get_ms,
+           profile->rknn_perf_run_ms,
+           profile->perf_run_query_ret,
+           profile->postprocess_ms,
+           profile->outputs_release_ms,
+           detections);
+}
+
+static void print_profile_summary(const ProfileSamples *samples)
+{
+    printf("UVC_RKNN_BENCH_PROFILE_RESULT profile_samples=%llu perf_run_query_errors=%d total_ms_avg=%.2f total_ms_p50=%.2f total_ms_p95=%.2f malloc_ms_avg=%.2f letterbox_ms_avg=%.2f letterbox_ms_p50=%.2f letterbox_ms_p95=%.2f inputs_set_ms_avg=%.2f run_ms_avg=%.2f run_ms_p50=%.2f run_ms_p95=%.2f outputs_get_ms_avg=%.2f outputs_get_ms_p50=%.2f outputs_get_ms_p95=%.2f rknn_perf_run_ms_avg=%.2f rknn_perf_run_ms_p50=%.2f rknn_perf_run_ms_p95=%.2f postprocess_ms_avg=%.2f postprocess_ms_p50=%.2f postprocess_ms_p95=%.2f outputs_release_ms_avg=%.2f\n",
+           (unsigned long long)samples->total_ms.size(),
+           samples->perf_run_query_errors,
+           average_ms(samples->total_ms),
+           percentile_ms(samples->total_ms, 0.50),
+           percentile_ms(samples->total_ms, 0.95),
+           average_ms(samples->malloc_ms),
+           average_ms(samples->letterbox_ms),
+           percentile_ms(samples->letterbox_ms, 0.50),
+           percentile_ms(samples->letterbox_ms, 0.95),
+           average_ms(samples->inputs_set_ms),
+           average_ms(samples->run_ms),
+           percentile_ms(samples->run_ms, 0.50),
+           percentile_ms(samples->run_ms, 0.95),
+           average_ms(samples->outputs_get_ms),
+           percentile_ms(samples->outputs_get_ms, 0.50),
+           percentile_ms(samples->outputs_get_ms, 0.95),
+           average_ms(samples->rknn_perf_run_ms),
+           percentile_ms(samples->rknn_perf_run_ms, 0.50),
+           percentile_ms(samples->rknn_perf_run_ms, 0.95),
+           average_ms(samples->postprocess_ms),
+           percentile_ms(samples->postprocess_ms, 0.50),
+           percentile_ms(samples->postprocess_ms, 0.95),
+           average_ms(samples->outputs_release_ms));
+}
+
 int main(int argc, char **argv)
 {
     Options options;
@@ -279,6 +381,7 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 2;
     }
+    apply_env_options(&options);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -286,7 +389,7 @@ int main(int argc, char **argv)
 
     printf("YOLOv8 UVC RKNN Benchmark\n");
     printf("=========================\n");
-    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d\n",
+    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d profile=%d profile_frames=%d\n",
            options.model_path,
            options.label_path,
            options.device,
@@ -296,7 +399,9 @@ int main(int argc, char **argv)
            options.duration_sec,
            options.infer_every,
            options.report_interval_sec,
-           options.min_confidence);
+           options.min_confidence,
+           options.profile ? 1 : 0,
+           options.profile_frames ? 1 : 0);
 
     int ret = init_post_process(options.label_path);
     if (ret != 0) {
@@ -342,6 +447,7 @@ int main(int argc, char **argv)
     uint64_t detections = 0;
     std::vector<double> decode_ms;
     std::vector<double> infer_ms;
+    ProfileSamples profile_samples;
 
     while (g_running && monotonic_sec() - start < options.duration_sec) {
         LatestFrame frame;
@@ -368,22 +474,40 @@ int main(int argc, char **argv)
 
             object_detect_result_list results;
             memset(&results, 0, sizeof(results));
-            ret = inference_yolov8_model_with_thresholds(
-                &app_ctx,
-                &image,
-                &results,
-                (float)options.min_confidence / 100.0f,
-                NMS_THRESH);
+            rknn_inference_profile_t profile;
+            memset(&profile, 0, sizeof(profile));
+            if (options.profile) {
+                ret = inference_yolov8_model_with_thresholds_profile(
+                    &app_ctx,
+                    &image,
+                    &results,
+                    (float)options.min_confidence / 100.0f,
+                    NMS_THRESH,
+                    &profile);
+            } else {
+                ret = inference_yolov8_model_with_thresholds(
+                    &app_ctx,
+                    &image,
+                    &results,
+                    (float)options.min_confidence / 100.0f,
+                    NMS_THRESH);
+            }
             double infer_end = monotonic_sec();
             last_inferred_frame = frame.id;
             decode_ms.push_back((infer_start - decode_start) * 1000.0);
             infer_ms.push_back((infer_end - infer_start) * 1000.0);
+            if (options.profile_frames) {
+                print_profile_line(frame.id, ret, &profile, ret == 0 ? results.count : 0);
+            }
             if (ret != 0) {
                 printf("inference_yolov8_model fail! ret=%d frame=%llu\n", ret, (unsigned long long)frame.id);
                 inference_errors++;
             } else {
                 inferences++;
                 detections += (uint64_t)results.count;
+                if (options.profile) {
+                    add_profile_sample(&profile_samples, &profile);
+                }
             }
             free(image.virt_addr);
             sched_yield();
@@ -441,6 +565,9 @@ int main(int argc, char **argv)
            memory.mem_total_kb,
            memory.mem_free_kb,
            memory.mem_available_kb);
+    if (options.profile) {
+        print_profile_summary(&profile_samples);
+    }
 
     if (release_ret == 0 && counters.captured > 0 && inferences > 0 && inference_errors == 0) {
         printf("UVC_RKNN_BENCH_DONE\n");

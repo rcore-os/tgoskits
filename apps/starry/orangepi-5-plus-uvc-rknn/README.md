@@ -145,6 +145,23 @@ UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=.
 UVC_RKNN_BENCH_DONE
 ```
 
+To split the RKNN path into preprocessing, runtime, output, and postprocess
+costs, enable profile mode:
+
+```bash
+RKNN_BENCH_PROFILE=1 ./rknn_yolov8_bench --duration-sec 8 --report-interval-sec 2
+```
+
+Profile mode adds one final summary line without changing the existing result
+line:
+
+```text
+UVC_RKNN_BENCH_PROFILE_RESULT profile_samples=... perf_run_query_errors=... total_ms_avg=... letterbox_ms_avg=... inputs_set_ms_avg=... run_ms_avg=... outputs_get_ms_avg=... rknn_perf_run_ms_avg=... postprocess_ms_avg=...
+```
+
+Use `RKNN_BENCH_PROFILE_FRAMES=1` or `--profile-frames` for one
+`RKNN_PROFILE` line per inference.
+
 The same bounded smoke-test command is also stored in
 `board-orangepi-5-plus.toml`, so this direct board command runs the default
 example as well:

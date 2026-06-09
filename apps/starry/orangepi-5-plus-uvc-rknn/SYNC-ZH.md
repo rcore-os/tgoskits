@@ -302,6 +302,20 @@ UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=.
 UVC_RKNN_BENCH_DONE
 ```
 
+需要拆分 RKNN 路径耗时时，可以打开 profile 模式：
+
+```bash
+RKNN_BENCH_PROFILE=1 ./rknn_yolov8_bench --duration-sec 8 --report-interval-sec 2
+```
+
+profile 模式不会改变既有的 `UVC_RKNN_BENCH_RESULT` 行，只会额外输出一行：
+
+```text
+UVC_RKNN_BENCH_PROFILE_RESULT profile_samples=... perf_run_query_errors=... total_ms_avg=... letterbox_ms_avg=... inputs_set_ms_avg=... run_ms_avg=... outputs_get_ms_avg=... rknn_perf_run_ms_avg=... postprocess_ms_avg=...
+```
+
+如果需要逐帧明细，使用 `RKNN_BENCH_PROFILE_FRAMES=1` 或 `--profile-frames`，会为每次推理输出一行 `RKNN_PROFILE`。
+
 ## 运行效果
 
 正常运行时可以看到：
