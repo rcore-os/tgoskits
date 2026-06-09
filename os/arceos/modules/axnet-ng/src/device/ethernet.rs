@@ -502,9 +502,13 @@ impl Device for EthernetDevice {
             .collect()
     }
 
+    fn wake_rx(&self) {
+        self.inner.poll_ready.wake();
+    }
+
     fn register_waker(&self, waker: &Waker) {
-        if self.inner.irq_num.is_some() {
-            self.inner.poll_ready.register(waker);
-        }
+        // Register for IRQ-driven devices, and also for SDIO WiFi (irq_num
+        // None) whose RX readiness is poked externally via `wake_rx`.
+        self.inner.poll_ready.register(waker);
     }
 }

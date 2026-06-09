@@ -165,6 +165,13 @@ impl Router {
         entries
     }
 
+    /// Wakes RX readiness on every device (used by the SDIO WiFi poll task).
+    pub fn wake_all_devices(&self) {
+        for device in &self.devices {
+            device.wake_rx();
+        }
+    }
+
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {
         let mut poll_next = false;
         while let Ok(((), packet)) = self.tx_buffer.dequeue() {

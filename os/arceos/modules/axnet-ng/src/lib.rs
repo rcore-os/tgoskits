@@ -21,6 +21,7 @@ extern crate std;
 
 mod consts;
 mod device;
+mod dhcp_server;
 mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
@@ -44,11 +45,15 @@ mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
 use core::{
+    future::poll_fn,
     sync::atomic::{AtomicBool, Ordering},
+    task::Poll,
     time::Duration,
 };
 
 use ax_sync::Mutex;
+use ax_task::future::block_on;
+use axpoll::PollSet;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{LazyLock, Once};
 
@@ -76,6 +81,10 @@ static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
+
+/// Signalled by [`notify_wifi_rx`] (AIC8800 RX thread) to wake `wlan0-poll`.
+static WIFI_RX_SIGNAL: PollSet = PollSet::new();
+static WIFI_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -204,6 +213,80 @@ pub fn poll_interfaces() {
 
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
+}
+
+/// Registers the AIC8800 Wi-Fi device as a SoftAP `wlan0` with a static IPv4
+/// and a built-in single-client DHCP server.
+///
+/// `dev` is the already-wrapped ethernet driver (an `RdNetDriver` around the
+/// AIC8800 `Interface`). `server_ip` becomes wlan0's address and gateway;
+/// `client_ip` is handed out over DHCP. The network service must already be
+/// initialized (via [`init_network`]).
+pub fn register_wifi_ap_device(
+    dev: Box<dyn EthernetDriver>,
+    server_ip: [u8; 4],
+    client_ip: [u8; 4],
+    prefix_len: u8,
+) {
+    let server_ip = Ipv4Address::new(server_ip[0], server_ip[1], server_ip[2], server_ip[3]);
+    let client_ip = Ipv4Address::new(client_ip[0], client_ip[1], client_ip[2], client_ip[3]);
+    let cidr = Ipv4Cidr::new(server_ip, prefix_len);
+    let subnet_mask = prefix_to_mask(prefix_len);
+
+    let mac = EthernetAddress(dev.mac_address());
+    let eth_dev = EthernetDevice::new("wlan0".to_owned(), dev, Some(cidr));
+
+    {
+        let mut s = get_service();
+        let dev_idx = s.register_static_device("wlan0".to_owned(), eth_dev, cidr);
+        s.iface.update_ip_addrs(|ip_addrs| {
+            let addr = smoltcp::wire::IpCidr::Ipv4(cidr);
+            if !ip_addrs.contains(&addr) {
+                ip_addrs.push(addr).ok();
+            }
+        });
+        s.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
+    }
+
+    info!("wlan0: SoftAP up, mac {mac}, ip {cidr}");
+    start_wifi_poll_task();
+}
+
+/// Wakes the `wlan0` poll task; registered as the AIC8800 RX-data callback.
+///
+/// The AIC8800 RX thread owns the SDIO CARD_INT and is outside the ethernet
+/// IRQ framework, so it only signals here; the `wlan0-poll` task does the
+/// actual stack polling to avoid starving SDIO RX.
+pub fn notify_wifi_rx() {
+    WIFI_RX_SIGNAL.wake();
+}
+
+/// Spawns the `wlan0-poll` task (idempotent).
+pub fn start_wifi_poll_task() {
+    if WIFI_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    ax_task::spawn_with_name(
+        || {
+            block_on(poll_fn(|cx| {
+                // Register first to avoid lost wakeups.
+                WIFI_RX_SIGNAL.register(cx.waker());
+                poll_interfaces();
+                get_service().wake_all_devices();
+                Poll::<()>::Pending
+            }));
+        },
+        "wlan0-poll".to_owned(),
+    );
+}
+
+fn prefix_to_mask(prefix_len: u8) -> Ipv4Address {
+    let bits: u32 = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len.min(32) as u32)
+    };
+    Ipv4Address::from_bits(bits)
 }
 
 fn dhcp_bootstrap() {
