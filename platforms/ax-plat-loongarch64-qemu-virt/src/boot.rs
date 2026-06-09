@@ -53,6 +53,7 @@ fn enable_fp_simd() {
     {
         ax_cpu::asm::enable_fp();
         ax_cpu::asm::enable_lsx();
+        ax_cpu::asm::enable_lasx();
     }
 }
 
