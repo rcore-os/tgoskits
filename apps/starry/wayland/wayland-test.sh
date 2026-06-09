@@ -91,7 +91,7 @@ ${mirrors}"
     for mirror in $mirrors; do
         echo "WAYLAND_PREP trying apk mirror: $mirror"
         write_apk_repositories "$mirror"
-        for attempt in 1; do
+        for attempt in 1 2; do
             echo "WAYLAND_PREP apk add attempt $attempt via $mirror"
             run_with_timeout 240 apk add --no-cache $packages
             rc=$?

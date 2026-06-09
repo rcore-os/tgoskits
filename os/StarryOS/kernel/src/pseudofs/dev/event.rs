@@ -255,6 +255,11 @@ unsafe fn event_dev_irq_handler(
     data: NonNull<()>,
 ) -> ax_runtime::hal::irq::IrqReturn {
     let event_dev = unsafe { data.cast::<EventDev>().as_ref() };
+    // Use `lock()` rather than `try_lock()` so the virtio ISR is always
+    // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
+    // disabled, so this IRQ can only fire on a different CPU. Without the
+    // ack, a level-triggered shared IRQ line stays asserted and can starve
+    // other devices on the same line.
     let mut inner = event_dev.inner.lock();
     let event = inner.device.handle_irq();
     if event.input_ready && inner.drain_into_queue() {
