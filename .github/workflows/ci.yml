@@ -508,7 +508,7 @@ jobs:
           # - name: Stress starry aarch64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch aarch64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch aarch64
           #   cache_key: test-starry-stress-aarch64
           #   container_image: base
           #   apk_region: us
@@ -517,7 +517,7 @@ jobs:
           # - name: Stress starry riscv64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch riscv64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch riscv64
           #   cache_key: test-starry-stress-riscv64
           #   container_image: base
           #   apk_region: us
@@ -526,7 +526,7 @@ jobs:
           # - name: Stress starry loongarch64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch loongarch64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch loongarch64
           #   cache_key: test-starry-stress-loongarch64
           #   container_image: base
           #   apk_region: us
@@ -535,7 +535,7 @@ jobs:
           # - name: Stress starry x86_64
           #   use_container: true
           #   runs_on: '["ubuntu-latest"]'
-          #   command: cargo xtask starry test qemu --arch x86_64 --test-group stress
+          #   command: cargo xtask starry app qemu -t stress/git --arch x86_64
           #   cache_key: test-starry-stress-x86_64
           #   container_image: base
           #   apk_region: us

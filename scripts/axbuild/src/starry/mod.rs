@@ -911,8 +911,6 @@ mod tests {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.target.as_deref(), Some("x86_64"));
-                    assert_eq!(args.test_group, None);
-                    assert!(!args.stress);
                 }
                 _ => panic!("expected qemu test command"),
             },
@@ -966,8 +964,6 @@ mod tests {
             "starry",
             "test",
             "board",
-            "-g",
-            "normal",
             "-c",
             "smoke",
             "--board",
@@ -984,7 +980,6 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Board(args) => {
-                    assert_eq!(args.test_group.as_deref(), Some("normal"));
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
                     assert_eq!(args.board.as_deref(), Some("orangepi-5-plus"));
                     assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
@@ -998,7 +993,37 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_test_qemu_with_group_and_case() {
+    fn command_rejects_test_qemu_group_flag() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "starry", "test", "qemu", "--arch", "x86_64", "-g", "stress", "-c", "smoke",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn command_rejects_test_qemu_stress_alias() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from(["starry", "test", "qemu", "--arch", "x86_64", "--stress"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn command_parses_test_qemu_with_case() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -1006,7 +1031,13 @@ mod tests {
         }
 
         let cli = Cli::try_parse_from([
-            "starry", "test", "qemu", "--arch", "x86_64", "-g", "stress", "-c", "smoke",
+            "starry",
+            "test",
+            "qemu",
+            "--arch",
+            "x86_64",
+            "-c",
+            "qemu-smp1/system",
         ])
         .unwrap();
 
@@ -1015,33 +1046,7 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
                     assert_eq!(args.target, None);
-                    assert_eq!(args.test_group.as_deref(), Some("stress"));
-                    assert_eq!(args.test_case, Some("smoke".to_string()));
-                    assert!(!args.stress);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu_with_stress_alias() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "test", "qemu", "--arch", "x86_64", "--stress"])
-            .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
-                    assert_eq!(args.test_group, None);
-                    assert!(args.stress);
+                    assert_eq!(args.test_case, Some("qemu-smp1/system".to_string()));
                 }
                 _ => panic!("expected qemu test command"),
             },

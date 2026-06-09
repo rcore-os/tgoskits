@@ -220,7 +220,7 @@ fn discover_all_qemu_cases_with_metadata(
         .filter(|case| indexed_case_matches_selected(case, selected_case))
         .map(|case| {
             (
-                case.name,
+                case.display_name,
                 case.qemu_configs.keys().cloned().collect::<Vec<_>>(),
             )
         })
@@ -604,7 +604,10 @@ fn indexed_case_matches_selected(case: &IndexedQemuCase, selected_case: Option<&
     let Some(selected_case) = selected_case else {
         return true;
     };
-    case.name == selected_case || case.name.starts_with(&format!("{selected_case}/"))
+    case.name == selected_case
+        || case.name.starts_with(&format!("{selected_case}/"))
+        || case.display_name == selected_case
+        || case.display_name.starts_with(&format!("{selected_case}/"))
 }
 
 fn indexed_qemu_case(
@@ -1732,14 +1735,9 @@ mod tests {
         assert_eq!(
             render_case_tree(
                 "normal",
-                [
-                    "qemu-smp1/apk-curl",
-                    "qemu-smp1/smoke",
-                    "qemu-smp4/affinity",
-                ],
+                ["qemu-smp1/apk-curl", "qemu-smp1/smoke", "qemu-smp4/system",],
             ),
-            "normal\n├── qemu-smp1\n│   ├── apk-curl\n│   └── smoke\n└── qemu-smp4\n    └── \
-             affinity"
+            "normal\n├── qemu-smp1\n│   ├── apk-curl\n│   └── smoke\n└── qemu-smp4\n    └── system"
         );
     }
 
