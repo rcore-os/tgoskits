@@ -30,3 +30,7 @@ cargo xtask starry app qemu \
 The prebuild step installs Redis into a temporary Alpine staging root and injects
 only the Redis binaries, test scripts, and needed runtime libraries into the app
 rootfs overlay.
+
+Legacy C reproduction assets live under `regressions/`; they are kept with the
+Redis app because they require Redis binaries and are not part of the Starry
+system test-suit grouped runner.

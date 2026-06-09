@@ -42,7 +42,7 @@ Run the preparation script from the repository root inside the Docker/Linux test
 environment:
 
 ```sh
-bash test-suit/starryos/k230-qemu/prepare-k230-qemu.sh
+bash apps/starry/k230-qemu/prepare-k230-qemu.sh
 ```
 
 Required build tools are `git`, `make`, `ninja` or `ninja-build`, `python3`,
@@ -68,7 +68,7 @@ target/qemu-k230-docker-build/
 If the source has already been cloned elsewhere, reuse it with:
 
 ```sh
-QEMU_SOURCE_DIR=/path/to/qemu bash test-suit/starryos/k230-qemu/prepare-k230-qemu.sh
+QEMU_SOURCE_DIR=/path/to/qemu bash apps/starry/k230-qemu/prepare-k230-qemu.sh
 ```
 
 The K230 test configs use `target/qemu-k230-docker-build/pc-bios` for QEMU
@@ -79,7 +79,7 @@ Example:
 
 ```sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-smoke
+  cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-smoke --arch riscv64
 ```
 
 The smoke output should include:
@@ -107,7 +107,7 @@ bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
 Then run:
 
 ```sh
-cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64
 ```
 
 Expected runtime output includes:
