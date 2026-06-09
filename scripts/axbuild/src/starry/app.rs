@@ -446,20 +446,12 @@ fn qemu_app_managed_rootfs_paths(
     workspace_root: &Path,
     qemu: &ostool::run::qemu::QemuConfig,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let managed_rootfs_dir = crate::image::storage::rootfs_dir(workspace_root)?;
-    Ok(crate::rootfs::qemu::drive_file_paths(qemu)
+    crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
-        .map(|path| resolve_qemu_app_config_path(workspace_root, path))
-        .filter(|path| path.starts_with(&managed_rootfs_dir))
-        .collect())
-}
-
-fn resolve_qemu_app_config_path(workspace_root: &Path, path: PathBuf) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix("${workspace}/") {
-        return workspace_root.join(rest);
-    }
-    path
+        .filter_map(|path| {
+            crate::image::storage::resolve_managed_rootfs_path(workspace_root, &path).transpose()
+        })
+        .collect()
 }
 
 fn optional_file(path: PathBuf) -> Option<PathBuf> {

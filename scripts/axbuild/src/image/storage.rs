@@ -221,6 +221,31 @@ pub(crate) fn rootfs_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
     Ok(ImageConfig::read_config(workspace_root)?.local_storage)
 }
 
+/// Resolves a QEMU rootfs path into the canonical image storage path.
+///
+/// Checked-in QEMU configs may still refer to the historical
+/// `tmp/axbuild/rootfs/rootfs-*.img` location. That path is treated only as a
+/// reference to an image-managed rootfs; the actual file remains in image
+/// storage.
+pub(crate) fn resolve_managed_rootfs_path(
+    workspace_root: &Path,
+    path: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let path = resolve_workspace_path(workspace_root, path);
+    let rootfs_dir = rootfs_dir(workspace_root)?;
+    let legacy_rootfs_dir = crate::context::axbuild_tmp_dir(workspace_root).join("rootfs");
+    if !path.starts_with(&rootfs_dir) && !path.starts_with(&legacy_rootfs_dir) {
+        return Ok(None);
+    }
+
+    let image_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("invalid managed rootfs path `{}`", path.display()))?;
+    ensure_rootfs_image_name(image_name)?;
+    rootfs_image_path(workspace_root, image_name).map(Some)
+}
+
 /// Resolves a user-facing rootfs argument into the image storage path.
 ///
 /// Bare values such as `alpine` or `debian` are expanded into the managed
@@ -288,9 +313,13 @@ pub(crate) async fn ensure_managed_rootfs(
     arch: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    if default_rootfs_image(arch).is_none() || !path.starts_with(rootfs_dir(workspace_root)?) {
+    if default_rootfs_image(arch).is_none() {
         return Ok(());
     }
+
+    let Some(path) = resolve_managed_rootfs_path(workspace_root, path)? else {
+        return Ok(());
+    };
 
     let image_name = path
         .file_name()
@@ -490,6 +519,14 @@ fn rootfs_image_path(workspace_root: &Path, image_name: &str) -> anyhow::Result<
         .local_storage
         .join(image_extract_dir_name(spec))
         .join(image_name))
+}
+
+fn resolve_workspace_path(workspace_root: &Path, path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("${workspace}/") {
+        return workspace_root.join(rest);
+    }
+    path.to_path_buf()
 }
 
 fn ensure_rootfs_image_name(image_name: &str) -> anyhow::Result<()> {
@@ -719,6 +756,48 @@ url = "https://example.com/{image_name}.tar.gz"
         let err = rt.block_on(Storage::new_from_config(&config)).unwrap_err();
 
         assert!(err.to_string().contains("Failed to read image registry"));
+    }
+
+    #[test]
+    fn resolve_managed_rootfs_path_accepts_legacy_tmp_rootfs_reference() {
+        let workspace = tempdir().unwrap();
+        let image_name = "rootfs-aarch64-busybox.img";
+        let config = ImageConfig {
+            local_storage: workspace.path().join(".tgos-images"),
+            registry: "https://example.com/registry.toml".to_string(),
+            auto_sync: true,
+            auto_sync_threshold: 60,
+        };
+        ImageConfig::write_config(workspace.path(), &config).unwrap();
+
+        let legacy_path = workspace.path().join("tmp/axbuild/rootfs").join(image_name);
+        let resolved = resolve_managed_rootfs_path(workspace.path(), &legacy_path).unwrap();
+
+        assert_eq!(
+            resolved,
+            Some(config.local_storage.join(image_name).join(image_name))
+        );
+    }
+
+    #[test]
+    fn resolve_managed_rootfs_path_accepts_workspace_legacy_reference() {
+        let workspace = tempdir().unwrap();
+        let image_name = "rootfs-aarch64-busybox.img";
+        let config = ImageConfig {
+            local_storage: workspace.path().join(".tgos-images"),
+            registry: "https://example.com/registry.toml".to_string(),
+            auto_sync: true,
+            auto_sync_threshold: 60,
+        };
+        ImageConfig::write_config(workspace.path(), &config).unwrap();
+
+        let legacy_path = PathBuf::from(format!("${{workspace}}/tmp/axbuild/rootfs/{image_name}"));
+        let resolved = resolve_managed_rootfs_path(workspace.path(), &legacy_path).unwrap();
+
+        assert_eq!(
+            resolved,
+            Some(config.local_storage.join(image_name).join(image_name))
+        );
     }
 
     #[tokio::test]

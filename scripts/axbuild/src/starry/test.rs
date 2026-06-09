@@ -763,6 +763,7 @@ impl Starry {
                     )
                 })?;
             qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
+            Self::rewrite_qemu_case_managed_rootfs_paths(self.app.workspace_root(), &mut qemu)?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path)?;
             rootfs_paths.insert(rootfs_path.clone());
@@ -833,11 +834,22 @@ impl Starry {
         workspace_root: &Path,
         qemu: &QemuConfig,
     ) -> anyhow::Result<Vec<PathBuf>> {
-        let managed_rootfs_dir = crate::image::storage::rootfs_dir(workspace_root)?;
-        Ok(crate::rootfs::qemu::drive_file_paths(qemu)
+        crate::rootfs::qemu::drive_file_paths(qemu)
             .into_iter()
-            .filter(|path| path.starts_with(&managed_rootfs_dir))
-            .collect())
+            .filter_map(|path| {
+                crate::image::storage::resolve_managed_rootfs_path(workspace_root, &path)
+                    .transpose()
+            })
+            .collect()
+    }
+
+    fn rewrite_qemu_case_managed_rootfs_paths(
+        workspace_root: &Path,
+        qemu: &mut QemuConfig,
+    ) -> anyhow::Result<()> {
+        crate::rootfs::qemu::rewrite_drive_file_paths(qemu, |path| {
+            crate::image::storage::resolve_managed_rootfs_path(workspace_root, path)
+        })
     }
 
     fn qemu_case_requirements(qemu: &QemuConfig) -> anyhow::Result<StarryQemuCaseRequirements> {
@@ -2648,6 +2660,46 @@ mod tests {
         let rootfs_paths = Starry::qemu_case_managed_rootfs_paths(root.path(), &qemu).unwrap();
 
         assert_eq!(rootfs_paths, vec![boot_rootfs, usb_rootfs]);
+    }
+
+    #[test]
+    fn qemu_case_rewrites_legacy_tmp_rootfs_drive_files() {
+        let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let image_name = "rootfs-aarch64-busybox.img";
+        let legacy_rootfs = root.path().join("tmp/axbuild/rootfs").join(image_name);
+        let managed_rootfs = root
+            .path()
+            .join(".tgos-images")
+            .join(image_name)
+            .join(image_name);
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                format!(
+                    "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
+                    legacy_rootfs.display()
+                ),
+            ],
+            ..Default::default()
+        };
+
+        Starry::rewrite_qemu_case_managed_rootfs_paths(root.path(), &mut qemu).unwrap();
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                format!(
+                    "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
+                    managed_rootfs.display()
+                ),
+            ]
+        );
+        assert_eq!(
+            Starry::qemu_case_managed_rootfs_paths(root.path(), &qemu).unwrap(),
+            vec![managed_rootfs]
+        );
     }
 
     #[test]

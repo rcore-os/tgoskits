@@ -132,10 +132,7 @@ pub(crate) fn managed_rootfs_path(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<Option<PathBuf>> {
     if let Some(explicit_rootfs) = explicit_rootfs {
-        if explicit_rootfs.starts_with(crate::image::storage::rootfs_dir(workspace_root)?) {
-            return Ok(Some(explicit_rootfs.to_path_buf()));
-        }
-        return Ok(None);
+        return crate::image::storage::resolve_managed_rootfs_path(workspace_root, explicit_rootfs);
     }
 
     if infer_rootfs_path(&request.vmconfigs)?.is_none() {
