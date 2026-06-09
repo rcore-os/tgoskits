@@ -1,3 +1,6 @@
+#[cfg(feature = "arceos")]
+use ax_std as _;
+
 // ArceAgent v0.2: Interactive AI Agent on ArceOS Unikernel
 //
 // Architecture:
@@ -8,9 +11,6 @@
 //
 // Uses minreq for HTTP (no TLS — requires a local HTTP proxy).
 // Compiles identically on Linux (for development) and ArceOS (for deployment).
-
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
 
 mod base64;
 mod context;
@@ -32,9 +32,9 @@ use tools::{dispatch, tool_catalog};
 // Configuration
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "hermit")]
+#[cfg(feature = "arceos")]
 const API_BASE: &str = "http://10.0.2.2:8080/v1";
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const API_BASE: &str = "http://localhost:8080/v1";
 const MODEL: &str = "qwen3.5-plus-thinking";
 const MAX_CONTEXT_MESSAGES: usize = 40;

@@ -10,15 +10,12 @@ use core::{
 use ax_driver::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddrRange;
-use ax_runtime::hal::mem::virt_to_phys;
+use ax_runtime::hal::{cpu::asm::user_copy, mem::virt_to_phys};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
-use super::{
-    rknpu_card::{RknpuCmd, copy_from_user, copy_to_user},
-    rknpu_drm::DrmVersion,
-};
+use super::rknpu_drm::DrmVersion;
 use crate::{
     file::FileLike,
     pseudofs::{
@@ -37,9 +34,6 @@ const DRM1_DESC: &CStr = c"RKNPU driver";
 
 /// Device ID for /dev/dri/card1
 pub const CARD1_SYSTEM_DEVICE_ID: DeviceId = DeviceId::new(0xe2, 1);
-
-/// Device ID for /dev/rknpu (pick an unused major/minor)
-pub const RKNPU_DEVICE_ID: DeviceId = DeviceId::new(251, 0);
 
 /// Page shift constant (4KB pages)
 const PAGE_SHIFT: u32 = 12;
@@ -65,6 +59,44 @@ pub struct DrmUnique {
     /// Pointer to user-space buffer holding unique name for driver
     /// instantiation
     pub unique: *mut c_char,
+}
+
+/// RKNPU command types
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RknpuCmd {
+    /// Action command
+    Action     = 0x00,
+    /// Submit command
+    Submit     = 0x01,
+    /// Memory create command
+    MemCreate  = 0x02,
+    /// Memory map command
+    MemMap     = 0x03,
+    /// Memory destroy command
+    MemDestroy = 0x04,
+    /// Memory sync command
+    MemSync    = 0x05,
+}
+
+impl TryFrom<u32> for RknpuCmd {
+    type Error = ();
+
+    /// Tries to convert a u32 value to an RknpuCmd
+    fn try_from(nr: u32) -> Result<Self, Self::Error> {
+        match nr {
+            0x00 | 0x40 => Ok(RknpuCmd::Action),
+            0x01 | 0x41 => Ok(RknpuCmd::Submit),
+            0x02 | 0x42 => Ok(RknpuCmd::MemCreate),
+            0x03 | 0x43 => Ok(RknpuCmd::MemMap),
+            0x04 | 0x44 => Ok(RknpuCmd::MemDestroy),
+            0x05 | 0x45 => Ok(RknpuCmd::MemSync),
+            _ => {
+                warn!("Unknown ioctl nr: {nr:#x}",);
+                Err(())
+            }
+        }
+    }
 }
 
 /// Represents an RKNPU user action with flags and value
@@ -253,6 +285,28 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
     }
 }
 
+/// Copies data from user space to kernel space
+pub fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> Result<(), VfsError> {
+    let ret = unsafe { user_copy(dst, src, size) };
+
+    if ret != 0 {
+        warn!("[rknpu]: copy_from_user failed, ret={}", ret);
+        return Err(VfsError::InvalidData);
+    }
+    Ok(())
+}
+
+/// Copies data from kernel space to user space
+pub fn copy_to_user(dst: *mut u8, src: *const u8, size: usize) -> Result<(), VfsError> {
+    let ret = unsafe { user_copy(dst, src, size) };
+
+    if ret != 0 {
+        warn!("[rknpu]: copy_to_user failed, ret={}", ret);
+        return Err(VfsError::InvalidData);
+    }
+    Ok(())
+}
+
 /// Handles RKNPU action ioctl commands
 pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
     info!("rknpu_driver_ioctl: op = {:?}", op);
@@ -378,50 +432,6 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             )?;
         }
     }
-    Ok(0)
-}
-
-/// Handles RKNPU submit ioctl command
-pub fn rknpu_submit_ioctl(arg: usize) -> VfsResult<usize> {
-    let mut submit_args = RknpuSubmit::default();
-
-    copy_from_user(
-        &mut submit_args as *mut _ as *mut u8,
-        arg as *const u8,
-        mem::size_of::<RknpuSubmit>(),
-    )?;
-
-    if let Err(e) = rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
-        warn!("rknpu submit ioctl failed: {:?}", e);
-    }
-
-    copy_to_user(
-        arg as *mut u8,
-        &submit_args as *const _ as *const u8,
-        mem::size_of::<RknpuSubmit>(),
-    )?;
-    Ok(0)
-}
-
-/// Handles RKNPU memory create ioctl command
-pub fn rknpu_mem_create_ioctl(arg: usize) -> VfsResult<usize> {
-    let mut mem_create_args = RknpuMemCreate::default();
-
-    copy_from_user(
-        &mut mem_create_args as *mut _ as *mut u8,
-        arg as *const u8,
-        mem::size_of::<RknpuMemCreate>(),
-    )?;
-
-    if let Err(e) = rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
-        warn!("rknpu mem_create ioctl failed: {:?}", e);
-    }
-
-    copy_to_user(
-        arg as *mut u8,
-        &mem_create_args as *const _ as *const u8,
-        mem::size_of::<RknpuMemCreate>(),
-    )?;
     Ok(0)
 }
 
@@ -615,22 +625,6 @@ pub fn drm_get_unique(data: &mut [u8]) -> VfsResult<()> {
     info!("drm_get_unique called: {:?}", unique_data);
 
     unique_data.unique_len = 0;
-
-    Ok(())
-}
-
-/// DRM_SET_UNIQUE ioctl handler (stub implementation)
-///
-/// This function handles DRM_IOCTL_SET_UNIQUE requests. For this
-/// implementation, we return success but don't actually set the unique
-/// identifier, as this is typically not used/needed in embedded systems.
-pub fn drm_set_unique(data: &mut [u8]) -> VfsResult<()> {
-    let unique_data = unsafe { &*(data.as_ptr() as *const DrmUnique) };
-    info!("drm_set_unique called: {:?}", unique_data);
-
-    // For this implementation, we just log the attempt and return success
-    // In a real implementation, this would validate and store the unique ID
-    warn!("[drm_set_unique] Setting unique identifier is not supported in this implementation");
 
     Ok(())
 }

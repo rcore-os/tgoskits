@@ -200,7 +200,8 @@ impl CloneArgs {
         };
 
         let curr = current();
-        let old_proc_data = &curr.as_thread().proc_data;
+        let curr_thread = curr.as_thread();
+        let old_proc_data = &curr_thread.proc_data;
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
 
@@ -333,9 +334,14 @@ impl CloneArgs {
 
         new_proc_data.proc.add_thread(tid);
 
-        let parent_cred = Some(curr.as_thread().cred());
-        let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
-        if curr.as_thread().no_new_privs() {
+        let parent_cred = Some(curr_thread.cred());
+        let thr = Thread::new(
+            tid,
+            new_proc_data.clone(),
+            parent_cred,
+            curr_thread.signal.blocked(),
+        );
+        if curr_thread.no_new_privs() {
             thr.set_no_new_privs();
         }
         if flags.contains(CloneFlags::CHILD_CLEARTID) {

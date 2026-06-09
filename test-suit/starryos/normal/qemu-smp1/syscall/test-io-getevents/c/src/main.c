@@ -69,9 +69,9 @@ int main(void)
                   "io_getevents with nr 0 returns 0 without touching events");
         CHECK_ERR(syscall(SYS_io_getevents, ctx, 2, 1, events, NULL), EINVAL,
                   "io_getevents rejects min_nr greater than nr");
-        CHECK_ERR(syscall(SYS_io_getevents, ctx, -1, 1, events, NULL), EINVAL,
+        CHECK_ERR(syscall(SYS_io_getevents, ctx, (long)-1, 1, events, NULL), EINVAL,
                   "io_getevents rejects negative min_nr");
-        CHECK_ERR(syscall(SYS_io_getevents, ctx, 0, -1, events, NULL), EINVAL,
+        CHECK_ERR(syscall(SYS_io_getevents, ctx, 0, (long)-1, events, NULL), EINVAL,
                   "io_getevents rejects negative nr");
 
         struct iocb cb[2];

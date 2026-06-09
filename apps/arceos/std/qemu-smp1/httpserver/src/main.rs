@@ -6,22 +6,22 @@
 //! ab -n 5000 -c 20 http://X.X.X.X:5555/
 //! ```
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use std::{
     io::{self, prelude::*},
     net::{TcpListener, TcpStream},
     thread,
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const LOCAL_IP: &str = "0.0.0.0";
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const LOCAL_PORT: u16 = 5555;
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 #[rustfmt::skip]
 macro_rules! header {
     () => {
@@ -35,7 +35,7 @@ Connection: close\r\n\
     };
 }
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const CONTENT: &str = r#"<html>
 <head>
   <title>Hello, ArceOS</title>
@@ -52,7 +52,7 @@ const CONTENT: &str = r#"<html>
 </html>
 "#;
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 macro_rules! info {
     ($($arg:tt)*) => {
         match option_env!("LOG") {
@@ -64,7 +64,7 @@ macro_rules! info {
     };
 }
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 fn http_server(mut stream: TcpStream) -> io::Result<()> {
     let mut buf = [0u8; 4096];
     let _len = stream.read(&mut buf)?;
@@ -75,7 +75,7 @@ fn http_server(mut stream: TcpStream) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 fn accept_loop() -> io::Result<()> {
     let listener = TcpListener::bind((LOCAL_IP, LOCAL_PORT))?;
     println!("listen on: http://{}/", listener.local_addr().unwrap());
@@ -98,8 +98,8 @@ fn accept_loop() -> io::Result<()> {
 
 fn main() {
     println!("Hello, ArceOS HTTP server!");
-    #[cfg(target_os = "hermit")]
+    #[cfg(feature = "arceos")]
     println!("HTTP server smoke test ready");
-    #[cfg(not(target_os = "hermit"))]
+    #[cfg(not(feature = "arceos"))]
     accept_loop().expect("test HTTP server failed");
 }

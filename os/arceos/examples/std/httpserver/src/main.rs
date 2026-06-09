@@ -12,8 +12,8 @@ use std::{
     thread,
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
 const LOCAL_IP: &str = "0.0.0.0";
 const LOCAL_PORT: u16 = 5555;

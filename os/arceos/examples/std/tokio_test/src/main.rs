@@ -3,8 +3,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 use tokio::{
     sync::{Barrier, Mutex, mpsc},
     time::{Duration, sleep},

@@ -6,8 +6,8 @@ use std::{
     time::SystemTime,
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
 fn main() -> io::Result<()> {
     println!("=== Rust 文件读写功能测试 ===\n");

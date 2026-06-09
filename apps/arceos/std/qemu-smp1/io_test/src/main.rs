@@ -6,8 +6,8 @@ use std::{
     time::SystemTime,
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
 fn main() -> io::Result<()> {
     println!("=== Rust 文件读写功能测试 ===\n");
@@ -343,12 +343,12 @@ fn read_directory() -> io::Result<()> {
     }
 
     // 删除目录
-    #[cfg(not(target_os = "hermit"))]
+    #[cfg(not(feature = "arceos"))]
     {
         fs::remove_dir_all("test_dir")?;
         println!("    已删除 test_dir 目录");
     }
-    #[cfg(target_os = "hermit")]
+    #[cfg(feature = "arceos")]
     println!("    Hermit 下跳过递归删除目录");
 
     Ok(())

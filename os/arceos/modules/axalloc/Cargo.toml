@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 default = []
+global-allocator = []
 tlsf = []
 buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
 tracking = ["dep:ax-percpu", "dep:axbacktrace"]

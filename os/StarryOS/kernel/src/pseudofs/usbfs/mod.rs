@@ -1,5 +1,3 @@
-#![cfg_attr(not(target_os = "none"), allow(dead_code, unused_imports))]
-
 mod descriptor;
 mod irq;
 mod manager;
@@ -45,28 +43,39 @@ fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
     })
 }
 
-pub(crate) fn new_usbfs() -> LinuxResult<Filesystem> {
+pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
     if let Some(manager) = manager() {
-        return Ok(create_filesystem(manager));
+        return Ok(Some(create_filesystem(manager)));
     }
 
     info!("usbfs: initializing manager");
     let (hosts, irq_slots) = manager::discover_hosts();
-    let manager = Arc::new(UsbFsManager::new(hosts));
-    irq::init_globals(manager.clone(), irq_slots);
-    let should_spawn_refresh = manager::initialize_hosts(&manager) > 0;
-
-    if should_spawn_refresh {
-        info!("usbfs: spawning refresh task");
-        let refresh_manager = manager.clone();
-        ax_task::spawn_with_name(
-            move || ax_task::future::block_on(manager::usbfs_refresh_task(refresh_manager.clone())),
-            "usbfs-refresh".to_owned(),
-        );
-        manager.refresh_event.notify(1);
+    if hosts.is_empty() {
+        info!("usbfs: no USB host found, skip mounting usbfs");
+        return Ok(None);
     }
 
-    Ok(create_filesystem(manager))
+    let manager = Arc::new(UsbFsManager::new(hosts));
+    irq::init_globals(manager.clone(), irq_slots);
+    let initialized_hosts = manager::initialize_hosts(&manager) > 0;
+    if !initialized_hosts {
+        info!("usbfs: no USB host initialized, skip mounting usbfs");
+        return Ok(None);
+    }
+
+    info!("usbfs: spawning refresh task");
+    let refresh_manager = manager.clone();
+    ax_task::spawn_with_name(
+        move || ax_task::future::block_on(manager::usbfs_refresh_task(refresh_manager.clone())),
+        "usbfs-refresh".to_owned(),
+    );
+    manager.refresh_event.notify(1);
+
+    Ok(Some(create_filesystem(manager)))
+}
+
+pub(crate) fn has_manager() -> bool {
+    manager().is_some_and(|manager| manager.has_hosts())
 }
 
 pub(crate) fn new_bus_usb_sysfs() -> Filesystem {

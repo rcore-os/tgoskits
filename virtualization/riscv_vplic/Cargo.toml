@@ -25,6 +25,10 @@ bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
 
 riscv-h = { workspace = true }
+
+[dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }
+
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]
 targets = ["riscv64gc-unknown-none-elf"]

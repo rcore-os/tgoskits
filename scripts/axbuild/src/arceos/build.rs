@@ -1,10 +1,14 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use cargo_metadata::Metadata;
 use log::warn;
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     build::{self, BuildInfo},
@@ -12,6 +16,30 @@ use crate::{
 };
 
 pub type ArceosBuildInfo = BuildInfo;
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct ArceosBuildConfig {
+    #[serde(flatten, default)]
+    pub(crate) build_info: ArceosBuildInfo,
+    #[serde(rename = "app-c", skip_serializing_if = "Option::is_none")]
+    pub(crate) app_c: Option<PathBuf>,
+}
+
+impl ArceosBuildConfig {
+    fn default_for_target(target: &str) -> Self {
+        Self {
+            build_info: ArceosBuildInfo::default_for_target(target),
+            app_c: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ArceosBuildMode {
+    RustStd,
+    AppC { app_dir: PathBuf, app_name: String },
+}
 
 pub(crate) fn resolve_build_info_path(
     package: &str,
@@ -48,72 +76,96 @@ fn load_build_info_with_makefile_features(
     )
 }
 
+#[cfg(test)]
 fn load_build_info_with_makefile_features_and_metadata(
     request: &ResolvedBuildRequest,
     makefile_features: &[String],
     metadata: Option<&Metadata>,
 ) -> anyhow::Result<ArceosBuildInfo> {
+    Ok(
+        load_build_config_with_makefile_features_and_metadata(
+            request,
+            makefile_features,
+            metadata,
+        )?
+        .build_info,
+    )
+}
+
+fn load_build_config_with_makefile_features_and_metadata(
+    request: &ResolvedBuildRequest,
+    makefile_features: &[String],
+    metadata: Option<&Metadata>,
+) -> anyhow::Result<ArceosBuildConfig> {
     build::ensure_build_info(&request.build_info_path, || {
-        ArceosBuildInfo::default_for_target(&request.target)
+        ArceosBuildConfig::default_for_target(&request.target)
     })?;
     let content = fs::read_to_string(&request.build_info_path)?;
-    let mut build_info: ArceosBuildInfo = toml::from_str(&content).with_context(|| {
+    build::reject_removed_std_field(&request.build_info_path, &content)?;
+    let mut config: ArceosBuildConfig = toml::from_str(&content).with_context(|| {
         format!(
             "failed to parse build info {}",
             request.build_info_path.display()
         )
     })?;
     build::apply_target_defaults_if_plat_dyn_unspecified(
-        &mut build_info,
+        &mut config.build_info,
         &request.target,
         &content,
     );
 
-    if build_info.normalize_legacy_feature_aliases() {
+    if config.build_info.normalize_legacy_feature_aliases() {
         warn!(
             "normalizing legacy feature aliases in build config {}",
             request.build_info_path.display()
         );
-        fs::write(
-            &request.build_info_path,
-            toml::to_string_pretty(&build_info)?,
-        )
-        .with_context(|| {
-            format!(
-                "failed to rewrite normalized build info {}",
-                request.build_info_path.display()
-            )
-        })?;
+        fs::write(&request.build_info_path, toml::to_string_pretty(&config)?).with_context(
+            || {
+                format!(
+                    "failed to rewrite normalized build info {}",
+                    request.build_info_path.display()
+                )
+            },
+        )?;
     }
 
     match metadata {
         Some(metadata) => build::apply_makefile_features_with_metadata(
-            &mut build_info,
+            &mut config.build_info,
             &request.package,
             makefile_features,
             metadata,
         ),
-        None => {
-            build::apply_makefile_features(&mut build_info, &request.package, makefile_features)
-        }
+        None => build::apply_makefile_features(
+            &mut config.build_info,
+            &request.package,
+            makefile_features,
+        ),
     }
 
     if let Some(smp) = request.smp {
-        build_info.max_cpu_num = Some(smp);
+        config.build_info.max_cpu_num = Some(smp);
     }
 
-    Ok(build_info)
+    Ok(config)
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
     let metadata =
         build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let build_info = load_build_info_with_makefile_features_and_metadata(
+    let config = load_build_config_with_makefile_features_and_metadata(
         request,
         &makefile_features,
         Some(metadata),
     )?;
+    if config.app_c.is_some() {
+        bail!(
+            "ArceOS build config {} uses `app-c`; use the C app build path",
+            request.build_info_path.display()
+        );
+    }
+    let build_info = config.build_info;
 
     build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
@@ -121,6 +173,126 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
         request.plat_dyn,
         metadata,
     )
+}
+
+pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+    let metadata =
+        build::cached_workspace_metadata().context("failed to load workspace metadata")?;
+    let makefile_features = build::makefile_features_from_env();
+    let mut build_info = load_build_config_with_makefile_features_and_metadata(
+        request,
+        &makefile_features,
+        Some(metadata),
+    )?
+    .build_info;
+    let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
+
+    build_info.validated_max_cpu_num()?;
+    build_info.prepare_non_dynamic_platform_for(
+        &request.package,
+        &request.target,
+        plat_dyn,
+        metadata,
+    )?;
+    build_info.resolve_features_with_metadata(
+        &request.package,
+        &request.target,
+        plat_dyn,
+        metadata,
+    );
+    let rustflags = build::toolchain_rustflags(&build_info.env);
+    let args = ArceosBuildInfo::build_cargo_args(&request.target, &rustflags);
+
+    build_info.prepare_log_env();
+    build_info.prepare_max_cpu_num_env()?;
+
+    Ok(build_info.into_base_cargo_config_with_to_bin(
+        request.package.clone(),
+        request.target.clone(),
+        args,
+        false,
+    ))
+}
+
+pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosBuildConfig> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read ArceOS build config {}", path.display()))?;
+    build::reject_removed_std_field(path, &content)?;
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse ArceOS build config {}", path.display()))
+}
+
+pub(crate) fn load_arceos_build_mode(path: &Path) -> anyhow::Result<ArceosBuildMode> {
+    let config = load_arceos_build_config(path)?;
+    match config.app_c {
+        Some(app_c) => resolve_app_c_mode(path, &app_c),
+        None => Ok(ArceosBuildMode::RustStd),
+    }
+}
+
+pub(crate) fn resolve_app_c_mode(
+    config_path: &Path,
+    app_c: &Path,
+) -> anyhow::Result<ArceosBuildMode> {
+    let app_dir = resolve_app_c_dir(config_path, app_c)?;
+    let app_name = c_app_name(&app_dir)
+        .with_context(|| format!("failed to derive C app name from {}", app_dir.display()))?;
+
+    Ok(ArceosBuildMode::AppC { app_dir, app_name })
+}
+
+pub(crate) fn resolve_app_c_dir(config_path: &Path, app_c: &Path) -> anyhow::Result<PathBuf> {
+    let app_dir = if app_c.is_absolute() {
+        app_c.to_path_buf()
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(app_c)
+    };
+
+    if !app_dir.is_dir() {
+        bail!(
+            "app-c source directory {} configured by {} does not exist or is not a directory",
+            app_dir.display(),
+            config_path.display()
+        );
+    }
+    if !dir_has_direct_c_source(&app_dir)? {
+        bail!(
+            "app-c source directory {} configured by {} must contain at least one direct .c file",
+            app_dir.display(),
+            config_path.display()
+        );
+    }
+
+    app_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve app-c source directory {}",
+            app_dir.display()
+        )
+    })
+}
+
+fn dir_has_direct_c_source(dir: &Path) -> anyhow::Result<bool> {
+    Ok(fs::read_dir(dir)
+        .with_context(|| format!("failed to read app-c source directory {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "c")))
+}
+
+fn c_app_name(app_dir: &Path) -> Option<String> {
+    let name_dir = if app_dir.file_name().and_then(|name| name.to_str()) == Some("c") {
+        app_dir.parent().unwrap_or(app_dir)
+    } else {
+        app_dir
+    };
+
+    name_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
 }
 
 pub(crate) fn default_build_info_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
@@ -196,14 +368,7 @@ mod tests {
         assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args(
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-            &[],
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
+        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
@@ -224,14 +389,7 @@ mod tests {
         );
         assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args(
-            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-            &[],
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
+        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-Z", "build-std=core,alloc"])
@@ -240,15 +398,15 @@ mod tests {
     }
 
     #[test]
-    fn preparing_non_dynamic_aarch64_without_custom_platform_fails() {
+    fn preparing_c_app_non_dynamic_aarch64_without_custom_platform_fails() {
         let metadata = repo_metadata();
-        let result = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
-            .into_prepared_base_cargo_config_with_metadata(
-                "ax-helloworld",
-                "aarch64-unknown-none-softfloat",
-                Some(false),
-                &metadata,
-            );
+        let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
+        let result = build_info.prepare_non_dynamic_platform_for(
+            "ax-helloworld",
+            "aarch64-unknown-none-softfloat",
+            false,
+            &metadata,
+        );
 
         assert!(
             result
@@ -259,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn max_cpu_num_adds_axfeat_smp_feature() {
+    fn max_cpu_num_adds_smp_feature_for_std_build() {
         let metadata = repo_metadata();
         let mut build_info = ArceosBuildInfo {
             features: vec!["ax-feat/net".to_string()],
@@ -274,7 +432,7 @@ mod tests {
             &metadata,
         );
 
-        assert!(build_info.features.contains(&"ax-feat/smp".to_string()));
+        assert!(build_info.features.contains(&"ax-std/smp".to_string()));
     }
 
     #[test]
@@ -334,6 +492,86 @@ mod tests {
     }
 
     #[test]
+    fn build_config_without_app_c_uses_std_rust_mode() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "features = [\"ax-std\"]\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let mode = load_arceos_build_mode(&path).unwrap();
+
+        assert_eq!(mode, ArceosBuildMode::RustStd);
+    }
+
+    #[test]
+    fn app_c_build_config_resolves_source_dir_relative_to_config() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("case");
+        let source_dir = case_dir.join("c");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+        let path = case_dir.join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let mode = load_arceos_build_mode(&path).unwrap();
+
+        assert_eq!(
+            mode,
+            ArceosBuildMode::AppC {
+                app_dir: source_dir.canonicalize().unwrap(),
+                app_name: "case".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn app_c_build_config_rejects_missing_source_dir() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "app-c = \"missing\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let err = load_arceos_build_mode(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("app-c source directory"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn app_c_build_config_rejects_source_dir_without_c_files() {
+        let root = tempdir().unwrap();
+        let source_dir = root.path().join("c");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("main.rs"), "fn main() {}\n").unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(
+            &path,
+            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+        )
+        .unwrap();
+
+        let err = load_arceos_build_mode(&path).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must contain at least one direct .c file"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
     fn load_build_info_normalizes_legacy_feature_aliases() {
         let root = tempdir().unwrap();
         let path = root.path().join(".build-target.toml");
@@ -380,7 +618,7 @@ BACKTRACE = "y"
         )
         .unwrap();
         let request = request(
-            "ax-backtrace",
+            "arceos-test-suit",
             "aarch64-unknown-none-softfloat",
             None,
             path.clone(),
@@ -404,7 +642,7 @@ BACKTRACE = "y"
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json")
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
         );
         assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
     }
@@ -474,13 +712,12 @@ AX_IP = "10.0.2.15"
         assert!(
             !cargo
                 .features
-                .iter()
-                .any(|feature| feature.starts_with("ax-hal/riscv64-"))
+                .contains(&"ax-std/riscv64-qemu-virt".to_string())
         );
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/riscv64gc-unknown-none-elf.json")
+                .ends_with("scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json")
         );
     }
 
@@ -497,7 +734,7 @@ AX_IP = "10.0.2.15"
     }
 
     #[test]
-    fn apply_makefile_features_uses_axfeat_prefix_for_axfeat_packages() {
+    fn apply_makefile_features_uses_ax_std_prefix_for_unified_std_build() {
         let metadata = repo_metadata();
         let mut build_info = ArceosBuildInfo {
             features: Vec::new(),
@@ -511,8 +748,58 @@ AX_IP = "10.0.2.15"
             &metadata,
         );
 
-        assert!(build_info.features.contains(&"ax-feat/lockdep".to_string()));
-        assert!(!build_info.features.contains(&"ax-std/lockdep".to_string()));
+        assert!(build_info.features.contains(&"lockdep".to_string()));
+        assert!(!build_info.features.contains(&"ax-feat/lockdep".to_string()));
+    }
+
+    #[test]
+    fn prepared_cargo_config_uses_unified_std_target() {
+        let metadata = repo_metadata();
+        let cargo = ArceosBuildInfo {
+            features: vec!["lockdep".to_string()],
+            ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+        }
+        .into_prepared_base_cargo_config_with_metadata(
+            "ax-helloworld",
+            "aarch64-unknown-none-softfloat",
+            None,
+            &metadata,
+        )
+        .unwrap();
+
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
+        );
+        assert!(cargo.features.contains(&"ax-std/lockdep".to_string()));
+    }
+
+    #[test]
+    fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
+        let root = tempdir().unwrap();
+        let build_config = root.path().join("build-x86_64-unknown-none.toml");
+        let build_info = ArceosBuildInfo {
+            features: vec!["ax-std".to_string()],
+            ..ArceosBuildInfo::default_for_target("x86_64-unknown-none")
+        };
+        fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
+        let request = request(
+            "ax-helloworld",
+            "x86_64-unknown-none",
+            Some(false),
+            build_config,
+        );
+        let cargo = load_c_app_cargo_config(&request).unwrap();
+
+        assert_eq!(cargo.target, "x86_64-unknown-none");
+        assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
+        assert!(
+            cargo
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
     }
 
     #[test]
@@ -558,7 +845,7 @@ AX_IP = "10.0.2.15"
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/pie/x86_64-unknown-none.json")
+                .ends_with("scripts/targets/std/pie/x86_64-unknown-linux-musl.json")
         );
         assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));

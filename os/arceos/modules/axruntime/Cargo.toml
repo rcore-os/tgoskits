@@ -12,6 +12,7 @@ default = []
 
 dma = ["paging"]
 ext-ld = []
+std-compat = []
 ipi = ["dep:ax-ipi"]
 irq = [
   "ax-hal/irq",

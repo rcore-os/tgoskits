@@ -619,7 +619,7 @@ pub unsafe fn sys_setsockopt(
                 }
                 // Accept and silently ignore timeouts — ArceOS's smoltcp
                 // stack does not track per-socket read/write timeouts, but
-                // hermit std calls setsockopt for these during
+                // std calls setsockopt for these during
                 // set_read_timeout / set_write_timeout.
                 ctypes::SO_RCVTIMEO | ctypes::SO_SNDTIMEO => {
                     debug!(

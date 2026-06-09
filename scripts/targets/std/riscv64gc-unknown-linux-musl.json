@@ -6,30 +6,43 @@
   "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
   "eh-frame-header": false,
   "emit-debug-gdb-scripts": false,
+  "env": "musl",
   "features": "+m,+a,+f,+d,+c,+zicsr,+zifencei",
+  "has-thread-local": true,
   "linker": "rust-lld",
   "linker-flavor": "gnu-lld",
   "llvm-abiname": "lp64d",
   "llvm-target": "riscv64",
   "max-atomic-width": 64,
   "metadata": {
-    "description": "Bare RISC-V (RV64IMAFDC ISA)",
+    "description": "ArceOS std RISC-V musl identity with kernel link style",
     "host_tools": false,
-    "std": false,
+    "std": true,
     "tier": 2
   },
+  "os": "linux",
   "panic-strategy": "abort",
   "pre-link-args": {
     "gnu-lld": [
+      "-static",
       "-no-pie",
+      "--gc-sections",
+      "-znorelro",
       "-znostart-stop-gc",
-      "-Tlinker.x"
+      "-Tlinker.x",
+      "-u",
+      "_start"
     ]
   },
   "relocation-model": "static",
+  "relro-level": "off",
   "supported-sanitizers": [
     "shadow-call-stack",
     "kernel-address"
   ],
-  "target-pointer-width": 64
+  "target-family": [
+    "unix"
+  ],
+  "target-pointer-width": 64,
+  "tls-model": "local-exec"
 }

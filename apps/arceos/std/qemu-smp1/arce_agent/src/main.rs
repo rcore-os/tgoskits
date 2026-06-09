@@ -1,3 +1,6 @@
+#[cfg(feature = "arceos")]
+use ax_std as _;
+
 // ArceAgent v0.2: Interactive AI Agent on ArceOS Unikernel
 //
 // Architecture:
@@ -9,54 +12,51 @@
 // Uses minreq for HTTP (no TLS — requires a local HTTP proxy).
 // Compiles identically on Linux (for development) and ArceOS (for deployment).
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
-
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod base64;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod context;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod hal;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod lineedit;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod llm;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod memory;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 mod tools;
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use context::ContextManager;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use hal::HalInterface;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use lineedit::LineEditor;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use llm::{ChatMessage, LlmClient};
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use log::{debug, error, info};
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use memory::Memory;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 use tools::{dispatch, tool_catalog};
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const API_BASE: &str = "http://localhost:8080/v1";
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const MODEL: &str = "qwen3.5-plus-thinking";
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const MAX_CONTEXT_MESSAGES: usize = 40;
 /// Max tool-call rounds per user turn (prevents infinite loops).
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const MAX_TOOL_ROUNDS: usize = 10;
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const SYSTEM_PROMPT: &str = r#"你是 ArceAgent，一个运行在 ArceOS Unikernel 上的智能机器人助手。
 
 ## 你的身体
@@ -86,7 +86,7 @@ const SYSTEM_PROMPT: &str = r#"你是 ArceAgent，一个运行在 ArceOS Unikern
 - 这体现了"云端大脑 + 裸机身体"的架构：你的推理能力来自云端 LLM，执行能力来自本地硬件
 - 请记住你是一个有物理实体的机器人，不是纯软件助手"#;
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 const STARTUP_PROMPT: &str = "你刚刚启动。请先用 read_memory \
                               工具检查持久记忆中是否有需要注意的内容，然后根据记忆内容和当前状态，\
                               向用户输出一句简短的欢迎/问候信息。如果记忆中有用户的名字或偏好，\
@@ -97,7 +97,7 @@ const STARTUP_PROMPT: &str = "你刚刚启动。请先用 read_memory \
 // Sends context to LLM, executes any tool calls, prints final text response.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(feature = "arceos"))]
 fn run_llm_turn(
     llm: &LlmClient,
     ctx: &mut ContextManager,
@@ -202,10 +202,10 @@ fn main() {
     println!("========================================");
     println!();
 
-    #[cfg(target_os = "hermit")]
+    #[cfg(feature = "arceos")]
     println!("ArceAgent smoke test ready");
 
-    #[cfg(not(target_os = "hermit"))]
+    #[cfg(not(feature = "arceos"))]
     {
         // init logging (colors, log level)
         let mut builder = env_logger::Builder::new();

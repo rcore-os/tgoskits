@@ -3,8 +3,8 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
 };
 
-#[cfg(target_os = "hermit")]
-use arceos_rust as _;
+#[cfg(feature = "arceos")]
+use ax_std as _;
 
 #[cfg(feature = "dns")]
 const DEST: &str = "ident.me:80";

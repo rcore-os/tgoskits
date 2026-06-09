@@ -84,7 +84,7 @@ static long futex_wake_bitset(_Atomic uint32_t *uaddr, int count, uint32_t bitse
     return syscall(SYS_futex, uaddr, FUTEX_WAKE_BITSET, count, NULL, NULL, bitset);
 }
 
-static int wait_for_waiters(_Atomic int *ready, int expected, const char *label)
+static int wait_until_ready(_Atomic int *ready, int expected, const char *label)
 {
     for (int i = 0; i < 1000; i++) {
         if (atomic_load(ready) >= expected)
@@ -141,8 +141,11 @@ static void test_basic_wait_wake(void)
 
     int total_woken = 0;
     for (int i = 0; i < T1_ROUNDS; i++) {
-        while (atomic_load(&t1_ready_round) < i + 1 && !atomic_load(&t1_done))
-            usleep(100);
+        if (!wait_until_ready(&t1_ready_round, i + 1, "T1")) {
+            atomic_store(&t1_futex, 1);
+            futex_wake(&t1_futex, 1);
+            break;
+        }
         atomic_store(&t1_futex, 1);
         long w = futex_wake(&t1_futex, 1);
         if (w > 0)
@@ -212,7 +215,7 @@ static void test_multi_waiter(void)
             break;
         }
 
-        if (!wait_for_waiters(&t2_ready, T2_N, "T2"))
+        if (!wait_until_ready(&t2_ready, T2_N, "T2"))
             all_ok = 0;
 
         /* Give all waiters time to block on the futex after reporting ready. */
@@ -395,7 +398,7 @@ static void test_stress_contention(void)
             break;
         }
 
-        if (!wait_for_waiters(&t5_ready, T5_N, "T5"))
+        if (!wait_until_ready(&t5_ready, T5_N, "T5"))
             all_ok = 0;
 
         usleep(5000);
@@ -428,18 +431,18 @@ static void test_stress_contention(void)
  * FUTEX_WAKE_PRIVATE (op 129).  The kernel resolves keys via
  * FutexKeyMode::Private instead of FutexKeyMode::Auto.
  *
- * A t6_ready flag synchronises each round: the waiter sets t6_futex=0,
- * then signals t6_ready before entering futex_wait; the main thread
- * spins on t6_ready, clears it, sets t6_futex=1, and wakes.  This
- * prevents the main thread from issuing a FUTEX_WAKE before the
- * waiter has actually blocked, which would lose the wakeup.
+ * A ready-round counter synchronises each round: the waiter sets
+ * t6_futex=0, then publishes the current round before entering
+ * futex_wait.  The main thread waits for that round before setting
+ * t6_futex=1 and waking, which avoids issuing FUTEX_WAKE before the
+ * waiter has actually reached the wait path.
  * ================================================================ */
 
 #define T6_ROUNDS 50
 
 static _Atomic uint32_t t6_futex;
-static _Atomic uint32_t t6_ready;
 static _Atomic int t6_done;
+static _Atomic int t6_ready_round;
 
 static void *t6_waiter(void *arg)
 {
@@ -448,10 +451,7 @@ static void *t6_waiter(void *arg)
 
     for (int i = 0; i < T6_ROUNDS; i++) {
         atomic_store(&t6_futex, 0);
-        /* Signal main that we are about to block — prevents the main
-         * thread from calling futex_wake before we enter futex_wait,
-         * which would lose the wakeup and leave us stuck. */
-        atomic_store_explicit(&t6_ready, 1, memory_order_release);
+        atomic_store(&t6_ready_round, i + 1);
         while (atomic_load(&t6_futex) == 0) {
             long r = futex_wait_private(&t6_futex, 0);
             if (r < 0 && errno != EAGAIN && errno != EINTR) {
@@ -481,8 +481,8 @@ static void test_private_flag(void)
 #endif
 
     atomic_store(&t6_futex, 1);
-    atomic_store(&t6_ready, 0);
     atomic_store(&t6_done, 0);
+    atomic_store(&t6_ready_round, 0);
 
     pthread_t t;
     CHECK(pthread_create(&t, NULL, t6_waiter, NULL) == 0,
@@ -490,12 +490,11 @@ static void test_private_flag(void)
 
     int total_woken = 0;
     for (int i = 0; i < T6_ROUNDS; i++) {
-        /* Wait until the waiter has set t6_futex=0 and signalled ready.
-         * This serialises with the waiter's memory_order_release so we
-         * are guaranteed to see t6_futex==0 before we overwrite it. */
-        while (atomic_load_explicit(&t6_ready, memory_order_acquire) == 0)
-            usleep(1000);
-        atomic_store_explicit(&t6_ready, 0, memory_order_relaxed);
+        if (!wait_until_ready(&t6_ready_round, i + 1, "T6")) {
+            atomic_store(&t6_futex, 1);
+            futex_wake_private(&t6_futex, 1);
+            break;
+        }
         atomic_store(&t6_futex, 1);
         long w = futex_wake_private(&t6_futex, 1);
         if (w > 0)
@@ -527,11 +526,13 @@ static void test_private_flag(void)
 static _Atomic uint32_t t7_futex;
 static const uint32_t t7_bitsets[T7_N] = { 0x1, 0x2, 0x4 };
 static _Atomic int t7_woken_flags[T7_N];
+static _Atomic int t7_ready;
 
 static void *t7_waiter(void *arg)
 {
     int idx = (int)(long)arg;
     atomic_store(&t7_woken_flags[idx], 0);
+    atomic_fetch_add(&t7_ready, 1);
     while (atomic_load(&t7_futex) == 0) {
         long r = futex_wait_bitset(&t7_futex, 0, t7_bitsets[idx]);
         if (r < 0 && errno != EAGAIN && errno != EINTR)
@@ -547,6 +548,7 @@ static void test_bitset_selective(void)
 
     for (int i = 0; i < T7_ROUNDS; i++) {
         atomic_store(&t7_futex, 0);
+        atomic_store(&t7_ready, 0);
         for (int w = 0; w < T7_N; w++)
             atomic_store(&t7_woken_flags[w], 0);
 
@@ -565,6 +567,13 @@ static void test_bitset_selective(void)
             break;
         }
 
+        if (!wait_until_ready(&t7_ready, T7_N, "T7")) {
+            atomic_store(&t7_futex, 1);
+            futex_wake(&t7_futex, T7_N);
+            for (int w = 0; w < created; w++)
+                pthread_join(ts[w], NULL);
+            break;
+        }
         usleep(5000);
 
         /* Step a: disjoint mask 0x8 should wake nobody */

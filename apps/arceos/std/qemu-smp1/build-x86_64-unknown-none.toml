@@ -1,4 +1,3 @@
-std = true
 features = [
 ]
 log = "Info"
