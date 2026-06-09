@@ -50,17 +50,10 @@ fn handle_breakpoint(tf: &mut TrapFrame) {
 
 fn handle_debug(tf: &mut TrapFrame) {
     debug!("#DB @ {:#x} ", tf.rip);
-    if crate::trap::debug_handler(tf) {
-        return;
-    }
-    let bt = tf.backtrace();
-    panic!(
-        "Unhandled #DB @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
-        tf.rip,
-        tf.error_code,
-        tf,
-        bt.kind("trap")
-    );
+    // If a kprobe/uprobe debug handler claims the #DB it fixes up `tf` and we
+    // resume directly. Otherwise fall through to the user-space exception loop,
+    // which delivers it as a ptrace single-step stop or a fatal SIGTRAP.
+    let _ = crate::trap::debug_handler(tf);
 }
 
 #[unsafe(no_mangle)]

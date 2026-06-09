@@ -1509,8 +1509,11 @@ pub fn ptrace_setup_singlestep(
 ) {
     // Set Trap Flag (TF, bit 8) in RFLAGS.
     // The CPU will generate a #DB debug exception after executing one
-    // instruction and will automatically clear TF before pushing RFLAGS
-    // onto the exception stack frame (Intel SDM Vol 3A §17.3.2).
+    // instruction. The CPU clears TF in the active RFLAGS register but
+    // preserves TF=1 in the RFLAGS saved on the exception stack frame
+    // (Intel SDM Vol 3A §17.3.2). The Debug handler in user.rs must
+    // clear TF in the saved frame to avoid tainting GDB's single-step
+    // sequence (e.g. ret_to_nx probe → wrong i386 arch detection).
     uctx.rflags |= 1 << 8;
 }
 
@@ -2067,10 +2070,10 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
             rdi: uctx.rdi,
             orig_rax: u64::MAX,
             rip: uctx.rip,
-            cs: uctx.cs,
+            cs: 0x33,
             eflags: uctx.rflags,
             rsp: uctx.rsp,
-            ss: uctx.ss,
+            ss: 0x2b,
             fs_base: uctx.fs_base,
             gs_base: uctx.gs_base,
             ds: 0,
@@ -2084,7 +2087,9 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
 #[cfg(target_arch = "x86_64")]
 impl X8664UserRegs {
     fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> AxResult<()> {
-        if self.cs != uctx.cs || self.ss != uctx.ss {
+        const LINUX_USER64_CS: u64 = 0x33;
+        const LINUX_USER_SS: u64 = 0x2b;
+        if self.cs != LINUX_USER64_CS || self.ss != LINUX_USER_SS {
             return Err(AxError::from(LinuxError::EINVAL));
         }
 

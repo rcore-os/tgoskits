@@ -21,8 +21,6 @@ use crate::{
     task::{AsThread, rebind_task_tid, zap_thread},
 };
 
-const PTRACE_O_TRACEEXEC_FLAG: usize = 1 << 4;
-
 pub fn sys_execve(
     uctx: &mut UserContext,
     path: *const c_char,
@@ -342,13 +340,11 @@ pub fn sys_execve(
         has_ldso,
     );
 
-    // PTRACE_TRACEME always stops on execve (Linux: the tracee sends
-    // SIGTRAP regardless of PTRACE_O_TRACEEXEC; that flag only controls
-    // whether the stop carries PTRACE_EVENT_EXEC).
-    if proc_data.is_ptrace_traceme()
-        || (proc_data.is_ptrace_attached()
-            && proc_data.ptrace_options() & PTRACE_O_TRACEEXEC_FLAG != 0)
-    {
+    // All ptrace tracees (both TRACEME and ATTACH) unconditionally
+    // stop with SIGTRAP on execve (Linux ptrace(2)). PTRACE_O_TRACEEXEC
+    // only controls whether the stop carries PTRACE_EVENT_EXEC data,
+    // not whether the stop itself occurs.
+    if proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached() {
         proc_data.set_ptrace_exec_stop_pending();
     }
 

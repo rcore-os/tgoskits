@@ -690,7 +690,6 @@ impl SimpleDirOps for ThreadDir {
                 "task",
                 "maps",
                 "auxv",
-                "mem",
                 "mounts",
                 "cmdline",
                 "comm",
