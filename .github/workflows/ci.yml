@@ -296,13 +296,13 @@ jobs:
             container_image: base
             fetch_depth: "1"
           - name: Run sync-lint
-            use_container: false
-            runs_on: '["self-hosted","linux","qcs"]'
-            self_hosted_owner: rcore-os
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
             command: cargo xtask sync-lint --since "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
             cache_key: ""
             container_image: base
             fetch_depth: full
+            upload_xtask_bin_artifact: true
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -329,6 +329,8 @@ jobs:
           || matrix.container_image
         }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
+      xtask_bin_artifact_name: tg-xtask-bin
 
   test_checks:
     name: ${{ matrix.name }}
@@ -380,47 +382,52 @@ jobs:
           - name: Test axvisor loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask axvisor test qemu --arch loongarch64
+            command: target/debug/tg-xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry riscv64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch riscv64
+            command: target/debug/tg-xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry aarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch aarch64
+            command: target/debug/tg-xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch loongarch64
+            command: target/debug/tg-xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test starry x86_64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --arch x86_64
+            command: target/debug/tg-xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: base
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
+            download_xtask_bin_artifact: true
           - name: Test arceos x86_64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
@@ -685,6 +692,15 @@ jobs:
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
+      download_xtask_bin_artifact: >-
+        ${{
+          matrix.download_xtask_bin_artifact
+          || (
+            matrix.self_hosted_owner != ''
+            && github.repository_owner != matrix.self_hosted_owner
+          )
+        }}
+      xtask_bin_artifact_name: tg-xtask-bin
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
