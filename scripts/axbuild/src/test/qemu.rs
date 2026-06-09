@@ -478,6 +478,14 @@ fn discover_qemu_cases_impl(
     if cases.is_empty() {
         if let Some(case_name) = selected_case {
             if !selected_case_dirs_without_config.is_empty() {
+                let expected_configs = selected_case_dirs_without_config
+                    .iter()
+                    .filter_map(|(_, path)| path.file_name())
+                    .map(|name| format!("`{}`", name.to_string_lossy()))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let searched = selected_case_dirs_without_config
                     .iter()
                     .map(|(build_group, path)| format!("{build_group}: {}", path.display()))
@@ -485,7 +493,8 @@ fn discover_qemu_cases_impl(
                     .join(", ");
                 bail!(
                     "{suite_name} {group_label} test case `{case_name}` exists under matching \
-                     build group(s), but none provide a qemu config for arch `{arch}`: {searched}"
+                     build group(s), but none provide {expected_configs} for arch `{arch}`: \
+                     {searched}"
                 );
             }
 

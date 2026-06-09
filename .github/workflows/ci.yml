@@ -597,10 +597,18 @@ jobs:
                 exit 0
               fi
 
+              rustup component add llvm-tools
               sudo apt-get update
               sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
               sudo usermod -aG kvm $USER
-              sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm"
+              sg kvm -c '
+                set -eux
+                rust_host="$(rustc -vV | awk "/^host:/ { print \$2 }")"
+                llvm_tools_dir="$(rustc --print sysroot)/lib/rustlib/${rust_host}/bin"
+                export PATH="${llvm_tools_dir}:${PATH}"
+                command -v rust-objcopy
+                cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+              '
             cache_key: ""
             container_image: ""
             limit_to_owner: ""
