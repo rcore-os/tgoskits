@@ -306,7 +306,7 @@ pub fn close_file_like(fd: c_int) -> AxResult {
         release_locks_on_close(f);
         return Ok(());
     }
-    Ok(())
+    Err(AxError::BadFileDescriptor)
 }
 
 fn notify_close_write(fd: &FileDescriptor) {
