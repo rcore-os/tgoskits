@@ -1430,6 +1430,31 @@ plat_dyn = false
     }
 
     #[test]
+    fn selected_qemu_case_allows_ignored_nested_app_when_explicit() {
+        let root = tempdir().unwrap();
+        write_case_file(
+            root.path(),
+            "k230-qemu/qemu-k230/kpu-smoke",
+            "qemu-riscv64.toml",
+            "args = []\n",
+        );
+        fs::write(root.path().join("apps/.ignore"), "apps/starry/k230-qemu\n").unwrap();
+        let args = ArgsAppQemu {
+            all: false,
+            test_case: Some("k230-qemu/qemu-k230/kpu-smoke".to_string()),
+            caps: Vec::new(),
+            arch: Some("riscv64".to_string()),
+            qemu_config: None,
+            debug: false,
+        };
+
+        let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
+        let names = apps.into_iter().map(|app| app.name).collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["k230-qemu/qemu-k230/kpu-smoke"]);
+    }
+
+    #[test]
     fn qemu_case_fields_load_grouped_commands_and_subcases() {
         let root = tempdir().unwrap();
         write_case_file(
