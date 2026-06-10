@@ -13,5 +13,12 @@ extern crate alloc;
 pub mod common;
 pub mod fdrv;
 pub mod fw;
+pub mod runtime;
+pub mod wireless;
 
+#[cfg(feature = "arceos")]
+pub mod glue_arceos;
+
+pub use runtime::set_runtime;
 pub use wifi_host;
+pub use wireless::{Aic8800Wifi, probe};

@@ -18,20 +18,22 @@ extern crate alloc;
 pub mod hw_init;
 pub mod irq;
 pub mod regs;
+pub mod runtime;
+
+#[cfg(feature = "arceos")]
+pub mod glue_arceos;
 
 use alloc::sync::Arc;
-use core::{
-    ptr::{read_volatile, write_volatile},
-    time::Duration,
-};
+use core::ptr::{read_volatile, write_volatile};
 
+pub use runtime::{SdhciDelay, set_delay};
 use sdio_host::{SdioCardIrq, SdioHost, cccr::*, cmd::*, error::SdioError};
 
 use crate::regs::*;
 
 #[inline]
 pub(crate) fn delay_ms(ms: u64) {
-    ax_task::sleep(Duration::from_millis(ms));
+    crate::runtime::delay().delay_ms(ms);
 }
 
 pub(crate) fn mmio_read<T: Copy>(addr: usize) -> T {
@@ -153,7 +155,7 @@ impl CviSdhci {
                     norm
                 );
             }
-            ax_task::yield_now();
+            crate::runtime::delay().yield_now();
         }
         let pres = self.read::<u32>(SDHCI_PRESENT_STATE);
         let sts = self.read::<u16>(SDHCI_INT_STATUS_NORM);

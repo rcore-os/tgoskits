@@ -198,7 +198,7 @@ impl IRxQueue for AicRxQueue {
     }
 }
 
-use ax_sync::Mutex;
+use spin::Mutex;
 
 /// 全局暂存：WiFi 网络设备（由集成层取出并通过 `register_net` 注册）
 static PENDING_NET_DEV: Mutex<Option<AicWifiNetDev>> = Mutex::new(None);

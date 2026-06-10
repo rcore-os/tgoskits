@@ -150,14 +150,11 @@ name = "aic8800"
 version = "0.1.0"
 dependencies = [
  "aes",
- "ax-config",
+ "atomic-waker",
  "ax-hal",
- "ax-kspin",
- "ax-net",
- "ax-sync",
  "ax-task",
- "axpoll",
  "digest 0.10.7",
+ "dma-api",
  "hmac",
  "log",
  "pbkdf2",
@@ -166,6 +163,7 @@ dependencies = [
  "sdhci-cv1800",
  "sdio-host",
  "sha1 0.10.6",
+ "spin 0.12.0",
  "wifi-host",
 ]
 
@@ -7186,7 +7184,6 @@ name = "sdhci-cv1800"
 version = "0.1.0"
 dependencies = [
  "ax-task",
- "axpoll",
  "log",
  "sdio-host",
 ]
@@ -7820,6 +7817,7 @@ dependencies = [
  "tock-registers 0.9.0",
  "uluru",
  "weak-map",
+ "wifi-host",
  "x86",
  "xmas-elf",
  "zerocopy",
@@ -9408,6 +9406,10 @@ dependencies = [
 [[package]]
 name = "wifi-host"
 version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "rd-net",
+]
 
 [[package]]
 name = "winapi"

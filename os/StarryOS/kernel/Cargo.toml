@@ -38,8 +38,11 @@ sg2002 = [
 sg2002-wifi = [
     "sg2002",
     "dep:aic8800",
+    "aic8800/arceos",
     "dep:sdhci-cv1800",
+    "sdhci-cv1800/arceos",
     "dep:sdio-host",
+    "dep:wifi-host",
     "dep:rd-net",
     "dep:axklib",
 ]
@@ -86,6 +89,7 @@ k230-kpu = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
 sdhci-cv1800 = { workspace = true, optional = true }
 sdio-host = { workspace = true, optional = true }
+wifi-host = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 crab-usb.workspace = true
 rdrive.workspace = true

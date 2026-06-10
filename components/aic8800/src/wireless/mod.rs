@@ -1,19 +1,17 @@
-//! AIC8800 WiFi 驱动
+//! AIC8800 Wi-Fi driver: `wifi_host::WifiDriver` implementation.
 //!
-//! 实现 `wifi_host::WifiDriver` trait，提供 init / connect / disconnect 三阶段接口。
+//! Platform-specific bring-up (MMIO mapping, SDHCI controller enumeration, IRQ
+//! wiring) is the OS glue's responsibility. The OS hands an already-initialized
+//! SDIO host to [`probe`], which performs the chip-side bring-up (firmware load,
+//! FDRV init) and returns a `Box<dyn WifiDriver>`. The OS then drives Wi-Fi
+//! purely through the trait, without referencing any AIC8800 internal type.
 
-use alloc::sync::Arc;
-use core::time::Duration;
+use alloc::{boxed::Box, sync::Arc};
 
-use sdhci_cv1800::{
-    CviSdhci,
-    hw_init::{Sdio1HwConfig, sdio1_hw_init},
-};
+use dma_api::DmaOp;
+use rd_net::Net;
 use sdio_host::SdioHost;
 use wifi_host::{WifiDriver, WifiError as HostError};
-
-#[cfg(feature = "speed-test")]
-pub mod speed_test;
 
 use crate::{
     common::ChipVariant,
@@ -33,97 +31,74 @@ fn map_err(e: crate::fdrv::WifiError) -> HostError {
     }
 }
 
-/// AIC8800D80 WiFi 驱动
-///
-/// 实现 `wifi_host::WifiDriver` trait。
+/// AIC8800 Wi-Fi driver instance.
 pub struct Aic8800Wifi {
     bus: Arc<WifiBus>,
     client: WifiClient,
-    #[allow(dead_code)]
     chip: ChipVariant,
+    net_taken: bool,
 }
 
-impl Aic8800Wifi {
-    /// 取出暂存的 WiFi 网络设备（用于注册到上游网络栈）
-    ///
-    /// 只能调用一次。调用后网络设备由集成层通过 `register_net` 持有。
-    pub fn take_net_device(&self) -> Option<crate::fdrv::net::device::AicWifiNetDev> {
-        crate::fdrv::take_wifi_net_device()
+/// Probe an AIC8800 chip over an already-initialized SDIO host.
+///
+/// The caller (OS glue) is responsible for the platform bring-up that precedes
+/// this: mapping MMIO, initializing the SDHCI controller, and registering the
+/// controller IRQ. `sdio` must be an enumerated, ready-to-use host.
+///
+/// This detects the chip variant, loads firmware, and starts FDRV (RX/TX/AP
+/// tasks), returning a `Box<dyn WifiDriver>`. Call [`crate::set_runtime`]
+/// before this. Returns an error if the chip is not a recognized AIC8800.
+pub fn probe<H: SdioHost + 'static>(mut sdio: H) -> Result<Box<dyn WifiDriver>, HostError> {
+    // ---- 芯片识别 ----
+    let (vid, did) = sdio.vendor_device_id();
+    let chip = ChipVariant::from_vid_did(vid, did);
+    log::info!(
+        "[aic8800] chip={:?} vid=0x{:04x} did=0x{:04x}",
+        chip,
+        vid,
+        did
+    );
+    if chip == ChipVariant::Unknown {
+        return Err(HostError::OperationFailed(alloc::format!(
+            "unknown Wi-Fi chip: vid=0x{:04x} did=0x{:04x}",
+            vid,
+            did
+        )));
     }
+
+    // ---- 固件加载 ----
+    crate::fw::firmware_init(&mut sdio, chip).map_err(|e| {
+        log::error!("[aic8800] firmware init failed: {:?}", e);
+        HostError::NotInitialized
+    })?;
+    log::info!("[aic8800] firmware loaded");
+
+    // ---- FDRV 初始化 (SdioTransport + RX/TX/AP 任务) ----
+    let bus = crate::fdrv::init(sdio, chip).map_err(|e| {
+        log::error!("[aic8800] FDRV init failed: {}", e);
+        HostError::NotInitialized
+    })?;
+
+    // ---- CARD_INT 回调：SDHCI 控制器收到卡中断时唤醒 RX 处理 ----
+    sdhci_cv1800::irq::register_card_irq_callback(crate::fdrv::sdio1_irq_handler);
+
+    let client = WifiClient::new(Arc::clone(&bus));
+    Ok(Box::new(Aic8800Wifi {
+        bus,
+        client,
+        chip,
+        net_taken: false,
+    }))
 }
 
 impl WifiDriver for Aic8800Wifi {
-    fn init() -> Result<Self, HostError> {
-        use ax_plat_riscv64_sg2002::config::{devices::*, plat::PHYS_VIRT_OFFSET};
-
-        // ---- Step 1: SoC 硬件初始化 ----
-        let hw_cfg = Sdio1HwConfig::new(
-            CRG_PADDR,
-            SYSCTRL_PADDR,
-            RTCSYS_CTRL_PADDR,
-            RTCSYS_IO_PADDR,
-            SDIO1_PADDR,
-            PHYS_VIRT_OFFSET,
-        );
-        sdio1_hw_init(&hw_cfg);
-
-        ax_plat_riscv64_sg2002::irq::register_sdio1_irq(sdhci_cv1800::irq::sdhci_irq_handler);
-
-        // ---- Step 2: SDIO 卡枚举 ----
-        let mut sdio = CviSdhci::new(hw_cfg.sdio1_base_va);
-        sdio.init().map_err(|e| {
-            log::error!("[aic8800] SDIO init failed: {:?}", e);
-            HostError::NotInitialized
-        })?;
-
-        // ---- Step 3: 芯片识别 ----
-        let (vid, did) = sdio.vendor_device_id();
-        let chip = ChipVariant::from_vid_did(vid, did);
-        log::info!(
-            "[aic8800] chip={:?} vid=0x{:04x} did=0x{:04x}",
-            chip,
-            vid,
-            did
-        );
-        if chip == ChipVariant::Unknown {
-            return Err(HostError::OperationFailed(alloc::format!(
-                "Unknown WiFi chip: vid=0x{:04x}, did=0x{:04x}",
-                vid,
-                did
-            )));
-        }
-
-        // ---- Step 4: 固件加载 ----
-        crate::fw::firmware_init(&mut sdio, chip).map_err(|e| {
-            log::error!("[aic8800] Firmware init failed: {:?}", e);
-            HostError::NotInitialized
-        })?;
-        log::info!("[aic8800] Firmware loaded");
-
-        // ---- Step 5: FDRV 初始化 (SdioTransport + IRQ + RX/TX 线程) ----
-        let bus = crate::fdrv::init(sdio, chip).map_err(|e| {
-            log::error!("[aic8800] FDRV init failed: {}", e);
-            HostError::NotInitialized
-        })?;
-
-        // ---- Step 6: CARD_INT 回调 ----
-        sdhci_cv1800::irq::register_card_irq_callback(crate::fdrv::sdio1_irq_handler);
-
-        // ---- Step 7: LMAC 配置 ----
-        let mut client = WifiClient::new(Arc::clone(&bus));
-        let mac = client.lmac_configure(chip, 6000).map_err(|e| {
-            log::error!("[aic8800] LMAC configure failed: {:?}", e);
-            map_err(e)
-        })?;
-        log::info!("[aic8800] WiFi initialized, MAC={:02x?}", mac);
-
-        // ---- Step 8: 创建并暂存网络设备 ----
-        client.store_net_device();
-
-        Ok(Self { bus, client, chip })
-    }
-
     fn connect(&mut self, ssid: &str, password: &str) -> Result<(), HostError> {
+        // STA 模式连接前需先完成 LMAC 配置（SoftAP 的 start_ap_open 自带配置）。
+        self.client
+            .lmac_configure(self.chip, 6000)
+            .map_err(map_err)?;
+        self.client.store_net_device();
+
         let config = if password.is_empty() {
             WifiConfig::open(ssid)
         } else {
@@ -133,31 +108,54 @@ impl WifiDriver for Aic8800Wifi {
         let mut last_err = None;
         for attempt in 0..2 {
             if attempt > 0 {
-                log::info!("[aic8800] Retrying connect (attempt {})...", attempt + 1);
-                ax_task::sleep(core::time::Duration::from_secs(3));
+                log::info!("[aic8800] retrying connect (attempt {})...", attempt + 1);
+                crate::runtime::runtime().sleep_ms(3000);
             }
-
             match self.client.connect(&config, 15000) {
                 Ok(()) => {
-                    log::info!("[aic8800] Connected to '{}'", ssid);
+                    log::info!("[aic8800] connected to '{}'", ssid);
                     return Ok(());
                 }
                 Err(e) => {
-                    log::warn!("[aic8800] Connect attempt {} failed: {:?}", attempt + 1, e);
+                    log::warn!("[aic8800] connect attempt {} failed: {:?}", attempt + 1, e);
                     last_err = Some(map_err(e));
                 }
             }
         }
-
         Err(last_err.unwrap_or(HostError::OperationFailed("connect failed".into())))
     }
 
     fn disconnect(&mut self) -> Result<(), HostError> {
-        self.client.disconnect().map_err(|e| {
-            log::warn!("[aic8800] Disconnect error: {:?}", e);
-            map_err(e)
-        })?;
-        log::info!("[aic8800] Disconnected");
+        self.client.disconnect().map_err(map_err)?;
+        log::info!("[aic8800] disconnected");
         Ok(())
+    }
+
+    fn start_ap_open(&mut self, ssid: &[u8], channel: u8) -> Result<(), HostError> {
+        let cfm = self
+            .client
+            .start_ap_open(self.chip, ssid, channel, 6000)
+            .map_err(map_err)?;
+        log::info!("[aic8800] AP started, APM_START_CFM={:02x?}", cfm);
+        // 暂存网络设备，供后续 take_net 取出注册。
+        self.client.store_net_device();
+        Ok(())
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.bus.conn.sta_mac.lock().unwrap_or([0; 6])
+    }
+
+    fn take_net(&mut self, dma_op: &'static dyn DmaOp) -> Option<Net> {
+        if self.net_taken {
+            return None;
+        }
+        let dev = crate::fdrv::take_wifi_net_device()?;
+        self.net_taken = true;
+        Some(Net::new(dev, dma_op))
+    }
+
+    fn set_rx_data_callback(&mut self, cb: fn()) {
+        crate::fdrv::register_rx_data_callback(cb);
     }
 }

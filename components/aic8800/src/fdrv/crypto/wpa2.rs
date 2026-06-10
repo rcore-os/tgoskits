@@ -414,7 +414,7 @@ fn aes_key_unwrap(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, WpaError> {
 
 fn generate_snonce() -> [u8; NONCE_LEN] {
     let mut snonce = [0u8; NONCE_LEN];
-    let ts = ax_hal::time::monotonic_time_nanos();
+    let ts = crate::runtime::runtime().now_nanos();
     let ts_bytes = ts.to_le_bytes();
     let hash1 = hmac_sha1(&ts_bytes, b"snonce-gen-1");
     let hash2 = hmac_sha1(&ts_bytes, b"snonce-gen-2");

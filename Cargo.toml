@@ -311,6 +311,7 @@ mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.12"
+atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.22.1" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }

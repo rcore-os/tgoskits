@@ -9,10 +9,8 @@
 //! 必须独立于 RX 线程：ME_STA_ADD 走 send_cmd 阻塞等 CFM，而 CFM 由
 //! RX 线程接收处理 —— 在 RX 线程里调 send_cmd 会死锁。
 
-use alloc::{sync::Arc, vec::Vec};
-use core::{future::poll_fn, sync::atomic::Ordering, task::Poll};
-
-use ax_task::future::block_on;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::{sync::atomic::Ordering, task::Poll};
 
 use crate::fdrv::{
     core::bus::{BusState, WifiBus},
@@ -22,33 +20,30 @@ use crate::fdrv::{
 
 /// 启动 AP worker 线程
 pub fn start(bus: Arc<WifiBus>) {
-    ax_task::spawn_with_name(
-        move || {
-            log::debug!("[wifi-ap] worker thread started");
-            block_on(poll_fn(|cx| {
-                if *bus.state.lock() == BusState::Down {
-                    return Poll::Ready(());
-                }
+    log::debug!("[wifi-ap] worker thread starting");
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-ap",
+        Box::new(move |cx| {
+            if *bus.state.lock() == BusState::Down {
+                return Poll::Ready(());
+            }
 
-                // 取出所有待处理的关联请求
-                loop {
-                    let assoc_req = bus.ap.assoc_queue.lock().pop_front();
-                    match assoc_req {
-                        Some(mpdu) => handle_assoc_req(&bus, &mpdu),
-                        None => break,
-                    }
+            // 取出所有待处理的关联请求
+            loop {
+                let assoc_req = bus.ap.assoc_queue.lock().pop_front();
+                match assoc_req {
+                    Some(mpdu) => handle_assoc_req(&bus, &mpdu),
+                    None => break,
                 }
+            }
 
-                bus.ap.assoc_pollset.register(cx.waker());
-                // 注册后再检查一次，避免错过唤醒
-                if !bus.ap.assoc_queue.lock().is_empty() {
-                    cx.waker().wake_by_ref();
-                }
-                Poll::Pending
-            }));
-            log::debug!("[wifi-ap] worker thread exited");
-        },
-        "wifi-ap".into(),
+            bus.ap.assoc_pollset.register(cx.waker());
+            // 注册后再检查一次，避免错过唤醒
+            if !bus.ap.assoc_queue.lock().is_empty() {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        }),
     );
 }
 

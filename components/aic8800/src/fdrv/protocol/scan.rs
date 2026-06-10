@@ -194,7 +194,7 @@ pub fn collect_scan_results(bus: &Arc<WifiBus>, timeout_ms: u64) -> Vec<ScanResu
                 }
             }
             None => {
-                ax_task::yield_now();
+                crate::runtime::runtime().yield_now();
             }
         }
     }

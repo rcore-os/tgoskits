@@ -1,7 +1,5 @@
 extern crate alloc;
 
-use core::time::Duration;
-
 // 模块声明
 pub mod chip;
 pub mod config;
@@ -37,7 +35,7 @@ pub fn sdio_func_setup<H: SdioHost>(host: &mut H, is_v3: bool) -> Result<(), Sdi
         host.write_byte(1, SDIOWIFI_BYTEMODE_ENABLE_REG, 0x01)?;
 
         // 延时等待芯片内部状态稳定 (Linux: mdelay(10))
-        ax_task::sleep(Duration::from_millis(10));
+        crate::runtime::runtime().sleep_ms(10);
     } else {
         // ---- AIC8800D80 / AIC8800D80X2 (SDIO v3) ----
 
@@ -51,7 +49,7 @@ pub fn sdio_func_setup<H: SdioHost>(host: &mut H, is_v3: bool) -> Result<(), Sdi
         host.write_byte(1, SDIOWIFI_WAKEUP_REG_V3, SDIOWIFI_V3_WAKEUP_VALUE)?;
 
         // 等待唤醒稳定 (Linux: mdelay(5))
-        ax_task::sleep(Duration::from_millis(5));
+        crate::runtime::runtime().sleep_ms(5);
 
         // 检查唤醒状态
         let sleep_val = host.read_byte(1, SDIOWIFI_SLEEP_REG_V3)?;

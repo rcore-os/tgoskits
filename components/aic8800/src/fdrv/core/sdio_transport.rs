@@ -5,8 +5,8 @@
 
 use alloc::sync::Arc;
 
-use ax_sync::Mutex;
 use sdio_host::{SdioCardIrq, SdioHost};
+use spin::Mutex;
 
 use crate::{
     common::{
@@ -179,7 +179,7 @@ impl SdioTransport {
         for _ in 0..200 {
             match self.read_byte(1, SDIOWIFI_SLEEP_REG_V3) {
                 Ok(val) if val & SDIOWIFI_V3_SLEEP_READY_BIT != 0 => return true,
-                _ => ax_task::yield_now(),
+                _ => crate::runtime::runtime().yield_now(),
             }
         }
 
@@ -221,7 +221,7 @@ impl SdioTransport {
             if self.check_flow_ctrl_available() {
                 return true;
             }
-            ax_task::yield_now();
+            crate::runtime::runtime().yield_now();
         }
         false
     }
@@ -232,7 +232,7 @@ impl SdioTransport {
             if self.check_flow_ctrl_for_size(send_len) {
                 return true;
             }
-            ax_task::yield_now();
+            crate::runtime::runtime().yield_now();
         }
         false
     }

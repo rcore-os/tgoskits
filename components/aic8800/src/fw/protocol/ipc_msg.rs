@@ -2,8 +2,6 @@
 //!
 //! 实现消息构建、SDIO 传输、响应解析。
 
-use core::time::Duration;
-
 use sdio_host::{SdioHost, error::SdioError};
 
 use super::super::chip::{
@@ -277,7 +275,7 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
                 log::error!("IPC: flow control timeout, last fc_reg=0x{:02x}", fc_reg);
                 return Err(SdioError::Timeout);
             }
-            ax_task::sleep(Duration::from_millis(1));
+            crate::runtime::runtime().sleep_ms(1);
         }
     }
 
@@ -290,7 +288,7 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
 
     /// 等待 SDIO 接口稳定 (Linux: udelay(200)~mdelay(2))
     fn wait_sdio_stable(&self) {
-        ax_task::sleep(Duration::from_millis(2));
+        crate::runtime::runtime().sleep_ms(2);
     }
 
     /// 处理 FIFO 读取错误
@@ -385,7 +383,7 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
                         log::error!("IPC: response timeout for msg_id=0x{:04x}", msg_id);
                         return Err(SdioError::Timeout);
                     }
-                    ax_task::sleep(Duration::from_millis(1));
+                    crate::runtime::runtime().sleep_ms(1);
                 }
                 Err(e) => {
                     log::warn!("IPC: poll_block_count error: {:?}", e);

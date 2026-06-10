@@ -1,11 +1,9 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
-    future::poll_fn,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Poll,
 };
 
-use ax_task::future::block_on;
 use log;
 
 use crate::{
@@ -57,48 +55,45 @@ fn align_up(val: usize, align: usize) -> usize {
 
 /// 启动 wifi-rx 线程
 pub fn start(bus: Arc<WifiBus>) {
-    ax_task::spawn_with_name(
-        move || {
-            log::debug!("[wifi-rx] thread started");
+    log::debug!("[wifi-rx] thread starting");
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-rx",
+        alloc::boxed::Box::new(move |cx| {
+            // 检查总线状态
+            if *bus.state.lock() == BusState::Down {
+                return Poll::Ready(());
+            }
 
-            block_on(poll_fn(move |cx| {
-                // 检查总线状态
-                if *bus.state.lock() == BusState::Down {
-                    return Poll::Ready(());
-                }
+            // 检查并清除 ISR 标志
+            if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
+                RX_WAKE_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
 
-                // 检查并清除 ISR 标志
-                if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
-                    RX_WAKE_COUNT.fetch_add(1, Ordering::Relaxed);
-                }
+            // 处理所有待读数据（内部会 mask CARD_INT，但不 unmask）
+            process_rx_frames(&bus);
 
-                // 处理所有待读数据（内部会 mask CARD_INT，但不 unmask）
+            // 先注册 waker，再 unmask CARD_INT
+            // 这样 ISR 触发时 waker 已经就位，不会丢失唤醒
+            bus.rx.irq_waker.register(cx.waker());
+
+            // 关键：先 register waker，再 unmask CARD_INT
+            // 如果 ISR 在 unmask 后立即触发，waker 已经注册好了
+            bus.transport.unmask_card_irq();
+
+            // 若本批有数据帧入队,驱动网络栈处理(AP/STA 收包)。
+            invoke_rx_data_callback();
+
+            // 双重检查：如果 ISR 在 register 和 unmask 之间触发了
+            if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
                 process_rx_frames(&bus);
-
-                // 先注册 waker，再 unmask CARD_INT
-                // 这样 ISR 触发时 waker 已经就位，不会丢失唤醒
-                bus.rx.irq_pollset.register(cx.waker());
-
-                // 关键：先 register waker，再 unmask CARD_INT
-                // 如果 ISR 在 unmask 后立即触发，waker 已经注册好了
                 bus.transport.unmask_card_irq();
-
-                // 若本批有数据帧入队,驱动网络栈处理(AP/STA 收包)。
                 invoke_rx_data_callback();
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
 
-                // 双重检查：如果 ISR 在 register 和 unmask 之间触发了
-                if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
-                    process_rx_frames(&bus);
-                    bus.transport.unmask_card_irq();
-                    invoke_rx_data_callback();
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-
-                Poll::Pending
-            }))
-        },
-        "wifi-rx".into(),
+            Poll::Pending
+        }),
     );
 }
 

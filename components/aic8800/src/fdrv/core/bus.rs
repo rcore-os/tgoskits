@@ -1,10 +1,13 @@
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
-use ax_kspin::SpinNoIrq;
-use axpoll::PollSet;
+use atomic_waker::AtomicWaker;
+use spin::Mutex;
 
-use crate::{common::SDIOWIFI_INTR_CONFIG_REG, fdrv::core::sdio_transport::SdioTransport};
+use crate::{
+    common::SDIOWIFI_INTR_CONFIG_REG,
+    fdrv::core::{pollset::PollSet, sdio_transport::SdioTransport},
+};
 
 /// 总线状态
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,8 +32,8 @@ pub struct ConnectionState {
     status: AtomicU8,
     pub vif_idx: AtomicU8,
     pub sta_idx: AtomicU8,
-    pub sta_mac: SpinNoIrq<Option<[u8; 6]>>,
-    pub ap_mac: SpinNoIrq<Option<[u8; 6]>>,
+    pub sta_mac: Mutex<Option<[u8; 6]>>,
+    pub ap_mac: Mutex<Option<[u8; 6]>>,
 }
 
 /// 连接状态常量
@@ -51,8 +54,8 @@ impl ConnectionState {
             status: AtomicU8::new(STATUS_DISCONNECTED),
             vif_idx: AtomicU8::new(0xFF),
             sta_idx: AtomicU8::new(0xFF),
-            sta_mac: SpinNoIrq::new(None),
-            ap_mac: SpinNoIrq::new(None),
+            sta_mac: Mutex::new(None),
+            ap_mac: Mutex::new(None),
         }
     }
 
@@ -71,11 +74,11 @@ impl ConnectionState {
 
 /// CMD 状态
 pub struct CmdState {
-    pub pending: SpinNoIrq<Option<Vec<u8>>>,
+    pub pending: Mutex<Option<Vec<u8>>>,
     pub pending_flag: AtomicBool,
     pub expected_cfm_id: AtomicU16,
     pub rsp_error: AtomicBool,
-    pub rsp_queue: SpinNoIrq<VecDeque<Vec<u8>>>,
+    pub rsp_queue: Mutex<VecDeque<Vec<u8>>>,
     pub rsp_pollset: PollSet,
 }
 
@@ -88,11 +91,11 @@ impl Default for CmdState {
 impl CmdState {
     pub fn new() -> Self {
         Self {
-            pending: SpinNoIrq::new(None),
+            pending: Mutex::new(None),
             pending_flag: AtomicBool::new(false),
             expected_cfm_id: AtomicU16::new(0),
             rsp_error: AtomicBool::new(false),
-            rsp_queue: SpinNoIrq::new(VecDeque::new()),
+            rsp_queue: Mutex::new(VecDeque::new()),
             rsp_pollset: PollSet::new(),
         }
     }
@@ -100,13 +103,15 @@ impl CmdState {
 
 /// RX 状态
 pub struct RxState {
-    pub irq_pollset: PollSet,
+    /// SDIO 卡中断唤醒。由 ISR (`sdio1_irq_handler`) 唤醒、RX 线程注册，
+    /// 是唯一跨中断/线程共享的唤醒点，故用无锁的 `AtomicWaker`（单 waiter）。
+    pub irq_waker: AtomicWaker,
     pub irq_pending: AtomicBool,
-    pub data_queue: SpinNoIrq<VecDeque<Vec<u8>>>,
+    pub data_queue: Mutex<VecDeque<Vec<u8>>>,
     pub data_pollset: PollSet,
-    pub eapol_queue: SpinNoIrq<VecDeque<Vec<u8>>>,
+    pub eapol_queue: Mutex<VecDeque<Vec<u8>>>,
     pub eapol_pollset: PollSet,
-    pub tx_cfm_queue: SpinNoIrq<VecDeque<Vec<u8>>>,
+    pub tx_cfm_queue: Mutex<VecDeque<Vec<u8>>>,
     pub tx_cfm_pollset: PollSet,
 }
 
@@ -119,13 +124,13 @@ impl Default for RxState {
 impl RxState {
     pub fn new() -> Self {
         Self {
-            irq_pollset: PollSet::new(),
+            irq_waker: AtomicWaker::new(),
             irq_pending: AtomicBool::new(false),
-            data_queue: SpinNoIrq::new(VecDeque::new()),
+            data_queue: Mutex::new(VecDeque::new()),
             data_pollset: PollSet::new(),
-            eapol_queue: SpinNoIrq::new(VecDeque::new()),
+            eapol_queue: Mutex::new(VecDeque::new()),
             eapol_pollset: PollSet::new(),
-            tx_cfm_queue: SpinNoIrq::new(VecDeque::new()),
+            tx_cfm_queue: Mutex::new(VecDeque::new()),
             tx_cfm_pollset: PollSet::new(),
         }
     }
@@ -133,10 +138,10 @@ impl RxState {
 
 /// TX 状态
 pub struct TxState {
-    pub queue: SpinNoIrq<VecDeque<TxFrame>>,
+    pub queue: Mutex<VecDeque<TxFrame>>,
     pub pktcnt: AtomicU32,
     pub wake_pollset: PollSet,
-    pub ind_queue: SpinNoIrq<VecDeque<Vec<u8>>>,
+    pub ind_queue: Mutex<VecDeque<Vec<u8>>>,
     pub ind_pollset: PollSet,
 }
 
@@ -149,10 +154,10 @@ impl Default for TxState {
 impl TxState {
     pub fn new() -> Self {
         Self {
-            queue: SpinNoIrq::new(VecDeque::new()),
+            queue: Mutex::new(VecDeque::new()),
             pktcnt: AtomicU32::new(0),
             wake_pollset: PollSet::new(),
-            ind_queue: SpinNoIrq::new(VecDeque::new()),
+            ind_queue: Mutex::new(VecDeque::new()),
             ind_pollset: PollSet::new(),
         }
     }
@@ -165,7 +170,7 @@ impl TxState {
 /// ME_STA_ADD 走 send_cmd 阻塞等 CFM，而 CFM 由 RX 线程处理 —— 在 RX
 /// 线程里 send_cmd 会死锁。
 pub struct ApState {
-    pub assoc_queue: SpinNoIrq<VecDeque<Vec<u8>>>,
+    pub assoc_queue: Mutex<VecDeque<Vec<u8>>>,
     pub assoc_pollset: PollSet,
 }
 
@@ -178,7 +183,7 @@ impl Default for ApState {
 impl ApState {
     pub fn new() -> Self {
         Self {
-            assoc_queue: SpinNoIrq::new(VecDeque::new()),
+            assoc_queue: Mutex::new(VecDeque::new()),
             assoc_pollset: PollSet::new(),
         }
     }
@@ -190,7 +195,7 @@ pub struct WifiBus {
     pub transport: Arc<SdioTransport>,
 
     /// 总线状态
-    pub state: SpinNoIrq<BusState>,
+    pub state: Mutex<BusState>,
 
     /// 连接状态
     pub conn: ConnectionState,
@@ -212,7 +217,7 @@ impl WifiBus {
     pub fn new(transport: Arc<SdioTransport>) -> Arc<Self> {
         Arc::new(Self {
             transport,
-            state: SpinNoIrq::new(BusState::Down),
+            state: Mutex::new(BusState::Down),
             conn: ConnectionState::new(),
             cmd: CmdState::new(),
             rx: RxState::new(),
@@ -231,7 +236,7 @@ impl WifiBus {
         self.tx.wake_pollset.wake();
         self.tx.queue.lock().clear();
 
-        self.rx.irq_pollset.wake();
+        self.rx.irq_waker.wake();
 
         self.rx.data_queue.lock().clear();
 
@@ -300,5 +305,5 @@ pub fn sdio1_irq_handler() {
     bus.transport.mask_card_irq();
 
     bus.rx.irq_pending.store(true, Ordering::Release);
-    bus.rx.irq_pollset.wake();
+    bus.rx.irq_waker.wake();
 }

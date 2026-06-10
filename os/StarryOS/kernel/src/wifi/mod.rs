@@ -9,20 +9,16 @@
 //! constants are placeholders under `plat_dyn`). The SG2002 register bases are
 //! fixed silicon addresses.
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::boxed::Box;
 use core::ptr::NonNull;
 
-use aic8800::{
-    common::ChipVariant,
-    fdrv::{WifiClient, init as fdrv_init, sdio1_irq_handler},
-    fw,
-};
 use axnet::{EthernetDriver, RdNetDriver, register_wifi_ap_device};
 use sdhci_cv1800::{
     CviSdhci,
     hw_init::{Sdio1HwConfig, sdio1_hw_init},
 };
 use sdio_host::SdioHost;
+use wifi_host::WifiDriver;
 
 // SG2002 fixed register bases (physical).
 const SYSCON_PADDR: usize = 0x0300_0000;
@@ -54,6 +50,12 @@ unsafe fn sdio1_raw_irq_handler(
 }
 
 pub fn probe_wifi() {
+    // Install the ArceOS runtime glue into the OS-independent driver cores
+    // (timing / delay / yield / task spawn). Must happen before any driver
+    // operation that sleeps or polls.
+    sdhci_cv1800::glue_arceos::install_delay();
+    aic8800::glue_arceos::install_runtime();
+
     // Map the MMIO regions the SDIO1 HW bring-up needs, then build the config
     // with phys_virt_offset = 0 (we pass already-mapped virtual addresses).
     let cfg = Sdio1HwConfig::new(
@@ -85,100 +87,70 @@ pub fn probe_wifi() {
     }
 
     let (vid, did) = sdio.vendor_device_id();
-    let chip = ChipVariant::from_vid_did(vid, did);
     info!(
-        "[wifi] AIC8800 detected: vendor=0x{:04x}, device=0x{:04x}, chip={:?}",
-        vid, did, chip
+        "[wifi] SDIO device: vendor=0x{:04x}, device=0x{:04x}",
+        vid, did
     );
-
-    if chip == ChipVariant::Unknown {
-        error!("[wifi] Unknown WiFi chip");
-        return;
-    }
 
     // Prepare SDHCI for first data transfer (clear stale DAT state)
     sdio.prepare_first_data_xfer();
 
-    // Firmware download
-    info!("[wifi] Downloading firmware...");
-    if let Err(e) = fw::firmware_init(&mut sdio, chip) {
-        error!("[wifi] Firmware init failed: {:?}", e);
-        return;
-    }
-    info!("[wifi] Firmware download complete");
-
-    // FDRV init
-    info!("[wifi] FDRV init starting...");
-    let bus = match fdrv_init(sdio, chip) {
-        Ok(bus) => bus,
+    // Hand the initialized SDIO host to the chip driver. From here on the
+    // kernel only talks to the generic `WifiDriver` trait, not any AIC8800
+    // internal type. `probe` detects the chip, loads firmware, and starts the
+    // FDRV tasks.
+    let mut wifi: Box<dyn WifiDriver> = match aic8800::probe(sdio) {
+        Ok(driver) => driver,
         Err(e) => {
-            error!("[wifi] FDRV init failed: {}", e);
+            error!("[wifi] chip probe failed: {:?}", e);
             return;
         }
     };
-    info!("[wifi] FDRV init complete");
-
-    // Register CARD_INT callback
-    sdhci_cv1800::irq::register_card_irq_callback(sdio1_irq_handler);
+    info!("[wifi] chip probe complete");
 
     // ================================================================
     // Start a softAP (open network).
     //
     // Runs the full vendor SDIO sequence: base LMAC config, add an AP-type
     // interface, then beacon download (APM_SET_BEACON_IE_REQ) followed by
-    // APM_START_REQ with real beacon metadata. A valid APM_START_CFM with
-    // status==0 means the AP is up and broadcasting.
+    // APM_START_REQ with real beacon metadata.
     // ================================================================
-    let mut client = WifiClient::new(Arc::clone(&bus));
     let channel = 6u8;
     let ssid = b"PicoClaw-Car";
-    match client.start_ap_open(chip, ssid, channel, 6000) {
-        Ok(cfm) => {
-            info!("==========================================================");
-            info!("[wifi] AP started! APM_START_CFM={:02x?}", cfm);
-            info!(
-                "[wifi] SSID=PicoClaw-Car channel={} (open network)",
-                channel
-            );
-            info!("==========================================================");
+    if let Err(e) = wifi.start_ap_open(ssid, channel) {
+        error!("==========================================================");
+        error!("[wifi] AP START FAILED: {:?}", e);
+        error!("==========================================================");
+        return;
+    }
+    info!("==========================================================");
+    info!(
+        "[wifi] AP started! SSID=PicoClaw-Car channel={} (open)",
+        channel
+    );
+    info!("==========================================================");
 
-            // 注册 wlan0 到网络栈:静态 IP 192.168.50.1/24 + 内建 DHCP server
-            // 给连入的手机分配 192.168.50.2。手机随后可 ping 192.168.50.1。
-            client.store_net_device();
-            match aic8800::fdrv::take_wifi_net_device() {
-                Some(aic_dev) => {
-                    // 把 AIC8800 的 `rd_net::Interface` 包成 `Net` 再包成
-                    // 上游网络栈消费的 `EthernetDriver`(RdNetDriver),与
-                    // ax-driver 的 register_net 路径一致。WiFi 走 SDIO 带外
-                    // RX,因此 irq_num = None。
-                    let net = rd_net::Net::new(aic_dev, axklib::dma::op());
-                    match RdNetDriver::new("wlan0", net, None) {
-                        Ok(driver) => {
-                            let driver: Box<dyn EthernetDriver> = Box::new(driver);
-                            register_wifi_ap_device(
-                                driver,
-                                [192, 168, 50, 1], // server (wlan0) IP
-                                [192, 168, 50, 2], // client (phone) IP
-                                24,
-                            );
-                            // AIC8800 RX 走自己的线程独占 SDIO CARD_INT,不经
-                            // 以太网 IRQ 框架。注册回调:收到数据帧时唤醒
-                            // wlan0-poll 任务驱动网络栈 poll,否则空闲时进来的
-                            // ARP/ICMP/数据包无人处理。
-                            aic8800::fdrv::register_rx_data_callback(axnet::notify_wifi_rx);
-                            info!("[wifi] wlan0 registered: 192.168.50.1/24, DHCP -> 192.168.50.2");
-                        }
-                        Err(e) => error!("[wifi] failed to build wlan0 driver: {:?}", e),
-                    }
-                }
-                None => error!("[wifi] no net device to register"),
-            }
+    // 注册 wlan0 到网络栈:静态 IP 192.168.50.1/24 + 内建 DHCP server
+    // 给连入的手机分配 192.168.50.2。手机随后可 ping 192.168.50.1。
+    //
+    // WiFi 走 SDIO 带外 RX,因此 irq_num = None。RX 回调:收到数据帧时唤醒
+    // wlan0-poll 任务驱动网络栈 poll,否则空闲时进来的 ARP/ICMP/数据包无人处理。
+    let Some(net) = wifi.take_net(axklib::dma::op()) else {
+        error!("[wifi] no net device to register");
+        return;
+    };
+    match RdNetDriver::new("wlan0", net, None) {
+        Ok(driver) => {
+            let driver: Box<dyn EthernetDriver> = Box::new(driver);
+            register_wifi_ap_device(
+                driver,
+                [192, 168, 50, 1], // server (wlan0) IP
+                [192, 168, 50, 2], // client (phone) IP
+                24,
+            );
+            wifi.set_rx_data_callback(axnet::notify_wifi_rx);
+            info!("[wifi] wlan0 registered: 192.168.50.1/24, DHCP -> 192.168.50.2");
         }
-        Err(e) => {
-            error!("==========================================================");
-            error!("[wifi] AP START FAILED: {:?}", e);
-            error!("[wifi] STA mode still works.");
-            error!("==========================================================");
-        }
+        Err(e) => error!("[wifi] failed to build wlan0 driver: {:?}", e),
     }
 }

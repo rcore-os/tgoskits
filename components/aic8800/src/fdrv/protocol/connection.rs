@@ -1,20 +1,21 @@
 //! WiFi 连接/断连命令和 indication 等待
 
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::{future::poll_fn, task::Poll};
+use core::task::Poll;
 
-use ax_task::future::block_on;
-
-use crate::fdrv::{
-    consts::ETH_P_PAE,
-    core::bus::WifiBus,
-    protocol::{cmd::send_cmd, lmac_msg::*},
+use crate::{
+    fdrv::{
+        consts::ETH_P_PAE,
+        core::bus::WifiBus,
+        protocol::{cmd::send_cmd, lmac_msg::*},
+    },
+    runtime::runtime,
 };
 
 // ===== Indication 等待 =====
 
 fn check_timeout_and_log_queue(bus: &WifiBus, target_msg_id: u16, deadline: u64) -> bool {
-    if ax_hal::time::monotonic_time_nanos() >= deadline {
+    if crate::runtime::runtime().now_nanos() >= deadline {
         let queue = bus.tx.ind_queue.lock();
         log::error!(
             "[wait_ind] TIMEOUT waiting for msg_id=0x{:04x}, ind_queue has {} messages:",
@@ -126,26 +127,32 @@ pub fn wait_for_indication(
     abort_msg_ids: &[u16],
     timeout_ms: u64,
 ) -> Result<Vec<u8>, CmdError> {
-    let deadline = ax_hal::time::monotonic_time_nanos() + timeout_ms * 1_000_000;
+    let deadline = runtime().now_nanos() + timeout_ms * 1_000_000;
 
-    block_on(poll_fn(|cx| {
+    let mut out: Option<Result<Vec<u8>, CmdError>> = None;
+    // 超时由 poll 体内部的 deadline 判定，故 block_until 不另设超时。
+    let _ = runtime().block_until(None, &mut |cx| {
         if check_timeout_and_log_queue(bus, target_msg_id, deadline) {
-            return Poll::Ready(Err(CmdError::Timeout));
+            out = Some(Err(CmdError::Timeout));
+            return Poll::Ready(());
         }
 
         if let Some(result) = try_find_message_in_queue(bus, target_msg_id, abort_msg_ids) {
-            return Poll::Ready(result);
+            out = Some(result);
+            return Poll::Ready(());
         }
 
         bus.tx.ind_pollset.register(cx.waker());
 
         if let Some(result) = try_find_message_in_queue(bus, target_msg_id, abort_msg_ids) {
-            return Poll::Ready(result);
+            out = Some(result);
+            return Poll::Ready(());
         }
 
         cx.waker().wake_by_ref();
         Poll::Pending
-    }))
+    });
+    out.unwrap_or(Err(CmdError::Timeout))
 }
 
 // ===== 连接/断连命令 =====

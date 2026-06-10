@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+[features]
+default = []
+# OS glue: ArceOS-backed delay/yield provider. The driver core does not need it.
+arceos = ["dep:ax-task"]
+
 [dependencies]
 sdio-host = { workspace = true }
-ax-task = { workspace = true }
-axpoll = { workspace = true }
 log = { workspace = true }
+
+# OS glue dependency — optional, only used behind the `arceos` feature.
+ax-task = { workspace = true, optional = true }

@@ -9,9 +9,7 @@
 //! 密钥命令 → key.rs
 
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::{future::poll_fn, sync::atomic::Ordering, task::Poll, time::Duration};
-
-use ax_task::future::{block_on, timeout};
+use core::{sync::atomic::Ordering, task::Poll};
 
 use crate::{
     common::{SDIO_TYPE_CFG_CMD_RSP, SDIOWIFI_WR_FIFO_ADDR},
@@ -20,12 +18,13 @@ use crate::{
         core::bus::{BusState, WifiBus},
         protocol::lmac_msg::*,
     },
+    runtime::runtime,
 };
 
 // ===== 辅助函数（子模块共享） =====
 
 pub(crate) fn current_time_ms() -> u64 {
-    ax_hal::time::monotonic_time_nanos() / 1_000_000
+    crate::runtime::runtime().now_nanos() / 1_000_000
 }
 
 fn align_up(val: usize, align: usize) -> usize {
@@ -163,30 +162,33 @@ fn try_get_cfm_from_queue(
 }
 
 /// 异步等待 CFM 响应（不含超时逻辑，由外部 timeout 包装器提供）
-async fn wait_for_cfm_response_async(
+/// 轮询体：等待指定 CFM ID 的响应。返回 `Poll::Ready` 携带结果。
+fn poll_cfm_response(
     bus: &Arc<WifiBus>,
     expected_cfm_id: u16,
-) -> Result<Vec<u8>, CmdError> {
-    poll_fn(|cx| {
-        if bus.cmd.rsp_error.load(Ordering::Acquire) || *bus.state.lock() == BusState::Down {
-            return Poll::Ready(Err(CmdError::BusDown));
-        }
+    out: &mut Option<Result<Vec<u8>, CmdError>>,
+    cx: &mut core::task::Context<'_>,
+) -> Poll<()> {
+    if bus.cmd.rsp_error.load(Ordering::Acquire) || *bus.state.lock() == BusState::Down {
+        *out = Some(Err(CmdError::BusDown));
+        return Poll::Ready(());
+    }
 
-        if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
-            return Poll::Ready(result);
-        }
+    if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
+        *out = Some(result);
+        return Poll::Ready(());
+    }
 
-        // 注册 waker，等待 RX 线程通过 rsp_pollset.wake() 唤醒
-        bus.cmd.rsp_pollset.register(cx.waker());
+    // 注册 waker，等待 RX 线程通过 rsp_pollset.wake() 唤醒
+    bus.cmd.rsp_pollset.register(cx.waker());
 
-        // 双重检查
-        if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
-            return Poll::Ready(result);
-        }
+    // 双重检查
+    if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
+        *out = Some(result);
+        return Poll::Ready(());
+    }
 
-        Poll::Pending
-    })
-    .await
+    Poll::Pending
 }
 
 // ===== 公共 CMD API =====
@@ -225,13 +227,12 @@ pub fn send_cmd_with_cfm_id(
     prepare_cmd_send(bus, expected_cfm_id);
     send_cmd_via_tx_thread(bus, frame);
 
-    // 使用 ax_task 的 timeout 包装器：同时注册 rsp_pollset 和定时器 waker
-    // 任何一个先触发都会唤醒本任务
-    let result = match block_on(timeout(
-        Some(Duration::from_millis(tout)),
-        wait_for_cfm_response_async(bus, expected_cfm_id),
-    )) {
-        Ok(inner) => inner,
+    // 通过注入的 runtime 阻塞等待：同时由 rsp_pollset 唤醒和超时定时器驱动。
+    let mut cfm: Option<Result<Vec<u8>, CmdError>> = None;
+    let result = match runtime().block_until(Some(tout), &mut |cx| {
+        poll_cfm_response(bus, expected_cfm_id, &mut cfm, cx)
+    }) {
+        Ok(()) => cfm.unwrap_or(Err(CmdError::Timeout)),
         Err(_) => {
             log::error!(
                 "[cmd_mgr] TIMEOUT waiting for cfm 0x{:04x} ({}ms)",
@@ -275,43 +276,46 @@ pub fn send_cmd_no_cfm(
 
 // ===== EAPOL 发送 =====
 
-/// 异步等待 EAPOL 帧（不含超时逻辑）
-async fn wait_for_eapol_async(bus: &Arc<WifiBus>) -> Option<Vec<u8>> {
-    poll_fn(|cx| {
-        {
-            let mut queue = bus.rx.eapol_queue.lock();
-            if let Some(eapol) = queue.pop_front() {
-                queue.clear();
-                return Poll::Ready(Some(eapol));
-            }
+/// 轮询体：从 eapol_queue 取出 EAPOL 帧。
+fn poll_eapol(
+    bus: &Arc<WifiBus>,
+    out: &mut Option<Vec<u8>>,
+    cx: &mut core::task::Context<'_>,
+) -> Poll<()> {
+    {
+        let mut queue = bus.rx.eapol_queue.lock();
+        if let Some(eapol) = queue.pop_front() {
+            queue.clear();
+            *out = Some(eapol);
+            return Poll::Ready(());
         }
+    }
 
-        bus.rx.eapol_pollset.register(cx.waker());
+    bus.rx.eapol_pollset.register(cx.waker());
 
-        {
-            let mut queue = bus.rx.eapol_queue.lock();
-            if let Some(eapol) = queue.pop_front() {
-                queue.clear();
-                return Poll::Ready(Some(eapol));
-            }
+    {
+        let mut queue = bus.rx.eapol_queue.lock();
+        if let Some(eapol) = queue.pop_front() {
+            queue.clear();
+            *out = Some(eapol);
+            return Poll::Ready(());
         }
+    }
 
-        Poll::Pending
-    })
-    .await
+    Poll::Pending
 }
 
 /// 等待 EAPOL 帧（从 eapol_queue 中取出）
 pub fn wait_for_eapol(bus: &Arc<WifiBus>, timeout_ms: u64) -> Result<Vec<u8>, CmdError> {
-    match block_on(timeout(
-        Some(Duration::from_millis(timeout_ms)),
-        wait_for_eapol_async(bus),
-    )) {
-        Ok(Some(eapol)) => Ok(eapol),
-        Ok(None) => {
-            log::error!("[cmd_mgr] EAPOL wait returned empty");
-            Err(CmdError::Timeout)
-        }
+    let mut eapol: Option<Vec<u8>> = None;
+    match runtime().block_until(Some(timeout_ms), &mut |cx| poll_eapol(bus, &mut eapol, cx)) {
+        Ok(()) => match eapol {
+            Some(e) => Ok(e),
+            None => {
+                log::error!("[cmd_mgr] EAPOL wait returned empty");
+                Err(CmdError::Timeout)
+            }
+        },
         Err(_) => {
             log::error!("[cmd_mgr] EAPOL wait timed out");
             Err(CmdError::Timeout)
@@ -427,7 +431,7 @@ fn send_eapol_frame_to_sdio(bus: &Arc<WifiBus>, buf: &[u8]) -> Result<(), CmdErr
         return Err(CmdError::SdioError);
     }
 
-    bus.rx.irq_pollset.wake();
+    bus.rx.irq_waker.wake();
     transport.unmask_card_irq();
 
     Ok(())

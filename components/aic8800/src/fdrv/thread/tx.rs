@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::{future::poll_fn, sync::atomic::Ordering, task::Poll};
+use core::{sync::atomic::Ordering, task::Poll};
 
-use ax_task::future::block_on;
 use log;
 
 use crate::{
@@ -44,45 +43,35 @@ fn pad_cmd_frame(cmd: &mut Vec<u8>) -> usize {
 
 /// 启动 wifi-tx 线程
 pub fn start(bus: Arc<WifiBus>) {
-    ax_task::spawn_with_name(
-        move || {
-            log::debug!("[wifi-tx] thread started");
-            block_on(poll_fn(|cx| {
-                log::warn!("[wifi-tx] poll enter");
-                // 检查总线状态
-                if *bus.state.lock() == BusState::Down {
-                    log::warn!("[wifi-tx] poll exit: bus down");
-                    return Poll::Ready(());
-                }
+    log::debug!("[wifi-tx] thread starting");
+    crate::runtime::runtime().spawn_poll_task(
+        "wifi-tx",
+        alloc::boxed::Box::new(move |cx| {
+            // 检查总线状态
+            if *bus.state.lock() == BusState::Down {
+                log::warn!("[wifi-tx] poll exit: bus down");
+                return Poll::Ready(());
+            }
 
-                // 处理所有待发帧
-                let did_work = tx_process(&bus);
-                log::warn!("[wifi-tx] after tx_process: did_work={}", did_work);
+            // 处理所有待发帧
+            let did_work = tx_process(&bus);
 
-                // 注册 waker
-                bus.tx.wake_pollset.register(cx.waker());
-                log::warn!("[wifi-tx] registered waker");
+            // 注册 waker
+            bus.tx.wake_pollset.register(cx.waker());
 
-                // 双重检查
-                let pending = has_pending_work(&bus);
-                log::warn!(
-                    "[wifi-tx] pending check: did_work={} pending={}",
-                    did_work,
-                    pending
-                );
-                if did_work || pending {
-                    cx.waker().wake_by_ref();
-                }
+            // 双重检查
+            let pending = has_pending_work(&bus);
+            if did_work || pending {
+                cx.waker().wake_by_ref();
+            }
 
-                // 只在有错误时唤醒 rsp_pollset，避免无意义的任务切换
-                if bus.cmd.rsp_error.load(Ordering::Acquire) {
-                    bus.cmd.rsp_pollset.wake();
-                }
+            // 只在有错误时唤醒 rsp_pollset，避免无意义的任务切换
+            if bus.cmd.rsp_error.load(Ordering::Acquire) {
+                bus.cmd.rsp_pollset.wake();
+            }
 
-                Poll::Pending
-            }))
-        },
-        "wifi-tx".into(),
+            Poll::Pending
+        }),
     );
 }
 
@@ -133,7 +122,7 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
 
     if fc_ok && did_work {
         log::debug!("[wifi-tx] process_cmd_tx: CMD sent OK, len={}", send_len);
-        bus.rx.irq_pollset.wake();
+        bus.rx.irq_waker.wake();
         transport.unmask_card_irq();
     } else if !fc_ok {
         log::error!("[wifi-tx] CMD flow_ctrl timeout, dropping CMD");
@@ -235,7 +224,7 @@ fn check_data_flow_control(transport: &crate::fdrv::core::sdio_transport::SdioTr
             }
             Err(_) => {}
         }
-        ax_task::yield_now();
+        crate::runtime::runtime().yield_now();
     }
     log::warn!("[wifi-tx] data flow ctrl timeout");
     false

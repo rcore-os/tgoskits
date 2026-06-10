@@ -645,18 +645,18 @@ impl WifiClient {
 
     /// 等待连接完成
     pub fn wait_for_connection(&self, timeout_ms: u64) -> Result<(), WifiError> {
-        let start = ax_hal::time::monotonic_time_nanos();
+        let start = crate::runtime::runtime().now_nanos();
         let timeout_ns = timeout_ms * 1_000_000;
 
         loop {
             if self.get_status() == ConnectionStatus::Connected {
                 return Ok(());
             }
-            let elapsed = ax_hal::time::monotonic_time_nanos() - start;
+            let elapsed = crate::runtime::runtime().now_nanos() - start;
             if elapsed > timeout_ns {
                 return Err(WifiError::ConnectionTimeout);
             }
-            ax_task::yield_now();
+            crate::runtime::runtime().yield_now();
         }
     }
 

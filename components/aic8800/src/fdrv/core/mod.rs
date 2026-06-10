@@ -4,6 +4,7 @@
 
 pub mod bus;
 pub mod init;
+pub mod pollset;
 pub mod sdio_transport;
 
 pub use bus::{
