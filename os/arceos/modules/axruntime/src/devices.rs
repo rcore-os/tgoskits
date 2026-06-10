@@ -89,22 +89,17 @@ pub(crate) fn init_static_input() {
     ax_input::init_input(devices);
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
+#[cfg(all(feature = "net", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_net() {
     ax_net::init_network(take_dyn_net_drivers());
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
+#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_net() {
     ax_net::init_network(take_static_net_drivers());
 }
 
-#[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
-pub(crate) fn init_dyn_net_ng() {
-    ax_net_ng::init_network(take_dyn_net_ng_drivers());
-}
-
-#[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
+#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn take_static_net_drivers()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     let mut devices = alloc::vec::Vec::new();
@@ -119,41 +114,25 @@ pub(crate) fn take_static_net_drivers()
     devices
 }
 
-#[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))]
-pub(crate) fn take_static_net_ng_drivers()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
-    let mut devices = alloc::vec::Vec::new();
-    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-            .unwrap_or_else(|err| panic!("failed to open static net device: {err:?}"));
-        let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
-            .unwrap_or_else(|err| panic!("failed to adapt static net device: {err:?}"));
-        devices.push(
-            alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>
-        );
-    }
-    devices
-}
-
 #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_vsock() {
     if !rdrive::is_initialized() {
-        ax_net_ng::init_vsock(alloc::vec::Vec::new());
+        ax_net::init_vsock(alloc::vec::Vec::new());
         return;
     }
     let devices = ax_driver::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
-    ax_net_ng::init_vsock(devices);
+    ax_net::init_vsock(devices);
 }
 
 #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_vsock() {
     let devices = ax_driver::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open static vsock devices: {err:?}"));
-    ax_net_ng::init_vsock(devices);
+    ax_net::init_vsock(devices);
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
+#[cfg(all(feature = "net", feature = "plat-dyn"))]
 fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     if !rdrive::is_initialized() {
         return alloc::vec::Vec::new();
@@ -166,24 +145,6 @@ fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::Ether
             .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
         devices
             .push(alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>);
-    }
-    devices
-}
-
-#[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
-fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
-    if !rdrive::is_initialized() {
-        return alloc::vec::Vec::new();
-    }
-    let mut devices = alloc::vec::Vec::new();
-    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-            .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-        let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
-            .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
-        devices.push(
-            alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>
-        );
     }
     devices
 }

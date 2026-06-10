@@ -50,13 +50,11 @@ sudo apt install qemu-system-arm qemu-system-riscv64 qemu-system-x86
 
 ```
 os/arceos/
-├── modules/          # 内核模块（17 个）
+├── modules/          # 内核模块
 │   ├── axhal/        # 硬件抽象层
 │   ├── axtask/       # 任务/线程管理 + 调度器
 │   ├── axalloc/      # 内存分配器
 │   ├── axdriver/     # 统一设备驱动框架
-│   ├── axnet/        # 网络（legacy, smoltcp）
-│   ├── axnet-ng/     # 网络（next-gen）
 │   ├── axfs/         # 文件系统（legacy）
 │   ├── axfs-ng/      # 文件系统（next-gen, ext4/fat）
 │   ├── axlog/        # 多级日志
@@ -75,6 +73,9 @@ os/arceos/
 ├── ulib/             # 用户侧库
 │   ├── axstd/        # Rust std 风格接口
 │   └── axlibc/       # C libc 接口
+
+net/
+└── ax-net/           # 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP）
 
 apps/arceos/
 ├── helloworld/
@@ -127,8 +128,8 @@ pub unsafe fn rust_main() {
     ax_task::init_scheduler();
     #[cfg(feature = "fs-ng")]
     ax_fs_ng::init_filesystems(/* ... */);
-    #[cfg(feature = "net-ng")]
-    ax_net_ng::init_network(/* ... */);
+    #[cfg(feature = "net")]
+    ax_net::init_network(/* ... */);
     // ...
     main();
 }
@@ -260,7 +261,7 @@ net = ["alloc", "paging", "ax-driver/virtio-net", "dep:ax-net", "ax-runtime/net"
 | 基础 crate（`axerrno`, `kspin`, `page_table_multiarch`） | `cargo test -p <crate>` | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` |
 | HAL（`axhal`） | `cargo xtask arceos qemu --package arceos-helloworld --arch aarch64` | 多架构验证 |
 | 调度器（`axtask`） | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` | `cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf` |
-| 网络（`axnet` / `axnet-ng`） | `cargo xtask arceos qemu --package arceos-httpserver --arch aarch64 --net` | 检查 TCP 连接和吞吐 |
+| 网络（`axnet` / `axnet`） | `cargo xtask arceos qemu --package arceos-httpserver --arch aarch64 --net` | 检查 TCP 连接和吞吐 |
 | 文件系统（`axfs` / `axfs-ng`） | `cargo xtask arceos qemu --package arceos-shell --arch aarch64 --blk` | 检查文件读写 |
 | 驱动（`axdriver`） | `cargo xtask arceos qemu --package arceos-helloworld --arch aarch64` | 启用对应设备 `--blk` / `--net` |
 
@@ -357,7 +358,7 @@ C 应用覆盖由 `test-suit/arceos/c` 维护；`apps/arceos` 只保留 Rust std
 |----------|-------------------|---------|
 | 最小运行 | `ax-std` | `--package arceos-helloworld` |
 | 多任务 | `multitask` | 在应用 Cargo.toml 中启用 |
-| 网络 | `net` 或 `net-ng` | `--package arceos-httpserver` |
+| 网络 | `net` | `--package arceos-httpserver` |
 | 文件系统 | `fs` 或 `fs-ng` | `--package arceos-shell` |
 | 多核 | `smp` | `--arch aarch64` + `SMP=4` |
 | PCI 设备 | `bus-pci` | 默认 |

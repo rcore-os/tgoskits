@@ -51,7 +51,7 @@ ax-feat = { workspace = true, features = [
     "rtc",
 
     "fs-ng-ext4",
-    "net-ng",
+    "net",
 ] }
 
 ax-alloc = { workspace = true }
@@ -65,7 +65,7 @@ ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
-axnet = { version = "0.7.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
+axnet = { workspace = true }
 ax-driver = { workspace = true, features = ["usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }

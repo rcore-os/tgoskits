@@ -51,13 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- updated the following local packages: ax-alloc, ax-driver, ax-task, ax-net-ng, axklib, ax-hal, ax-mm, ax-display, ax-fs, ax-fs-ng, ax-input, ax-ipi, ax-net
+- updated the following local packages: ax-alloc, ax-driver, ax-task, ax-net, axklib, ax-hal, ax-mm, ax-display, ax-fs, ax-fs-ng, ax-input, ax-ipi, ax-net
 
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.5.13...ax-runtime-v0.5.14) - 2026-05-15
 
 ### Other
 
-- updated the following local packages: axbacktrace, ax-alloc, ax-config, ax-hal, ax-mm, ax-fs, ax-fs-ng, ax-log, ax-net, ax-net-ng, ax-plat, ax-driver, ax-task, ax-display, ax-input, ax-ipi
+- updated the following local packages: axbacktrace, ax-alloc, ax-config, ax-hal, ax-mm, ax-fs, ax-fs-ng, ax-log, ax-net, ax-net, ax-plat, ax-driver, ax-task, ax-display, ax-input, ax-ipi
 
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.5.11...ax-runtime-v0.5.12) - 2026-04-27
 

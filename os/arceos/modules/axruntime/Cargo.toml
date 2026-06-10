@@ -57,9 +57,8 @@ fs-ng = [
 fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4"]
 fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
-net = ["dep:ax-net", "ax-driver/net"]
-net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
-vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
+net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
+vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
 ax-alloc = {workspace = true}
@@ -79,7 +78,6 @@ ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
 ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
-ax-net-ng = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-task = {workspace = true, optional = true}

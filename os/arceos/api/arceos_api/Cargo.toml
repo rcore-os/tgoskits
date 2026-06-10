@@ -39,6 +39,7 @@ ax-ipi = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-mm = { workspace = true, optional = true }
 ax-net = { workspace = true, optional = true }
+axpoll.workspace = true
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task = { workspace = true, optional = true }

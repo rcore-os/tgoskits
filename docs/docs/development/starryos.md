@@ -117,7 +117,7 @@ StarryOS 专用组件（位于 `components/`）：
 | `rknpu` | Rockchip NPU 驱动 |
 | `vsock` | VSOCK 支持 |
 
-内核默认启用：`fp-simd`, `irq`, `uspace`, `page-alloc-4g`, `alloc-slab`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `fs-ng-ext4`, `net-ng`。
+内核默认启用：`fp-simd`, `irq`, `uspace`, `page-alloc-4g`, `alloc-slab`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `fs-ng-ext4`, `net`。
 
 ### 3.3 KCOV 暂不引入
 

@@ -222,6 +222,13 @@ impl Service {
             .is_some_and(|state| state.address.is_some())
     }
 
+    pub fn dns_servers(&self) -> Vec<Ipv4Address> {
+        self.dhcp
+            .as_ref()
+            .map(|state| state.dns_servers.clone())
+            .unwrap_or_default()
+    }
+
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
         let mut dhcp_events = Vec::new();

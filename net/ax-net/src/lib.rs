@@ -1,13 +1,15 @@
-//! [ArceOS](https://github.com/rcore-os/arceos) network module.
+//! Unified network stack for TGOSKits systems.
 //!
-//! It provides unified networking primitives for TCP/UDP communication
-//! using various underlying network stacks. Currently, only [smoltcp] is
-//! supported.
+//! It provides TCP, UDP, raw IPv4/ICMP, Unix domain socket, optional vsock,
+//! DNS, DHCP, and readiness primitives on top of [smoltcp] and shared device
+//! interfaces.
 //!
 //! # Organization
 //!
-//! - [`tcp::TcpSocket`]: A TCP socket that provides POSIX-like APIs.
-//! - [`udp::UdpSocket`]: A UDP socket that provides POSIX-like APIs.
+//! - [`tcp::TcpSocket`]: TCP socket implementation.
+//! - [`udp::UdpSocket`]: UDP socket implementation.
+//! - [`raw`]: raw socket support.
+//! - [`unix`]: Unix domain socket support.
 //!
 //! [smoltcp]: https://github.com/smoltcp-rs/smoltcp
 
@@ -42,20 +44,25 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, vec, vec::Vec};
 use core::{
+    net::IpAddr,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
+use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::Mutex;
-use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
+use smoltcp::{
+    socket::dns::{self, GetQueryResultError, StartQueryError},
+    wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
+};
 use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
 use self::{
-    consts::{GATEWAY, IP, IP_PREFIX},
+    consts::{DNS, GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
     router::{Router, Rule},
@@ -204,6 +211,92 @@ pub fn poll_interfaces() {
 
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
+}
+
+pub fn dns_servers() -> Vec<Ipv4Address> {
+    let servers = get_service().dns_servers();
+    if servers.is_empty() {
+        static_dns_servers()
+    } else {
+        servers
+    }
+}
+
+pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>> {
+    let servers = dns_servers();
+    if servers.is_empty() {
+        return Err(ax_err_type!(NotFound, "no DNS server configured"));
+    }
+
+    let servers = servers.into_iter().map(IpAddress::Ipv4).collect::<Vec<_>>();
+    let handle = SOCKET_SET.add(dns::Socket::new(&servers, vec![]));
+    DnsSocketGuard(handle).query(name, DnsQueryType::A)
+}
+
+struct DnsSocketGuard(smoltcp::iface::SocketHandle);
+
+impl DnsSocketGuard {
+    fn query(&self, name: &str, query_type: DnsQueryType) -> AxResult<Vec<IpAddr>> {
+        let query_handle = {
+            let mut service = get_service();
+            let mut sockets = SOCKET_SET.inner.lock();
+            sockets.get_mut::<dns::Socket>(self.0).start_query(
+                service.iface.context(),
+                name,
+                query_type,
+            )
+        }
+        .map_err(|err| match err {
+            StartQueryError::NoFreeSlot => {
+                ax_err_type!(ResourceBusy, "DNS query failed: no free slot")
+            }
+            StartQueryError::InvalidName => {
+                ax_err_type!(InvalidInput, "DNS query failed: invalid name")
+            }
+            StartQueryError::NameTooLong => {
+                ax_err_type!(InvalidInput, "DNS query failed: name too long")
+            }
+        })?;
+
+        loop {
+            poll_interfaces();
+            match SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(self.0, |socket| {
+                socket
+                    .get_query_result(query_handle)
+                    .map_err(|err| match err {
+                        GetQueryResultError::Pending => AxError::WouldBlock,
+                        GetQueryResultError::Failed => {
+                            ax_err_type!(ConnectionRefused, "DNS query failed")
+                        }
+                    })
+            }) {
+                Ok(addrs) => {
+                    return Ok(addrs.into_iter().map(IpAddr::from).collect());
+                }
+                Err(AxError::WouldBlock) => ax_task::yield_now(),
+                Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+impl Drop for DnsSocketGuard {
+    fn drop(&mut self) {
+        SOCKET_SET.remove(self.0);
+    }
+}
+
+fn static_dns_servers() -> Vec<Ipv4Address> {
+    DNS.split(',')
+        .filter_map(|server| {
+            let server = server.trim();
+            (!server.is_empty()).then(|| {
+                server
+                    .parse()
+                    .unwrap_or_else(|_| panic!("Invalid DNS server address: {server}"))
+            })
+        })
+        .collect()
 }
 
 fn dhcp_bootstrap() {

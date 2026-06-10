@@ -529,6 +529,7 @@ dependencies = [
  "ax-runtime",
  "ax-sync",
  "ax-task",
+ "axpoll",
 ]
 
 [[package]]
@@ -738,7 +739,6 @@ dependencies = [
  "ax-kspin",
  "ax-log",
  "ax-net",
- "ax-net-ng",
  "ax-runtime",
  "ax-sync",
  "ax-task",
@@ -972,23 +972,6 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.5.16"
-dependencies = [
- "ax-errno 0.6.0",
- "ax-hal",
- "ax-io",
- "ax-lazyinit",
- "ax-net-ng",
- "ax-sync",
- "ax-task",
- "cfg-if",
- "log",
- "smoltcp 0.13.1",
- "spin 0.12.0",
-]
-
-[[package]]
-name = "ax-net-ng"
 version = "0.7.1"
 dependencies = [
  "async-channel",
@@ -1164,6 +1147,7 @@ dependencies = [
  "ax-runtime",
  "ax-sync",
  "ax-task",
+ "axpoll",
  "bindgen 0.72.1",
  "flatten_objects",
  "scope-local",
@@ -1198,7 +1182,6 @@ dependencies = [
  "ax-memory-addr",
  "ax-mm",
  "ax-net",
- "ax-net-ng",
  "ax-percpu",
  "ax-plat",
  "ax-task",
@@ -7670,7 +7653,7 @@ dependencies = [
  "ax-memory-addr",
  "ax-memory-set",
  "ax-mm",
- "ax-net-ng",
+ "ax-net",
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-runtime",
