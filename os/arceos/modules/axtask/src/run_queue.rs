@@ -660,6 +660,8 @@ impl AxRunQueue {
     /// idle CPUs hammering CPU 0) and tries to pick a task from each.
     /// Returns [`None`] only when every other CPU's queue is also empty.
     #[cfg(feature = "smp")]
+    // `ax_config::plat::MAX_CPU_NUM` is always greater than 1 with "smp" enabled.
+    #[allow(clippy::modulo_one, clippy::reversed_empty_ranges)]
     fn try_steal(&self) -> Option<AxTaskRef> {
         let current_cpu = self.cpu_id;
         for i in 1..ax_config::plat::MAX_CPU_NUM {
