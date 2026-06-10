@@ -12,6 +12,13 @@ pub fn enumerate_by_controller<'a>(
     controller: &'a mut PcieController,
     range: Option<core::ops::Range<usize>>,
 ) -> impl Iterator<Item = Endpoint> + 'a {
+    enumerate_by_controller_with_info(controller, range).map(|item| item.endpoint)
+}
+
+pub fn enumerate_by_controller_with_info<'a>(
+    controller: &'a mut PcieController,
+    range: Option<core::ops::Range<usize>>,
+) -> impl Iterator<Item = EnumeratedEndpoint> + 'a {
     let range = range.unwrap_or(0..0x100);
 
     PciIterator {
@@ -25,6 +32,19 @@ pub fn enumerate_by_controller<'a>(
     }
 }
 
+#[derive(Debug)]
+pub struct EnumeratedEndpoint {
+    pub endpoint: Endpoint,
+    pub intx_route: Option<PciIntxRoute>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PciIntxRoute {
+    pub root_device: u8,
+    pub root_function: u8,
+    pub root_pin: u8,
+}
+
 pub(crate) struct PciIterator<'a> {
     root: &'a mut PcieController,
     segment: u16,
@@ -36,7 +56,7 @@ pub(crate) struct PciIterator<'a> {
 }
 
 impl<'a> Iterator for PciIterator<'a> {
-    type Item = Endpoint;
+    type Item = EnumeratedEndpoint;
 
     fn next(&mut self) -> Option<Self::Item> {
         while !self.is_finish {
@@ -46,7 +66,11 @@ impl<'a> Iterator for PciIterator<'a> {
                         self.next(Some(pci_pci_bridge));
                     }
                     PciConfigSpace::Endpoint(ep) => {
-                        let item = ep;
+                        let intx_route = self.intx_route_for_endpoint(&ep);
+                        let item = EnumeratedEndpoint {
+                            endpoint: ep,
+                            intx_route,
+                        };
                         self.next(None);
                         return Some(item);
                     }
@@ -113,6 +137,17 @@ impl<'a> PciIterator<'a> {
         PciAddress::new(self.segment, bus, device, self.function)
     }
 
+    fn intx_route_for_endpoint(&self, endpoint: &Endpoint) -> Option<PciIntxRoute> {
+        root_intx_route(
+            endpoint.address(),
+            endpoint.interrupt_pin(),
+            self.stack.iter().skip(1).map(|bridge| BridgeAddress {
+                device: bridge.parent_device,
+                function: bridge.parent_function,
+            }),
+        )
+    }
+
     /// 若进位返回true
     fn is_next_function_max(&mut self) -> bool {
         if self.is_mulitple_function {
@@ -163,7 +198,13 @@ impl<'a> PciIterator<'a> {
                 });
             }
 
-            self.stack.push(Bridge { bridge, device: 0 });
+            let address = bridge.address();
+            self.stack.push(Bridge {
+                bridge,
+                device: 0,
+                parent_device: address.device(),
+                parent_function: address.function(),
+            });
 
             self.function = 0;
             return;
@@ -180,6 +221,8 @@ impl<'a> PciIterator<'a> {
 struct Bridge {
     bridge: PciPciBridge,
     device: u8,
+    parent_device: u8,
+    parent_function: u8,
 }
 
 impl Bridge {
@@ -187,6 +230,131 @@ impl Bridge {
         Self {
             bridge: PciPciBridge::root(),
             device: bus_start,
+            parent_device: 0,
+            parent_function: 0,
         }
+    }
+}
+
+const fn swizzle_interrupt_pin(interrupt_pin: u8, device: u8) -> Option<u8> {
+    if interrupt_pin == 0 || interrupt_pin > 4 {
+        return None;
+    }
+    Some(((interrupt_pin - 1 + (device & 0x3)) % 4) + 1)
+}
+
+#[derive(Clone, Copy)]
+struct BridgeAddress {
+    device: u8,
+    function: u8,
+}
+
+fn root_intx_route(
+    endpoint: PciAddress,
+    interrupt_pin: u8,
+    bridges_from_root: impl DoubleEndedIterator<Item = BridgeAddress>,
+) -> Option<PciIntxRoute> {
+    let mut pin = interrupt_pin;
+    if !(1..=4).contains(&pin) {
+        return None;
+    }
+
+    let mut device = endpoint.device();
+    let mut function = endpoint.function();
+    for bridge in bridges_from_root.rev() {
+        pin = swizzle_interrupt_pin(pin, device)?;
+        device = bridge.device;
+        function = bridge.function;
+    }
+
+    Some(PciIntxRoute {
+        root_device: device,
+        root_function: function,
+        root_pin: pin,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BridgeAddress, PciIntxRoute, root_intx_route, swizzle_interrupt_pin};
+    use crate::PciAddress;
+
+    #[test]
+    fn intx_swizzle_uses_linux_slot_rotation() {
+        assert_eq!(swizzle_interrupt_pin(1, 0), Some(1));
+        assert_eq!(swizzle_interrupt_pin(1, 1), Some(2));
+        assert_eq!(swizzle_interrupt_pin(1, 2), Some(3));
+        assert_eq!(swizzle_interrupt_pin(1, 3), Some(4));
+        assert_eq!(swizzle_interrupt_pin(4, 1), Some(1));
+    }
+
+    #[test]
+    fn intx_swizzle_rejects_absent_or_invalid_pins() {
+        assert_eq!(swizzle_interrupt_pin(0, 1), None);
+        assert_eq!(swizzle_interrupt_pin(5, 1), None);
+    }
+
+    #[test]
+    fn root_endpoint_uses_its_own_device_function_and_pin() {
+        let route = root_intx_route(PciAddress::new(0, 0, 5, 2), 3, [].into_iter());
+
+        assert_eq!(
+            route,
+            Some(PciIntxRoute {
+                root_device: 5,
+                root_function: 2,
+                root_pin: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn bridge_endpoint_uses_parent_bridge_slot_and_swizzled_pin() {
+        let route = root_intx_route(
+            PciAddress::new(0, 1, 3, 0),
+            1,
+            [BridgeAddress {
+                device: 2,
+                function: 0,
+            }]
+            .into_iter(),
+        );
+
+        assert_eq!(
+            route,
+            Some(PciIntxRoute {
+                root_device: 2,
+                root_function: 0,
+                root_pin: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn nested_bridge_endpoint_swizzles_at_each_level() {
+        let route = root_intx_route(
+            PciAddress::new(0, 2, 1, 0),
+            2,
+            [
+                BridgeAddress {
+                    device: 4,
+                    function: 1,
+                },
+                BridgeAddress {
+                    device: 3,
+                    function: 0,
+                },
+            ]
+            .into_iter(),
+        );
+
+        assert_eq!(
+            route,
+            Some(PciIntxRoute {
+                root_device: 4,
+                root_function: 1,
+                root_pin: 2,
+            })
+        );
     }
 }

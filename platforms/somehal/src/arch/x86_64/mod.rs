@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver,
+    DriverGeneric, module_driver,
     probe::{
         OnProbeError,
-        acpi::{AcpiId, AcpiInfo, AcpiIoApic},
+        acpi::{AcpiId, AcpiIoApic, ProbeAcpi},
     },
 };
 use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
@@ -171,7 +171,8 @@ impl rdif_intc::Interface for X86IoApicIntc {
     }
 }
 
-fn probe_ioapic(info: AcpiInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    let (info, dev) = probe.into_parts();
     let ioapics = info.root.routing().io_apics();
     if ioapics.is_empty() {
         return Err(OnProbeError::NotMatch);

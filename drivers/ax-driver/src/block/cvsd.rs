@@ -1,5 +1,5 @@
 #[cfg(plat_dyn)]
-use rdrive::register::FdtInfo;
+use rdrive::register::ProbeFdt;
 use rdrive::{PlatformDevice, probe::OnProbeError};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 use {alloc::format, sg200x_bsp::sdmmc::Sdmmc};
@@ -23,7 +23,8 @@ crate::model_register!(
 );
 
 #[cfg(plat_dyn)]
-fn probe_fdt(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let sdmmc =
         info.node.regs().into_iter().next().ok_or_else(|| {
             OnProbeError::other(alloc::format!("[{}] has no reg", info.node.name()))

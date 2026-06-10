@@ -5,7 +5,7 @@ use core::ptr::NonNull;
 
 use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{info, warn};
-use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{DriverGeneric, probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{
     BankId, GpioDirection, Iomux, PinConfig, PinCtrl, PinCtrlOp, PinId, Pull, SocType,
 };
@@ -150,7 +150,8 @@ impl DriverGeneric for RockchipPinCtrl {
     }
 }
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let fdt = live_fdt()?;
 
     let grf_phandle = info
