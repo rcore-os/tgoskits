@@ -46,7 +46,6 @@ pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::R
         .with_context(|| format!("failed to read response body from {url}"))
 }
 
-#[cfg(test)]
 pub(crate) async fn download_file(
     client: &reqwest::Client,
     url: &str,

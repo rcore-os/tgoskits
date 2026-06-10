@@ -25,6 +25,10 @@ pub fn serial_println(args: fmt::Arguments<'_>) {
     serial.write_str("\n").ok();
 }
 
+pub fn serial_read_byte() -> Option<u8> {
+    imp::read_serial_byte()
+}
+
 struct SerialWriter;
 
 impl Write for SerialWriter {
@@ -47,6 +51,7 @@ mod imp {
     const UART_LSR: u16 = 5;
     const UART_DLL: u16 = 0;
     const UART_DLM: u16 = 1;
+    const UART_LSR_DR: u8 = 1;
     const UART_LSR_THRE: u8 = 1 << 5;
     const UART_LSR_TEMT: u8 = 1 << 6;
     const UART_LCR_DLAB: u8 = 1 << 7;
@@ -60,6 +65,14 @@ mod imp {
             }
             serial_putc(*byte);
         }
+    }
+
+    pub fn read_serial_byte() -> Option<u8> {
+        init_com1();
+        if unsafe { inb(COM1_PORT + UART_LSR) } & UART_LSR_DR == 0 {
+            return None;
+        }
+        Some(unsafe { inb(COM1_PORT + UART_RBR_THR) })
     }
 
     fn init_com1() {
@@ -123,6 +136,10 @@ mod imp {
 #[cfg(not(target_arch = "x86_64"))]
 mod imp {
     pub fn write_serial(_bytes: &[u8]) {}
+
+    pub fn read_serial_byte() -> Option<u8> {
+        None
+    }
 }
 
 fn write_serial(bytes: &[u8]) {

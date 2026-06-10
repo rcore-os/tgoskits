@@ -14,16 +14,11 @@ mod console;
 #[cfg(target_os = "uefi")]
 mod control;
 #[cfg(target_os = "uefi")]
-mod discovery;
-#[cfg(target_os = "uefi")]
 mod elf_loader;
 #[cfg(target_os = "uefi")]
 mod entry;
 #[cfg(target_os = "uefi")]
 mod http;
-#[cfg(target_os = "uefi")]
-mod identity;
-
 #[cfg(target_os = "uefi")]
 use uefi::{Status, prelude::*};
 
@@ -94,7 +89,6 @@ fn fetch_control_offer() -> bool {
                 }
             }
         }
-        Err(control::ControlError::NoServerUrl) => false,
         Err(err) => {
             logln!("control_boot_error: {err:?}");
             false

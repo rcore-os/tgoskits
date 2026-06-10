@@ -6,14 +6,19 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::context::{
-    AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest, SnapshotPersistence,
+use crate::{
+    axvisor::context::AxvisorContext,
+    context::{
+        AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest,
+        SnapshotPersistence,
+    },
 };
 
 pub mod board;
 pub mod build;
 pub mod config;
-pub mod httpboot;
+pub mod context;
+pub mod image;
 pub mod rootfs;
 pub mod test;
 
@@ -34,8 +39,8 @@ pub enum Command {
     Defconfig(ArgsDefconfig),
     /// Board config helpers
     Config(ArgsConfig),
-    /// HTTP Boot helpers
-    Httpboot(Box<httpboot::Args>),
+    /// Guest image management
+    Image(image::Args),
 }
 
 #[derive(Args, Clone)]
@@ -222,6 +227,7 @@ pub enum ConfigCommand {
 
 pub struct Axvisor {
     app: AppContext,
+    ctx: AxvisorContext,
 }
 
 impl From<&ArgsBuild> for AxvisorCliArgs {
@@ -241,7 +247,8 @@ impl From<&ArgsBuild> for AxvisorCliArgs {
 impl Axvisor {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
-        Ok(Self { app })
+        let ctx = AxvisorContext::new()?;
+        Ok(Self { app, ctx })
     }
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
@@ -252,7 +259,7 @@ impl Axvisor {
             Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
-            Command::Httpboot(args) => self.httpboot(*args).await,
+            Command::Image(args) => self.image(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -323,8 +330,8 @@ impl Axvisor {
         Ok(())
     }
 
-    async fn httpboot(&mut self, args: httpboot::Args) -> anyhow::Result<()> {
-        httpboot::run(self, args).await
+    async fn image(&self, args: image::Args) -> anyhow::Result<()> {
+        image::run(args, &self.ctx).await
     }
 
     async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
@@ -417,6 +424,22 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+    use crate::context::{resolve_workspace_member_dir, workspace_root_path};
+
+    #[test]
+    fn context_resolves_workspace_root() {
+        let ctx = AxvisorContext::new().unwrap();
+        assert_eq!(
+            ctx.workspace_root(),
+            workspace_root_path().unwrap().as_path()
+        );
+        assert_eq!(
+            ctx.axvisor_dir(),
+            resolve_workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)
+                .unwrap()
+                .as_path()
+        );
+    }
 
     #[test]
     fn default_qemu_template_path_uses_axvisor_script_location() {
@@ -494,198 +517,6 @@ mod tests {
                 assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
             }
             _ => panic!("expected board command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_httpboot_check() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "axvisor",
-            "httpboot",
-            "check",
-            "--config",
-            "os/axvisor/configs/board/qemu-x86_64.toml",
-            "--elf",
-            "target/x86_64-unknown-none/release/axvisor",
-            "--vmconfigs",
-            "tmp/vm1.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Httpboot(args) => match args.command.unwrap() {
-                httpboot::Command::Check(args) => {
-                    assert_eq!(
-                        args.build.config,
-                        Some(PathBuf::from("os/axvisor/configs/board/qemu-x86_64.toml"))
-                    );
-                    assert_eq!(
-                        args.elf,
-                        Some(PathBuf::from("target/x86_64-unknown-none/release/axvisor"))
-                    );
-                    assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
-                }
-                httpboot::Command::Init(_) => panic!("expected httpboot check command"),
-                httpboot::Command::Publish(_) => panic!("expected httpboot check command"),
-            },
-            _ => panic!("expected httpboot command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_httpboot_init() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "axvisor",
-            "httpboot",
-            "init",
-            "--board",
-            "Asus-nuc15-x86_64-vmx",
-            "--output",
-            "configs/httpboot.toml",
-            "--force",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Httpboot(args) => match args.command.unwrap() {
-                httpboot::Command::Init(args) => {
-                    assert_eq!(args.board, "Asus-nuc15-x86_64-vmx");
-                    assert_eq!(args.output, PathBuf::from("configs/httpboot.toml"));
-                    assert!(args.force);
-                    assert!(!args.no_open_console);
-                }
-                httpboot::Command::Check(_) | httpboot::Command::Publish(_) => {
-                    panic!("expected httpboot init command")
-                }
-            },
-            _ => panic!("expected httpboot command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_httpboot_publish() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "axvisor",
-            "httpboot",
-            "publish",
-            "--config",
-            "os/axvisor/configs/board/qemu-x86_64.toml",
-            "--httpboot-config",
-            "/code/vmx/ostool/docs/examples/Asus-nuc15-x86_64-vmx.httpboot.toml",
-            "--board",
-            "Asus-nuc15-x86_64-vmx",
-            "--server",
-            "127.0.0.1",
-            "--port",
-            "2999",
-            "--remote-name",
-            "kernel.bin",
-            "--kernel-load-addr",
-            "0x200000",
-            "--entry-point",
-            "0x200000",
-            "--vmconfigs",
-            "tmp/vm1.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Httpboot(args) => match args.command.unwrap() {
-                httpboot::Command::Publish(args) => {
-                    assert_eq!(
-                        args.build.config,
-                        Some(PathBuf::from("os/axvisor/configs/board/qemu-x86_64.toml"))
-                    );
-                    assert_eq!(
-                        args.httpboot_config,
-                        Some(PathBuf::from(
-                            "/code/vmx/ostool/docs/examples/Asus-nuc15-x86_64-vmx.httpboot.toml"
-                        ))
-                    );
-                    assert_eq!(args.board_type.as_deref(), Some("Asus-nuc15-x86_64-vmx"));
-                    assert_eq!(args.server.as_deref(), Some("127.0.0.1"));
-                    assert_eq!(args.port, Some(2999));
-                    assert_eq!(args.remote_name.as_deref(), Some("kernel.bin"));
-                    assert_eq!(args.kernel_load_addr.as_deref(), Some("0x200000"));
-                    assert_eq!(args.entry_point.as_deref(), Some("0x200000"));
-                    assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
-                }
-                httpboot::Command::Init(_) => panic!("expected httpboot publish command"),
-                httpboot::Command::Check(_) => panic!("expected httpboot publish command"),
-            },
-            _ => panic!("expected httpboot command"),
-        }
-    }
-
-    #[test]
-    fn command_rejects_httpboot_publish_efi_loader() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let result = Cli::try_parse_from([
-            "axvisor",
-            "httpboot",
-            "publish",
-            "--efi-loader",
-            "target/httpboot/BOOTX64.EFI",
-        ]);
-
-        let err = result.err().unwrap();
-        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
-    }
-
-    #[test]
-    fn command_parses_httpboot_default_publish() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "axvisor",
-            "httpboot",
-            "--config",
-            "os/axvisor/configs/board/qemu-x86_64.toml",
-            "--vmconfigs",
-            "tmp/vm1.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Httpboot(args) => {
-                assert!(args.command.is_none());
-                assert_eq!(
-                    args.publish.build.config,
-                    Some(PathBuf::from("os/axvisor/configs/board/qemu-x86_64.toml"))
-                );
-                assert_eq!(
-                    args.publish.build.vmconfigs,
-                    vec![PathBuf::from("tmp/vm1.toml")]
-                );
-            }
-            _ => panic!("expected httpboot command"),
         }
     }
 

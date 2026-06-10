@@ -20,7 +20,6 @@ colored = { version = "3" }
 env_logger = { workspace = true }
 futures-util = "0.3"
 flate2 = { version = "1.0" }
-httpboot-protocol = { workspace = true }
 indicatif = "0.18"
 jkconfig = { version = "0.1" }
 log = "0.4"

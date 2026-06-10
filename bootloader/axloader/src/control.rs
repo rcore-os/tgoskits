@@ -1,26 +1,26 @@
 extern crate alloc;
 
-use alloc::{format, string::String};
+use alloc::{format, string::String, vec::Vec};
 use core::str;
 
-use crate::{boards, discovery, http, identity};
+use crate::{boards, console};
 
-const CONTROL_BODY_LIMIT: usize = 8192;
-const HELLO_RETRY_LIMIT: usize = 8;
-const HELLO_RETRY_STALL: core::time::Duration = core::time::Duration::from_millis(500);
-const BOOT_OFFER_POLL_LIMIT: usize = 30;
-const BOOT_OFFER_POLL_STALL: core::time::Duration = core::time::Duration::from_secs(1);
+const SERIAL_PROTOCOL_VERSION: u64 = 1;
+const SERIAL_READY_PREFIX: &str = "AXLOADER READY ";
+const SERIAL_BOOT_PREFIX: &str = "AXLOADER BOOT ";
+const SERIAL_BOOT_LINE_LIMIT: usize = 4096;
+const SERIAL_BOOT_WAIT_POLLS: usize = 600;
+const SERIAL_BOOT_POLL_STALL: core::time::Duration = core::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlError {
-    NoServerUrl,
-    Identity(identity::IdentityError),
-    Http(http::DownloadError),
+    Timeout,
     NonUtf8,
     MissingField(&'static str),
     InvalidNumber(&'static str),
+    InvalidProtocolVersion,
     ServerError,
-    PollLimit,
+    LineTooLong,
 }
 
 #[derive(Debug, Clone)]
@@ -34,66 +34,68 @@ pub struct BootOffer {
 }
 
 pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
-    let mac = identity::mac_address_string().map_err(ControlError::Identity)?;
-    crate::logln!("loader_mac: {mac}");
-    let server_url = server_url(&mac)?;
-    crate::logln!("server_url: {server_url}");
+    announce_ready();
+    crate::logln!("serial_control_wait: waiting for AXLOADER BOOT");
+    let line = read_boot_line()?;
+    crate::logln!("serial_control_received");
+    parse_boot_offer(&line)
+}
 
-    let hello_url = format!("{server_url}/api/v1/httpboot/loaders/hello");
-    let hello_body = format!(
-        "{{\"protocol_version\":1,\"nonce\":\"{}\",\"arch\":\"{}\",\"board\":\"{}\",\"mac\":\"{}\"\
-         ,\"firmware_vendor\":\"UEFI\",\"loader_version\":\"axloader\",\"capabilities\":{{\"\
-         image_formats\":[\"elf64\"],\"range_get\":true,\"sha256\":false}}}}",
+fn announce_ready() {
+    crate::logln!(
+        concat!(
+            "{}{{\"protocol_version\":1,",
+            "\"board\":\"{}\",",
+            "\"arch\":\"{}\",",
+            "\"loader_version\":\"axloader\"}}"
+        ),
+        SERIAL_READY_PREFIX,
         boards::active::BOARD_NAME,
         boards::active::ARCH_NAME,
-        boards::active::BOARD_NAME,
-        mac
     );
-    let hello_response = post_hello_with_retry(&hello_url, &hello_body)?;
-    let hello_text = str::from_utf8(&hello_response).map_err(|_| ControlError::NonUtf8)?;
-    let poll_url =
-        json_string_field(hello_text, "poll_url").ok_or(ControlError::MissingField("poll_url"))?;
-    crate::logln!("loader_poll_url: {poll_url}");
-
-    for poll_round in 1..=BOOT_OFFER_POLL_LIMIT {
-        crate::logln!("boot_offer_poll: {poll_round}/{BOOT_OFFER_POLL_LIMIT}");
-        let body = http::get_json_body(poll_url, CONTROL_BODY_LIMIT).map_err(ControlError::Http)?;
-        let text = str::from_utf8(&body).map_err(|_| ControlError::NonUtf8)?;
-        match json_string_field(text, "state") {
-            Some("ready") => return parse_ready_offer(text),
-            Some("waiting") => {
-                if let Some(message) = json_string_field(text, "message") {
-                    crate::logln!("boot_offer_waiting: {message}");
-                }
-                uefi::boot::stall(BOOT_OFFER_POLL_STALL);
-            }
-            Some("error") => return Err(ControlError::ServerError),
-            _ => return Err(ControlError::MissingField("state")),
-        }
-    }
-
-    Err(ControlError::PollLimit)
 }
 
-fn post_hello_with_retry(url: &str, body: &str) -> Result<alloc::vec::Vec<u8>, ControlError> {
-    let mut last_error = None;
-    for attempt in 1..=HELLO_RETRY_LIMIT {
-        match http::post_json_body(url, body, CONTROL_BODY_LIMIT) {
-            Ok(response) => return Ok(response),
-            Err(err) => {
-                last_error = Some(err);
-                if attempt < HELLO_RETRY_LIMIT {
-                    uefi::boot::stall(HELLO_RETRY_STALL);
+fn read_boot_line() -> Result<String, ControlError> {
+    let mut line = Vec::new();
+    for _ in 0..SERIAL_BOOT_WAIT_POLLS {
+        while let Some(byte) = console::serial_read_byte() {
+            match byte {
+                b'\r' => {}
+                b'\n' => {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let text = str::from_utf8(&line).map_err(|_| ControlError::NonUtf8)?;
+                    if text.trim_start().starts_with(SERIAL_BOOT_PREFIX) {
+                        return Ok(text.into());
+                    }
+                    crate::logln!("serial_control_ignored: {text}");
+                    line.clear();
+                }
+                byte => {
+                    if line.len() >= SERIAL_BOOT_LINE_LIMIT {
+                        return Err(ControlError::LineTooLong);
+                    }
+                    line.push(byte);
                 }
             }
         }
+        uefi::boot::stall(SERIAL_BOOT_POLL_STALL);
     }
-    Err(ControlError::Http(
-        last_error.unwrap_or(http::DownloadError::RequestFailed),
-    ))
+
+    Err(ControlError::Timeout)
 }
 
-fn parse_ready_offer(input: &str) -> Result<BootOffer, ControlError> {
+fn parse_boot_offer(input: &str) -> Result<BootOffer, ControlError> {
+    let input = input
+        .trim()
+        .strip_prefix(SERIAL_BOOT_PREFIX)
+        .ok_or(ControlError::MissingField("serial_boot_prefix"))?;
+    let protocol_version = json_u64_field(input, "protocol_version")
+        .ok_or(ControlError::InvalidNumber("protocol_version"))?;
+    if protocol_version != SERIAL_PROTOCOL_VERSION {
+        return Err(ControlError::InvalidProtocolVersion);
+    }
     let arch = json_string_field(input, "arch").ok_or(ControlError::MissingField("arch"))?;
     if arch != boards::active::ARCH_NAME {
         return Err(ControlError::ServerError);
@@ -117,20 +119,6 @@ fn parse_ready_offer(input: &str) -> Result<BootOffer, ControlError> {
         arch: arch.into(),
         entry_symbol: json_nullable_string_field(input, "entry_symbol").map(String::from),
     })
-}
-
-fn trim_trailing_slash(input: &str) -> &str {
-    input.strip_suffix('/').unwrap_or(input)
-}
-
-fn server_url(mac: &str) -> Result<String, ControlError> {
-    match discovery::discover_server(mac) {
-        Ok(url) => return Ok(url),
-        Err(err) => crate::logln!("discovery_error: {err:?}"),
-    }
-
-    let server_url = option_env!("BOOTLOADER_HTTP_SERVER_URL").ok_or(ControlError::NoServerUrl)?;
-    Ok(trim_trailing_slash(server_url).into())
 }
 
 fn json_string_field<'a>(input: &'a str, key: &str) -> Option<&'a str> {

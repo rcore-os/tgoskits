@@ -41,24 +41,6 @@ pub enum KernelLoadError {
     SizeMismatch,
 }
 
-pub fn get_json_body(url: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
-    let mut client = HttpClient::new()?;
-    let response = retry_http(|| client.get(url, max_len))?;
-    if response.status != HttpStatusCode::STATUS_200_OK {
-        return Err(DownloadError::UnexpectedStatus);
-    }
-    Ok(response.body)
-}
-
-pub fn post_json_body(url: &str, body: &str, max_len: usize) -> Result<Vec<u8>, DownloadError> {
-    let mut client = HttpClient::new()?;
-    let response = retry_http(|| client.post_json(url, body, max_len))?;
-    if response.status != HttpStatusCode::STATUS_200_OK {
-        return Err(DownloadError::UnexpectedStatus);
-    }
-    Ok(response.body)
-}
-
 pub fn download_sized_body(url: &str, expected_size: u64) -> Result<Vec<u8>, KernelLoadError> {
     let expected_size = checked_kernel_size(expected_size)?;
     crate::logln!("body_download_start: size={}", expected_size);
@@ -279,26 +261,11 @@ impl HttpClient {
     fn get_range(&mut self, url: &str, start: usize, end: usize) -> Result<Vec<u8>, DownloadError> {
         let range = range_header_value(start, end)?;
         self.request_get(url, Some(range.as_str()))?;
-        let response = self.response_first(KERNEL_RANGE_CHUNK_SIZE)?;
-        if response.status != HttpStatusCode::STATUS_206_PARTIAL_CONTENT {
+        let (status, body) = self.response_first(KERNEL_RANGE_CHUNK_SIZE)?;
+        if status != HttpStatusCode::STATUS_206_PARTIAL_CONTENT {
             return Err(DownloadError::UnexpectedStatus);
         }
-        Ok(response.body)
-    }
-
-    fn get(&mut self, url: &str, max_len: usize) -> Result<HttpResponse, DownloadError> {
-        self.request_get(url, None)?;
-        self.response_first(max_len)
-    }
-
-    fn post_json(
-        &mut self,
-        url: &str,
-        body: &str,
-        max_len: usize,
-    ) -> Result<HttpResponse, DownloadError> {
-        self.request_post(url, body)?;
-        self.response_first(max_len)
+        Ok(body)
     }
 
     fn request_get(&mut self, url: &str, range: Option<&str>) -> Result<(), DownloadError> {
@@ -346,57 +313,10 @@ impl HttpClient {
         wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::RequestFailed)
     }
 
-    fn request_post(&mut self, url: &str, body: &str) -> Result<(), DownloadError> {
-        let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
-        let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
-        let mut host = String::from(host);
-        host.push('\0');
-        let mut content_type = String::from("application/json");
-        content_type.push('\0');
-        let mut content_length = String::new();
-        push_usize(&mut content_length, body.len());
-        content_length.push('\0');
-
-        let mut request = HttpRequestData {
-            method: HttpMethod::POST,
-            url: url16.as_ptr().cast::<u16>(),
-        };
-        let mut headers = [
-            HttpHeader {
-                field_name: c"Host".as_ptr().cast::<u8>(),
-                field_value: host.as_ptr(),
-            },
-            HttpHeader {
-                field_name: c"Content-Type".as_ptr().cast::<u8>(),
-                field_value: content_type.as_ptr(),
-            },
-            HttpHeader {
-                field_name: c"Content-Length".as_ptr().cast::<u8>(),
-                field_value: content_length.as_ptr(),
-            },
-        ];
-
-        let mut message = HttpMessage::default();
-        message.data.request = &mut request;
-        message.header_count = headers.len();
-        message.header = headers.as_mut_ptr();
-        message.body_length = body.len();
-        message.body = body.as_ptr().cast::<c_void>().cast_mut();
-
-        let mut token = HttpToken {
-            status: Status::NOT_READY,
-            message: &mut message,
-            ..Default::default()
-        };
-
-        let protocol = self.protocol.as_mut().unwrap();
-        protocol
-            .request(&mut token)
-            .map_err(|_| DownloadError::RequestFailed)?;
-        wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::RequestFailed)
-    }
-
-    fn response_first(&mut self, max_len: usize) -> Result<HttpResponse, DownloadError> {
+    fn response_first(
+        &mut self,
+        max_len: usize,
+    ) -> Result<(HttpStatusCode, Vec<u8>), DownloadError> {
         let mut response_data = HttpResponseData {
             status_code: HttpStatusCode::STATUS_UNSUPPORTED,
         };
@@ -423,10 +343,7 @@ impl HttpClient {
         wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::ResponseFailed)?;
 
         body.truncate(message.body_length);
-        Ok(HttpResponse {
-            status: response_data.status_code,
-            body,
-        })
+        Ok((response_data.status_code, body))
     }
 }
 
@@ -464,11 +381,6 @@ impl HttpHelperProxy {
             .configure(&config)
             .map_err(|_| DownloadError::ConfigureFailed)
     }
-}
-
-struct HttpResponse {
-    status: HttpStatusCode,
-    body: Vec<u8>,
 }
 
 fn wait_for_http_token(protocol: &mut Http, token: &mut HttpToken) -> Result<(), Status> {
