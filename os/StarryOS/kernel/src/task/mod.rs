@@ -585,7 +585,7 @@ pub struct ProcessData {
     /// mapping the out-of-line single-step page) which requires sleeping locks;
     /// the exception-context breakpoint/debug handlers acquire it with
     /// `try_lock()` (a single CAS, safe in atomic context) instead.
-    pub uprobe_manager: Mutex<crate::kprobe::KprobeManager>,
+    pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The resource scope
@@ -744,7 +744,7 @@ impl ProcessData {
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
-            uprobe_manager: Mutex::new(crate::kprobe::KprobeManager::default()),
+            uprobe_manager: crate::kprobe::KprobeManager::new(),
             uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),

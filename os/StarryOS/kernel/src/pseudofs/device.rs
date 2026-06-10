@@ -1,8 +1,8 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, task::Context};
 
 use ax_fs::CachedFile;
-use ax_memory_addr::PhysAddrRange;
+use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, VfsError, VfsResult,
@@ -28,6 +28,12 @@ pub enum DeviceMmap {
     /// This is for file descriptors whose mmap offset is a selector rather than
     /// a byte offset into a linear device, such as io_uring ring offsets.
     PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an explicit physical page list for this exact mmap request.
+    /// The producer has already applied the requested offset and length, so
+    /// mmap callers must map these pages in order without adding the offset
+    /// again. This covers layouts that are not a single contiguous physical
+    /// range, such as BPF ringbuf maps that expose mirrored data pages.
+    PhysicalPages(Vec<PhysAddr>, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
 }

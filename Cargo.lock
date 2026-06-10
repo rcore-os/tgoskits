@@ -4608,13 +4608,14 @@ checksum = "753ac4e7753fa007b8f7828d0e01e9ececa48b689460e6380fb36bbf74654a8d"
 
 [[package]]
 name = "kbpf-basic"
-version = "0.5.7"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43c066bb7997a6daf34a35ad2790570f32f33677dec17538781bbaff4be2248e"
+checksum = "939c71c68bfebd52de856c50f7650713e449fe8a83255e8cee53d8519500b5e0"
 dependencies = [
  "ax-errno 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 2.13.0",
  "int-enum",
+ "lock_api",
  "log",
  "lru 0.18.0",
  "printf-compat",
@@ -4690,9 +4691,9 @@ dependencies = [
 
 [[package]]
 name = "kprobe"
-version = "0.5.5"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cf6b7b70ff393b62d067f6f2e35bd64c9278ac77fd6fa2de883b2c0be8fa5ff"
+checksum = "58aa2f033d7576265cbdd2e98b902e9f10d4c3d7dc0e95f897dd59f2af9e480a"
 dependencies = [
  "cfg-if",
  "lock_api",

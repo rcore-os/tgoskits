@@ -575,7 +575,7 @@ fn cpu_range_string() -> String {
     if cpu_num <= 1 {
         "0".to_owned()
     } else {
-        format!("0-{}", cpu_num - 1)
+        format!("0-{}\n", cpu_num - 1)
     }
 }
 
