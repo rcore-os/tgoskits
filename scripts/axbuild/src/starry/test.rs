@@ -1003,7 +1003,7 @@ mod tests {
             &path,
             format!(
                 "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
-                 \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
+                 \"Info\"\nplat_dyn = true\nmax_cpu_num = {max_cpu_num}\n"
             ),
         )
         .unwrap();
@@ -2793,6 +2793,7 @@ mod tests {
         );
         request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
             max_cpu_num: Some(1),
+            plat_dyn: true,
             ..crate::starry::build::default_starry_build_info_for_target("x86_64-unknown-none")
         });
 
