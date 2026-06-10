@@ -527,13 +527,21 @@ impl SocketOps for TcpSocket {
                                 .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
                         )
                     } else {
-                        socket
-                            .recv(|buf| {
-                                let result = dst.write(buf);
-                                let len = result.unwrap_or(0);
-                                (len, result)
-                            })
-                            .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?
+                        let mut total = 0;
+                        while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
+                            let len = socket
+                                .recv(|buf| {
+                                    let result = dst.write(buf);
+                                    let len = result.unwrap_or(0);
+                                    (len, result)
+                                })
+                                .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
+                            if len == 0 {
+                                break;
+                            }
+                            total += len;
+                        }
+                        Ok(total)
                     }
                 } else if !socket.may_recv() {
                     Ok(0)
