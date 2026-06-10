@@ -115,8 +115,6 @@ fn register_unix_namespace() {
 
 #[cfg(feature = "net")]
 fn parse_network_config() -> ax_net::NetworkConfig {
-    use smoltcp::wire::Ipv4Cidr;
-
     macro_rules! env_or_default {
         ($key:literal) => {
             match option_env!($key) {
@@ -132,7 +130,8 @@ fn parse_network_config() -> ax_net::NetworkConfig {
 
     let static_ip = if !IP.is_empty() && !GATEWAY.is_empty() {
         Some(ax_net::StaticIpConfig {
-            ip: Ipv4Cidr::new(IP.parse().expect("Invalid AX_IP"), 24),
+            ip: IP.parse().expect("Invalid AX_IP"),
+            prefix_len: 24,
             gateway: GATEWAY.parse().expect("Invalid AX_GW"),
         })
     } else {

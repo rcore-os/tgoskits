@@ -28,6 +28,7 @@ pub struct Service {
     router: Router,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     dhcp: Option<DhcpState>,
+    static_dns: Vec<Ipv4Address>,
 }
 
 struct DhcpState {
@@ -195,7 +196,7 @@ impl DhcpState {
     }
 }
 impl Service {
-    pub fn new(mut router: Router) -> Self {
+    pub fn new(mut router: Router, static_dns: Vec<Ipv4Address>) -> Self {
         let config = smoltcp::iface::Config::new(HardwareAddress::Ip);
         let iface = Interface::new(config, &mut router, now());
 
@@ -204,6 +205,7 @@ impl Service {
             router,
             timeout: None,
             dhcp: None,
+            static_dns,
         }
     }
 
@@ -223,10 +225,17 @@ impl Service {
     }
 
     pub fn dns_servers(&self) -> Vec<Ipv4Address> {
-        self.dhcp
+        let dhcp_dns = self
+            .dhcp
             .as_ref()
             .map(|state| state.dns_servers.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        if !dhcp_dns.is_empty() {
+            dhcp_dns
+        } else {
+            self.static_dns.clone()
+        }
     }
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {

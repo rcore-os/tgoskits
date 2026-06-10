@@ -36,8 +36,7 @@ pub(crate) fn with_namespace<R>(f: impl FnOnce(&dyn UnixNamespace) -> AxResult<R
         Some(ns) => f(&**ns),
         None => Err(ax_err_type!(
             Unsupported,
-            "Unix socket path operations require filesystem support (enable 'fs' or 'fs-ng' \
-             feature)"
+            "Unix socket path operations require filesystem support (enable 'fs-ng' feature)"
         )),
     }
 }

@@ -58,7 +58,7 @@ fs-ng = [
 fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4"]
 fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
-net = ["dep:ax-net", "dep:rd-net", "dep:smoltcp", "dep:spin", "dep:axklib", "ax-driver/net"]
+net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
@@ -91,5 +91,4 @@ chrono = {version = "0.4", default-features = false}
 indoc = "2"
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
-smoltcp = { workspace = true, optional = true }
 spin = {workspace = true, optional = true}

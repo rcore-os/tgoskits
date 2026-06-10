@@ -1191,7 +1191,6 @@ dependencies = [
  "indoc",
  "rd-net",
  "rdrive",
- "smoltcp 0.13.1",
  "spin 0.12.0",
 ]
 

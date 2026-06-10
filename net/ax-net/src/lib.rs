@@ -68,7 +68,10 @@ pub use self::{
         ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult,
         NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
     },
-    socket::*,
+    socket::{
+        CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
+        SocketOps,
+    },
 };
 use self::{
     device::{EthernetDevice, LoopbackDevice},
@@ -81,7 +84,6 @@ use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static CONFIG: Once<Mutex<NetworkConfig>> = Once::new();
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
@@ -102,7 +104,7 @@ fn get_service() -> ax_sync::MutexGuard<'static, Service> {
 ///
 /// Panics if called more than once, or if the configuration contains invalid values.
 pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
-    if CONFIG.get().is_some() {
+    if SERVICE.get().is_some() {
         panic!("init_network() called more than once");
     }
 
@@ -110,10 +112,10 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     // Validate configuration
     if let Some(ref static_cfg) = config.static_ip {
-        if static_cfg.ip.address().is_unspecified() {
+        if static_cfg.ip.is_unspecified() {
             panic!("Invalid static IP: unspecified address");
         }
-        if static_cfg.ip.prefix_len() > 32 {
+        if static_cfg.prefix_len > 32 {
             panic!("Invalid static IP: prefix length > 32");
         }
         if static_cfg.gateway.is_unspecified() {
@@ -126,8 +128,12 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         }
     }
 
-    // Store configuration
-    CONFIG.call_once(|| Mutex::new(config.clone()));
+    // Convert DNS servers to smoltcp types
+    let static_dns: Vec<Ipv4Address> = config
+        .dns_servers
+        .iter()
+        .map(|addr| Ipv4Address::from(addr.octets()))
+        .collect();
 
     let mut router = Router::new();
     let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
@@ -148,7 +154,10 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         info!("  use NIC 0: {:?}", dev.device_name());
 
         let eth0_address = EthernetAddress(dev.mac_address());
-        let eth0_ip = config.static_ip.as_ref().map(|cfg| cfg.ip);
+        let eth0_ip = config
+            .static_ip
+            .as_ref()
+            .map(|cfg| Ipv4Cidr::new(Ipv4Address::from(cfg.ip.octets()), cfg.prefix_len));
 
         let eth0_dev = router.add_device(Box::new(EthernetDevice::new(
             "eth0".to_owned(),
@@ -161,12 +170,12 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         if let Some(static_cfg) = &config.static_ip {
             router.add_rule(Rule::new(
                 Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
-                Some(static_cfg.gateway.into()),
+                Some(Ipv4Address::from(static_cfg.gateway.octets()).into()),
                 eth0_dev,
-                static_cfg.ip.address().into(),
+                Ipv4Address::from(static_cfg.ip.octets()).into(),
             ));
             info!("  mode: static");
-            info!("  ip:   {}", static_cfg.ip);
+            info!("  ip:   {}/{}", static_cfg.ip, static_cfg.prefix_len);
             info!("  gw:   {}", static_cfg.gateway);
         } else {
             dhcp_dev = Some(eth0_dev);
@@ -184,7 +193,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         info!("Device: {}", dev.name());
     }
 
-    let mut service = Service::new(router);
+    let mut service = Service::new(router, static_dns);
     service.iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.push(lo_ip.into()).unwrap();
         if let Some(eth0_ip) = eth0_ip {
@@ -246,12 +255,7 @@ pub fn arp_entries() -> Vec<ArpEntry> {
 /// Priority: DHCP-provided servers take precedence over statically configured servers.
 /// If DHCP hasn't provided servers, falls back to the servers from `NetworkConfig`.
 pub fn dns_servers() -> Vec<Ipv4Address> {
-    let servers = get_service().dns_servers();
-    if servers.is_empty() {
-        configured_dns_servers()
-    } else {
-        servers
-    }
+    get_service().dns_servers()
 }
 
 const DNS_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -338,13 +342,6 @@ impl Drop for DnsSocketGuard {
     }
 }
 
-fn configured_dns_servers() -> Vec<Ipv4Address> {
-    CONFIG
-        .get()
-        .map(|cfg| cfg.lock().dns_servers.clone())
-        .unwrap_or_default()
-}
-
 fn dhcp_bootstrap() {
     for _ in 0..DHCP_BOOTSTRAP_ATTEMPTS {
         poll_interfaces();
@@ -405,7 +402,7 @@ pub(crate) mod test_support {
                 IpAddress::Ipv4(PEER_ADDR),
             ));
 
-            let mut service = Service::new(router);
+            let mut service = Service::new(router, Vec::new());
             service.iface.update_ip_addrs(|ip_addrs| {
                 ip_addrs.push(local_cidr.into()).unwrap();
                 ip_addrs.push(peer_cidr.into()).unwrap();
