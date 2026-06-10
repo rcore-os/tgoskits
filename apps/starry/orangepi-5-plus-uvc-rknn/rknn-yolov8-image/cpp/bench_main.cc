@@ -11,8 +11,11 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <string>
 #include <vector>
 
+#include "detection_validation.h"
+#include "image_utils.h"
 #include "uvc_capture.h"
 #include "yolov8.h"
 
@@ -32,6 +35,9 @@ struct Options {
     const char *core_mask_name = "0_1_2";
     const char *model_path = "model/yolov8.rknn";
     const char *label_path = "model/coco_80_labels_list.txt";
+    const char *validate_list_path = NULL;
+    const char *expected_path = NULL;
+    const char *write_expected_path = NULL;
 };
 
 struct MemoryStats {
@@ -86,6 +92,9 @@ static void print_usage(const char *argv0)
     printf("  --core-mask <MASK>             RKNN NPU core mask: none, auto, 0, 1, 2, 0_1, 0_1_2, all [default: 0_1_2]\n");
     printf("  --profile                      print final RKNN stage timing summary\n");
     printf("  --profile-frames               print one RKNN_PROFILE line per inference\n");
+    printf("  --validate-list <PATH>         validate fixed images from list without starting UVC\n");
+    printf("  --expected <PATH>              read committed validation expected file\n");
+    printf("  --write-expected <PATH>        write validation expected file for maintenance\n");
 }
 
 static bool parse_int_arg(const char *name, const char *value, int *out)
@@ -213,6 +222,15 @@ static bool parse_args(int argc, char **argv, Options *options)
         } else if (strcmp(arg, "--core-mask") == 0 && value != NULL) {
             if (!parse_core_mask_arg(value, options)) return false;
             ++i;
+        } else if (strcmp(arg, "--validate-list") == 0 && value != NULL) {
+            options->validate_list_path = value;
+            ++i;
+        } else if (strcmp(arg, "--expected") == 0 && value != NULL) {
+            options->expected_path = value;
+            ++i;
+        } else if (strcmp(arg, "--write-expected") == 0 && value != NULL) {
+            options->write_expected_path = value;
+            ++i;
         } else if (strcmp(arg, "--profile") == 0) {
             options->profile = true;
         } else if (strcmp(arg, "--profile-frames") == 0) {
@@ -222,6 +240,16 @@ static bool parse_args(int argc, char **argv, Options *options)
             printf("unknown or incomplete argument: %s\n", arg);
             return false;
         }
+    }
+    if (options->validate_list_path != NULL &&
+        (options->expected_path == NULL) == (options->write_expected_path == NULL)) {
+        printf("--validate-list requires exactly one of --expected or --write-expected\n");
+        return false;
+    }
+    if (options->validate_list_path == NULL &&
+        (options->expected_path != NULL || options->write_expected_path != NULL)) {
+        printf("--expected and --write-expected require --validate-list\n");
+        return false;
     }
     return true;
 }
@@ -411,6 +439,171 @@ static void print_profile_summary(const ProfileSamples *samples)
            average_ms(samples->outputs_release_ms));
 }
 
+static void print_validation_messages(int index, const char *path, const std::vector<std::string> &messages)
+{
+    for (size_t i = 0; i < messages.size(); i++) {
+        printf("UVC_RKNN_VALIDATE_FAIL image=%d path=%s reason=%s\n", index, path, messages[i].c_str());
+    }
+}
+
+static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
+{
+    std::string error;
+    std::vector<rknn_validation::ValidationImage> images;
+    if (!rknn_validation::ReadImageListFile(options.validate_list_path, &images, &error)) {
+        printf("UVC_RKNN_VALIDATE_FAIL reason=%s\n", error.c_str());
+        return 1;
+    }
+
+    rknn_validation::ExpectedFile expected;
+    if (options.expected_path != NULL &&
+        !rknn_validation::ReadExpectedFile(options.expected_path, &expected, &error)) {
+        printf("UVC_RKNN_VALIDATE_FAIL reason=%s\n", error.c_str());
+        return 1;
+    }
+    if (options.expected_path != NULL && expected.images.size() != images.size()) {
+        printf("UVC_RKNN_VALIDATE_FAIL reason=image_count_mismatch list=%llu expected=%llu\n",
+               (unsigned long long)images.size(),
+               (unsigned long long)expected.images.size());
+        return 1;
+    }
+    if (options.expected_path != NULL &&
+        (expected.min_confidence != options.min_confidence ||
+         expected.nms_threshold_q10000 != (int)(NMS_THRESH * 10000.0f + 0.5f))) {
+        printf("UVC_RKNN_VALIDATE_FAIL reason=threshold_mismatch expected_min_confidence=%d actual_min_confidence=%d expected_nms_q10000=%d actual_nms_q10000=%d\n",
+               expected.min_confidence,
+               options.min_confidence,
+               expected.nms_threshold_q10000,
+               (int)(NMS_THRESH * 10000.0f + 0.5f));
+        return 1;
+    }
+
+    rknn_validation::ExpectedFile generated;
+    generated.min_confidence = options.min_confidence;
+    generated.nms_threshold_q10000 = (int)(NMS_THRESH * 10000.0f + 0.5f);
+    ProfileSamples profile_samples;
+
+    printf("UVC_RKNN_VALIDATE_BEGIN images=%llu mode=%s\n",
+           (unsigned long long)images.size(),
+           options.write_expected_path != NULL ? "write_expected" : "compare_expected");
+
+    for (size_t i = 0; i < images.size(); i++) {
+        image_buffer_t image;
+        memset(&image, 0, sizeof(image));
+        int ret = read_image(images[i].path.c_str(), &image);
+        if (ret != 0) {
+            printf("UVC_RKNN_VALIDATE_FAIL image=%llu path=%s reason=read_image ret=%d\n",
+                   (unsigned long long)i,
+                   images[i].path.c_str(),
+                   ret);
+            return 1;
+        }
+
+        object_detect_result_list results;
+        memset(&results, 0, sizeof(results));
+        rknn_inference_profile_t profile;
+        memset(&profile, 0, sizeof(profile));
+        if (options.profile) {
+            ret = inference_yolov8_model_with_thresholds_profile(
+                app_ctx,
+                &image,
+                &results,
+                (float)options.min_confidence / 100.0f,
+                NMS_THRESH,
+                &profile);
+        } else {
+            ret = inference_yolov8_model_with_thresholds(
+                app_ctx,
+                &image,
+                &results,
+                (float)options.min_confidence / 100.0f,
+                NMS_THRESH);
+        }
+
+        if (ret != 0) {
+            printf("UVC_RKNN_VALIDATE_FAIL image=%llu path=%s reason=inference ret=%d\n",
+                   (unsigned long long)i,
+                   images[i].path.c_str(),
+                   ret);
+            free(image.virt_addr);
+            return 1;
+        }
+
+        if (options.profile) {
+            add_profile_sample(&profile_samples, &profile);
+        }
+        if (options.profile_frames) {
+            print_profile_line((uint64_t)i, ret, &profile, results.count);
+        }
+
+        std::vector<rknn_validation::DetectionEntry> actual = rknn_validation::ConvertDetections(results);
+        printf("UVC_RKNN_VALIDATE_IMAGE index=%llu path=%s width=%d height=%d detections=%d\n",
+               (unsigned long long)i,
+               images[i].path.c_str(),
+               image.width,
+               image.height,
+               results.count);
+
+        if (options.write_expected_path != NULL) {
+            rknn_validation::ExpectedImage expected_image;
+            expected_image.index = (int)i;
+            expected_image.path = images[i].path;
+            expected_image.width = image.width;
+            expected_image.height = image.height;
+            expected_image.detections = actual;
+            generated.images.push_back(expected_image);
+        } else {
+            const rknn_validation::ExpectedImage *expected_image =
+                rknn_validation::FindExpectedImage(expected, (int)i);
+            if (expected_image == NULL) {
+                printf("UVC_RKNN_VALIDATE_FAIL image=%llu path=%s reason=missing_expected_image\n",
+                       (unsigned long long)i,
+                       images[i].path.c_str());
+                free(image.virt_addr);
+                return 1;
+            }
+            if (expected_image->path != images[i].path ||
+                expected_image->width != image.width ||
+                expected_image->height != image.height) {
+                printf("UVC_RKNN_VALIDATE_FAIL image=%llu path=%s reason=image_metadata_mismatch expected_path=%s expected_size=%dx%d actual_size=%dx%d\n",
+                       (unsigned long long)i,
+                       images[i].path.c_str(),
+                       expected_image->path.c_str(),
+                       expected_image->width,
+                       expected_image->height,
+                       image.width,
+                       image.height);
+                free(image.virt_addr);
+                return 1;
+            }
+            std::vector<std::string> messages;
+            if (!rknn_validation::ValidateImageDetections(expected, (int)i, actual, &messages)) {
+                print_validation_messages((int)i, images[i].path.c_str(), messages);
+                free(image.virt_addr);
+                return 1;
+            }
+        }
+
+        free(image.virt_addr);
+    }
+
+    if (options.write_expected_path != NULL) {
+        if (!rknn_validation::WriteExpectedFile(options.write_expected_path, generated, &error)) {
+            printf("UVC_RKNN_VALIDATE_FAIL reason=%s\n", error.c_str());
+            return 1;
+        }
+        printf("UVC_RKNN_VALIDATE_EXPECTED_WRITTEN path=%s images=%llu\n",
+               options.write_expected_path,
+               (unsigned long long)generated.images.size());
+    }
+
+    if (options.profile) {
+        print_profile_summary(&profile_samples);
+    }
+    printf("UVC_RKNN_VALIDATE_PASS images=%llu\n", (unsigned long long)images.size());
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     Options options;
@@ -426,7 +619,7 @@ int main(int argc, char **argv)
 
     printf("YOLOv8 UVC RKNN Benchmark\n");
     printf("=========================\n");
-    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d core_mask=%s profile=%d profile_frames=%d\n",
+    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d core_mask=%s profile=%d profile_frames=%d validate_list=%s expected=%s write_expected=%s\n",
            options.model_path,
            options.label_path,
            options.device,
@@ -439,7 +632,10 @@ int main(int argc, char **argv)
            options.min_confidence,
            options.core_mask_name,
            options.profile ? 1 : 0,
-           options.profile_frames ? 1 : 0);
+           options.profile_frames ? 1 : 0,
+           options.validate_list_path != NULL ? options.validate_list_path : "none",
+           options.expected_path != NULL ? options.expected_path : "none",
+           options.write_expected_path != NULL ? options.write_expected_path : "none");
 
     int ret = init_post_process(options.label_path);
     if (ret != 0) {
@@ -469,6 +665,13 @@ int main(int argc, char **argv)
         }
     } else {
         printf("bench-rknn: set_core_mask=none\n");
+    }
+
+    if (options.validate_list_path != NULL) {
+        int validation_ret = run_validation(options, &app_ctx);
+        release_yolov8_model(&app_ctx);
+        deinit_post_process();
+        return validation_ret;
     }
 
     UvcCaptureSession capture;

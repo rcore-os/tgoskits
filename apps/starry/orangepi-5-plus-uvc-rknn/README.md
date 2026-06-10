@@ -23,6 +23,25 @@ The board rootfs must contain:
 - `/rknn_yolov8_image/model/yolov8.rknn`
 - `/rknn_yolov8_image/model/coco_80_labels_list.txt`
 
+The fixed-image benchmark board config also expects a validation asset set under
+`/rknn_yolov8_image/validation/`:
+
+- `images.txt`: list of the three validation image paths, relative to
+  `/rknn_yolov8_image`;
+- `expected.txt`: committed source asset with the expected detections for those
+  images;
+- the three user-provided image files referenced by `images.txt`.
+
+`expected.txt` is consumed as a source asset during routine StarryOS board tests.
+Regenerating it on Linux is only a maintenance step for intentional changes to
+the model, image set, threshold, RKNN runtime, or postprocess behavior; routine
+StarryOS tests should not regenerate it.
+
+This tree currently carries the validation list placeholder only. Do not copy
+or synthesize replacement image binaries: add the user-provided three-image set
+and its matching committed `expected.txt` before expecting the validation-first
+benchmark board config to pass.
+
 Build the image runner:
 
 ```bash
@@ -55,6 +74,25 @@ ssh orangepi@${BOARD_IP} '
       --device 0 --width 320 --height 240 --fps 30 --duration-sec 8 --infer-every 2 --max-inferences 3 \
       --http-port 8080 --http-fps 15 --jpeg-quality 80
 '
+```
+
+Linux-side fixed-image validation should pass before the realtime UVC benchmark
+when the validation assets are present:
+
+```bash
+ssh orangepi@${BOARD_IP} '
+  cd /rknn_yolov8_image &&
+  export LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH &&
+  printf "%s\n" orangepi | sudo -E -S \
+    ./rknn_yolov8_bench --validate-list validation/images.txt --expected validation/expected.txt \
+      --min-confidence 25 --core-mask all --profile
+'
+```
+
+The validation command must print:
+
+```text
+UVC_RKNN_VALIDATE_PASS images=3
 ```
 
 Linux-side 60-second benchmark smoke can be shortened during setup:
@@ -137,10 +175,13 @@ cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
 If the board is leased through a non-default shared service, add the matching
 `--server` and `--port` values to either command.
 
-The benchmark command does not start the HTTP stream. It runs camera capture and
-RKNN inference for 60 seconds, then prints one machine-readable summary line:
+The benchmark board config first runs fixed-image validation, then starts the
+realtime UVC benchmark. The UVC benchmark does not start the HTTP stream. It
+runs camera capture and RKNN inference for 60 seconds, then prints one
+machine-readable summary line:
 
 ```text
+UVC_RKNN_VALIDATE_PASS images=3
 UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=... infer_fps=... bytes=... throughput_mib_s=... dropped_latest=... decode_errors=... inference_errors=... decode_ms_avg=... decode_ms_p50=... decode_ms_p95=... infer_ms_avg=... infer_ms_p50=... infer_ms_p95=... detections=... vm_size_kb=... vm_rss_kb=... vm_hwm_kb=... mem_total_kb=... mem_free_kb=... mem_available_kb=...
 UVC_RKNN_BENCH_DONE
 ```

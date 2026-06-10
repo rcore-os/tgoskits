@@ -1,9 +1,10 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = '''
-echo UVC_RKNN_BENCH_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 --report-interval-sec 5 --min-confidence 25 --core-mask all --profile && echo UVC_RKNN_BENCH_DONE
+echo UVC_RKNN_BENCH_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_bench --validate-list validation/images.txt --expected validation/expected.txt --min-confidence 25 --core-mask all --profile && ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 --report-interval-sec 5 --min-confidence 25 --core-mask all --profile && echo UVC_RKNN_BENCH_DONE
 '''
 success_regex = [
+  "(?m)^UVC_RKNN_VALIDATE_PASS images=3$",
   "(?m)^UVC_RKNN_BENCH_RESULT .*\\binferences=[1-9][0-9]*\\b.*\\binference_errors=0\\b.*$",
   "(?m)^UVC_RKNN_BENCH_DONE$",
 ]
@@ -14,6 +15,7 @@ fail_regex = [
   "(?m)^rknn_init fail!.*$",
   "(?m)^read_image fail!.*$",
   "(?m)^inference_yolov8_model fail!.*$",
+  "(?m)^UVC_RKNN_VALIDATE_FAIL .*$",
   "(?m)^(uvc_init|uvc_open|uvc_start_streaming|uvc_get_device_list) failed: .*$",
   "(?m)^dlopen libuvc\\.so failed: .*$",
   "(?i)error while loading shared libraries",

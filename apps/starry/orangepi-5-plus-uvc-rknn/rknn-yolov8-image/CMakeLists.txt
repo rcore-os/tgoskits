@@ -28,6 +28,7 @@ add_executable(rknn_yolov8_stream
 
 add_executable(rknn_yolov8_bench
     cpp/bench_main.cc
+    cpp/detection_validation.cc
     cpp/uvc_capture.cc
     cpp/postprocess.cc
     cpp/rknpu2/yolov8.cc
@@ -90,3 +91,4 @@ install(TARGETS rknn_yolov8_image DESTINATION .)
 install(TARGETS rknn_yolov8_stream DESTINATION .)
 install(TARGETS rknn_yolov8_bench DESTINATION .)
 install(DIRECTORY model DESTINATION .)
+install(DIRECTORY validation DESTINATION . OPTIONAL)

@@ -45,6 +45,23 @@ apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarc
 /rknn_yolov8_image/model/coco_80_labels_list.txt
 ```
 
+固定图片 benchmark 板端配置还需要在 `/rknn_yolov8_image/validation/`
+下准备验证资源：
+
+```text
+/rknn_yolov8_image/validation/images.txt
+/rknn_yolov8_image/validation/expected.txt
+/rknn_yolov8_image/validation/<three user-provided image files>
+```
+
+其中 `images.txt` 列出 3 张验证图片路径，路径相对于
+`/rknn_yolov8_image`；`expected.txt` 是随源码提交的期望检测结果资源。
+常规 StarryOS 板端测试只读取 `expected.txt`，不在测试过程中重新生成它。
+只有在有意更换模型、图片集合、阈值、RKNN runtime 或后处理语义时，才需要
+在 Linux 侧重新生成并更新 `expected.txt`。
+
+当前仓库只放置验证图片列表占位文件。不要临时伪造或替换图片二进制；需要先补齐用户提供的 3 张验证图片和匹配的 `expected.txt`，固定图片优先的 benchmark 板端配置才可以通过。
+
 ## StarryOS 网络地址
 
 网页服务由 StarryOS 上的 `rknn_yolov8_stream` 直接发布，默认监听端口为 `8080`。
@@ -271,6 +288,25 @@ export LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-li
 
 Linux 侧部署后可以先跑 8 秒短测：
 
+如果验证资源已经齐全，先在 Linux 侧跑固定图片验证：
+
+```bash
+sudo -E ./rknn_yolov8_bench \
+  --validate-list validation/images.txt \
+  --expected validation/expected.txt \
+  --min-confidence 25 \
+  --core-mask all \
+  --profile
+```
+
+该命令需要输出：
+
+```text
+UVC_RKNN_VALIDATE_PASS images=3
+```
+
+然后再跑 UVC benchmark 短测：
+
 ```bash
 sudo -E ./rknn_yolov8_bench \
   --model model/yolov8.rknn \
@@ -295,9 +331,10 @@ cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
 
 如果开发板通过非默认共享服务租用，再按实际服务地址追加 `--server` 和 `--port`。
 
-结束时会输出一行机器可解析的摘要，以及完成标记：
+板端 benchmark 配置会先跑固定图片验证，再跑实时 UVC benchmark。结束时会输出固定图片验证通过标记、一行机器可解析的 UVC 摘要，以及完成标记：
 
 ```text
+UVC_RKNN_VALIDATE_PASS images=3
 UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=... infer_fps=... bytes=... throughput_mib_s=... dropped_latest=... decode_errors=... inference_errors=... decode_ms_avg=... decode_ms_p50=... decode_ms_p95=... infer_ms_avg=... infer_ms_p50=... infer_ms_p95=... detections=... vm_size_kb=... vm_rss_kb=... vm_hwm_kb=... mem_total_kb=... mem_free_kb=... mem_available_kb=...
 UVC_RKNN_BENCH_DONE
 ```
