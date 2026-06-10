@@ -578,13 +578,8 @@ pub struct ProcessData {
     /// The virtual memory address space.
     // TODO: scopify
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
-    /// Per-process uprobe manager. Uprobes plant an `int3` in *this* process'
-    /// user text, so (unlike the global kprobe manager) the registry is
-    /// per-address-space. A *sleeping* mutex, because arming/disarming
-    /// manipulates the user address space (page-table query, faulting reads,
-    /// mapping the out-of-line single-step page) which requires sleeping locks;
-    /// the exception-context breakpoint/debug handlers acquire it with
-    /// `try_lock()` (a single CAS, safe in atomic context) instead.
+    /// The per-process uprobe manager. Each process has its own because user
+    /// code can be modified independently.
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
