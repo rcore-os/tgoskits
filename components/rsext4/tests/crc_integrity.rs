@@ -144,7 +144,7 @@ fn sync_with_axfs_ng_order(
 ) -> Ext4Result<()> {
     fs.datablock_cache.flush_all(dev)?;
     fs.bitmap_cache.flush_all(dev)?;
-    fs.inodetable_cahce.flush_all(dev)?;
+    fs.inodetable_cache.flush_all(dev)?;
     fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
     fs.sync_superblock(dev)?;
     fs.sync_group_descriptors(dev)?;
