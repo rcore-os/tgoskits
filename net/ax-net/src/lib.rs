@@ -62,13 +62,6 @@ use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
-use self::{
-    device::{EthernetDevice, LoopbackDevice},
-    listen_table::ListenTable,
-    router::{Router, Rule},
-    service::Service,
-    wrapper::SocketSetWrapper,
-};
 pub use self::{
     config::{NetworkConfig, StaticIpConfig},
     device::{
@@ -76,6 +69,13 @@ pub use self::{
         NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
     },
     socket::*,
+};
+use self::{
+    device::{EthernetDevice, LoopbackDevice},
+    listen_table::ListenTable,
+    router::{Router, Rule},
+    service::Service,
+    wrapper::SocketSetWrapper,
 };
 
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
@@ -253,7 +253,6 @@ pub fn dns_servers() -> Vec<Ipv4Address> {
         servers
     }
 }
-
 
 const DNS_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 

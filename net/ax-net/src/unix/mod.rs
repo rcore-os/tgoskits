@@ -1,6 +1,6 @@
 pub(crate) mod dgram;
-pub(crate) mod stream;
 pub mod namespace;
+pub(crate) mod stream;
 
 use alloc::{boxed::Box, sync::Arc};
 use core::task::Context;
@@ -15,7 +15,11 @@ use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
 use spin::LazyLock;
 
-pub use self::{dgram::DgramTransport, namespace::{UnixNamespace, register_unix_namespace}, stream::StreamTransport};
+pub use self::{
+    dgram::DgramTransport,
+    namespace::{UnixNamespace, register_unix_namespace},
+    stream::StreamTransport,
+};
 use crate::{
     RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -109,12 +113,10 @@ pub(crate) fn with_slot<R>(
                 Err(AxError::NotFound)
             }
         }
-        UnixSocketAddr::Path(path) => {
-            namespace::with_namespace(|ns| {
-                let slot = ns.resolve(path.as_ref())?;
-                f(slot.as_ref())
-            })
-        }
+        UnixSocketAddr::Path(path) => namespace::with_namespace(|ns| {
+            let slot = ns.resolve(path.as_ref())?;
+            f(slot.as_ref())
+        }),
     }
 }
 fn with_slot_or_insert<R>(
@@ -127,12 +129,10 @@ fn with_slot_or_insert<R>(
             let mut binds = ABSTRACT_BINDS.lock();
             f(binds.entry(name.clone()).or_default())
         }
-        UnixSocketAddr::Path(path) => {
-            namespace::with_namespace(|ns| {
-                let slot = ns.bind(path.as_ref())?;
-                f(slot.as_ref())
-            })
-        }
+        UnixSocketAddr::Path(path) => namespace::with_namespace(|ns| {
+            let slot = ns.bind(path.as_ref())?;
+            f(slot.as_ref())
+        }),
     }
 }
 

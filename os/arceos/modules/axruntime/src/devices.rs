@@ -132,10 +132,7 @@ fn parse_network_config() -> ax_net::NetworkConfig {
 
     let static_ip = if !IP.is_empty() && !GATEWAY.is_empty() {
         Some(ax_net::StaticIpConfig {
-            ip: Ipv4Cidr::new(
-                IP.parse().expect("Invalid AX_IP"),
-                24,
-            ),
+            ip: Ipv4Cidr::new(IP.parse().expect("Invalid AX_IP"), 24),
             gateway: GATEWAY.parse().expect("Invalid AX_GW"),
         })
     } else {
@@ -147,7 +144,8 @@ fn parse_network_config() -> ax_net::NetworkConfig {
         .filter(|s| !s.trim().is_empty())
         .map(|s| {
             let s = s.trim();
-            s.parse().unwrap_or_else(|_| panic!("Invalid DNS server address: {}", s))
+            s.parse()
+                .unwrap_or_else(|_| panic!("Invalid DNS server address: {}", s))
         })
         .collect();
 

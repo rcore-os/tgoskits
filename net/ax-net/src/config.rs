@@ -1,5 +1,6 @@
-use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 use alloc::vec::Vec;
+
+use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
 /// Network initialization configuration.
 #[derive(Debug, Clone, Default)]
