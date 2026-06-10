@@ -18,7 +18,7 @@ args = [
     "user,id=net0",
 ]
 uefi = false
-to_bin = true
+to_bin = false
 shell_prefix = "root@starry:"
 test_commands = [
     '''

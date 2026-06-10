@@ -22,7 +22,7 @@ args = [
     "virtio-tablet-pci",
 ]
 uefi = false
-to_bin = true
+to_bin = false
 shell_prefix = "root@starry:"
 test_commands = [
     '''
