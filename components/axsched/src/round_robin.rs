@@ -110,15 +110,15 @@ impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {
         loop {
             match self.ready_queue.pop_front() {
                 Some(task) if predicate(&task) => {
-                    for t in skipped {
-                        self.ready_queue.push_back(t);
+                    for t in skipped.into_iter().rev() {
+                        self.ready_queue.push_front(t);
                     }
                     return Some(task);
                 }
                 Some(task) => skipped.push(task),
                 None => {
-                    for t in skipped {
-                        self.ready_queue.push_back(t);
+                    for t in skipped.into_iter().rev() {
+                        self.ready_queue.push_front(t);
                     }
                     return None;
                 }

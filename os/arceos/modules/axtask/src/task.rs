@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc};
 #[cfg(not(feature = "stack-guard-page"))]
 use core::alloc::Layout;
 #[cfg(any(
@@ -119,6 +119,16 @@ pub struct TaskInner {
     #[cfg(feature = "tls")]
     tls: TlsArea,
 }
+
+/// Per-task scheduling attributes stored separately from [`TaskInner`] so that
+/// adding scheduling fields does not change [`TaskInner`]'s layout.
+struct SchedState {
+    policy: AtomicI32,
+    priority: AtomicI32,
+}
+
+/// Global sched state map, keyed by [`TaskId`].
+static SCHED_STATES: SpinNoIrq<BTreeMap<u64, SchedState>> = SpinNoIrq::new(BTreeMap::new());
 
 impl TaskId {
     fn new() -> Self {
@@ -267,19 +277,45 @@ impl TaskInner {
 
     #[inline]
     pub fn sched_policy(&self) -> i32 {
-        0
+        SCHED_STATES
+            .lock()
+            .get(&self.id.as_u64())
+            .map_or(0, |s| s.policy.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn set_sched_policy(&self, _policy: i32) {}
+    pub fn set_sched_policy(&self, policy: i32) {
+        SCHED_STATES
+            .lock()
+            .entry(self.id.as_u64())
+            .or_insert_with(|| SchedState {
+                policy: AtomicI32::new(0),
+                priority: AtomicI32::new(0),
+            })
+            .policy
+            .store(policy, Ordering::Release);
+    }
 
     #[inline]
     pub fn sched_priority(&self) -> i32 {
-        0
+        SCHED_STATES
+            .lock()
+            .get(&self.id.as_u64())
+            .map_or(0, |s| s.priority.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn set_sched_priority(&self, _prio: i32) {}
+    pub fn set_sched_priority(&self, prio: i32) {
+        SCHED_STATES
+            .lock()
+            .entry(self.id.as_u64())
+            .or_insert_with(|| SchedState {
+                policy: AtomicI32::new(0),
+                priority: AtomicI32::new(0),
+            })
+            .priority
+            .store(prio, Ordering::Release);
+    }
 
     /// Polls whether the task has been interrupted.
     #[inline]
@@ -586,6 +622,7 @@ impl fmt::Debug for TaskInner {
 impl Drop for TaskInner {
     fn drop(&mut self) {
         debug!("task drop: {}", self.id_name());
+        SCHED_STATES.lock().remove(&self.id.as_u64());
     }
 }
 
