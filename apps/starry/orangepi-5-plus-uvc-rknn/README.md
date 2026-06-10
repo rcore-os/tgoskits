@@ -30,17 +30,19 @@ The fixed-image benchmark board config also expects a validation asset set under
   `/rknn_yolov8_image`;
 - `expected.txt`: committed source asset with the expected detections for those
   images;
-- the three user-provided image files referenced by `images.txt`.
+- `tennis-ball-close.jpg`;
+- `tennis-ball-black-box.jpg`;
+- `tennis-ball-plant.jpg`.
 
 `expected.txt` is consumed as a source asset during routine StarryOS board tests.
 Regenerating it on Linux is only a maintenance step for intentional changes to
 the model, image set, threshold, RKNN runtime, or postprocess behavior; routine
 StarryOS tests should not regenerate it.
 
-This tree currently carries the validation list placeholder only. Do not copy
-or synthesize replacement image binaries: add the user-provided three-image set
-and its matching committed `expected.txt` before expecting the validation-first
-benchmark board config to pass.
+When updating `expected.txt`, use the committed validation images instead of
+capturing or synthesizing replacements. The benchmark board config expects the
+three image files and the matching committed `expected.txt` to be installed
+together.
 
 Build the image runner:
 

@@ -51,7 +51,9 @@ apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarc
 ```text
 /rknn_yolov8_image/validation/images.txt
 /rknn_yolov8_image/validation/expected.txt
-/rknn_yolov8_image/validation/<three user-provided image files>
+/rknn_yolov8_image/validation/tennis-ball-close.jpg
+/rknn_yolov8_image/validation/tennis-ball-black-box.jpg
+/rknn_yolov8_image/validation/tennis-ball-plant.jpg
 ```
 
 其中 `images.txt` 列出 3 张验证图片路径，路径相对于
@@ -60,7 +62,9 @@ apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarc
 只有在有意更换模型、图片集合、阈值、RKNN runtime 或后处理语义时，才需要
 在 Linux 侧重新生成并更新 `expected.txt`。
 
-当前仓库只放置验证图片列表占位文件。不要临时伪造或替换图片二进制；需要先补齐用户提供的 3 张验证图片和匹配的 `expected.txt`，固定图片优先的 benchmark 板端配置才可以通过。
+更新 `expected.txt` 时应使用仓库内这 3 张固定验证图片，不要临时拍摄、
+合成或替换图片二进制。固定图片优先的 benchmark 板端配置要求 3 张图片
+和匹配的 `expected.txt` 一起安装到板端。
 
 ## StarryOS 网络地址
 
