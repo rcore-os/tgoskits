@@ -63,7 +63,7 @@ unsafe fn setup_csrs() {
         )
         .write();
 
-        // Delegate all interupts.
+        // Delegate all interrupts.
         hideleg::Hideleg::from_bits(
             traps::interrupt::VIRTUAL_SUPERVISOR_TIMER
                 | traps::interrupt::VIRTUAL_SUPERVISOR_EXTERNAL

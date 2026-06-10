@@ -1,5 +1,5 @@
 /*
- * Max avaliable Page Size is 64K, so we set SectionAlignment
+ * Max available Page Size is 64K, so we set SectionAlignment
  * field of EFI application to 64K.
  */
 PECOFF_FILE_ALIGN = 0x200;
