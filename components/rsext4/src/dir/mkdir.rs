@@ -10,7 +10,7 @@ use crate::{
     crc32c::ext4_superblock_has_metadata_csum,
     dir::{
         create_lost_found_directory, get_inode_with_num, insert_dir_entry,
-        split_paren_child_and_tranlatevalid,
+        split_paren_child_and_translatevalid,
     },
     disknode::*,
     endian::DiskFormat,
@@ -37,7 +37,7 @@ fn mkdir_internal<B: BlockDevice>(
     gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     // Resolve trivial and already-existing paths before allocating anything.
     if norm_path.is_empty() {
         return Err(Ext4Error::invalid_input());

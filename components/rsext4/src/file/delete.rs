@@ -55,7 +55,7 @@ pub fn unlink<B: BlockDevice>(
 ) -> Ext4Result<()> {
     // Resolve the parent directory and target entry before mutating link
     // counts or directory contents.
-    let norm_path = split_paren_child_and_tranlatevalid(link_path);
+    let norm_path = split_paren_child_and_translatevalid(link_path);
     let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
         let parent = if pos == 0 {
             "/".to_string()
@@ -360,7 +360,7 @@ pub fn delete_dir<B: BlockDevice>(
         stage: u8, // 0=scan, 1=cleanup
     }
 
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     if norm_path == "/" {
         return Err(Ext4Error::busy());
     }
@@ -565,7 +565,7 @@ pub fn delete_file<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> Ext4Result<()> {
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
         let parent = if pos == 0 {
             "/".to_string()

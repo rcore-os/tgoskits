@@ -22,8 +22,8 @@ pub fn rename<B: BlockDevice>(
     old_path: &str,
     new_path: &str,
 ) -> Ext4Result<()> {
-    let old_norm = split_paren_child_and_tranlatevalid(old_path);
-    let new_norm = split_paren_child_and_tranlatevalid(new_path);
+    let old_norm = split_paren_child_and_translatevalid(old_path);
+    let new_norm = split_paren_child_and_translatevalid(new_path);
 
     // Resolve source type for cross-type checks.
     let src_is_dir = get_inode_with_num(fs, device, &old_norm)?.is_some_and(|(_, i)| i.is_dir());
@@ -93,8 +93,8 @@ pub fn mv<B: BlockDevice>(
     // 4. remove the old entry,
     // 5. fix directory-specific link counts and `..` when moving directories.
 
-    let old_norm = split_paren_child_and_tranlatevalid(old_path);
-    let new_norm = split_paren_child_and_tranlatevalid(new_path);
+    let old_norm = split_paren_child_and_translatevalid(old_path);
+    let new_norm = split_paren_child_and_translatevalid(new_path);
 
     let (old_parent, old_name) = match old_norm.rfind('/') {
         Some(pos) => {
