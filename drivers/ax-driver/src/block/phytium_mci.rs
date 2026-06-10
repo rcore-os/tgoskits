@@ -9,7 +9,11 @@ use core::{
 use dma_api::DeviceDma;
 use log::{info, warn};
 use phytium_mci_host::{BlockRequest, BlockRequestSlot, PhytiumMci, RequestId};
-use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{
+    DriverGeneric,
+    probe::OnProbeError,
+    register::{FdtInfo, ProbeFdt},
+};
 use sdmmc_protocol::{
     BlockPoll, BlockTransferMode, Error, OperationPoll,
     error::Phase,
@@ -17,7 +21,7 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    block::{PlatformDeviceBlock, SharedDriver, decode_fdt_irq},
+    block::{ProbeFdtBlock, SharedDriver},
     mmio::iomap,
 };
 
@@ -37,7 +41,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
     let base_reg = info
         .node
         .regs()
@@ -65,7 +70,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     info!("phytium-mci: initialize card");
     let mut card = SdioSdmmc::new(host);
     card.set_sd_uhs_selection_enabled(false);
-    let preference = card_init_preference(&info);
+    let preference = card_init_preference(info);
     let card_info = poll_card_init(&mut card, preference).map_err(|e| {
         warn!("phytium-mci: card init failed: {:?}", e);
         card_init_error(base_reg.address, mmio_size, e)
@@ -82,7 +87,6 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         card_info.ext_csd.is_some()
     );
 
-    let irq_num = decode_fdt_irq(&info.interrupts());
     let raw = SharedDriver::new(card);
     let dev = MciBlockDevice {
         raw: Some(raw),
@@ -91,8 +95,8 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         queue_created: false,
         irq_handler_taken: false,
     };
-    plat_dev.register_block_with_irq(dev, irq_num);
-    info!("phytium-mci block device registered irq={:?}", irq_num);
+    let irq = probe.register_block(dev)?;
+    info!("phytium-mci block device registered irq={:?}", irq);
     Ok(())
 }
 

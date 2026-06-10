@@ -18,7 +18,10 @@ use core::time::Duration;
 use dwmmc_host::DwMmc;
 use log::{info, warn};
 use rdif_clk::ClockId;
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{
+    probe::OnProbeError,
+    register::{FdtInfo, ProbeFdt},
+};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
@@ -26,7 +29,7 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    block::{PlatformDeviceBlock, SharedDriver, decode_fdt_irq},
+    block::{ProbeFdtBlock, SharedDriver},
     mmio::iomap,
     soc::scmi,
 };
@@ -63,7 +66,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
     let base_reg = info
         .node
         .regs()
@@ -84,15 +88,15 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { DwMmc::new(mmio_base) };
-    let reference_clock = dwmmc_reference_clock(&info);
+    let reference_clock = dwmmc_reference_clock(info);
     if let Some(reference_clock) = reference_clock {
         info!(
             "rockchip-dwmmc: using ciu reference clock {} Hz",
             reference_clock
         );
         host.set_reference_clock(reference_clock);
-        if is_rk3588_dwmmc(&info) {
-            init_rk3588_sdmmc_phase(&info, reference_clock)?;
+        if is_rk3588_dwmmc(info) {
+            init_rk3588_sdmmc_phase(info, reference_clock)?;
         }
     } else {
         warn!(
@@ -125,12 +129,11 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     );
 
     if let Some(reference_clock) = reference_clock
-        && is_rk3588_dwmmc(&info)
+        && is_rk3588_dwmmc(info)
     {
         tune_rk3588_sdmmc_sample_phase(&mut sd, reference_clock);
     }
 
-    let irq_num = decode_fdt_irq(&info.interrupts());
     let raw = SharedDriver::new(sd);
     let dev = SdBlockDevice {
         raw: Some(raw.clone()),
@@ -139,8 +142,8 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         queue_created: false,
         irq_handler_taken: false,
     };
-    plat_dev.register_block_with_irq(dev, irq_num);
-    info!("rockchip-sd block device registered irq={:?}", irq_num);
+    let irq = probe.register_block(dev)?;
+    info!("rockchip-sd block device registered irq={:?}", irq);
     Ok(())
 }
 

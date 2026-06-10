@@ -4,7 +4,7 @@ use alloc::format;
 
 use rdif_vsock::{VsockAddr as RdifVsockAddr, VsockConnId, VsockError, VsockEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(any(plat_static, plat_dyn))]
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -15,11 +15,13 @@ use virtio_drivers::{
     transport::Transport,
 };
 
-use crate::{virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
+use crate::{BindingInfo, virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
-#[cfg(any(plat_static, plat_dyn))]
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 crate::model_register!(
     name: "VirtIO Socket",
     level: ProbeLevel::PostKernel,
@@ -29,24 +31,30 @@ crate::model_register!(
     }],
 );
 
-#[cfg(any(plat_static, plat_dyn))]
-fn probe_pci(
-    endpoint: &mut rdrive::probe::pci::EndpointRc,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Socket)?;
-    register_transport(plat_dev, transport)
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
+    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::Socket)?;
+    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
+    register_transport_with_info(probe.into_platform_device(), transport, info)
 }
 
 pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
+    register_transport_with_info(plat_dev, transport, BindingInfo::empty())
+}
+
+pub fn register_transport_with_info<T: Transport + 'static>(
+    plat_dev: PlatformDevice,
+    transport: T,
+    info: BindingInfo,
+) -> Result<(), OnProbeError> {
     let dev = VirtIoVsock::new(transport).map_err(|err| {
         OnProbeError::other(format!("failed to initialize virtio-socket: {err:?}"))
     })?;
-    plat_dev.register_vsock(dev);
-    log::info!("registered virtio socket device");
+    let irq = plat_dev.register_vsock_with_info(dev, info);
+    log::info!("registered virtio socket device irq={irq:?}");
     Ok(())
 }
 

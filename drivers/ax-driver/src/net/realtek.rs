@@ -2,16 +2,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, info, warn};
 use pcie::CommandRegister;
-use rdrive::{
-    PlatformDevice,
-    probe::{
-        OnProbeError,
-        pci::{EndpointRc, FnOnProbe},
-    },
+use rdrive::probe::{
+    OnProbeError,
+    pci::{EndpointRc, FnOnProbe, ProbePci},
 };
 use realtek_rtl8125::Rtl8125;
 
-use crate::net::{PlatformDeviceNet, pci_legacy_irq};
+use crate::{PciIrqRequirement, net::ProbePciNet};
 
 const DRIVER_NAME: &str = "realtek-rtl8125";
 const RTL8125_DMA_MASK: u64 = u32::MAX as u64;
@@ -26,7 +23,8 @@ crate::model_register!(
     }],
 );
 
-fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint_mut();
     if !Rtl8125::check_vid_did(endpoint.vendor_id(), endpoint.device_id()) {
         return Err(OnProbeError::NotMatch);
     }
@@ -37,18 +35,13 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         return Err(OnProbeError::NotMatch);
     }
 
-    let irq = pci_legacy_irq(endpoint).ok_or_else(|| {
-        OnProbeError::other(alloc::format!(
-            "failed to resolve IRQ for RTL8125 {address}"
-        ))
-    })?;
     let Some((bar_index, bar)) = first_mmio_bar(endpoint) else {
         warn!("RTL8125 at {address} left unused: no PCI MMIO BAR found");
         return Err(OnProbeError::NotMatch);
     };
     info!(
-        "RTL8125 PCI endpoint {address}: BAR{bar_index}={:#x}..{:#x}, irq={irq}, int_pin={}, \
-         int_line={}, command={:?}, status={:?}",
+        "RTL8125 PCI endpoint {address}: BAR{bar_index}={:#x}..{:#x}, int_pin={}, int_line={}, \
+         command={:?}, status={:?}",
         bar.start,
         bar.end,
         endpoint.interrupt_pin(),
@@ -89,8 +82,8 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         return Err(OnProbeError::NotMatch);
     }
 
-    plat_dev.register_net(DRIVER_NAME, dev, Some(irq));
-    debug!("RTL8125 PCI network device registered at {address} with irq {irq:#x}");
+    let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
+    debug!("RTL8125 PCI network device registered at {address} with irq {irq:?}");
     Ok(())
 }
 

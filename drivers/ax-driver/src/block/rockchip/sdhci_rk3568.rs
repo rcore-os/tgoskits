@@ -23,7 +23,11 @@ use core::{
 use dma_api::DeviceDma;
 use log::{info, warn};
 use rdif_clk::ClockId;
-use rdrive::{Device, DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{
+    Device, DriverGeneric,
+    probe::OnProbeError,
+    register::{FdtInfo, ProbeFdt},
+};
 use sdhci_host::{BlockRequest, BlockRequestSlot, HostClock, RequestId, Sdhci};
 use sdmmc_protocol::{
     BlockPoll, BlockTransferMode, Error, OperationPoll,
@@ -33,7 +37,7 @@ use sdmmc_protocol::{
 use spin::Once;
 
 use crate::{
-    block::{PlatformDeviceBlock, SharedDriver, decode_fdt_irq},
+    block::{ProbeFdtBlock, SharedDriver},
     mmio::iomap,
 };
 
@@ -110,7 +114,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
     let base_reg = info
         .node
         .regs()
@@ -130,7 +135,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     );
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
-    init_core_clock(&info)?;
+    init_core_clock(info)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
     if CLK_DEV.is_completed() {
@@ -163,7 +168,6 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         card_info.ext_csd.is_some()
     );
 
-    let irq_num = decode_fdt_irq(&info.interrupts());
     let raw = SharedDriver::new(card);
     let dev = BlockDevice {
         raw: Some(raw.clone()),
@@ -172,10 +176,10 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         queue_created: false,
         irq_handler_taken: false,
     };
-    plat_dev.register_block_with_irq(dev, irq_num);
+    let irq = probe.register_block(dev)?;
     info!(
         "rockchip-rk3568-sdhci block device registered irq={:?}",
-        irq_num
+        irq
     );
     Ok(())
 }
