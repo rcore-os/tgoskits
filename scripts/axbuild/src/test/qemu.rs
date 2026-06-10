@@ -863,6 +863,7 @@ pub(crate) fn load_test_qemu_case_fields(
         host_symbolize_success_regex: config.host_symbolize_success_regex,
         host_http_server: config.host_http_server,
         subcases,
+        grouped_subcase_filter: None,
     })
 }
 
@@ -905,7 +906,7 @@ fn discover_qemu_subcases(
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let kind = if path.join("c").is_dir() {
+        let kind = if path.join("c").is_dir() || path.join("CMakeLists.txt").is_file() {
             Some(TestQemuSubcaseKind::C)
         } else if path.join("rust").is_dir() {
             Some(TestQemuSubcaseKind::Rust)
