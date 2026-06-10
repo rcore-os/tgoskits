@@ -782,13 +782,14 @@ AX_IP = "10.0.2.15"
         let build_config = root.path().join("build-x86_64-unknown-none.toml");
         let build_info = ArceosBuildInfo {
             features: vec!["ax-std".to_string()],
+            plat_dyn: true,
             ..ArceosBuildInfo::default_for_target("x86_64-unknown-none")
         };
         fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
         let request = request(
             "arceos-helloworld",
             "x86_64-unknown-none",
-            Some(false),
+            Some(true),
             build_config,
         );
         let cargo = load_c_app_cargo_config(&request).unwrap();

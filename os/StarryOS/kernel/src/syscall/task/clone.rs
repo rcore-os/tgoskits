@@ -426,6 +426,30 @@ impl CloneArgs {
     }
 }
 
+ktracepoint::define_event_trace!(
+    sys_clone,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(syscalls),
+    TP_PROTO(flags:u32, stack:usize, parent_tid:usize),
+    TP_STRUCT__entry {
+        stack: usize,
+        parent_tid: usize,
+        flags: u32,
+    },
+    TP_fast_assign {
+        flags: flags,
+        stack: stack,
+        parent_tid: parent_tid,
+    },
+    TP_ident(__entry),
+    TP_printk({
+        let flags = __entry.flags;
+        let stack = __entry.stack;
+        let parent_tid = __entry.parent_tid;
+        alloc::format!("clone with flags: {flags}, stack: {stack:#x}, parent_tid: {parent_tid:#x}")
+    })
+);
+
 pub fn sys_clone(
     uctx: &UserContext,
     flags: u32,
@@ -438,6 +462,8 @@ pub fn sys_clone(
     const FLAG_MASK: u32 = 0xff;
     let clone_flags = CloneFlags::from_bits_truncate((flags & !FLAG_MASK) as u64);
     let exit_signal = (flags & FLAG_MASK) as u64;
+
+    trace_sys_clone(clone_flags.bits() as _, stack, parent_tid);
 
     if clone_flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
         return Err(AxError::InvalidInput);

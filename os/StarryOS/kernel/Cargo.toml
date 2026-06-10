@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.5.13"
+version = "0.6.0"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -16,6 +16,7 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
+kprobe_test = []
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
@@ -58,14 +59,14 @@ ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-crate-interface.workspace = true
 ax-display.workspace = true
-ax-fs = { version = "0.5.16", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-fs = { version = "0.5.17", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
-axnet = { version = "0.7.0", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
+axnet = { version = "0.7.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 ax-driver = { workspace = true, features = ["usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
@@ -134,7 +135,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
-kprobe = "0.5"
+kprobe = "0.6"
 kmod = { version = "0.2", package = "kmod-tools" }
 kmod-loader = "0.2.1"
 lwprintf-rs = "0.3"
@@ -145,7 +146,7 @@ sg200x-bsp = { workspace = true, optional = true }
 tock-registers = { version = "0.9", optional = true }
 ktracepoint = "0.6"
 ksym = "0.6"
-kbpf-basic = "0.5.7"
+kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

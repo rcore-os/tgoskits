@@ -92,27 +92,27 @@ impl TSender for Sender {
 }
 
 #[enum_dispatch]
-pub enum Reciever {
+pub enum Receiver {
     #[cfg(target_arch = "x86_64")]
-    Ns16550Reciever(ns16550::Ns16550Reciever<ns16550::Port>),
-    Ns16550MmioReciever(ns16550::Ns16550Reciever<ns16550::Mmio>),
-    Ns16550DwApbReciever(ns16550::Ns16550Reciever<ns16550::DwApb>),
-    Ns16550RockchipFiqReciever(ns16550::rockchip_fiq::RockchipFiqReceiver),
-    Pl011Reciever(pl011::Pl011Reciever),
+    Ns16550Receiver(ns16550::Ns16550Receiver<ns16550::Port>),
+    Ns16550MmioReceiver(ns16550::Ns16550Receiver<ns16550::Mmio>),
+    Ns16550DwApbReceiver(ns16550::Ns16550Receiver<ns16550::DwApb>),
+    Ns16550RockchipFiqReceiver(ns16550::rockchip_fiq::RockchipFiqReceiver),
+    Pl011Receiver(pl011::Pl011Receiver),
 }
 
-impl TReciever for Reciever {
+impl TReceiver for Receiver {
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
-        RawReciever::read_byte(self)
+        RawReceiver::read_byte(self)
     }
 
     fn read_bytes(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {
-        RawReciever::read_bytes(self, bytes)
+        RawReceiver::read_bytes(self, bytes)
     }
 }
 
-#[enum_dispatch(Reciever)]
-trait RawReciever {
+#[enum_dispatch(Receiver)]
+trait RawReceiver {
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>>;
 
     fn read_bytes(&mut self, bytes: &mut [u8]) -> Result<usize, TransBytesError> {

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.0...axplat-dyn-v0.7.1) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Fixed
+
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.6.2...axplat-dyn-v0.7.0) - 2026-06-03
 
 ### Added

@@ -255,8 +255,30 @@ impl BackendOps for FileBackend {
         let file_data = self.0.file_data.lock();
         let start_page =
             ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
+        // Pages whose file offset is at or beyond EOF must not be eagerly backed
+        // by a physical frame: a shared file mapping reads as SIGBUS past the last
+        // file page (Linux semantics). Without this bound an eager populate over a
+        // sparse mapping far larger than the file (e.g. bbolt's multi-GB
+        // `InitialMmapSize` over a tiny etcd db) allocates a frame for every page
+        // in the mapping and exhausts RAM. `div_ceil` keeps the final partial page;
+        // its tail beyond EOF is zeroed by `page_or_insert` (which now clears the
+        // short-read remainder of the page rather than leaving stale frame contents).
+        let eof_page = self
+            .0
+            .cache
+            .file_len()
+            .unwrap_or(u64::MAX)
+            .div_ceil(PAGE_SIZE_4K as u64);
         for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
             let pn = start_page + i as u32;
+            if (pn as u64) >= eof_page {
+                // Beyond EOF: leave unmapped so a real access faults instead of
+                // reading an eagerly-preallocated zero page. Linux delivers SIGBUS
+                // for such an access; StarryOS currently raises SIGSEGV for any
+                // unbacked fault (a dedicated Bus path is a separate fault-handler
+                // gap). Either way the page is not pre-backed — that is the OOM fix.
+                continue;
+            }
             match pt.query(addr) {
                 Ok((paddr, page_flags, _)) => {
                     if access_flags.contains(MappingFlags::WRITE)

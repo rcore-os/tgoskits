@@ -4,7 +4,7 @@
 
 use rdif_serial::InterfaceRaw;
 
-use super::{Kind, Ns16550, Ns16550IrqHandler, Ns16550Reciever, Ns16550Sender};
+use super::{Kind, Ns16550, Ns16550IrqHandler, Ns16550Receiver, Ns16550Sender};
 
 /// NS16550 IO Port 版本驱动
 #[derive(Clone, Debug)]
@@ -43,7 +43,7 @@ impl Ns16550<Port> {
             tx: Some(crate::Sender::Ns16550Sender(Ns16550Sender {
                 base: base.clone(),
             })),
-            rx: Some(crate::Reciever::Ns16550Reciever(Ns16550Reciever { base })),
+            rx: Some(crate::Receiver::Ns16550Receiver(Ns16550Receiver { base })),
         }
     }
 
@@ -57,7 +57,7 @@ impl Ns16550<Port> {
         self.tx.take()
     }
 
-    pub fn take_rx(&mut self) -> Option<crate::Reciever> {
+    pub fn take_rx(&mut self) -> Option<crate::Receiver> {
         self.rx.take()
     }
 }

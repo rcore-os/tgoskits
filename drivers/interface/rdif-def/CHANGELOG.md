@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/rcore-os/tgoskits/compare/rdif-def-v0.2.3...rdif-def-v0.2.4) - 2026-06-09
+
+### Added
+
+- *(somehal)* register x86 ACPI IOAPIC through rdrive ([#1155](https://github.com/rcore-os/tgoskits/pull/1155))
+
 ## [0.2.2](https://github.com/drivercraft/sparreal-os/compare/rdif-def-v0.2.1...rdif-def-v0.2.2) - 2026-03-10
 
 ### Other

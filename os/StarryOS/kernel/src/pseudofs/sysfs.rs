@@ -573,9 +573,9 @@ impl SimpleDirOps for SystemCpuEntryDir {
 fn cpu_range_string() -> String {
     let cpu_num = ax_runtime::hal::cpu_num();
     if cpu_num <= 1 {
-        "0".to_owned()
+        "0\n".to_owned()
     } else {
-        format!("0-{}", cpu_num - 1)
+        format!("0-{}\n", cpu_num - 1)
     }
 }
 

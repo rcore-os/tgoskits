@@ -11,4 +11,4 @@ pub use insert::insert_dir_entry;
 pub use lookup::get_inode_with_num;
 pub(crate) use mkdir::ensure_directory;
 pub use mkdir::{mkdir, mkdir_with_owner};
-pub use path::split_paren_child_and_tranlatevalid;
+pub use path::split_paren_child_and_translatevalid;

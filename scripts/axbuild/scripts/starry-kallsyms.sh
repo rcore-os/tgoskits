@@ -89,7 +89,7 @@ pad_kallsyms_to_section() {
     fi
 
     if [ "$kallsyms_size" -lt "$section_size" ]; then
-        dd if=/dev/zero bs=1 count=$((section_size - kallsyms_size)) >> "$kallsyms" 2>/dev/null
+        truncate -s "$section_size" "$kallsyms"
     fi
 }
 

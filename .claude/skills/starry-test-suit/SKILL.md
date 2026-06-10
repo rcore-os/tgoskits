@@ -35,7 +35,7 @@ QEMU cases build the `starryos` package and run a per-arch `qemu-<arch>.toml`. B
 - A build wrapper packages shared build configs and multiple cases. If a directory itself contains both `build-*` and `qemu-*` or `board-*`, it is also a case.
 - QEMU discovery first selects directories with a build config matching the requested arch/target, then discovers matching `qemu-<arch>.toml` in that directory and below it.
 - Board discovery scans for `board-*.toml` and resolves the build config from the case directory or nearest build wrapper.
-- Batch QEMU runs skip case directories without the requested `qemu-<arch>.toml`; explicit `-c/--test-case` requires the case and config to exist under a matching build wrapper.
+- Batch QEMU runs skip case directories without the requested `qemu-<arch>.toml`; explicit `-c/--test-case` requires the case and config to exist under a matching build wrapper. Starry QEMU additionally accepts `-c qemu-smp1/<subcase>`, `-c qemu-smp4/<subcase>`, and `-c qemu-smp*/system/<subcase>` to run a single `qemu-smp*/system` grouped subcase.
 - The old Starry `--test-group` and `--stress` entries have been removed. Heavy app, stress, K230, visual, and golden workloads live under `apps/starry` and use `cargo xtask starry app ...` or their own scripts.
 - `-l/--list` lists all discovered Starry QEMU or board cases. Build-wrapper roots such as `qemu-smp1` are not listed unless the root itself has a runtime config.
 - `qemu-smp1/system` and `qemu-smp4/system` are the aggregate QEMU cases for their wrappers. Their subcases keep assets only; do not add `qemu-<arch>.toml` under those subcase directories.
@@ -48,7 +48,7 @@ Each QEMU case may use at most one asset pipeline:
 - `c`: case directory has `c/CMakeLists.txt`; CMake builds and installs artifacts into a rootfs overlay.
 - `sh`: case directory has `sh/`; scripts are copied into the guest overlay.
 - `python`: case directory has `python/`; the runner installs `python3` in staging and copies `.py` files into `/usr/bin/`.
-- `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu-smp*/system` grouped cases scan `/usr/bin/starry-test-suit/*` and use `STARRY_GROUPED_TESTS_PASSED` as the success marker.
+- `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu-smp*/system` grouped cases use `system/CMakeLists.txt` as one root CMake project, keep each subcase's `CMakeLists.txt` and `src/` directly under `system/<subcase>`, scan `/usr/bin/starry-test-suit/*`, and use `STARRY_GROUPED_TESTS_PASSED` as the success marker. Single grouped subcases run through `-c qemu-smp*/<subcase>` or `-c qemu-smp*/system/<subcase>`.
 
 Pipeline cases use per-case rootfs copies and cache injected images under `target/<target>/qemu-cases/.../cache/rootfs/`. Plain cases do not copy the rootfs.
 
@@ -67,6 +67,15 @@ Each `qemu-<arch>.toml` should define runtime behavior, not build config:
 
 Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narrow and choose stable, unique success markers.
 
+## Failure Propagation
+
+- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; do not force board cases into the QEMU grouped/C runner structure.
+- Starry QEMU tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test qemu ...` exit successfully.
+- QEMU `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
+- In QEMU grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
+- In QEMU shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
+- Explicit QEMU skips are allowed only when the test prints a clear skip marker and the review or case comment explains why the environment cannot require success. Bugfix and regression QEMU tests should fail loudly when the fixed behavior is absent.
+
 ## Editing Rules
 
 - Reuse the closest existing case as a template.
@@ -76,7 +85,7 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - For C cases, install outputs through CMake `install()` so they land in the guest overlay.
 - Use `prebuild.sh` only for packages or setup that must happen inside the staging rootfs.
 - For grouped cases, keep `test_commands` aligned with installed guest paths and include the grouped success/fail regexes.
-- For `qemu-smp*/system` C subcases, install binaries to `usr/bin/starry-test-suit`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
+- For `qemu-smp*/system` C subcases, install binaries to `usr/bin/starry-test-suit`. Put shared system rootfs preparation in `system/prebuild.sh`, not in subcase-local `prebuild.sh`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
 - Board case names and board config names should match the actual board target, such as `board-orangepi-5-plus.toml`.
 
 ## Validation
@@ -86,6 +95,7 @@ Use xtask commands:
 ```bash
 cargo xtask starry test qemu --arch riscv64
 cargo xtask starry test qemu --arch aarch64 -c qemu-smp1/system
+cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/syscall-test-uid-gid-re-setters
 cargo xtask starry app qemu -t stress/git --arch riscv64
 cargo xtask starry test board --board orangepi-5-plus
 ```

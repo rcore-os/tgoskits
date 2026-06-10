@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-intc"
 repository.workspace = true
-version = "0.14.1"
+version = "0.14.2"
 
 [dependencies]
 cfg-if = "1.0"

@@ -515,14 +515,18 @@ impl IoBufMut for VmBytesMut {
     }
 }
 
-/// Writes data to kernel text, ensuring the page permissions are properly handled.
-pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
-    if data.is_empty() {
+/// Patches kernel text, ensuring page permissions and instruction-cache
+/// synchronization are handled consistently.
+pub fn patch_kernel_text<F>(addr: VirtAddr, len: usize, action: F) -> AxResult<()>
+where
+    F: FnOnce(*mut u8),
+{
+    if len == 0 {
         return Ok(());
     }
 
     let aligned_addr = addr.align_down_4k();
-    let aligned_length = (addr + data.len()).align_up_4k() - aligned_addr;
+    let aligned_length = (addr + len).align_up_4k() - aligned_addr;
 
     // The kernel address-space lock (`SpinNoIrq`) MUST be acquired *inside* the
     // `stop_machine` critical section, not before it. `stop_machine` itself
@@ -537,28 +541,50 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
     crate::stop_machine::stop_machine(
         move || -> AxResult<()> {
             let mut guard = ax_mm::kernel_aspace().lock();
-            let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+            if guard.contains_range(aligned_addr, aligned_length) {
+                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
 
-            guard.protect(
-                aligned_addr,
-                aligned_length,
-                original_flags | MappingFlags::WRITE,
-            )?;
+                guard.protect(
+                    aligned_addr,
+                    aligned_length,
+                    original_flags | MappingFlags::WRITE,
+                )?;
 
-            flush_tlb_range(aligned_addr, aligned_length);
+                flush_tlb_range(aligned_addr, aligned_length);
+                action(addr.as_mut_ptr());
 
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), addr.as_mut_ptr(), data.len());
+                #[cfg(target_arch = "aarch64")]
+                ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, len);
+
+                guard.protect(aligned_addr, aligned_length, original_flags)?;
+                return Ok(());
             }
 
-            #[cfg(target_arch = "aarch64")]
-            ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, data.len());
+            #[cfg(target_arch = "loongarch64")]
+            {
+                // LoongArch64 kernel text may execute from the 0x9000... DMW
+                // direct-map window. DMW translations do not consult PTEs, so
+                // there are no page permissions to relax here. Patch directly
+                // while all other CPUs are parked, then rely on the per-CPU
+                // sync callback to flush instruction state.
+                action(addr.as_mut_ptr());
+                return Ok(());
+            }
 
-            guard.protect(aligned_addr, aligned_length, original_flags)?;
-            Ok(())
+            #[cfg(not(target_arch = "loongarch64"))]
+            {
+                Err(AxError::BadAddress)
+            }
         },
         move || sync_modified_kernel_text(aligned_addr, aligned_length),
     )
+}
+
+/// Writes data to kernel text, ensuring the page permissions are properly handled.
+pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
+    patch_kernel_text(addr, data.len(), |dst| unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
+    })
 }
 
 pub fn flush_tlb_range(start: VirtAddr, size: usize) {

@@ -461,7 +461,9 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         Cpus_allowed:\t{}\n\
         Cpus_allowed_list:\t{}\n\
         Mems_allowed:\t1\n\
-        Mems_allowed_list:\t0",
+        Mems_allowed_list:\t0\n\
+        voluntary_ctxt_switches:\t0\n\
+        nonvoluntary_ctxt_switches:\t0",
         base.name,
         base.state,
         base.tgid,

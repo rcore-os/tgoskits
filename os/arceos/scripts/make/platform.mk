@@ -14,7 +14,7 @@ define validate_config
 endef
 
 define default_platform_package
-  $(if $(filter x86_64,$(ARCH)),ax-plat-x86-pc,\
+  $(if $(filter x86_64,$(ARCH)),$(error x86_64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
     $(if $(filter aarch64,$(ARCH)),$(error AArch64 no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
       $(if $(filter riscv64,$(ARCH)),$(error RISC-V QEMU no longer has a repo-owned static default platform; use cargo xtask for plat-dyn builds or pass MYPLAT/PLAT_CONFIG explicitly),\
         $(if $(filter loongarch64,$(ARCH)),ax-plat-loongarch64-qemu-virt,\

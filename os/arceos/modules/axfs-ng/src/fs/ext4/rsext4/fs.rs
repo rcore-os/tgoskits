@@ -152,7 +152,7 @@ impl Ext4Filesystem {
         let (fs, dev) = state.split();
         fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
         fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;
-        fs.inodetable_cahce.flush_all(dev).map_err(into_vfs_err)?;
+        fs.inodetable_cache.flush_all(dev).map_err(into_vfs_err)?;
         // Mark the filesystem clean before writing the superblock so the
         // on-disk state reflects a clean sync / unmount.
         fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;

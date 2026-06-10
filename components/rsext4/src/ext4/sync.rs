@@ -12,7 +12,7 @@ impl Ext4FileSystem {
     ) -> Ext4Result<()> {
         info!("Syncing filesystem...");
         self.datablock_cache.flush_all(block_dev)?;
-        self.inodetable_cahce.flush_all(block_dev)?;
+        self.inodetable_cache.flush_all(block_dev)?;
         self.bitmap_cache.flush_all(block_dev)?;
         self.sync_group_descriptors(block_dev)?;
         self.sync_superblock(block_dev)?;
