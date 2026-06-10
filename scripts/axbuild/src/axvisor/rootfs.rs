@@ -8,7 +8,9 @@
 
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, anyhow};
@@ -84,6 +86,7 @@ fn prepare_loongarch_linux_memory_vmconfigs(
             continue;
         }
 
+        ensure_loongarch_busybox_serial_init(&rootfs_path, &out_dir)?;
         rootfs::inject::extract_file(&rootfs_path, "/guest/linux/linux-qemu", &kernel_path)
             .with_context(|| {
                 format!(
@@ -112,6 +115,72 @@ fn prepare_loongarch_linux_memory_vmconfigs(
 
     request.vmconfigs = prepared_vmconfigs;
     Ok(())
+}
+
+fn ensure_loongarch_busybox_serial_init(rootfs_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
+    let Some(inittab) = rootfs::inject::read_text_file(rootfs_path, "/etc/inittab")? else {
+        return Ok(());
+    };
+    let replacement_content = loongarch_busybox_inittab();
+    if inittab == replacement_content
+        || (!inittab.contains("/sbin/openrc") && !inittab.contains("/etc/init.d/rcS"))
+        || rootfs_file_exists(rootfs_path, "/sbin/openrc")?
+    {
+        return Ok(());
+    }
+
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("failed to create {}", out_dir.display()))?;
+    let replacement = out_dir.join("inittab.busybox");
+    write_text_file(&replacement, replacement_content)?;
+    rootfs::inject::replace_file(rootfs_path, "/etc/inittab", &replacement)
+        .with_context(|| format!("failed to patch /etc/inittab in {}", rootfs_path.display()))?;
+    Ok(())
+}
+
+fn loongarch_busybox_inittab() -> &'static str {
+    concat!(
+        "# /etc/inittab - BusyBox init for LoongArch AxVisor rootfs\n",
+        "::sysinit:/bin/mount -t proc proc /proc\n",
+        "::sysinit:/bin/mount -t sysfs sysfs /sys\n",
+        "::sysinit:/bin/mount -t devtmpfs devtmpfs /dev\n",
+        "ttyS0::respawn:/bin/sh\n",
+        "::ctrlaltdel:/sbin/reboot\n",
+        "::shutdown:/bin/umount -a -r\n",
+    )
+}
+
+fn rootfs_file_exists(rootfs_path: &Path, guest_path: &str) -> anyhow::Result<bool> {
+    let output = Command::new("debugfs")
+        .arg("-R")
+        .arg(format!("stat {guest_path}"))
+        .arg(rootfs_path)
+        .output()
+        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_path.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stdout.contains("File not found")
+        || stdout.contains("File not found by ext2_lookup")
+        || stderr.contains("File not found")
+        || stderr.contains("File not found by ext2_lookup")
+    {
+        return Ok(false);
+    }
+    if output.status.success() {
+        return Ok(true);
+    }
+    Err(anyhow!(
+        "failed to stat {guest_path} in {}: {}",
+        rootfs_path.display(),
+        stderr.trim()
+    ))
+}
+
+fn write_text_file(path: &Path, content: &str) -> anyhow::Result<()> {
+    let mut file =
+        fs::File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub(super) async fn load_patched_qemu_config(

@@ -322,6 +322,19 @@ impl ImageLoader {
 
     fn load_kernel_from_memory(&self, kernel: &[u8]) -> AxResult {
         #[cfg(target_arch = "loongarch64")]
+        if let Some(info) = loongarch_zboot::try_load_streamed_image(kernel, self.vm.clone())? {
+            self.vm.with_config(|config| {
+                config.cpu_config.bsp_entry = info.entry;
+                config.cpu_config.ap_entry = info.entry;
+            });
+            info!(
+                "LoongArch zboot Image entry set to {:#x}",
+                info.entry.as_usize()
+            );
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "loongarch64")]
         if let Some(image) = loongarch_zboot::decompress(kernel)? {
             return self.load_kernel_from_memory(&image.payload);
         }

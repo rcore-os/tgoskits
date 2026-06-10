@@ -36,6 +36,7 @@ const DEFAULT_PLATFORMS: &[(&str, &str)] = &[("loongarch64", "ax_plat_loongarch6
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
+    println!("cargo:rustc-check-cfg=cfg(ax_hal_any_platform_feature)");
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=AX_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed={}", feature_env("host-test"));
@@ -132,6 +133,9 @@ fn gen_selected_platform(arch: &str, platform: Option<&PlatformFeature>) -> Resu
 
     if crate_name == Some("axplat_dyn") {
         println!("cargo:rustc-cfg=plat_dyn");
+    }
+    if crate_name.is_some() {
+        println!("cargo:rustc-cfg=ax_hal_any_platform_feature");
     }
 
     let content = crate_name

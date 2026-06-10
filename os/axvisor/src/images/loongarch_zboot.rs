@@ -1,7 +1,10 @@
 use alloc::vec::Vec;
 
 use ax_errno::{AxResult, ax_err_type};
-use ruzstd::{decoding::StreamingDecoder, io::Read};
+use axvm::{AxVMRef, GuestPhysAddr};
+use ruzstd::{decoding::StreamingDecoder, decoding::errors::FrameDecoderError, io::Read};
+
+use super::{load_vm_image_from_memory, loongarch_image};
 
 const ZBOOT_MAGIC: &[u8; 8] = b"MZ\0\0zimg";
 const HEADER_SIZE: usize = 0x40;
@@ -10,6 +13,7 @@ const PAYLOAD_OFFSET_BITS: u64 = 32;
 const PAYLOAD_OFFSET_MASK: u64 = (1 << PAYLOAD_OFFSET_BITS) - 1;
 const FORMAT_OFFSET: usize = 0x18;
 const FORMAT_ZSTD: &[u8; 4] = b"zstd";
+const STREAM_CHUNK_SIZE: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub struct ZbootImage {
@@ -35,12 +39,7 @@ pub fn decompress(image: &[u8]) -> AxResult<Option<ZbootImage>> {
             )
         })?;
 
-    let mut decoder = StreamingDecoder::new(compressed).map_err(|err| {
-        ax_err_type!(
-            InvalidInput,
-            format!("failed to initialize LoongArch zboot zstd decoder: {err:?}")
-        )
-    })?;
+    let mut decoder = StreamingDecoder::new(compressed).map_err(decoder_error)?;
     let mut payload = Vec::with_capacity(header.payload_size);
     decoder.read_to_end(&mut payload).map_err(|err| {
         ax_err_type!(
@@ -57,6 +56,81 @@ pub fn decompress(image: &[u8]) -> AxResult<Option<ZbootImage>> {
     );
 
     Ok(Some(ZbootImage { payload }))
+}
+
+pub fn try_load_streamed_image(
+    image: &[u8],
+    vm: AxVMRef,
+) -> AxResult<Option<loongarch_image::ImageInfo>> {
+    let Some(header) = Header::parse(image)? else {
+        return Ok(None);
+    };
+
+    let compressed = compressed_payload(image, &header)?;
+    let mut decoder = StreamingDecoder::new(compressed).map_err(decoder_error)?;
+    let mut image_header = [0u8; HEADER_SIZE];
+    decoder.read_exact(&mut image_header).map_err(|err| {
+        ax_err_type!(
+            InvalidInput,
+            format!("failed to decompress LoongArch zboot image header: {err}")
+        )
+    })?;
+
+    let Some(info) = loongarch_image::parse_info(&image_header)? else {
+        return Ok(None);
+    };
+    load_vm_image_from_memory(&image_header, info.load_offset, vm.clone())?;
+
+    let mut chunk = [0u8; STREAM_CHUNK_SIZE];
+    let mut written = image_header.len();
+    while written < info.image_size {
+        let read_len = (info.image_size - written).min(chunk.len());
+        decoder.read_exact(&mut chunk[..read_len]).map_err(|err| {
+            ax_err_type!(
+                InvalidInput,
+                format!("failed to stream LoongArch zboot payload: {err}")
+            )
+        })?;
+        load_vm_image_from_memory(
+            &chunk[..read_len],
+            GuestPhysAddr::from(info.load_offset.as_usize() + written),
+            vm.clone(),
+        )?;
+        written += read_len;
+    }
+
+    info!(
+        "Streamed LoongArch zboot Image: payload_offset={:#x}, compressed={:#x}, image_size={:#x}, load_offset={:#x}",
+        header.payload_offset,
+        header.payload_size,
+        info.image_size,
+        info.load_offset.as_usize()
+    );
+
+    Ok(Some(info))
+}
+
+fn compressed_payload<'a>(image: &'a [u8], header: &Header) -> AxResult<&'a [u8]> {
+    image
+        .get(header.payload_offset..header.payload_end())
+        .ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "LoongArch zboot payload range [{:#x}, {:#x}) exceeds image size {:#x}",
+                    header.payload_offset,
+                    header.payload_end(),
+                    image.len()
+                )
+            )
+        })
+}
+
+fn decoder_error(err: FrameDecoderError) -> ax_errno::AxError {
+    ax_err_type!(
+        InvalidInput,
+        format!("failed to initialize LoongArch zboot zstd decoder: {err:?}")
+    )
 }
 
 struct Header {

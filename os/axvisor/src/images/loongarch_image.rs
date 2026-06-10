@@ -14,17 +14,30 @@ const PE_HEADER_OFFSET: u32 = 0x40;
 #[derive(Clone, Copy, Debug)]
 pub struct ImageInfo {
     pub entry: GuestPhysAddr,
+    pub image_size: usize,
+    pub load_offset: GuestPhysAddr,
 }
 
 pub fn try_load(image: &[u8], vm: AxVMRef) -> AxResult<Option<ImageInfo>> {
+    let Some(info) = parse_info(image)? else {
+        return Ok(None);
+    };
+
+    validate_image_size(image, info.image_size)?;
+    let image = &image[..info.image_size];
+    load_vm_image_from_memory(image, info.load_offset, vm)?;
+    Ok(Some(info))
+}
+
+pub fn parse_info(image: &[u8]) -> AxResult<Option<ImageInfo>> {
     let Some(header) = Header::parse(image)? else {
         return Ok(None);
     };
 
-    let image = &image[..header.image_size];
-    load_vm_image_from_memory(image, GuestPhysAddr::from(header.load_offset), vm)?;
     Ok(Some(ImageInfo {
         entry: GuestPhysAddr::from(header.entry),
+        image_size: header.image_size,
+        load_offset: GuestPhysAddr::from(header.load_offset),
     }))
 }
 
@@ -46,14 +59,10 @@ impl Header {
         }
 
         let image_size = read_u64(image, IMAGE_SIZE_OFFSET)? as usize;
-        if image_size == 0 || image.len() < image_size {
+        if image_size == 0 {
             return Err(ax_err_type!(
                 InvalidInput,
-                format!(
-                    "LoongArch Linux Image size is invalid: image={:#x}, header={:#x}",
-                    image.len(),
-                    image_size
-                )
+                format!("LoongArch Linux Image size is invalid: header={image_size:#x}")
             ));
         }
 
@@ -63,6 +72,20 @@ impl Header {
             load_offset: read_u64(image, LOAD_OFFSET_OFFSET)? as usize,
         }))
     }
+}
+
+fn validate_image_size(image: &[u8], image_size: usize) -> AxResult {
+    if image.len() < image_size {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "LoongArch Linux Image size is invalid: image={:#x}, header={:#x}",
+                image.len(),
+                image_size
+            )
+        ));
+    }
+    Ok(())
 }
 
 fn read_u32(image: &[u8], offset: usize) -> AxResult<u32> {
