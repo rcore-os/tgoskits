@@ -6,17 +6,6 @@ const VIRTIO_DEV_FEATURES: &[&str] = &[
     "virtio-socket",
 ];
 
-const PCI_DYN_INTX_ROUTE_FEATURES: &[&str] = &[
-    "intel-net",
-    "ixgbe",
-    "realtek-rtl8125",
-    "virtio-net",
-    "xhci-pci",
-];
-
-const PCI_DYN_ACPI_INTX_ROUTE_FEATURES: &[&str] =
-    &["intel-net", "ixgbe", "realtek-rtl8125", "virtio-net"];
-
 fn has_feature(feature: &str) -> bool {
     std::env::var(format!(
         "CARGO_FEATURE_{}",
@@ -49,12 +38,6 @@ fn main() {
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
     }
-    if has_plat_dyn && has_any_feature(PCI_DYN_INTX_ROUTE_FEATURES) {
-        enable_cfg_flag("pci_dyn_intx_route");
-    }
-    if has_plat_dyn && has_any_feature(PCI_DYN_ACPI_INTX_ROUTE_FEATURES) {
-        enable_cfg_flag("pci_dyn_acpi_intx_route");
-    }
     if has_any_feature(&["ahci", "bcm2835-sdhci"]) || (has_feature("cvsd") && target_has_cvsd) {
         enable_cfg_flag("sync_block_dev");
     }
@@ -62,7 +45,5 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(plat_static)");
     println!("cargo::rustc-check-cfg=cfg(plat_dyn)");
     println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
-    println!("cargo::rustc-check-cfg=cfg(pci_dyn_intx_route)");
-    println!("cargo::rustc-check-cfg=cfg(pci_dyn_acpi_intx_route)");
     println!("cargo::rustc-check-cfg=cfg(sync_block_dev)");
 }

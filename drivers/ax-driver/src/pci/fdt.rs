@@ -1,22 +1,21 @@
 extern crate alloc;
 
 use alloc::format;
-#[cfg(pci_dyn_intx_route)]
+#[cfg(plat_dyn)]
 use alloc::vec::Vec;
 
-#[cfg(pci_dyn_intx_route)]
-use fdt_edit::Fdt;
+#[cfg(plat_dyn)]
+use fdt_edit::{Fdt, PciInterruptMap};
 use fdt_edit::{NodeType, PciRange, PciSpace};
 use log::{debug, trace, warn};
-#[cfg(pci_dyn_intx_route)]
-use rdrive::probe::pci::PciAddress;
+#[cfg(plat_dyn)]
+use rdrive::probe::pci::{PciInfo, PciIntxRoute};
 use rdrive::{
-    PlatformDevice,
     probe::{
         OnProbeError,
         pci::{PciMem32, PciMem64, PcieController, new_driver_generic},
     },
-    register::FdtInfo,
+    register::{FdtInfo, ProbeFdt},
 };
 
 #[cfg(feature = "rk3588-pcie")]
@@ -35,7 +34,8 @@ crate::model_register!(
     ],
 );
 
-fn probe_generic_ecam(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_generic_ecam(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let NodeType::Pci(node) = info.node else {
         return Err(OnProbeError::NotMatch);
     };
@@ -131,32 +131,21 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     super::register_legacy_irq_route(0, logical_bus_end, irq);
 }
 
-#[cfg(pci_dyn_intx_route)]
-pub fn fdt_irq_for_endpoint(
-    address: PciAddress,
-    interrupt_pin: u8,
-) -> Result<Option<usize>, OnProbeError> {
-    let Some(result) =
-        rdrive::with_fdt(|fdt| resolve_pci_irq_from_fdt(fdt, address, interrupt_pin))
-    else {
+#[cfg(plat_dyn)]
+pub fn fdt_irq_for_endpoint(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
+    let Some(result) = rdrive::with_fdt(|fdt| resolve_pci_irq_from_fdt(fdt, info)) else {
         return Ok(None);
     };
     result.map(Some)
 }
 
-#[cfg(pci_dyn_intx_route)]
-fn resolve_pci_irq_from_fdt(
-    fdt: &Fdt,
-    address: PciAddress,
-    interrupt_pin: u8,
-) -> Result<usize, OnProbeError> {
-    if interrupt_pin == 0 {
-        return Err(OnProbeError::other(format!(
-            "PCI endpoint {address} has no interrupt pin"
-        )));
-    }
+#[cfg(plat_dyn)]
+fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<usize, OnProbeError> {
+    let route = info.intx_route.ok_or_else(|| {
+        OnProbeError::other(format!("PCI endpoint {} has no INTx route", info.address))
+    })?;
 
-    let bus = address.bus();
+    let bus = info.address.bus();
     let mut candidates = Vec::new();
     let mut exact_range_matches = Vec::new();
     for node in fdt.all_nodes() {
@@ -178,59 +167,101 @@ fn resolve_pci_irq_from_fdt(
         exact_range_matches[0]
     } else if exact_range_matches.len() > 1 {
         return Err(OnProbeError::other(format!(
-            "multiple PCI host nodes in FDT match endpoint {address} with the same bus-range"
+            "multiple PCI host nodes in FDT match endpoint {} with the same bus-range",
+            info.address
         )));
     } else if candidates.len() == 1 {
         candidates[0]
     } else if candidates.is_empty() {
         return Err(OnProbeError::other(format!(
-            "no PCI host node in FDT matches endpoint {address}"
+            "no PCI host node in FDT matches endpoint {}",
+            info.address
         )));
     } else {
         return Err(OnProbeError::other(format!(
-            "multiple PCI host nodes in FDT match endpoint {address} without a unique bus-range \
-             match"
+            "multiple PCI host nodes in FDT match endpoint {} without a unique bus-range match",
+            info.address
         )));
     };
 
-    let irq = pci_host
-        .child_interrupts(
-            address.bus(),
-            address.device(),
-            address.function(),
-            interrupt_pin,
-        )
-        .map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to resolve PCI interrupt-map entry for endpoint {address}: {err:?}"
-            ))
-        })?;
+    let bus = pci_host
+        .bus_range()
+        .map(|range| range.start as u8)
+        .unwrap_or(0);
+    let Some(interrupt) = pci_interrupt_map_entry(pci_host, bus, route) else {
+        return Err(OnProbeError::other(format!(
+            "failed to resolve PCI interrupt-map entry for endpoint {}",
+            info.address
+        )));
+    };
 
-    decode_irq_cells(&irq.irqs).ok_or_else(|| {
+    let parent = rdrive::fdt_phandle_to_device_id(interrupt.interrupt_parent).ok_or_else(|| {
         OnProbeError::other(format!(
-            "unsupported PCI interrupt specifier {:?} for endpoint {address}",
-            irq.irqs
+            "failed to resolve PCI interrupt parent {:?} for endpoint {}",
+            interrupt.interrupt_parent, info.address
         ))
-    })
+    })?;
+    let intc = rdrive::get::<rdif_intc::Intc>(parent).map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to get PCI interrupt parent {:?} for endpoint {}: {err:?}",
+            parent, info.address
+        ))
+    })?;
+    let mut intc = intc.lock().map_err(|err| {
+        OnProbeError::other(format!(
+            "failed to lock PCI interrupt parent {:?} for endpoint {}: {err:?}",
+            parent, info.address
+        ))
+    })?;
+    Ok(intc.setup_irq_by_fdt(&interrupt.parent_irq).into())
 }
 
-#[cfg(pci_dyn_intx_route)]
-fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
-    match specifier {
-        [irq] => Some(*irq as usize),
-        [kind, irq, ..] => match *kind {
-            0 => Some(*irq as usize + 32),
-            1 => Some(*irq as usize + 16),
-            _ => Some(*irq as usize),
-        },
-        _ => None,
+#[cfg(plat_dyn)]
+fn pci_interrupt_map_entry(
+    pci_host: fdt_edit::PciNodeView<'_>,
+    bus: u8,
+    route: PciIntxRoute,
+) -> Option<PciInterruptMap> {
+    let interrupt_map = pci_host.interrupt_map().ok()?;
+    let mask = pci_host.interrupt_map_mask()?;
+    let child_addr_cells = 3;
+    let child_irq_cells = pci_host.interrupt_cells() as usize;
+    let address = encoded_pci_child_address(bus, route.root_device, route.root_function);
+    let irq = [u32::from(route.root_pin)];
+    let child_address = masked_cells(&address, child_addr_cells, &mask, 0);
+    let child_irq = masked_cells(&irq, child_irq_cells, &mask, child_addr_cells);
+
+    interrupt_map
+        .into_iter()
+        .find(|entry| entry.child_address == child_address && entry.child_irq == child_irq)
+}
+
+#[cfg(plat_dyn)]
+fn encoded_pci_child_address(bus: u8, device: u8, function: u8) -> [u32; 3] {
+    [
+        ((u32::from(bus) & 0xff) << 16)
+            | ((u32::from(device) & 0x1f) << 11)
+            | ((u32::from(function) & 0x07) << 8),
+        0,
+        0,
+    ]
+}
+
+#[cfg(plat_dyn)]
+fn masked_cells(values: &[u32], len: usize, mask: &[u32], mask_offset: usize) -> Vec<u32> {
+    let mut cells = Vec::with_capacity(len);
+    for idx in 0..len {
+        let value = values.get(idx).copied().unwrap_or(0);
+        let mask_value = mask.get(mask_offset + idx).copied().unwrap_or(0xffff_ffff);
+        cells.push(value & mask_value);
     }
+    cells
 }
 
 #[cfg(feature = "list-pci-devices")]
 mod pci_list_devices {
     use log::info;
-    use rdrive::probe::pci::{EndpointRc, FnOnProbe};
+    use rdrive::probe::pci::{FnOnProbe, ProbePci};
 
     use super::*;
 
@@ -243,8 +274,9 @@ mod pci_list_devices {
         }],
     );
 
-    fn probe(endpoint: &mut EndpointRc, _plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-        info!("PCIe endpoint: {} bars={:?}", &**endpoint, endpoint.bars());
+    fn probe(probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+        let endpoint = probe.endpoint();
+        info!("PCIe endpoint: {} bars={:?}", endpoint, endpoint.bars());
         Err(OnProbeError::NotMatch)
     }
 }

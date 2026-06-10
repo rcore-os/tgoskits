@@ -5,15 +5,12 @@ use alloc::format;
 use log::info;
 use nvme_driver::{Config, Nvme, NvmeBlockDriver};
 use pcie::{CommandRegister, DeviceType};
-use rdrive::{
-    PlatformDevice,
-    probe::{
-        OnProbeError,
-        pci::{EndpointRc, FnOnProbe},
-    },
+use rdrive::probe::{
+    OnProbeError,
+    pci::{FnOnProbe, ProbePci},
 };
 
-use super::PlatformDeviceBlock;
+use crate::{PciIrqRequirement, block::ProbePciBlock};
 
 pub const DEVICE_NAME: &str = "nvme";
 const DEFAULT_PAGE_SIZE: usize = 0x1000;
@@ -28,7 +25,8 @@ crate::model_register!(
     }],
 );
 
-fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint_mut();
     if endpoint.device_type() != DeviceType::NvmeController {
         return Err(OnProbeError::NotMatch);
     }
@@ -44,12 +42,10 @@ fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), 
     });
 
     let address = endpoint.address();
-    let irq = crate::pci::endpoint_legacy_irq(endpoint);
     info!(
-        "NVMe PCI endpoint {address}: BAR0={:#x}..{:#x}, irq={:?}, int_pin={}, int_line={}",
+        "NVMe PCI endpoint {address}: BAR0={:#x}..{:#x}, int_pin={}, int_line={}",
         bar.start,
         bar.end,
-        irq,
         endpoint.interrupt_pin(),
         endpoint.interrupt_line()
     );
@@ -69,6 +65,7 @@ fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), 
     let driver = NvmeBlockDriver::from_nvme(nvme).map_err(|err| {
         OnProbeError::other(format!("failed to create NVMe block driver: {err:?}"))
     })?;
-    plat_dev.register_block_with_irq(driver, irq);
+    let irq = probe.register_block(driver, PciIrqRequirement::Optional)?;
+    info!("NVMe block device registered at {address} with irq {irq:?}");
     Ok(())
 }
