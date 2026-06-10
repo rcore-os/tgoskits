@@ -1646,6 +1646,22 @@ mod tests {
     }
 
     #[test]
+    fn x86_linux_direct_boot_configs_keep_timer_calibration_bypass() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for path in [
+            "os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml",
+            "os/axvisor/configs/vms/qemu/x86_64/linux-svm-smp1.toml",
+        ] {
+            let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+            assert!(
+                content.contains("no_timer_check"),
+                "{path} should keep no_timer_check to avoid x86 Linux guest timer calibration \
+                 stalls"
+            );
+        }
+    }
+
+    #[test]
     fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         let root = tempdir().unwrap();
         write_qemu_build_config(
