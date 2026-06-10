@@ -48,7 +48,7 @@ Each QEMU case may use at most one asset pipeline:
 - `c`: case directory has `c/CMakeLists.txt`; CMake builds and installs artifacts into a rootfs overlay.
 - `sh`: case directory has `sh/`; scripts are copied into the guest overlay.
 - `python`: case directory has `python/`; the runner installs `python3` in staging and copies `.py` files into `/usr/bin/`.
-- `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu-smp*/system` grouped cases use `system/CMakeLists.txt` as one root CMake project, keep each subcase's `CMakeLists.txt` and `src/` directly under the subcase directory, scan `/usr/bin/starry-test-suit/*`, and use `STARRY_GROUPED_TESTS_PASSED` as the success marker.
+- `grouped`: `qemu-<arch>.toml` defines `test_commands`; subdirectories such as `<subcase>/c/` are built and a `/usr/bin/starry-run-case-tests` runner is injected. The `qemu-smp*/system` grouped cases use `system/CMakeLists.txt` as one root CMake project, keep each subcase's `CMakeLists.txt` and `src/` directly under `system/<subcase>`, scan `/usr/bin/starry-test-suit/*`, and use `STARRY_GROUPED_TESTS_PASSED` as the success marker. Single grouped subcases run through `-c qemu-smp*/<subcase>` or `-c qemu-smp*/system/<subcase>`.
 
 Pipeline cases use per-case rootfs copies and cache injected images under `target/<target>/qemu-cases/.../cache/rootfs/`. Plain cases do not copy the rootfs.
 
@@ -66,6 +66,14 @@ Each `qemu-<arch>.toml` should define runtime behavior, not build config:
 - `timeout`
 
 Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narrow and choose stable, unique success markers.
+
+## Failure Propagation
+
+- Starry QEMU and board tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test ...` exit successfully.
+- `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
+- In grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
+- In shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
+- Explicit skips are allowed only when the test prints a clear skip marker and the review or case comment explains why the environment cannot require success. Bugfix and regression tests should fail loudly when the fixed behavior is absent.
 
 ## Editing Rules
 
