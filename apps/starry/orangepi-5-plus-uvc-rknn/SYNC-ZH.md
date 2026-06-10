@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-该示例用于在 OrangePi 5 Plus 上运行 UVC 摄像头采集、RKNN YOLOv8 目标检测和网页实时预览。
+该示例用于在 OrangePi 5 Plus 上运行 UVC 摄像头采集、RKNN YOLOv8 目标检测、网页实时预览，以及 60 秒无网页服务的采集加推理 benchmark。
 
 主要功能：
 
@@ -11,6 +11,7 @@
 3. 在串口输出 `YOLO_INFER` 和 `YOLO_RESULT`，包含推理耗时、类别、置信度和检测框。
 4. 在图像上绘制检测框，并由 StarryOS 自己发布 HTTP MJPEG 网页。
 5. 在同一局域网电脑上通过浏览器查看实时画面和识别结果。
+6. 使用 `rknn_yolov8_bench` 跑 60 秒摄像头采集和 RKNN 推理，最后输出帧率、推理延迟和内存占用。
 
 ## Linux 根文件系统部署
 
@@ -37,11 +38,33 @@ apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarc
 ```text
 /rknn_yolov8_image/rknn_yolov8_stream
 /rknn_yolov8_image/rknn_yolov8_image
+/rknn_yolov8_image/rknn_yolov8_bench
 /rknn_yolov8_image/lib/librknnrt.so
 /rknn_yolov8_image/lib/librga.so
 /rknn_yolov8_image/model/yolov8.rknn
 /rknn_yolov8_image/model/coco_80_labels_list.txt
 ```
+
+固定图片 benchmark 板端配置还需要在 `/rknn_yolov8_image/validation/`
+下准备验证资源：
+
+```text
+/rknn_yolov8_image/validation/images.txt
+/rknn_yolov8_image/validation/expected.txt
+/rknn_yolov8_image/validation/tennis-ball-close.jpg
+/rknn_yolov8_image/validation/tennis-ball-black-box.jpg
+/rknn_yolov8_image/validation/tennis-ball-plant.jpg
+```
+
+其中 `images.txt` 列出 3 张验证图片路径，路径相对于
+`/rknn_yolov8_image`；`expected.txt` 是随源码提交的期望检测结果资源。
+常规 StarryOS 板端测试只读取 `expected.txt`，不在测试过程中重新生成它。
+只有在有意更换模型、图片集合、阈值、RKNN runtime 或后处理语义时，才需要
+在 Linux 侧重新生成并更新 `expected.txt`。
+
+更新 `expected.txt` 时应使用仓库内这 3 张固定验证图片，不要临时拍摄、
+合成或替换图片二进制。固定图片优先的 benchmark 板端配置要求 3 张图片
+和匹配的 `expected.txt` 一起安装到板端。
 
 ## StarryOS 网络地址
 
@@ -246,6 +269,93 @@ http://<StarryOS-IP>:8080/
   --infer-every 30 \
   --max-inferences 3
 ```
+
+## Benchmark 运行
+
+`rknn_yolov8_bench` 不启动 HTTP 服务，也不绘制或发布 JPEG。它只运行 UVC 摄像头采集、MJPEG/YUYV 解码和 RKNN YOLOv8 推理，默认持续 60 秒：
+
+```bash
+cd /rknn_yolov8_image
+export LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-}
+./rknn_yolov8_bench \
+  --model model/yolov8.rknn \
+  --label model/coco_80_labels_list.txt \
+  --device 0 \
+  --width 320 \
+  --height 240 \
+  --fps 30 \
+  --duration-sec 60 \
+  --infer-every 1 \
+  --report-interval-sec 5 \
+  --min-confidence 25
+```
+
+Linux 侧部署后可以先跑 8 秒短测：
+
+如果验证资源已经齐全，先在 Linux 侧跑固定图片验证：
+
+```bash
+sudo -E ./rknn_yolov8_bench \
+  --validate-list validation/images.txt \
+  --expected validation/expected.txt \
+  --min-confidence 25 \
+  --core-mask all \
+  --profile
+```
+
+该命令需要输出：
+
+```text
+UVC_RKNN_VALIDATE_PASS images=3
+```
+
+然后再跑 UVC benchmark 短测：
+
+```bash
+sudo -E ./rknn_yolov8_bench \
+  --model model/yolov8.rknn \
+  --label model/coco_80_labels_list.txt \
+  --device 0 \
+  --width 320 \
+  --height 240 \
+  --fps 30 \
+  --duration-sec 8 \
+  --infer-every 1 \
+  --report-interval-sec 2 \
+  --min-confidence 25
+```
+
+StarryOS 板端 benchmark 使用单独的 board 配置：
+
+```bash
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-bench.toml \
+  -b OrangePi-5-Plus
+```
+
+如果开发板通过非默认共享服务租用，再按实际服务地址追加 `--server` 和 `--port`。
+
+板端 benchmark 配置会先跑固定图片验证，再跑实时 UVC benchmark。结束时会输出固定图片验证通过标记、一行机器可解析的 UVC 摘要，以及完成标记：
+
+```text
+UVC_RKNN_VALIDATE_PASS images=3
+UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=... infer_fps=... bytes=... throughput_mib_s=... dropped_latest=... decode_errors=... inference_errors=... decode_ms_avg=... decode_ms_p50=... decode_ms_p95=... infer_ms_avg=... infer_ms_p50=... infer_ms_p95=... detections=... vm_size_kb=... vm_rss_kb=... vm_hwm_kb=... mem_total_kb=... mem_free_kb=... mem_available_kb=...
+UVC_RKNN_BENCH_DONE
+```
+
+需要拆分 RKNN 路径耗时时，可以打开 profile 模式：
+
+```bash
+RKNN_BENCH_PROFILE=1 ./rknn_yolov8_bench --duration-sec 8 --report-interval-sec 2
+```
+
+profile 模式不会改变既有的 `UVC_RKNN_BENCH_RESULT` 行，只会额外输出一行：
+
+```text
+UVC_RKNN_BENCH_PROFILE_RESULT profile_samples=... perf_run_query_errors=... total_ms_avg=... letterbox_ms_avg=... inputs_set_ms_avg=... run_ms_avg=... outputs_get_ms_avg=... rknn_perf_run_ms_avg=... postprocess_ms_avg=...
+```
+
+如果需要逐帧明细，使用 `RKNN_BENCH_PROFILE_FRAMES=1` 或 `--profile-frames`，会为每次推理输出一行 `RKNN_PROFILE`。
 
 ## 运行效果
 
