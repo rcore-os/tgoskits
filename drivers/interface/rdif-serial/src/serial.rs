@@ -6,7 +6,7 @@ use rdif_base::DriverGeneric;
 use spin::Mutex;
 
 use super::{
-    BIrqHandler, BReciever, BSender, BSerial, InterfaceRaw, InterruptMask, TransBytesError,
+    BIrqHandler, BReceiver, BSender, BSerial, InterfaceRaw, InterruptMask, TransBytesError,
 };
 use crate::TransferError;
 
@@ -27,7 +27,7 @@ impl<T: InterfaceRaw> SerialDyn<T> {
         let tx = Arc::new(Mutex::new(Some(tx)));
 
         let rx_inner = inner.take_rx().unwrap();
-        let rx_inner = SRecv(UnsafeCell::new(RecieverInner {
+        let rx_inner = SRecv(UnsafeCell::new(ReceiverInner {
             inner: Box::new(rx_inner),
             fifo: RcvBuff(Deque::new()),
         }));
@@ -66,9 +66,9 @@ impl<T: InterfaceRaw> super::Interface for SerialDyn<T> {
         }))
     }
 
-    fn take_rx(&mut self) -> Option<Box<dyn super::TReciever>> {
+    fn take_rx(&mut self) -> Option<Box<dyn super::TReceiver>> {
         let rx = self.rx.lock().take()?;
-        Some(Box::new(Reciever {
+        Some(Box::new(Receiver {
             c: self.rx.clone(),
             inner: Some(rx),
         }))
@@ -174,23 +174,23 @@ impl super::TSender for Sender {
     }
 }
 
-struct RecieverInner {
-    inner: BReciever,
+struct ReceiverInner {
+    inner: BReceiver,
     fifo: RcvBuff,
 }
 
-pub struct Reciever {
+pub struct Receiver {
     c: Arc<Mutex<Option<Arc<SRecv>>>>,
     inner: Option<Arc<SRecv>>,
 }
 
-impl Reciever {
+impl Receiver {
     fn inner(&self) -> &SRecv {
         self.inner.as_ref().unwrap()
     }
 }
 
-impl super::TReciever for Reciever {
+impl super::TReceiver for Receiver {
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
         if let Some(b) = self.inner().fifo_pop() {
             return Some(b);
@@ -236,7 +236,7 @@ impl super::TReciever for Reciever {
     }
 }
 
-impl Drop for Reciever {
+impl Drop for Receiver {
     fn drop(&mut self) {
         let mut guard = self.c.lock();
         guard.replace(self.inner.take().unwrap());
@@ -273,7 +273,7 @@ impl Drop for IrqHandler {
 #[repr(align(64))]
 struct RcvBuff(Deque<Result<u8, TransferError>, 64>);
 
-struct SRecv(UnsafeCell<RecieverInner>);
+struct SRecv(UnsafeCell<ReceiverInner>);
 
 unsafe impl Send for SRecv {}
 unsafe impl Sync for SRecv {}

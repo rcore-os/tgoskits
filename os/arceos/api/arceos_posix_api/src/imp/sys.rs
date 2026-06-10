@@ -18,7 +18,7 @@ pub fn sys_sysconf(name: c_int) -> c_long {
             ctypes::_SC_NPROCESSORS_ONLN => Ok(ax_config::plat::MAX_CPU_NUM),
             // Total physical pages
             ctypes::_SC_PHYS_PAGES => Ok(ax_hal::mem::total_ram_size() / PAGE_SIZE_4K),
-            // Avaliable physical pages
+            // Available physical pages
             ctypes::_SC_AVPHYS_PAGES => {
                 #[cfg(feature = "alloc")]
                 {

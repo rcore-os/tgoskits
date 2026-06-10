@@ -45,8 +45,8 @@ pub fn create_symbol_link_with_owner<B: BlockDevice>(
     gid: u32,
 ) -> Ext4Result<()> {
     // Validate the source and destination before allocating the new symlink.
-    let src_norm = split_paren_child_and_tranlatevalid(src_path);
-    let dst_norm = split_paren_child_and_tranlatevalid(dst_path);
+    let src_norm = split_paren_child_and_translatevalid(src_path);
+    let dst_norm = split_paren_child_and_translatevalid(dst_path);
 
     if get_file_inode(fs, device, &src_norm)?.is_none() {
         return Err(Ext4Error::invalid_input());
@@ -204,7 +204,7 @@ pub fn mkfile_with_owner<B: BlockDevice>(
     gid: u32,
 ) -> Ext4Result<Ext4Inode> {
     // Normalize first so all later path splitting uses one canonical form.
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     if norm_path.is_empty() || norm_path == "/" {
         return Err(Ext4Error::invalid_input());
     }
