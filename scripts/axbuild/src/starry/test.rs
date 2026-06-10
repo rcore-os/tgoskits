@@ -754,7 +754,6 @@ impl Starry {
         for starry_case in cases {
             let qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(cargo, &starry_case.case.qemu_config_path)
                 .await
                 .with_context(|| {

@@ -1,10 +1,10 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "uefi", no_std)]
+#![cfg_attr(target_os = "uefi", no_main)]
 
 extern crate alloc;
 
 #[cfg(not(target_os = "uefi"))]
-compile_error!("axloader board builds require a *-unknown-uefi target and one board-* feature");
+fn main() {}
 
 #[cfg(target_os = "uefi")]
 mod boards;
@@ -13,16 +13,11 @@ mod console;
 #[cfg(target_os = "uefi")]
 mod control;
 #[cfg(target_os = "uefi")]
-mod discovery;
-#[cfg(target_os = "uefi")]
 mod elf_loader;
 #[cfg(target_os = "uefi")]
 mod entry;
 #[cfg(target_os = "uefi")]
 mod http;
-#[cfg(target_os = "uefi")]
-mod identity;
-
 #[cfg(target_os = "uefi")]
 use uefi::{Status, prelude::*};
 
@@ -93,7 +88,6 @@ fn fetch_control_offer() -> bool {
                 }
             }
         }
-        Err(control::ControlError::NoServerUrl) => false,
         Err(err) => {
             logln!("control_boot_error: {err:?}");
             false

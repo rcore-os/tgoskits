@@ -7,14 +7,13 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use ostool::{Tool, ToolConfig};
 use tempfile::tempdir;
 
 use super::*;
 
 fn test_app_context(root: &Path) -> AppContext {
     AppContext {
-        tool: Tool::new(ToolConfig::default()).unwrap(),
+        invocation: AppContext::new_invocation(None, false).unwrap(),
         build_config_path: None,
         root: root.to_path_buf(),
         member_dirs: HashMap::from([("axvisor".to_string(), root.join("os/axvisor"))]),

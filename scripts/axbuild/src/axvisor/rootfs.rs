@@ -58,7 +58,6 @@ pub(super) async fn load_patched_qemu_config(
     });
     let mut qemu = axvisor
         .app
-        .tool_mut()
         .read_qemu_config_from_path_for_cargo(cargo, &config_path)
         .await?;
     patch_qemu_rootfs(

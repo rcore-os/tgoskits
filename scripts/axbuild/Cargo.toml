@@ -20,7 +20,6 @@ colored = { version = "3" }
 env_logger = { workspace = true }
 futures-util = "0.3"
 flate2 = { version = "1.0" }
-httpboot-protocol = { workspace = true }
 indicatif = "0.18"
 jkconfig = { version = "0.1" }
 log = "0.4"
@@ -35,7 +34,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
-axloader = { workspace = true }
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
 toml.workspace = true
 tracing = "0.1"

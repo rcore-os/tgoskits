@@ -30,7 +30,7 @@ fn main() {
         panic!("selected axloader board feature did not enable its arch-* feature");
     }
     if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(std::ffi::OsStr::new("uefi")) {
-        panic!("axloader board builds require a *-unknown-uefi target");
+        return;
     }
     if std::env::var("TARGET").as_deref() != Ok(board.uefi_target) {
         panic!(
