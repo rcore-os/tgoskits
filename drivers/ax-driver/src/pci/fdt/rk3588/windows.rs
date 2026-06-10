@@ -1,4 +1,21 @@
-fn log_resource_summary(resources: &HostResources<'_>) {
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+
+use fdt_edit::{Fdt, Node, PciRange, PciSpace, Phandle, RegFixed};
+use log::{debug, info, warn};
+use rdif_pcie::{PciMem64, PcieController};
+use rdrive::probe::OnProbeError;
+use rk3588_pci::{MEM_ATU_FIRST_REGION, OutboundWindow, Rk3588PcieHost};
+
+use super::{
+    resources::{DEFAULT_CFG_SIZE, GpioSpec, HostResources},
+    set_pcie_mem_range,
+};
+
+pub(super) fn log_resource_summary(resources: &HostResources<'_>) {
     info!(
         "Rockchip RK3588 PCIe host {:#x}: FDT resources node={}, dbi={:#x}/{:#x}, \
          cfg={:#x}/{:#x}, buses {:#x}..={:#x}, clocks={}, resets={}, power-domains={}, phys={}, \
@@ -39,11 +56,11 @@ fn reset_gpio_label(gpio: Option<GpioSpec>) -> String {
     }
 }
 
-fn is_compatible(node: &Node, compatible: &str) -> bool {
+pub(super) fn is_compatible(node: &Node, compatible: &str) -> bool {
     node.compatibles().any(|item| item == compatible)
 }
 
-fn phy_cells(phandle: Phandle) -> Result<usize, OnProbeError> {
+pub(super) fn phy_cells(phandle: Phandle) -> Result<usize, OnProbeError> {
     let fdt = live_fdt()?;
     let phy = fdt
         .get_by_phandle(phandle)
@@ -60,39 +77,39 @@ fn phy_cells(phandle: Phandle) -> Result<usize, OnProbeError> {
         })
 }
 
-fn prop_phandle(node: &Node, prop_name: &str) -> Option<Phandle> {
+pub(super) fn prop_phandle(node: &Node, prop_name: &str) -> Option<Phandle> {
     node.get_property(prop_name)
         .and_then(|prop| prop.get_u32())
         .map(Phandle::from)
 }
 
-fn prop_u32(node: &Node, prop_name: &str) -> Option<u32> {
+pub(super) fn prop_u32(node: &Node, prop_name: &str) -> Option<u32> {
     node.get_property(prop_name).and_then(|prop| prop.get_u32())
 }
 
-fn prop_str_list(node: &Node, prop_name: &str) -> Vec<String> {
+pub(super) fn prop_str_list(node: &Node, prop_name: &str) -> Vec<String> {
     node.get_property(prop_name)
         .map(|prop| prop.as_str_iter().map(|s| s.to_string()).collect())
         .unwrap_or_default()
 }
 
-fn live_fdt() -> Result<Fdt, OnProbeError> {
+pub(super) fn live_fdt() -> Result<Fdt, OnProbeError> {
     rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
-fn align_up_4k(size: usize) -> usize {
+pub(super) fn align_up_4k(size: usize) -> usize {
     const MASK: usize = 0xfff;
     (size + MASK) & !MASK
 }
 
 #[derive(Clone, Copy)]
-struct Rk3588ResetPin {
-    bank: u8,
-    pin: u8,
-    active_high: bool,
+pub(super) struct Rk3588ResetPin {
+    pub(super) bank: u8,
+    pub(super) pin: u8,
+    pub(super) active_high: bool,
 }
 
-fn rk3588_pcie_reset_pin(apb_base: u64) -> Option<Rk3588ResetPin> {
+pub(super) fn rk3588_pcie_reset_pin(apb_base: u64) -> Option<Rk3588ResetPin> {
     match apb_base {
         0xfe18_0000 => Some(Rk3588ResetPin {
             bank: 3,
@@ -108,7 +125,10 @@ fn rk3588_pcie_reset_pin(apb_base: u64) -> Option<Rk3588ResetPin> {
     }
 }
 
-fn config_window(regs: &[RegFixed], ranges: &[PciRange]) -> Result<(u64, u64), OnProbeError> {
+pub(super) fn config_window(
+    regs: &[RegFixed],
+    ranges: &[PciRange],
+) -> Result<(u64, u64), OnProbeError> {
     if let Some(reg) = regs.get(2) {
         return Ok((reg.address, reg.size.unwrap_or(DEFAULT_CFG_SIZE)));
     }
@@ -124,7 +144,7 @@ fn config_window(regs: &[RegFixed], ranges: &[PciRange]) -> Result<(u64, u64), O
         .ok_or_else(|| OnProbeError::other("RK3588 PCIe host has no config window"))
 }
 
-fn bus_range_info(bus_range: Option<core::ops::Range<u32>>) -> (u8, u8) {
+pub(super) fn bus_range_info(bus_range: Option<core::ops::Range<u32>>) -> (u8, u8) {
     let Some(bus_range) = bus_range else {
         return (0, u8::MAX);
     };
@@ -136,7 +156,7 @@ fn bus_range_info(bus_range: Option<core::ops::Range<u32>>) -> (u8, u8) {
     (bus_base, logical_end)
 }
 
-fn program_memory_windows(
+pub(super) fn program_memory_windows(
     host: &Rk3588PcieHost,
     ranges: &[PciRange],
     cfg_phys: u64,
@@ -176,7 +196,7 @@ fn program_memory_windows(
     }
 }
 
-fn log_direct_endpoint(host: &Rk3588PcieHost) {
+pub(super) fn log_direct_endpoint(host: &Rk3588PcieHost) {
     if let Some(endpoint) = host.direct_endpoint_info() {
         info!(
             "PCIe endpoint: {} {:04x}:{:04x} (rev {:02x}, class {:02x}{:02x}{:02x})",
@@ -191,12 +211,12 @@ fn log_direct_endpoint(host: &Rk3588PcieHost) {
     }
 }
 
-fn is_config_range(range: &PciRange, cfg_phys: u64, cfg_size: u64) -> bool {
+pub(super) fn is_config_range(range: &PciRange, cfg_phys: u64, cfg_size: u64) -> bool {
     range.cpu_address == cfg_phys && range.size == cfg_size
 }
 
-fn set_rk3588_bar_range(drv: &mut PcieController, range: &PciRange) {
-    super::set_pcie_mem_range(drv, range);
+pub(super) fn set_rk3588_bar_range(drv: &mut PcieController, range: &PciRange) {
+    set_pcie_mem_range(drv, range);
     if matches!(range.space, PciSpace::Memory32) {
         drv.set_mem64(
             PciMem64 {

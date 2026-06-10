@@ -10,24 +10,30 @@ use core::{
     time::Duration,
 };
 
-use fdt_edit::{ClockRef, Fdt, Node, PciRange, PciSpace, Phandle, RegFixed};
+use fdt_edit::{Node, PciRange, Phandle, RegFixed};
+use log::{info, warn};
 use mmio_api::{MmioAddr, MmioRaw};
-use rdif_pcie::{PciMem64, PcieController};
+use rdif_pcie::PcieController;
 use rdrive::{
-    PlatformDevice,
     probe::{OnProbeError, fdt::NodeType},
-    register::FdtInfo,
+    register::{FdtInfo, ProbeFdt},
 };
-use rk3588_pci::{
-    Delay, HostConfig, IatuMode, MEM_ATU_FIRST_REGION, OutboundWindow, ResetControl, Rk3588PcieHost,
-};
+use rk3588_pci::{Delay, HostConfig, IatuMode, ResetControl, Rk3588PcieHost};
 
-use crate::soc::{
-    RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
-    rk3588_reset_deassert, rk3588_set_clock_rate,
+use super::{
+    clocks_reset_gpio::{
+        assert_resets, clock_specs, deassert_resets, enable_clocks, parse_reset_gpio, parse_resets,
+    },
+    phy::{init_phys, parse_phys},
+    register_fdt_legacy_irq,
+    windows::{
+        align_up_4k, bus_range_info, config_window, is_config_range, live_fdt, log_direct_endpoint,
+        log_resource_summary, program_memory_windows, prop_phandle, set_rk3588_bar_range,
+    },
 };
+use crate::soc::{RockchipPinCtrl, rk3588_enable_power_domain};
 
-const RK3588_GPIO_BASES: [u64; 5] = [
+pub(super) const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
     0xfec2_0000,
     0xfec3_0000,
@@ -40,15 +46,15 @@ const RK3588_GPIO_SWPORT_DR_H: usize = 0x04;
 const RK3588_GPIO_SWPORT_DDR_L: usize = 0x08;
 const RK3588_GPIO_SWPORT_DDR_H: usize = 0x0c;
 const RK3588_PCIE_PERST_INACTIVE_MS: u64 = 200;
-const DEFAULT_CFG_SIZE: u64 = 0x10_0000;
-const PHY_TYPE_PCIE: u32 = 2;
-const RK3588_PCIE3PHY_DEFAULT_MODE: u32 = 4;
-const RK3588_PCIE3PHY_CMN_CON0: usize = 0x000;
-const RK3588_PCIE3PHY_PHY0_STATUS1: usize = 0x904;
-const RK3588_PCIE3PHY_PHY1_STATUS1: usize = 0xa04;
-const PHP_GRF_PCIESEL_CON: usize = 0x100;
-const PCIE3PHY_SRAM_INIT_DONE: u32 = 1;
-const BIT_WRITEABLE_SHIFT: u32 = 16;
+pub(super) const DEFAULT_CFG_SIZE: u64 = 0x10_0000;
+pub(super) const PHY_TYPE_PCIE: u32 = 2;
+pub(super) const RK3588_PCIE3PHY_DEFAULT_MODE: u32 = 4;
+pub(super) const RK3588_PCIE3PHY_CMN_CON0: usize = 0x000;
+pub(super) const RK3588_PCIE3PHY_PHY0_STATUS1: usize = 0x904;
+pub(super) const RK3588_PCIE3PHY_PHY1_STATUS1: usize = 0xa04;
+pub(super) const PHP_GRF_PCIESEL_CON: usize = 0x100;
+pub(super) const PCIE3PHY_SRAM_INIT_DONE: u32 = 1;
+pub(super) const BIT_WRITEABLE_SHIFT: u32 = 16;
 const RK3588_PCIE_MAX_HOSTS: u32 = 8;
 static PROBED_HOST_MASK: AtomicU32 = AtomicU32::new(0);
 
@@ -123,13 +129,13 @@ impl ResetControl for Rk3588GpioReset {
     }
 }
 
-struct RegMmio {
+pub(super) struct RegMmio {
     mmio: MmioRaw,
     size: usize,
 }
 
 impl RegMmio {
-    fn map_phandle(phandle: Phandle, context: &str) -> Result<Self, OnProbeError> {
+    pub(super) fn map_phandle(phandle: Phandle, context: &str) -> Result<Self, OnProbeError> {
         let fdt = live_fdt()?;
         let node = fdt.get_by_phandle(phandle).ok_or_else(|| {
             OnProbeError::other(format!("{context} phandle {phandle:?} not found"))
@@ -140,96 +146,97 @@ impl RegMmio {
         Self::map_reg(reg)
     }
 
-    fn map_reg(reg: RegFixed) -> Result<Self, OnProbeError> {
+    pub(super) fn map_reg(reg: RegFixed) -> Result<Self, OnProbeError> {
         let size = align_up_4k((reg.size.unwrap_or(0x1000) as usize).max(1));
         let mmio = map_mmio(reg.address, size)?;
         Ok(Self { mmio, size })
     }
 
-    fn read32(&self, offset: usize) -> u32 {
+    pub(super) fn read32(&self, offset: usize) -> u32 {
         debug_assert!(offset + core::mem::size_of::<u32>() <= self.size);
         self.mmio.read::<u32>(offset)
     }
 
-    fn write32(&self, offset: usize, value: u32) {
+    pub(super) fn write32(&self, offset: usize, value: u32) {
         debug_assert!(offset + core::mem::size_of::<u32>() <= self.size);
         self.mmio.write::<u32>(offset, value);
     }
 
-    fn update32(&self, offset: usize, mask: u32, value: u32) {
+    pub(super) fn update32(&self, offset: usize, mask: u32, value: u32) {
         let current = self.read32(offset);
         self.write32(offset, (current & !mask) | value);
     }
 }
 
 #[derive(Clone)]
-struct ClockSpec {
-    name: Option<String>,
-    id: u32,
-    assigned_rate: Option<u32>,
+pub(super) struct ClockSpec {
+    pub(super) name: Option<String>,
+    pub(super) id: u32,
+    pub(super) assigned_rate: Option<u32>,
 }
 
 #[derive(Clone)]
-struct ResetSpec {
-    name: Option<String>,
-    id: u64,
+pub(super) struct ResetSpec {
+    pub(super) name: Option<String>,
+    pub(super) id: u64,
 }
 
 #[derive(Clone, Copy)]
-struct GpioSpec {
-    bank: u8,
-    pin: u8,
-    active_high: bool,
+pub(super) struct GpioSpec {
+    pub(super) bank: u8,
+    pub(super) pin: u8,
+    pub(super) active_high: bool,
 }
 
-struct HostResources<'a> {
-    name: String,
-    node: NodeType<'a>,
-    apb: RegFixed,
-    dbi: RegFixed,
-    cfg_phys: u64,
-    cfg_size: u64,
-    ranges: Vec<PciRange>,
-    bus_base: u8,
-    logical_bus_end: u8,
-    power_domains: Vec<usize>,
-    clocks: Vec<ClockSpec>,
-    resets: Vec<ResetSpec>,
-    pipe_grf: Option<Phandle>,
-    reset_gpio: Option<GpioSpec>,
-    supply: Option<Phandle>,
-    phys: Vec<PhyRef>,
+pub(super) struct HostResources<'a> {
+    pub(super) name: String,
+    pub(super) node: NodeType<'a>,
+    pub(super) apb: RegFixed,
+    pub(super) dbi: RegFixed,
+    pub(super) cfg_phys: u64,
+    pub(super) cfg_size: u64,
+    pub(super) ranges: Vec<PciRange>,
+    pub(super) bus_base: u8,
+    pub(super) logical_bus_end: u8,
+    pub(super) power_domains: Vec<usize>,
+    pub(super) clocks: Vec<ClockSpec>,
+    pub(super) resets: Vec<ResetSpec>,
+    pub(super) pipe_grf: Option<Phandle>,
+    pub(super) reset_gpio: Option<GpioSpec>,
+    pub(super) supply: Option<Phandle>,
+    pub(super) phys: Vec<PhyRef>,
 }
 
 #[derive(Clone)]
-struct PhyRef {
-    phandle: Phandle,
-    specifier: Vec<u32>,
-    name: Option<String>,
+pub(super) struct PhyRef {
+    pub(super) phandle: Phandle,
+    pub(super) specifier: Vec<u32>,
+    pub(super) name: Option<String>,
 }
 
-struct Pcie3PhyResources {
-    name: String,
-    reg: RegFixed,
-    phy_grf: Phandle,
-    pipe_grf: Option<Phandle>,
-    pcie30_phymode: u32,
-    clocks: Vec<ClockSpec>,
-    resets: Vec<ResetSpec>,
+pub(super) struct Pcie3PhyResources {
+    pub(super) name: String,
+    pub(super) reg: RegFixed,
+    pub(super) phy_grf: Phandle,
+    pub(super) pipe_grf: Option<Phandle>,
+    pub(super) pcie30_phymode: u32,
+    pub(super) clocks: Vec<ClockSpec>,
+    pub(super) resets: Vec<ResetSpec>,
 }
 
-struct CombphyResources {
-    name: String,
-    reg: RegFixed,
-    pipe_grf: Phandle,
-    pipe_phy_grf: Phandle,
-    pcie1ln_sel_bits: Option<[u32; 4]>,
-    refclk_rate: u32,
-    clocks: Vec<ClockSpec>,
-    resets: Vec<ResetSpec>,
+pub(super) struct CombphyResources {
+    pub(super) name: String,
+    pub(super) reg: RegFixed,
+    pub(super) pipe_grf: Phandle,
+    pub(super) pipe_phy_grf: Phandle,
+    pub(super) pcie1ln_sel_bits: Option<[u32; 4]>,
+    pub(super) refclk_rate: u32,
+    pub(super) clocks: Vec<ClockSpec>,
+    pub(super) resets: Vec<ResetSpec>,
 }
 
-fn probe_rk3588(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+pub(super) fn probe_rk3588(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let NodeType::Pci(node) = info.node else {
         return Err(OnProbeError::NotMatch);
     };
@@ -288,7 +295,7 @@ fn probe_rk3588(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
         host.apb_phys()
     );
     log_direct_endpoint(&host);
-    super::register_fdt_legacy_irq(&info, resources.logical_bus_end);
+    register_fdt_legacy_irq(&info, resources.logical_bus_end);
 
     let mut drv = PcieController::new(host);
     for range in &resources.ranges {
