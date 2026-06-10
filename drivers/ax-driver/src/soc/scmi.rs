@@ -6,7 +6,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use fdt_edit::Phandle;
 use log::{info, warn};
 
-use crate::{DriverGeneric, PlatformDevice, mmio::iomap, probe::OnProbeError, register::FdtInfo};
+use crate::{DriverGeneric, mmio::iomap, probe::OnProbeError, register::ProbeFdt};
 
 const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
@@ -26,7 +26,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let smc_id = info
         .node
         .as_node()

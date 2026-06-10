@@ -80,7 +80,30 @@ impl<'a> FdtInfo<'a> {
     }
 }
 
-pub type FnOnProbe = fn(fdt: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError>;
+pub struct ProbeFdt<'a> {
+    info: FdtInfo<'a>,
+    platform: PlatformDevice,
+}
+
+impl<'a> ProbeFdt<'a> {
+    pub(crate) fn new(info: FdtInfo<'a>, platform: PlatformDevice) -> Self {
+        Self { info, platform }
+    }
+
+    pub const fn info(&self) -> &FdtInfo<'a> {
+        &self.info
+    }
+
+    pub fn into_platform_device(self) -> PlatformDevice {
+        self.platform
+    }
+
+    pub fn into_parts(self) -> (FdtInfo<'a>, PlatformDevice) {
+        (self.info, self.platform)
+    }
+}
+
+pub type FnOnProbe = for<'a> fn(ProbeFdt<'a>) -> Result<(), OnProbeError>;
 
 pub struct System {
     fdt: Fdt,
@@ -192,13 +215,13 @@ impl System {
                 irq_parent,
             };
 
-            let res = (node_info.on_probe)(
+            let res = (node_info.on_probe)(ProbeFdt::new(
                 FdtInfo {
                     node,
                     phandle_2_device_id: phandle_map,
                 },
                 PlatformDevice::new(descriptor),
-            );
+            ));
 
             if res.is_ok() {
                 self.probed_names.lock().insert(node_info.name);

@@ -14,7 +14,6 @@ use acpi::{
         namespace::{AmlName, NamespaceLevelKind},
         object::Object,
         pci_routing::{IrqDescriptor, PciRoutingTable, Pin},
-        resource::{InterruptPolarity, InterruptTrigger},
     },
     platform::{
         AcpiPlatform,
@@ -28,7 +27,10 @@ use spin::{Mutex, Once};
 use crate::{
     DeviceId, PlatformDevice,
     error::DriverError,
-    probe::{OnProbeError, ProbeError, pci::PciAddress},
+    probe::{
+        OnProbeError, ProbeError,
+        pci::{PciAddress, PciInfo, PciIntxRoute},
+    },
     register::{DriverRegister, ProbeKind},
 };
 
@@ -151,7 +153,15 @@ impl Default for AcpiRouting {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting};
+    use acpi::aml::{
+        pci_routing::IrqDescriptor,
+        resource::{InterruptPolarity, InterruptTrigger},
+    };
+
+    use super::{
+        AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting, is_pci_gsi,
+        route_with_irq_descriptor_flags,
+    };
 
     #[test]
     fn ioapic_routes_map_gsi_to_stable_vector() {
@@ -175,21 +185,89 @@ mod tests {
         assert_eq!(irq.polarity, AcpiIrqPolarity::ActiveLow);
         assert!(routing.resolve_gsi(24).is_none());
     }
+
+    #[test]
+    fn pci_intx_rejects_legacy_pic_irqs() {
+        for irq in 0..16 {
+            assert!(!is_pci_gsi(irq), "IRQ {irq} should use fallback routing");
+        }
+
+        for irq in [16, 17, 23, 24, 32] {
+            assert!(is_pci_gsi(irq), "GSI {irq} should be accepted");
+        }
+    }
+
+    #[test]
+    fn pci_irq_route_preserves_descriptor_trigger_and_polarity() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        let route = routing.resolve_gsi(16).unwrap();
+        let descriptor = IrqDescriptor {
+            is_consumer: true,
+            trigger: InterruptTrigger::Edge,
+            polarity: InterruptPolarity::ActiveHigh,
+            is_shared: false,
+            is_wake_capable: false,
+            irq: 16,
+        };
+
+        let route = route_with_irq_descriptor_flags(route, &descriptor);
+
+        assert_eq!(route.trigger, AcpiIrqTrigger::Edge);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveHigh);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiPciIrqRoute {
     pub address: PciAddress,
     pub interrupt_pin: u8,
+    pub intx_route: PciIntxRoute,
     pub gsi: AcpiGsiRoute,
 }
 
 pub struct AcpiInfo<'a> {
     pub root: &'a System,
     pub path: &'a str,
+    pub irq_route: Option<AcpiGsiRoute>,
 }
 
-pub type FnOnProbe = fn(AcpiInfo<'_>, PlatformDevice) -> Result<(), OnProbeError>;
+impl AcpiInfo<'_> {
+    pub const fn irq_route(&self) -> Option<AcpiGsiRoute> {
+        self.irq_route
+    }
+}
+
+pub struct ProbeAcpi<'a> {
+    info: AcpiInfo<'a>,
+    platform: PlatformDevice,
+}
+
+impl<'a> ProbeAcpi<'a> {
+    #[allow(dead_code)]
+    pub(crate) fn new(info: AcpiInfo<'a>, platform: PlatformDevice) -> Self {
+        Self { info, platform }
+    }
+
+    pub const fn info(&self) -> &AcpiInfo<'a> {
+        &self.info
+    }
+
+    pub fn into_platform_device(self) -> PlatformDevice {
+        self.platform
+    }
+
+    pub fn into_parts(self) -> (AcpiInfo<'a>, PlatformDevice) {
+        (self.info, self.platform)
+    }
+}
+
+pub type FnOnProbe = for<'a> fn(ProbeAcpi<'a>) -> Result<(), OnProbeError>;
 
 pub fn check_root(root: AcpiRoot) -> Result<(), DriverError> {
     if root.rsdp == 0 {
@@ -488,44 +566,46 @@ impl System {
 
     pub fn pci_irq_for_endpoint(
         &self,
-        address: PciAddress,
-        interrupt_pin: u8,
+        info: PciInfo,
     ) -> Result<Option<AcpiPciIrqRoute>, OnProbeError> {
-        let Some(mut irq) = self.resolve_endpoint_gsi(address, interrupt_pin)? else {
+        let Some(intx_route) = info.intx_route else {
+            return Ok(None);
+        };
+        let Some(irq) = self.resolve_endpoint_gsi(info.address, intx_route)? else {
             return Ok(None);
         };
         let Some(gsi) = irq_descriptor_gsi(&irq) else {
             return Err(OnProbeError::other(format!(
                 "ACPI PCI endpoint {} pin {} returned an invalid IRQ descriptor: {:?}",
-                address, interrupt_pin, irq
+                info.address, intx_route.root_pin, irq
             )));
         };
-        irq.irq = gsi;
+        if !is_pci_gsi(gsi) {
+            return Ok(None);
+        }
 
         let Some(route) = self.routing.resolve_gsi(gsi) else {
             return Err(OnProbeError::other(format!(
                 "ACPI GSI {} for PCI endpoint {} is not covered by an IOAPIC",
-                gsi, address
+                gsi, info.address
             )));
         };
+        let route = route_with_irq_descriptor_flags(route, &irq);
 
         Ok(Some(AcpiPciIrqRoute {
-            address,
-            interrupt_pin,
-            gsi: AcpiGsiRoute {
-                trigger: irq_trigger(irq.trigger),
-                polarity: irq_polarity(irq.polarity),
-                ..route
-            },
+            address: info.address,
+            interrupt_pin: intx_route.root_pin,
+            intx_route,
+            gsi: route,
         }))
     }
 
     fn resolve_endpoint_gsi(
         &self,
         address: PciAddress,
-        interrupt_pin: u8,
+        route: PciIntxRoute,
     ) -> Result<Option<IrqDescriptor>, OnProbeError> {
-        let pin = acpi_pin(interrupt_pin)?;
+        let pin = acpi_pin(route.root_pin)?;
         let Some(pci) = &self.pci else {
             return Ok(None);
         };
@@ -540,8 +620,8 @@ impl System {
             };
 
             match prt.route(
-                u16::from(address.device()),
-                u16::from(address.function()),
+                u16::from(route.root_device),
+                u16::from(route.root_function),
                 pin,
                 &pci.interpreter,
             ) {
@@ -606,8 +686,9 @@ impl System {
             let info = AcpiInfo {
                 root: self,
                 path: "\\",
+                irq_route: None,
             };
-            let res = on_probe(info, PlatformDevice::new(desc));
+            let res = on_probe(ProbeAcpi::new(info, PlatformDevice::new(desc)));
             if res.is_ok() {
                 self.probed_names.lock().insert(register.name);
             }
@@ -800,17 +881,32 @@ fn irq_descriptor_gsi(descriptor: &IrqDescriptor) -> Option<u32> {
     }
 }
 
-fn irq_trigger(trigger: InterruptTrigger) -> AcpiIrqTrigger {
-    match trigger {
-        InterruptTrigger::Edge => AcpiIrqTrigger::Edge,
-        InterruptTrigger::Level => AcpiIrqTrigger::Level,
+fn route_with_irq_descriptor_flags(
+    route: AcpiGsiRoute,
+    descriptor: &IrqDescriptor,
+) -> AcpiGsiRoute {
+    AcpiGsiRoute {
+        trigger: irq_trigger(descriptor.trigger),
+        polarity: irq_polarity(descriptor.polarity),
+        ..route
     }
 }
 
-fn irq_polarity(polarity: InterruptPolarity) -> AcpiIrqPolarity {
+fn is_pci_gsi(irq: u32) -> bool {
+    irq >= 16
+}
+
+fn irq_trigger(trigger: acpi::aml::resource::InterruptTrigger) -> AcpiIrqTrigger {
+    match trigger {
+        acpi::aml::resource::InterruptTrigger::Edge => AcpiIrqTrigger::Edge,
+        acpi::aml::resource::InterruptTrigger::Level => AcpiIrqTrigger::Level,
+    }
+}
+
+fn irq_polarity(polarity: acpi::aml::resource::InterruptPolarity) -> AcpiIrqPolarity {
     match polarity {
-        InterruptPolarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
-        InterruptPolarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
+        acpi::aml::resource::InterruptPolarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
+        acpi::aml::resource::InterruptPolarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
     }
 }
 

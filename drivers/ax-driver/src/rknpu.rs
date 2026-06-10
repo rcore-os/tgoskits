@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use log::info;
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
 pub use rockchip_npu::{
     RknpuAction,
@@ -30,7 +30,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let regs = info.node.regs();
 
     let config = RknpuConfig {

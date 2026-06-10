@@ -2,7 +2,7 @@ use alloc::{collections::btree_set::BTreeSet, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
 use ::pcie::*;
-pub use ::pcie::{Endpoint, PciCapability, PcieGeneric};
+pub use ::pcie::{Endpoint, PciCapability, PciIntxRoute, PcieGeneric};
 use mmio_api::{MapError, MmioOp};
 pub use rdif_pcie::{DriverGeneric, PciAddress, PciMem32, PciMem64, PcieController};
 use spin::{Mutex, Once};
@@ -15,7 +15,7 @@ use crate::{
 
 static PCIE: Once<Mutex<Vec<PcieEnumterator>>> = Once::new();
 
-pub type FnOnProbe = fn(ep: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError>;
+pub type FnOnProbe = fn(ProbePci<'_>) -> Result<(), OnProbeError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Id {
@@ -69,6 +69,69 @@ impl EndpointRc {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciInfo {
+    pub address: PciAddress,
+    pub interrupt_pin: u8,
+    pub interrupt_line: u8,
+    pub intx_route: Option<PciIntxRoute>,
+}
+
+impl PciInfo {
+    fn from_endpoint(endpoint: &EndpointRc, intx_route: Option<PciIntxRoute>) -> Self {
+        Self {
+            address: endpoint.address(),
+            interrupt_pin: endpoint.interrupt_pin(),
+            interrupt_line: endpoint.interrupt_line(),
+            intx_route,
+        }
+    }
+}
+
+pub struct ProbePci<'a> {
+    info: PciInfo,
+    endpoint: &'a mut EndpointRc,
+    platform: PlatformDevice,
+}
+
+impl<'a> ProbePci<'a> {
+    pub(crate) fn new(
+        info: PciInfo,
+        endpoint: &'a mut EndpointRc,
+        platform: PlatformDevice,
+    ) -> Self {
+        Self {
+            info,
+            endpoint,
+            platform,
+        }
+    }
+
+    pub const fn info(&self) -> PciInfo {
+        self.info
+    }
+
+    pub fn endpoint(&self) -> &Endpoint {
+        self.endpoint
+    }
+
+    pub fn endpoint_mut(&mut self) -> &mut EndpointRc {
+        self.endpoint
+    }
+
+    pub fn take_endpoint(&mut self) -> Endpoint {
+        self.endpoint.take()
+    }
+
+    pub fn into_platform_device(self) -> PlatformDevice {
+        self.platform
+    }
+
+    pub fn into_parts(self) -> (PciInfo, &'a mut EndpointRc, PlatformDevice) {
+        (self.info, self.endpoint, self.platform)
+    }
+}
+
 impl Deref for EndpointRc {
     type Target = Endpoint;
 
@@ -96,8 +159,8 @@ impl PcieEnumterator {
     ) -> Result<(), ProbeError> {
         let mut g = self.ctrl.lock().unwrap();
 
-        for ep in enumerate_by_controller(&mut g, None) {
-            debug!("PCIe endpiont: {}", ep);
+        for ep in enumerate_by_controller_with_info(&mut g, None) {
+            debug!("PCIe endpiont: {}", ep.endpoint);
             match self.probe_one(ep, registers, stop_if_fail) {
                 Ok(_) => {} // Successfully probed, move to the next
                 Err(e) => {
@@ -115,10 +178,12 @@ impl PcieEnumterator {
 
     fn probe_one(
         &mut self,
-        endpoint: Endpoint,
+        endpoint: EnumeratedEndpoint,
         registers: &[DriverRegister],
         stop_if_fail: bool,
     ) -> Result<(), ProbeError> {
+        let intx_route = endpoint.intx_route;
+        let endpoint = endpoint.endpoint;
         let id = Id {
             vendor: endpoint.vendor_id(),
             device: endpoint.device_id(),
@@ -143,8 +208,9 @@ impl PcieEnumterator {
             desc.name = register.name;
             desc.irq_parent = self.ctrl.descriptor().irq_parent;
 
+            let info = PciInfo::from_endpoint(&endpoint, intx_route);
             let plat_dev = PlatformDevice::new(desc);
-            match (pci_probe)(&mut endpoint, plat_dev) {
+            match (pci_probe)(ProbePci::new(info, &mut endpoint, plat_dev)) {
                 Ok(_) => {
                     self.probed.insert(id);
                     return Ok(());

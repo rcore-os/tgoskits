@@ -14,5 +14,7 @@ pub use bar_alloc::*;
 pub use chip::PcieGeneric;
 pub use mmio_api::{MapError, Mmio, MmioAddr, MmioOp};
 pub use rdif_pcie::{Interface as Controller, PciMem32, PciMem64, PcieController};
-pub use root::enumerate_by_controller;
+pub use root::{
+    EnumeratedEndpoint, PciIntxRoute, enumerate_by_controller, enumerate_by_controller_with_info,
+};
 pub use types::*;

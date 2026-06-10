@@ -1,5 +1,5 @@
 use log::info;
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
 
 const PLACEHOLDER_COMPATIBLES: &[&str] = &[
     "cvitek,tpu",
@@ -35,7 +35,8 @@ crate::model_register!(
     }],
 );
 
-fn probe(info: FdtInfo<'_>, _plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
     let mut mapped = 0usize;
     for node in info.find_compatible(PLACEHOLDER_COMPATIBLES) {
         for reg in node.regs() {

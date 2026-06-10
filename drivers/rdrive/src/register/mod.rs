@@ -3,8 +3,12 @@ use core::ops::Deref;
 
 pub use fdt::NodeType as Node;
 
-pub use crate::probe::fdt::FdtInfo;
 use crate::probe::{acpi, fdt, pci, static_};
+pub use crate::probe::{
+    acpi::{AcpiInfo, ProbeAcpi},
+    fdt::{FdtInfo, ProbeFdt},
+    pci::{PciInfo, ProbePci},
+};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
