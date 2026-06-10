@@ -192,6 +192,36 @@ static expected_t derive(cred_t pre, uint32_t euid_caller,
 typedef enum { M_LIBC = 0, M_RAW = 1 } call_mode_t;
 typedef enum { SC_SETREUID = 0, SC_SETREGID = 1 } syscall_kind_t;
 
+static const char *syscall_name(syscall_kind_t sc)
+{
+    return sc == SC_SETREUID ? "setreuid" : "setregid";
+}
+
+static const char *mode_name(call_mode_t m)
+{
+    return m == M_RAW ? "raw" : "libc";
+}
+
+static void dump_matrix_failure(syscall_kind_t sc, cred_state_t s,
+                                uint32_t rin, uint32_t ein, call_mode_t m,
+                                int ec, cred_t pre, cred_t uid_pre,
+                                uint32_t cap_euid, expected_t exp,
+                                long rc, int err, const cred_t *post)
+{
+    dprintf(STDOUT_FILENO,
+            "  matrix detail | ec=%d sc=%s s=%s r=0x%08x e=0x%08x m=%s "
+            "pre=(%u,%u,%u) uid_pre=(%u,%u,%u) cap_euid=%u "
+            "exp=(rc=%d err=%d r=%u e=%u s=%u) actual=(rc=%ld err=%d)",
+            ec, syscall_name(sc), state_name(s), rin, ein, mode_name(m),
+            pre.r, pre.e, pre.s, uid_pre.r, uid_pre.e, uid_pre.s,
+            cap_euid, exp.rc, exp.err, exp.new_r, exp.new_e, exp.new_s,
+            rc, err);
+    if (post != NULL) {
+        dprintf(STDOUT_FILENO, " post=(%u,%u,%u)", post->r, post->e, post->s);
+    }
+    dprintf(STDOUT_FILENO, "\n");
+}
+
 static long do_call(syscall_kind_t sc, call_mode_t m,
                      uint32_t r, uint32_t e)
 {
@@ -223,25 +253,49 @@ static void matrix_one(syscall_kind_t sc, cred_state_t s,
 
         cred_t uid_pre;
         if (read_uid_cred(&uid_pre) != 0) _exit(97);
-        uint32_t euid_caller = uid_pre.e;
+        uint32_t cap_euid = (sc == SC_SETREUID) ? pre.e : uid_pre.e;
 
-        expected_t exp = derive(pre, euid_caller, rin, ein);
+        expected_t exp = derive(pre, cap_euid, rin, ein);
 
         errno = 0;
         long rc = do_call(sc, m, rin, ein);
         int err = errno;
 
-        if (rc != exp.rc) _exit(11);
-        if (exp.rc == -1 && err != exp.err) _exit(12);
+        if (rc != exp.rc) {
+            dump_matrix_failure(sc, s, rin, ein, m, 11, pre, uid_pre,
+                                cap_euid, exp, rc, err, NULL);
+            _exit(11);
+        }
+        if (exp.rc == -1 && err != exp.err) {
+            dump_matrix_failure(sc, s, rin, ein, m, 12, pre, uid_pre,
+                                cap_euid, exp, rc, err, NULL);
+            _exit(12);
+        }
 
         if (exp.rc == 0) {
             cred_t post;
             int prv = (sc == SC_SETREUID ? read_uid_cred(&post)
                                           : read_gid_cred(&post));
-            if (prv != 0) _exit(13);
-            if (post.r != exp.new_r) _exit(14);
-            if (post.e != exp.new_e) _exit(15);
-            if (post.s != exp.new_s) _exit(16);
+            if (prv != 0) {
+                dump_matrix_failure(sc, s, rin, ein, m, 13, pre, uid_pre,
+                                    cap_euid, exp, rc, err, NULL);
+                _exit(13);
+            }
+            if (post.r != exp.new_r) {
+                dump_matrix_failure(sc, s, rin, ein, m, 14, pre, uid_pre,
+                                    cap_euid, exp, rc, err, &post);
+                _exit(14);
+            }
+            if (post.e != exp.new_e) {
+                dump_matrix_failure(sc, s, rin, ein, m, 15, pre, uid_pre,
+                                    cap_euid, exp, rc, err, &post);
+                _exit(15);
+            }
+            if (post.s != exp.new_s) {
+                dump_matrix_failure(sc, s, rin, ein, m, 16, pre, uid_pre,
+                                    cap_euid, exp, rc, err, &post);
+                _exit(16);
+            }
         }
         _exit(0);
     }
@@ -254,8 +308,7 @@ static void matrix_one(syscall_kind_t sc, cred_state_t s,
     char msg[300];
     snprintf(msg, sizeof msg,
              "matrix sc=%s s=%s r=0x%08x e=0x%08x m=%s",
-             sc == SC_SETREUID ? "setreuid" : "setregid",
-             state_name(s), rin, ein, m == M_RAW ? "raw" : "libc");
+             syscall_name(sc), state_name(s), rin, ein, mode_name(m));
     if (ec == 0)        CHECK(1, msg);
     else if (ec == 99)  printf("  SKIP (setup) | %s\n", msg);
     else {
