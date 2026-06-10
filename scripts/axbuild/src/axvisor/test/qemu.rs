@@ -117,15 +117,21 @@ impl Axvisor {
         let mut summary = test_qemu::QemuTestSummary::default();
         let asset_config = axvisor_case_asset_config();
 
-        let build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
+        let mut build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
             Self::qemu_group_build_context(&request, build_config_path)
         })?;
 
         // Phase 1: Build all build groups first so compilation errors surface
         // before any QEMU time is spent.
-        for build_group in &build_groups {
+        for build_group in &mut build_groups {
             rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
+            rootfs::prepare_loongarch_linux_memory_vmconfigs(
+                &mut build_group.request,
+                self.app.workspace_root(),
+                None,
+            )?;
+            build_group.cargo = build::load_cargo_config(&build_group.request)?;
             if build_group_needs_arceos_x86_64_guest(&build_group.request) {
                 self.build_arceos_x86_64_guest_image()
                     .await

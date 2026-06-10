@@ -57,7 +57,7 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         .await
 }
 
-fn prepare_loongarch_linux_memory_vmconfigs(
+pub(crate) fn prepare_loongarch_linux_memory_vmconfigs(
     request: &mut ResolvedAxvisorRequest,
     workspace_root: &Path,
     explicit_rootfs: Option<&Path>,
