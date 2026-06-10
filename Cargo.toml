@@ -8,7 +8,7 @@ keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
 
 [profile.release]
-lto = false
+lto = true
 
 [workspace]
 resolver = "3"

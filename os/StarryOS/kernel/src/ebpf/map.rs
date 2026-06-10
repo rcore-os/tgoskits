@@ -25,7 +25,7 @@ use crate::{
 /// abstraction over array / hash / lru / queue / perf-array maps) and a
 /// `PollSet` so `poll(2)`-based maps (e.g. ringbuf) can wake waiters.
 pub struct BpfMap {
-    unified_map: UnifiedMap<KernelRawMutex>,
+    unified_map: Arc<UnifiedMap<KernelRawMutex>>,
     poll_ready: Arc<PollSetWrapper>,
 }
 
@@ -39,14 +39,14 @@ impl BpfMap {
     /// Wrap a freshly-created `UnifiedMap` in the kernel file-like layer.
     pub fn new(unified_map: UnifiedMap<KernelRawMutex>, poll_ready: Arc<PollSetWrapper>) -> Self {
         BpfMap {
-            unified_map,
+            unified_map: Arc::new(unified_map),
             poll_ready,
         }
     }
 
     /// Lock and access the underlying `UnifiedMap`.
     pub fn unified_map(&self) -> &UnifiedMap<KernelRawMutex> {
-        &self.unified_map
+        self.unified_map.as_ref()
     }
 }
 
@@ -103,7 +103,8 @@ impl FileLike for BpfMap {
             .map(|&phys_addr| PhysAddr::from_usize(phys_addr))
             .collect::<Vec<_>>();
 
-        Ok(DeviceMmap::PhysicalPages(phy_addrs, None))
+        let retain: Arc<dyn core::any::Any + Send + Sync> = self.unified_map.clone();
+        Ok(DeviceMmap::PhysicalPages(phy_addrs, Some(retain)))
     }
 }
 
