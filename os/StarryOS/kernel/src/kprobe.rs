@@ -21,6 +21,7 @@ use alloc::sync::Arc;
 
 use ax_kspin::RawSpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_sync::spin::SpinNoIrq;
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
     register_kprobe as kprobe_crate_register_kprobe,
@@ -144,16 +145,27 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
 
     fn insert_kretprobe_instance_to_task(instance: kprobe::retprobe::RetprobeInstance) {
         let curr = ax_task::current();
-        curr.as_thread().kretprobe_stack.lock().push(instance);
+        if let Some(thread) = curr.try_as_thread() {
+            thread.kretprobe_stack.lock().push(instance);
+        } else {
+            KERNEL_KRETPROBE_STACK.lock().push(instance);
+        }
     }
 
     fn pop_kretprobe_instance_from_task() -> kprobe::retprobe::RetprobeInstance {
         let curr = ax_task::current();
-        curr.as_thread()
-            .kretprobe_stack
-            .lock()
-            .pop()
-            .expect("kretprobe instance stack underflow")
+        if let Some(thread) = curr.try_as_thread() {
+            thread
+                .kretprobe_stack
+                .lock()
+                .pop()
+                .expect("kretprobe instance stack underflow")
+        } else {
+            KERNEL_KRETPROBE_STACK
+                .lock()
+                .pop()
+                .expect("kernel kretprobe instance stack underflow")
+        }
     }
 }
 
@@ -172,6 +184,8 @@ static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
     ax_sync::spin::SpinNoIrq::new(None);
 static KPROBE_POINT_LIST: ax_sync::spin::SpinNoIrq<Option<KprobePointList>> =
     ax_sync::spin::SpinNoIrq::new(None);
+static KERNEL_KRETPROBE_STACK: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>> =
+    SpinNoIrq::new(alloc::vec::Vec::new());
 
 fn with_manager<F, R>(f: F) -> R
 where
@@ -485,51 +499,41 @@ pub fn run_selftest() -> bool {
     SELFTEST_RET_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
 
     let target_addr = kprobe_selftest_target as *const () as usize;
-    let mut kprobe_ok = false;
-    let mut kretprobe_ok = false;
 
-    with_manager(|manager| {
-        let mut probe_list = kprobe::ProbePointList::new();
-        let builder = kprobe::ProbeBuilder::<KernelKprobeOps>::new()
-            .with_symbol_addr(target_addr)
-            .with_pre_handler(selftest_pre_handler)
-            .with_enable(true);
+    let builder = kprobe::ProbeBuilder::<KernelKprobeOps>::new()
+        .with_symbol_addr(target_addr)
+        .with_pre_handler(selftest_pre_handler)
+        .with_enable(true);
 
-        let kp = kprobe::register_kprobe(manager, &mut probe_list, builder);
-        let val = kprobe_selftest_target();
-        kprobe_ok = SELFTEST_HIT.load(core::sync::atomic::Ordering::SeqCst);
+    let kp = register_kprobe(builder);
+    let val = kprobe_selftest_target();
+    let kprobe_ok = SELFTEST_HIT.load(core::sync::atomic::Ordering::SeqCst);
+    unregister_kprobe(kp);
 
-        kprobe::unregister_kprobe(manager, &mut probe_list, kp);
+    if kprobe_ok && val == 42 {
+        info!("kprobe selftest passed");
+    } else {
+        warn!("kprobe selftest failed: hit={}, val={}", kprobe_ok, val);
+    }
 
-        if kprobe_ok && val == 42 {
-            info!("kprobe selftest passed");
-        } else {
-            warn!("kprobe selftest failed: hit={}, val={}", kprobe_ok, val);
-        }
-    });
+    let builder = kprobe::KretprobeBuilder::<KernelRawMutex>::new(4)
+        .with_symbol_addr(target_addr)
+        .with_ret_handler(selftest_ret_handler)
+        .with_enable(true);
 
-    with_manager(|manager| {
-        let mut probe_list = kprobe::ProbePointList::new();
-        let builder = kprobe::KretprobeBuilder::<KernelRawMutex>::new(4)
-            .with_symbol_addr(target_addr)
-            .with_ret_handler(selftest_ret_handler)
-            .with_enable(true);
+    let kr = register_kretprobe(builder);
+    let val = kprobe_selftest_target();
+    let kretprobe_ok = SELFTEST_RET_HIT.load(core::sync::atomic::Ordering::SeqCst);
+    unregister_kretprobe(kr);
 
-        let kr = kprobe::register_kretprobe(manager, &mut probe_list, builder);
-        let val = kprobe_selftest_target();
-        kretprobe_ok = SELFTEST_RET_HIT.load(core::sync::atomic::Ordering::SeqCst);
-
-        kprobe::unregister_kretprobe(manager, &mut probe_list, kr);
-
-        if kretprobe_ok && val == 42 {
-            info!("kretprobe selftest passed");
-        } else {
-            warn!(
-                "kretprobe selftest failed: hit={}, val={}",
-                kretprobe_ok, val
-            );
-        }
-    });
+    if kretprobe_ok && val == 42 {
+        info!("kretprobe selftest passed");
+    } else {
+        warn!(
+            "kretprobe selftest failed: hit={}, val={}",
+            kretprobe_ok, val
+        );
+    }
 
     kprobe_ok && kretprobe_ok
 }

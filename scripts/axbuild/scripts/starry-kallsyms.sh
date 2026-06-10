@@ -82,14 +82,29 @@ kallsyms_section_size() {
 pad_kallsyms_to_section() {
     section_size="$1"
     kallsyms_size=$(wc -c < "$kallsyms" | tr -d ' ')
+    padding_size=$((section_size - kallsyms_size))
+
     if [ "$kallsyms_size" -gt "$section_size" ]; then
         echo "generated kallsyms (${kallsyms_size} bytes) exceed .kallsyms section (${section_size} bytes)" >&2
         echo "remove the stale kernel ELF or rebuild it so the linker script reserve is restored" >&2
         exit 1
     fi
 
-    if [ "$kallsyms_size" -lt "$section_size" ]; then
-        dd if=/dev/zero bs=1 count=$((section_size - kallsyms_size)) >> "$kallsyms" 2>/dev/null
+    if [ "$padding_size" -gt 0 ]; then
+        if command -v truncate >/dev/null 2>&1; then
+            truncate -s "$section_size" "$kallsyms"
+            return
+        fi
+
+        full_blocks=$((padding_size / 1048576))
+        tail_bytes=$((padding_size % 1048576))
+
+        if [ "$full_blocks" -gt 0 ]; then
+            dd if=/dev/zero bs=1048576 count="$full_blocks" >> "$kallsyms" 2>/dev/null
+        fi
+        if [ "$tail_bytes" -gt 0 ]; then
+            dd if=/dev/zero bs="$tail_bytes" count=1 >> "$kallsyms" 2>/dev/null
+        fi
     fi
 }
 

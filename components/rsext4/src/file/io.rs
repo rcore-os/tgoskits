@@ -57,6 +57,16 @@ fn truncate_inode<B: BlockDevice>(
     // Extent-backed files handle sparse growth and extent-aware shrinking here.
     if fs.superblock.has_extents() && inode.have_extend_header_and_use_extend() {
         if truncate_size < old_size {
+            if truncate_size > 0 && !truncate_size.is_multiple_of(block_bytes) {
+                let lbn = (truncate_size / block_bytes) as u32;
+                if let Some(phys) = resolve_inode_block(device, &mut inode, lbn)? {
+                    let zero_from = (truncate_size % block_bytes) as usize;
+                    fs.datablock_cache.modify(device, phys, |data| {
+                        data[zero_from..].fill(0);
+                    })?;
+                }
+            }
+
             // Delegate range removal to the extent tree so physical-block frees
             // stay consistent even when holes exist.
             let del_start_lbn = new_blocks as u32;
@@ -88,46 +98,6 @@ fn truncate_inode<B: BlockDevice>(
                 {
                     let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
                     tree.remove_extend(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
-                }
-            }
-        }
-
-        if new_blocks > old_blocks {
-            let mut new_blocks_map: Vec<(u32, AbsoluteBN)> = Vec::new();
-            for lbn in old_blocks as u32..new_blocks as u32 {
-                let phys = fs.alloc_block(device)?;
-                fs.datablock_cache.modify_new(device, phys, |data| {
-                    for b in data.iter_mut() {
-                        *b = 0;
-                    }
-                })?;
-                new_blocks_map.push((lbn, phys));
-            }
-
-            let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
-            if !new_blocks_map.is_empty() {
-                let mut idx = 0usize;
-                while idx < new_blocks_map.len() {
-                    let (start_lbn, start_phys) = new_blocks_map[idx];
-                    let mut run_len: u32 = 1;
-                    let mut last_lbn = start_lbn;
-                    let mut last_phys = start_phys;
-                    idx += 1;
-                    while idx < new_blocks_map.len() {
-                        let (cur_lbn, cur_phys) = new_blocks_map[idx];
-                        if cur_lbn == last_lbn + 1
-                            && last_phys.checked_add(1).ok() == Some(cur_phys)
-                        {
-                            run_len = run_len.saturating_add(1);
-                            last_lbn = cur_lbn;
-                            last_phys = cur_phys;
-                            idx += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    let ext = Ext4Extent::new(start_lbn, start_phys.raw(), run_len as u16);
-                    tree.insert_extent(fs, ext, device)?;
                 }
             }
         }

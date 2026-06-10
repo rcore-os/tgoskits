@@ -16,9 +16,10 @@ or run the final QEMU step directly:
   apps/starry/macos-selfbuild/run_selfbuild.sh
 
 Common knobs:
-  SMP=8 JOBS=1 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
+  SMP=8 JOBS=8 SOURCE_TMPFS=1 QEMU_TIMEOUT_SEC=7200
   EXPECTED_MAX_CRATES=420
   QEMU_ACCEL=hvf QEMU_MACHINE=virt,gic-version=3 QEMU_CPU=host
+  QEMU_SNAPSHOT=0
   BOOT_ONLY=1
   EXTRA_RUSTFLAGS='<extra guest rustflags>'
 USAGE
@@ -103,12 +104,13 @@ git_value() {
 kernel="${KERNEL:-$repo_root/target/aarch64-unknown-none-softfloat/release/starryos.bin}"
 rootfs="${ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img}"
 smp="${SMP:-8}"
-jobs="${JOBS:-1}"
+jobs="${JOBS:-$smp}"
 mem="${MEM:-4096M}"
 qemu_accel="${QEMU_ACCEL:-hvf}"
 qemu_machine="${QEMU_MACHINE:-virt,gic-version=3}"
 qemu_cpu="${QEMU_CPU:-host}"
 boot_only="${BOOT_ONLY:-0}"
+qemu_snapshot="${QEMU_SNAPSHOT:-0}"
 source_tmpfs="${SOURCE_TMPFS:-1}"
 qemu_timeout_sec="${QEMU_TIMEOUT_SEC:-7200}"
 stamp="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
@@ -185,23 +187,31 @@ guest_runner="$work_dir/starry-macos-run.sh"
     emit_export "JOBS" "$jobs"
     emit_export "SMP" "$smp"
     emit_export "RAYON_NUM_THREADS" "${RAYON_NUM_THREADS:-1}"
-    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-1}"
+    emit_export "RUSTC_THREADS" "${RUSTC_THREADS:-2}"
     emit_export "SOURCE_TMPFS" "$source_tmpfs"
     emit_export "PROFILE" "${PROFILE:-release}"
     emit_export "BUILD_TARGET" "${BUILD_TARGET:-aarch64-unknown-none-softfloat}"
     emit_export "BUILD_PACKAGE" "${BUILD_PACKAGE:-starryos}"
     emit_export "BUILD_BIN" "${BUILD_BIN:-starryos}"
-    emit_export "BUILD_STD" "${BUILD_STD:-core,alloc,compiler_builtins}"
-    emit_export "FEATURES" "${FEATURES-plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp}"
+    emit_export "BUILD_STD" "${BUILD_STD:-core,alloc}"
+    emit_export "FEATURES" "${FEATURES:-plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock}"
     emit_export "NO_DEFAULT_FEATURES" "${NO_DEFAULT_FEATURES:-0}"
+    emit_export "TARGET_SPEC_MODE" "${TARGET_SPEC_MODE:-pie}"
+    emit_export "TARGET_SPEC_PATH" "${TARGET_SPEC_PATH:-}"
+    emit_export "ARTIFACT_TO_BIN" "${ARTIFACT_TO_BIN:-1}"
+    emit_export "STARRY_KALLSYMS_RESERVED" "${STARRY_KALLSYMS_RESERVED:-64M}"
     emit_export "CARGO_SUBCOMMAND" "${CARGO_SUBCOMMAND:-build}"
     emit_export "CARGO_BIN" "${CARGO_BIN:-/usr/bin/cargo}"
     emit_export "SOURCE_DIR" "${SOURCE_DIR:-/opt/tgoskits}"
     emit_export "WORK_DIR" "${WORK_DIR:-/tmp/starryos-selfbuild-src}"
     emit_export "CARGO_TARGET_DIR" "${CARGO_TARGET_DIR:-/tmp/starryos-selfbuild-target}"
+    emit_export "ARTIFACT_DIR" "${ARTIFACT_DIR:-/opt/starryos-selfbuild-artifacts}"
+    emit_export "TARGET_HEARTBEAT_SEC" "${TARGET_HEARTBEAT_SEC:-0}"
+    emit_export "TRACE_RUSTC" "${TRACE_RUSTC:-0}"
+    emit_export "CARGO_VERBOSE" "${CARGO_VERBOSE:-0}"
     emit_export "CARGO_PROFILE_RELEASE_LTO" "${CARGO_PROFILE_RELEASE_LTO:-false}"
     emit_export "CARGO_PROFILE_RELEASE_OPT_LEVEL" "${CARGO_PROFILE_RELEASE_OPT_LEVEL:-0}"
-    emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
+    emit_export "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
     emit_export "CARGO_PROFILE_RELEASE_DEBUG" "${CARGO_PROFILE_RELEASE_DEBUG:-0}"
     emit_export "ALLOW_SLOW_SELFBUILD" "${ALLOW_SLOW_SELFBUILD:-0}"
     emit_export "GUEST_MONITOR_INTERVAL_SEC" "${GUEST_MONITOR_INTERVAL_SEC:-60}"
@@ -234,25 +244,32 @@ echo "kernel=$kernel"
 echo "rootfs_copy=$work_rootfs"
 echo "qemu=$qemu"
 echo "qemu_accel=$qemu_accel qemu_machine=$qemu_machine qemu_cpu=$qemu_cpu"
-echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_timeout_sec=$qemu_timeout_sec"
+echo "smp=$smp jobs=$jobs mem=$mem source_tmpfs=$source_tmpfs boot_only=$boot_only qemu_snapshot=$qemu_snapshot qemu_timeout_sec=$qemu_timeout_sec"
 echo "source_commit=$source_commit source_ref=$source_ref"
 : >"$log"
 
+qemu_args=()
+if [[ "$qemu_snapshot" = "1" ]]; then
+    qemu_args+=(-snapshot)
+fi
+qemu_args+=(
+    -nographic
+    -accel "$qemu_accel"
+    -machine "$qemu_machine"
+    -cpu "$qemu_cpu"
+    -m "$mem"
+    -smp "$smp"
+    -device virtio-blk-pci,drive=disk0
+    -drive "id=disk0,if=none,format=raw,file=$work_rootfs,file.locking=off"
+    -device virtio-net-pci,netdev=net0
+    -netdev user,id=net0
+    -kernel "$kernel"
+    -monitor none
+    -serial mon:stdio
+)
+
 "$qemu" \
-    -snapshot \
-    -nographic \
-    -accel "$qemu_accel" \
-    -machine "$qemu_machine" \
-    -cpu "$qemu_cpu" \
-    -m "$mem" \
-    -smp "$smp" \
-    -device virtio-blk-pci,drive=disk0 \
-    -drive "id=disk0,if=none,format=raw,file=$work_rootfs,file.locking=off" \
-    -device virtio-net-pci,netdev=net0 \
-    -netdev user,id=net0 \
-    -kernel "$kernel" \
-    -monitor none \
-    -serial mon:stdio \
+    "${qemu_args[@]}" \
     <"$input_fifo" >"$log" 2>&1 &
 qemu_pid="$!"
 
@@ -286,7 +303,7 @@ check_crate_count_guard() {
     if (( total > expected_max_crates )); then
         cat >>"$log" <<EOF
 ===HOST-QEMU-STOP reason=unexpected-crate-count total=$total expected_max=$expected_max_crates===
-This run is not using the fast macOS self-build profile.
+This run is not using the fast macOS self-build profile. An unexpected Cargo total
 usually means a stale rootfs or slow feature set is being used. Refresh the rootfs with:
   apps/starry/macos-selfbuild/prepare_rootfs.sh
 or set ALLOW_SLOW_SELFBUILD=1 only for deliberate slow-profile experiments.

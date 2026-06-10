@@ -14,8 +14,13 @@ mod pipe;
 pub mod signalfd;
 pub mod timerfd;
 
-use alloc::{borrow::Cow, sync::Arc};
-use core::{ffi::c_int, time::Duration};
+use alloc::{
+    alloc::{alloc_zeroed, handle_alloc_error},
+    borrow::Cow,
+    boxed::Box,
+    sync::Arc,
+};
+use core::{alloc::Layout, ffi::c_int, ptr::NonNull, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
@@ -259,9 +264,30 @@ pub struct FileDescriptor {
     pub cloexec: bool,
 }
 
+type FdTable = FlattenObjects<FileDescriptor, AX_FILE_LIMIT>;
+type FdTableRef = Arc<RwLock<Box<FdTable>>>;
+
+fn new_fd_table() -> FdTableRef {
+    let layout = Layout::new::<FdTable>();
+    // `FlattenObjects::new()` returns a large inline array. Building it as a
+    // normal value in this scope-local initializer creates a large kernel-stack
+    // temporary on AArch64, so initialize the empty table directly on heap.
+    let raw = unsafe { alloc_zeroed(layout) };
+    let table = match NonNull::new(raw) {
+        Some(ptr) => {
+            // SAFETY: flatten_objects 0.2.4 represents an empty table as
+            // uninitialized object slots plus a zero bitmap and zero count.
+            // No `FileDescriptor` value is considered initialized until `add`.
+            unsafe { Box::from_raw(ptr.cast::<FdTable>().as_ptr()) }
+        }
+        None => handle_alloc_error(layout),
+    };
+    Arc::new(RwLock::new(table))
+}
+
 scope_local::scope_local! {
     /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
+    pub static FD_TABLE: FdTableRef = new_fd_table();
 }
 
 /// Get a file-like object by `fd`.
@@ -399,7 +425,7 @@ pub fn close_all_fds() {
     }
 }
 
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
+pub fn add_stdio(fd_table: &mut FdTable) -> AxResult<()> {
     assert_eq!(fd_table.count(), 0);
     let cx = FS_CONTEXT.lock();
     let open = |options: &mut OpenOptions, flags| {

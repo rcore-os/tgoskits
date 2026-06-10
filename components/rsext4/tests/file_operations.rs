@@ -140,8 +140,7 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
-    /// Covers both shrinking and growing a file and documents that growth keeps
-    /// previously stored bytes instead of zero-filling the new range.
+    /// Covers both shrinking and growing a file.
     #[test]
     fn test_file_truncate() {
         let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
@@ -170,17 +169,15 @@ mod file_functional_tests {
             .expect("read_file failed");
         assert_eq!(truncated_data, Vec::from(&original_data[..10]));
 
-        // Grow the file again and check the implementation-specific contents.
+        // Grow the file again. New bytes must read back as zeroes.
         truncate(&mut jbd2_dev, &mut fs, "/truncatetest/truncate_file", 20)
             .expect("truncate expand failed");
 
         let expanded_data = read_file(&mut jbd2_dev, &mut fs, "/truncatetest/truncate_file")
             .expect("read_file failed");
 
-        // Growth currently preserves the bytes that were already present in the
-        // backing blocks instead of returning zero-filled data.
         let mut expected = Vec::from(&original_data[..10]);
-        expected.extend_from_slice(&original_data[10..20]);
+        expected.extend_from_slice(&[0; 10]);
         assert_eq!(expanded_data, expected);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");

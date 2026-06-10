@@ -15,13 +15,13 @@ Runs the complete macOS HVF self-build reproduction:
   3. boot StarryOS with QEMU HVF and build StarryOS inside the guest.
 
 Common knobs:
-  SMP=8 JOBS=1 MEM=4096M QEMU_TIMEOUT_SEC=10800
+  SMP=8 JOBS=8 MEM=4096M QEMU_TIMEOUT_SEC=10800
   ROOTFS_MODE=build-rootfs|prepare-rootfs|skip
   RUST_DIST_SERVER=https://rsproxy.cn
   STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/
 
 For memory-constrained base M1 machines, first verify the flow with:
-  SMP=4 JOBS=1 MEM=3072M apps/starry/macos-selfbuild/reproduce.sh
+  SMP=4 JOBS=4 MEM=3072M apps/starry/macos-selfbuild/reproduce.sh
 USAGE
 }
 
@@ -59,11 +59,16 @@ exec env \
     KERNEL="$kernel" \
     ROOTFS="$rootfs" \
     SMP="${SMP:-8}" \
-    JOBS="${JOBS:-1}" \
+    JOBS="${JOBS:-${SMP:-8}}" \
     MEM="${MEM:-4096M}" \
     RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-1}" \
-    RUSTC_THREADS="${RUSTC_THREADS-1}" \
+    RUSTC_THREADS="${RUSTC_THREADS:-2}" \
     SOURCE_TMPFS="${SOURCE_TMPFS:-1}" \
+    TARGET_SPEC_MODE="${TARGET_SPEC_MODE:-pie}" \
+    ARTIFACT_TO_BIN="${ARTIFACT_TO_BIN:-1}" \
+    TARGET_HEARTBEAT_SEC="${TARGET_HEARTBEAT_SEC:-0}" \
+    TRACE_RUSTC="${TRACE_RUSTC:-0}" \
+    CARGO_VERBOSE="${CARGO_VERBOSE:-0}" \
     EXPECTED_MAX_CRATES="${EXPECTED_MAX_CRATES:-420}" \
     QEMU_TIMEOUT_SEC="${QEMU_TIMEOUT_SEC:-10800}" \
     "$script_dir/run_selfbuild.sh"

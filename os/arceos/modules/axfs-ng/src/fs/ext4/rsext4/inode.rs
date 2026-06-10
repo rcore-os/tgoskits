@@ -282,7 +282,6 @@ impl FileNodeOps for Inode {
             // which causes dirty page loss when jcode atomically replaces files.
             rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         }
-        self.fs.sync_to_disk()?;
         Ok(buf.len())
     }
 
@@ -295,7 +294,6 @@ impl FileNodeOps for Inode {
             rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
             length
         };
-        self.fs.sync_to_disk()?;
         Ok((buf.len(), length + buf.len() as u64))
     }
 
@@ -311,7 +309,7 @@ impl FileNodeOps for Inode {
             )
             .map_err(into_vfs_err)?;
         }
-        self.fs.sync_to_disk()
+        Ok(())
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
