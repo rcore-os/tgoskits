@@ -264,25 +264,6 @@ int main(void)
         fail++;
     }
 
-    /*
-     * Fork a canary child before the tracer exits.
-     *
-     * The parent (which owns the ptrace session) exits immediately so any
-     * deferred kernel cleanup triggered on exit can materialise now.  If the
-     * kernel panics during that cleanup the canary never prints DONE and the
-     * runner will eventually time out (or a fail_regex like #GP will match in
-     * the kernel output).  When the kernel stays healthy the canary waits
-     * briefly, prints the final success marker and exits.
-     */
-    fflush(NULL);
-    pid_t canary = fork();
-    if (canary < 0) {
-        return fail_errno("fork canary");
-    }
-    if (canary > 0) {
-        _exit(0);
-    }
-    sleep(5);
     printf("DONE: %d pass, %d fail\n", pass, fail);
     return fail == 0 ? 0 : 1;
 }

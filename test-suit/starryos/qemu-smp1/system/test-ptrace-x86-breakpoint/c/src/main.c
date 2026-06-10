@@ -192,7 +192,7 @@ static int test_breakpoint(void)
                (unsigned long long)regs.rip, (unsigned long long)bp_addr);
         return 1;
     }
-    printf("  ok: RIP=%#llx at breakpoint (offset +%lld)\n",
+    printf("  ok: RIP=%#llx at breakpoint %#llx (offset +%lld)\n",
            (unsigned long long)regs.rip, (unsigned long long)bp_addr,
            (long long)(regs.rip - bp_addr));
 
