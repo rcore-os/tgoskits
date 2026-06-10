@@ -69,11 +69,12 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 
 ## Failure Propagation
 
-- Starry QEMU and board tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test ...` exit successfully.
-- `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
-- In grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
-- In shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
-- Explicit skips are allowed only when the test prints a clear skip marker and the review or case comment explains why the environment cannot require success. Bugfix and regression tests should fail loudly when the fixed behavior is absent.
+- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; do not force board cases into the QEMU grouped/C runner structure.
+- Starry QEMU tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test qemu ...` exit successfully.
+- QEMU `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
+- In QEMU grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
+- In QEMU shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
+- Explicit QEMU skips are allowed only when the test prints a clear skip marker and the review or case comment explains why the environment cannot require success. Bugfix and regression QEMU tests should fail loudly when the fixed behavior is absent.
 
 ## Editing Rules
 

@@ -233,7 +233,7 @@ Do not accept "success path" tests that silently skip on unexpected failure, suc
 
 Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from required test-suit coverage, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving regression coverage.
 
-For PRs that add or change Starry tests, `qemu-*.toml`, board configs, grouped wrappers, generated runners, or `success_regex`/`fail_regex`, verify failure propagation as a hard gate. A guest test failure must be observable by `cargo xtask starry test ...` as a failed case, not only as a log line. Treat this as blocking when a test binary fails but the wrapper still prints the grouped success marker, the command exits zero, `fail_regex` cannot match the failure marker, `$?` is overwritten before being captured, or a failing subcase is converted into an unreviewed skip.
+For PRs that add or change Starry QEMU tests, `qemu-*.toml`, grouped wrappers, generated QEMU runners, or QEMU `success_regex`/`fail_regex`, verify failure propagation as a hard gate. A guest test failure must be observable by `cargo xtask starry test qemu ...` as a failed case, not only as a log line. Treat this as blocking when a QEMU test binary fails but the wrapper still prints the grouped success marker, the command exits zero, `fail_regex` cannot match the failure marker, `$?` is overwritten before being captured, or a failing subcase is converted into an unreviewed skip. Board config changes should still be reviewed against the existing board runner semantics, but do not force them into the QEMU grouped/C runner failure-propagation model.
 
 ### Crates.io Patch Policy
 
@@ -386,7 +386,7 @@ Treat these as blocking unless clearly non-blocking:
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
 - targeted tests, formatting, clippy, or PR-related CI fail;
 - a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
-- a Starry test failure is visible in guest logs but does not make `cargo xtask starry test ...` fail, including hidden `$?`, missing failure marker, overly loose `success_regex`, or missing `fail_regex` coverage;
+- a Starry QEMU test failure is visible in guest logs but does not make `cargo xtask starry test qemu ...` fail, including hidden `$?`, missing failure marker, overly loose `success_regex`, or missing `fail_regex` coverage;
 - a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
 - a PR adds or changes CI-missing StarryOS user-space support, an ArceOS app, or an app-facing tool/wrapper, but the documented preparation plus QEMU/runtime workflow was not run on the current head;
 - an app/tool workflow's documentation is incomplete or wrong enough that the reviewer cannot prepare the environment, launch QEMU, or verify the documented postcondition;
