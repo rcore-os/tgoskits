@@ -41,21 +41,3 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
         FS_CONTEXT.lock().remove_file(path)
     }
 }
-
-#[cfg(all(feature = "net", feature = "fs", not(feature = "fs-ng")))]
-pub(crate) struct AxFsUnixNamespace;
-
-#[cfg(all(feature = "net", feature = "fs", not(feature = "fs-ng")))]
-impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
-    fn resolve(&self, _path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
-        Err(ax_errno::AxError::Unsupported)
-    }
-
-    fn bind(&self, _path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
-        Err(ax_errno::AxError::Unsupported)
-    }
-
-    fn unbind(&self, path: &str) -> ax_errno::AxResult<()> {
-        ax_fs::api::remove_file(path)
-    }
-}

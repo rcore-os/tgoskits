@@ -103,14 +103,14 @@ pub(crate) fn init_static_net() {
     ax_net::init_network(take_static_net_drivers(), config);
 }
 
-#[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
+#[cfg(all(feature = "net", feature = "fs-ng"))]
 fn register_unix_namespace() {
     ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 }
 
-#[cfg(all(feature = "net", not(any(feature = "fs", feature = "fs-ng"))))]
+#[cfg(all(feature = "net", not(feature = "fs-ng")))]
 fn register_unix_namespace() {
-    // No filesystem, Unix socket namespace not available
+    // Path-based Unix sockets require fs-ng namespace support
 }
 
 #[cfg(feature = "net")]

@@ -302,7 +302,8 @@ impl DnsSocketGuard {
         })?;
 
         let start_time = ax_hal::time::monotonic_time_nanos();
-        let deadline = start_time.saturating_add(timeout.as_nanos() as u64);
+        let timeout_ns = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
+        let deadline = start_time.saturating_add(timeout_ns);
 
         loop {
             poll_interfaces();

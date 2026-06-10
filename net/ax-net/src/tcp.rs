@@ -527,6 +527,10 @@ impl SocketOps for TcpSocket {
                                 .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
                         )
                     } else {
+                        // Drain currently available bytes from RX queue without waiting.
+                        // This loop copies across smoltcp's internal buffer segments to fill
+                        // the user buffer with as many bytes as are ready, but does not block
+                        // waiting for more data to arrive.
                         let mut total = 0;
                         while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
                             let len = socket
