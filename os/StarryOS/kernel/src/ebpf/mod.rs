@@ -41,6 +41,7 @@ pub use transform::EbpfKernelAuxiliary;
 use crate::{
     ebpf::{error::BpfResultExt, map::create_map, prog::load_prog},
     file::add_file_like,
+    kprobe::KernelRawMutex,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
 };
@@ -103,37 +104,37 @@ fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
 
 fn handle_map_update(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_update_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_update_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_lookup_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_lookup_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_delete_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_get_next_key(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapGetNextKeyArg::from(attr);
-    bpf_map_get_next_key::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_get_next_key::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_freeze(attr: &bpf_attr) -> AxResult<isize> {
     let map_fd = unsafe { attr.__bindgen_anon_2.map_fd };
-    bpf_map_freeze::<EbpfKernelAuxiliary>(map_fd).into_ax_result()?;
+    bpf_map_freeze::<EbpfKernelAuxiliary, KernelRawMutex>(map_fd).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup_and_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 

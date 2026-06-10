@@ -34,10 +34,15 @@ phys-bus-offset = 0                             # uint
 kernel-base-paddr = 0x0020_0000                 # uint
 # Base virtual address of the kernel image.
 kernel-base-vaddr = "0x9000_0000_0020_0000"     # uint
-# Kernel address space base.
-kernel-aspace-base = "0x9000_0000_0000_0000"    # uint
-# Kernel address space size.
-kernel-aspace-size = "0x0000_ffff_ffff_f000"    # uint
+# Kernel page-table-backed address space.
+#
+# LoongArch64 uses the 0x9000_0000_0000_0000 DMW window for cached direct
+# mapping, so the kernel page table must not manage that range. Use a
+# sign-extended PGDH address whose low 48-bit page-table indexes do not alias
+# the DMW mappings.
+kernel-aspace-base = "0xFFFF_8000_0000_0000"    # uint
+# Kernel page-table-backed address space size.
+kernel-aspace-size = "0x0000_7fff_ffff_f000"    # uint
 # Stack size on bootstrapping. (256K)
 boot-stack-size = 0x40000                       # uint
 

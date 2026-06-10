@@ -3,11 +3,11 @@
 //! to tgoskits' `ax_hal` / `ax_kspin` / `ax_errno` / `ax_alloc` package
 //! names per `crate-fork-audit.md §6`.
 
-use alloc::{borrow::Cow, sync::Arc};
+use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use axpoll::{PollSet, Pollable};
 use kbpf_basic::{
     PollWaker,
@@ -17,13 +17,15 @@ use kbpf_basic::{
 use crate::{
     ebpf::transform::{EbpfKernelAuxiliary, PerCpuImpl},
     file::{FileLike, Kstat},
+    kprobe::KernelRawMutex,
+    pseudofs::DeviceMmap,
 };
 
 /// File-like handle for a BPF map. Holds the `UnifiedMap` (the kbpf-basic
 /// abstraction over array / hash / lru / queue / perf-array maps) and a
 /// `PollSet` so `poll(2)`-based maps (e.g. ringbuf) can wake waiters.
 pub struct BpfMap {
-    unified_map: SpinNoPreempt<UnifiedMap>,
+    unified_map: Arc<UnifiedMap<KernelRawMutex>>,
     poll_ready: Arc<PollSetWrapper>,
 }
 
@@ -35,16 +37,16 @@ impl core::fmt::Debug for BpfMap {
 
 impl BpfMap {
     /// Wrap a freshly-created `UnifiedMap` in the kernel file-like layer.
-    pub fn new(unified_map: UnifiedMap, poll_ready: Arc<PollSetWrapper>) -> Self {
+    pub fn new(unified_map: UnifiedMap<KernelRawMutex>, poll_ready: Arc<PollSetWrapper>) -> Self {
         BpfMap {
-            unified_map: SpinNoPreempt::new(unified_map),
+            unified_map: Arc::new(unified_map),
             poll_ready,
         }
     }
 
     /// Lock and access the underlying `UnifiedMap`.
-    pub fn unified_map(&self) -> SpinNoPreemptGuard<'_, UnifiedMap> {
-        self.unified_map.lock()
+    pub fn unified_map(&self) -> &UnifiedMap<KernelRawMutex> {
+        self.unified_map.as_ref()
     }
 }
 
@@ -81,6 +83,28 @@ impl FileLike for BpfMap {
 
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[bpf_map]".into()
+    }
+
+    fn device_mmap(&self, offset: u64, length: u64) -> AxResult<crate::pseudofs::DeviceMmap> {
+        // for ringbuf maps, userland calls mmap on the map fd to get a pointer to the ringbuf;
+        // the kernel must support this. For other map types, mmap is not meaningful and Linux rejects it with EINVAL.
+        if !offset.is_multiple_of(PAGE_SIZE_4K as u64)
+            || !length.is_multiple_of(PAGE_SIZE_4K as u64)
+        {
+            return Err(AxError::InvalidInput);
+        }
+
+        let unified_map = self.unified_map();
+        let map = unified_map.map();
+        let phy_addrs = map
+            .map_mmap(offset as usize, length as usize)
+            .map_err(|_| AxError::InvalidInput)?
+            .iter()
+            .map(|&phys_addr| PhysAddr::from_usize(phys_addr))
+            .collect::<Vec<_>>();
+
+        let retain: Arc<dyn core::any::Any + Send + Sync> = self.unified_map.clone();
+        Ok(DeviceMmap::PhysicalPages(phy_addrs, Some(retain)))
     }
 }
 
