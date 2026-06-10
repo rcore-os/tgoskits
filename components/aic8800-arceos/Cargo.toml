@@ -1,0 +1,15 @@
+[package]
+name = "aic8800-arceos"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "ArceOS runtime glue for the aic8800 Wi-Fi driver core (implements WifiRuntime over ax-task/ax-hal)."
+# Board bring-up / in-tree integration only; not intended for crates.io.
+publish = false
+
+[dependencies]
+aic8800 = { workspace = true }
+sdhci-cv1800-arceos = { workspace = true }
+wifi-host = { workspace = true }
+ax-task = { workspace = true, features = ["multitask"] }
+ax-hal = { workspace = true, features = ["irq"] }

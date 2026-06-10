@@ -20,9 +20,6 @@ pub mod irq;
 pub mod regs;
 pub mod runtime;
 
-#[cfg(feature = "arceos")]
-pub mod glue_arceos;
-
 use alloc::sync::Arc;
 use core::ptr::{read_volatile, write_volatile};
 

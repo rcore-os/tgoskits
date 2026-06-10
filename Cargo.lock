@@ -151,8 +151,6 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "atomic-waker",
- "ax-hal",
- "ax-task",
  "digest 0.10.7",
  "dma-api",
  "hmac",
@@ -164,6 +162,17 @@ dependencies = [
  "sdio-host",
  "sha1 0.10.6",
  "spin 0.12.0",
+ "wifi-host",
+]
+
+[[package]]
+name = "aic8800-arceos"
+version = "0.1.0"
+dependencies = [
+ "aic8800",
+ "ax-hal",
+ "ax-task",
+ "sdhci-cv1800-arceos",
  "wifi-host",
 ]
 
@@ -688,6 +697,7 @@ dependencies = [
 name = "ax-driver"
 version = "0.7.0"
 dependencies = [
+ "aic8800",
  "anyhow",
  "arm-scmi-rs",
  "ax-alloc",
@@ -728,13 +738,16 @@ dependencies = [
  "rockchip-npu",
  "rockchip-pm",
  "rockchip-soc",
+ "sdhci-cv1800",
  "sdhci-host",
+ "sdio-host",
  "sdmmc-protocol",
  "sg200x-bsp",
  "simple-ahci",
  "some-serial",
  "spin 0.12.0",
  "virtio-drivers",
+ "wifi-host",
 ]
 
 [[package]]
@@ -1214,6 +1227,7 @@ dependencies = [
 name = "ax-runtime"
 version = "0.6.1"
 dependencies = [
+ "aic8800-arceos",
  "ax-alloc",
  "ax-config",
  "ax-crate-interface",
@@ -7183,9 +7197,16 @@ dependencies = [
 name = "sdhci-cv1800"
 version = "0.1.0"
 dependencies = [
- "ax-task",
  "log",
  "sdio-host",
+]
+
+[[package]]
+name = "sdhci-cv1800-arceos"
+version = "0.1.0"
+dependencies = [
+ "ax-task",
+ "sdhci-cv1800",
 ]
 
 [[package]]
@@ -7732,7 +7753,6 @@ dependencies = [
 name = "starry-kernel"
 version = "0.6.0"
 dependencies = [
- "aic8800",
  "ax-alloc",
  "ax-config",
  "ax-cpu",
@@ -7796,13 +7816,10 @@ dependencies = [
  "ouroboros",
  "rand 0.10.1",
  "rbpf",
- "rd-net",
  "rdrive",
  "ringbuf",
  "riscv",
  "scope-local",
- "sdhci-cv1800",
- "sdio-host",
  "sg2002-tpu",
  "sg200x-bsp",
  "slab",
@@ -7817,7 +7834,6 @@ dependencies = [
  "tock-registers 0.9.0",
  "uluru",
  "weak-map",
- "wifi-host",
  "x86",
  "xmas-elf",
  "zerocopy",

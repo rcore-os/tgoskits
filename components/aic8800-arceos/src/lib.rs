@@ -1,9 +1,17 @@
-//! ArceOS runtime glue (feature `arceos`).
+//! ArceOS runtime glue for the `aic8800` Wi-Fi driver core.
 //!
-//! This is the OS adapter layer: it implements [`wifi_host::WifiRuntime`] on top
-//! of ArceOS's `ax-task` / `ax-hal` and installs it into the driver core. The
-//! driver core itself (everything outside this module) contains no reference to
-//! any ArceOS crate.
+//! Implements [`wifi_host::WifiRuntime`] on top of ArceOS's `ax-task` / `ax-hal`
+//! and installs it into the driver core. The core crate itself contains no
+//! reference to any ArceOS crate; this crate is the OS adapter layer, kept
+//! separate so the core can sit below `ax-hal` in the crate graph (e.g. be used
+//! by `ax-driver`).
+//!
+//! [`install_runtime`] also installs the sibling `sdhci-cv1800` delay glue, so a
+//! single call wires up the whole SG2002 Wi-Fi stack's runtime capabilities.
+
+#![no_std]
+
+extern crate alloc;
 
 use alloc::boxed::Box;
 use core::{future::poll_fn, time::Duration};
@@ -57,8 +65,9 @@ impl WifiRuntime for ArceosWifiRuntime {
 
 static ARCEOS_RUNTIME: ArceosWifiRuntime = ArceosWifiRuntime;
 
-/// Installs the ArceOS runtime into the driver core. Call once during init,
-/// before [`crate::fdrv::init`] or any Wi-Fi operation.
+/// Installs the ArceOS runtime into the aic8800 driver core *and* the
+/// sdhci-cv1800 delay glue. Call once during init, before any Wi-Fi operation.
 pub fn install_runtime() {
-    crate::set_runtime(&ARCEOS_RUNTIME);
+    sdhci_cv1800_arceos::install_delay();
+    aic8800::set_runtime(&ARCEOS_RUNTIME);
 }

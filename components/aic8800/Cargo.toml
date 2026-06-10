@@ -10,9 +10,6 @@ publish = false
 
 [features]
 default = []
-# OS glue: provides an ArceOS-backed `WifiRuntime` implementation. The driver
-# core does not need this; enable it when integrating on ArceOS/Starry.
-arceos = ["dep:ax-task", "dep:ax-hal", "sdhci-cv1800/arceos"]
 
 [dependencies]
 log = { workspace = true }
@@ -27,10 +24,6 @@ atomic-waker = { workspace = true }
 rdif-eth = { workspace = true }
 rd-net = { workspace = true }
 dma-api = { workspace = true }
-
-# OS glue dependencies — optional, only used behind the `arceos` feature.
-ax-task = { workspace = true, features = ["multitask"], optional = true }
-ax-hal = { workspace = true, features = ["irq"], optional = true }
 
 hmac = { version = "0.12", default-features = false }
 sha1 = { version = "0.10", default-features = false }

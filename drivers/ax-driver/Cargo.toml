@@ -40,6 +40,14 @@ ixgbe = ["net", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "dep:realtek-rtl8125"]
+aic8800-wifi = [
+    "net",
+    "plat-dyn",
+    "dep:aic8800",
+    "dep:sdhci-cv1800",
+    "dep:sdio-host",
+    "dep:wifi-host",
+]
 
 usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
@@ -96,6 +104,7 @@ list-pci-devices = []
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+aic8800 = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
@@ -135,12 +144,15 @@ rockchip-pm = { workspace = true, optional = true }
 rockchip-soc = { workspace = true, optional = true }
 phytium-mci-host = { workspace = true, optional = true }
 sdhci-host = { workspace = true, optional = true }
+sdhci-cv1800 = { workspace = true, optional = true }
+sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
 virtio-drivers = { workspace = true, optional = true }
+wifi-host = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

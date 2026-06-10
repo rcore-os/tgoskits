@@ -1,0 +1,12 @@
+[package]
+name = "sdhci-cv1800-arceos"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "ArceOS runtime glue for the sdhci-cv1800 driver core (implements SdhciDelay over ax-task)."
+# Board bring-up / in-tree integration only; not intended for crates.io.
+publish = false
+
+[dependencies]
+sdhci-cv1800 = { workspace = true }
+ax-task = { workspace = true }

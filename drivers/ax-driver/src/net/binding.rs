@@ -35,6 +35,90 @@ pub fn take_rd_net_device(
         .ok_or_else(|| NetError::Other(Box::new(rd_net::KError::Unknown("device already taken"))))
 }
 
+/// A registered Wi-Fi device.
+///
+/// Unlike [`PlatformNetDevice`] (a plain NIC), a Wi-Fi device carries two extra
+/// things past the probe stage:
+///
+/// * the chip-facing control plane ([`wifi_host::WifiDriver`]) for STA/SoftAP
+///   control (connect / start_ap / MAC / RX-wake), and
+/// * an [`ApConfig`] describing the link policy the board wants applied once the
+///   network service is up.
+///
+/// The data plane is the same `rd_net::Net` every NIC uses. Keeping the control
+/// handle and policy *with the device* (rather than in the protocol stack) is
+/// what lets the network stack stay Wi-Fi-agnostic.
+#[cfg(feature = "aic8800-wifi")]
+pub struct PlatformWifiDevice {
+    name: &'static str,
+    net: Option<rd_net::Net>,
+    wifi: Option<Box<dyn wifi_host::WifiDriver>>,
+    ap: ApConfig,
+}
+
+/// Link policy for a Wi-Fi device, produced by the board/probe layer and applied
+/// by the runtime when it brings the network service up. The protocol stack only
+/// consumes the generic fields; it has no notion of "Wi-Fi" or "SoftAP".
+#[cfg(feature = "aic8800-wifi")]
+#[derive(Clone, Copy)]
+pub struct ApConfig {
+    /// SoftAP gateway / this interface's static address.
+    pub server_ip: [u8; 4],
+    /// Address handed out to the single DHCP client.
+    pub client_ip: [u8; 4],
+    pub prefix_len: u8,
+}
+
+/// The parts taken out of a [`PlatformWifiDevice`]: data plane, control plane,
+/// device name, and link policy.
+#[cfg(feature = "aic8800-wifi")]
+pub type WifiDeviceParts = (
+    rd_net::Net,
+    Box<dyn wifi_host::WifiDriver>,
+    &'static str,
+    ApConfig,
+);
+
+#[cfg(feature = "aic8800-wifi")]
+impl PlatformWifiDevice {
+    pub fn new(
+        name: &'static str,
+        net: rd_net::Net,
+        wifi: Box<dyn wifi_host::WifiDriver>,
+        ap: ApConfig,
+    ) -> Self {
+        Self {
+            name,
+            net: Some(net),
+            wifi: Some(wifi),
+            ap,
+        }
+    }
+
+    /// Takes the data plane, control plane, name and AP policy. Returns `None`
+    /// if already taken.
+    pub fn take(&mut self) -> Option<WifiDeviceParts> {
+        Some((self.net.take()?, self.wifi.take()?, self.name, self.ap))
+    }
+}
+
+#[cfg(feature = "aic8800-wifi")]
+impl DriverGeneric for PlatformWifiDevice {
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+/// Takes the parts of a registered Wi-Fi device out of its rdrive slot.
+#[cfg(feature = "aic8800-wifi")]
+pub fn take_wifi_device(device: Device<PlatformWifiDevice>) -> Result<WifiDeviceParts, NetError> {
+    let mut dev = device
+        .lock()
+        .map_err(|_| NetError::Other(Box::new(rd_net::KError::Unknown("device locked"))))?;
+    dev.take()
+        .ok_or_else(|| NetError::Other(Box::new(rd_net::KError::Unknown("device already taken"))))
+}
+
 impl DriverGeneric for PlatformNetDevice {
     fn name(&self) -> &str {
         self.name
