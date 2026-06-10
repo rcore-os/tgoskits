@@ -671,10 +671,14 @@ impl AxRunQueue {
             }
             let task = {
                 let mut sched = get_run_queue(target).scheduler.lock();
-                sched.pick_next_task_matching(|t| t.cpumask().get(current_cpu))
+                sched
+                    .pick_next_task_matching(|t| t.cpumask().get(current_cpu))
+                    .map(|task| {
+                        task.set_cpu_id(current_cpu as _);
+                        task
+                    })
             };
             if let Some(task) = task {
-                task.set_cpu_id(current_cpu as _);
                 #[cfg(feature = "ipi")]
                 kick_remote_cpu(target);
                 return Some(task);
