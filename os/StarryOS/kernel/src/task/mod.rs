@@ -373,6 +373,11 @@ impl Thread {
     pub fn set_cred(&self, new_cred: Cred) {
         let new_arc = Arc::new(new_cred);
 
+        // Always update the caller first.  The process thread list is a
+        // best-effort snapshot, and credential-changing syscalls must not
+        // return before the calling thread observes its own new credentials.
+        self.set_cred_single(new_arc.clone());
+
         // Collect TIDs and sort to establish a consistent lock order.
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
