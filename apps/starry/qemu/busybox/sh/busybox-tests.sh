@@ -1471,14 +1471,41 @@ else
     echo "FAIL_DETAIL: busybox_insmod (rc=$_rc)"; echo "$_t"; bb_case_fail
 fi
 
+# busybox_fdflush — issues the BLKFLSBUF ioctl. On a missing / non-block target
+# it fails with a file/ioctl diagnostic. Require that diagnostic AND reject
+# "applet not found" so an unregistered applet (which also exits non-zero with
+# "fdflush: applet not found") can't pass on a bare rc!=0.
 bb_case_start "busybox_fdflush"
 _t=$({ timeout 10 sh -c 'busybox fdflush /tmp/bb_no_such_device 2>&1'; echo "EXIT:$?"; } 2>&1)
 _rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
 _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
-if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such|not found|can't open|cannot open|device|ioctl"; then
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -ne 0 ] \
+    && echo "$_t" | grep -qiE "No such|can't open|cannot open|not a tty|inappropriate|ioctl" \
+    && ! echo "$_t" | grep -qiF "applet not found"; then
     echo "PASS: busybox_fdflush"; bb_case_pass
 else
     echo "FAIL_DETAIL: busybox_fdflush (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# fdflush no operand: usage error (non-zero), not "applet not found".
+bb_case_start "busybox_fdflush_noarg"
+_t=$({ timeout 10 sh -c 'busybox fdflush 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -ne 0 ] && ! echo "$_t" | grep -qiF "applet not found" && echo "$_t" | grep -qiE "usage|fdflush|argument"; then
+    echo "PASS: busybox_fdflush_noarg"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_fdflush_noarg (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# fdflush on a real (non-floppy) device node /dev/null: opens OK, FDFLUSH ioctl
+# yields an error diagnostic (tolerant: rc!=0 with a diagnostic, or rc=0).
+bb_case_start "busybox_fdflush_devnull"
+_t=$({ timeout 10 sh -c 'busybox fdflush /dev/null 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && ! echo "$_t" | grep -qiF "applet not found" && { [ "$_rc" = 0 ] || echo "$_t" | grep -qiE "ioctl|not a tty|inappropriate|invalid|error|No such"; }; then
+    echo "PASS: busybox_fdflush_devnull"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_fdflush_devnull (rc=$_rc)"; echo "$_t"; bb_case_fail
 fi
 
 bb_case_start "busybox_raidautorun"
@@ -1491,46 +1518,165 @@ else
     echo "FAIL_DETAIL: busybox_raidautorun (rc=$_rc)"; echo "$_t"; bb_case_fail
 fi
 
+# busybox_killall5 — the real SIGSTOP/SIGCONT job-control killall5 relies on is
+# verified safely (forked child, no effect on this suite) by the dedicated
+# test-job-control-stop case. Here we smoke the applet and reject "applet not
+# found" so an unregistered applet can't pass: running the real session-wide
+# SIGSTOP inside this suite would risk stopping the test harness itself.
 bb_case_start "busybox_killall5"
 _t=$({ timeout 10 sh -c 'busybox killall5 -h 2>&1'; echo "EXIT:$?"; } 2>&1)
 _rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
 _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
-if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && echo "$_t" | grep -qiE "Usage|killall5"; then
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && echo "$_t" | grep -qiE "Usage|killall5" && ! echo "$_t" | grep -qiF "applet not found"; then
     echo "PASS: busybox_killall5"; bb_case_pass
 else
     echo "FAIL_DETAIL: busybox_killall5 (rc=$_rc)"; echo "$_t"; bb_case_fail
 fi
 
-# busybox_rdev — rdev outputs nothing on StarryOS (no /proc/kcore etc.)
-# so we only verify: applet exists, executes without hang, returns non-timeout
+# busybox_rdev — reports the device mounted at "/": stats "/", takes st_dev,
+# scans /dev for a block node with matching st_rdev. With the /dev/vda root
+# block node (its rdev == root st_dev) rdev prints "/dev/vda /". Require exactly
+# one "/dev/<no-space> /" line so stray output can't slip through.
 bb_case_start "busybox_rdev"
 _t=$({ timeout 10 sh -c 'busybox rdev 2>&1'; echo "EXIT:$?"; } 2>&1)
 _rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
-if [ -n "$_rc" ] && [ "$_rc" -ne 124 ]; then
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$(printf '%s\n' "$_t" | grep -cE '^/dev/[^[:space:]]+[[:space:]]+/$')" = 1 ]; then
     echo "PASS: busybox_rdev"; bb_case_pass
 else
     echo "FAIL_DETAIL: busybox_rdev (rc=$_rc)"; echo "$_t"; bb_case_fail
 fi
 
+# busybox_setlogcons — real TIOCLINUX subcmd 11 ioctl on /dev/tty0 (not just
+# -h). Accept rc=0 (kernel handled it) or a "/dev/tty0" open-failure fallback
+# (the applet itself works; starry may lack /dev/tty0). Reject "applet not
+# found" so an unregistered applet can't pass.
 bb_case_start "busybox_setlogcons"
-_t=$({ timeout 10 sh -c 'busybox setlogcons -h 2>&1'; echo "EXIT:$?"; } 2>&1)
+_t=$({ timeout 10 sh -c 'busybox setlogcons 0 2>&1'; echo "EXIT:$?"; } 2>&1)
 _rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
 _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
-if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && echo "$_t" | grep -qiE "Usage|setlogcons"; then
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && ! echo "$_t" | grep -qiF "not found" \
+    && { [ "$_rc" = 0 ] || echo "$_t" | grep -qF "/dev/tty0"; }; then
     echo "PASS: busybox_setlogcons"; bb_case_pass
 else
     echo "FAIL_DETAIL: busybox_setlogcons (rc=$_rc)"; echo "$_t"; bb_case_fail
 fi
 
-# busybox_resize — outputs terminal escape sequences that corrupt EXIT: parsing
-# redirect all output to /dev/null, only capture return code
+# setlogcons with no positional arg: defaults to console 0 (same TIOCLINUX path).
+bb_case_start "busybox_setlogcons_noarg"
+_t=$({ timeout 10 sh -c 'busybox setlogcons 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && ! echo "$_t" | grep -qiF "not found" && { [ "$_rc" = 0 ] || echo "$_t" | grep -qiE "/dev/tty0|console|ioctl|usage|TIOCLINUX"; }; then
+    echo "PASS: busybox_setlogcons_noarg"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_setlogcons_noarg (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# setlogcons with explicit console 1 exercises the N argument path.
+bb_case_start "busybox_setlogcons_n1"
+_t=$({ timeout 10 sh -c 'busybox setlogcons 1 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && ! echo "$_t" | grep -qiF "not found" && { [ "$_rc" = 0 ] || echo "$_t" | grep -qiE "/dev/tty|console|ioctl|TIOCLINUX"; }; then
+    echo "PASS: busybox_setlogcons_n1"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_setlogcons_n1 (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# busybox_resize — sets the tty to raw mode (TCSETS), writes an ESC[6n cursor
+# query, reads the report, then prints a `COLUMNS=N;LINES=N;export COLUMNS LINES;`
+# trailer scripts can `eval`. The busybox-shell stdio console on starry does not
+# yet honor the TCSETS raw-mode ioctl (it returns ENOTTY — see notes/51), so
+# resize cannot complete the probe and exits non-zero before emitting the
+# trailer. Accept EITHER outcome: the full trailer (the ideal, once the console
+# gains TCSETS) OR a clean non-zero exit that is NOT "applet not found" (the
+# current starry reality). A stub that silently exits 0 without a trailer, or a
+# dropped/unregistered applet ("applet not found"), still FAILs.
 bb_case_start "busybox_resize"
-_t=$({ timeout 10 sh -c 'busybox resize >/dev/null 2>&1'; echo "EXIT:$?"; } 2>&1)
-_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
-if [ -n "$_rc" ] && [ "$_rc" -ne 124 ]; then
+timeout 10 sh -c 'busybox resize >/tmp/bb_resize.out 2>/tmp/bb_resize.err'; _rc=$?
+_rerr=$(cat /tmp/bb_resize.err 2>/dev/null)
+_rtrailer=0
+if grep -qF "COLUMNS=" /tmp/bb_resize.out && grep -qF "LINES=" /tmp/bb_resize.out && grep -qF "export COLUMNS LINES" /tmp/bb_resize.out; then _rtrailer=1; fi
+if [ "$_rc" -ne 124 ] && ! echo "$_rerr" | grep -qiF "applet not found" && { [ "$_rtrailer" = 1 ] || [ "$_rc" -ne 0 ]; }; then
     echo "PASS: busybox_resize"; bb_case_pass
 else
-    echo "FAIL_DETAIL: busybox_resize (rc=$_rc)"; echo "$_t"; bb_case_fail
+    echo "FAIL_DETAIL: busybox_resize (rc=$_rc trailer=$_rtrailer)"; echo "OUT:"; cat /tmp/bb_resize.out; echo "ERR: $_rerr"; bb_case_fail
+fi
+
+# resize must be a registered applet (built in), not "applet not found".
+bb_case_start "busybox_resize_registered"
+_t=$({ timeout 10 sh -c 'busybox resize --help 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && ! echo "$_t" | grep -qiF "applet not found"; then
+    echo "PASS: busybox_resize_registered"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_resize_registered (rc=$_rc)"; echo "$_t"; bb_case_fail
+fi
+
+# resize with stdin redirected from a non-tty must stay bounded (no hang) and
+# must not be reported as "applet not found".
+bb_case_start "busybox_resize_redir_stdin"
+timeout 10 sh -c 'busybox resize </dev/null >/tmp/bb_resize2.out 2>&1'; _rc=$?
+if [ "$_rc" -ne 124 ] && ! grep -qiF "applet not found" /tmp/bb_resize2.out 2>/dev/null; then
+    echo "PASS: busybox_resize_redir_stdin"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_resize_redir_stdin (rc=$_rc)"; cat /tmp/bb_resize2.out 2>/dev/null; bb_case_fail
+fi
+
+# busybox_remove_shell — removes the named shell(s) from /etc/shells. Seed
+# /etc/shells with two entries, remove one, and require the removed entry is
+# gone while the survivor remains — a real edit of the file, not just --help.
+bb_case_start "busybox_remove_shell"
+printf '/bin/sh\n/bin/bb_dummy_shell\n' > /etc/shells 2>/dev/null
+_t=$({ timeout 10 sh -c 'busybox remove-shell /bin/bb_dummy_shell 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -eq 0 ] \
+    && ! echo "$_t" | grep -qiF "applet not found" \
+    && ! grep -qF "/bin/bb_dummy_shell" /etc/shells 2>/dev/null \
+    && grep -qF "/bin/sh" /etc/shells 2>/dev/null; then
+    echo "PASS: busybox_remove_shell"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_remove_shell (rc=$_rc)"; echo "$_t"; cat /etc/shells 2>/dev/null; bb_case_fail
+fi
+
+# remove-shell removes multiple shells in one invocation; survivors retained.
+bb_case_start "busybox_remove_shell_multi"
+printf '/bin/sh\n/bin/aaa\n/bin/bbb\n/bin/ccc\n' > /etc/shells 2>/dev/null
+_t=$({ timeout 10 sh -c 'busybox remove-shell /bin/aaa /bin/ccc 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -eq 0 ] && ! echo "$_t" | grep -qiF "applet not found" \
+    && ! grep -qF "/bin/aaa" /etc/shells && ! grep -qF "/bin/ccc" /etc/shells \
+    && grep -qF "/bin/sh" /etc/shells && grep -qF "/bin/bbb" /etc/shells; then
+    echo "PASS: busybox_remove_shell_multi"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_remove_shell_multi (rc=$_rc)"; echo "$_t"; cat /etc/shells 2>/dev/null; bb_case_fail
+fi
+
+# remove-shell of a shell not present is a no-op success; file left intact.
+bb_case_start "busybox_remove_shell_absent"
+printf '/bin/sh\n/bin/zsh\n' > /etc/shells 2>/dev/null
+_t=$({ timeout 10 sh -c 'busybox remove-shell /bin/nonexistent_xyz 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && [ "$_rc" -eq 0 ] && ! echo "$_t" | grep -qiF "applet not found" \
+    && grep -qF "/bin/sh" /etc/shells && grep -qF "/bin/zsh" /etc/shells; then
+    echo "PASS: busybox_remove_shell_absent"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_remove_shell_absent (rc=$_rc)"; echo "$_t"; cat /etc/shells 2>/dev/null; bb_case_fail
+fi
+
+# remove-shell with no operand: the per-arg removal loop has nothing to do, so
+# BusyBox treats it as a no-op (rc 0) that leaves /etc/shells intact (some
+# builds instead print usage with rc!=0). Accept either, but the applet must be
+# registered ("applet not found" rejected) and must not corrupt the file.
+bb_case_start "busybox_remove_shell_noarg"
+printf '/bin/sh\n/bin/ksh\n' > /etc/shells 2>/dev/null
+_t=$({ timeout 10 sh -c 'busybox remove-shell 2>&1'; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p'); _t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if [ -n "$_rc" ] && [ "$_rc" -ne 124 ] && ! echo "$_t" | grep -qiF "applet not found" \
+    && grep -qF "/bin/sh" /etc/shells && grep -qF "/bin/ksh" /etc/shells; then
+    echo "PASS: busybox_remove_shell_noarg"; bb_case_pass
+else
+    echo "FAIL_DETAIL: busybox_remove_shell_noarg (rc=$_rc)"; echo "$_t"; cat /etc/shells 2>/dev/null; bb_case_fail
 fi
 
 
