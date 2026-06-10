@@ -223,6 +223,60 @@ impl AddrSpace {
         Ok(())
     }
 
+    /// Discards the physical pages backing `[start, start+size)` while keeping
+    /// the VMA metadata intact (Linux `MADV_DONTNEED` / `MADV_FREE` semantics).
+    ///
+    /// For every anonymous private (`CowBackend`) area overlapping the range,
+    /// the intersection (clamped *inward* to the backend's page size) is handed
+    /// to the backend's existing `unmap`, which clears the PTEs and decrements
+    /// the `FRAME_TABLE` refcounts so freed frames return to the global
+    /// allocator. The `MemoryArea` is NOT removed, so the next access re-faults
+    /// and `CowBackend::populate` re-allocates a fresh zero page. Without this,
+    /// Go's runtime `madvise(MADV_DONTNEED)` is a no-op and committed frames
+    /// accumulate until OOM (etcd/consul/minio/prometheus/grafana on starry).
+    ///
+    /// Non-anonymous / non-CoW backends (file-backed, MAP_SHARED, linear device
+    /// memory) are skipped: their frames are not owned per-VMA and dropping
+    /// their PTEs has no reclaim benefit while risking an un-repopulatable hole.
+    pub fn discard_range(&mut self, start: VirtAddr, size: usize) -> AxResult {
+        self.validate_region(start, size)?;
+        let end = start + size;
+
+        // Collect (clamped, page-aligned) fragments + backend clones first, so
+        // the immutable `self.areas` borrow is released before we take the
+        // mutable page-table cursor (mirrors `areas_in_range`).
+        let mut frags: alloc::vec::Vec<(VirtAddrRange, Backend)> = alloc::vec::Vec::new();
+        for area in self.areas.iter() {
+            if area.start() >= end {
+                break;
+            }
+            if area.end() <= start {
+                continue;
+            }
+            // Only anonymous private mappings (Go's heap). See doc comment.
+            let backend = match area.backend() {
+                Backend::Cow(cow) if cow.is_anonymous() => area.backend().clone(),
+                _ => continue,
+            };
+            let page = backend.page_size();
+            // Clamp inward to whole backend-sized pages fully inside the range
+            // (`pages_in`/`DynPageIter` require both ends aligned, else EINVAL).
+            let frag_start = area.start().max(start).align_up(page);
+            let frag_end = area.end().min(end).align_down(page);
+            if frag_start >= frag_end {
+                continue;
+            }
+            frags.push((VirtAddrRange::new(frag_start, frag_end), backend));
+        }
+
+        for (range, backend) in frags {
+            let mut cursor = self.pt.cursor();
+            BackendOps::unmap(&backend, range, &mut cursor)?;
+        }
+
+        Ok(())
+    }
+
     /// Removes mappings within the specified virtual address range.
     ///
     /// Returns an error if the address range is out of the address space or not
