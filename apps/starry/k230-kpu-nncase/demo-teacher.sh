@@ -114,9 +114,9 @@ run_case() {
 
     set +e
     if command -v stdbuf >/dev/null 2>&1; then
-        stdbuf -oL -eL cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c "${case_name}" 2>&1 | tee "${log_file}"
+        stdbuf -oL -eL cargo xtask starry app qemu -t "k230-qemu/qemu-k230/${case_name}" --arch riscv64 2>&1 | tee "${log_file}"
     else
-        cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c "${case_name}" 2>&1 | tee "${log_file}"
+        cargo xtask starry app qemu -t "k230-qemu/qemu-k230/${case_name}" --arch riscv64 2>&1 | tee "${log_file}"
     fi
     local status=${PIPESTATUS[0]}
     set -e
@@ -151,7 +151,7 @@ fail_with_log_tail() {
 LOG_DIR="${REPO_ROOT}/target/k230-kpu-demo"
 RUNTIME_LOG="${LOG_DIR}/teacher-nncase-runtime.log"
 REPLAY_LOG="${LOG_DIR}/yolov8n-full-sequence-replay.log"
-K230_QEMU_CASE_DIR="${REPO_ROOT}/test-suit/starryos/k230-qemu/qemu-k230"
+K230_QEMU_CASE_DIR="${REPO_ROOT}/apps/starry/k230-qemu/qemu-k230"
 CAPTURE="${K230_QEMU_CASE_DIR}/kpu-smoke/c/assets/captures/yolov8n-full-sequence-delta.krun"
 
 export PATH="${BASE_ROOT}/target/qemu-k230-docker-build:${BASE_ROOT}/target/qemu-k230-docker-build/bin:/opt/qemu-10.2.1/bin:/opt/riscv64-linux-musl-cross/bin:/opt/x86_64-linux-musl-cross/bin:${PATH}"

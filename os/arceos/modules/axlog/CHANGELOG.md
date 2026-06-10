@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-log-v0.5.13...ax-log-v0.5.14) - 2026-06-09
+
+### Fixed
+
+- *(lockdep)* resolve Starry lock ordering and log print issues ([#1103](https://github.com/rcore-os/tgoskits/pull/1103))
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-log-v0.5.12...ax-log-v0.5.13) - 2026-06-03
 
 ### Other

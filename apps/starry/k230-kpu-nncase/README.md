@@ -45,7 +45,7 @@ apps/starry/k230-kpu-nncase/c/assets/bin/
 Prepare the K230 QEMU fork first:
 
 ```sh
-bash test-suit/starryos/k230-qemu/prepare-k230-qemu.sh
+bash apps/starry/k230-qemu/prepare-k230-qemu.sh
 ```
 
 Then run:
@@ -72,8 +72,8 @@ summary, run:
 bash apps/starry/k230-kpu-nncase/demo-teacher.sh
 ```
 
-The legacy test-suite wrapper remains available:
+The K230 app-QEMU demo wrapper uses the migrated K230 cases:
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+bash apps/starry/k230-qemu/qemu-k230/demo-teacher.sh
 ```

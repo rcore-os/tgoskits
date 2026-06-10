@@ -851,8 +851,9 @@ target = "aarch64-unknown-none-softfloat"
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ax-hal/x86-qemu-q35", "ept-level-4", "fs", "vmx"]
+features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
+plat_dyn = true
 vm_configs = []
 "#,
         );
@@ -880,11 +881,13 @@ vm_configs = []
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
         assert!(cargo.features.contains(&"vmx".to_string()));
-        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(!cargo.features.contains(&"ax-std/x86-pc".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
-        assert!(cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
     }
 
     #[test]
@@ -1037,15 +1040,16 @@ plat_dyn = true
     }
 
     #[test]
-    fn load_cargo_config_adds_default_x86_platform_when_missing() {
+    fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
         fs::write(
             &config_path,
             r#"
 env = {}
-features = ["ax-driver/virtio-blk", "ax-driver/plat-static", "ept-level-4", "fs", "vmx"]
+features = ["ax-driver/virtio-blk", "ept-level-4", "fs", "vmx"]
 log = "Info"
+plat_dyn = true
 "#,
         )
         .unwrap();
@@ -1065,9 +1069,17 @@ log = "Info"
         })
         .unwrap();
 
-        assert!(cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"dyn-plat".to_string()));
         assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(
+            !cargo
+                .features
+                .contains(&"ax-driver/plat-static".to_string())
+        );
     }
 
     #[test]

@@ -311,10 +311,12 @@ impl AppContext {
                 None
             },
         );
-        let vmconfigs = if cli.vmconfigs.is_empty() {
+        let vmconfigs = if !cli.vmconfigs.is_empty() {
+            self.resolve_workspace_paths(cli.vmconfigs.iter())
+        } else if inherit_snapshot_runtime {
             self.resolve_workspace_paths(snapshot.vmconfigs.iter())
         } else {
-            self.resolve_workspace_paths(cli.vmconfigs.iter())
+            Vec::new()
         };
 
         let request = ResolvedAxvisorRequest {

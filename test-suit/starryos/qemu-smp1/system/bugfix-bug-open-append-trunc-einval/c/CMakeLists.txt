@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-open-append-trunc-einval C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-open-append-trunc-einval src/main.c)
+target_compile_options(bug-open-append-trunc-einval PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-open-append-trunc-einval RUNTIME DESTINATION usr/bin/starry-test-suit)

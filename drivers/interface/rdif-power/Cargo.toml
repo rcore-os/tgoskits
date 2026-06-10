@@ -1,6 +1,6 @@
 [package]
 name = "rdif-power"
-version = "0.7.1"
+version = "0.7.2"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true

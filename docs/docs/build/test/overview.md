@@ -77,39 +77,38 @@ test-suit/
 │           ├── build-{target}.toml
 │           └── qemu-{arch}.toml
 ├── starryos/           StarryOS 测试
-│   ├── normal/         普通功能测试
-│   │   └── <build-group>/<case>/qemu-{arch}.toml
-│   └── stress/         压力测试
-│       └── <case>/qemu-{arch}.toml
+│   ├── qemu-smp1/      QEMU 单核 build wrapper
+│   │   └── system/qemu-{arch}.toml
+│   ├── qemu-smp4/      QEMU 多核 build wrapper
+│   │   └── system/qemu-{arch}.toml
+│   └── board-*/        板级 build wrapper
+│       └── <case>/board-{board}.toml
 └── axvisor/            Axvisor 测试
     └── normal/
         └── <case>/qemu-{arch}.toml
 ```
 
-三个子系统的测试目录结构有所不同：ArceOS 区分 Rust 和 C 测试（分别放在 `rust/` 和 `c/` 子目录），StarryOS 区分 normal 和 stress 测试组，Axvisor 使用扁平的 normal 目录。但无论哪种结构，核心的发现算法（通过 `build-{target}.toml` 定位构建组、通过 `qemu-{arch}.toml` 定位用例）是统一的。
+三个子系统的测试目录结构有所不同：ArceOS 区分 Rust 和 C 测试（分别放在 `rust/` 和 `c/` 子目录），StarryOS 从 `test-suit/starryos/` 根目录直接发现 QEMU/board 用例，Axvisor 使用自己的测试组目录。但无论哪种结构，核心的发现算法（通过 `build-{target}.toml` 定位构建组、通过 `qemu-{arch}.toml` 定位用例）是统一的。
 
 ### Build Wrapper 目录
 
 测试目录中的关键概念是 **build wrapper**——包含 `build-{target}.toml` 的目录。它定义了一组共享相同构建配置的用例：
 
 ```text
-test-suit/starryos/normal/
+test-suit/starryos/
 ├── qemu-smp1/                    ← build wrapper（含 build-riscv64gc-unknown-none-elf.toml）
 │   ├── build-riscv64gc-unknown-none-elf.toml
-│   ├── qemu-riscv64.toml         ← wrapper root case（构建配置与运行配置在同一目录）
-│   ├── smoke/
-│   │   └── qemu-riscv64.toml     ← 子 case（继承 wrapper 的 build config）
-│   └── syscall/
-│       └── qemu-riscv64.toml
+│   └── system/
+│       └── qemu-riscv64.toml     ← 子 case（继承 wrapper 的 build config）
 └── qemu-smp4/                    ← 另一个 build wrapper（不同 SMP 配置）
     ├── build-riscv64gc-unknown-none-elf.toml
-    └── affinity/
+    └── system/
         └── qemu-riscv64.toml
 ```
 
 同一 build wrapper 下的所有 case 共享一次 OS 构建。
 
-Build Wrapper 的设计动机是避免重复编译。例如 `qemu-smp1` 和 `qemu-smp4` 分别测试单核和多核场景，它们的构建配置不同（SMP 核数不同），因此必须分别编译；但 `qemu-smp1` 下的 `smoke`、`syscall`、`bugfix` 等用例使用完全相同的内核，只需编译一次。发现算法通过识别 `build-{target}.toml` 文件来自动划分构建边界。
+Build Wrapper 的设计动机是避免重复编译。例如 `qemu-smp1` 和 `qemu-smp4` 分别测试单核和多核场景，它们的构建配置不同（SMP 核数不同），因此必须分别编译；每个 wrapper 下的 `system` 聚合用例使用完全相同的内核，只需编译一次并启动一次。发现算法通过识别 `build-{target}.toml` 文件来自动划分构建边界。
 
 ## 章节导航
 
@@ -119,6 +118,6 @@ Build Wrapper 的设计动机是避免重复编译。例如 `qemu-smp1` 和 `qem
 | [资产注入与缓存](./assets) | Pipeline 判定、C/Shell/Python/Grouped 处理、Rootfs 缓存 |
 | [运行配置文件](./config) | QEMU / Board 运行配置、SMP 注入、超时缩放 |
 | [ArceOS 测试](./arceos) | Rust / C 测试流程 |
-| [StarryOS 测试](./starry) | normal/stress 分组、QEMU 序列图、Board 测试 |
+| [StarryOS 测试](./starry) | 平铺 test-suit、QEMU 聚合 case、Board 测试 |
 | [Axvisor 测试](./axvisor) | QEMU / U-Boot / Board 测试 |
 | [Host 端检查](./host) | std 白名单、clippy、sync-lint |

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.4...crab-usb-v0.9.5) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
 ## [0.9.4](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.3...crab-usb-v0.9.4) - 2026-06-03
 
 ### Added

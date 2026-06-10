@@ -88,7 +88,7 @@ cargo xtask arceos <subcommand> [options]
 
 ## StarryOS
 
-StarryOS 编译整个内核（不需要 `--package`），增加了 rootfs 管理和 app 运行命令，支持 `--stress` 快捷方式选择压力测试组。
+StarryOS 编译整个内核（不需要 `--package`），增加了 rootfs 管理和 app 运行命令。test-suit 用例直接从 `test-suit/starryos/` 根目录发现，压力、K230 和 visual 等重型用例迁到 `apps/starry/` 后通过 app 命令显式运行。
 
 ```text
 cargo xtask starry <subcommand> [options]
@@ -102,7 +102,7 @@ cargo xtask starry <subcommand> [options]
 | `qemu` | 编译并在 QEMU 中运行（含 rootfs 准备） |
 | `uboot` | 编译并通过 U-Boot 运行 |
 | `board` | 编译并在远程板卡运行 |
-| `test qemu` | QEMU 测试（normal / stress） |
+| `test qemu` | QEMU 测试 |
 | `test board` | 板级测试 |
 | `app list` | 列出 `apps/starry/` 下发现的可运行应用 |
 | `app run` | 构建并运行 `apps/starry/` 下发现的应用 |
@@ -133,9 +133,9 @@ cargo xtask starry <subcommand> [options]
 
 **Board 额外参数**：`--board-config`、`--board-type`、`--server`、`--port`
 
-**测试参数**（`test qemu`）：`--test-group`、`--test-case`、`--stress`、`--list`
+**测试参数**（`test qemu`）：`--test-case`、`--list`
 
-**测试参数**（`test board`）：`--test-group`、`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
+**测试参数**（`test board`）：`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
 
 **App 参数**（`app list`）：`--kind`
 

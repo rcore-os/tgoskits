@@ -5,7 +5,7 @@ sidebar_label: "用例发现"
 
 # 用例发现
 
-用例发现是测试流程的第一个阶段，负责从 `test-suit/<os>/<group>/` 目录中扫描并收集所有可执行的测试用例。发现算法的核心逻辑是**识别 build wrapper（含 `build-{target}.toml` 的目录）和其中的 QEMU 用例（含 `qemu-{arch}.toml` 的目录）**，跳过资产目录（`c/`、`sh/`、`python/`、`rust/`）以避免误识别。
+用例发现是测试流程的第一个阶段，负责从 `test-suit/<os>/` 或子系统定义的测试根目录中扫描并收集所有可执行的测试用例。发现算法的核心逻辑是**识别 build wrapper（含 `build-{target}.toml` 的目录）和其中的 QEMU 用例（含 `qemu-{arch}.toml` 的目录）**，跳过资产目录（`c/`、`sh/`、`python/`、`rust/`）以避免误识别。
 
 发现过程产生两级结构：外层是 `TestBuildWrapper`（定义构建边界），内层是 `DiscoveredQemuCase`（定义运行边界）。这两个结构体是实现"构建一次、逐 case 运行"的基础——分组函数根据 `build_config_path` 将 case 归入对应的 wrapper。
 
@@ -40,7 +40,7 @@ flowchart TD
 ```rust
 // 发现的构建包装器
 struct TestBuildWrapper {
-    name: String,                // 相对于 test group 根目录的路径（如 `qemu-smp1`）
+    name: String,                // 相对于测试根目录的路径（如 `qemu-smp1`）
     dir: PathBuf,               // 包装器目录路径
     build_config_path: PathBuf, // build-{target}.toml 路径
 }
@@ -48,7 +48,7 @@ struct TestBuildWrapper {
 // 发现的 QEMU 测试用例
 struct DiscoveredQemuCase {
     name: String,               // 用例名
-    display_name: String,       // 显示名（含 build group 前缀，如 `qemu-smp1/smoke`）
+    display_name: String,       // 显示名（含 build group 前缀，如 `qemu-smp1/system`）
     case_dir: PathBuf,          // 用例目录
     qemu_config_path: PathBuf,  // qemu-{arch}.toml 路径
     build_group: String,        // 所属 build wrapper 名称
@@ -56,14 +56,14 @@ struct DiscoveredQemuCase {
 }
 ```
 
-`TestBuildWrapper` 的 `name` 字段是相对于 test group 根目录的路径（如 `qemu-smp1`），用于构建分组的键。`DiscoveredQemuCase` 的 `display_name` 包含 build group 前缀（如 `qemu-smp1/smoke`），用于结果报告中区分来自不同构建组的同名用例。每个 case 都通过 `build_config_path` 回溯到所属的 wrapper，这是分组函数的工作基础。
+`TestBuildWrapper` 的 `name` 字段是相对于测试根目录的路径（如 `qemu-smp1`），用于构建分组的键。`DiscoveredQemuCase` 的 `display_name` 包含 build group 前缀（如 `qemu-smp1/system`），用于结果报告中区分来自不同构建组的同名用例。每个 case 都通过 `build_config_path` 回溯到所属的 wrapper，这是分组函数的工作基础。
 
 ## 发现算法细节
 
 ### Build Wrapper 发现
 
 `discover_build_wrappers()` 采用**栈式 DFS**：
-1. 从 test group 目录开始，压栈所有子条目
+1. 从测试根目录开始，压栈所有子条目
 2. 对每个目录，检查是否包含 `build-{target}.toml`
 3. 若包含，记录为 `TestBuildWrapper`（不再深入）
 4. 若是资产目录（`c/`、`sh/`、`python/`、`rust/`），跳过
@@ -85,9 +85,9 @@ Wrapper root case 是一个特殊场景：当 `qemu-{arch}.toml` 直接位于 wr
 
 | 场景 | 用例目录 | display_name |
 |------|----------|-------------|
-| wrapper root case | `normal/qemu-smp1/` + `qemu-riscv64.toml` | `qemu-smp1` |
-| wrapper 子 case | `normal/qemu-smp1/smoke/` + `qemu-riscv64.toml` | `qemu-smp1/smoke` |
-| 嵌套子 case | `normal/qemu-smp1/sub/deep/` + `qemu-riscv64.toml` | `qemu-smp1/sub/deep` |
+| wrapper root case | `qemu-custom/` + `qemu-riscv64.toml` | `qemu-custom` |
+| wrapper 子 case | `qemu-smp1/system/` + `qemu-riscv64.toml` | `qemu-smp1/system` |
+| 嵌套子 case | `qemu-custom/sub/deep/` + `qemu-riscv64.toml` | `qemu-custom/sub/deep` |
 
 display_name 的命名规则确保了每个用例的唯一标识：以 build group 名为前缀，加上相对于 wrapper 的路径。嵌套子 case 场景支持在 wrapper 内进一步组织目录结构（如按功能分类），不影响分组的正确性。
 
@@ -113,10 +113,10 @@ fn group_cases_by_build_config<T: BuildConfigRef>(cases: &[T])
 
 | build_group | build_config_path | cases |
 |-------------|-------------------|-------|
-| `qemu-smp1` | `.../qemu-smp1/build-riscv64gc-unknown-none-elf.toml` | smoke, syscall, bugfix |
-| `qemu-smp4` | `.../qemu-smp4/build-riscv64gc-unknown-none-elf.toml` | affinity, sched |
+| `qemu-smp1` | `.../qemu-smp1/build-riscv64gc-unknown-none-elf.toml` | system |
+| `qemu-smp4` | `.../qemu-smp4/build-riscv64gc-unknown-none-elf.toml` | system |
 
-上例中，`qemu-smp1` 组的三个用例共享同一个构建配置（单核），只需编译一次 StarryOS 内核即可依次运行三个测试。
+上例中，`qemu-smp1/system` 和 `qemu-smp4/system` 分别共享各自 wrapper 的构建配置，每个聚合 case 在一次 StarryOS 启动内运行对应子测例。
 
 ### Board 用例发现
 

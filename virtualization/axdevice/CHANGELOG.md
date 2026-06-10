@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.11...axdevice-v0.4.12) - 2026-06-09
+
+### Fixed
+
+- *(axvisor)* cache x86 emulated devices directly and harden vCPU interrupt queuing ([#1137](https://github.com/rcore-os/tgoskits/pull/1137))
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.4.11](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.4.10...axdevice-v0.4.11) - 2026-06-03
 
 ### Added

@@ -29,7 +29,6 @@ const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
 /// A global map that holds the vCPU task state for each VM.
 static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
-
 fn get_vm_vcpus(vm_id: usize) -> Option<Arc<VMVCpus>> {
     VM_VCPU_TASKS.lock().get(&vm_id).cloned()
 }
@@ -548,6 +547,8 @@ fn vcpu_run() {
                 }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
+                    #[cfg(target_arch = "x86_64")]
+                    super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
                     #[cfg(target_arch = "x86_64")]
                     super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
                     #[cfg(target_arch = "x86_64")]
