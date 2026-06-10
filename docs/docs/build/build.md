@@ -178,7 +178,7 @@ flowchart TD
     E --> F["注入 AX_CONFIG_PATH<br/>和 AX_PLATFORM 环境变量"]
 ```
 
-ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `axbuild` 复用配置引擎库从平台包配置文件中合并生成 `.axconfig.toml`。动态平台模式是支持动态平台 target 的默认构建方式，配置可省略 `plat_dyn`；在静态模式下（`plat_dyn = false`），必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的配置宏能在编译期读取配置。
+ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `axbuild` 复用配置引擎库从平台包配置文件中合并生成 `.axconfig.toml`。在动态平台模式下（`plat_dyn = true`），这些配置由运行时动态加载；在静态模式下，必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的配置宏能在编译期读取配置。
 
 ### 6a. 平台包解析
 
@@ -208,9 +208,9 @@ flowchart TD
 
 | 架构 | 默认平台包 |
 |------|-----------|
-| `aarch64` | 无静态默认平台；默认使用动态平台 |
-| `x86_64` | 无静态默认平台；默认使用动态平台 |
-| `riscv64` | 无静态默认平台；默认使用动态平台 |
+| `aarch64` | 无静态默认平台；默认使用 `plat_dyn = true` |
+| `x86_64` | 无静态默认平台；默认使用 `plat_dyn = true` |
+| `riscv64` | 无静态默认平台；默认使用 `plat_dyn = true` |
 | `loongarch64` | `ax-plat-loongarch64-qemu-virt` |
 
 **平台包命名规则**：

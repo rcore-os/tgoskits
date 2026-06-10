@@ -9,3 +9,4 @@ features = [
   "ax-driver/virtio-socket",
   "starry-kernel/memtrack",
 ]
+plat_dyn = true

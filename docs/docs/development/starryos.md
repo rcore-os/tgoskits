@@ -438,6 +438,7 @@ features = [
   "ax-driver/virtio-net",
 ]
 log = "Warn"
+plat_dyn = true
 target = "riscv64gc-unknown-none-elf"
 ```
 

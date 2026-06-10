@@ -27,16 +27,6 @@ pub use relocate::relocate;
 use crate::{ArchTrait, DCacheOp, efi_stub, irq::IrqId, power::CpuOnError};
 
 const MIN_TICKS: usize = 4;
-const BOOT_TLS_SIZE: usize = 64 * 1024;
-
-#[repr(C, align(16))]
-struct BootTls {
-    bytes: [u8; BOOT_TLS_SIZE],
-}
-
-static mut BOOT_TLS: BootTls = BootTls {
-    bytes: [0; BOOT_TLS_SIZE],
-};
 
 pub struct Arch;
 
@@ -53,41 +43,6 @@ impl ArchTrait for Arch {
     }
 
     fn post_allocator() {}
-
-    fn init_boot_tls() {
-        unsafe extern "C" {
-            fn _stdata();
-            fn _etdata();
-            fn _etbss();
-        }
-
-        let stdata = _stdata as *const () as usize;
-        let etdata = _etdata as *const () as usize;
-        let etbss = _etbss as *const () as usize;
-        if etdata < stdata || etbss < stdata {
-            return;
-        }
-
-        let tls_size = align_up(etbss - stdata, 16);
-        if tls_size > BOOT_TLS_SIZE {
-            return;
-        }
-
-        unsafe {
-            let boot_tls = core::ptr::addr_of_mut!(BOOT_TLS).cast::<u8>();
-            core::ptr::write_bytes(boot_tls, 0, tls_size);
-            core::ptr::copy_nonoverlapping(stdata as *const u8, boot_tls, etdata - stdata);
-            core::arch::asm!("move $tp, {}", in(reg) boot_tls as usize, options(nostack));
-        }
-    }
-
-    fn init_runtime_percpu_reg(cpu_idx: usize) {
-        if let Some(percpu) = crate::smp::percpu_data_ptr(cpu_idx) {
-            unsafe {
-                core::arch::asm!("move $r21, {}", in(reg) percpu as usize);
-            }
-        }
-    }
 
     fn per_cpu_trap_init(is_primary: bool) {
         trap::per_cpu_trap_init(is_primary);
@@ -294,8 +249,4 @@ impl ArchTrait for Arch {
         unsafe { crate::arch::entry::kernel_entry(1, null(), system_table) };
         unreachable!()
     }
-}
-
-const fn align_up(value: usize, align: usize) -> usize {
-    (value + align - 1) & !(align - 1)
 }

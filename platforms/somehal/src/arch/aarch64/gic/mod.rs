@@ -29,18 +29,12 @@ fn backend() -> GicBackend {
 }
 
 pub fn init_current_cpu() {
-    let cpu_idx = crate::cpu::current_cpu_idx()
-        .unwrap_or_else(|| panic!("current logical CPU index is not available for GIC init"));
-    init_cpu(cpu_idx);
-}
-
-pub fn init_cpu(cpu_idx: usize) {
     match backend() {
         GicBackend::V2 => v2::init_cpu(),
-        GicBackend::V3 => v3::init_cpu(cpu_idx),
+        GicBackend::V3 => v3::init_cpu(),
         GicBackend::None => {
             if v3::is_support_icc() {
-                v3::init_cpu(cpu_idx);
+                v3::init_cpu();
             } else {
                 v2::init_cpu();
             }
@@ -79,8 +73,8 @@ pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
     }
 }
 
-fn hardware_cpu_id(cpu_idx: usize) -> usize {
-    someboot::smp::cpu_idx_to_id(cpu_idx).unwrap_or(cpu_idx)
+fn hardware_cpu_id(cpu_id: usize) -> usize {
+    someboot::smp::cpu_idx_to_id(cpu_id).unwrap_or(cpu_id)
 }
 
 #[unsafe(no_mangle)]

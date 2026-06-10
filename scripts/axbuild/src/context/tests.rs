@@ -369,7 +369,7 @@ fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
+plat_dyn = true
 smp = 4
 
 [qemu]
@@ -561,7 +561,7 @@ fn prepare_axvisor_request_prefers_cli_over_snapshot() {
 config = "os/axvisor/.build.toml"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
+plat_dyn = true
 vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
