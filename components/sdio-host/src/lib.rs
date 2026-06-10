@@ -74,6 +74,6 @@ pub trait SdioHost: Send + Sync {
     /// 禁用 SDHCI 中断信号
     fn disable_irq(&self);
 
-    /// 创建无锁的 Card IRQ 控制句柄  
+    /// 创建无锁的 Card IRQ 控制句柄
     fn card_irq_ctrl(&self) -> Option<Arc<dyn SdioCardIrq>>;
 }

@@ -1,15 +1,15 @@
-//! SDIO 错误类型  
+//! SDIO 错误类型
 
-/// SDIO 操作错误  
+/// SDIO 操作错误
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SdioError {
-    /// 命令或数据传输超时  
+    /// 命令或数据传输超时
     Timeout,
-    /// CRC 校验失败  
+    /// CRC 校验失败
     CrcError,
-    /// 不支持的操作  
+    /// 不支持的操作
     Unsupported,
-    /// 通用 IO 错误  
+    /// 通用 IO 错误
     IoError,
 }
 

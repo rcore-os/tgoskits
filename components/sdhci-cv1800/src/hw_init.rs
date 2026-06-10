@@ -1,59 +1,59 @@
-//! SG2002 SDIO1 硬件初始化 (时钟 / 复位 / Pinmux / CardDetect)  
+//! SG2002 SDIO1 硬件初始化 (时钟 / 复位 / Pinmux / CardDetect)
 
 use crate::{mmio_read, mmio_write};
-/// clk_en_0 (offset 0x000)  
-///   bit21: clk_axi4_sd1  bit22: clk_sd1  bit23: clk_100k_sd1  
+/// clk_en_0 (offset 0x000)
+///   bit21: clk_axi4_sd1  bit22: clk_sd1  bit23: clk_100k_sd1
 const CLK_EN_0: usize = 0x000;
 const CLK_EN_0_SD1_ALL: u32 = (1 << 21) | (1 << 22) | (1 << 23);
 
-/// clk_byp_0 (offset 0x030)  
-///   bit7: clk_sd1 bypass — 1=xtal, 0=PLL  
+/// clk_byp_0 (offset 0x030)
+///   bit7: clk_sd1 bypass — 1=xtal, 0=PLL
 const CLK_BYP_0: usize = 0x030;
 const CLK_BYP_0_SD1: u32 = 1 << 7;
 
-/// div_clk_sd1 (offset 0x07C)  
-///   bit0: Divider Reset Control — 0=assert, 1=de-assert  
+/// div_clk_sd1 (offset 0x07C)
+///   bit0: Divider Reset Control — 0=assert, 1=de-assert
 const DIV_CLK_SD1: usize = 0x07C;
 
-/// div_clk_100k_sd1 (offset 0x084)  
-///   bit0: Divider Reset Control — 0=assert, 1=de-assert  
+/// div_clk_100k_sd1 (offset 0x084)
+///   bit0: Divider Reset Control — 0=assert, 1=de-assert
 const DIV_CLK_100K_SD1: usize = 0x084;
 
-/// Divider reset de-assert (bit 0 = 1)  
+/// Divider reset de-assert (bit 0 = 1)
 const DIV_RESET_DEASSERT: u32 = 1 << 0;
 
-/// sd_ctrl_opt (offset 0x294)  
-///   bit8: reg_sd1_carddet_ow — 使能卡检测覆写  
-///   bit9: reg_sd1_carddet_sw — 覆写值 (1=卡已插入)  
+/// sd_ctrl_opt (offset 0x294)
+///   bit8: reg_sd1_carddet_ow — 使能卡检测覆写
+///   bit9: reg_sd1_carddet_sw — 覆写值 (1=卡已插入)
 const SD_CTRL_OPT: usize = 0x294;
 const SD1_CARDDET_OW: u32 = 1 << 8;
 const SD1_CARDDET_SW: u32 = 1 << 9;
 
-/// rtcsys_rst_ctrl (offset 0x018)  
-///   bit2: reg_soft_rstn_sdio — 0=reset, 1=de-assert  
+/// rtcsys_rst_ctrl (offset 0x018)
+///   bit2: reg_soft_rstn_sdio — 0=reset, 1=de-assert
 const RTCSYS_RST_CTRL: usize = 0x018;
 const RTCSYS_RST_SDIO: u32 = 1 << 2;
 
-/// rtcsys_clkmux (offset 0x01C)  
-///   bits[3:0]: reg_sdio_clk_mux — 0=fpll/4, 1=osc_div  
+/// rtcsys_clkmux (offset 0x01C)
+///   bits[3:0]: reg_sdio_clk_mux — 0=fpll/4, 1=osc_div
 const RTCSYS_CLKMUX: usize = 0x01C;
-/// bits[3:0] 掩码，用于清除时钟源选择位  
+/// bits[3:0] 掩码，用于清除时钟源选择位
 const RTCSYS_CLKMUX_MASK: u32 = 0xF;
 
-/// rtcsys_clkbyp (offset 0x030)  
-///   bit1: clk_sdio — 0=PLL, 1=xtal  
+/// rtcsys_clkbyp (offset 0x030)
+///   bit1: clk_sdio — 0=PLL, 1=xtal
 const RTCSYS_CLKBYP: usize = 0x030;
 const RTCSYS_CLKBYP_SDIO: u32 = 1 << 1;
 
-/// rtcsys_clk_en (offset 0x034)  
-///   bit1: clk_sd1  bit2: clk_fab_sd1  
+/// rtcsys_clk_en (offset 0x034)
+///   bit1: clk_sd1  bit2: clk_fab_sd1
 const RTCSYS_CLK_EN: usize = 0x034;
 const RTCSYS_CLK_EN_SD1_ALL: u32 = (1 << 1) | (1 << 2);
 
-/// SD1/VO 引脚功能选择 (offset 0x0E4)  
-///   写 0 = SD1 功能, 非零 = VO 功能  
+/// SD1/VO 引脚功能选择 (offset 0x0E4)
+///   写 0 = SD1 功能, 非零 = VO 功能
 const FMUX_SD1_VO: usize = 0x0E4;
-/// 选择 SD1 引脚功能  
+/// 选择 SD1 引脚功能
 const FMUX_SEL_SD1: u32 = 0x0;
 
 #[inline]

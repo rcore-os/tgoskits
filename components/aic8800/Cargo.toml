@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "AIC8800 Wi-Fi driver core (SDIO, firmware, WPA2, SoftAP). OS-independent; runtime capabilities are injected via wifi-host::WifiRuntime."
+# Board bring-up / in-tree integration only; not intended for crates.io.
+# (Also avoids the build-time firmware-download dependency on `cargo xtask`.)
+publish = false
 
 [features]
 default = []
@@ -34,4 +37,3 @@ sha1 = { version = "0.10", default-features = false }
 digest = { version = "0.10", default-features = false }
 aes = { version = "0.8", default-features = false }
 pbkdf2 = { version = "0.12", default-features = false }
-

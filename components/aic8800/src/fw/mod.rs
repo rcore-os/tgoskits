@@ -81,9 +81,9 @@ fn aicbsp_system_config<H: SdioHost>(ipc: &mut IpcTransport<H>) -> Result<(), Sd
     Ok(())
 }
 
-/// 完整的固件初始化入口  
-///  
-/// fw_data: 固件二进制数据 (fmacfw.bin 或 fw_patch.bin)  
+/// 完整的固件初始化入口
+///
+/// fw_data: 固件二进制数据 (fmacfw.bin 或 fw_patch.bin)
 pub fn firmware_init<H: SdioHost>(host: &mut H, chip: ChipVariant) -> Result<(), SdioError> {
     log::info!("[aic8800] firmware_init: chip={:?}", chip);
 

@@ -31,7 +31,7 @@ pub static FW_DC_PATCH_TBL: &[u8] =
 // AIC8800D80 固件
 // ============================================================
 
-/// AIC8800D80 U01/U02/H U02 固件  
+/// AIC8800D80 U01/U02/H U02 固件
 pub static FW_D80: &[u8] = include_bytes!("../../../firmware/fmacfw_8800d80_u02.bin");
 pub static FW_D80_PATCH: &[u8] = include_bytes!("../../../firmware/fw_patch_8800d80_u02.bin");
 pub static FW_D80_PATCH_TBL: &[u8] =
@@ -45,15 +45,15 @@ pub static FW_D80X2_PATCH: &[u8] = include_bytes!("../../../firmware/fw_patch_88
 pub static FW_D80X2_PATCH_TBL: &[u8] =
     include_bytes!("../../../firmware/fw_patch_table_8800d80_u02.bin");
 
-/// 选中的固件集合  
+/// 选中的固件集合
 pub struct FirmwareSet {
-    /// WiFi 主固件 (AIC8801/D80/D80X2) 或 补丁固件 (AIC8800DC)  
+    /// WiFi 主固件 (AIC8801/D80/D80X2) 或 补丁固件 (AIC8800DC)
     pub wl_fw: &'static [u8],
-    /// 补丁表 (仅 AIC8800DC 使用, 其他芯片为空)  
+    /// 补丁表 (仅 AIC8800DC 使用, 其他芯片为空)
     pub patch_tbl: &'static [u8],
-    /// AIC8801 的额外补丁固件  
+    /// AIC8801 的额外补丁固件
     pub wl_patch: &'static [u8],
-    /// 描述信息  
+    /// 描述信息
     pub desc: &'static str,
 }
 

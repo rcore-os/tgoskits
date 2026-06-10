@@ -3,3 +3,6 @@ name = "sdio-host"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+description = "SDIO host controller trait abstraction for in-tree SDIO device drivers."
+# Board bring-up / in-tree integration only; not intended for crates.io.
+publish = false

@@ -112,9 +112,9 @@ const FIFO_READ_MAX_RETRY: u32 = 5;
 
 use crate::common::crc8_ponl_107;
 
-/// IPC 消息传输层  
-///  
-/// 封装了消息的构建、发送和响应接收。  
+/// IPC 消息传输层
+///
+/// 封装了消息的构建、发送和响应接收。
 pub struct IpcTransport<'a, H: SdioHost> {
     sdio_host: &'a mut H,
     chip: ChipVariant,
@@ -419,7 +419,7 @@ impl<'a, H: SdioHost> IpcTransport<'a, H> {
 // 高层消息接口
 // ============================================================
 
-/// 读取芯片内存 (4 字节)  
+/// 读取芯片内存 (4 字节)
 pub fn ipc_mem_read<H: SdioHost>(
     transport: &mut IpcTransport<H>,
     addr: u32,
@@ -427,11 +427,11 @@ pub fn ipc_mem_read<H: SdioHost>(
     let payload = addr.to_le_bytes(); // 4 字节地址作为消息负载
     let mut cfm = [0u8; 8];
     transport.send_msg(DbgMsgId::MemReadReq, &payload, true, &mut cfm)?;
-    let data = u32::from_le_bytes([cfm[4], cfm[5], cfm[6], cfm[7]]); // cfm[0..4]=memaddr, cfm[4..8]=memdata 
+    let data = u32::from_le_bytes([cfm[4], cfm[5], cfm[6], cfm[7]]); // cfm[0..4]=memaddr, cfm[4..8]=memdata
     Ok(data)
 }
 
-/// 写入芯片内存 (4 字节)  
+/// 写入芯片内存 (4 字节)
 pub fn ipc_mem_write<H: SdioHost>(
     transport: &mut IpcTransport<H>,
     addr: u32,
@@ -456,7 +456,7 @@ pub fn ipc_mem_block_write<H: SdioHost>(
     // param: memaddr (4) + memsize (4) + memdata[256] (up to 1024 bytes)
     let payload_len = 4 + 4 + data.len(); // 地址 + 大小 + 数据
     // 构建 param 到栈上缓冲区
-    let mut payload = [0u8; 1032]; // 4 + 4 + 1024  
+    let mut payload = [0u8; 1032]; // 4 + 4 + 1024
     payload[..4].copy_from_slice(&addr.to_le_bytes()); // 前 4 字节为地址
     payload[4..8].copy_from_slice(&(data.len() as u32).to_le_bytes()); // 后 4 字节为大小
     payload[8..8 + data.len()].copy_from_slice(data); // 后续字节为数据
@@ -488,7 +488,7 @@ pub fn ipc_mem_mask_write<H: SdioHost>(
     Ok(())
 }
 
-/// 启动固件  
+/// 启动固件
 pub fn ipc_start_app<H: SdioHost>(
     transport: &mut IpcTransport<H>,
     boot_addr: u32,

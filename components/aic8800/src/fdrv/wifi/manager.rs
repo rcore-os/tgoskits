@@ -186,7 +186,7 @@ pub fn connect(
     Ok(result)
 }
 
-/// 解析 SM_CONNECT_IND 的 param 部分  
+/// 解析 SM_CONNECT_IND 的 param 部分
 fn parse_connect_ind(param: &[u8]) -> Result<ConnectResult, CmdError> {
     // sm_connect_ind 布局（参考 lmac_msg.h:2444-2477）:
     //   [0..2]    u16  status_code
@@ -331,7 +331,7 @@ pub fn install_pairwise_key(
     Ok(hw_key_idx)
 }
 
-/// 安装 GTK  
+/// 安装 GTK
 pub fn install_group_key(
     bus: &Arc<WifiBus>,
     vif_idx: u8,
@@ -354,7 +354,7 @@ pub fn install_group_key(
     Ok(hw_key_idx)
 }
 
-/// 删除密钥  
+/// 删除密钥
 pub fn delete_key(bus: &Arc<WifiBus>, hw_key_idx: u8) -> Result<(), CmdError> {
     log::debug!("[wifi_mgr] delete key: hw_key_idx={}", hw_key_idx);
     send_key_del_req(bus, hw_key_idx, 5000)?;
@@ -471,8 +471,8 @@ pub fn build_wpa2_rsn_ie() -> Vec<u8> {
     ie
 }
 
-/// 根据 AP 的 RSN IE 构造 STA 的 RSN IE  
-/// ap_rsn_ie: AP beacon 中的 RSN IE（包含 tag + length 头部）  
+/// 根据 AP 的 RSN IE 构造 STA 的 RSN IE
+/// ap_rsn_ie: AP beacon 中的 RSN IE（包含 tag + length 头部）
 pub fn build_wpa2_rsn_ie_from_ap(ap_rsn_ie: &[u8]) -> Vec<u8> {
     // 默认 fallback: TKIP group + CCMP pairwise（最常见的混合模式）
     let group_cipher = if ap_rsn_ie.len() >= 8 {
@@ -486,9 +486,9 @@ pub fn build_wpa2_rsn_ie_from_ap(ap_rsn_ie: &[u8]) -> Vec<u8> {
     let rsn_cap = [0x00, 0x00]; // 始终使用 0x0000，避免固件修改导致不匹配
 
     let mut ie = Vec::with_capacity(22);
-    ie.push(0x30); // Element ID: RSN  
-    ie.push(20); // Length  
-    ie.extend_from_slice(&1u16.to_le_bytes()); // Version: 1  
+    ie.push(0x30); // Element ID: RSN
+    ie.push(20); // Length
+    ie.extend_from_slice(&1u16.to_le_bytes()); // Version: 1
 
     // Group Cipher Suite: 从 AP 的 RSN IE 中复制
     ie.extend_from_slice(group_cipher);
