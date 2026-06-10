@@ -402,7 +402,11 @@ impl Starry {
         )?;
         let mut request = Self::qemu_test_request(request);
         if let Some(default_board) = default_board {
-            request.plat_dyn = Some(default_board.build_info.plat_dyn);
+            request.plat_dyn = Some(
+                default_board
+                    .build_info
+                    .effective_plat_dyn(&default_board.target, None),
+            );
             request.build_info_override = Some(default_board.build_info);
         } else {
             anyhow::bail!(
@@ -2805,7 +2809,7 @@ mod tests {
     }
 
     #[test]
-    fn qemu_group_build_context_uses_group_plat_dyn_over_default_request() {
+    fn qemu_group_build_context_uses_omitted_group_plat_dyn_over_default_request() {
         let root = tempdir().unwrap();
         let build_config = root
             .path()
@@ -2814,7 +2818,7 @@ mod tests {
         fs::write(
             &build_config,
             "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
-             \"Warn\"\nplat_dyn = true\n",
+             \"Warn\"\n",
         )
         .unwrap();
         let mut request = starry_request(
