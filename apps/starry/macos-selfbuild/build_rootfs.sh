@@ -529,7 +529,11 @@ WRAP
 #!/bin/sh
 exec /lib/ld-musl-aarch64.so.1 --library-path /opt/rust-nightly/lib:/usr/lib /opt/rust-nightly/bin/rustdoc --sysroot /opt/rust-nightly "$@"
 WRAP
-    chmod +x "$overlay_dir/opt/rustc-nightly-sysroot" "$overlay_dir/opt/rustdoc-nightly-sysroot"
+    cat >"$overlay_dir/opt/cargo-nightly-sysroot" <<'WRAP'
+#!/bin/sh
+exec /lib/ld-musl-aarch64.so.1 --library-path /opt/rust-nightly/lib:/usr/lib /opt/rust-nightly/bin/cargo "$@"
+WRAP
+    chmod +x "$overlay_dir/opt/rustc-nightly-sysroot" "$overlay_dir/opt/rustdoc-nightly-sysroot" "$overlay_dir/opt/cargo-nightly-sysroot"
 
     cat >"$overlay_dir/usr/bin/aarch64-linux-musl-gcc" <<'WRAP'
 #!/bin/sh
@@ -791,7 +795,11 @@ WRAP
 #!/bin/sh
 exec /lib/ld-musl-aarch64.so.1 --library-path /opt/rust-nightly/lib:/usr/lib /opt/rust-nightly/bin/rustdoc --sysroot /opt/rust-nightly "$@"
 WRAP
-        chmod +x /payload/opt/rustc-nightly-sysroot /payload/opt/rustdoc-nightly-sysroot
+        cat >/payload/opt/cargo-nightly-sysroot <<'"'"'WRAP'"'"'
+#!/bin/sh
+exec /lib/ld-musl-aarch64.so.1 --library-path /opt/rust-nightly/lib:/usr/lib /opt/rust-nightly/bin/cargo "$@"
+WRAP
+        chmod +x /payload/opt/rustc-nightly-sysroot /payload/opt/rustdoc-nightly-sysroot /payload/opt/cargo-nightly-sysroot
 
         cat >/payload/usr/bin/aarch64-linux-musl-gcc <<'"'"'WRAP'"'"'
 #!/bin/sh
@@ -904,7 +912,11 @@ WRAP
 #!/bin/sh
 exec /lib/ld-musl-aarch64.so.1 --library-path /opt/rust-nightly/lib:/usr/lib /opt/rust-nightly/bin/rustdoc --sysroot /opt/rust-nightly "$@"
 WRAP
-    chmod +x "$overlay_dir/opt/rustc-nightly-sysroot" "$overlay_dir/opt/rustdoc-nightly-sysroot"
+    cat >"$overlay_dir/opt/cargo-nightly-sysroot" <<'WRAP'
+#!/bin/sh
+exec /lib/ld-musl-aarch64.so.1 --library-path /opt/rust-nightly/lib:/usr/lib /opt/rust-nightly/bin/cargo "$@"
+WRAP
+    chmod +x "$overlay_dir/opt/rustc-nightly-sysroot" "$overlay_dir/opt/rustdoc-nightly-sysroot" "$overlay_dir/opt/cargo-nightly-sysroot"
 fi
 
 echo "injecting toolchain payload with debugfs..."
