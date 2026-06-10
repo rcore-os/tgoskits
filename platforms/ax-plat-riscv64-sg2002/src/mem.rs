@@ -14,7 +14,7 @@ impl MemIf for MemIfImpl {
     /// All memory ranges except reserved ranges (including the kernel loaded
     /// range) are free for allocation.
     fn phys_ram_ranges() -> &'static [RawRange] {
-        // TODO: paser dtb to get the available memory ranges
+        // TODO: parse dtb to get the available memory ranges
         // We can't directly use `PHYS_MEMORY_BASE` here, because it may has been used by sbi.
         &[(
             KERNEL_BASE_PADDR,

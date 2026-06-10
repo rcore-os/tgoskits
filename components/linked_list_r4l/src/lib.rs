@@ -35,7 +35,7 @@ macro_rules! __def_node_internal {
             }
 
             #[inline]
-            #[doc = "Return the referece of wrapped inner"]
+            #[doc = "Return the reference of wrapped inner"]
             pub const fn inner(&self) -> &$type {
                 &self.inner
             }
@@ -83,7 +83,7 @@ macro_rules! __def_node_internal {
             }
 
             #[inline]
-            #[doc = "Return the referece of wrapped inner"]
+            #[doc = "Return the reference of wrapped inner"]
             pub const fn inner(&self) -> &$type {
                 &self.inner
             }
