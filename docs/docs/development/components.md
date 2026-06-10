@@ -63,7 +63,7 @@ flowchart TD
    例如 `ax-hal`、`ax-task`、`ax-driver`、`ax-net`
 
 3. 通过平台和配置接到最终系统  
-   例如 `axplat-*`、`platforms/ax-plat-x86-pc`、Axvisor 的 `configs/board/*.toml`
+   例如 `axplat-*`、`platforms/axplat-dyn`、Axvisor 的 `configs/board/*.toml`
 
 ### 2.1 依赖统计
 

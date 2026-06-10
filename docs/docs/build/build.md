@@ -209,7 +209,7 @@ flowchart TD
 | 架构 | 默认平台包 |
 |------|-----------|
 | `aarch64` | 无静态默认平台；默认使用 `plat_dyn = true` |
-| `x86_64` | `ax-plat-x86-pc` |
+| `x86_64` | 无静态默认平台；默认使用 `plat_dyn = true` |
 | `riscv64` | 无静态默认平台；默认使用 `plat_dyn = true` |
 | `loongarch64` | `ax-plat-loongarch64-qemu-virt` |
 

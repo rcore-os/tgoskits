@@ -1551,7 +1551,7 @@ fn ax_hal_platform_feature_name<'a>(
 fn is_known_ax_hal_platform_feature(platform: &str) -> bool {
     matches!(
         platform,
-        "x86-pc" | "riscv64-sg2002" | "riscv64-visionfive2" | "loongarch64-qemu-virt"
+        "riscv64-sg2002" | "riscv64-visionfive2" | "loongarch64-qemu-virt"
     )
 }
 
@@ -1580,13 +1580,12 @@ fn default_ax_hal_platform_feature(
     }
 
     Ok(match arch {
-        "x86_64" => "ax-hal/x86-pc",
-        "loongarch64" => "ax-hal/loongarch64-qemu-virt",
-        "aarch64" | "riscv64" => {
+        "x86_64" | "aarch64" | "riscv64" => {
             return Err(anyhow!(
                 "no static default ax-hal platform for arch `{arch}`"
             ));
         }
+        "loongarch64" => "ax-hal/loongarch64-qemu-virt",
         _ => unreachable!("unsupported arch"),
     }
     .to_string())
@@ -2179,12 +2178,8 @@ mod tests {
     fn std_build_cargo_config_builds_fake_lib_before_app() {
         let metadata = repo_metadata();
         let cargo = BuildInfo {
-            features: vec![
-                "ax-std".to_string(),
-                "ax-hal/x86-pc".to_string(),
-                "fs".to_string(),
-                "dns".to_string(),
-            ],
+            plat_dyn: true,
+            features: vec!["ax-std".to_string(), "fs".to_string(), "dns".to_string()],
             ..BuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
@@ -2198,7 +2193,7 @@ mod tests {
         assert!(
             cargo
                 .target
-                .ends_with("scripts/targets/std/x86_64-unknown-linux-musl.json")
+                .ends_with("scripts/targets/std/pie/x86_64-unknown-linux-musl.json")
         );
         assert!(
             cargo
@@ -2212,11 +2207,12 @@ mod tests {
                 "arceos".to_string(),
                 "ax-std/dns".to_string(),
                 "ax-std/fs".to_string(),
+                "ax-std/plat-dyn".to_string(),
+                "ax-std/smp".to_string(),
                 "ax-std/std-compat".to_string(),
-                "ax-std/x86-pc".to_string(),
             ]
         );
-        assert!(!cargo.to_bin);
+        assert!(cargo.to_bin);
         assert_eq!(
             cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
             Some(&"true".to_string())
@@ -2230,7 +2226,7 @@ mod tests {
             cargo
                 .extra_config
                 .as_ref()
-                .is_some_and(|path| path.ends_with("config-x86_64-unknown-linux-musl-static.toml"))
+                .is_some_and(|path| path.ends_with("config-x86_64-unknown-linux-musl-dynamic.toml"))
         );
         assert_eq!(cargo.pre_build_cmds.len(), 1);
         let prebuild = fs::read_to_string(&cargo.pre_build_cmds[0]).unwrap();
@@ -2287,7 +2283,7 @@ AX_IP = "10.0.2.15"
             ..BuildInfo::default()
         };
 
-        info.resolve_std_features_with_metadata("std-app", "x86_64-unknown-none", false, &metadata);
+        info.resolve_std_features_with_metadata("std-app", "x86_64-unknown-none", true, &metadata);
         let mut envs = HashMap::new();
         pass_std_build_nested_features(
             &mut envs,
@@ -2297,8 +2293,8 @@ AX_IP = "10.0.2.15"
                 "dns".to_string(),
                 "multitask".to_string(),
                 "net".to_string(),
+                "plat-dyn".to_string(),
                 "std-compat".to_string(),
-                "x86-pc".to_string(),
             ],
         );
 
@@ -2308,8 +2304,8 @@ AX_IP = "10.0.2.15"
                 "ax-std/dns".to_string(),
                 "ax-std/multitask".to_string(),
                 "ax-std/net".to_string(),
+                "ax-std/plat-dyn".to_string(),
                 "ax-std/std-compat".to_string(),
-                "ax-std/x86-pc".to_string(),
             ]
         );
         assert!(envs.is_empty());
@@ -2319,6 +2315,7 @@ AX_IP = "10.0.2.15"
     fn std_build_auto_enables_app_arceos_feature_when_declared() {
         let metadata = repo_metadata();
         let cargo = BuildInfo {
+            plat_dyn: true,
             features: Vec::new(),
             ..BuildInfo::default()
         }

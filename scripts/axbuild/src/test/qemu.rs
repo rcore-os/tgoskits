@@ -1831,12 +1831,12 @@ mod tests {
     }
 
     #[test]
-    fn static_x86_64_cargo_keeps_existing_qemu_boot() {
+    fn non_dynamic_x86_64_cargo_keeps_existing_qemu_boot() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _debug = TempEnvVar::set(DYNAMIC_X86_64_QEMU_DEBUG_ENV, "1");
         let cargo = Cargo {
             target: "scripts/targets/std/x86_64-unknown-linux-musl.json".to_string(),
-            features: vec!["ax-hal/x86-pc".to_string()],
+            features: vec![],
             to_bin: false,
             ..Default::default()
         };

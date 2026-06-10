@@ -44,7 +44,7 @@ flowchart TB
     subgraph sg_plat["平台层"]
         direction LR
         p1["axplat-dyn"]
-        p2["ax-plat-x86-pc"]
+        p2["ax-plat-loongarch64-qemu-virt"]
     end
     subgraph sg_comp["组件层 (92 crates)"]
         direction LR
@@ -159,7 +159,6 @@ flowchart TB
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
 | `ax-plat-loongarch64-qemu-virt` | 组件层 | `platforms/ax-plat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
 | `ax-plat-macros` | 组件层 | `platforms/ax-plat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
-| `ax-plat-x86-pc` | 组件层 | `platforms/ax-plat-x86-pc` | 7 | 5 | [查看](crates/ax-plat-x86-pc) |
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |
 | `ax-sched` | 组件层 | `components/axsched` | 1 | 1 | [查看](crates/ax-sched) |

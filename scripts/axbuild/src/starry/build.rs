@@ -309,7 +309,7 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
 
 fn default_starry_qemu_platform_feature(feature: &str) -> Option<&str> {
     match feature.strip_prefix("ax-hal/")? {
-        "x86-pc" | "loongarch64-qemu-virt" => Some(feature),
+        "loongarch64-qemu-virt" => Some(feature),
         _ => None,
     }
 }

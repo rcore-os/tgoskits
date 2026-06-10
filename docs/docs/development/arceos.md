@@ -392,17 +392,15 @@ platforms/ax-plat-riscv64-sg2002/
 |------|------|
 | `platforms/` | 工作区内 `ax-plat-*` 平台 crate |
 | `platforms/axplat-dyn/` | 动态平台加载（设备树驱动） |
-| `platforms/ax-plat-x86-pc/` | x86_64 PC 静态平台 |
 
 已有平台：
 
 | 平台 | 架构 | 目标硬件 |
 |------|------|---------|
 | `ax-plat-riscv64-sg2002` | riscv64 | SG2002 板级平台 |
-| `axplat-x86-pc` | x86_64 | QEMU Q35 / 物理 PC |
 | `axplat-loongarch64-qemu-virt` | loongarch64 | QEMU virt |
 
-AArch64 和 RISC-V QEMU 默认平台由 `axplat-dyn` 通过设备树/运行时信息加载，不再维护仓库内静态平台 crate。
+AArch64、RISC-V QEMU 和 x86_64 QEMU 默认平台由 `axplat-dyn` 通过设备树/运行时信息加载，不再维护仓库内静态平台 crate。
 
 ### 5.3 添加新平台
 

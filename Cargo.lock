@@ -272,7 +272,6 @@ name = "arceos-helloworld-myplat"
 version = "0.3.1"
 dependencies = [
  "ax-plat-loongarch64-qemu-virt",
- "ax-plat-x86-pc",
  "ax-std",
  "cfg-if",
 ]
@@ -834,7 +833,6 @@ dependencies = [
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-sg2002",
  "ax-plat-riscv64-visionfive2",
- "ax-plat-x86-pc",
  "axplat-dyn",
  "cfg-if",
  "fdt-parser",
@@ -1148,31 +1146,6 @@ dependencies = [
  "riscv_goldfish",
  "sbi-rt",
  "uart_16550 0.4.0",
-]
-
-[[package]]
-name = "ax-plat-x86-pc"
-version = "0.5.12"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-driver",
- "ax-int-ratio",
- "ax-kspin",
- "ax-lazyinit",
- "ax-percpu",
- "ax-plat",
- "axklib",
- "bitflags 2.13.0",
- "heapless 0.9.3",
- "log",
- "multiboot",
- "raw-cpuid 11.6.0",
- "uart_16550 0.5.0",
- "x2apic",
- "x86",
- "x86_64",
- "x86_rtc",
 ]
 
 [[package]]
@@ -5176,15 +5149,6 @@ version = "0.2.2"
 dependencies = [
  "derive_more",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "multiboot"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f87ad3b7b7bcf5da525c22221e3eb3a020cd68b2d55ae62f629c15e8bc3bd56e"
-dependencies = [
- "paste",
 ]
 
 [[package]]
@@ -9829,16 +9793,6 @@ dependencies = [
  "const_fn",
  "rustversion",
  "volatile 0.4.6",
-]
-
-[[package]]
-name = "x86_rtc"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1a42420da20c01d82e5d42231570efa3b9e16a5515eaaf9ee4e964f49cc1313"
-dependencies = [
- "cfg-if",
- "x86_64",
 ]
 
 [[package]]

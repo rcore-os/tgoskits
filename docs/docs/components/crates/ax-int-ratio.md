@@ -14,8 +14,7 @@
 
 当前仓库里的真实使用场景也印证了这个定位：
 
-- `ax-plat-x86-pc/src/time.rs` 用它把纳秒转换为 LAPIC ticks。
-- 动态 AArch64 平台时间路径经由 `somehal`/generic timer 逻辑使用同类比例换算。
+- 动态平台时间路径经由 `somehal`/generic timer 逻辑使用同类比例换算。
 
 ### 1.2 核心类型
 - `Ratio`：保存原始 `numerator`、`denominator`，以及预计算后的 `mult` 和 `shift`。
@@ -50,7 +49,7 @@ numerator / denominator ~= mult / (1 << shift)
 - 支持快速取倒数 `inverse()`。
 
 ### 使用场景
-- `Ratio::new()`：在 `ax-plat-x86-pc` 和动态平台时间初始化代码中使用。
+- `Ratio::new()`：在动态平台时间初始化代码中使用。
 - `mul_trunc()`：平台时间路径用来把 deadline 或 tick 值做快速转换。
 - `inverse()`：AArch64 generic timer 初始化时直接通过现有比例求反比率。
 - `Ratio::zero()`：常作为静态变量的初始化哨兵值。
@@ -63,7 +62,6 @@ numerator / denominator ~= mult / (1 << shift)
 ## 依赖关系
 ```mermaid
 graph LR
-    ax_int_ratio["ax-int-ratio"] --> x86pc["ax-plat-x86-pc"]
     ax_int_ratio --> dyn["axplat-dyn / somehal"]
 ```
 
@@ -71,7 +69,6 @@ graph LR
 `ax-int-ratio` 没有本地 crate 依赖，体量非常小。
 
 ### 主要消费者
-- `ax-plat-x86-pc`：LAPIC 计时换算。
 - `axplat-dyn` / `somehal`：动态平台 generic timer 的 ticks / nanos 双向换算。
 
 ## 开发指南

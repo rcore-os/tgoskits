@@ -75,11 +75,11 @@ flowchart TD
 | 架构 | 默认 rootfs 镜像 | StarryOS 默认平台 | GNU 工具前缀 | qemu-user 二进制 |
 |------|-----------------|------------------|-------------|-----------------|
 | `aarch64` | `rootfs-aarch64-alpine.img` | 动态平台 | `aarch64-linux-musl` | `qemu-aarch64-static` |
-| `x86_64` | `rootfs-x86_64-alpine.img` | `x86-pc` | `x86_64-linux-musl` | `qemu-x86_64-static` |
+| `x86_64` | `rootfs-x86_64-alpine.img` | 动态平台 | `x86_64-linux-musl` | `qemu-x86_64-static` |
 | `riscv64` | `rootfs-riscv64-alpine.img` | 动态平台 | `riscv64-linux-musl` | `qemu-riscv64-static` |
 | `loongarch64` | `rootfs-loongarch64-alpine.img` | `loongarch64-qemu-virt` | `loongarch64-linux-musl` | `qemu-loongarch64-static` |
 
-这些字段由 `CrossCompileSpec` 承载，被 StarryOS 和 Axvisor 的 C/Python 测试用例的 prebuild 环境和 CMake 交叉编译流程所使用。AArch64 和 RISC-V QEMU 默认不再绑定静态 StarryOS 平台，相关构建走动态平台路径。
+这些字段由 `CrossCompileSpec` 承载，被 StarryOS 和 Axvisor 的 C/Python 测试用例的 prebuild 环境和 CMake 交叉编译流程所使用。AArch64、RISC-V QEMU 和 x86_64 QEMU 默认不再绑定静态 StarryOS 平台，相关构建走动态平台路径。
 
 ## Snapshot
 

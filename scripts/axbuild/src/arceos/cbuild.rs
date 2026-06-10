@@ -969,17 +969,17 @@ mod tests {
         let build_dir = target_dir.join(target).join(mode).join("build");
         let axhal_out = build_dir.join("ax-hal-abc/out");
         let loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
-        let stale_x86_out = build_dir.join("ax-plat-x86-pc-abc/out");
+        let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-old/out");
         let runtime_out = build_dir.join("ax-runtime-def/out");
         let unrelated_out = build_dir.join("unrelated-ghi/out");
         fs::create_dir_all(&axhal_out).unwrap();
         fs::create_dir_all(&loong_out).unwrap();
-        fs::create_dir_all(&stale_x86_out).unwrap();
+        fs::create_dir_all(&stale_loong_out).unwrap();
         fs::create_dir_all(&runtime_out).unwrap();
         fs::create_dir_all(&unrelated_out).unwrap();
         fs::write(axhal_out.join("axplat.x"), "").unwrap();
         fs::write(loong_out.join("axplat.x"), "").unwrap();
-        fs::write(stale_x86_out.join("axplat.x"), "").unwrap();
+        fs::write(stale_loong_out.join("axplat.x"), "").unwrap();
         fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
         fs::write(unrelated_out.join("note.txt"), "").unwrap();
 
