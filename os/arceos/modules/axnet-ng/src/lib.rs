@@ -215,6 +215,62 @@ pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
 }
 
+/// Stack-agnostic configuration for registering an already-wrapped ethernet
+/// device with a static IPv4 and optional services.
+///
+/// This carries no notion of "Wi-Fi" or "SoftAP" — it is the generic policy the
+/// protocol stack applies. Link-type-specific policy (e.g. a SoftAP's choice of
+/// addresses and DHCP-server lease) is decided by the caller (board/runtime) and
+/// passed in as data.
+pub struct NetConfig {
+    /// Interface name (e.g. `"wlan0"`).
+    pub name: alloc::string::String,
+    /// This interface's static address / gateway.
+    pub ip: [u8; 4],
+    pub prefix_len: u8,
+    /// If set, run a built-in DHCP server handing out this single address.
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+    /// Spawn a dedicated poll task woken via [`notify_wifi_rx`]. Needed for
+    /// out-of-band RX devices (e.g. SDIO) that sit outside the ethernet IRQ
+    /// framework.
+    pub dedicated_poll: bool,
+}
+
+/// Registers an already-wrapped ethernet device with a static IPv4 and the
+/// services described by `config`. The network service must already be
+/// initialized (via [`init_network`]).
+///
+/// This is the generic, link-type-agnostic registration entry point. A SoftAP
+/// is just one caller that fills in a static IP + DHCP server + dedicated poll.
+pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
+    let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
+    let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
+
+    let mac = EthernetAddress(dev.mac_address());
+    let eth_dev = EthernetDevice::new(config.name.clone(), dev, Some(cidr));
+
+    {
+        let mut s = get_service();
+        let dev_idx = s.register_static_device(config.name.clone(), eth_dev, cidr);
+        s.iface.update_ip_addrs(|ip_addrs| {
+            let addr = smoltcp::wire::IpCidr::Ipv4(cidr);
+            if !ip_addrs.contains(&addr) {
+                ip_addrs.push(addr).ok();
+            }
+        });
+        if let Some(client) = config.dhcp_server_client_ip {
+            let client_ip = Ipv4Address::new(client[0], client[1], client[2], client[3]);
+            let subnet_mask = prefix_to_mask(config.prefix_len);
+            s.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
+        }
+    }
+
+    info!("{}: up, mac {mac}, ip {cidr}", config.name);
+    if config.dedicated_poll {
+        start_wifi_poll_task();
+    }
+}
+
 /// Registers the AIC8800 Wi-Fi device as a SoftAP `wlan0` with a static IPv4
 /// and a built-in single-client DHCP server.
 ///
@@ -228,28 +284,16 @@ pub fn register_wifi_ap_device(
     client_ip: [u8; 4],
     prefix_len: u8,
 ) {
-    let server_ip = Ipv4Address::new(server_ip[0], server_ip[1], server_ip[2], server_ip[3]);
-    let client_ip = Ipv4Address::new(client_ip[0], client_ip[1], client_ip[2], client_ip[3]);
-    let cidr = Ipv4Cidr::new(server_ip, prefix_len);
-    let subnet_mask = prefix_to_mask(prefix_len);
-
-    let mac = EthernetAddress(dev.mac_address());
-    let eth_dev = EthernetDevice::new("wlan0".to_owned(), dev, Some(cidr));
-
-    {
-        let mut s = get_service();
-        let dev_idx = s.register_static_device("wlan0".to_owned(), eth_dev, cidr);
-        s.iface.update_ip_addrs(|ip_addrs| {
-            let addr = smoltcp::wire::IpCidr::Ipv4(cidr);
-            if !ip_addrs.contains(&addr) {
-                ip_addrs.push(addr).ok();
-            }
-        });
-        s.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
-    }
-
-    info!("wlan0: SoftAP up, mac {mac}, ip {cidr}");
-    start_wifi_poll_task();
+    register_device_with_config(
+        dev,
+        NetConfig {
+            name: "wlan0".to_owned(),
+            ip: server_ip,
+            prefix_len,
+            dhcp_server_client_ip: Some(client_ip),
+            dedicated_poll: true,
+        },
+    );
 }
 
 /// Wakes the `wlan0` poll task; registered as the AIC8800 RX-data callback.
