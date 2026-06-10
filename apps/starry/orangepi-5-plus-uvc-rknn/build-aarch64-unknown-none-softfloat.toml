@@ -14,4 +14,3 @@ features = [
 ]
 log = "Warn"
 max_cpu_num = 1
-plat_dyn = true
