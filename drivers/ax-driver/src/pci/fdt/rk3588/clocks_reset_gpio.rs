@@ -1,4 +1,21 @@
-fn clock_specs_for_node(node: NodeType<'_>) -> Vec<ClockSpec> {
+use alloc::{format, vec::Vec};
+
+use fdt_edit::{ClockRef, Node, Phandle};
+use log::warn;
+use rdrive::{
+    probe::{OnProbeError, fdt::NodeType},
+    register::FdtInfo,
+};
+
+use super::{
+    resources::{ClockSpec, GpioSpec, RK3588_GPIO_BASES, ResetSpec},
+    windows::{live_fdt, prop_str_list, rk3588_pcie_reset_pin},
+};
+use crate::soc::{
+    rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
+};
+
+pub(super) fn clock_specs_for_node(node: NodeType<'_>) -> Vec<ClockSpec> {
     let assigned_clocks = node
         .as_node()
         .get_property("assigned-clocks")
@@ -39,7 +56,7 @@ fn clock_specs_for_node(node: NodeType<'_>) -> Vec<ClockSpec> {
         .collect()
 }
 
-fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
+pub(super) fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
     clocks
         .into_iter()
         .filter_map(|clock| {
@@ -53,7 +70,7 @@ fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
         .collect()
 }
 
-fn enable_clocks(clocks: &[ClockSpec]) -> Result<(), OnProbeError> {
+pub(super) fn enable_clocks(clocks: &[ClockSpec]) -> Result<(), OnProbeError> {
     for clock in clocks {
         let id = clock.id;
         if id == 0 {
@@ -77,7 +94,7 @@ fn enable_clocks(clocks: &[ClockSpec]) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
+pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
     let Some(prop) = node.as_node().get_property("resets") else {
         return Ok(Vec::new());
     };
@@ -99,7 +116,7 @@ fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
         .collect())
 }
 
-fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+pub(super) fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
     for reset in resets {
         rk3588_reset_assert(reset.id).map_err(|err| {
             OnProbeError::other(format!(
@@ -111,7 +128,7 @@ fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+pub(super) fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
     for reset in resets {
         rk3588_reset_deassert(reset.id).map_err(|err| {
             OnProbeError::other(format!(
@@ -123,7 +140,10 @@ fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn parse_reset_gpio(info: &FdtInfo<'_>, apb_base: u64) -> Result<Option<GpioSpec>, OnProbeError> {
+pub(super) fn parse_reset_gpio(
+    info: &FdtInfo<'_>,
+    apb_base: u64,
+) -> Result<Option<GpioSpec>, OnProbeError> {
     if let Some(gpio) = parse_gpio_spec(info.node, "reset-gpios")? {
         return Ok(Some(gpio));
     }

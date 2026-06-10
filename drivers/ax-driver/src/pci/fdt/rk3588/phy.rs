@@ -1,4 +1,25 @@
-fn parse_phys(node_type: NodeType<'_>) -> Result<Vec<PhyRef>, OnProbeError> {
+use alloc::{format, string::ToString, vec::Vec};
+use core::time::Duration;
+
+use fdt_edit::{Node, Phandle};
+use log::{info, warn};
+use rdrive::probe::{OnProbeError, fdt::NodeType};
+
+use super::{
+    clocks_reset_gpio::{
+        assert_resets, clock_specs_for_node, deassert_resets, enable_clocks, parse_resets,
+    },
+    resources::{
+        BIT_WRITEABLE_SHIFT, CombphyResources, PCIE3PHY_SRAM_INIT_DONE, PHP_GRF_PCIESEL_CON,
+        PHY_TYPE_PCIE, Pcie3PhyResources, PhyRef, RK3588_PCIE3PHY_CMN_CON0,
+        RK3588_PCIE3PHY_DEFAULT_MODE, RK3588_PCIE3PHY_PHY0_STATUS1, RK3588_PCIE3PHY_PHY1_STATUS1,
+        RegMmio,
+    },
+    windows::{is_compatible, live_fdt, phy_cells, prop_phandle, prop_str_list, prop_u32},
+};
+use crate::soc::{rk3588_reset_assert, rk3588_reset_deassert};
+
+pub(super) fn parse_phys(node_type: NodeType<'_>) -> Result<Vec<PhyRef>, OnProbeError> {
     let node = node_type.as_node();
     let Some(prop) = node.get_property("phys") else {
         return Ok(Vec::new());
@@ -33,7 +54,7 @@ fn parse_phys(node_type: NodeType<'_>) -> Result<Vec<PhyRef>, OnProbeError> {
     Ok(refs)
 }
 
-fn init_phys(host_node: NodeType<'_>, phys: &[PhyRef]) -> Result<(), OnProbeError> {
+pub(super) fn init_phys(host_node: NodeType<'_>, phys: &[PhyRef]) -> Result<(), OnProbeError> {
     if phys.is_empty() {
         warn!(
             "Rockchip RK3588 PCIe host {} has no phys property",

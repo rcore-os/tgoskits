@@ -19,7 +19,6 @@ use rdrive::{
 };
 
 #[cfg(feature = "rk3588-pcie")]
-#[path = "rk3588.rs"]
 mod rk3588;
 
 crate::model_register!(
