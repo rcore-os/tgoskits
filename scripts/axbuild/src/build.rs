@@ -1235,7 +1235,10 @@ pub(crate) fn resolve_effective_plat_dyn(
 }
 
 fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-") || target.starts_with("riscv64") || target.starts_with("x86_64-")
+    target.starts_with("aarch64-")
+        || target.starts_with("loongarch64-")
+        || target.starts_with("riscv64")
+        || target.starts_with("x86_64-")
 }
 
 fn defaults_to_platform_dynamic(target: &str) -> bool {
@@ -2470,6 +2473,11 @@ AX_IP = "10.0.2.15"
                 false,
                 "scripts/targets/std/loongarch64-unknown-linux-musl.json",
             ),
+            (
+                "loongarch64-unknown-none-softfloat",
+                true,
+                "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json",
+            ),
         ];
 
         for (bare_target, plat_dyn, expected_path) in cases {
@@ -2612,6 +2620,13 @@ AX_IP = "10.0.2.15"
                 "loongarch64",
                 64,
             ),
+            (
+                "loongarch64-unknown-linux-musl",
+                true,
+                "loongarch64-unknown-none",
+                "loongarch64",
+                64,
+            ),
         ] {
             let workspace = crate::context::workspace_root_path().unwrap();
             let std_path = workspace.join(std_target_json_path(std_target, plat_dyn));
@@ -2672,6 +2687,7 @@ AX_IP = "10.0.2.15"
             ("riscv64gc-unknown-linux-musl", false),
             ("riscv64gc-unknown-linux-musl", true),
             ("loongarch64-unknown-linux-musl", false),
+            ("loongarch64-unknown-linux-musl", true),
         ] {
             let path = crate::context::workspace_root_path()
                 .unwrap()
@@ -2701,6 +2717,7 @@ AX_IP = "10.0.2.15"
             ("riscv64gc-unknown-linux-musl", false, "_start", "-no-pie"),
             ("riscv64gc-unknown-linux-musl", true, "_head", "-pie"),
             ("loongarch64-unknown-linux-musl", false, "_start", "-no-pie"),
+            ("loongarch64-unknown-linux-musl", true, "_head", "-pie"),
         ];
 
         for (target, plat_dyn, entry, mode_arg) in cases {
@@ -2946,6 +2963,19 @@ AX_IP = "10.0.2.15"
         assert!(default_to_bin_for_target_config(
             "x86_64-unknown-none",
             true
+        ));
+    }
+
+    #[test]
+    fn loongarch64_supports_explicit_dynamic_platform_without_defaulting_to_it() {
+        assert!(supports_platform_dynamic(
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(!BuildInfo::default_for_target("loongarch64-unknown-none-softfloat").plat_dyn);
+        assert!(resolve_effective_plat_dyn(
+            "loongarch64-unknown-none-softfloat",
+            false,
+            Some(true)
         ));
     }
 

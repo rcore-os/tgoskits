@@ -74,9 +74,9 @@ macro_rules! include_asm_macros {
 
         .macro _asm_extable, from, to
             .pushsection __ex_table, "a"
-            .balign 8
-            .quad   \from
-            .quad   \to
+            .balign 4
+            .word   \from - .
+            .word   \to - .
             .popsection
         .endm
 

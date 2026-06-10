@@ -24,7 +24,7 @@ exception_entry_base:
     andi    $t1, $t1, 0x3
     bnez    $t1, .Lexit_user
 
-    la.abs  $ra, .Ltrap_return
+    la.pcrel $ra, .Ltrap_return
     b       loongarch64_trap_handler
 
 .Lexit_user:
