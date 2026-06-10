@@ -401,6 +401,7 @@ pub(crate) fn app_qemu_test_case(
         host_symbolize_success_regex: case.host_symbolize_success_regex.clone(),
         host_http_server: None,
         subcases: case.subcases.clone(),
+        grouped_subcase_filter: None,
     })
 }
 

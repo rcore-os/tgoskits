@@ -720,7 +720,10 @@ impl Axvisor {
             None,
             &case.case.case.qemu_config_path,
             prepared_assets,
-            prepare_started.elapsed(),
+            test_case::RunPreparedQemuCaseOptions {
+                prepare_elapsed: prepare_started.elapsed(),
+                qemu_timing_fields: None,
+            },
         )
         .await
     }

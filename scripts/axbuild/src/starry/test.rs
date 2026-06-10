@@ -1,6 +1,7 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -18,7 +19,7 @@ use crate::{
     },
     test::{
         board as board_test, case, case::TestQemuCase, host_http::HostHttpServerGuard,
-        qemu as qemu_test,
+        qemu as qemu_test, timing,
     },
 };
 
@@ -224,8 +225,37 @@ pub(crate) fn discover_qemu_cases(
     selected_case: Option<&str>,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
     let test_suite_dir = require_test_suite_dir(workspace_root)?;
-    qemu_test::discover_qemu_cases(
+    let selection = parse_starry_qemu_case_selection(selected_case);
+    if let Some(direct_case) = selection.prefer_direct_case.as_deref()
+        && direct_starry_qemu_case_exists(&test_suite_dir, direct_case)?
+    {
+        return load_qemu_cases_for_selection(
+            &test_suite_dir,
+            arch,
+            target,
+            Some(direct_case),
+            None,
+        );
+    }
+
+    load_qemu_cases_for_selection(
         &test_suite_dir,
+        arch,
+        target,
+        selection.parent_case.as_deref(),
+        selection.grouped_subcase_filter,
+    )
+}
+
+fn load_qemu_cases_for_selection(
+    test_suite_dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    grouped_subcase_filter: Option<BTreeSet<String>>,
+) -> anyhow::Result<Vec<StarryQemuCase>> {
+    qemu_test::discover_qemu_cases(
+        test_suite_dir,
         arch,
         target,
         selected_case,
@@ -233,14 +263,85 @@ pub(crate) fn discover_qemu_cases(
         "qemu",
     )?
     .into_iter()
-    .map(load_qemu_case)
+    .map(|case| load_qemu_case(case, grouped_subcase_filter.clone()))
     .collect()
 }
 
-fn load_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<StarryQemuCase> {
+fn direct_starry_qemu_case_exists(
+    test_suite_dir: &Path,
+    selected_case: &str,
+) -> anyhow::Result<bool> {
+    match qemu_test::discover_all_qemu_cases(test_suite_dir, Some(selected_case), "Starry", "qemu")
+    {
+        Ok(cases) => Ok(!cases.is_empty()),
+        Err(err) if err.kind() == qemu_test::ListQemuCasesErrorKind::UnknownSelectedCase => {
+            Ok(false)
+        }
+        Err(err) => Err(anyhow::Error::new(err)),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StarryQemuCaseSelection {
+    parent_case: Option<String>,
+    grouped_subcase_filter: Option<BTreeSet<String>>,
+    prefer_direct_case: Option<String>,
+}
+
+fn parse_starry_qemu_case_selection(selected_case: Option<&str>) -> StarryQemuCaseSelection {
+    let Some(selected_case) = selected_case else {
+        return StarryQemuCaseSelection {
+            parent_case: None,
+            grouped_subcase_filter: None,
+            prefer_direct_case: None,
+        };
+    };
+
+    let parts = selected_case.split('/').collect::<Vec<_>>();
+    let mapped = match parts.as_slice() {
+        [group, subcase]
+            if is_starry_qemu_system_group(group)
+                && *subcase != "system"
+                && !subcase.is_empty() =>
+        {
+            Some((
+                format!("{group}/system"),
+                *subcase,
+                Some(selected_case.to_string()),
+            ))
+        }
+        [group, "system", subcase] if is_starry_qemu_system_group(group) && !subcase.is_empty() => {
+            Some((format!("{group}/system"), *subcase, None))
+        }
+        _ => None,
+    };
+
+    if let Some((parent_case, subcase, prefer_direct_case)) = mapped {
+        return StarryQemuCaseSelection {
+            parent_case: Some(parent_case),
+            grouped_subcase_filter: Some(BTreeSet::from([subcase.to_string()])),
+            prefer_direct_case,
+        };
+    }
+
+    StarryQemuCaseSelection {
+        parent_case: Some(selected_case.to_string()),
+        grouped_subcase_filter: None,
+        prefer_direct_case: None,
+    }
+}
+
+fn is_starry_qemu_system_group(group: &str) -> bool {
+    matches!(group, "qemu-smp1" | "qemu-smp4")
+}
+
+fn load_qemu_case(
+    case: qemu_test::DiscoveredQemuCase,
+    grouped_subcase_filter: Option<BTreeSet<String>>,
+) -> anyhow::Result<StarryQemuCase> {
     let build_group = case.build_group;
     let build_config_path = case.build_config_path;
-    let test_case = qemu_test::load_test_qemu_case_fields(
+    let mut test_case = qemu_test::load_test_qemu_case_fields(
         case.display_name,
         case.name,
         case.case_dir,
@@ -248,11 +349,180 @@ fn load_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<StarryQ
         "Starry",
         true,
     )?;
+    if let Some(filter) = grouped_subcase_filter.as_ref() {
+        test_case.grouped_subcase_filter =
+            Some(resolve_grouped_subcase_filter(&test_case, filter)?);
+    }
     Ok(StarryQemuCase {
         case: test_case,
         build_group,
         build_config_path,
     })
+}
+
+fn resolve_grouped_subcase_filter(
+    case: &TestQemuCase,
+    filter: &BTreeSet<String>,
+) -> anyhow::Result<BTreeSet<String>> {
+    let canonical_names = case
+        .subcases
+        .iter()
+        .map(|subcase| subcase.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let aliases = grouped_subcase_selector_aliases(case)?;
+    let mut resolved = BTreeSet::new();
+    let mut missing = Vec::new();
+    for requested in filter {
+        if canonical_names.contains(requested.as_str()) {
+            resolved.insert(requested.clone());
+            continue;
+        }
+
+        match aliases.get(requested) {
+            Some(matches) if matches.len() == 1 => {
+                resolved.extend(matches.iter().cloned());
+            }
+            Some(matches) => bail!(
+                "ambiguous Starry qemu grouped subcase selector `{}` for parent case `{}`; \
+                 matches: {}",
+                requested,
+                case.display_name,
+                matches.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            None => missing.push(requested.as_str()),
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(resolved);
+    }
+
+    bail!(
+        "unknown Starry qemu grouped subcase(s) {} for parent case `{}`",
+        missing.join(", "),
+        case.display_name
+    )
+}
+
+fn grouped_subcase_selector_aliases(
+    case: &TestQemuCase,
+) -> anyhow::Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut aliases = BTreeMap::new();
+    for subcase in &case.subcases {
+        add_grouped_subcase_selector_alias(&mut aliases, &subcase.name, &subcase.name);
+        for alias in grouped_subcase_binary_aliases(subcase)? {
+            add_grouped_subcase_selector_alias(&mut aliases, &alias, &subcase.name);
+        }
+    }
+    Ok(aliases)
+}
+
+fn add_grouped_subcase_selector_alias(
+    aliases: &mut BTreeMap<String, BTreeSet<String>>,
+    alias: &str,
+    subcase_name: &str,
+) {
+    aliases
+        .entry(alias.to_string())
+        .or_default()
+        .insert(subcase_name.to_string());
+}
+
+fn grouped_subcase_binary_aliases(
+    subcase: &case::TestQemuSubcase,
+) -> anyhow::Result<BTreeSet<String>> {
+    let cmake_lists = subcase.case_dir.join("CMakeLists.txt");
+    if !cmake_lists.is_file() {
+        return Ok(BTreeSet::new());
+    }
+
+    let content = fs::read_to_string(&cmake_lists)
+        .with_context(|| format!("failed to read {}", cmake_lists.display()))?;
+    Ok(cmake_target_aliases(&content))
+}
+
+fn cmake_target_aliases(content: &str) -> BTreeSet<String> {
+    let mut aliases = cmake_install_target_names(content);
+    aliases.extend(cmake_executable_target_names(content));
+    aliases
+}
+
+fn cmake_install_target_names(content: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for line in content.lines() {
+        let tokens = cmake_line_tokens(line);
+        if !tokens
+            .first()
+            .is_some_and(|token| token.eq_ignore_ascii_case("install"))
+        {
+            continue;
+        }
+
+        let mut collect_targets = false;
+        for token in tokens.iter().skip(1) {
+            let keyword = token.to_ascii_uppercase();
+            if collect_targets {
+                if cmake_install_target_boundary(&keyword) {
+                    break;
+                }
+                names.insert(token.clone());
+            } else if keyword == "TARGETS" {
+                collect_targets = true;
+            }
+        }
+    }
+    names
+}
+
+fn cmake_executable_target_names(content: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for line in content.lines() {
+        let tokens = cmake_line_tokens(line);
+        if tokens
+            .first()
+            .is_some_and(|token| token.eq_ignore_ascii_case("add_executable"))
+            && let Some(target) = tokens.get(1)
+        {
+            names.insert(target.clone());
+        }
+    }
+    names
+}
+
+fn cmake_line_tokens(line: &str) -> Vec<String> {
+    let line = line.split_once('#').map_or(line, |(code, _)| code);
+    line.split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '(' | ')'))
+        .map(|token| token.trim_matches(|ch| matches!(ch, '"' | '\'')))
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn cmake_install_target_boundary(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "ARCHIVE"
+            | "BUNDLE"
+            | "COMPONENT"
+            | "CONFIGURATIONS"
+            | "DESTINATION"
+            | "EXCLUDE_FROM_ALL"
+            | "EXPORT"
+            | "FRAMEWORK"
+            | "INCLUDES"
+            | "LIBRARY"
+            | "NAMELINK_COMPONENT"
+            | "NAMELINK_ONLY"
+            | "NAMELINK_SKIP"
+            | "OBJECTS"
+            | "OPTIONAL"
+            | "PERMISSIONS"
+            | "PRIVATE_HEADER"
+            | "PUBLIC_HEADER"
+            | "RENAME"
+            | "RESOURCE"
+            | "RUNTIME"
+    )
 }
 
 pub(crate) fn finalize_qemu_case_run(report: &StarryQemuRunReport) -> anyhow::Result<()> {
@@ -295,6 +565,17 @@ fn discover_all_qemu_cases_with_archs(
     selected_case: Option<&str>,
 ) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
     let test_suite_dir = require_test_suite_dir(workspace_root)?;
+    let selection = parse_starry_qemu_case_selection(selected_case);
+    let selected_case = if selection.grouped_subcase_filter.is_some() {
+        match selection.prefer_direct_case.as_deref() {
+            Some(direct_case) if direct_starry_qemu_case_exists(&test_suite_dir, direct_case)? => {
+                Some(direct_case)
+            }
+            _ => selection.parent_case.as_deref(),
+        }
+    } else {
+        selected_case
+    };
     qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", "qemu")
 }
 
@@ -419,26 +700,52 @@ impl Starry {
         let mut reports = Vec::new();
         let asset_config = starry_case_asset_config();
 
+        let timing_stage = timing::TimingStage::new(
+            "starry-qemu",
+            [
+                ("phase", "prepare-build-groups".to_string()),
+                ("arch", arch.clone()),
+                ("target", target.clone()),
+            ],
+        );
         let build_groups = qemu_test::prepare_case_build_groups(&cases, |build_config_path| {
             Self::qemu_group_build_context(&request, build_config_path)
-        })?;
+        });
+        timing_stage.finish();
+        let build_groups = build_groups?;
 
         let mut completed = 0;
         for build_group in &build_groups {
-            self.app
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("build_group", build_group.group.build_group.to_string()),
+                    ("phase", "build".to_string()),
+                ],
+            );
+            let build_result = self
+                .app
                 .build(
                     build_group.cargo.clone(),
                     build_group.request.build_info_path.clone(),
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to build Starry qemu test artifact for build group `{}` ({})",
-                        build_group.group.build_group,
-                        build_group.group.build_config_path.display()
-                    )
-                })?;
+                .await;
+            timing_stage.finish();
+            build_result.with_context(|| {
+                format!(
+                    "failed to build Starry qemu test artifact for build group `{}` ({})",
+                    build_group.group.build_group,
+                    build_group.group.build_config_path.display()
+                )
+            })?;
 
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("build_group", build_group.group.build_group.to_string()),
+                    ("phase", "prepare-qemu-cases".to_string()),
+                ],
+            );
             let cases = self
                 .prepare_qemu_cases(
                     &build_group.request,
@@ -446,14 +753,15 @@ impl Starry {
                     &default_rootfs_path,
                     &build_group.group.cases,
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to load Starry qemu test cases for build group `{}` ({})",
-                        build_group.group.build_group,
-                        build_group.group.build_config_path.display()
-                    )
-                })?;
+                .await;
+            timing_stage.finish();
+            let cases = cases.with_context(|| {
+                format!(
+                    "failed to load Starry qemu test cases for build group `{}` ({})",
+                    build_group.group.build_group,
+                    build_group.group.build_config_path.display()
+                )
+            })?;
 
             for case in &cases {
                 completed += 1;
@@ -603,16 +911,31 @@ impl Starry {
         let mut prepared = Vec::with_capacity(cases.len());
         let mut rootfs_paths = BTreeSet::new();
         for starry_case in cases {
-            let mut qemu = self
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("case", starry_case.case.display_name.clone()),
+                    ("phase", "read-qemu-config".to_string()),
+                ],
+            );
+            let qemu_result = self
                 .app
                 .read_qemu_config_from_path_for_cargo(cargo, &starry_case.case.qemu_config_path)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to read Starry qemu config for case `{}`",
-                        starry_case.case.display_name
-                    )
-                })?;
+                .await;
+            timing_stage.finish();
+            let mut qemu = qemu_result.with_context(|| {
+                format!(
+                    "failed to read Starry qemu config for case `{}`",
+                    starry_case.case.display_name
+                )
+            })?;
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("case", starry_case.case.display_name.clone()),
+                    ("phase", "prepare-qemu-config".to_string()),
+                ],
+            );
             qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
             Self::rewrite_qemu_case_managed_rootfs_paths(self.app.workspace_root(), &mut qemu)?;
             let rootfs_path =
@@ -629,6 +952,7 @@ impl Starry {
                     starry_case.case.display_name
                 )
             })?;
+            timing_stage.finish();
             prepared.push(PreparedStarryQemuCase {
                 case: starry_case.case.clone(),
                 qemu,
@@ -639,8 +963,18 @@ impl Starry {
             });
         }
 
-        self.ensure_qemu_case_rootfs_paths(request, default_rootfs_path, &rootfs_paths)
-            .await?;
+        let timing_stage = timing::TimingStage::new(
+            "starry-qemu",
+            [
+                ("phase", "ensure-rootfs-paths".to_string()),
+                ("rootfs_count", rootfs_paths.len().to_string()),
+            ],
+        );
+        let ensure_result = self
+            .ensure_qemu_case_rootfs_paths(request, default_rootfs_path, &rootfs_paths)
+            .await;
+        timing_stage.finish();
+        ensure_result?;
         Ok(prepared)
     }
 
@@ -651,21 +985,37 @@ impl Starry {
         rootfs_paths: &BTreeSet<PathBuf>,
     ) -> anyhow::Result<()> {
         for rootfs_path in rootfs_paths {
-            if rootfs_path == default_rootfs_path {
+            let rootfs_kind = if rootfs_path == default_rootfs_path {
+                "default"
+            } else {
+                "managed"
+            };
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("phase", "ensure-rootfs-path".to_string()),
+                    ("rootfs_kind", rootfs_kind.to_string()),
+                    ("rootfs", rootfs_path.display().to_string()),
+                ],
+            );
+            let result = if rootfs_path == default_rootfs_path {
                 rootfs::ensure_rootfs_in_tmp_dir(
                     self.app.workspace_root(),
                     &request.arch,
                     &request.target,
                 )
-                .await?;
+                .await
+                .map(|_| ())
             } else {
                 crate::image::storage::ensure_optional_managed_rootfs(
                     self.app.workspace_root(),
                     &request.arch,
                     Some(rootfs_path),
                 )
-                .await?;
-            }
+                .await
+            };
+            timing_stage.finish();
+            result?;
         }
         Ok(())
     }
@@ -791,8 +1141,14 @@ impl Starry {
             .as_ref()
             .map(|capture| capture.captured_blocks.clone());
 
-        let prepare_started = Instant::now();
-        let prepared_assets = case::prepare_case_assets(
+        let prepare_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "prepare-assets".to_string()),
+            ],
+        );
+        let prepared_assets_result = case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -800,15 +1156,71 @@ impl Starry {
             prepared_case.rootfs_path.clone(),
             asset_config.clone(),
         )
-        .await?;
+        .await;
+        if prepared_assets_result.is_err() {
+            timing::print_timing_line(
+                "qemu-case",
+                &[
+                    ("case", case.display_name.clone()),
+                    ("phase", "prepare-assets".to_string()),
+                    ("status", "failed".to_string()),
+                ],
+                prepare_stage.elapsed(),
+            );
+        }
+        let prepared_assets = prepared_assets_result?;
+        let prepare_elapsed = prepare_stage.elapsed();
+        timing::print_timing_line(
+            "qemu-case",
+            &[
+                ("case", case.display_name.clone()),
+                ("phase", "prepare-assets".to_string()),
+                ("pipeline", prepared_assets.pipeline.as_str().to_string()),
+                (
+                    "cache",
+                    if prepared_assets.cache_hit {
+                        "hit"
+                    } else {
+                        "miss"
+                    }
+                    .to_string(),
+                ),
+            ],
+            prepare_elapsed,
+        );
+        let timing_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "patch-rootfs".to_string()),
+            ],
+        );
         rootfs::patch_rootfs(
             &mut qemu,
             &prepared_assets.rootfs_path,
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
+        timing_stage.finish();
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        let timing_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "apply-dynamic-boot".to_string()),
+            ],
+        );
         qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
-        let _host_http_server = start_qemu_case_host_http_server(case)?;
+        timing_stage.finish();
+        let timing_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "start-host-http".to_string()),
+            ],
+        );
+        let host_http_result = start_qemu_case_host_http_server(case);
+        timing_stage.finish();
+        let _host_http_server = host_http_result?;
         case::run_qemu_with_prepared_case_assets(
             &mut self.app,
             cargo,
@@ -816,7 +1228,10 @@ impl Starry {
             capture_backtrace,
             &case.qemu_config_path,
             prepared_assets,
-            prepare_started.elapsed(),
+            case::RunPreparedQemuCaseOptions {
+                prepare_elapsed,
+                qemu_timing_fields: Some(vec![("case", case.display_name.clone())]),
+            },
         )
         .await?;
 
@@ -861,8 +1276,84 @@ fn start_qemu_case_host_http_server(
 ) -> anyhow::Result<Option<HostHttpServerGuard>> {
     case.host_http_server
         .as_ref()
+        .filter(|config| grouped_subcase_needs_host_http_server(case, config))
         .map(|config| HostHttpServerGuard::start(config, &case.name))
         .transpose()
+}
+
+fn grouped_subcase_needs_host_http_server(
+    case: &TestQemuCase,
+    config: &case::HostHttpServerConfig,
+) -> bool {
+    let Some(filter) = case
+        .grouped_subcase_filter
+        .as_ref()
+        .filter(|filter| !filter.is_empty())
+    else {
+        return true;
+    };
+
+    case.subcases
+        .iter()
+        .filter(|subcase| filter.contains(subcase.name.as_str()))
+        .any(|subcase| subcase_dir_references_host_http_server(&subcase.case_dir, config))
+}
+
+fn subcase_dir_references_host_http_server(
+    subcase_dir: &Path,
+    config: &case::HostHttpServerConfig,
+) -> bool {
+    if !subcase_dir.is_dir() {
+        return false;
+    }
+
+    for entry in walkdir::WalkDir::new(subcase_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| should_scan_subcase_http_reference_path(entry.path()))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        if file_references_host_http_server(entry.path(), config) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn should_scan_subcase_http_reference_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    !matches!(
+        name,
+        ".git" | "build" | "target" | "CMakeFiles" | "__pycache__"
+    )
+}
+
+fn file_references_host_http_server(path: &Path, config: &case::HostHttpServerConfig) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() > 1024 * 1024 {
+        return false;
+    }
+
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        return false;
+    }
+
+    let port = config.port.to_string();
+    (content.contains("10.0.2.2") && content.contains(&port))
+        || content.contains(&format!("http://{}:{port}", config.bind))
+        || content.contains(&format!("http://localhost:{port}"))
+        || content.contains(&format!("http://127.0.0.1:{port}"))
 }
 
 fn ensure_host_symbolize_output_matches(
@@ -2009,7 +2500,7 @@ mod tests {
         let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
         let case_dir = system_dir.join("bugfix-bug-ext4-dir-ops");
         assert!(
-            case_dir.join("c/CMakeLists.txt").is_file(),
+            case_dir.join("CMakeLists.txt").is_file(),
             "{} must remain a system grouped C subcase",
             case_dir.display()
         );
@@ -2059,6 +2550,80 @@ mod tests {
     }
 
     #[test]
+    fn starry_system_grouped_qemu_configs_report_subcase_timing() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        for group in ["qemu-smp1", "qemu-smp4"] {
+            let system_dir = workspace_root.join(format!("test-suit/starryos/{group}/system"));
+            for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+                let path = system_dir.join(format!("qemu-{arch}.toml"));
+                let content = fs::read_to_string(&path).unwrap();
+                let config: toml::Value = toml::from_str(&content).unwrap();
+                let test_commands = config
+                    .get("test_commands")
+                    .and_then(toml::Value::as_array)
+                    .unwrap();
+                let command = test_commands
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .next()
+                    .unwrap_or_default();
+
+                assert!(
+                    command.contains("STARRY_SYSTEM_TEST_TIMING_BEGIN"),
+                    "{} must start a grouped subcase timing section",
+                    path.display()
+                );
+                assert!(
+                    command.contains("STARRY_SYSTEM_TEST_TIMING: elapsed_s="),
+                    "{} must report per-subcase elapsed seconds",
+                    path.display()
+                );
+                assert!(
+                    command.contains("status=passed bin=")
+                        && command.contains("status=failed bin="),
+                    "{} must include pass/fail status in timing lines",
+                    path.display()
+                );
+                assert!(
+                    command.contains("STARRY_SYSTEM_TEST_TIMING_END"),
+                    "{} must end a grouped subcase timing section",
+                    path.display()
+                );
+                let failure_branch = command.find("else\n").unwrap_or_else(|| {
+                    panic!(
+                        "{} must contain a failure branch for grouped subcases",
+                        path.display()
+                    )
+                });
+                let failure_command = &command[failure_branch..];
+                let exit_status_position =
+                    failure_command.find("exit_status=$?").unwrap_or_else(|| {
+                        panic!(
+                            "{} must preserve grouped subcase exit status",
+                            path.display()
+                        )
+                    });
+                let status_failed_position =
+                    failure_command.find("status=failed").unwrap_or_else(|| {
+                        panic!("{} must mark failed grouped subcases", path.display())
+                    });
+                assert!(
+                    exit_status_position < status_failed_position,
+                    "{} must capture `$?` before assigning shell variables in the failure branch",
+                    path.display()
+                );
+                assert!(
+                    command.contains("STARRY_GROUPED_TESTS_PASSED")
+                        && command.contains("STARRY_GROUPED_TEST_FAILED"),
+                    "{} must keep existing grouped success/fail markers",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
@@ -2074,7 +2639,7 @@ mod tests {
             assert!(
                 system_dir
                     .join(format!("zombie-bugfix-{name}"))
-                    .join("c/CMakeLists.txt")
+                    .join("CMakeLists.txt")
                     .is_file(),
                 "{} must be built in the system grouped case",
                 command
@@ -2114,7 +2679,7 @@ mod tests {
             assert!(
                 system_dir
                     .join(format!("tty-bugfix-{name}"))
-                    .join("c/CMakeLists.txt")
+                    .join("CMakeLists.txt")
                     .is_file(),
                 "{} must be built in the system grouped case",
                 command
@@ -2145,9 +2710,9 @@ mod tests {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
         let subcase_dir = system_dir.join("apk-curl-equivalence");
-        let cmake_path = subcase_dir.join("c/CMakeLists.txt");
-        let prebuild_path = subcase_dir.join("c/prebuild.sh");
-        let script_path = subcase_dir.join("c/src/apk-curl-equivalence.sh");
+        let cmake_path = subcase_dir.join("CMakeLists.txt");
+        let prebuild_path = system_dir.join("prebuild.sh");
+        let script_path = subcase_dir.join("src/apk-curl-equivalence.sh");
 
         let cmake = fs::read_to_string(&cmake_path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
@@ -2252,11 +2817,89 @@ mod tests {
                 body_byte: b'Z',
             }),
             subcases: Vec::new(),
+            grouped_subcase_filter: None,
         };
 
         let guard = start_qemu_case_host_http_server(&test_case).unwrap();
 
         assert!(guard.is_some());
+    }
+
+    #[test]
+    fn starry_qemu_single_subcase_skips_unneeded_host_http_server() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        let subcase_dir = case_dir.join("syscall-test-uid-gid-re-setters");
+        fs::create_dir_all(subcase_dir.join("src")).unwrap();
+        fs::write(
+            subcase_dir.join("src/main.c"),
+            "int main(void) { return 0; }\n",
+        )
+        .unwrap();
+        let test_case = grouped_host_http_test_case(
+            &case_dir,
+            Some(BTreeSet::from([
+                "syscall-test-uid-gid-re-setters".to_string()
+            ])),
+        );
+
+        let guard = start_qemu_case_host_http_server(&test_case).unwrap();
+
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn starry_qemu_single_subcase_keeps_needed_host_http_server() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        let subcase_dir = case_dir.join("apk-curl-equivalence");
+        fs::create_dir_all(subcase_dir.join("src")).unwrap();
+        fs::write(
+            subcase_dir.join("src/apk-curl-equivalence.sh"),
+            "curl -fsSL http://10.0.2.2:18380/payload.bin\n",
+        )
+        .unwrap();
+        let mut test_case = grouped_host_http_test_case(
+            &case_dir,
+            Some(BTreeSet::from(["apk-curl-equivalence".to_string()])),
+        );
+        test_case.host_http_server.as_mut().unwrap().port = 0;
+
+        let guard = start_qemu_case_host_http_server(&test_case).unwrap();
+
+        assert!(guard.is_some());
+    }
+
+    fn grouped_host_http_test_case(
+        case_dir: &Path,
+        grouped_subcase_filter: Option<BTreeSet<String>>,
+    ) -> TestQemuCase {
+        TestQemuCase {
+            name: "qemu-smp1/system".to_string(),
+            display_name: "qemu-smp1/system".to_string(),
+            case_dir: case_dir.to_path_buf(),
+            qemu_config_path: case_dir.join("qemu-x86_64.toml"),
+            test_commands: Vec::new(),
+            host_symbolize_success_regex: Vec::new(),
+            host_http_server: Some(case::HostHttpServerConfig {
+                bind: "127.0.0.1".to_string(),
+                port: 18380,
+                body: "fixture".to_string(),
+                body_size: Some(4),
+                body_byte: b'Z',
+            }),
+            subcases: grouped_subcase_filter
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|name| case::TestQemuSubcase {
+                    name: name.clone(),
+                    case_dir: case_dir.join(name),
+                    kind: case::TestQemuSubcaseKind::C,
+                })
+                .collect(),
+            grouped_subcase_filter,
+        }
     }
 
     #[test]
@@ -2304,6 +2947,7 @@ mod tests {
                 host_symbolize_success_regex: Vec::new(),
                 host_http_server: None,
                 subcases: Vec::new(),
+                grouped_subcase_filter: None,
             },
             qemu: QemuConfig::default(),
             build_group: "default".to_string(),
@@ -2411,6 +3055,289 @@ mod tests {
         let listed = discover_all_qemu_cases_with_archs(root.path(), None).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "qemu-smp1/system");
+    }
+
+    #[test]
+    fn starry_qemu_subcase_selector_maps_to_system_parent() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
+        fs::write(
+            case_dir.join("alpha/CMakeLists.txt"),
+            "add_executable(alpha src/main.c)\n",
+        )
+        .unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu-smp1/alpha"),
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
+        assert_eq!(
+            cases[0].case.grouped_subcase_filter,
+            Some(BTreeSet::from(["alpha".to_string()]))
+        );
+    }
+
+    #[test]
+    fn starry_qemu_subcase_selector_accepts_installed_binary_name() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(case_dir.join("syscall-test-uid-gid-re-setters/src")).unwrap();
+        fs::write(
+            case_dir.join("syscall-test-uid-gid-re-setters/CMakeLists.txt"),
+            r#"
+add_executable(test-uid-gid-re-setters src/main.c)
+install(TARGETS test-uid-gid-re-setters RUNTIME DESTINATION usr/bin/starry-test-suit)
+"#,
+        )
+        .unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu-smp1/test-uid-gid-re-setters"),
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
+        assert_eq!(
+            cases[0].case.grouped_subcase_filter,
+            Some(BTreeSet::from([
+                "syscall-test-uid-gid-re-setters".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn starry_qemu_system_subcase_selector_sets_filter() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp4", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp4", "system", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp4/system");
+        fs::create_dir_all(case_dir.join("test-futex-race/src")).unwrap();
+        fs::write(
+            case_dir.join("test-futex-race/CMakeLists.txt"),
+            "add_executable(test-futex-race src/main.c)\n",
+        )
+        .unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu-smp4/system/test-futex-race"),
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu-smp4/system");
+        assert_eq!(
+            cases[0].case.grouped_subcase_filter,
+            Some(BTreeSet::from(["test-futex-race".to_string()]))
+        );
+    }
+
+    #[test]
+    fn starry_qemu_system_selector_keeps_full_group() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
+        fs::write(
+            case_dir.join("alpha/CMakeLists.txt"),
+            "add_executable(alpha src/main.c)\n",
+        )
+        .unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu-smp1/system"),
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
+        assert_eq!(cases[0].case.grouped_subcase_filter, None);
+    }
+
+    #[test]
+    fn starry_qemu_subcase_selector_reports_unknown_subcase() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
+        fs::write(
+            case_dir.join("alpha/CMakeLists.txt"),
+            "add_executable(alpha src/main.c)\n",
+        )
+        .unwrap();
+
+        let err = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu-smp1/missing"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("qemu-smp1/system"));
+        assert!(err.contains("missing"));
+    }
+
+    #[test]
+    fn starry_qemu_subcase_selector_prefers_existing_direct_case() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        write_qemu_test_config(root.path(), "normal", "qemu-smp1", "alpha", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
+        fs::write(
+            case_dir.join("alpha/CMakeLists.txt"),
+            "add_executable(alpha src/main.c)\n",
+        )
+        .unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu-smp1/alpha"),
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu-smp1/alpha");
+        assert_eq!(cases[0].case.grouped_subcase_filter, None);
+    }
+
+    #[test]
+    fn starry_qemu_list_accepts_subcase_selector() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+
+        let listed =
+            discover_all_qemu_cases_with_archs(root.path(), Some("qemu-smp1/alpha")).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "qemu-smp1/system");
+    }
+
+    #[test]
+    fn starry_qemu_list_prefers_existing_direct_case() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        write_qemu_test_config(root.path(), "normal", "qemu-smp1", "alpha", "x86_64");
+
+        let listed =
+            discover_all_qemu_cases_with_archs(root.path(), Some("qemu-smp1/alpha")).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "qemu-smp1/alpha");
+    }
+
+    #[test]
+    fn discovers_flat_qemu_wrapper_case_with_root_cmake_subcases() {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+        write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+        let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(
+            case_dir.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.20)\nproject(system C)\nadd_subdirectory(smoke)\n",
+        )
+        .unwrap();
+        fs::create_dir_all(case_dir.join("smoke/src")).unwrap();
+        fs::write(
+            case_dir.join("smoke/CMakeLists.txt"),
+            "add_executable(smoke src/main.c)\n",
+        )
+        .unwrap();
+
+        let cases =
+            discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(
+            cases[0]
+                .case
+                .subcases
+                .iter()
+                .map(|subcase| subcase.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["smoke"]
+        );
+        assert!(
+            cases[0]
+                .case
+                .subcases
+                .iter()
+                .all(|subcase| subcase.kind == TestQemuSubcaseKind::C)
+        );
+    }
+
+    #[test]
+    fn starry_system_grouped_cases_use_root_cmake_layout() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        for group in ["qemu-smp1", "qemu-smp4"] {
+            let system_dir = workspace_root.join(format!("test-suit/starryos/{group}/system"));
+            let root_cmake = system_dir.join("CMakeLists.txt");
+            assert!(
+                root_cmake.is_file(),
+                "{} must be the grouped system CMake project entry",
+                root_cmake.display()
+            );
+
+            let mut subcase_count = 0;
+            for entry in fs::read_dir(&system_dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if !path.is_dir()
+                    || path.file_name().is_some_and(|name| name == "common")
+                    || !path.join("CMakeLists.txt").is_file()
+                {
+                    continue;
+                }
+                subcase_count += 1;
+                assert!(
+                    !path.join("c").exists(),
+                    "{} must keep CMakeLists.txt and src/ directly under the subcase",
+                    path.display()
+                );
+                assert!(
+                    path.join("src").is_dir() || path.join("CMakeLists.txt").is_file(),
+                    "{} must remain a buildable subcase directory",
+                    path.display()
+                );
+            }
+
+            assert!(
+                subcase_count > 0,
+                "{} must contain grouped C subcases",
+                system_dir.display()
+            );
+        }
     }
 
     #[test]

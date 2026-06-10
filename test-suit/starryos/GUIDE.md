@@ -20,6 +20,13 @@ test-suit/starryos/<build_wrapper>/<case>/<runtime-config>.toml
 - 如果目录自身同时包含 `build-*` 和 `qemu-*` / `board-*`，它本身也可以作为 case 被发现。
 - 批量运行时，没有当前 arch/runtime config 的目录会被跳过。
 - 显式 `-c/--test-case` 时，case 必须存在，且必须提供当前 arch 对应的 runtime config。
+- Starry QEMU 支持 `qemu-smp1/<subcase>`、`qemu-smp4/<subcase>` 作为
+  `qemu-smp*/system` 聚合 case 的单子测例选择器；也可以写成
+  `qemu-smp*/system/<subcase>`。
+- `<subcase>` 优先使用 `system/` 下的子目录名；如果某个子测例安装的
+  `usr/bin/starry-test-suit` binary / CMake target 名与目录名不同，也可以使用唯一的
+  binary / target 名，例如 `qemu-smp1/test-uid-gid-re-setters` 会映射到
+  `qemu-smp1/system/syscall-test-uid-gid-re-setters`。
 - `-l/--list` 列出根目录下发现的 Starry case；`qemu-smp1` 这类仅含 build config 的 wrapper 不会作为 root case 出现。
 
 旧的 Starry `--test-group` 和 `--stress` 入口已经移除。需要运行迁出的压力、K230、
@@ -35,29 +42,40 @@ test-suit/starryos/
     build-riscv64gc-unknown-none-elf.toml
     build-x86_64-unknown-none.toml
     system/
+      CMakeLists.txt
+      prebuild.sh
       qemu-aarch64.toml
       qemu-loongarch64.toml
       qemu-riscv64.toml
       qemu-x86_64.toml
       syscall-test-brk/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
       bugfix-bug-futex-wait-wake/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
       c-regression-test-msync/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
       drm-test-drm-perbuf-dumb/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
       evdev-test-evdev-event-primary/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
       usb-audio-iso/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
       usb-storage/
-        c/CMakeLists.txt
+        CMakeLists.txt
+        src/
   qemu-smp4/
     build-<target>.toml
     system/
+      CMakeLists.txt
       qemu-<arch>.toml
-      <subcase>/c/CMakeLists.txt
+      <subcase>/CMakeLists.txt
+      <subcase>/src/
   board-orangepi-5-plus/
     build-aarch64-unknown-none-softfloat.toml
     npu-yolov8/
@@ -78,9 +96,8 @@ StarryOS 启动运行对应 SMP 配置下的所有系统类子测例。子测例
 
 ```text
 qemu-smp1/system/<subcase>/
-  c/
-  sh/
-  python/
+  CMakeLists.txt
+  src/
 ```
 
 子测例目录不要再放 `qemu-*.toml`。架构过滤不能依赖子目录下的 runtime config，而应在代码或 CMake 中显式处理。
@@ -233,6 +250,22 @@ apk add zlib-dev
   <subcase-b>/c/CMakeLists.txt
 ```
 
+`qemu-smp1/system` 和 `qemu-smp4/system` 是特殊的大型 system grouped
+case：`system/CMakeLists.txt` 是唯一 configure 入口，自动 `add_subdirectory()`
+各个 subcase；每个 subcase 直接在目录根放 `CMakeLists.txt` 和 `src/`。如果所有
+system subcase 需要共享 rootfs 准备步骤，把脚本放在 `system/prebuild.sh`，不要给
+单个 subcase 增加 `prebuild.sh`。
+
+调试单个 system subcase 时，不需要新增 CLI 参数，直接复用 `-c/--test-case`：
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/syscall-test-uid-gid-re-setters
+cargo xtask starry test qemu --arch x86_64 -c qemu-smp4/test-futex-race
+```
+
+这会继续使用对应 wrapper 的 `system/qemu-<arch>.toml`，但只配置、编译和注入指定
+subcase 目录。
+
 在 `qemu-<arch>.toml` 中使用 `test_commands`：
 
 ```toml
@@ -311,6 +344,7 @@ cargo xtask starry test board -c board-orangepi-5-plus/pcie-enumerate --board or
 cargo xtask starry test qemu --arch riscv64
 cargo xtask starry test qemu --target riscv64gc-unknown-none-elf
 cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/system
+cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/syscall-test-uid-gid-re-setters
 
 # 列出发现的用例
 cargo xtask starry test qemu -l
