@@ -76,7 +76,7 @@ cargo xtask starry test qemu --arch aarch64 -c test-nix-prereqs
 
 That grouped case contains focused C-language regression tests independent of
 the Nix app workflow, making them reviewable and runnable across CI targets.
-See `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/`.
+See `test-suit/starryos/qemu-smp1/test-nix-prereqs/`.
 
 ## File Structure
 
