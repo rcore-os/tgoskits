@@ -1,12 +1,6 @@
 pub use mmio_api::{MapError, MmioAddr, MmioOp, MmioRaw};
 
-pub trait KernelOp: MmioOp {
-    /// Returns the current logical CPU index after the kernel has initialized
-    /// its runtime per-CPU state.
-    fn current_cpu_idx(&self) -> Option<usize> {
-        None
-    }
-}
+pub trait KernelOp: MmioOp {}
 
 struct EmptyKernelOp;
 
@@ -31,6 +25,6 @@ pub(crate) fn set_kernel_op(op: &'static dyn KernelOp) {
     }
 }
 
-pub(crate) fn kernel() -> &'static dyn KernelOp {
-    unsafe { KERNEL_OP }
-}
+// pub(crate) fn kernel() -> &'static dyn KernelOp {
+//     unsafe { KERNEL_OP }
+// }

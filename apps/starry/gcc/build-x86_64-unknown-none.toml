@@ -5,3 +5,4 @@ features = [
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
 ]
+plat_dyn = true

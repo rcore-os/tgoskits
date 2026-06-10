@@ -6,6 +6,7 @@ features = [
     "sstc"
 ]
 log = "Info"
+plat_dyn = true
 target = "riscv64gc-unknown-none-elf"
 vm_configs = []
 max_cpu_num = 4

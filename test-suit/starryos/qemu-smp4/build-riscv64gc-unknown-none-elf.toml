@@ -10,4 +10,5 @@ features = [
 ]
 max_cpu_num = 4
 log = "Warn"
+plat_dyn = true
 target = "riscv64gc-unknown-none-elf"

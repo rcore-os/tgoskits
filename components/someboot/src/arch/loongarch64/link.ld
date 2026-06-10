@@ -41,13 +41,6 @@ SECTIONS
     } :text
     . = __exception_vectors + 0x10000;
     __exception_vectors_end = .;
-
-    . = ALIGN(PAGE_SIZE);
-    .vectors : {
-        KEEP(*(.vectors))
-        KEEP(*(.vectors.*))
-    } :text
-
     . = ALIGN(PAGE_SIZE);
     _etext = .;
     _srodata = .; 
