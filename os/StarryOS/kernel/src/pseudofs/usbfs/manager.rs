@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_sync::Mutex as BlockingMutex;
 use crab_usb::{
-    Device, DeviceInfo, Endpoint, EventHandler, ProbedDevice,
+    Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{
         endpoint::{RequestId, TransferCompletion, TransferRequest},
         err::{TransferError, USBError},
@@ -1307,16 +1307,16 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
         };
 
         let irq_num = guard.irq_num();
-        info!("usbfs: creating event handler for bus {}", bus_num);
-        let event_handler: EventHandler = guard.host_mut().create_event_handler();
+        let irq_handler = guard.take_irq_handler();
         drop(guard);
 
-        if let Some(irq_num) = irq_num {
+        if let Some((irq, handler)) = irq_handler {
+            debug_assert_eq!(irq_num, Some(irq));
             irq_slots.push(PendingUsbIrqSlot {
-                irq_num,
+                irq_num: irq,
                 device_id,
                 bus_num,
-                handler: event_handler,
+                handler,
             });
         }
 

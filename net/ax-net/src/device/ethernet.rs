@@ -20,6 +20,66 @@ use crate::{
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
 
+pub trait EthernetIrqRegistration: Send + Sync {}
+
+#[derive(Clone, Copy)]
+pub struct EthernetIrqAction {
+    data: NonNull<()>,
+    handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome,
+}
+
+impl EthernetIrqAction {
+    pub const fn new(
+        data: NonNull<()>,
+        handler: unsafe fn(NonNull<()>) -> EthernetIrqOutcome,
+    ) -> Self {
+        Self { data, handler }
+    }
+
+    /// Runs the IRQ action.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `data` still points to the Ethernet IRQ state
+    /// expected by `handler`, and that the associated registration is still
+    /// alive while the handler runs.
+    pub unsafe fn run(self) -> EthernetIrqOutcome {
+        unsafe { (self.handler)(self.data) }
+    }
+}
+
+unsafe impl Send for EthernetIrqAction {}
+unsafe impl Sync for EthernetIrqAction {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EthernetIrqOutcome {
+    Handled,
+    Wake,
+}
+
+pub trait EthernetIrqRegistrar: Send + Sync {
+    fn register_shared(
+        &self,
+        name: &str,
+        irq: usize,
+        action: EthernetIrqAction,
+    ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EthernetIrqRegistrationError {
+    InvalidIrq,
+    Busy,
+    Unsupported,
+    Other,
+}
+
+static ETHERNET_IRQ_REGISTRAR: spin::Once<&'static dyn EthernetIrqRegistrar> = spin::Once::new();
+
+pub fn set_ethernet_irq_registrar(registrar: &'static dyn EthernetIrqRegistrar) {
+    ETHERNET_IRQ_REGISTRAR.call_once(|| registrar);
+}
+
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
@@ -30,10 +90,10 @@ struct PendingNeighbor {
 }
 
 struct EthernetIrqState {
-    irq_num: Option<usize>,
+    irq: Option<usize>,
+    irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: PollSet,
-    irq_handle: spin::Once<ax_hal::irq::IrqHandle>,
 }
 
 impl EthernetIrqState {
@@ -52,17 +112,14 @@ pub struct EthernetDevice {
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
 
-unsafe fn handle_ethernet_irq(
-    _ctx: ax_hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_hal::irq::IrqReturn {
+unsafe fn handle_ethernet_irq(data: NonNull<()>) -> EthernetIrqOutcome {
     let state = unsafe { data.cast::<EthernetIrqState>().as_ref() };
     let events = state.handle_irq();
     if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
         state.poll_ready.wake();
-        return ax_hal::irq::IrqReturn::Wake;
+        return EthernetIrqOutcome::Wake;
     }
-    ax_hal::irq::IrqReturn::Handled
+    EthernetIrqOutcome::Handled
 }
 
 impl EthernetDevice {
@@ -76,12 +133,12 @@ impl EthernetDevice {
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
     pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        let irq_num = inner.irq_num();
+        let irq = inner.irq_num();
         let mut inner = Arc::new(EthernetIrqState {
-            irq_num,
+            irq,
+            irq_registration: spin::Once::new(),
             driver: SpinNoIrq::new(inner),
             poll_ready: PollSet::new(),
-            irq_handle: spin::Once::new(),
         });
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
@@ -91,15 +148,26 @@ impl EthernetDevice {
                     * ETHERNET_MAX_PENDING_PACKETS
             ],
         );
-        if let Some(irq) = inner.irq_num {
+        if let Some(irq) = inner.irq {
             let data = NonNull::from(Arc::get_mut(&mut inner).expect("new Arc is unique")).cast();
-            match ax_hal::irq::request_shared_irq(irq, handle_ethernet_irq, data) {
-                Ok(handle) => {
-                    inner.irq_handle.call_once(|| handle);
+            if let Some(registrar) = ETHERNET_IRQ_REGISTRAR.get().copied() {
+                let action = EthernetIrqAction::new(data, handle_ethernet_irq);
+                match registrar.register_shared(&name, irq, action) {
+                    Ok(registration) => {
+                        inner.irq_registration.call_once(|| registration);
+                    }
+                    Err(err) => {
+                        warn!(
+                            "failed to register ethernet irq handler for {name} irq {}: {err:?}",
+                            irq
+                        );
+                    }
                 }
-                Err(err) => {
-                    warn!("failed to register ethernet irq handler for irq {irq}: {err:?}");
-                }
+            } else {
+                warn!(
+                    "ethernet irq registrar is not installed for {name} irq {}; use polling",
+                    irq
+                );
             }
         }
 
@@ -374,16 +442,6 @@ impl EthernetDevice {
     }
 }
 
-impl Drop for EthernetIrqState {
-    fn drop(&mut self) {
-        if let Some(handle) = self.irq_handle.get().copied()
-            && let Err(err) = ax_hal::irq::free_irq(handle)
-        {
-            warn!("failed to free ethernet irq handler: {err:?}");
-        }
-    }
-}
-
 impl Device for EthernetDevice {
     fn name(&self) -> &str {
         &self.name
@@ -503,7 +561,7 @@ impl Device for EthernetDevice {
     }
 
     fn register_waker(&self, waker: &Waker) {
-        if self.inner.irq_num.is_some() {
+        if self.inner.irq_registration.get().is_some() {
             self.inner.poll_ready.register(waker);
         }
     }

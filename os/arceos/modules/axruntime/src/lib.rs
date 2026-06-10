@@ -50,6 +50,8 @@ mod klib;
 #[cfg(any(feature = "fs", feature = "fs-ng", test))]
 mod block;
 mod devices;
+#[cfg(feature = "irq")]
+pub mod irq;
 mod registers;
 
 #[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]

@@ -91,6 +91,8 @@ pub(crate) fn init_static_input() {
 
 #[cfg(all(feature = "net", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_net() {
+    #[cfg(feature = "irq")]
+    ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
     register_unix_namespace();
     let config = parse_network_config();
     ax_net::init_network(take_dyn_net_drivers(), config);
@@ -98,6 +100,8 @@ pub(crate) fn init_dyn_net() {
 
 #[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_net() {
+    #[cfg(feature = "irq")]
+    ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
     register_unix_namespace();
     let config = parse_network_config();
     ax_net::init_network(take_static_net_drivers(), config);
@@ -181,9 +185,9 @@ pub(crate) fn take_static_net_drivers()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     let mut devices = alloc::vec::Vec::new();
     for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
+        let (net, name, irq) = ax_driver::net::take_rd_net_device(dev)
             .unwrap_or_else(|err| panic!("failed to open static net device: {err:?}"));
-        let driver = ax_net::RdNetDriver::new(name, net, irq_num)
+        let driver = ax_net::RdNetDriver::new(name, net, irq)
             .unwrap_or_else(|err| panic!("failed to adapt static net device: {err:?}"));
         devices
             .push(alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>);
@@ -216,9 +220,9 @@ fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::Ether
     }
     let mut devices = alloc::vec::Vec::new();
     for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
+        let (net, name, irq) = ax_driver::net::take_rd_net_device(dev)
             .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-        let driver = ax_net::RdNetDriver::new(name, net, irq_num)
+        let driver = ax_net::RdNetDriver::new(name, net, irq)
             .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
         devices
             .push(alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>);

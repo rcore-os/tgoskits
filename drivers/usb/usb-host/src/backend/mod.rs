@@ -49,4 +49,12 @@ pub(crate) trait BackendOp: Send + Any + 'static {
 
     #[cfg(kmod)]
     fn create_event_handler(&mut self) -> Box<dyn crate::backend::ty::EventHandlerOp>;
+
+    fn enable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
+    fn disable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
 }

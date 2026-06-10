@@ -26,6 +26,8 @@ k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 plat-dyn = [
     "dep:axplat-dyn",
     "ax-feat/plat-dyn",
+    "ax-feat/usb",
+    "ax-driver/usb",
 ]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ax-feat/ipi"]
