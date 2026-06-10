@@ -976,15 +976,12 @@ version = "0.7.1"
 dependencies = [
  "async-channel",
  "async-trait",
- "ax-config",
  "ax-errno 0.6.0",
- "ax-fs-ng",
  "ax-hal",
  "ax-io",
  "ax-kspin",
  "ax-sync",
  "ax-task",
- "axfs-ng-vfs",
  "axpoll",
  "bitflags 2.13.0",
  "cfg-if",
@@ -1186,6 +1183,7 @@ dependencies = [
  "ax-plat",
  "ax-task",
  "axbacktrace",
+ "axfs-ng-vfs",
  "axklib",
  "axpanic",
  "cfg-if",
@@ -1193,6 +1191,7 @@ dependencies = [
  "indoc",
  "rd-net",
  "rdrive",
+ "smoltcp 0.13.1",
  "spin 0.12.0",
 ]
 

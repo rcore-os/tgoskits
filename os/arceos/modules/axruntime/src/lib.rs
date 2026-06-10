@@ -52,6 +52,9 @@ mod block;
 mod devices;
 mod registers;
 
+#[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
+mod unix_ns;
+
 pub use ax_hal as hal;
 
 #[cfg(feature = "smp")]

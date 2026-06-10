@@ -1,22 +1,21 @@
 pub(crate) mod dgram;
 pub(crate) mod stream;
+pub mod namespace;
 
 use alloc::{boxed::Box, sync::Arc};
 use core::task::Context;
 
 use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::{FS_CONTEXT, OpenOptions};
 use ax_io::{IoBuf, Read, Write};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
 use spin::LazyLock;
 
-pub use self::{dgram::DgramTransport, stream::StreamTransport};
+pub use self::{dgram::DgramTransport, namespace::{UnixNamespace, register_unix_namespace}, stream::StreamTransport};
 use crate::{
     RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -111,20 +110,10 @@ pub(crate) fn with_slot<R>(
             }
         }
         UnixSocketAddr::Path(path) => {
-            let loc = FS_CONTEXT.lock().resolve(path.as_ref())?;
-            if loc.metadata()?.node_type != NodeType::Socket {
-                return Err(AxError::NotASocket);
-            }
-            let slot = {
-                // `DirEntry::user_data()` is protected by a SpinNoIrq guard.
-                // Drop it before running transport code, which may take
-                // sleepable socket mutexes.
-                let user_data = loc.user_data();
-                user_data
-                    .get::<BindSlot>()
-                    .ok_or(AxError::ConnectionRefused)?
-            };
-            f(slot.as_ref())
+            namespace::with_namespace(|ns| {
+                let slot = ns.resolve(path.as_ref())?;
+                f(slot.as_ref())
+            })
         }
     }
 }
@@ -139,23 +128,10 @@ fn with_slot_or_insert<R>(
             f(binds.entry(name.clone()).or_default())
         }
         UnixSocketAddr::Path(path) => {
-            let loc = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .node_type(NodeType::Socket)
-                .open(&FS_CONTEXT.lock(), path.as_ref())?
-                .into_location();
-            if loc.metadata()?.node_type != NodeType::Socket {
-                return Err(AxError::NotASocket);
-            }
-            let slot = {
-                // `DirEntry::user_data()` is protected by a SpinNoIrq guard.
-                // Drop it before running transport code, which may take
-                // sleepable socket mutexes.
-                let mut user_data = loc.user_data();
-                user_data.get_or_insert_with(BindSlot::default)
-            };
-            f(slot.as_ref())
+            namespace::with_namespace(|ns| {
+                let slot = ns.bind(path.as_ref())?;
+                f(slot.as_ref())
+            })
         }
     }
 }

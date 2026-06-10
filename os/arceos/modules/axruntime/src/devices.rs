@@ -91,12 +91,70 @@ pub(crate) fn init_static_input() {
 
 #[cfg(all(feature = "net", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_net() {
-    ax_net::init_network(take_dyn_net_drivers());
+    register_unix_namespace();
+    let config = parse_network_config();
+    ax_net::init_network(take_dyn_net_drivers(), config);
 }
 
 #[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_net() {
-    ax_net::init_network(take_static_net_drivers());
+    register_unix_namespace();
+    let config = parse_network_config();
+    ax_net::init_network(take_static_net_drivers(), config);
+}
+
+#[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
+fn register_unix_namespace() {
+    ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
+}
+
+#[cfg(all(feature = "net", not(any(feature = "fs", feature = "fs-ng"))))]
+fn register_unix_namespace() {
+    // No filesystem, Unix socket namespace not available
+}
+
+#[cfg(feature = "net")]
+fn parse_network_config() -> ax_net::NetworkConfig {
+    use smoltcp::wire::Ipv4Cidr;
+
+    macro_rules! env_or_default {
+        ($key:literal) => {
+            match option_env!($key) {
+                Some(val) => val,
+                None => "",
+            }
+        };
+    }
+
+    const IP: &str = env_or_default!("AX_IP");
+    const GATEWAY: &str = env_or_default!("AX_GW");
+    const DNS: &str = env_or_default!("AX_DNS");
+
+    let static_ip = if !IP.is_empty() && !GATEWAY.is_empty() {
+        Some(ax_net::StaticIpConfig {
+            ip: Ipv4Cidr::new(
+                IP.parse().expect("Invalid AX_IP"),
+                24,
+            ),
+            gateway: GATEWAY.parse().expect("Invalid AX_GW"),
+        })
+    } else {
+        None
+    };
+
+    let dns_servers = DNS
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            let s = s.trim();
+            s.parse().unwrap_or_else(|_| panic!("Invalid DNS server address: {}", s))
+        })
+        .collect();
+
+    ax_net::NetworkConfig {
+        static_ip,
+        dns_servers,
+    }
 }
 
 #[cfg(all(feature = "net", not(feature = "plat-dyn")))]

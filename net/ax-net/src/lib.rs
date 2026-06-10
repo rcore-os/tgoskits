@@ -21,6 +21,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod config;
 mod consts;
 mod device;
 mod general;
@@ -62,7 +63,6 @@ use spin::{LazyLock, Once};
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
 use self::{
-    consts::{DNS, GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
     router::{Router, Rule},
@@ -70,6 +70,7 @@ use self::{
     wrapper::SocketSetWrapper,
 };
 pub use self::{
+    config::{NetworkConfig, StaticIpConfig},
     device::{
         ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult,
         NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
@@ -80,6 +81,7 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
+static CONFIG: Once<Mutex<NetworkConfig>> = Once::new();
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
@@ -95,8 +97,37 @@ fn get_service() -> ax_sync::MutexGuard<'static, Service> {
 }
 
 /// Initializes the network subsystem by NIC devices.
-pub fn init_network(mut net_devs: EthernetDeviceList) {
+///
+/// # Panics
+///
+/// Panics if called more than once, or if the configuration contains invalid values.
+pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
+    if CONFIG.get().is_some() {
+        panic!("init_network() called more than once");
+    }
+
     info!("Initialize network subsystem...");
+
+    // Validate configuration
+    if let Some(ref static_cfg) = config.static_ip {
+        if static_cfg.ip.address().is_unspecified() {
+            panic!("Invalid static IP: unspecified address");
+        }
+        if static_cfg.ip.prefix_len() > 32 {
+            panic!("Invalid static IP: prefix length > 32");
+        }
+        if static_cfg.gateway.is_unspecified() {
+            panic!("Invalid gateway: unspecified address");
+        }
+    }
+    for (i, dns) in config.dns_servers.iter().enumerate() {
+        if dns.is_unspecified() {
+            panic!("Invalid DNS server at index {}: unspecified address", i);
+        }
+    }
+
+    // Store configuration
+    CONFIG.call_once(|| Mutex::new(config.clone()));
 
     let mut router = Router::new();
     let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
@@ -109,7 +140,6 @@ pub fn init_network(mut net_devs: EthernetDeviceList) {
         lo_ip.address().into(),
     ));
 
-    let static_network = !IP.is_empty() && !GATEWAY.is_empty();
     let mut dhcp_dev = None;
     let mut dhcp_mac = None;
 
@@ -118,8 +148,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList) {
         info!("  use NIC 0: {:?}", dev.device_name());
 
         let eth0_address = EthernetAddress(dev.mac_address());
-        let eth0_ip = static_network
-            .then(|| Ipv4Cidr::new(IP.parse().expect("Invalid IPv4 address"), IP_PREFIX));
+        let eth0_ip = config.static_ip.as_ref().map(|cfg| cfg.ip);
 
         let eth0_dev = router.add_device(Box::new(EthernetDevice::new(
             "eth0".to_owned(),
@@ -129,17 +158,16 @@ pub fn init_network(mut net_devs: EthernetDeviceList) {
 
         info!("eth0:");
         info!("  mac:  {}", eth0_address);
-        if let Some(eth0_ip) = eth0_ip {
-            let gateway = GATEWAY.parse().expect("Invalid gateway address");
+        if let Some(static_cfg) = &config.static_ip {
             router.add_rule(Rule::new(
                 Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
-                Some(gateway),
+                Some(static_cfg.gateway.into()),
                 eth0_dev,
-                eth0_ip.address().into(),
+                static_cfg.ip.address().into(),
             ));
             info!("  mode: static");
-            info!("  ip:   {}", eth0_ip);
-            info!("  gw:   {}", gateway);
+            info!("  ip:   {}", static_cfg.ip);
+            info!("  gw:   {}", static_cfg.gateway);
         } else {
             dhcp_dev = Some(eth0_dev);
             dhcp_mac = Some(eth0_address);
@@ -213,16 +241,27 @@ pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
 }
 
+/// Returns the list of configured DNS servers.
+///
+/// Priority: DHCP-provided servers take precedence over statically configured servers.
+/// If DHCP hasn't provided servers, falls back to the servers from `NetworkConfig`.
 pub fn dns_servers() -> Vec<Ipv4Address> {
     let servers = get_service().dns_servers();
     if servers.is_empty() {
-        static_dns_servers()
+        configured_dns_servers()
     } else {
         servers
     }
 }
 
+
+const DNS_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>> {
+    dns_query_timeout(name, DNS_DEFAULT_TIMEOUT)
+}
+
+pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>> {
     let servers = dns_servers();
     if servers.is_empty() {
         return Err(ax_err_type!(NotFound, "no DNS server configured"));
@@ -230,13 +269,18 @@ pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>> {
 
     let servers = servers.into_iter().map(IpAddress::Ipv4).collect::<Vec<_>>();
     let handle = SOCKET_SET.add(dns::Socket::new(&servers, vec![]));
-    DnsSocketGuard(handle).query(name, DnsQueryType::A)
+    DnsSocketGuard(handle).query_timeout(name, DnsQueryType::A, timeout)
 }
 
 struct DnsSocketGuard(smoltcp::iface::SocketHandle);
 
 impl DnsSocketGuard {
-    fn query(&self, name: &str, query_type: DnsQueryType) -> AxResult<Vec<IpAddr>> {
+    fn query_timeout(
+        &self,
+        name: &str,
+        query_type: DnsQueryType,
+        timeout: Duration,
+    ) -> AxResult<Vec<IpAddr>> {
         let query_handle = {
             let mut service = get_service();
             let mut sockets = SOCKET_SET.inner.lock();
@@ -258,6 +302,9 @@ impl DnsSocketGuard {
             }
         })?;
 
+        let start_time = ax_hal::time::monotonic_time_nanos();
+        let deadline = start_time.saturating_add(timeout.as_nanos() as u64);
+
         loop {
             poll_interfaces();
             match SOCKET_SET.with_socket_mut::<dns::Socket, _, _>(self.0, |socket| {
@@ -273,7 +320,12 @@ impl DnsSocketGuard {
                 Ok(addrs) => {
                     return Ok(addrs.into_iter().map(IpAddr::from).collect());
                 }
-                Err(AxError::WouldBlock) => ax_task::yield_now(),
+                Err(AxError::WouldBlock) => {
+                    if ax_hal::time::monotonic_time_nanos() >= deadline {
+                        return Err(ax_err_type!(TimedOut, "DNS query timed out"));
+                    }
+                    ax_task::yield_now();
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -286,17 +338,11 @@ impl Drop for DnsSocketGuard {
     }
 }
 
-fn static_dns_servers() -> Vec<Ipv4Address> {
-    DNS.split(',')
-        .filter_map(|server| {
-            let server = server.trim();
-            (!server.is_empty()).then(|| {
-                server
-                    .parse()
-                    .unwrap_or_else(|_| panic!("Invalid DNS server address: {server}"))
-            })
-        })
-        .collect()
+fn configured_dns_servers() -> Vec<Ipv4Address> {
+    CONFIG
+        .get()
+        .map(|cfg| cfg.lock().dns_servers.clone())
+        .unwrap_or_default()
 }
 
 fn dhcp_bootstrap() {
