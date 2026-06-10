@@ -62,6 +62,30 @@ pub(super) async fn qemu_with_explicit_rootfs(
     starry.run_qemu_artifact(&request, cargo, qemu).await
 }
 
+pub(super) async fn qemu_with_external_kernel(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+    rootfs: Option<PathBuf>,
+    kernel_elf: PathBuf,
+) -> anyhow::Result<()> {
+    let rootfs = rootfs.map(|rootfs| {
+        crate::rootfs::store::resolve_explicit_rootfs(
+            starry.app.workspace_root(),
+            &request.arch,
+            rootfs,
+        )
+    });
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), rootfs.as_deref()).await?;
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, rootfs.as_deref(), true).await?;
+    starry
+        .app
+        .prepare_elf_artifact(kernel_elf, qemu.to_bin)
+        .await?;
+    starry.app.run_prepared_qemu(qemu, None).await
+}
+
 pub(super) async fn qemu(
     starry: &mut Starry,
     request: ResolvedStarryRequest,
