@@ -679,6 +679,12 @@ impl AxRunQueue {
                     })
             };
             if let Some(task) = task {
+                info!(
+                    "work-steal: CPU {} stole {} from CPU {}",
+                    current_cpu,
+                    task.id_name(),
+                    target,
+                );
                 #[cfg(feature = "ipi")]
                 kick_remote_cpu(target);
                 return Some(task);
@@ -723,7 +729,7 @@ impl AxRunQueue {
             !ax_hal::asm::irqs_enabled(),
             "IRQs must be disabled during scheduling"
         );
-        trace!(
+        info!(
             "context switch: {} -> {}",
             prev_task.id_name(),
             next_task.id_name()
@@ -736,6 +742,14 @@ impl AxRunQueue {
         if prev_task.ptr_eq(&next_task) {
             return;
         }
+
+        // Defensive: a task being scheduled must not already be marked on_cpu.
+        #[cfg(feature = "smp")]
+        debug_assert!(
+            !next_task.on_cpu(),
+            "next task {} already marked on_cpu",
+            next_task.id_name()
+        );
 
         // Claim the task as running, we do this before switching to it
         // such that any running task will have this set.

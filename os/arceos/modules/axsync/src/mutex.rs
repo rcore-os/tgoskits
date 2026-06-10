@@ -125,7 +125,10 @@ unsafe impl lock_api::RawMutex for RawMutex {
         let current_id = current().id().as_u64();
         assert_eq!(
             owner_id, current_id,
-            "Thread({current_id}) tried to release mutex it doesn't own",
+            "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
+             mutex={self:p}, curr={}, cpu={}",
+            current().id_name(),
+            ax_hal::percpu::this_cpu_id(),
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
@@ -174,6 +177,11 @@ impl RawMutex {
                         .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
                     // This check is necessary: some newcomers may race with a wakened one.
                     if self.is_owner(current_id) {
+                        debug_assert_eq!(
+                            current().id().as_u64(),
+                            current_id,
+                            "current task changed while waiting for mutex"
+                        );
                         break;
                     }
                 }
