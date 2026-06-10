@@ -2,6 +2,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 
+extern crate alloc;
+
 #[macro_use]
 extern crate ax_plat_macros;
 

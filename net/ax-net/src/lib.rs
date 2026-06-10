@@ -65,8 +65,10 @@ pub use self::device::{VsockDevice, VsockDeviceList};
 pub use self::{
     config::{Ipv4InterfaceConfig, NetworkConfig, StaticIpConfig},
     device::{
-        ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult,
-        NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
+        ArpEntry, EthernetDeviceList, EthernetDriver, EthernetIrqAction, EthernetIrqOutcome,
+        EthernetIrqRegistrar, EthernetIrqRegistration, EthernetIrqRegistrationError,
+        NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
+        set_ethernet_irq_registrar,
     },
     socket::{
         CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
