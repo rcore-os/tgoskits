@@ -1,6 +1,6 @@
 use core::{arch::naked_asm, ffi::c_void};
 
-use crate::{arch::addrspace::*, entry::PrimaryCpuInitInfo};
+use crate::{ArchTrait, arch::addrspace::*, entry::PrimaryCpuInitInfo};
 
 static mut FW_ARG0: usize = 0;
 static mut FW_ARG1: usize = 0;
@@ -91,6 +91,7 @@ pub unsafe extern "C" fn kernel_entry(
 fn rust_main() -> ! {
     // 执行重定位，将所有地址从物理地址转换为虚拟地址
     super::relocate();
+    super::Arch::init_boot_tls();
     println!("LoongArch64 Rust kernel entry.");
 
     crate::mem::mmu::set_mmu_enabled();

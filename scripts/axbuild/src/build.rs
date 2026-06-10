@@ -97,7 +97,10 @@ pub struct BuildInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub axconfig_overrides: Vec<String>,
     /// Whether to use the dynamic platform linker flow when supported.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default = "default_plat_dyn",
+        skip_serializing_if = "is_default_plat_dyn"
+    )]
     pub plat_dyn: bool,
 }
 
@@ -110,13 +113,6 @@ impl BuildInfo {
             .collect();
         self.features = features;
         self
-    }
-
-    pub fn default_for_target(target: &str) -> Self {
-        Self {
-            plat_dyn: defaults_to_platform_dynamic(target),
-            ..Self::default()
-        }
     }
 
     pub(crate) fn effective_plat_dyn(&self, target: &str, plat_dyn_override: Option<bool>) -> bool {
@@ -490,7 +486,7 @@ impl Default for BuildInfo {
             features: vec!["ax-std".to_string()],
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
-            plat_dyn: false,
+            plat_dyn: true,
         }
     }
 }
@@ -1173,27 +1169,6 @@ where
         .with_context(|| format!("failed to parse build info {}", path.display()))
 }
 
-pub(crate) fn apply_target_defaults_if_plat_dyn_unspecified(
-    build_info: &mut BuildInfo,
-    target: &str,
-    content: &str,
-) {
-    if build_info_declares_plat_dyn(content) {
-        return;
-    }
-
-    if target.starts_with("aarch64-") || target.starts_with("riscv64") {
-        build_info.plat_dyn = BuildInfo::default_for_target(target).plat_dyn;
-    }
-}
-
-fn build_info_declares_plat_dyn(content: &str) -> bool {
-    toml::from_str::<toml::Value>(content)
-        .ok()
-        .and_then(|value| value.as_table().cloned())
-        .is_some_and(|table| table.contains_key("plat_dyn") || table.contains_key("plat-dyn"))
-}
-
 pub(crate) fn reject_removed_std_field(path: &Path, contents: &str) -> anyhow::Result<()> {
     if let Ok(table) = toml::from_str::<toml::Table>(contents)
         && table.contains_key("std")
@@ -1222,8 +1197,12 @@ pub(crate) fn reject_arceos_app_c_field(path: &Path, contents: &str) -> anyhow::
     Ok(())
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+fn default_plat_dyn() -> bool {
+    true
+}
+
+fn is_default_plat_dyn(value: &bool) -> bool {
+    *value
 }
 
 pub(crate) fn resolve_effective_plat_dyn(
@@ -1235,11 +1214,10 @@ pub(crate) fn resolve_effective_plat_dyn(
 }
 
 fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-") || target.starts_with("riscv64") || target.starts_with("x86_64-")
-}
-
-fn defaults_to_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-") || target.starts_with("riscv64") || target.starts_with("x86_64-")
+    target.starts_with("aarch64-")
+        || target.starts_with("loongarch64-")
+        || target.starts_with("riscv64")
+        || target.starts_with("x86_64-")
 }
 
 fn default_to_bin_for_target(target: &str) -> bool {
@@ -1994,9 +1972,13 @@ fn resolve_defconfig_path(workspace_root: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use tempfile::tempdir;
+    use walkdir::WalkDir;
 
     use super::*;
 
@@ -2178,7 +2160,6 @@ mod tests {
     fn std_build_cargo_config_builds_fake_lib_before_app() {
         let metadata = repo_metadata();
         let cargo = BuildInfo {
-            plat_dyn: true,
             features: vec!["ax-std".to_string(), "fs".to_string(), "dns".to_string()],
             ..BuildInfo::default()
         }
@@ -2262,6 +2243,125 @@ AX_IP = "10.0.2.15"
         assert!(
             err.to_string().contains("uses removed `std` field"),
             "{err:#}"
+        );
+    }
+
+    #[test]
+    fn build_info_omits_true_plat_dyn_and_serializes_false() {
+        let default = toml::to_string_pretty(&BuildInfo::default()).unwrap();
+
+        assert!(!default.contains("plat_dyn"));
+
+        let non_dynamic = BuildInfo {
+            plat_dyn: false,
+            ..BuildInfo::default()
+        };
+        let serialized = toml::to_string_pretty(&non_dynamic).unwrap();
+
+        assert!(serialized.contains("plat_dyn = false"));
+    }
+
+    fn declares_non_dynamic_platform(content: &str) -> bool {
+        toml::from_str::<toml::Table>(content)
+            .ok()
+            .and_then(|table| table.get("plat_dyn").and_then(|value| value.as_bool()))
+            == Some(false)
+    }
+
+    fn declares_static_platform(content: &str) -> bool {
+        let Ok(table) = toml::from_str::<toml::Table>(content) else {
+            return false;
+        };
+        let Some(features) = table.get("features").and_then(|value| value.as_array()) else {
+            return false;
+        };
+
+        features
+            .iter()
+            .filter_map(|feature| feature.as_str())
+            .any(is_static_platform_feature)
+    }
+
+    fn is_static_platform_feature(feature: &str) -> bool {
+        feature == "ax-driver/plat-static"
+            || ax_hal_platform_feature_name(feature, None)
+                .is_some_and(|platform| platform != "plat-dyn")
+    }
+
+    fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 4] {
+        [
+            workspace.join("apps"),
+            workspace.join("os/StarryOS/configs/board"),
+            workspace.join("os/axvisor/configs/board"),
+            workspace.join("test-suit"),
+        ]
+    }
+
+    fn declares_default_dynamic_platform(content: &str) -> bool {
+        toml::from_str::<toml::Table>(content)
+            .ok()
+            .and_then(|table| table.get("plat_dyn").and_then(|value| value.as_bool()))
+            == Some(true)
+    }
+
+    fn checked_in_toml_files(
+        roots: impl IntoIterator<Item = PathBuf>,
+    ) -> impl Iterator<Item = PathBuf> {
+        roots.into_iter().flat_map(|root| {
+            WalkDir::new(root)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .filter(|entry| {
+                    entry.path().extension().and_then(|ext| ext.to_str()) == Some("toml")
+                })
+                .map(|entry| entry.into_path())
+        })
+    }
+
+    #[test]
+    fn static_platform_configs_declare_non_dynamic_builds() {
+        let workspace = crate::context::workspace_root_path().unwrap();
+        let mut offenders = Vec::new();
+
+        for path in checked_in_toml_files(checked_in_build_config_roots(&workspace)) {
+            let content = fs::read_to_string(&path).unwrap();
+            if declares_static_platform(&content) && !declares_non_dynamic_platform(&content) {
+                offenders.push(
+                    path.strip_prefix(&workspace)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "static platform configs must set `plat_dyn = false`: {offenders:#?}"
+        );
+    }
+
+    #[test]
+    fn checked_in_build_configs_do_not_declare_default_dynamic_builds() {
+        let workspace = crate::context::workspace_root_path().unwrap();
+        let mut offenders = Vec::new();
+
+        for path in checked_in_toml_files(checked_in_build_config_roots(&workspace)) {
+            let content = fs::read_to_string(&path).unwrap();
+            if declares_default_dynamic_platform(&content) {
+                offenders.push(
+                    path.strip_prefix(&workspace)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "default dynamic configs should omit `plat_dyn = true`: {offenders:#?}"
         );
     }
 
@@ -2385,7 +2485,7 @@ AX_IP = "10.0.2.15"
     fn std_build_aarch64_defaults_to_dynamic_platform() {
         let metadata = repo_metadata();
         let cargo = BuildInfo {
-            ..BuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+            ..BuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
             "arceos-helloworld",
@@ -2419,7 +2519,7 @@ AX_IP = "10.0.2.15"
     #[test]
     fn std_build_config_preserves_backtrace_rustflags_from_env() {
         let metadata = repo_metadata();
-        let mut info = BuildInfo::default_for_target("x86_64-unknown-none");
+        let mut info = BuildInfo::default();
         info.env.insert("DWARF".to_string(), "y".to_string());
 
         let cargo = info
@@ -2469,6 +2569,11 @@ AX_IP = "10.0.2.15"
                 "loongarch64-unknown-none-softfloat",
                 false,
                 "scripts/targets/std/loongarch64-unknown-linux-musl.json",
+            ),
+            (
+                "loongarch64-unknown-none-softfloat",
+                true,
+                "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json",
             ),
         ];
 
@@ -2612,6 +2717,13 @@ AX_IP = "10.0.2.15"
                 "loongarch64",
                 64,
             ),
+            (
+                "loongarch64-unknown-linux-musl",
+                true,
+                "loongarch64-unknown-none",
+                "loongarch64",
+                64,
+            ),
         ] {
             let workspace = crate::context::workspace_root_path().unwrap();
             let std_path = workspace.join(std_target_json_path(std_target, plat_dyn));
@@ -2672,6 +2784,7 @@ AX_IP = "10.0.2.15"
             ("riscv64gc-unknown-linux-musl", false),
             ("riscv64gc-unknown-linux-musl", true),
             ("loongarch64-unknown-linux-musl", false),
+            ("loongarch64-unknown-linux-musl", true),
         ] {
             let path = crate::context::workspace_root_path()
                 .unwrap()
@@ -2701,6 +2814,7 @@ AX_IP = "10.0.2.15"
             ("riscv64gc-unknown-linux-musl", false, "_start", "-no-pie"),
             ("riscv64gc-unknown-linux-musl", true, "_head", "-pie"),
             ("loongarch64-unknown-linux-musl", false, "_start", "-no-pie"),
+            ("loongarch64-unknown-linux-musl", true, "_head", "-pie"),
         ];
 
         for (target, plat_dyn, entry, mode_arg) in cases {
@@ -2895,7 +3009,7 @@ AX_IP = "10.0.2.15"
     fn std_build_dynamic_x86_64_prepares_binary_artifact() {
         let metadata = repo_metadata();
         let cargo = BuildInfo {
-            ..BuildInfo::default_for_target("x86_64-unknown-none")
+            ..BuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
             "arceos-helloworld",
@@ -2937,7 +3051,7 @@ AX_IP = "10.0.2.15"
     #[test]
     fn x86_64_defaults_to_dynamic_platform() {
         assert!(supports_platform_dynamic("x86_64-unknown-none"));
-        assert!(BuildInfo::default_for_target("x86_64-unknown-none").plat_dyn);
+        assert!(BuildInfo::default().plat_dyn);
         assert!(resolve_effective_plat_dyn(
             "x86_64-unknown-none",
             true,
@@ -2946,6 +3060,30 @@ AX_IP = "10.0.2.15"
         assert!(default_to_bin_for_target_config(
             "x86_64-unknown-none",
             true
+        ));
+    }
+
+    #[test]
+    fn loongarch64_defaults_to_dynamic_platform_when_supported() {
+        assert!(supports_platform_dynamic(
+            "loongarch64-unknown-none-softfloat"
+        ));
+        assert!(BuildInfo::default().plat_dyn);
+        assert!(resolve_effective_plat_dyn(
+            "loongarch64-unknown-none-softfloat",
+            true,
+            None
+        ));
+    }
+
+    #[test]
+    fn unsupported_targets_do_not_effectively_enable_dynamic_platform() {
+        assert!(!supports_platform_dynamic("armv7-unknown-none-eabi"));
+        assert!(BuildInfo::default().plat_dyn);
+        assert!(!resolve_effective_plat_dyn(
+            "armv7-unknown-none-eabi",
+            true,
+            None
         ));
     }
 

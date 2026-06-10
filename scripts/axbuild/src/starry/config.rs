@@ -156,7 +156,6 @@ target = "riscv64gc-unknown-none-elf"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ax-driver/serial", "ax-driver/virtio-blk"]
 log = "Warn"
-plat_dyn = true
 "#,
         );
         let existing_snapshot = StarryCommandSnapshot {
@@ -247,7 +246,6 @@ target = "riscv64gc-unknown-none-elf"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ax-driver/serial", "ax-driver/virtio-blk"]
 log = "Warn"
-plat_dyn = true
 "#,
         );
         let existing_snapshot = StarryCommandSnapshot {
@@ -305,7 +303,7 @@ plat_dyn = false
 
         let output = root.path().join("tmp/custom-starry.toml");
         fs::create_dir_all(output.parent().unwrap()).unwrap();
-        fs::write(&output, "plat_dyn = true\n").unwrap();
+        fs::write(&output, "log = \"Debug\"\n").unwrap();
 
         let board = ensure_default_build_config_for_target(
             root.path(),
@@ -315,6 +313,6 @@ plat_dyn = false
         .unwrap();
 
         assert!(board.is_none());
-        assert_eq!(fs::read_to_string(&output).unwrap(), "plat_dyn = true\n");
+        assert_eq!(fs::read_to_string(&output).unwrap(), "log = \"Debug\"\n");
     }
 }

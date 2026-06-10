@@ -14,4 +14,3 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 8
-plat_dyn = true

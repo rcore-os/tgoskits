@@ -38,8 +38,22 @@ mod arch {
     pub const KERNEL_BASE_VADDR: usize = 0xffff_8000_0000_0000;
 }
 
+#[cfg(target_arch = "loongarch64")]
+mod arch {
+    pub const ARCH: &str = "loongarch64";
+    pub const PACKAGE: &str = "axplat-dyn";
+    pub const PLATFORM: &str = "loongarch64-plat-dyn";
+    pub const TIMER_IRQ: usize = 11;
+    pub const IPI_IRQ: usize = 12;
+    pub const KERNEL_ASPACE_BASE: usize = 0x9000_0000_0000_0000;
+    pub const KERNEL_ASPACE_SIZE: usize = 0x0000_ffff_ffff_f000;
+    pub const KERNEL_BASE_PADDR: usize = 0x20_0000;
+    pub const KERNEL_BASE_VADDR: usize = 0x9000_0000_0020_0000;
+}
+
 #[cfg(not(any(
     target_arch = "aarch64",
+    target_arch = "loongarch64",
     target_arch = "riscv64",
     target_arch = "x86_64"
 )))]
@@ -135,5 +149,17 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     fn x86_64_dynamic_platform_uses_dedicated_ipi_vector() {
         assert_eq!(super::devices::IPI_IRQ, 0xf3);
+    }
+
+    #[test]
+    #[cfg(target_arch = "loongarch64")]
+    fn loongarch64_dynamic_platform_uses_arch_specific_config() {
+        assert_eq!(super::ARCH, "loongarch64");
+        assert_eq!(super::PACKAGE, "axplat-dyn");
+        assert_eq!(super::PLATFORM, "loongarch64-plat-dyn");
+        assert_eq!(super::devices::TIMER_IRQ, 11);
+        assert_eq!(super::devices::IPI_IRQ, 12);
+        assert_eq!(super::plat::KERNEL_ASPACE_BASE, 0x9000_0000_0000_0000);
+        assert_eq!(super::plat::KERNEL_BASE_VADDR, 0x9000_0000_0020_0000);
     }
 }

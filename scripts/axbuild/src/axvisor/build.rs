@@ -56,8 +56,8 @@ impl AxvisorBoardFile {
     }
 }
 
-pub(crate) fn default_axvisor_build_info_for_target(target: &str) -> AxvisorBuildInfo {
-    let mut build_info = AxvisorBuildInfo::default_for_target(target);
+pub(crate) fn default_axvisor_build_info() -> AxvisorBuildInfo {
+    let mut build_info = AxvisorBuildInfo::default();
     build_info.features.clear();
     build_info
 }
@@ -272,8 +272,8 @@ fn reject_unsupported_nested_platform_features(
         .find(|feature| is_axvisor_plat_dyn_feature(feature))
     {
         return Err(anyhow!(
-            "Axvisor build configs must use `plat_dyn = true` instead of dynamic platform \
-             features; found `{feature}`"
+            "Axvisor build configs enable dynamic platforms by default; remove dynamic platform \
+             features from `features`; found `{feature}`"
         ));
     }
 
@@ -509,24 +509,13 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             let mut loaded = default_board
                 .config
                 .into_loaded(default_board.target.clone());
-            let content = fs::read_to_string(&default_board.path).map_err(|e| {
-                anyhow!(
-                    "failed to read Axvisor default board config {}: {e}",
-                    default_board.path.display()
-                )
-            })?;
-            crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-                &mut loaded.build_info,
-                &loaded.target,
-                &content,
-            );
             if let Some(smp) = request.smp {
                 loaded.build_info.max_cpu_num = Some(smp);
             }
             return Ok(loaded);
         }
 
-        let default_build_info = default_axvisor_build_info_for_target(&request.target);
+        let default_build_info = default_axvisor_build_info();
         fs::write(
             &request.build_info_path,
             toml::to_string_pretty(&default_build_info)?,
@@ -554,11 +543,6 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
 
     if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
         let mut loaded = board_config.into_loaded();
-        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-            &mut loaded.build_info,
-            &loaded.target,
-            &content,
-        );
         if let Some(smp) = request.smp {
             loaded.build_info.max_cpu_num = Some(smp);
         }
@@ -566,12 +550,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
     }
 
     toml::from_str::<AxvisorBuildInfo>(&content)
-        .map(|mut build_info| {
-            crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-                &mut build_info,
-                &request.target,
-                &content,
-            );
+        .map(|build_info| {
             let mut loaded = LoadedAxvisorBuildConfig {
                 build_info,
                 target: request.target.clone(),
@@ -692,7 +671,6 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["ept-level-4"]
 log = "Info"
-plat_dyn = true
 vm_configs = []
 "#,
         );
@@ -735,7 +713,6 @@ vm_configs = []
 env = {}
 features = ["fs", "ept-level-4"]
 log = "Info"
-plat_dyn = true
 "#,
         )
         .unwrap();
@@ -872,7 +849,6 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
 features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
-plat_dyn = true
 vm_configs = []
 "#,
         );
@@ -1015,7 +991,7 @@ plat_dyn = false
     }
 
     #[test]
-    fn load_cargo_config_drops_static_platform_when_plat_dyn_is_enabled() {
+    fn load_cargo_config_drops_static_platform_when_plat_dyn_is_defaulted() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
         fs::write(
@@ -1024,7 +1000,6 @@ plat_dyn = false
 env = {}
 features = ["ax-hal/riscv64-sg2002", "fs"]
 log = "Info"
-plat_dyn = true
 "#,
         )
         .unwrap();
@@ -1034,7 +1009,7 @@ plat_dyn = true
             axvisor_dir: root.path().join("os/axvisor"),
             arch: "riscv64".to_string(),
             target: "riscv64gc-unknown-none-elf".to_string(),
-            plat_dyn: Some(true),
+            plat_dyn: None,
             smp: None,
             debug: false,
             build_info_path: config_path,
@@ -1064,7 +1039,6 @@ plat_dyn = true
 env = {}
 features = ["ax-driver/virtio-blk", "ept-level-4", "fs", "vmx"]
 log = "Info"
-plat_dyn = true
 "#,
         )
         .unwrap();
@@ -1095,6 +1069,42 @@ plat_dyn = true
                 .features
                 .contains(&"ax-driver/plat-static".to_string())
         );
+    }
+
+    #[test]
+    fn load_cargo_config_defaults_x86_to_dynamic_platform_when_omitted() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["ept-level-4", "fs", "vmx"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"axvm/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-qemu-q35".to_string()));
+        assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
     }
 
     #[test]

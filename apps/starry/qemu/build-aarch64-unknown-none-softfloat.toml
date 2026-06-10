@@ -11,5 +11,4 @@ features = [
   "starry-kernel/vsock",
 ]
 log = "Warn"
-plat_dyn = true
 target = "aarch64-unknown-none-softfloat"

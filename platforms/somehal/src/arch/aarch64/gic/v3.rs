@@ -27,19 +27,19 @@ impl CpuInterfaceSlot {
         }
     }
 
-    unsafe fn set(&self, cpu_id: usize, cpu_if: CpuInterface) {
+    unsafe fn set(&self, cpu_idx: usize, cpu_if: CpuInterface) {
         let slot = unsafe { &mut *self.inner.get() };
         assert!(
             slot.is_none(),
-            "GICv3 CPU interface for CPU {cpu_id} is already initialized"
+            "GICv3 CPU interface for CPU index {cpu_idx} is already initialized"
         );
         *slot = Some(cpu_if);
     }
 
-    unsafe fn get(&self, cpu_id: usize) -> &CpuInterface {
-        unsafe { &*self.inner.get() }
-            .as_ref()
-            .unwrap_or_else(|| panic!("GICv3 CPU interface for CPU {cpu_id} is not initialized"))
+    unsafe fn get(&self, cpu_idx: usize) -> &CpuInterface {
+        unsafe { &*self.inner.get() }.as_ref().unwrap_or_else(|| {
+            panic!("GICv3 CPU interface for CPU index {cpu_idx} is not initialized")
+        })
     }
 }
 
@@ -86,7 +86,9 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
     super::set_backend(super::GicBackend::V3);
 
     init_cpu_interface_map();
-    init_cpu_interface(&gic, 0);
+    let cpu_idx =
+        crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
+    init_cpu_interface(&gic, cpu_idx);
 
     dev.register(rdif_intc::Intc::new(gic));
 
@@ -125,8 +127,8 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
     let sgi = IntId::sgi(raw as u32);
     let target = match target {
         crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::current(),
-        crate::irq::IpiTarget::Other { cpu_id } => {
-            SGITarget::list([affinity_from_mpidr(super::hardware_cpu_id(cpu_id))])
+        crate::irq::IpiTarget::Other { cpu_id: cpu_idx } => {
+            SGITarget::list([affinity_from_mpidr(super::hardware_cpu_id(cpu_idx))])
         }
         crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::All,
     };
@@ -142,22 +144,21 @@ fn affinity_from_mpidr(mpidr: usize) -> Affinity {
     }
 }
 
-pub fn init_cpu() {
-    let cpu_id = someboot::smp::early_current_cpu_idx();
-    with_gic(|gic| init_cpu_interface(gic, cpu_id));
+pub fn init_cpu(cpu_idx: usize) {
+    with_gic(|gic| init_cpu_interface(gic, cpu_idx));
 
     debug!("GICCv3 initialized");
 }
 
 fn init_cpu_interface_map() {
     let mut cpu_if = BTreeMap::new();
-    for cpu_id in 0..someboot::smp::cpu_count() {
-        cpu_if.insert(cpu_id, CpuInterfaceSlot::empty());
+    for cpu_idx in 0..someboot::smp::cpu_count() {
+        cpu_if.insert(cpu_idx, CpuInterfaceSlot::empty());
     }
     CPU_IF.init(cpu_if);
 }
 
-fn init_cpu_interface(gic: &Gic, cpu_id: usize) {
+fn init_cpu_interface(gic: &Gic, cpu_idx: usize) {
     let mut cpu = gic.cpu_interface();
     cpu.init_current_cpu().unwrap();
     #[cfg(feature = "hv")]
@@ -165,18 +166,19 @@ fn init_cpu_interface(gic: &Gic, cpu_id: usize) {
 
     // SAFETY: CPU_IF was preallocated during BSP probe. Each CPU initializes
     // only its own logical CPU slot before it can send SGIs through that slot.
-    unsafe { cpu_interface_slot(cpu_id).set(cpu_id, cpu) };
+    unsafe { cpu_interface_slot(cpu_idx).set(cpu_idx, cpu) };
 }
 
 fn current_cpu_interface() -> &'static CpuInterface {
-    let cpu_id = someboot::smp::early_current_cpu_idx();
+    let cpu_idx = crate::cpu::current_cpu_idx()
+        .unwrap_or_else(|| panic!("current logical CPU index is not available for GICv3 SGI"));
     // SAFETY: send_ipi is only valid after the current CPU has completed
     // interrupt-controller initialization and stored its CpuInterface.
-    unsafe { cpu_interface_slot(cpu_id).get(cpu_id) }
+    unsafe { cpu_interface_slot(cpu_idx).get(cpu_idx) }
 }
 
-fn cpu_interface_slot(cpu_id: usize) -> &'static CpuInterfaceSlot {
+fn cpu_interface_slot(cpu_idx: usize) -> &'static CpuInterfaceSlot {
     CPU_IF
-        .get(&cpu_id)
-        .unwrap_or_else(|| panic!("GICv3 CPU interface slot for CPU {cpu_id} is not registered"))
+        .get(&cpu_idx)
+        .unwrap_or_else(|| panic!("GICv3 CPU interface slot for CPU {cpu_idx} is not registered"))
 }

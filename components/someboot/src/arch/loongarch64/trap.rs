@@ -598,8 +598,7 @@ global_asm!(
     "handle_exc_79:", "b handle_reserved_exception",
 
     ".balign VECSIZE",
-    ".global handle_tlb_refill",
-    "handle_tlb_refill:",
+    ".Lsomeboot_handle_tlb_refill:",
     "
     csrwr   $t0, 0x8B  // LOONGARCH_CSR_TLBRSAV - 保存 $t0
     csrrd   $t0, 0x1b  // LA_CSR_PGD - 读取页表基址
