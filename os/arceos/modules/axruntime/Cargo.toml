@@ -59,9 +59,18 @@ fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
 net = ["dep:ax-net", "ax-driver/net"]
 net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
+# SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
+# the ArceOS runtime glue (the driver cores are OS-independent) before probing.
+aic8800-wifi = [
+  "net-ng",
+  "plat-dyn",
+  "ax-driver/aic8800-wifi",
+  "dep:aic8800-arceos",
+]
 vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
 
 [dependencies]
+aic8800-arceos = {workspace = true, optional = true}
 ax-alloc = {workspace = true}
 ax-config = {workspace = true}
 ax-crate-interface = {workspace = true}

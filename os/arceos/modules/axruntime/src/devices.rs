@@ -104,6 +104,42 @@ pub(crate) fn init_dyn_net_ng() {
     ax_net_ng::init_network(take_dyn_net_ng_drivers());
 }
 
+/// Registers probed Wi-Fi devices with the (already-initialized) network stack.
+///
+/// A Wi-Fi device is a distinct rdrive type ([`PlatformWifiDevice`]) carrying
+/// both the data plane (`rd_net::Net`) and the control plane
+/// (`WifiDriver`) plus the board's link policy (`ApConfig`). We wrap the data
+/// plane as a normal `RdNetDriver`, wire the chip's out-of-band RX callback to
+/// the stack's Wi-Fi RX notifier, then register it with the SoftAP config.
+#[cfg(feature = "aic8800-wifi")]
+pub(crate) fn register_wifi_devices() {
+    if !rdrive::is_initialized() {
+        return;
+    }
+    for dev in rdrive::get_list::<ax_driver::net::PlatformWifiDevice>() {
+        let (net, mut wifi, name, ap) = ax_driver::net::take_wifi_device(dev)
+            .unwrap_or_else(|err| panic!("failed to open wifi device: {err:?}"));
+
+        // SDIO Wi-Fi RX is out-of-band (not the ethernet IRQ framework); the
+        // chip's RX-data callback wakes the stack's dedicated poll task.
+        wifi.set_rx_data_callback(ax_net_ng::notify_wifi_rx);
+
+        let driver = ax_net_ng::RdNetDriver::new(name, net, None)
+            .unwrap_or_else(|err| panic!("failed to adapt wifi device: {err:?}"));
+
+        ax_net_ng::register_device_with_config(
+            alloc::boxed::Box::new(driver),
+            ax_net_ng::NetConfig {
+                name: name.into(),
+                ip: ap.server_ip,
+                prefix_len: ap.prefix_len,
+                dhcp_server_client_ip: Some(ap.client_ip),
+                dedicated_poll: true,
+            },
+        );
+    }
+}
+
 #[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
 pub(crate) fn take_static_net_drivers()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
