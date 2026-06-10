@@ -45,7 +45,6 @@ ext-ld = ["ax-feat/ext-ld"]
 myplat = ["alloc", "tls", "fd", "ax-feat/myplat"]
 defplat = ["alloc", "tls", "fd", "ax-feat/defplat"]
 plat-dyn = ["alloc", "tls", "fd", "ax-feat/plat-dyn"]
-x86-pc = ["alloc", "tls", "fd", "ax-hal/x86-pc"]
 aarch64-qemu-virt = ["alloc", "tls", "fd"]
 loongarch64-qemu-virt = ["alloc", "tls", "fd", "ax-hal/loongarch64-qemu-virt"]
 

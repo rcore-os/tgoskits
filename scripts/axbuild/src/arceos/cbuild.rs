@@ -403,7 +403,6 @@ fn platform_linker_owner_prefix(platform: &str, features: &[String]) -> &'static
 
     match platform {
         "loongarch64-qemu-virt" => "ax-plat-loongarch64-qemu-virt-",
-        "x86-qemu-q35" => "ax-plat-x86-qemu-q35-",
         _ => "ax-hal-",
     }
 }
@@ -969,17 +968,17 @@ mod tests {
         let mode = "release";
         let build_dir = target_dir.join(target).join(mode).join("build");
         let axhal_out = build_dir.join("ax-hal-abc/out");
-        let q35_out = build_dir.join("ax-plat-x86-qemu-q35-abc/out");
-        let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
+        let loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
+        let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-old/out");
         let runtime_out = build_dir.join("ax-runtime-def/out");
         let unrelated_out = build_dir.join("unrelated-ghi/out");
         fs::create_dir_all(&axhal_out).unwrap();
-        fs::create_dir_all(&q35_out).unwrap();
+        fs::create_dir_all(&loong_out).unwrap();
         fs::create_dir_all(&stale_loong_out).unwrap();
         fs::create_dir_all(&runtime_out).unwrap();
         fs::create_dir_all(&unrelated_out).unwrap();
         fs::write(axhal_out.join("axplat.x"), "").unwrap();
-        fs::write(q35_out.join("axplat.x"), "").unwrap();
+        fs::write(loong_out.join("axplat.x"), "").unwrap();
         fs::write(stale_loong_out.join("axplat.x"), "").unwrap();
         fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
         fs::write(unrelated_out.join("note.txt"), "").unwrap();
@@ -988,12 +987,12 @@ mod tests {
             &target_dir,
             target,
             mode,
-            "x86-qemu-q35",
-            &strings(&["ax-hal/x86-qemu-q35"]),
+            "loongarch64-qemu-virt",
+            &strings(&["ax-hal/loongarch64-qemu-virt"]),
         )
         .unwrap();
 
-        assert_eq!(dirs, vec![q35_out, runtime_out]);
+        assert_eq!(dirs, vec![loong_out, runtime_out]);
     }
 
     #[test]

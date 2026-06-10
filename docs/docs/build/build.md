@@ -198,8 +198,8 @@ flowchart TD
     C --> D["返回匹配的依赖包名"]
     B -->|否| E{feature 包含 myplat?}
     E -->|是| F{是 Axvisor?}
-    F -->|x86_64| G["→ ax-plat-x86-qemu-q35"]
-    F -->|其他架构| I["在依赖中查找<br/>架构前缀匹配的平台包"]
+    F -->|是| G["要求动态平台<br/>或显式平台包"]
+    F -->|否| I["在依赖中查找<br/>架构前缀匹配的平台包"]
     E -->|否| J["回退到默认平台"]
     J --> K[default_platform_package]
 ```
@@ -209,7 +209,7 @@ flowchart TD
 | 架构 | 默认平台包 |
 |------|-----------|
 | `aarch64` | 无静态默认平台；默认使用 `plat_dyn = true` |
-| `x86_64` | `ax-plat-x86-pc` |
+| `x86_64` | 无静态默认平台；默认使用 `plat_dyn = true` |
 | `riscv64` | 无静态默认平台；默认使用 `plat_dyn = true` |
 | `loongarch64` | `ax-plat-loongarch64-qemu-virt` |
 

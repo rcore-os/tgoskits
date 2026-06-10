@@ -165,8 +165,6 @@ ifeq ($(PLAT_DYN), y)
   AXPLAT_OWNER_PREFIX := axplat-dyn-
 else ifeq ($(PLAT_NAME), loongarch64-qemu-virt)
   AXPLAT_OWNER_PREFIX := ax-plat-loongarch64-qemu-virt-
-else ifeq ($(PLAT_NAME), x86-qemu-q35)
-  AXPLAT_OWNER_PREFIX := ax-plat-x86-qemu-q35-
 else
   AXPLAT_OWNER_PREFIX := ax-hal-
 endif

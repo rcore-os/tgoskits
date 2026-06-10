@@ -17,7 +17,7 @@ const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
 const AXCONFIG_FILE: &str = "axconfig.toml";
 const AXSTD_STD_PACKAGE: &str = "ax-std";
 const AXSTD_STD_DEFAULT_FEATURE: &str = "default";
-const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,x86-pc,fs,multitask,irq,net";
+const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,plat-dyn,fs,multitask,irq,net";
 const AXSTD_STD_CLIPPY_TARGET: &str = "x86_64-unknown-none";
 const DOCS_RS_METADATA: &str = "docs.rs";
 const DOCS_METADATA: &str = "docs";
@@ -55,8 +55,6 @@ const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[
     ("loongarch64-qemu-virt", &["loongarch64"]),
     ("riscv64-sg2002", &["riscv64"]),
     ("riscv64-visionfive2", &["riscv64"]),
-    ("x86-pc", &["x86_64"]),
-    ("x86-qemu-q35", &["x86_64"]),
 ];
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
@@ -659,7 +657,7 @@ fn with_axconfig_env_override(
 
 fn axstd_std_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     let mut envs = HashMap::new();
-    crate::build::prepare_std_build_env(&mut envs, AXSTD_STD_CLIPPY_TARGET, false, metadata)
+    crate::build::prepare_std_build_env(&mut envs, AXSTD_STD_CLIPPY_TARGET, true, metadata)
         .context("failed to prepare ax-std std clippy config")?;
     Ok(envs.into_iter().collect())
 }
@@ -1805,9 +1803,9 @@ mod tests {
             &[
                 ("irq", &[]),
                 ("loongarch64-qemu-virt", &[]),
-                ("x86-pc", &[]),
+                ("riscv64-sg2002", &[]),
             ],
-            Some(&["loongarch64-unknown-none", "x86_64-unknown-none"]),
+            Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
         )]);
 
         let has_feature_on_target = |feature: &str, target: &str| {
@@ -1821,18 +1819,21 @@ mod tests {
             "irq",
             "loongarch64-unknown-none-softfloat"
         ));
-        assert!(has_feature_on_target("irq", "x86_64-unknown-none"));
+        assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
         assert!(has_feature_on_target(
             "loongarch64-qemu-virt",
             "loongarch64-unknown-none-softfloat"
         ));
         assert!(!has_feature_on_target(
             "loongarch64-qemu-virt",
-            "x86_64-unknown-none"
+            "riscv64gc-unknown-none-elf"
         ));
-        assert!(has_feature_on_target("x86-pc", "x86_64-unknown-none"));
+        assert!(has_feature_on_target(
+            "riscv64-sg2002",
+            "riscv64gc-unknown-none-elf"
+        ));
         assert!(!has_feature_on_target(
-            "x86-pc",
+            "riscv64-sg2002",
             "loongarch64-unknown-none-softfloat"
         ));
     }
@@ -1842,7 +1843,7 @@ mod tests {
         let checks = expand(&[pkg(
             "ax-hal",
             "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-            &[("irq", &[]), ("plat-dyn", &[]), ("x86-pc", &[])],
+            &[("irq", &[]), ("plat-dyn", &[]), ("riscv64-sg2002", &[])],
             None,
         )]);
 
@@ -1853,7 +1854,7 @@ mod tests {
             matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "plat-dyn")
         }));
         assert!(!checks.iter().any(|check| {
-            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "x86-pc")
+            matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "riscv64-sg2002")
         }));
     }
 
@@ -1865,9 +1866,9 @@ mod tests {
             &[
                 ("irq", &["ax-hal/irq"]),
                 ("loongarch64-qemu-virt", &["ax-hal/loongarch64-qemu-virt"]),
-                ("x86-pc", &["ax-hal/x86-pc"]),
+                ("riscv64-sg2002", &["ax-hal/riscv64-sg2002"]),
             ],
-            Some(&["loongarch64-unknown-none", "x86_64-unknown-none"]),
+            Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
         )]);
 
         let has_feature_on_target = |feature: &str, target: &str| {
@@ -1881,18 +1882,21 @@ mod tests {
             "irq",
             "loongarch64-unknown-none-softfloat"
         ));
-        assert!(has_feature_on_target("irq", "x86_64-unknown-none"));
+        assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
         assert!(has_feature_on_target(
             "loongarch64-qemu-virt",
             "loongarch64-unknown-none-softfloat"
         ));
         assert!(!has_feature_on_target(
             "loongarch64-qemu-virt",
-            "x86_64-unknown-none"
+            "riscv64gc-unknown-none-elf"
         ));
-        assert!(has_feature_on_target("x86-pc", "x86_64-unknown-none"));
+        assert!(has_feature_on_target(
+            "riscv64-sg2002",
+            "riscv64gc-unknown-none-elf"
+        ));
         assert!(!has_feature_on_target(
-            "x86-pc",
+            "riscv64-sg2002",
             "loongarch64-unknown-none-softfloat"
         ));
     }
@@ -1950,9 +1954,9 @@ mod tests {
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[("feat", &[])],
             Some(&[
-                "x86_64-unknown-none",
+                "riscv64gc-unknown-none-elf",
                 "aarch64-unknown-none-softfloat",
-                "x86_64-unknown-none",
+                "riscv64gc-unknown-none-elf",
             ]),
         )]);
 
@@ -1964,8 +1968,8 @@ mod tests {
             vec![
                 "alpha (base, target: aarch64-unknown-none-softfloat)",
                 "alpha (feature: feat, target: aarch64-unknown-none-softfloat)",
-                "alpha (base, target: x86_64-unknown-none)",
-                "alpha (feature: feat, target: x86_64-unknown-none)",
+                "alpha (base, target: riscv64gc-unknown-none-elf)",
+                "alpha (feature: feat, target: riscv64gc-unknown-none-elf)",
             ]
         );
     }
@@ -2136,12 +2140,19 @@ mod tests {
             .expect("ax-std default clippy check should exist");
 
         assert!(
-            std_check.env.iter().any(|(key, value)| {
-                key == AX_CONFIG_PATH_ENV
-                    && value
-                        .ends_with("tmp/axbuild/axconfig/ax-std/x86_64-unknown-none/.axconfig.toml")
-            }),
-            "expected {AX_CONFIG_PATH_ENV} in {:?}",
+            std_check
+                .env
+                .iter()
+                .any(|(key, value)| { key == "AX_TARGET" && value == AXSTD_STD_CLIPPY_TARGET }),
+            "expected AX_TARGET in {:?}",
+            std_check.env
+        );
+        assert!(
+            !std_check
+                .env
+                .iter()
+                .any(|(key, _)| key == AX_CONFIG_PATH_ENV),
+            "dynamic ax-std clippy check should not use static AX_CONFIG_PATH: {:?}",
             std_check.env
         );
         assert!(

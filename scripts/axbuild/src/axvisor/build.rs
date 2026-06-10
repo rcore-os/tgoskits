@@ -21,6 +21,7 @@ pub use crate::build::LogLevel;
 pub const AXVISOR_PACKAGE: &str = "axvisor";
 const AXVISOR_PLAT_DYN_FEATURES: &[&str] =
     &["axvm/plat-dyn", "ax-std/plat-dyn", "ax-driver/plat-dyn"];
+const REMOVED_AXVISOR_PLATFORM_FEATURES: &[&str] = &["x86-qemu-q35"];
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
@@ -258,6 +259,16 @@ fn reject_unsupported_nested_platform_features(
 ) -> anyhow::Result<()> {
     if let Some(feature) = features
         .iter()
+        .find(|feature| removed_axvisor_platform_feature_name(feature).is_some())
+    {
+        return Err(anyhow!(
+            "Axvisor platform feature `{feature}` has been removed; use `plat_dyn = true` for \
+             x86_64 dynamic platform builds"
+        ));
+    }
+
+    if let Some(feature) = features
+        .iter()
         .find(|feature| is_axvisor_plat_dyn_feature(feature))
     {
         return Err(anyhow!(
@@ -299,6 +310,18 @@ fn is_axvisor_plat_dyn_feature(feature: &str) -> bool {
     )
 }
 
+fn removed_axvisor_platform_feature_name(feature: &str) -> Option<&str> {
+    let name = feature
+        .strip_prefix("ax-hal/")
+        .or_else(|| feature.strip_prefix("ax-std/"))
+        .or_else(|| feature.strip_prefix("ax-feat/"))
+        .unwrap_or(feature);
+    REMOVED_AXVISOR_PLATFORM_FEATURES
+        .iter()
+        .find(|platform| **platform == name)
+        .copied()
+}
+
 fn select_axvisor_platform_feature(
     features: &[String],
     target: &str,
@@ -334,10 +357,6 @@ fn default_axvisor_platform_feature(
     metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Option<String>> {
     let arch = arch_for_target_checked(target)?;
-    if arch == "x86_64" {
-        return Ok(Some("ax-hal/x86-qemu-q35".to_string()));
-    }
-
     let candidates = platform_metadata_entries(metadata)
         .into_iter()
         .filter(|platform| !platform.dynamic && platform.arch == arch)
@@ -928,7 +947,7 @@ plat_dyn = false
     }
 
     #[test]
-    fn load_cargo_config_rejects_nested_axstd_platform_feature() {
+    fn load_cargo_config_rejects_removed_nested_axstd_platform_feature() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
         fs::write(
@@ -957,31 +976,26 @@ plat_dyn = false
         })
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("ax-hal platform features directly")
-        );
+        assert!(err.to_string().contains("has been removed"));
+        assert!(err.to_string().contains("plat_dyn = true"));
     }
 
     #[test]
-    fn load_cargo_config_accepts_axhal_platform_feature() {
+    fn load_cargo_config_rejects_removed_x86_q35_platform_feature() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
-        let platform_feature = ["ax-hal", "x86-qemu-q35"].join("/");
         fs::write(
             &config_path,
-            format!(
-                r#"
-env = {{}}
-features = ["{platform_feature}", "ept-level-4"]
+            r#"
+env = {}
+features = ["ax-hal/x86-qemu-q35", "ept-level-4"]
 log = "Info"
 plat_dyn = false
 "#,
-            ),
         )
         .unwrap();
 
-        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+        let err = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.path().join("os/axvisor"),
             arch: "x86_64".to_string(),
@@ -994,9 +1008,10 @@ plat_dyn = false
             uboot_config: None,
             vmconfigs: vec![],
         })
-        .unwrap();
+        .unwrap_err();
 
-        assert!(cargo.features.contains(&platform_feature));
+        assert!(err.to_string().contains("has been removed"));
+        assert!(err.to_string().contains("plat_dyn = true"));
     }
 
     #[test]

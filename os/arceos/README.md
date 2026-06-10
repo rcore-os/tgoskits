@@ -195,12 +195,8 @@ explicitly instead of relying on the removed in-tree static AArch64 platform
 crates.
 
 You may need to select the corresponding device drivers by setting the
-`FEATURES` variable:
-
-```bash
-# Build httpserver for the bare-metal x86_64 platform, and use the ixgbe and ramdisk driver
-make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml A=examples/httpserver FEATURES=page-alloc-4g,ax-driver/plat-static,ax-driver/ixgbe,ax-driver/ramdisk SMP=4
-```
+`FEATURES` variable. For x86_64 QEMU builds, prefer the `cargo xtask` dynamic
+platform flow instead of the removed in-tree static PC platform.
 
 ## How to reuse ArceOS modules in your own project
 

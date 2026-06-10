@@ -21,16 +21,6 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
         crate_name: "axplat_dyn",
     },
     PlatformFeature {
-        feature: "x86-pc",
-        target_arch: Some("x86_64"),
-        crate_name: "ax_plat_x86_pc",
-    },
-    PlatformFeature {
-        feature: "x86-qemu-q35",
-        target_arch: Some("x86_64"),
-        crate_name: "ax_plat_x86_qemu_q35",
-    },
-    PlatformFeature {
         feature: "riscv64-sg2002",
         target_arch: Some("riscv64"),
         crate_name: "ax_plat_riscv64_sg2002",
@@ -47,10 +37,7 @@ const PLATFORM_FEATURES: &[PlatformFeature] = &[
     },
 ];
 
-const DEFAULT_PLATFORMS: &[(&str, &str)] = &[
-    ("loongarch64", "ax_plat_loongarch64_qemu_virt"),
-    ("x86_64", "ax_plat_x86_pc"),
-];
+const DEFAULT_PLATFORMS: &[(&str, &str)] = &[("loongarch64", "ax_plat_loongarch64_qemu_virt")];
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(plat_dyn)");
@@ -72,12 +59,8 @@ fn main() {
 
     let config = load_linker_config().unwrap();
 
-    let platform_linker_is_external = selected_platform.is_some_and(|platform| {
-        matches!(
-            platform.feature,
-            "plat-dyn" | "x86-qemu-q35" | "loongarch64-qemu-virt"
-        )
-    });
+    let platform_linker_is_external = selected_platform
+        .is_some_and(|platform| matches!(platform.feature, "plat-dyn" | "loongarch64-qemu-virt"));
 
     if config.platform != "dummy" && !platform_linker_is_external {
         gen_linker_script(&arch, &config).unwrap();

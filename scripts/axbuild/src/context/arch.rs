@@ -41,7 +41,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "x86_64",
         target: "x86_64-unknown-none",
         default_rootfs_image: "rootfs-x86_64-alpine.img",
-        starry_default_platform: Some("x86-pc"),
+        starry_default_platform: None,
         cross_compile: CrossCompileSpec {
             llvm_target: "x86_64-linux-musl",
             cmake_system_processor: "x86_64",

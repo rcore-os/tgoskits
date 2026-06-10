@@ -181,7 +181,6 @@ ax-plat = { version = "0.6.1", path = "platforms/ax-plat" }
 ax-plat-loongarch64-qemu-virt = { version = "0.5.12", path = "platforms/ax-plat-loongarch64-qemu-virt", default-features = false }
 ax-plat-macros = { version = "0.3.7", path = "platforms/ax-plat-macros" }
 ax-plat-riscv64-sg2002 = { version = "0.4.1", path = "platforms/ax-plat-riscv64-sg2002" }
-ax-plat-x86-pc = { version = "0.5.12", path = "platforms/ax-plat-x86-pc" }
 ax-posix-api = { version = "0.5.18", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.7", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.6.1", path = "os/arceos/modules/axruntime" }
@@ -200,7 +199,6 @@ axhvc = { version = "0.4.9", path = "virtualization/axhvc" }
 axklib = { version = "0.6.1", path = "components/axklib" }
 axplat-dyn = { version = "0.7.1", path = "platforms/axplat-dyn", default-features = false }
 ax-plat-riscv64-visionfive2 = { version = "0.1.6", path = "platforms/ax-plat-riscv64-visionfive2" }
-ax-plat-x86-qemu-q35 = { version = "0.4.10", path = "platforms/ax-plat-x86-qemu-q35", default-features = false }
 axpoll = { version = "0.3.11", path = "components/axpoll" }
 axvcpu = { version = "0.6.1", path = "virtualization/axvcpu" }
 axvisor = { version = "0.5.10", path = "os/axvisor" }

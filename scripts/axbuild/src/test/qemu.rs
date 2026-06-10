@@ -863,6 +863,7 @@ pub(crate) fn load_test_qemu_case_fields(
         host_symbolize_success_regex: config.host_symbolize_success_regex,
         host_http_server: config.host_http_server,
         subcases,
+        grouped_subcase_filter: None,
     })
 }
 
@@ -905,7 +906,7 @@ fn discover_qemu_subcases(
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let kind = if path.join("c").is_dir() {
+        let kind = if path.join("c").is_dir() || path.join("CMakeLists.txt").is_file() {
             Some(TestQemuSubcaseKind::C)
         } else if path.join("rust").is_dir() {
             Some(TestQemuSubcaseKind::Rust)
@@ -1831,12 +1832,12 @@ mod tests {
     }
 
     #[test]
-    fn static_x86_64_cargo_keeps_existing_qemu_boot() {
+    fn non_dynamic_x86_64_cargo_keeps_existing_qemu_boot() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _debug = TempEnvVar::set(DYNAMIC_X86_64_QEMU_DEBUG_ENV, "1");
         let cargo = Cargo {
             target: "scripts/targets/std/x86_64-unknown-linux-musl.json".to_string(),
-            features: vec!["ax-hal/x86-pc".to_string()],
+            features: vec![],
             to_bin: false,
             ..Default::default()
         };
