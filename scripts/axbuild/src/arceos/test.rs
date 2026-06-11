@@ -727,6 +727,7 @@ async fn prepare_rust_qemu_cases(
         let mut qemu = arceos
             .load_qemu_config(&request, &cargo)
             .await?
+            .config
             .with_context(|| {
                 format!(
                     "failed to load ArceOS qemu config for case `{}`",

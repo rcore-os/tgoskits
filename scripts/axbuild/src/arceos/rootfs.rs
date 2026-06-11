@@ -51,6 +51,7 @@ pub(super) async fn qemu_with_explicit_rootfs(
     let mut qemu = arceos
         .load_qemu_config(&request, &cargo)
         .await?
+        .config
         .unwrap_or_default();
     qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
     patch_qemu_rootfs(&mut qemu, &rootfs);

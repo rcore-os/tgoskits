@@ -155,12 +155,19 @@ pub mod cbuild;
 pub mod rootfs;
 pub mod test;
 
+pub(super) struct LoadedQemuConfig {
+    config: Option<QemuConfig>,
+    config_path: Option<PathBuf>,
+}
+
 fn start_qemu_host_http_server(
     request: &ResolvedBuildRequest,
+    qemu_config_path: Option<&Path>,
 ) -> anyhow::Result<Option<HostHttpServerGuard>> {
     request
         .qemu_config
         .as_deref()
+        .or(qemu_config_path)
         .map(crate::test::qemu::load_qemu_case_host_http_server)
         .transpose()?
         .flatten()
@@ -325,32 +332,41 @@ impl ArceOS {
         &mut self,
         request: &ResolvedBuildRequest,
         cargo: &Cargo,
-    ) -> anyhow::Result<Option<ostool::run::qemu::QemuConfig>> {
-        let mut qemu = match request.qemu_config.as_deref() {
-            Some(path) => self
-                .app
-                .read_qemu_config_from_path_for_cargo(cargo, path)
-                .await
-                .map(Some)?,
+    ) -> anyhow::Result<LoadedQemuConfig> {
+        let (mut qemu, config_path) = match request.qemu_config.as_deref() {
+            Some(path) => (
+                self.app
+                    .read_qemu_config_from_path_for_cargo(cargo, path)
+                    .await
+                    .map(Some)?,
+                Some(path.to_path_buf()),
+            ),
             None => {
                 let default_path = self
                     .app
                     .workspace_member_dir(&request.package)?
                     .join(format!("qemu-{}.toml", request.arch));
                 if default_path.exists() {
-                    self.app
-                        .read_qemu_config_from_path_for_cargo(cargo, &default_path)
-                        .await
-                        .map(Some)?
+                    (
+                        self.app
+                            .read_qemu_config_from_path_for_cargo(cargo, &default_path)
+                            .await
+                            .map(Some)?,
+                        Some(default_path),
+                    )
                 } else {
-                    None
+                    (None, None)
                 }
             }
         };
         if let Some(qemu) = qemu.as_mut() {
             crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, cargo);
         }
-        Ok(qemu)
+
+        Ok(LoadedQemuConfig {
+            config: qemu,
+            config_path,
+        })
     }
 
     async fn load_uboot_config(
@@ -387,12 +403,15 @@ impl ArceOS {
         cargo: Cargo,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let qemu = self.load_qemu_config(&request, &cargo).await?;
-        if let Some(qemu) = qemu.as_ref() {
+        let loaded_qemu = self.load_qemu_config(&request, &cargo).await?;
+        if let Some(qemu) = loaded_qemu.config.as_ref() {
             ensure_qemu_runtime_assets(self.app.workspace_root(), qemu)?;
         }
-        let _host_http_server = start_qemu_host_http_server(&request)?;
-        self.app.qemu(cargo, request.build_info_path, qemu).await
+        let _host_http_server =
+            start_qemu_host_http_server(&request, loaded_qemu.config_path.as_deref())?;
+        self.app
+            .qemu(cargo, request.build_info_path, loaded_qemu.config)
+            .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
@@ -455,22 +474,21 @@ impl ArceOS {
         self.app.set_debug_mode(request.debug)?;
         let request = c_app_internal_request(&request);
         let cargo = build::load_c_app_cargo_config(&request)?;
-        let mut qemu = self
-            .load_qemu_config(&request, &cargo)
-            .await?
-            .with_context(|| {
-                format!(
-                    "ArceOS C app config {} requires an explicit qemu config",
-                    request.build_info_path.display()
-                )
-            })?;
+        let loaded_qemu = self.load_qemu_config(&request, &cargo).await?;
+        let mut qemu = loaded_qemu.config.with_context(|| {
+            format!(
+                "ArceOS C app config {} requires an explicit qemu config",
+                request.build_info_path.display()
+            )
+        })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
         crate::test::qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         ensure_qemu_runtime_assets(self.app.workspace_root(), &qemu)?;
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)
             .await?;
-        let _host_http_server = start_qemu_host_http_server(&request)?;
+        let _host_http_server =
+            start_qemu_host_http_server(&request, loaded_qemu.config_path.as_deref())?;
         self.app.run_prepared_qemu(qemu, None).await
     }
 
@@ -601,7 +619,39 @@ body = "fixture"
             uboot_config: None,
         };
 
-        let guard = start_qemu_host_http_server(&request).unwrap();
+        let guard = start_qemu_host_http_server(&request, None).unwrap();
+
+        assert!(guard.is_some());
+    }
+
+    #[test]
+    fn qemu_request_starts_host_http_server_from_fallback_qemu_config_path() {
+        let root = tempdir().unwrap();
+        let qemu_config = root.path().join("qemu-x86_64.toml");
+        std::fs::write(
+            &qemu_config,
+            r#"
+args = []
+
+[host_http_server]
+port = 0
+body = "fixture"
+"#,
+        )
+        .unwrap();
+        let request = ResolvedBuildRequest {
+            package: "arceos-httpclient".to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: Some(true),
+            smp: Some(1),
+            debug: false,
+            build_info_path: root.path().join("build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+        };
+
+        let guard = start_qemu_host_http_server(&request, Some(&qemu_config)).unwrap();
 
         assert!(guard.is_some());
     }
