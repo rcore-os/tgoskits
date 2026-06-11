@@ -71,13 +71,15 @@ pub(super) async fn qemu_with_external_kernel(
     rootfs: Option<PathBuf>,
     kernel_elf: PathBuf,
 ) -> anyhow::Result<()> {
-    let rootfs = rootfs.map(|rootfs| {
-        crate::image::storage::resolve_explicit_rootfs(
-            starry.app.workspace_root(),
-            &request.arch,
-            rootfs,
-        )
-    });
+    let rootfs = rootfs
+        .map(|rootfs| {
+            crate::image::storage::resolve_explicit_rootfs(
+                starry.app.workspace_root(),
+                &request.arch,
+                rootfs,
+            )
+        })
+        .transpose()?;
     ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), rootfs.as_deref()).await?;
     starry.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request)?;
