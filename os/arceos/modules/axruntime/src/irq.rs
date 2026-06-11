@@ -45,7 +45,7 @@ impl Drop for Registration {
 
 pub struct HandlerRegistration<T> {
     _registration: Registration,
-    _state: Box<T>,
+    state: Box<T>,
 }
 
 impl<T> HandlerRegistration<T> {
@@ -60,8 +60,12 @@ impl<T> HandlerRegistration<T> {
         let registration = Registration::register_shared(name, irq, handler, data)?;
         Ok(Self {
             _registration: registration,
-            _state: state,
+            state,
         })
+    }
+
+    pub fn state(&self) -> &T {
+        &self.state
     }
 }
 

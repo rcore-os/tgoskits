@@ -94,18 +94,30 @@ impl BoundDevice for PlatformBlockDevice {
 #[cfg(feature = "irq")]
 pub struct BlockIrqHandler {
     handler: Box<dyn rdif_block::IrqHandler>,
-    events: Arc<BlockIrqEvents>,
+    events: Option<Arc<BlockIrqEvents>>,
 }
 
 #[cfg(feature = "irq")]
 impl BlockIrqHandler {
     fn new(handler: Box<dyn rdif_block::IrqHandler>, events: Arc<BlockIrqEvents>) -> Self {
-        Self { handler, events }
+        Self {
+            handler,
+            events: Some(events),
+        }
+    }
+
+    fn new_raw(handler: Box<dyn rdif_block::IrqHandler>) -> Self {
+        Self {
+            handler,
+            events: None,
+        }
     }
 
     pub fn handle(&self) -> rdif_block::Event {
         let event = self.handler.handle_irq();
-        self.events.record(event);
+        if let Some(events) = &self.events {
+            events.record(event);
+        }
         event
     }
 
@@ -309,7 +321,7 @@ impl RawBlockDevice {
         let irq_num = self.irq_num?;
         self.interface
             .take_irq_handler(source_id)
-            .map(BlockIrqHandler::new)
+            .map(BlockIrqHandler::new_raw)
             .map(|handler| (irq_num, handler))
     }
 
@@ -434,7 +446,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for RawBlockDevice {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq_num = dev.irq_num;
+        let irq_num = dev.irq_num();
         let interface = dev.interface.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,

@@ -54,9 +54,9 @@ mod mp;
 mod klib;
 
 mod devices;
+mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
-mod fs;
 mod registers;
 
 #[cfg(all(feature = "net", feature = "fs"))]

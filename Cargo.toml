@@ -148,7 +148,6 @@ ax-driver = { version = "0.8.0", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.0", path = "components/axerrno" }
 ax-feat = { version = "0.5.20", path = "os/arceos/api/axfeat" }
-ax-fs = { version = "0.5.19", path = "os/arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-fs-ng = { version = "0.5.19", path = "os/arceos/modules/axfs-ng" }
 ax-hal = { version = "0.5.19", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
