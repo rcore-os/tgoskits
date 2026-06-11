@@ -1,6 +1,4 @@
 use core::str;
-#[cfg(feature = "ax-std")]
-use std::fs::{FileTypeExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::{

@@ -35,7 +35,7 @@ path = "xtask/src/main.rs"
 [features]
 default = []
 ept-level-4 = ["axvm/4-level-ept"]
-fs = ["ax-std/fs", "axvm/host-fs"]
+fs = ["ax-std/ext4fs", "axvm/host-fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["axvm/sstc"]
