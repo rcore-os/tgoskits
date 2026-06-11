@@ -50,8 +50,12 @@ static void test_poll_pipe_close(void) {
         _exit(0);
     }
 
-    // Parent: close write end, poll the read end
+    // Parent: close write end, wait for child to finish writing
     close(pipefd[1]);
+
+    // Ensure child has written before polling, avoiding arch-dependent
+    // scheduler race where poll(200ms) fires before the child is scheduled.
+    waitpid(child, NULL, 0);
 
     // First read the data the child wrote
     char buf[64] = {0};
