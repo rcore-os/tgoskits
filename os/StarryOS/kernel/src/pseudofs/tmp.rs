@@ -12,8 +12,6 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::pseudofs::dummy_stat_fs;
-
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -129,7 +127,27 @@ impl FilesystemOps for MemoryFs {
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
-        Ok(dummy_stat_fs(0x01021994))
+        // Override dummy_stat_fs (which reports 50 KiB total = 100 blocks * 512 B):
+        // BookKeeper / RocksDB / many Java servers refuse to allocate ledger / SST
+        // / WAL when File.getUsableSpace() < minUsableSizeForEntryLogCreation
+        // (default 1 GiB), throwing NoWritableLedgerDirException from a critical
+        // bookie thread that exits the JVM silently. Pulsar standalone died here.
+        // Linux tmpfs reports total = total_RAM / 2 by default; we lack a proper
+        // accounting layer, so advertise 4 GiB / 4 GiB free with realistic block
+        // size, which is enough to unblock every Java server we've hit and remains
+        // accurate when the guest VM has >= 2 GiB.
+        Ok(StatFs {
+            fs_type: 0x01021994,
+            block_size: 4096,
+            blocks: 1 << 20,
+            blocks_free: 1 << 20,
+            blocks_available: 1 << 20,
+            file_count: 0,
+            free_file_count: 1 << 16,
+            name_length: axfs_ng_vfs::path::MAX_NAME_LEN as _,
+            fragment_size: 4096,
+            mount_flags: 0,
+        })
     }
 }
 
