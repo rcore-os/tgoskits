@@ -1,5 +1,7 @@
 args = [
     "-nographic",
+    "-cpu",
+    "Haswell,+avx",
     "-m",
     "512M",
     "-device",
