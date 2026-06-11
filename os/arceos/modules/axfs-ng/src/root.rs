@@ -8,7 +8,7 @@ use alloc::{
 use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
     block::{FsBlockDevice, boxed_native_handle_block_device},
-    detect_filesystem, init_filesystem,
+    detect_filesystem, init_detected_filesystem, init_filesystem,
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
         PartitionTableKind as VolumeTableKind, scan_volumes,
@@ -76,6 +76,7 @@ struct RootCandidate {
 struct DiscoveredDisk {
     disk_index: usize,
     handle: Arc<BlockDeviceHandle>,
+    raw_filesystem: Option<FilesystemKind>,
     partitions: Vec<DetectedPartition>,
 }
 
@@ -164,7 +165,11 @@ pub fn init_root(
         |part| part.info.region,
     );
 
-    init_filesystem(selected.handle, region, &description);
+    if let Some(kind) = selected_filesystem_kind(&selected, selected_partition) {
+        init_detected_filesystem(selected.handle, region, kind, &description);
+    } else {
+        init_filesystem(selected.handle, region, &description);
+    }
 }
 
 fn collect_disks(
@@ -179,11 +184,12 @@ fn collect_disks(
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
             Ok(volumes) => {
-                let partitions = collect_partitions(&mut *dev, volumes);
+                let (raw_filesystem, partitions) = collect_partitions(&mut *dev, volumes);
                 log_disk(disk_index, &device_name, &partitions);
                 disks.push(DiscoveredDisk {
                     disk_index,
                     handle,
+                    raw_filesystem,
                     partitions,
                 });
             }
@@ -202,13 +208,15 @@ fn collect_disks(
 fn collect_partitions(
     dev: &mut dyn FsBlockDevice,
     volumes: Vec<BlockVolume>,
-) -> Vec<DetectedPartition> {
+) -> (Option<FilesystemKind>, Vec<DetectedPartition>) {
     let mut partitions = Vec::new();
+    let mut raw_filesystem = None;
     for volume in volumes {
         if volume.table_kind == VolumeTableKind::Raw {
             let region = region_from_volume(&volume);
             let raw_fs = detect_filesystem(dev, region);
             info!("    raw device fs={:?}", raw_fs);
+            raw_filesystem = raw_fs;
             continue;
         }
 
@@ -225,7 +233,7 @@ fn collect_partitions(
         partitions.push(DetectedPartition { info, filesystem });
     }
 
-    partitions
+    (raw_filesystem, partitions)
 }
 
 fn log_disk(disk_index: usize, device_name: &str, partitions: &[DetectedPartition]) {
@@ -445,6 +453,18 @@ fn supported_default_root_partition(partition: &DetectedPartition) -> bool {
     partition.filesystem.is_some()
 }
 
+fn selected_filesystem_kind(
+    disk: &DiscoveredDisk,
+    partition_index: Option<usize>,
+) -> Option<FilesystemKind> {
+    partition_index.map_or(disk.raw_filesystem, |partition_index| {
+        disk.partitions
+            .iter()
+            .find(|partition| partition.info.index == partition_index)
+            .and_then(|partition| partition.filesystem)
+    })
+}
+
 fn describe_selection(disk_index: usize, partition: Option<&DetectedPartition>) -> String {
     if let Some(partition) = partition {
         describe_partition(disk_index, partition)
@@ -527,7 +547,55 @@ pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
 
 #[cfg(test)]
 mod tests {
+    use core::any::Any;
+
+    use rdif_block::{
+        BlkError, DeviceInfo, DriverGeneric, IQueue, QueueInfo, QueueLimits, Request, RequestId,
+        RequestStatus,
+    };
+
     use super::*;
+    use crate::block_runtime::{BlockIrqBridge, BlockRuntimeConfig, NoopDrainWake, VecDmaProvider};
+
+    struct TestQueue;
+
+    // SAFETY: This queue is only used to construct a `BlockDeviceHandle` for
+    // root selection tests and never stores request segments.
+    unsafe impl IQueue for TestQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(16, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            unreachable!("root selection tests do not submit block requests")
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            unreachable!("root selection tests do not poll block requests")
+        }
+    }
+
+    impl DriverGeneric for TestQueue {
+        fn name(&self) -> &str {
+            "test-queue"
+        }
+
+        fn raw_any(&self) -> Option<&dyn Any> {
+            Some(self)
+        }
+
+        fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+            Some(self)
+        }
+    }
 
     fn mbr_partition(
         index: usize,
@@ -548,6 +616,40 @@ mod tests {
                 filesystem,
             }),
         }
+    }
+
+    fn raw_disk(filesystem: Option<FilesystemKind>) -> DiscoveredDisk {
+        let config = BlockRuntimeConfig::new(Arc::new(VecDmaProvider), Arc::new(NoopDrainWake));
+        DiscoveredDisk {
+            disk_index: 0,
+            handle: BlockDeviceHandle::new(
+                "test-disk",
+                [Box::new(TestQueue) as Box<dyn IQueue>],
+                Arc::new(BlockIrqBridge::new()),
+                config,
+            )
+            .unwrap(),
+            raw_filesystem: filesystem,
+            partitions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn raw_root_selection_preserves_detected_filesystem_kind() {
+        let disks = [raw_disk(Some(FilesystemKind::Fat))];
+        let candidates = collect_root_candidates(&disks);
+        let (disk_index, partition_index) =
+            select_default_root(&candidates).expect("raw root should be selected");
+        let disk = disks
+            .iter()
+            .find(|disk| disk.disk_index == disk_index)
+            .unwrap();
+
+        assert_eq!(partition_index, None);
+        assert_eq!(
+            selected_filesystem_kind(disk, partition_index),
+            Some(FilesystemKind::Fat)
+        );
     }
 
     #[test]

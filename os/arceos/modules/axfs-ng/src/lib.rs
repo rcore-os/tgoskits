@@ -53,6 +53,28 @@ pub(crate) fn init_filesystem(dev: Arc<BlockDeviceHandle>, region: BlockRegion, 
             description
         )
     });
+    finish_filesystem_init(fs);
+}
+
+pub(crate) fn init_detected_filesystem(
+    dev: Arc<BlockDeviceHandle>,
+    region: BlockRegion,
+    kind: FilesystemKind,
+    description: &str,
+) {
+    info!("Initialize filesystem subsystem...");
+    info!("  selected root device: {}", description);
+
+    let fs = fs::new_from_handle_with_kind(dev, region, kind).unwrap_or_else(|err| {
+        panic!(
+            "failed to initialize filesystem on {}: {err:?}",
+            description
+        )
+    });
+    finish_filesystem_init(fs);
+}
+
+fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem) {
     info!("  filesystem type: {:?}", fs.name());
 
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
