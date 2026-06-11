@@ -53,6 +53,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-parallel",
     "task-priority",
     "task-sleep",
+    "task-smp-online",
     ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
     "task-tls",
     "task-wait-queue",
@@ -2063,7 +2064,8 @@ BT 0 ip=0x1 fp=0x2
         let smp = qemu_test::smp_from_qemu_arg(&config).unwrap();
         assert!(
             smp >= 2,
-            "aarch64 task-ipi and task-stack-guard-page require SMP >= 2, got {smp}"
+            "aarch64 task-ipi, task-smp-online, and task-stack-guard-page require SMP >= 2, got \
+             {smp}"
         );
     }
 
