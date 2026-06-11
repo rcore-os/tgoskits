@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(test-ptrace-x86-breakpoint C)
-include(${CMAKE_CURRENT_LIST_DIR}/../../common/starry_arch_filter.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../common/starry_arch_filter.cmake)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
