@@ -25,7 +25,7 @@ mod ebpf;
 mod file;
 #[cfg(feature = "ebpf-kmod")]
 mod kmod;
-#[cfg(feature = "ebpf-kmod")]
+#[cfg(any(feature = "ebpf-kmod", feature = "kprobe_test"))]
 mod kprobe;
 mod mm;
 #[cfg(feature = "ebpf-kmod")]
