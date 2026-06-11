@@ -94,12 +94,16 @@ unsafe fn handle_net_irq(
 #[cfg(feature = "net")]
 fn map_net_irq_error(err: IrqError) -> ax_net::EthernetIrqRegistrationError {
     match err {
-        IrqError::InvalidIrq | IrqError::InvalidCpu => ax_net::EthernetIrqRegistrationError::InvalidIrq,
+        IrqError::InvalidIrq | IrqError::InvalidCpu => {
+            ax_net::EthernetIrqRegistrationError::InvalidIrq
+        }
         IrqError::Busy | IrqError::InIrqContext => ax_net::EthernetIrqRegistrationError::Busy,
         IrqError::Unsupported | IrqError::CpuOffline => {
             ax_net::EthernetIrqRegistrationError::Unsupported
         }
-        IrqError::NoMemory | IrqError::NotFound | IrqError::Controller => ax_net::EthernetIrqRegistrationError::Other,
+        IrqError::NoMemory | IrqError::NotFound | IrqError::Controller => {
+            ax_net::EthernetIrqRegistrationError::Other
+        }
     }
 }
 
