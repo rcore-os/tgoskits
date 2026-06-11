@@ -33,8 +33,8 @@ use riscv_vplic::VPlicGlobal;
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
 use crate::{
-    AxVmDeviceConfig, DeviceBundle, DeviceRegistration, PollableDeviceOps,
-    range_alloc::RangeAllocator,
+    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceRegistration,
+    PollableDeviceOps, range_alloc::RangeAllocator,
 };
 
 /// A set of emulated device types that can be accessed by a specific address range type.
@@ -221,9 +221,8 @@ fn panic_device_not_found(
 
 /// The implemention for AxVmDevices
 impl AxVmDevices {
-    /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> AxResult<Self> {
-        let mut this = Self {
+    fn empty() -> Self {
+        Self {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
@@ -235,14 +234,70 @@ impl AxVmDevices {
             #[cfg(target_arch = "x86_64")]
             x86_serial: None,
             ivc_channel: None,
-        };
+        }
+    }
+
+    /// According AxVmDeviceConfig to init the AxVmDevices
+    pub fn new(config: AxVmDeviceConfig) -> AxResult<Self> {
+        let mut this = Self::empty();
 
         Self::init(&mut this, &config.emu_configs)?;
         Ok(this)
     }
 
+    /// Builds devices with registered factories and explicit legacy fallbacks.
+    pub fn build_with_factories(
+        config: AxVmDeviceConfig,
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+    ) -> AxResult<Self> {
+        let mut this = Self::empty();
+        for config in &config.emu_configs {
+            if factories.get(config.emu_type).is_some() {
+                this.register_factory_device(config, factories, context)?;
+            } else if Self::is_legacy_fallback(config.emu_type) {
+                Self::init(&mut this, core::slice::from_ref(config))?;
+            } else {
+                return ax_err!(
+                    Unsupported,
+                    format_args!(
+                        "no factory is registered for emulated device '{}' of type {}",
+                        config.name, config.emu_type
+                    )
+                );
+            }
+        }
+        Ok(this)
+    }
+
+    /// Builds and atomically registers one factory-managed device.
+    pub fn register_factory_device(
+        &mut self,
+        config: &EmulatedDeviceConfig,
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+    ) -> AxResult {
+        let bundle = factories.build(config, context)?;
+        self.register_bundle(bundle)
+    }
+
+    fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
+        matches!(
+            device_type,
+            EmulatedDeviceType::InterruptController
+                | EmulatedDeviceType::Console
+                | EmulatedDeviceType::IVCChannel
+                | EmulatedDeviceType::GPPTRedistributor
+                | EmulatedDeviceType::GPPTDistributor
+                | EmulatedDeviceType::GPPTITS
+                | EmulatedDeviceType::X86IoApic
+                | EmulatedDeviceType::X86Pit
+                | EmulatedDeviceType::PPPTGlobal
+        )
+    }
+
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) -> AxResult {
+    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> AxResult {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {

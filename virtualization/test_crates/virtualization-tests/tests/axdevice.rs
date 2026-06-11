@@ -17,9 +17,14 @@ use std::sync::{Arc, Mutex};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBundle, DeviceRegistration, PollableDeviceOps,
+    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
+    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, PollableDeviceOps,
+    register_builtin_factories,
 };
-use axdevice_base::{AccessWidth, BaseDeviceOps, Port, PortRange, SysRegAddr, SysRegAddrRange};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, Port, PortRange, SysRegAddr,
+    SysRegAddrRange,
+};
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
     VCpuId, VMId,
@@ -190,6 +195,53 @@ fn mmio_device(name: &str, start: usize, end: usize) -> Arc<MockMmioDevice> {
         name,
         GuestPhysAddrRange::new(start.into(), end.into()),
     ))
+}
+
+fn device_config(
+    name: &str,
+    emu_type: EmulatedDeviceType,
+    base_gpa: usize,
+    length: usize,
+) -> EmulatedDeviceConfig {
+    EmulatedDeviceConfig {
+        name: String::from(name),
+        base_gpa,
+        length,
+        irq_id: 0,
+        emu_type,
+        cfg_list: vec![],
+    }
+}
+
+struct RejectingIrqResolver;
+
+impl IrqResolver for RejectingIrqResolver {
+    fn resolve_irq(&self, _line: usize, _trigger: InterruptTriggerMode) -> AxResult<IrqLine> {
+        Err(AxError::Unsupported)
+    }
+}
+
+struct MockMmioFactory;
+
+impl DeviceFactory for MockMmioFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::VirtioBlk
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> AxResult<DeviceBundle> {
+        let Some(end) = config.base_gpa.checked_add(config.length) else {
+            return Err(AxError::InvalidInput);
+        };
+        if config.length == 0 {
+            return Err(AxError::InvalidInput);
+        }
+
+        Ok(DeviceRegistration::Mmio(mmio_device(&config.name, config.base_gpa, end)).into())
+    }
 }
 
 #[test]
@@ -509,6 +561,163 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
     assert_eq!(devices.register_bundle(bundle), Err(AxError::AlreadyExists));
     assert_eq!(devices.iter_mmio_dev().count(), 0);
     assert_eq!(devices.iter_pollable_dev().count(), 1);
+}
+
+#[test]
+fn test_factory_registry_registers_and_finds_factory() {
+    let mut factories = DeviceFactoryRegistry::new();
+
+    assert_eq!(factories.register(Arc::new(MockMmioFactory)), Ok(()));
+    assert!(factories.get(EmulatedDeviceType::VirtioBlk).is_some());
+    assert!(factories.get(EmulatedDeviceType::VirtioNet).is_none());
+}
+
+#[test]
+fn test_factory_registry_rejects_duplicate_device_type() {
+    let mut factories = DeviceFactoryRegistry::new();
+
+    assert_eq!(factories.register(Arc::new(MockMmioFactory)), Ok(()));
+    assert_eq!(
+        factories.register(Arc::new(MockMmioFactory)),
+        Err(AxError::AlreadyExists)
+    );
+}
+
+#[test]
+fn test_missing_factory_returns_unsupported() {
+    let factories = DeviceFactoryRegistry::new();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let config = device_config(
+        "missing-console",
+        EmulatedDeviceType::VirtioConsole,
+        0x1000,
+        0x1000,
+    );
+
+    assert_eq!(
+        factories.build(&config, &context).err(),
+        Some(AxError::Unsupported)
+    );
+    assert_eq!(
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![config]),
+            &factories,
+            &context,
+        )
+        .err(),
+        Some(AxError::Unsupported)
+    );
+}
+
+#[test]
+fn test_factory_build_registers_new_device_type_without_legacy_branch() {
+    let mut factories = DeviceFactoryRegistry::new();
+    factories.register(Arc::new(MockMmioFactory)).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let base = 0x1_0000;
+    let devices = AxVmDevices::build_with_factories(
+        AxVmDeviceConfig::new(vec![device_config(
+            "factory-mmio",
+            EmulatedDeviceType::VirtioBlk,
+            base,
+            0x1000,
+        )]),
+        &factories,
+        &context,
+    )
+    .unwrap();
+
+    assert_eq!(devices.iter_mmio_dev().count(), 1);
+    assert_eq!(
+        devices
+            .handle_mmio_read(base.into(), AccessWidth::try_from(4).unwrap())
+            .unwrap(),
+        0xDEAD_BEEF
+    );
+}
+
+#[test]
+fn test_factory_validation_failure_leaves_devices_unchanged() {
+    let mut devices = empty_devices();
+    devices
+        .add_port_dev(Arc::new(MockPortDevice::new(0x3f8, 0x3ff)))
+        .unwrap();
+    let counts_before = (
+        devices.iter_mmio_dev().count(),
+        devices.iter_port_dev().count(),
+        devices.iter_sys_reg_dev().count(),
+    );
+    let mut factories = DeviceFactoryRegistry::new();
+    factories.register(Arc::new(MockMmioFactory)).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let invalid = device_config(
+        "invalid-factory-mmio",
+        EmulatedDeviceType::VirtioBlk,
+        0x2_0000,
+        0,
+    );
+
+    assert_eq!(
+        devices.register_factory_device(&invalid, &factories, &context),
+        Err(AxError::InvalidInput)
+    );
+    assert_eq!(
+        (
+            devices.iter_mmio_dev().count(),
+            devices.iter_port_dev().count(),
+            devices.iter_sys_reg_dev().count(),
+        ),
+        counts_before
+    );
+}
+
+#[test]
+fn test_builtin_meta_factory_builds_dummy_config() {
+    let mut factories = DeviceFactoryRegistry::new();
+    register_builtin_factories(&mut factories).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let devices = AxVmDevices::build_with_factories(
+        AxVmDeviceConfig::new(vec![device_config(
+            "metadata",
+            EmulatedDeviceType::Dummy,
+            0,
+            0,
+        )]),
+        &factories,
+        &context,
+    )
+    .unwrap();
+
+    assert_eq!(devices.iter_mmio_dev().count(), 0);
+    assert_eq!(devices.iter_port_dev().count(), 0);
+    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+}
+
+#[test]
+fn test_build_with_factories_preserves_legacy_ivc_config() {
+    let mut factories = DeviceFactoryRegistry::new();
+    register_builtin_factories(&mut factories).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let devices = AxVmDevices::build_with_factories(
+        AxVmDeviceConfig::new(vec![device_config(
+            "ivc",
+            EmulatedDeviceType::IVCChannel,
+            0x4_0000,
+            0x2000,
+        )]),
+        &factories,
+        &context,
+    )
+    .unwrap();
+
+    assert_eq!(devices.iter_mmio_dev().count(), 0);
+    assert_eq!(devices.iter_port_dev().count(), 0);
+    assert_eq!(devices.iter_sys_reg_dev().count(), 0);
 }
 
 // Mock implementation for x86_vlapic host callbacks when running

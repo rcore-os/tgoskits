@@ -28,6 +28,7 @@ extern crate log;
 
 mod config;
 mod device;
+mod factory;
 mod range_alloc;
 mod registration;
 
@@ -38,6 +39,10 @@ pub use axdevice_base::{
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
 pub use device::{AxEmuDevices, AxVmDevices};
+pub use factory::{
+    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
+    register_builtin_factories,
+};
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;
