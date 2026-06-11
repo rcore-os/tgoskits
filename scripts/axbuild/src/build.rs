@@ -85,6 +85,7 @@ impl AxFeaturePrefixFamily {
 #[derive(Debug, Clone, JsonSchema, Deserialize, Serialize, PartialEq)]
 pub struct BuildInfo {
     /// Environment variables to set during the build.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
     /// Cargo features to enable.
     pub features: Vec<String>,
