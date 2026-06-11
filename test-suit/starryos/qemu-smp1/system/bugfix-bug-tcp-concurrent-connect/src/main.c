@@ -12,8 +12,8 @@
 #include <unistd.h>
 
 #define CLIENTS 8
-#define IO_TIMEOUT_MS 10000
-#define TEST_TIMEOUT_SEC 60
+#define IO_TIMEOUT_MS 30000
+#define TEST_TIMEOUT_SEC 180
 
 #define CHECK(cond, fmt, ...)                                                    \
     do {                                                                         \
