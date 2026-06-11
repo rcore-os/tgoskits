@@ -72,7 +72,7 @@ pub(super) async fn qemu_with_external_kernel(
     kernel_elf: PathBuf,
 ) -> anyhow::Result<()> {
     let rootfs = rootfs.map(|rootfs| {
-        crate::rootfs::store::resolve_explicit_rootfs(
+        crate::image::storage::resolve_explicit_rootfs(
             starry.app.workspace_root(),
             &request.arch,
             rootfs,
