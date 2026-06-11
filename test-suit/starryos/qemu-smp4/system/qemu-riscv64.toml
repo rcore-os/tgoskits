@@ -77,5 +77,5 @@ echo "STARRY_GROUPED_TESTS_PASSED"
 ''',
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_SYSTEM_TEST_FAILED:', '(?m)^STARRY_GROUPED_TEST_FAILED: (?:no SMP system tests found|one or more SMP system tests failed)']
 timeout = 1800
