@@ -2,17 +2,17 @@ use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FS_CONTEXT;
-use ax_task::current;
-use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
-use axnet::vsock::{VsockSocket, VsockStreamTransport};
-use axnet::{
+use ax_net::vsock::{VsockSocket, VsockStreamTransport};
+use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
+use ax_task::current;
+use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use ax_errno::LinuxResult;
-use axnet::{
+use ax_net::{
     RecvOptions, SocketAddrEx, SocketOps,
     unix::{DgramTransport, UnixSocket, UnixSocketAddr},
 };

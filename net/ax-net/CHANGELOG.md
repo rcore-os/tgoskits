@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - *(irq)* introduce shared IRQ framework ([#1065](https://github.com/rcore-os/tgoskits/pull/1065))
-- *(axnet)* implement SO_TYPE, SO_PROTOCOL, SO_DOMAIN socket options ([#884](https://github.com/rcore-os/tgoskits/pull/884))
+- *(ax-net)* implement SO_TYPE, SO_PROTOCOL, SO_DOMAIN socket options ([#884](https://github.com/rcore-os/tgoskits/pull/884))
 
 ### Fixed
 
@@ -68,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(starry-kernel)* close CLI compatibility gaps ([#524](https://github.com/rcore-os/tgoskits/pull/524))
 - UDP recv returns EAGAIN on unconnected socket, sendto dispatches loopback ([#529](https://github.com/rcore-os/tgoskits/pull/529))
 - *(proc)* expose arp table for busybox arp ([#480](https://github.com/rcore-os/tgoskits/pull/480))
-- *(axnet)* call poll_interfaces() after TCP send to wake epoll waiters ([#485](https://github.com/rcore-os/tgoskits/pull/485))
+- *(ax-net)* call poll_interfaces() after TCP send to wake epoll waiters ([#485](https://github.com/rcore-os/tgoskits/pull/485))
 - *(arceos)* adjust dynamic platform and network integration
 - implement close_all_fds function and enhance pipe and syscall handling ([#305](https://github.com/rcore-os/tgoskits/pull/305))
 

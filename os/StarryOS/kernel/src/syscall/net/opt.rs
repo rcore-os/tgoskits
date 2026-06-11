@@ -1,5 +1,5 @@
 use ax_errno::{AxError, AxResult, LinuxError};
-use axnet::options::{
+use ax_net::options::{
     Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState,
 };
 use linux_raw_sys::net::{
@@ -113,7 +113,7 @@ fn write_tcp_info(socket: &Socket, optval: UserPtr<u8>, optlen: &mut socklen_t) 
 
 mod conv {
     use ax_errno::{AxError, AxResult};
-    use axnet::options::UnixCredentials;
+    use ax_net::options::UnixCredentials;
     use linux_raw_sys::{general::timeval, net::ucred};
 
     use crate::time::TimeValueLike;
@@ -264,7 +264,7 @@ pub fn sys_getsockopt(
     // SO_TYPE is handled at the kernel level because the socket type is
     // known from the Socket enum variant, not from a per-protocol option.
     {
-        use axnet::Socket as SocketInner;
+        use ax_net::Socket as SocketInner;
         use linux_raw_sys::net::{SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET};
 
         if level == SOL_SOCKET && optname == SO_TYPE {

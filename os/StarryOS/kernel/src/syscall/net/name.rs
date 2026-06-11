@@ -1,5 +1,5 @@
 use ax_errno::AxResult;
-use axnet::SocketOps;
+use ax_net::SocketOps;
 use linux_raw_sys::net::{sockaddr, socklen_t};
 
 use super::addr::{SocketAddrExt, socket_addr_ex_for_user_name};
