@@ -75,7 +75,7 @@ specs/002-starryos-nix-smoke/
 
 ```text
 os/StarryOS/kernel/src/syscall/task/namespace.rs    # unshare(CLONE_FS) fix
-test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/
+test-suit/starryos/qemu-smp1/test-nix-prereqs/
   test-unshare-fs/c/src/main.c                       # Rewrite: fork→clone(CLONE_FS)
 apps/starry/nix/
   nix-nosandbox.sh                                   # Fix builder args (mkdir + fail-fast)

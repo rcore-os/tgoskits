@@ -55,7 +55,7 @@
 
 ### Implementation for Fix 2
 
-- [x] T008 [US3] Rewrite `test-suit/starryos/normal/qemu-smp1/test-nix-prereqs/test-unshare-fs/c/src/main.c` to use `clone(CLONE_FS | CLONE_VM | SIGCHLD)` with heap-allocated stack, testing shared-cwd phase then isolated-cwd phase
+- [x] T008 [US3] Rewrite `test-suit/starryos/qemu-smp1/test-nix-prereqs/test-unshare-fs/c/src/main.c` to use `clone(CLONE_FS | CLONE_VM | SIGCHLD)` with heap-allocated stack, testing shared-cwd phase then isolated-cwd phase
 - [x] T009 [US3] Verify test by running `cargo xtask starry test qemu --arch x86_64 -c test-nix-prereqs` and checking for `UNSHARE_FS_CLONE_ISOLATION_PASSED` in output
 
 **Checkpoint**: Test correctly validates `unshare(CLONE_FS)` isolation behavior with `clone(CLONE_FS)`.
