@@ -571,7 +571,7 @@ impl Starry {
             if !qemu.args.iter().any(|arg| arg == "-snapshot") {
                 qemu.args.push("-snapshot".to_string());
             }
-            qemu::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+            qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
                 "  qemu config: {} (timeout={})",
@@ -615,7 +615,7 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
-        qemu::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),
