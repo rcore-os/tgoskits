@@ -1,5 +1,10 @@
 use std::{fs, io::Write, path::PathBuf};
 
+#[path = "build_support/linker.rs"]
+mod linker;
+
+use linker::{LinkerArch, LinkerConfig, render_linker_script, source_paths};
+
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(efi)");
     println!("cargo::rustc-check-cfg=cfg(page_size_4k)");
@@ -78,6 +83,10 @@ impl Build {
     const LD_NAME: &'static str = "someboot.x";
 
     fn prepare(&mut self) {
+        for path in source_paths() {
+            println!("cargo:rerun-if-changed={path}");
+        }
+
         match self.arch {
             Arch::Loongarch64 => self.prepare_loongarch64(),
             Arch::Arch64 => self.prepare_aarch64(),
@@ -91,8 +100,6 @@ impl Build {
     fn prepare_aarch64(&mut self) {
         println!("cargo::rustc-check-cfg=cfg(hard_float)");
 
-        let ld_src = "src/arch/aarch64/link.ld";
-
         if self.hv {
             self.uspace = false;
             self.kernel_vaddr = 0xffff_8000_0000;
@@ -101,60 +108,29 @@ impl Build {
             self.kernel_vaddr = 0xffff_ffff_8000_0000;
         }
 
-        let kernel_vaddr = self.kernel_vaddr as usize;
-
-        let ld = include_str!("src/arch/aarch64/link.ld")
-            .replace("${kernel_load_vaddr}", &format!("{kernel_vaddr:#x}"));
-
-        println!("cargo:rerun-if-changed={ld_src}");
         if std::env::var("CARGO_FEATURE_EFI").is_ok() {
             println!("cargo:rustc-cfg=efi");
         }
-        let ld_dst = self.out_dir.join(Self::LD_NAME);
-
-        fs::write(ld_dst, ld).unwrap();
+        self.write_linker_script(LinkerArch::Aarch64);
     }
 
     fn prepare_loongarch64(&mut self) {
-        let ld_src = "src/arch/loongarch64/link.ld";
-
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
-        let kernel_load_vaddr = self.kernel_vaddr as usize;
-        let kernel_load_paddr = self.kernel_paddr as usize;
-
-        let ld = include_str!("src/arch/loongarch64/link.ld")
-            .replace("${kernel_load_vaddr}", &format!("{kernel_load_vaddr:#x}"))
-            .replace("${kernel_load_paddr}", &format!("{kernel_load_paddr:#x}"));
-
-        println!("cargo:rerun-if-changed={ld_src}");
         println!("cargo:rustc-cfg=efi");
 
-        let ld_dst = self.out_dir.join(Self::LD_NAME);
-
-        fs::write(ld_dst, ld).unwrap();
+        self.write_linker_script(LinkerArch::Loongarch64);
     }
 
     fn prepare_x86_64(&mut self) {
-        let ld_src = "src/arch/x86_64/link.ld";
-
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
-        let kernel_load_vaddr = self.kernel_vaddr as usize;
-
-        let ld = include_str!("src/arch/x86_64/link.ld")
-            .replace("${kernel_load_vaddr}", &format!("{kernel_load_vaddr:#x}"));
-
-        println!("cargo:rerun-if-changed={ld_src}");
         println!("cargo:rustc-cfg=efi");
 
-        let ld_dst = self.out_dir.join(Self::LD_NAME);
-        fs::write(ld_dst, ld).unwrap();
+        self.write_linker_script(LinkerArch::X86_64);
     }
 
     fn prepare_riscv64(&mut self) {
-        let ld_src = "src/arch/riscv64/link.ld";
-
         self.kernel_paddr = env_u64("SOMEBOOT_RISCV64_KERNEL_LOAD_PADDR").unwrap_or(0x8020_0000);
         if self.uspace || self.hv {
             self.kernel_vaddr = 0xffff_ffff_8000_0000;
@@ -162,12 +138,17 @@ impl Build {
             self.kernel_vaddr = self.kernel_paddr;
         }
 
-        let kernel_load_vaddr = self.kernel_vaddr as usize;
-        let ld = include_str!("src/arch/riscv64/link.ld")
-            .replace("${kernel_load_vaddr}", &format!("{kernel_load_vaddr:#x}"));
+        self.write_linker_script(LinkerArch::Riscv64);
+    }
 
-        println!("cargo:rerun-if-changed={ld_src}");
-
+    fn write_linker_script(&self, arch: LinkerArch) {
+        let ld = render_linker_script(
+            arch,
+            LinkerConfig {
+                kernel_load_vaddr: self.kernel_vaddr,
+                kernel_load_paddr: self.kernel_paddr,
+            },
+        );
         let ld_dst = self.out_dir.join(Self::LD_NAME);
         fs::write(ld_dst, ld).unwrap();
     }
