@@ -25,16 +25,23 @@ const OPAQUE_MARKER_NAME: &str = ".wh..wh..opq";
 #[derive(Clone)]
 pub struct OverlayOptions {
     pub lower_dirs: Vec<Location>,
-    pub upper_dir: Location,
-    pub work_dir: Location,
+    pub upper_dir: Option<Location>,
+    pub work_dir: Option<Location>,
 }
 
 pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     if options.lower_dirs.is_empty() {
         return Err(VfsError::InvalidInput);
     }
-    options.upper_dir.check_is_dir()?;
-    options.work_dir.check_is_dir()?;
+    if options.upper_dir.is_some() != options.work_dir.is_some() {
+        return Err(VfsError::InvalidInput);
+    }
+    if let Some(upper_dir) = &options.upper_dir {
+        upper_dir.check_is_dir()?;
+    }
+    if let Some(work_dir) = &options.work_dir {
+        work_dir.check_is_dir()?;
+    }
     for lower in &options.lower_dirs {
         lower.check_is_dir()?;
     }
@@ -47,7 +54,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     });
     let root = OverlayDir::entry(
         fs.clone(),
-        Some(fs.upper_dir.clone()),
+        fs.upper_dir.clone(),
         fs.lower_dirs.clone(),
         Vec::new(),
         None,
@@ -67,8 +74,8 @@ pub(crate) fn ensure_copy_up(loc: &Location) -> VfsResult<()> {
 
 struct OverlayFs {
     lower_dirs: Vec<Location>,
-    upper_dir: Location,
-    _work_dir: Location,
+    upper_dir: Option<Location>,
+    _work_dir: Option<Location>,
     root: Mutex<Option<DirEntry>>,
 }
 
@@ -333,7 +340,11 @@ impl OverlayDir {
             return Ok(upper_dir);
         }
 
-        let mut upper_dir = self.fs.upper_dir.clone();
+        let mut upper_dir = self
+            .fs
+            .upper_dir
+            .clone()
+            .ok_or(VfsError::ReadOnlyFilesystem)?;
         let mut lower_dirs = self.fs.lower_dirs.clone();
         for name in &self.path {
             if let Some(existing) = lookup_visible_upper(&upper_dir, name)? {
@@ -590,7 +601,11 @@ impl OverlayFile {
             return Ok(upper_dir);
         }
 
-        let mut upper_dir = self.fs.upper_dir.clone();
+        let mut upper_dir = self
+            .fs
+            .upper_dir
+            .clone()
+            .ok_or(VfsError::ReadOnlyFilesystem)?;
         let mut lower_dirs = self.fs.lower_dirs.clone();
         for name in &self.parent_path {
             if let Some(existing) = lookup_visible_upper(&upper_dir, name)? {

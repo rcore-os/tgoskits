@@ -30,7 +30,9 @@ const MS_SHARED: i32 = 1 << 20;
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
 
-fn parse_overlay_options(data: *const c_void) -> AxResult<(Vec<String>, String, String)> {
+fn parse_overlay_options(
+    data: *const c_void,
+) -> AxResult<(Vec<String>, Option<String>, Option<String>)> {
     if data.is_null() {
         return Err(AxError::InvalidInput);
     }
@@ -61,10 +63,14 @@ fn parse_overlay_options(data: *const c_void) -> AxResult<(Vec<String>, String, 
         return Err(AxError::InvalidInput);
     }
 
+    if upperdir.is_some() != workdir.is_some() {
+        return Err(AxError::InvalidInput);
+    }
+
     Ok((
         lower_dirs,
-        upperdir.ok_or(AxError::InvalidInput)?.into(),
-        workdir.ok_or(AxError::InvalidInput)?.into(),
+        upperdir.map(String::from),
+        workdir.map(String::from),
     ))
 }
 
@@ -200,8 +206,9 @@ pub fn sys_mount(
             for lower in lower_paths {
                 lower_dirs.push(ctx.resolve(lower)?);
             }
-            let upper_dir = ctx.resolve(upper_path)?;
-            let work_dir = ctx.resolve(work_path)?;
+            let upper_dir = upper_path.map(|path| ctx.resolve(path)).transpose()?;
+            let work_dir = work_path.map(|path| ctx.resolve(path)).transpose()?;
+            let readonly = upper_dir.is_none();
             let fs = crate::pseudofs::overlay::new_overlayfs(OverlayOptions {
                 lower_dirs,
                 upper_dir,
@@ -209,7 +216,7 @@ pub fn sys_mount(
             })?;
             let target = ctx.resolve(target)?;
             let mp = target.mount(&fs)?;
-            if (flags & MS_RDONLY) != 0 {
+            if readonly || (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
         }
