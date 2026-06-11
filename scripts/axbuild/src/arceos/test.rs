@@ -740,6 +740,7 @@ async fn prepare_rust_qemu_cases(
             request.smp.or(build_info.max_cpu_num).or(Some(1)),
         );
         apply_rust_qemu_feature_overrides(&mut cargo, &mut qemu, case.feature.as_deref());
+        apply_riscv64_smp_tcg_workaround(&cargo, &mut qemu);
         qemu_test::apply_timeout_scale(&mut qemu);
         ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
@@ -798,15 +799,23 @@ fn apply_rust_qemu_feature_overrides(
             qemu.fail_regex = vec!["stack guard page was not hit".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
-        Some("task-wait-queue-remote-wake")
-            if cargo.target == "riscv64gc-unknown-none-elf"
-                && !qemu.args.iter().any(|arg| arg == "-accel") =>
-        {
-            qemu.args.push("-accel".to_string());
-            qemu.args.push("tcg,thread=single".to_string());
-        }
         _ => {}
     }
+}
+
+fn apply_riscv64_smp_tcg_workaround(cargo: &Cargo, qemu: &mut QemuConfig) {
+    if cargo.target != "riscv64gc-unknown-none-elf" {
+        return;
+    }
+    if qemu_test::smp_from_qemu_arg(qemu).unwrap_or(1) <= 1 {
+        return;
+    }
+    if qemu.args.iter().any(|arg| arg == "-accel") {
+        return;
+    }
+
+    qemu.args.push("-accel".to_string());
+    qemu.args.push("tcg,thread=single".to_string());
 }
 
 fn add_cargo_feature(cargo: &mut Cargo, feature: &str) {
@@ -2107,20 +2116,55 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
-    fn arceos_rust_remote_wake_riscv_uses_single_threaded_tcg() {
-        let mut cargo = rust_test_cargo_for_target("riscv64gc-unknown-none-elf");
-        let mut qemu = QemuConfig::default();
+    fn arceos_rust_riscv64_smp_uses_single_threaded_tcg() {
+        let cargo = rust_test_cargo_for_target("riscv64gc-unknown-none-elf");
+        let mut qemu = QemuConfig {
+            args: vec!["-smp".to_string(), "4".to_string()],
+            ..QemuConfig::default()
+        };
 
-        apply_rust_qemu_feature_overrides(
-            &mut cargo,
-            &mut qemu,
-            Some("task-wait-queue-remote-wake"),
-        );
+        apply_riscv64_smp_tcg_workaround(&cargo, &mut qemu);
 
         assert!(
             qemu.args
                 .windows(2)
                 .any(|args| args == ["-accel", "tcg,thread=single"])
+        );
+    }
+
+    #[test]
+    fn arceos_rust_riscv64_single_core_keeps_default_tcg() {
+        let cargo = rust_test_cargo_for_target("riscv64gc-unknown-none-elf");
+        let mut qemu = QemuConfig {
+            args: vec!["-smp".to_string(), "1".to_string()],
+            ..QemuConfig::default()
+        };
+
+        apply_riscv64_smp_tcg_workaround(&cargo, &mut qemu);
+
+        assert!(!qemu.args.iter().any(|arg| arg == "-accel"));
+    }
+
+    #[test]
+    fn arceos_rust_riscv64_smp_keeps_explicit_accel() {
+        let cargo = rust_test_cargo_for_target("riscv64gc-unknown-none-elf");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-smp".to_string(),
+                "4".to_string(),
+                "-accel".to_string(),
+                "tcg,thread=multi".to_string(),
+            ],
+            ..QemuConfig::default()
+        };
+
+        apply_riscv64_smp_tcg_workaround(&cargo, &mut qemu);
+
+        assert_eq!(qemu.args.iter().filter(|arg| *arg == "-accel").count(), 1);
+        assert!(
+            qemu.args
+                .windows(2)
+                .any(|args| args == ["-accel", "tcg,thread=multi"])
         );
     }
 
