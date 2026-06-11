@@ -1,3 +1,4 @@
+#[track_caller]
 pub fn ax_sleep_until(deadline: crate::time::AxTimeValue) {
     #[cfg(feature = "multitask")]
     ax_task::sleep_until(deadline);
@@ -5,6 +6,7 @@ pub fn ax_sleep_until(deadline: crate::time::AxTimeValue) {
     ax_hal::time::busy_wait_until(deadline);
 }
 
+#[track_caller]
 pub fn ax_yield_now() {
     #[cfg(feature = "multitask")]
     ax_task::yield_now();
@@ -16,6 +18,7 @@ pub fn ax_yield_now() {
     }
 }
 
+#[track_caller]
 pub fn ax_exit(_exit_code: i32) -> ! {
     #[cfg(feature = "multitask")]
     ax_task::exit(_exit_code);
@@ -78,6 +81,7 @@ cfg_task! {
         }
     }
 
+    #[track_caller]
     pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32 {
         task.inner.join()
     }
@@ -93,6 +97,7 @@ cfg_task! {
         }
     }
 
+    #[track_caller]
     pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::AxResult {
         if ax_task::set_current_affinity(cpumask) {
             Ok(())
@@ -104,6 +109,7 @@ cfg_task! {
         }
     }
 
+    #[track_caller]
     pub fn ax_wait_queue_wait(wq: &AxWaitQueueHandle, timeout: Option<Duration>) -> bool {
         #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
@@ -117,6 +123,7 @@ cfg_task! {
         false
     }
 
+    #[track_caller]
     pub fn ax_wait_queue_wait_until(
         wq: &AxWaitQueueHandle,
         until_condition: impl Fn() -> bool,

@@ -231,6 +231,7 @@ pub fn set_priority(prio: isize) -> bool {
 /// Returns `true` if the affinity is set successfully.
 ///
 /// TODO: support set the affinity for other tasks.
+#[track_caller]
 pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
     might_sleep();
 
@@ -282,6 +283,7 @@ pub(crate) fn yield_now_unchecked() {
 /// Current task is going to sleep for the given duration.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep(dur: core::time::Duration) {
     sleep_until(ax_hal::time::wall_time() + dur);
 }
@@ -289,6 +291,7 @@ pub fn sleep(dur: core::time::Duration) {
 /// Current task is going to sleep, it will be woken up at the given deadline.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
     might_sleep();
@@ -299,6 +302,7 @@ pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
 }
 
 /// Exits the current task.
+#[track_caller]
 pub fn exit(exit_code: i32) -> ! {
     might_sleep();
 

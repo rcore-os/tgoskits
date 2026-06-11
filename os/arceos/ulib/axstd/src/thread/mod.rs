@@ -13,6 +13,7 @@ pub use multi::*;
 ///
 /// For single-threaded configuration (`multitask` feature is disabled), we just
 /// relax the CPU and wait for incoming interrupts.
+#[track_caller]
 pub fn yield_now() {
     api::ax_yield_now();
 }
@@ -21,6 +22,7 @@ pub fn yield_now() {
 ///
 /// For single-threaded configuration (`multitask` feature is disabled),
 /// it directly terminates the main thread and shutdown.
+#[track_caller]
 pub fn exit(exit_code: i32) -> ! {
     api::ax_exit(exit_code);
 }
@@ -29,6 +31,7 @@ pub fn exit(exit_code: i32) -> ! {
 ///
 /// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
 /// instead.
+#[track_caller]
 pub fn sleep(dur: core::time::Duration) {
     sleep_until(ax_api::time::ax_wall_time() + dur);
 }
@@ -37,6 +40,7 @@ pub fn sleep(dur: core::time::Duration) {
 ///
 /// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
 /// instead.
+#[track_caller]
 pub fn sleep_until(deadline: ax_api::time::AxTimeValue) {
     api::ax_sleep_until(deadline);
 }

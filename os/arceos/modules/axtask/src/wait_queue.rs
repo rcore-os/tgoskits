@@ -73,6 +73,7 @@ impl WaitQueue {
 
     /// Blocks the current task and put it into the wait queue, until other task
     /// notifies it.
+    #[track_caller]
     pub fn wait(&self) {
         crate::api::might_sleep();
         current_run_queue::<NoPreemptIrqSave>().blocked_resched(self.queue.lock());
@@ -84,6 +85,7 @@ impl WaitQueue {
     ///
     /// Note that even other tasks notify this task, it will not wake up until
     /// the condition becomes true.
+    #[track_caller]
     pub fn wait_until<F>(&self, condition: F)
     where
         F: Fn() -> bool,
@@ -106,6 +108,7 @@ impl WaitQueue {
     /// Blocks the current task and put it into the wait queue, until other tasks
     /// notify it, or the given duration has elapsed.
     #[cfg(feature = "irq")]
+    #[track_caller]
     pub fn wait_timeout(&self, dur: core::time::Duration) -> bool {
         crate::api::might_sleep();
         let mut rq = current_run_queue::<NoPreemptIrqSave>();
@@ -133,6 +136,7 @@ impl WaitQueue {
     /// Note that even other tasks notify this task, it will not wake up until
     /// the above conditions are met.
     #[cfg(feature = "irq")]
+    #[track_caller]
     pub fn wait_timeout_until<F>(&self, dur: core::time::Duration, condition: F) -> bool
     where
         F: Fn() -> bool,
