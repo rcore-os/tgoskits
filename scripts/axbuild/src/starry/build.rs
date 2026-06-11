@@ -522,8 +522,6 @@ std = false
 features = []
 log = "Info"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
@@ -547,8 +545,6 @@ app-c = "c"
 features = []
 log = "Info"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();

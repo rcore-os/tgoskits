@@ -117,7 +117,7 @@ graph LR
     ax-sync --> ax-posix-api["ax-posix-api"]
     ax-sync --> ax-display["ax-display"]
     ax-sync --> ax-input["ax-input"]
-    ax-sync --> ax-net["ax-net / ax-net-ng"]
+    ax-sync --> ax-net["ax-net / ax-net"]
     ax-sync --> starry_kernel["starry-kernel"]
 ```
 
@@ -130,7 +130,7 @@ graph LR
 ### 主要消费者
 - `ax-api`：在 `multitask` 路径下把 `RawMutex` 作为公开类型再导出。
 - `ax-posix-api`：用于 pipe、fs、net、pthread mutex 等路径。
-- `ax-net` / `ax-net-ng`、`ax-input`、`ax-display`、`ax-fs-ng`：用 `Mutex` 保护全局状态或共享对象。
+- `ax-net` / `ax-net`、`ax-input`、`ax-display`、`ax-fs-ng`：用 `Mutex` 保护全局状态或共享对象。
 - `starry-kernel`：大量复用 `ax-sync::Mutex`，同时与 `spin::SpinNoIrq` 并存。
 
 ### 3.3 间接消费者

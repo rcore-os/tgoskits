@@ -85,6 +85,7 @@ impl AxFeaturePrefixFamily {
 #[derive(Debug, Clone, JsonSchema, Deserialize, Serialize, PartialEq)]
 pub struct BuildInfo {
     /// Environment variables to set during the build.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
     /// Cargo features to enable.
     pub features: Vec<String>,
@@ -476,12 +477,8 @@ impl BuildInfo {
 
 impl Default for BuildInfo {
     fn default() -> Self {
-        let mut env = HashMap::new();
-        env.insert("AX_IP".to_string(), "10.0.2.15".to_string());
-        env.insert("AX_GW".to_string(), "10.0.2.2".to_string());
-
         Self {
-            env,
+            env: HashMap::new(),
             log: LogLevel::Warn,
             features: vec!["ax-std".to_string()],
             max_cpu_num: None,
@@ -2069,6 +2066,25 @@ mod tests {
     }
 
     #[test]
+    fn build_info_defaults_to_empty_env() {
+        let info = BuildInfo::default();
+        assert!(info.env.is_empty());
+    }
+
+    #[test]
+    fn build_info_accepts_missing_env() {
+        let info: BuildInfo = toml::from_str(
+            r#"
+features = []
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        assert!(info.env.is_empty());
+    }
+
+    #[test]
     fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
         let env = HashMap::from([("DWARF".to_string(), "1".to_string())]);
 
@@ -2233,8 +2249,6 @@ std = true
 features = []
 log = "Info"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();

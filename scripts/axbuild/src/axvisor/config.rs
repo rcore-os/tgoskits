@@ -77,7 +77,6 @@ mod tests {
             &axvisor_dir,
             "roc-rk3568-pc",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["fs", "ax-driver/rockchip-sdhci"]
 log = "Info"
@@ -137,7 +136,6 @@ vm_configs = []
             root.path(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = []
 log = "Info"
@@ -147,7 +145,6 @@ log = "Info"
             root.path(),
             "orangepi-5-plus",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["ax-driver/rockchip-soc"]
 log = "Info"
@@ -167,7 +164,6 @@ log = "Info"
             root.path(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = []
 log = "Info"

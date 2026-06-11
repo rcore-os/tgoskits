@@ -490,11 +490,7 @@ mod tests {
     fn build_config_without_app_c_uses_std_rust_mode() {
         let root = tempdir().unwrap();
         let path = root.path().join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "features = [\"ax-std\"]\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "features = [\"ax-std\"]\nlog = \"Warn\"\n").unwrap();
 
         let mode = load_arceos_build_mode(&path).unwrap();
 
@@ -509,11 +505,7 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
         let path = case_dir.join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n").unwrap();
 
         let mode = load_arceos_build_mode(&path).unwrap();
 
@@ -532,7 +524,7 @@ mod tests {
         let path = root.path().join("build-x86_64-unknown-none.toml");
         fs::write(
             &path,
-            "app-c = \"missing\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+            "app-c = \"missing\"\nfeatures = []\nlog = \"Warn\"\n",
         )
         .unwrap();
 
@@ -551,11 +543,7 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("main.rs"), "fn main() {}\n").unwrap();
         let path = root.path().join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n").unwrap();
 
         let err = load_arceos_build_mode(&path).unwrap_err();
 
@@ -576,8 +564,6 @@ mod tests {
 features = ["axstd", "axstd/smp", "axfeat/net"]
 log = "Warn"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
@@ -652,7 +638,6 @@ BACKTRACE = "y"
             &path,
             r#"
 features = ["ax-std"]
-env = {}
 log = "Info"
 plat_dyn = false
 "#,
@@ -681,9 +666,6 @@ features = ["ax-std"]
 log = "Warn"
 max_cpu_num = 4
 
-[env]
-AX_GW = "10.0.2.2"
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
@@ -728,9 +710,6 @@ AX_IP = "10.0.2.15"
 features = ["ax-std"]
 log = "Warn"
 
-[env]
-AX_GW = "10.0.2.2"
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();

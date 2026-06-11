@@ -1,5 +1,4 @@
 target = "loongarch64-unknown-none-softfloat"
-env = {}
 log = "Warn"
 features = [
   "ax-hal/plat-dyn",

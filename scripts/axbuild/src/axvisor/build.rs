@@ -667,7 +667,6 @@ mod tests {
             path.parent().unwrap(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["ept-level-4"]
 log = "Info"
@@ -710,7 +709,6 @@ vm_configs = []
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["fs", "ept-level-4"]
 log = "Info"
 "#,
@@ -771,7 +769,6 @@ log = "Info"
         fs::write(
             &path,
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
@@ -794,7 +791,6 @@ vm_configs = []
             &path,
             r#"
 std = true
-env = {}
 features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
@@ -818,7 +814,6 @@ target = "aarch64-unknown-none-softfloat"
             &path,
             r#"
 app-c = "c"
-env = {}
 features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
@@ -845,7 +840,6 @@ target = "aarch64-unknown-none-softfloat"
             path.parent().unwrap(),
             "qemu-x86_64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
 features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
@@ -892,7 +886,6 @@ vm_configs = []
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ax-std", "ept-level-4"]
 log = "Info"
 plat_dyn = false
@@ -929,7 +922,6 @@ plat_dyn = false
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ax-std/x86-qemu-q35", "ept-level-4"]
 log = "Info"
 plat_dyn = false
@@ -963,7 +955,6 @@ plat_dyn = false
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ax-hal/x86-qemu-q35", "ept-level-4"]
 log = "Info"
 plat_dyn = false
@@ -997,7 +988,6 @@ plat_dyn = false
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ax-hal/riscv64-sg2002", "fs"]
 log = "Info"
 "#,
@@ -1036,7 +1026,6 @@ log = "Info"
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ax-driver/virtio-blk", "ept-level-4", "fs", "vmx"]
 log = "Info"
 "#,
@@ -1078,7 +1067,6 @@ log = "Info"
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
 "#,
@@ -1114,7 +1102,6 @@ log = "Info"
         fs::write(
             &config_path,
             r#"
-env = {}
 features = ["ept-level-4"]
 log = "Info"
 plat_dyn = false

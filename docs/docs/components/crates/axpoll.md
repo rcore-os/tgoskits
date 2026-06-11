@@ -85,7 +85,7 @@
 当前仓库中直接依赖 `axpoll` 的关键路径包括：
 
 - `ax-task`：把同步 nonblocking I/O 封装成可等待 future
-- `ax-net-ng`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
+- `ax-net`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
 - `ax-fs-ng` / `axfs-ng-vfs`：为文件节点暴露可轮询事件
 - StarryOS 内核：为 `FileLike`、pipe、TTY、socket、eventfd、epoll 等对象复用同一套等待协议
 
@@ -122,7 +122,7 @@
 | 消费者 | 使用方式 |
 | --- | --- |
 | `ax-task` | 通过 `poll_io()`、IRQ waker 等机制消费 `Pollable` 与 `PollSet` |
-| `ax-net-ng` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
+| `ax-net` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
 | `ax-fs-ng` | 让文件节点支持统一 readiness 协议 |
 | StarryOS 内核 | 作为 fd 世界底层的 readiness glue 层 |
 
@@ -140,7 +140,7 @@ axpoll = { workspace = true }
 1. `poll()` 中只读当前状态，不要在这里阻塞或睡眠。
 2. `register()` 中只保存/转发 waker；真正的 `wake()` 必须发生在状态变化点。
 3. 如果对象有不同类型的唤醒源，优先按读、写、关闭、异常分开组织 `PollSet`。
-4. 如果对象本身有 IRQ 或设备事件来源，可参考 `ax-task` 与 `ax-net-ng` 的做法，把底层事件桥接到 `PollSet`。
+4. 如果对象本身有 IRQ 或设备事件来源，可参考 `ax-task` 与 `ax-net` 的做法，把底层事件桥接到 `PollSet`。
 
 ### 4.3 修改实现时的风险点
 
@@ -175,7 +175,7 @@ cargo test -p axpoll
 
 ### ArceOS
 
-在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `ax-task`、`ax-net-ng`、`ax-fs-ng` 的公共 readiness glue 层。
+在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `ax-task`、`ax-net`、`ax-fs-ng` 的公共 readiness glue 层。
 
 ### StarryOS
 

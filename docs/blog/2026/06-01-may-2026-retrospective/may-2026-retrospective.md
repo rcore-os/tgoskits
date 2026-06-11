@@ -112,10 +112,10 @@ ArceOS 本月继续加强运行时错误发现能力。lockdep 扩展了 task-he
 
 ### 网络栈与 POSIX 行为
 
-网络栈方面，`ax-net` 迁移到 crates.io 版本的 smoltcp，并在后续同步到 smoltcp 0.13.1。`ax-net-ng` 新增 ICMP raw socket 支持，并修复 TCP send 后未轮询接口导致 epoll waiter 无法被及时唤醒的问题。随后，socket option、ARP pending queue、SIOCGIFINDEX/FIONREAD 等行为也继续向 Linux 兼容语义靠拢。
+网络栈方面，`ax-net` 迁移到 crates.io 版本的 smoltcp，并在后续同步到 smoltcp 0.13.1。`ax-net` 新增 ICMP raw socket 支持，并修复 TCP send 后未轮询接口导致 epoll waiter 无法被及时唤醒的问题。随后，socket option、ARP pending queue、SIOCGIFINDEX/FIONREAD 等行为也继续向 Linux 兼容语义靠拢。
 
 - [PR #410](https://github.com/rcore-os/tgoskits/pull/410) — `ax-net` 迁移到 crates.io smoltcp（周睿）
-- [PR #368](https://github.com/rcore-os/tgoskits/pull/368) — `ax-net-ng` ICMP raw socket 支持（sunhaosheng）
+- [PR #368](https://github.com/rcore-os/tgoskits/pull/368) — `ax-net` ICMP raw socket 支持（sunhaosheng）
 - [PR #485](https://github.com/rcore-os/tgoskits/pull/485) — TCP send 后轮询接口以唤醒 epoll waiter（CharlieV）
 - [PR #884](https://github.com/rcore-os/tgoskits/pull/884) — `SO_TYPE`、`SO_PROTOCOL`、`SO_DOMAIN` socket option 支持（取地址符）
 - [PR #911](https://github.com/rcore-os/tgoskits/pull/911) — ARP pending queue drain 与 cache TTL/capacity 调整（Feiran Qin）

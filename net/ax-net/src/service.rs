@@ -17,7 +17,9 @@ use smoltcp::{
     },
 };
 
-use crate::{SOCKET_SET, consts::STANDARD_MTU, device::ArpEntry, router::Router};
+use crate::{
+    SOCKET_SET, config::Ipv4InterfaceConfig, consts::STANDARD_MTU, device::ArpEntry, router::Router,
+};
 
 fn now() -> Instant {
     Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
@@ -28,6 +30,7 @@ pub struct Service {
     router: Router,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     dhcp: Option<DhcpState>,
+    static_dns: Vec<Ipv4Address>,
 }
 
 struct DhcpState {
@@ -195,7 +198,7 @@ impl DhcpState {
     }
 }
 impl Service {
-    pub fn new(mut router: Router) -> Self {
+    pub fn new(mut router: Router, static_dns: Vec<Ipv4Address>) -> Self {
         let config = smoltcp::iface::Config::new(HardwareAddress::Ip);
         let iface = Interface::new(config, &mut router, now());
 
@@ -204,6 +207,7 @@ impl Service {
             router,
             timeout: None,
             dhcp: None,
+            static_dns,
         }
     }
 
@@ -220,6 +224,20 @@ impl Service {
         self.dhcp
             .as_ref()
             .is_some_and(|state| state.address.is_some())
+    }
+
+    pub fn dns_servers(&self) -> Vec<Ipv4Address> {
+        let dhcp_dns = self
+            .dhcp
+            .as_ref()
+            .map(|state| state.dns_servers.clone())
+            .unwrap_or_default();
+
+        if !dhcp_dns.is_empty() {
+            dhcp_dns
+        } else {
+            self.static_dns.clone()
+        }
     }
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
@@ -325,6 +343,10 @@ impl Service {
 
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
+    }
+
+    pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
+        self.router.ipv4_config_for_dev(1)
     }
 
     pub fn device_mask_for(&self, endpoint: &IpListenEndpoint) -> u32 {

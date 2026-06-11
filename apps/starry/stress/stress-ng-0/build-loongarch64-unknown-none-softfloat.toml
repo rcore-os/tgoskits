@@ -1,5 +1,4 @@
 target = "loongarch64-unknown-none-softfloat"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
 log = "Warn"
 features = [

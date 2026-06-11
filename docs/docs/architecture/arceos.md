@@ -93,8 +93,7 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-driver` | `ax-driver` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
 | `ax-fs` | `fs` | 文件系统（FAT、ramfs、ext4） |
 | `ax-fs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
-| `ax-net` | `net` | 网络栈（基于 smoltcp） |
-| `ax-net-ng` | `net-ng` | 下一代网络栈（异步感知，基于 smoltcp） |
+| `ax-net` | `net` | 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP，基于 smoltcp） |
 | `ax-display` | `display` | 图形显示（帧缓冲） |
 | `ax-input` | `input` | 输入设备管理 |
 | `ax-dma` | `dma` | DMA 内存分配与管理（依赖 `paging`） |
@@ -114,11 +113,10 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-sync` | `modules/axsync` | mutex 等同步原语 | `ax-task`、任意并发模块 |
 | `ax-driver` | `modules/axdriver` | 设备探测与驱动初始化 | `ax-fs`、`ax-net`、`ax-display` |
 | `ax-fs` | `modules/axfs` | 文件系统挂载、文件/目录 API | `ax-driver` |
-| `ax-net` | `modules/axnet` | 网络栈、socket 抽象 | `ax-driver` |
+| `ax-net` | `net/ax-net` | 统一网络栈、socket 抽象 | `rd-net`、`rdif-vsock`、`smoltcp` |
 | `axconfig` | `modules/axconfig` | 构建期常量与目标参数 | 所有模块 |
 | `ax-log` | `modules/axlog` | 多级日志与格式化输出 | 所有模块 |
 | `ax-fs-ng` | `modules/axfs-ng` | 下一代文件系统 | `ax-driver` |
-| `ax-net-ng` | `modules/axnet-ng` | 下一代网络栈 | `ax-driver` |
 | `ax-dma` | `modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`ax-mm` |
 | `ax-ipi` | `modules/axipi` | 处理器间中断管理 | `ax-hal` |
 | `ax-input` | `modules/axinput` | 输入设备管理与事件分发 | `ax-driver` |

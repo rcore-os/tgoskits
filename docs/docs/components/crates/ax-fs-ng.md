@@ -41,7 +41,7 @@ graph LR
     current --> axpoll["axpoll"]
     current --> ax-sync["ax-sync"]
     ax_feat["ax-feat"] --> current
-    ax_net_ng["ax-net-ng"] --> current
+    ax_net["ax-net"] --> current
     ax_runtime["ax-runtime"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
@@ -74,7 +74,7 @@ graph LR
 
 ### 3.3 被依赖情况
 - `ax-feat`
-- `ax-net-ng`
+- `ax-net`
 - `ax-runtime`
 - `starry-kernel`
 

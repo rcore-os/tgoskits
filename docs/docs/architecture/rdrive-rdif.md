@@ -69,7 +69,7 @@ flowchart TB
     subgraph Consumers["消费方"]
         Runtime["ax-runtime"]
         Fs["ax-fs / ax-fs-ng"]
-        Net["ax-net / ax-net-ng"]
+        Net["ax-net / ax-net"]
         Starry["starry-kernel"]
         Axvisor["axvisor"]
     end
@@ -351,7 +351,7 @@ Phase 3: block volume service
 
 Phase 4: NET / NET-NG 硬切
 
-- `ax-net` / `ax-net-ng` 从 `AxNetDevice` 切到 `rd-net` 或 net service。
+- `ax-net` / `ax-net` 从 `AxNetDevice` 切到 `rd-net` 或 net service。
 - DHCP/static IP policy 留在 net service 或 NET/NET-NG，不回到 platform glue。
 
 Phase 5: display / input / vsock 硬切
@@ -388,7 +388,7 @@ yarn build
 cargo xtask clippy --package rdrive
 cargo xtask clippy --package ax-runtime
 cargo xtask clippy --package ax-fs-ng
-cargo xtask clippy --package ax-net-ng
+cargo xtask clippy --package ax-net
 cargo xtask clippy --package starry-kernel
 cargo xtask clippy --package axvisor
 ```
@@ -406,6 +406,6 @@ rg "rdrive::get_|rdrive::get_one|rdrive::get_list" os/arceos/modules os/StarryOS
 
 - StarryOS QEMU smoke。
 - ext4 rootfs 启动与读写。
-- `net-ng` / DHCP。
+- `net` / DHCP。
 - aarch64 QEMU 动态平台配置。
 - Axvisor QEMU / GIC / `rdif-intc` 路径。

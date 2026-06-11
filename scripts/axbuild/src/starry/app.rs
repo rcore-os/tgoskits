@@ -1170,7 +1170,6 @@ mod tests {
             "codex-cli",
             "build-x86_64-unknown-none.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = []
 log = \"Info\"
 plat_dyn = false
@@ -1211,7 +1210,6 @@ plat_dyn = false
             "qemu-smp1",
             "build-x86_64-unknown-none.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = []
 log = \"Info\"
 plat_dyn = false
@@ -1222,7 +1220,6 @@ plat_dyn = false
             "qemu-smp1/nested",
             "build-x86_64-unknown-none.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = [\"nearest\"]
 log = \"Info\"
 plat_dyn = false
@@ -1264,7 +1261,6 @@ plat_dyn = false
             "codex-cli",
             "build-x86_64.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = []
 log = \"Info\"
 plat_dyn = false

@@ -184,7 +184,14 @@ impl TransportOps for DgramTransport {
 
     fn send(&self, mut src: impl Read, options: SendOptions) -> AxResult<usize> {
         let mut message = Vec::new();
-        src.read_to_end(&mut message)?;
+        let mut buf = [0u8; 4096];
+        loop {
+            match src.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => message.extend_from_slice(&buf[..n]),
+                Err(e) => return Err(e),
+            }
+        }
         let len = message.len();
         let packet = Packet {
             data: message,
