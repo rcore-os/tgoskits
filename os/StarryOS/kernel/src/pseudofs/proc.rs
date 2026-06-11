@@ -461,7 +461,9 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         Cpus_allowed:\t{}\n\
         Cpus_allowed_list:\t{}\n\
         Mems_allowed:\t1\n\
-        Mems_allowed_list:\t0",
+        Mems_allowed_list:\t0\n\
+        voluntary_ctxt_switches:\t0\n\
+        nonvoluntary_ctxt_switches:\t0",
         base.name,
         base.state,
         base.tgid,
@@ -1316,6 +1318,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "pid_max",
                 SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
+            );
+            // Linux exposes the kernel release/type here. Apps + libraries read
+            // these at init for feature detection (e.g. modernc.org/fileutil,
+            // pulled in by juicefs's sqlite meta store, panics on open() of a
+            // missing osrelease). Report a recent release so apps take modern
+            // paths starry supports; ostype is always "Linux".
+            kernel.add(
+                "osrelease",
+                SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
+            );
+            kernel.add(
+                "ostype",
+                SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
             );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))

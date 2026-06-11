@@ -588,6 +588,20 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        // Legacy getrlimit/setrlimit -> prlimit64. The syscalls crate defines these
+        // numbers on all four arches (x86_64 #97/#160; riscv64/aarch64/loongarch64
+        // #163/#164). They are load-bearing on riscv64/x86_64 (which keep
+        // __ARCH_WANT_SET_GET_RLIMIT, so glibc/Go issue the legacy call); on
+        // aarch64/loongarch64 stock Linux is asm-generic and returns ENOSYS there
+        // (libc uses prlimit64 only), so this arm is a harmless, more-permissive
+        // superset. `struct rlimit` is two `unsigned long` == two u64 on every
+        // 64-bit arch, layout-identical to `rlimit64`, so route through prlimit64
+        // with pid=0 (== current process). Go's syscall package invokes the legacy
+        // getrlimit directly (consul on riscv64 aborts with ENOSYS otherwise).
+        Sysno::getrlimit => sys_prlimit64(0, uctx.arg0() as _, core::ptr::null(), uctx.arg1() as _),
+        Sysno::setrlimit => {
+            sys_prlimit64(0, uctx.arg0() as _, uctx.arg1() as _, core::ptr::null_mut())
+        }
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),

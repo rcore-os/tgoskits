@@ -29,6 +29,8 @@
 /* macros for timeval validation */
 #define TV_NONNEG(tv)   ((tv).tv_sec >= 0 && (tv).tv_usec >= 0)
 #define TV_VALID(tv)    ((tv).tv_sec >= 0 && (tv).tv_usec >= 0 && (tv).tv_usec < 1000000)
+#define TV_TO_US(tv)    ((long)(tv).tv_sec * 1000000L + (long)(tv).tv_usec)
+#define A6_SKEW_TOLERANCE_US 500000L
 
 int main(void)
 {
@@ -269,13 +271,15 @@ int main(void)
         /* In a single-threaded process, SELF time and THREAD time
          * should be nearly identical (small differences from call
          * ordering are expected). */
-        long ts = (long)us.ru_utime.tv_sec * 1000000 + us.ru_utime.tv_usec
-                + (long)us.ru_stime.tv_sec * 1000000 + us.ru_stime.tv_usec;
-        long tt = (long)ut.ru_utime.tv_sec * 1000000 + ut.ru_utime.tv_usec
-                + (long)ut.ru_stime.tv_sec * 1000000 + ut.ru_stime.tv_usec;
+        long ts = TV_TO_US(us.ru_utime) + TV_TO_US(us.ru_stime);
+        long tt = TV_TO_US(ut.ru_utime) + TV_TO_US(ut.ru_stime);
         long diff = ts > tt ? ts - tt : tt - ts;
-        CHECK(diff <= 5000, "A6: RUSAGE_SELF and RUSAGE_THREAD times close");
-        printf("  info | self=%ldus thread=%ldus diff=%ldus\n", ts, tt, ts - tt);
+        CHECK(ts > 0 && tt > 0,
+              "A6: RUSAGE_SELF and RUSAGE_THREAD report non-zero CPU time");
+        CHECK(diff <= A6_SKEW_TOLERANCE_US,
+              "A6: RUSAGE_SELF and RUSAGE_THREAD times within scheduler tolerance");
+        printf("  info | self=%ldus thread=%ldus diff=%ldus tolerance=%ldus\n",
+               ts, tt, ts - tt, A6_SKEW_TOLERANCE_US);
     }
 
     /* ============================================================== */

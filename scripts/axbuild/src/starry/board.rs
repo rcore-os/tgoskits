@@ -156,7 +156,6 @@ mod tests {
             "z-board",
             r#"
 target = "aarch64-unknown-none-softfloat"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["qemu"]
 log = "Warn"
 plat_dyn = false
@@ -167,7 +166,6 @@ plat_dyn = false
             "a-board",
             r#"
 target = "x86_64-unknown-none"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["qemu"]
 log = "Warn"
 plat_dyn = false
@@ -197,10 +195,8 @@ baud_rate = "1500000"
             "orangepi-5-plus",
             r#"
 target = "aarch64-unknown-none-softfloat"
-env = {}
 features = ["common"]
 log = "Info"
-plat_dyn = true
 "#,
         );
         write_board(
@@ -208,7 +204,6 @@ plat_dyn = true
             "qemu-aarch64",
             r#"
 target = "aarch64-unknown-none-softfloat"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["qemu"]
 log = "Warn"
 plat_dyn = false
@@ -219,10 +214,8 @@ plat_dyn = false
             "qemu-riscv64",
             r#"
 target = "riscv64gc-unknown-none-elf"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ax-driver/serial", "ax-driver/virtio-blk"]
 log = "Warn"
-plat_dyn = true
 "#,
         );
 

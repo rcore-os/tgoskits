@@ -16,7 +16,7 @@ use ax_hal::{
 };
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 
 pub use self::{aspace::AddrSpace, backend::Backend};
 
@@ -63,12 +63,17 @@ pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
         // mapped range should contain the whole region if it is not aligned.
         let start = r.paddr.align_down_4k();
         let end = (r.paddr + r.size).align_up_4k();
-        aspace.map_linear(
-            phys_to_virt(start),
-            start,
-            end - start,
-            reg_flag_to_map_flag(r.flags),
-        )?;
+        let vaddr = phys_to_virt(start);
+        let size = end - start;
+
+        // Some platforms, such as LoongArch64 with DMW enabled, provide the
+        // physical direct map outside the page-table-backed kernel address
+        // space. Those ranges must not be inserted into the kernel page table:
+        // DMW accesses do not consult PTEs, and their low VA bits can alias
+        // real page-table mappings such as vmap.
+        if aspace.contains_range(vaddr, size) {
+            aspace.map_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
+        }
     }
     Ok(aspace)
 }
@@ -114,17 +119,33 @@ pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     let virt_aligned = virt.align_down_4k();
     let addr_aligned = addr.align_down_4k();
     let size_aligned = (addr + size).align_up_4k() - addr_aligned;
+    let offset = addr - addr_aligned;
 
     let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
     let mut tb = kernel_aspace().lock();
-    match tb.map_linear(virt_aligned, addr_aligned, size_aligned, flags) {
-        Err(AxError::AlreadyExists) => {
-            tb.map_linear_overwrite(virt_aligned, addr_aligned, size_aligned, flags)?;
+
+    let mapped = if tb.contains_range(virt_aligned, size_aligned) {
+        match tb.map_linear(virt_aligned, addr_aligned, size_aligned, flags) {
+            Err(AxError::AlreadyExists) => {
+                tb.map_linear_overwrite(virt_aligned, addr_aligned, size_aligned, flags)?;
+            }
+            Err(e) => {
+                return Err(e);
+            }
+            Ok(_) => {}
         }
-        Err(e) => {
-            return Err(e);
-        }
-        Ok(_) => {}
-    }
-    Ok(virt)
+        virt_aligned
+    } else {
+        // On platforms where `phys_to_virt()` is a hardware direct map outside
+        // the page-table-backed kernel address space, such as LoongArch64 DMW,
+        // allocate a separate kernel VA and map the device with PTE attributes.
+        let range = VirtAddrRange::new(tb.base(), tb.end());
+        let mapped = tb
+            .find_free_area(tb.base(), size_aligned, range)
+            .ok_or(AxError::NoMemory)?;
+        tb.map_linear(mapped, addr_aligned, size_aligned, flags)?;
+        mapped
+    };
+
+    Ok(mapped + offset)
 }

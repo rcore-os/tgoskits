@@ -75,7 +75,7 @@ graph LR
     ax_lazyinit --> ax-mm["ax-mm"]
     ax_lazyinit --> ax-ipi["ax-ipi"]
     ax_lazyinit --> ax-fs["ax-fs / ax-fs-ng"]
-    ax_lazyinit --> ax-net["ax-net / ax-net-ng"]
+    ax_lazyinit --> ax-net["ax-net / ax-net"]
     ax_lazyinit --> ax-display["ax-display"]
     ax_lazyinit --> ax-input["ax-input"]
     ax_lazyinit --> axplat["多个 axplat 平台 crate"]

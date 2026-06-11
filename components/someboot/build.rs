@@ -121,9 +121,11 @@ impl Build {
         self.kernel_vaddr = 0xffff_ffff_8000_0000;
 
         let kernel_load_vaddr = self.kernel_vaddr as usize;
+        let kernel_load_paddr = self.kernel_paddr as usize;
 
         let ld = include_str!("src/arch/loongarch64/link.ld")
-            .replace("${kernel_load_vaddr}", &format!("{kernel_load_vaddr:#x}"));
+            .replace("${kernel_load_vaddr}", &format!("{kernel_load_vaddr:#x}"))
+            .replace("${kernel_load_paddr}", &format!("{kernel_load_paddr:#x}"));
 
         println!("cargo:rerun-if-changed={ld_src}");
         println!("cargo:rustc-cfg=efi");

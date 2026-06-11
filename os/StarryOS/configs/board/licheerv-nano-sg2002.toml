@@ -7,5 +7,4 @@ features = [
   "ax-driver/serial",
 ]
 log = "Info"
-plat_dyn = true
 target = "riscv64gc-unknown-none-elf"

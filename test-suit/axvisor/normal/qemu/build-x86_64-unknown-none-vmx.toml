@@ -1,4 +1,3 @@
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ax-driver/virtio-blk",
     "ept-level-4",
@@ -6,6 +5,5 @@ features = [
     "vmx",
 ]
 log = "Info"
-plat_dyn = true
 target = "x86_64-unknown-none"
 vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]

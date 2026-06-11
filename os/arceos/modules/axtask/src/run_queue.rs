@@ -512,7 +512,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             curr.set_in_wait_queue(true);
             wq_guard.push_back(curr.clone());
         }
-        // Drop the lock of wait queue explictly.
+        // Drop the lock of wait queue explicitly.
         drop(wq_guard);
 
         // Current task's state has been changed to `Blocked` and added to the wait queue.

@@ -1,4 +1,3 @@
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ax-driver/virtio-blk",
     "ept-level-4",
@@ -6,7 +5,6 @@ features = [
     "sstc"
 ]
 log = "Info"
-plat_dyn = true
 target = "riscv64gc-unknown-none-elf"
 vm_configs = []
 max_cpu_num = 4

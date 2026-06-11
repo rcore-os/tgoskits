@@ -197,7 +197,7 @@ impl HyperCall {
                     }
                 };
 
-                // TODO: seperate the mapping flags of metadata and data.
+                // TODO: separate the mapping flags of metadata and data.
                 if let Err(err) = self.vm.map_region(
                     shm_base_gpa,
                     base_hpa,

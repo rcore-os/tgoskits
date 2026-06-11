@@ -1,6 +1,5 @@
 # Build-time config for the Orange Pi 5 Plus UVC Starry example.
 target = "aarch64-unknown-none-softfloat"
-env = {}
 features = [
   "ax-driver/rockchip-soc",
   "ax-driver/rockchip-dwc-xhci",
@@ -9,4 +8,3 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 1
-plat_dyn = true

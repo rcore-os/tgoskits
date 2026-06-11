@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.10...axvisor-v0.5.11) - 2026-06-11
+
+### Added
+
+- *(axplat-dyn)* add LoongArch64 UEFI dynamic platform ([#1190](https://github.com/rcore-os/tgoskits/pull/1190))
+
+### Fixed
+
+- *(axvisor)* keep LoongArch QEMU on static platform
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+- *(axvisor)* avoid svm guest timer calibration stall ([#1205](https://github.com/rcore-os/tgoskits/pull/1205))
+
+### Other
+
+- Revert "feat(axplat-dyn): add LoongArch64 UEFI dynamic platform ([#1190](https://github.com/rcore-os/tgoskits/pull/1190))" ([#1202](https://github.com/rcore-os/tgoskits/pull/1202))
+- *(axvisor)* remove obsolete x86 q35 static platform ([#1186](https://github.com/rcore-os/tgoskits/pull/1186))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.9...axvisor-v0.5.10) - 2026-06-09
 
 ### Added
@@ -92,7 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Refactor architecture and enhance commands for incremental checks ([#532](https://github.com/rcore-os/tgoskits/pull/532))
 - Refactor QEMU build configuration and test execution flow ([#527](https://github.com/rcore-os/tgoskits/pull/527))
-- fmt vm conifg file and  organize annotations ([#393](https://github.com/rcore-os/tgoskits/pull/393))
+- fmt vm config file and  organize annotations ([#393](https://github.com/rcore-os/tgoskits/pull/393))
 - Implement QEMU test orchestration and refactor Axvisor/Starry tests ([#394](https://github.com/rcore-os/tgoskits/pull/394))
 - *(axvisor)* inherit workspace dependencies
 - Update rootfs archive format and boot arguments for configurations ([#380](https://github.com/rcore-os/tgoskits/pull/380))

@@ -82,24 +82,25 @@ enum NetInterface {
     Loopback,
 }
 
-fn configured_eth0_ipv4() -> [u8; 4] {
-    parse_ipv4_addr(option_env!("AX_IP").unwrap_or("10.0.2.15")).unwrap_or([10, 0, 2, 15])
+fn eth0_ipv4_config() -> AxResult<axnet::Ipv4InterfaceConfig> {
+    axnet::eth0_ipv4_config().ok_or(AxError::NoSuchDevice)
 }
 
-fn parse_ipv4_addr(value: &str) -> Option<[u8; 4]> {
-    let mut addr = [0; 4];
-    let mut parts = value.split('.');
-    for octet in &mut addr {
-        let part = parts.next()?;
-        if part.is_empty() {
-            return None;
-        }
-        *octet = part.parse().ok()?;
+fn eth0_ipv4_addr() -> AxResult<[u8; 4]> {
+    Ok(eth0_ipv4_config()?.address.address().octets())
+}
+
+fn ipv4_netmask(prefix_len: u8) -> [u8; 4] {
+    if prefix_len == 0 {
+        return [0; 4];
     }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(addr)
+    (!0u32 << (32 - prefix_len)).to_be_bytes()
+}
+
+fn ipv4_broadcast(config: axnet::Ipv4InterfaceConfig) -> [u8; 4] {
+    let ip = u32::from_be_bytes(config.address.address().octets());
+    let mask = u32::from_be_bytes(ipv4_netmask(config.address.prefix_len()));
+    (ip | !mask).to_be_bytes()
 }
 
 fn read_user_bytes<const N: usize>(ptr: *const u8) -> AxResult<[u8; N]> {
@@ -162,7 +163,7 @@ fn write_eth0_ifconf(arg: usize) -> AxResult<()> {
     if buf != 0 {
         let mut written = 0;
         if in_root_net_ns() && ifc_len >= IFREQ_COMPAT_LEN as i32 {
-            write_ifconf_entry(buf, written, ETH0_NAME, configured_eth0_ipv4())?;
+            write_ifconf_entry(buf, written, ETH0_NAME, eth0_ipv4_addr()?)?;
             written += IFREQ_COMPAT_LEN;
         }
         if ifc_len >= (written + IFREQ_COMPAT_LEN) as i32 {
@@ -266,7 +267,7 @@ impl FileLike for Socket {
             }
             SIOCGIFADDR => {
                 let addr = match read_ifreq_interface(arg)? {
-                    NetInterface::Eth0 => configured_eth0_ipv4(),
+                    NetInterface::Eth0 => eth0_ipv4_addr()?,
                     NetInterface::Loopback => [127, 0, 0, 1],
                 };
                 write_ifreq_sockaddr(arg, addr)?;
@@ -280,18 +281,14 @@ impl FileLike for Socket {
             }
             SIOCGIFBRDADDR => {
                 let addr = match read_ifreq_interface(arg)? {
-                    NetInterface::Eth0 => {
-                        let mut addr = configured_eth0_ipv4();
-                        addr[3] = 255;
-                        addr
-                    }
+                    NetInterface::Eth0 => ipv4_broadcast(eth0_ipv4_config()?),
                     NetInterface::Loopback => [127, 0, 0, 1],
                 };
                 write_ifreq_sockaddr(arg, addr)?;
             }
             SIOCGIFNETMASK => {
                 let addr = match read_ifreq_interface(arg)? {
-                    NetInterface::Eth0 => [255, 255, 255, 0],
+                    NetInterface::Eth0 => ipv4_netmask(eth0_ipv4_config()?.address.prefix_len()),
                     NetInterface::Loopback => [255, 0, 0, 0],
                 };
                 write_ifreq_sockaddr(arg, addr)?;

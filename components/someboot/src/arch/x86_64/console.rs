@@ -18,7 +18,7 @@ impl crate::console::ArchConsoleOps for Console {
         };
 
         crate::console::set_earlycon_sender(tx);
-        crate::console::set_earlycon_reciever(rx);
+        crate::console::set_earlycon_receiver(rx);
         true
     }
 

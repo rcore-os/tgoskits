@@ -619,7 +619,7 @@ impl Axvisor {
                         case.case.display_name
                     )
                 })?;
-            test_qemu::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+            test_qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
             test_qemu::validate_grouped_qemu_commands(&qemu, &case.case, "Axvisor")?;
             prepared.push(PreparedAxvisorQemuCase { case, qemu });
         }
@@ -698,7 +698,7 @@ impl Axvisor {
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         let cargo = build::load_cargo_config(request)?;
-        test_qemu::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        test_qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         Ok((qemu, prepared_assets))
     }
 

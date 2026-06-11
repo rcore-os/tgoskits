@@ -119,7 +119,7 @@ pub fn sys_execve(
     let mut new_aspace = new_user_aspace_empty()?;
     copy_from_kernel(&mut new_aspace)?;
     let (entry_point, user_stack_base, auxv) =
-        match load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs) {
+        match load_user_app(&mut new_aspace, loc, &path, &args, &envs) {
             Ok(result) => result,
             Err(AxError::InvalidExecutable) => {
                 // ENOEXEC fallback: retry via /bin/sh.
@@ -133,7 +133,7 @@ pub fn sys_execve(
                 args = iter::once(String::from(shell_path))
                     .chain(args.iter().cloned())
                     .collect();
-                load_user_app(&mut new_aspace, None, &args, &envs)?
+                load_user_app(&mut new_aspace, shell_loc, shell_path, &args, &envs)?
             }
             Err(e) => return Err(e),
         };

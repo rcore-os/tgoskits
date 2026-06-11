@@ -51,6 +51,18 @@ typedef struct {
 
 #include "postprocess.h"
 
+typedef struct {
+    double total_ms;
+    double malloc_ms;
+    double letterbox_ms;
+    double inputs_set_ms;
+    double run_ms;
+    double outputs_get_ms;
+    double rknn_perf_run_ms;
+    double postprocess_ms;
+    double outputs_release_ms;
+    int perf_run_query_ret;
+} rknn_inference_profile_t;
 
 int init_yolov8_model(const char* model_path, rknn_app_context_t* app_ctx);
 
@@ -59,5 +71,8 @@ int release_yolov8_model(rknn_app_context_t* app_ctx);
 int inference_yolov8_model(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results);
 int inference_yolov8_model_with_thresholds(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results,
                                            float box_conf_threshold, float nms_threshold);
+int inference_yolov8_model_with_thresholds_profile(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results,
+                                                   float box_conf_threshold, float nms_threshold,
+                                                   rknn_inference_profile_t* profile);
 
 #endif //_RKNN_DEMO_YOLOV8_H_

@@ -7,6 +7,7 @@ edition.workspace = true
 kret-common = { path = "../kret-common" }
 
 aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
 
 [build-dependencies]
 which = { workspace = true }

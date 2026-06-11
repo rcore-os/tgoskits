@@ -213,7 +213,7 @@ cargo xtask starry test qemu --arch riscv64 --test-suite test-suit/starryos/self
 1. **`phys-memory-size` 硬编码 8GB**: 动态 RAM 检测因启动阶段地址空间不一致无法实现。标准 CI 测试使用默认内存配置，自编译需要 `-m 8G`。
 2. **自编译测试不在标准 CI 中运行**: 需要 8-12GB rootfs 镜像，仅支持本地手动测试。
 3. **SMP > 1 未验证**: ext4 `SpinNoPreempt` 死锁 workaround 为 SMP=1。x86_64 通过 KVM 加速弥补单核性能。
-4. **aarch64 引导已验证**: rootfs 准备 + 种子内核引导 + shell 可用均通过，完整编译因 TCG 模拟性能限制（预计 4-8h）未运行。需 `plat_dyn=true` + PIE 目标（`--config test-suit/starryos/qemu-smp1/build-aarch64-unknown-none-softfloat.toml`）。
+4. **aarch64 引导已验证**: rootfs 准备 + 种子内核引导 + shell 可用均通过，完整编译因 TCG 模拟性能限制（预计 4-8h）未运行。需动态平台默认配置 + PIE 目标（`--config test-suit/starryos/qemu-smp1/build-aarch64-unknown-none-softfloat.toml`）。
 5. **页面回收仅支持干净页**: 脏页在极端压力下作为最后手段回收（记录 warning），缺少脏页写回机制。
 
 ## 环境要求

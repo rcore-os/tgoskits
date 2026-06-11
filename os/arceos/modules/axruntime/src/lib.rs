@@ -52,6 +52,9 @@ mod block;
 mod devices;
 mod registers;
 
+#[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
+mod unix_ns;
+
 pub use ax_hal as hal;
 
 #[cfg(feature = "smp")]
@@ -311,11 +314,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     devices::init_static_input();
 
     cfg_if::cfg_if! {
-        if #[cfg(all(feature = "net-ng", feature = "plat-dyn"))] {
-            devices::init_dyn_net_ng();
-        } else if #[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))] {
-            ax_net_ng::init_network(devices::take_static_net_ng_drivers());
-        } else if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
+        if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
             devices::init_dyn_net();
         } else if #[cfg(all(feature = "net", not(feature = "plat-dyn")))] {
             devices::init_static_net();

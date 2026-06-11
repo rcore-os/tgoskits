@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.6.1"
+version = "0.6.2"
 
 [features]
 default = []
@@ -50,6 +50,7 @@ fs = [
 fs-ng = [
   "dep:ax-errno",
   "dep:ax-fs-ng",
+  "dep:axfs-ng-vfs",
   "dep:spin",
   "dep:axklib",
   "ax-driver/block",
@@ -57,17 +58,16 @@ fs-ng = [
 fs-ng-ext4 = ["fs-ng", "ax-fs-ng/ext4"]
 fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
-net = ["dep:ax-net", "ax-driver/net"]
-net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
+net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
 # SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
 # the ArceOS runtime glue (the driver cores are OS-independent) before probing.
 aic8800-wifi = [
-  "net-ng",
+  "net",
   "plat-dyn",
   "ax-driver/aic8800-wifi",
   "dep:aic8800-arceos",
 ]
-vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock"]
+vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
 aic8800-arceos = {workspace = true, optional = true}
@@ -80,6 +80,7 @@ ax-driver = {workspace = true}
 ax-errno = {workspace = true, optional = true}
 ax-fs = {workspace = true, optional = true}
 ax-fs-ng = {workspace = true, optional = true}
+axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
@@ -88,7 +89,6 @@ ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
 ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
-ax-net-ng = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-task = {workspace = true, optional = true}

@@ -1,10 +1,8 @@
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ax-driver/virtio-blk",
     "fs",
     "svm",
 ]
 log = "Info"
-plat_dyn = true
 target = "x86_64-unknown-none"
 vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-svm-smp1.toml"]

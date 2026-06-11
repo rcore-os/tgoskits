@@ -8,7 +8,7 @@ use core::{any::Any, num::NonZeroU32, ptr::NonNull};
 use heapless::{String, Vec};
 use rdif_serial::{
     BSerial, Config, ConfigError, DataBits, DriverGeneric, Interface, InterruptMask, Parity,
-    SerialDyn, StopBits, TIrqHandler, TReciever, TSender, TransferError,
+    SerialDyn, StopBits, TIrqHandler, TReceiver, TSender, TransferError,
 };
 
 use super::{
@@ -19,7 +19,7 @@ use super::{
         UART_RBR, UART_THR,
     },
 };
-use crate::{RawReciever, RawSender};
+use crate::{RawReceiver, RawSender};
 
 pub const ROCKCHIP_FIQ_RK3588_UART_CLOCK: u32 = 24_000_000;
 pub const ROCKCHIP_FIQ_DEFAULT_BAUDRATE: u32 = 1_500_000;
@@ -579,7 +579,7 @@ impl RockchipFiqReceiver {
     }
 }
 
-impl RawReciever for RockchipFiqReceiver {
+impl RawReceiver for RockchipFiqReceiver {
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
         self.base.read_debug_byte().map(Ok)
     }
@@ -595,7 +595,7 @@ impl Ns16550<RockchipFiqPort> {
             tx: Some(crate::Sender::Ns16550RockchipFiqSender(RockchipFiqSender {
                 base,
             })),
-            rx: Some(crate::Reciever::Ns16550RockchipFiqReciever(
+            rx: Some(crate::Receiver::Ns16550RockchipFiqReceiver(
                 RockchipFiqReceiver { base },
             )),
         }
@@ -679,7 +679,7 @@ impl Interface for RockchipFiqSerial {
         self.serial.take_tx()
     }
 
-    fn take_rx(&mut self) -> Option<Box<dyn TReciever>> {
+    fn take_rx(&mut self) -> Option<Box<dyn TReceiver>> {
         self.serial.take_rx()
     }
 

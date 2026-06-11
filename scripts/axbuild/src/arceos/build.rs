@@ -27,9 +27,9 @@ pub(crate) struct ArceosBuildConfig {
 }
 
 impl ArceosBuildConfig {
-    fn default_for_target(target: &str) -> Self {
+    fn default_config() -> Self {
         Self {
-            build_info: ArceosBuildInfo::default_for_target(target),
+            build_info: ArceosBuildInfo::default(),
             app_c: None,
         }
     }
@@ -98,7 +98,7 @@ fn load_build_config_with_makefile_features_and_metadata(
     metadata: Option<&Metadata>,
 ) -> anyhow::Result<ArceosBuildConfig> {
     build::ensure_build_info(&request.build_info_path, || {
-        ArceosBuildConfig::default_for_target(&request.target)
+        ArceosBuildConfig::default_config()
     })?;
     let content = fs::read_to_string(&request.build_info_path)?;
     build::reject_removed_std_field(&request.build_info_path, &content)?;
@@ -108,12 +108,6 @@ fn load_build_config_with_makefile_features_and_metadata(
             request.build_info_path.display()
         )
     })?;
-    build::apply_target_defaults_if_plat_dyn_unspecified(
-        &mut config.build_info,
-        &request.target,
-        &content,
-    );
-
     if config.build_info.normalize_legacy_feature_aliases() {
         warn!(
             "normalizing legacy feature aliases in build config {}",
@@ -361,7 +355,7 @@ mod tests {
 
     #[test]
     fn resolves_dynamic_platform_features_and_args() {
-        let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
+        let mut build_info = ArceosBuildInfo::default();
         build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat", true);
 
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -378,7 +372,7 @@ mod tests {
 
     #[test]
     fn resolves_non_dynamic_aarch64_to_defplat_without_static_default() {
-        let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
+        let mut build_info = ArceosBuildInfo::default();
         build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat", false);
 
         assert!(build_info.features.contains(&"ax-hal/defplat".to_string()));
@@ -400,7 +394,7 @@ mod tests {
     #[test]
     fn preparing_c_app_non_dynamic_aarch64_without_custom_platform_fails() {
         let metadata = repo_metadata();
-        let mut build_info = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat");
+        let mut build_info = ArceosBuildInfo::default();
         let result = build_info.prepare_non_dynamic_platform_for(
             "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
@@ -483,7 +477,7 @@ mod tests {
 
         let build_info = load_build_info(&request).unwrap();
 
-        assert_eq!(build_info, ArceosBuildInfo::default_for_target("target"));
+        assert_eq!(build_info, ArceosBuildInfo::default());
         assert!(path.exists());
         assert!(
             fs::read_to_string(path)
@@ -496,11 +490,7 @@ mod tests {
     fn build_config_without_app_c_uses_std_rust_mode() {
         let root = tempdir().unwrap();
         let path = root.path().join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "features = [\"ax-std\"]\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "features = [\"ax-std\"]\nlog = \"Warn\"\n").unwrap();
 
         let mode = load_arceos_build_mode(&path).unwrap();
 
@@ -515,11 +505,7 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
         let path = case_dir.join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n").unwrap();
 
         let mode = load_arceos_build_mode(&path).unwrap();
 
@@ -538,7 +524,7 @@ mod tests {
         let path = root.path().join("build-x86_64-unknown-none.toml");
         fs::write(
             &path,
-            "app-c = \"missing\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
+            "app-c = \"missing\"\nfeatures = []\nlog = \"Warn\"\n",
         )
         .unwrap();
 
@@ -557,11 +543,7 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("main.rs"), "fn main() {}\n").unwrap();
         let path = root.path().join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n\n[env]\nAX_IP = \"10.0.2.15\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\n").unwrap();
 
         let err = load_arceos_build_mode(&path).unwrap_err();
 
@@ -582,8 +564,6 @@ mod tests {
 features = ["axstd", "axstd/smp", "axfeat/net"]
 log = "Warn"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
@@ -658,7 +638,6 @@ BACKTRACE = "y"
             &path,
             r#"
 features = ["ax-std"]
-env = {}
 log = "Info"
 plat_dyn = false
 "#,
@@ -687,9 +666,6 @@ features = ["ax-std"]
 log = "Warn"
 max_cpu_num = 4
 
-[env]
-AX_GW = "10.0.2.2"
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
@@ -719,6 +695,55 @@ AX_IP = "10.0.2.15"
             cargo
                 .target
                 .ends_with("scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json")
+        );
+    }
+
+    #[test]
+    fn load_build_info_defaults_unspecified_loongarch64_to_dynamic_platform() {
+        let root = tempdir().unwrap();
+        let path = root
+            .path()
+            .join("build-loongarch64-unknown-none-softfloat.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["ax-std"]
+log = "Warn"
+
+"#,
+        )
+        .unwrap();
+        let request = request(
+            "arceos-test-suit",
+            "loongarch64-unknown-none-softfloat",
+            None,
+            path,
+        );
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert!(build_info.plat_dyn);
+
+        let metadata = repo_metadata();
+        let cargo = build_info
+            .into_prepared_base_cargo_config_with_metadata(
+                &request.package,
+                &request.target,
+                request.plat_dyn,
+                &metadata,
+            )
+            .unwrap();
+
+        assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(
+            !cargo
+                .features
+                .contains(&"ax-std/loongarch64-qemu-virt".to_string())
+        );
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/pie/loongarch64-unknown-linux-musl.json")
         );
     }
 
@@ -758,7 +783,7 @@ AX_IP = "10.0.2.15"
         let metadata = repo_metadata();
         let cargo = ArceosBuildInfo {
             features: vec!["lockdep".to_string()],
-            ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+            ..ArceosBuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
             "arceos-helloworld",
@@ -779,22 +804,23 @@ AX_IP = "10.0.2.15"
     #[test]
     fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
         let root = tempdir().unwrap();
-        let build_config = root.path().join("build-x86_64-unknown-none.toml");
+        let build_config = root
+            .path()
+            .join("build-loongarch64-unknown-none-softfloat.toml");
         let build_info = ArceosBuildInfo {
             features: vec!["ax-std".to_string()],
-            plat_dyn: true,
-            ..ArceosBuildInfo::default_for_target("x86_64-unknown-none")
+            ..ArceosBuildInfo::default()
         };
         fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
         let request = request(
             "arceos-helloworld",
-            "x86_64-unknown-none",
-            Some(true),
+            "loongarch64-unknown-none-softfloat",
+            Some(false),
             build_config,
         );
         let cargo = load_c_app_cargo_config(&request).unwrap();
 
-        assert_eq!(cargo.target, "x86_64-unknown-none");
+        assert_eq!(cargo.target, "loongarch64-unknown-none-softfloat");
         assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
         assert!(
             cargo
@@ -817,7 +843,7 @@ AX_IP = "10.0.2.15"
         let metadata = repo_metadata();
         let cargo = ArceosBuildInfo {
             max_cpu_num: Some(4),
-            ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+            ..ArceosBuildInfo::default()
         }
         .into_prepared_base_cargo_config_with_metadata(
             &request.package,
@@ -834,7 +860,7 @@ AX_IP = "10.0.2.15"
     #[test]
     fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
         let metadata = repo_metadata();
-        let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
+        let cargo = ArceosBuildInfo::default()
             .into_prepared_base_cargo_config_with_metadata(
                 "arceos-helloworld",
                 "x86_64-unknown-none",

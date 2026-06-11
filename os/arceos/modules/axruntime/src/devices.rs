@@ -89,19 +89,91 @@ pub(crate) fn init_static_input() {
     ax_input::init_input(devices);
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
+#[cfg(all(feature = "net", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_net() {
-    ax_net::init_network(take_dyn_net_drivers());
+    register_unix_namespace();
+    let config = parse_network_config();
+    ax_net::init_network(take_dyn_net_drivers(), config);
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
+#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_net() {
-    ax_net::init_network(take_static_net_drivers());
+    register_unix_namespace();
+    let config = parse_network_config();
+    ax_net::init_network(take_static_net_drivers(), config);
 }
 
-#[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
-pub(crate) fn init_dyn_net_ng() {
-    ax_net_ng::init_network(take_dyn_net_ng_drivers());
+#[cfg(all(feature = "net", feature = "fs-ng"))]
+fn register_unix_namespace() {
+    ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
+}
+
+#[cfg(all(feature = "net", not(feature = "fs-ng")))]
+fn register_unix_namespace() {
+    // Path-based Unix sockets require fs-ng namespace support
+}
+
+#[cfg(feature = "net")]
+fn parse_network_config() -> ax_net::NetworkConfig {
+    macro_rules! env_or_default {
+        ($key:literal) => {
+            match option_env!($key) {
+                Some(val) => val,
+                None => "",
+            }
+        };
+    }
+
+    const IP: &str = env_or_default!("AX_IP");
+    const GATEWAY: &str = env_or_default!("AX_GW");
+    const PREFIX_LEN: &str = env_or_default!("AX_PREFIX_LEN");
+    const DNS: &str = env_or_default!("AX_DNS");
+
+    let ip = IP.trim();
+    let gateway = GATEWAY.trim();
+    let prefix_len = PREFIX_LEN.trim();
+
+    let static_ip = match (!ip.is_empty(), !gateway.is_empty()) {
+        (false, false) => {
+            if !prefix_len.is_empty() {
+                panic!("AX_PREFIX_LEN requires AX_IP and AX_GW");
+            }
+            None
+        }
+        (true, true) => {
+            let prefix_len = if prefix_len.is_empty() {
+                24
+            } else {
+                prefix_len.parse().expect("Invalid AX_PREFIX_LEN")
+            };
+            if prefix_len > 32 {
+                panic!("Invalid AX_PREFIX_LEN: prefix length > 32");
+            }
+            Some(ax_net::StaticIpConfig {
+                ip: ip.parse().expect("Invalid AX_IP"),
+                prefix_len,
+                gateway: gateway.parse().expect("Invalid AX_GW"),
+            })
+        }
+        _ => {
+            panic!("AX_IP and AX_GW must be configured together");
+        }
+    };
+
+    let dns_servers = DNS
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            let s = s.trim();
+            s.parse()
+                .unwrap_or_else(|_| panic!("Invalid DNS server address: {}", s))
+        })
+        .collect();
+
+    ax_net::NetworkConfig {
+        static_ip,
+        dns_servers,
+    }
 }
 
 /// Registers probed Wi-Fi devices with the (already-initialized) network stack.
@@ -122,14 +194,14 @@ pub(crate) fn register_wifi_devices() {
 
         // SDIO Wi-Fi RX is out-of-band (not the ethernet IRQ framework); the
         // chip's RX-data callback wakes the stack's dedicated poll task.
-        wifi.set_rx_data_callback(ax_net_ng::notify_wifi_rx);
+        wifi.set_rx_data_callback(ax_net::notify_wifi_rx);
 
-        let driver = ax_net_ng::RdNetDriver::new(name, net, None)
+        let driver = ax_net::RdNetDriver::new(name, net, None)
             .unwrap_or_else(|err| panic!("failed to adapt wifi device: {err:?}"));
 
-        ax_net_ng::register_device_with_config(
+        ax_net::register_device_with_config(
             alloc::boxed::Box::new(driver),
-            ax_net_ng::NetConfig {
+            ax_net::NetConfig {
                 name: name.into(),
                 ip: ap.server_ip,
                 prefix_len: ap.prefix_len,
@@ -140,7 +212,7 @@ pub(crate) fn register_wifi_devices() {
     }
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
+#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn take_static_net_drivers()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     let mut devices = alloc::vec::Vec::new();
@@ -155,41 +227,25 @@ pub(crate) fn take_static_net_drivers()
     devices
 }
 
-#[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))]
-pub(crate) fn take_static_net_ng_drivers()
--> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
-    let mut devices = alloc::vec::Vec::new();
-    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-            .unwrap_or_else(|err| panic!("failed to open static net device: {err:?}"));
-        let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
-            .unwrap_or_else(|err| panic!("failed to adapt static net device: {err:?}"));
-        devices.push(
-            alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>
-        );
-    }
-    devices
-}
-
 #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_vsock() {
     if !rdrive::is_initialized() {
-        ax_net_ng::init_vsock(alloc::vec::Vec::new());
+        ax_net::init_vsock(alloc::vec::Vec::new());
         return;
     }
     let devices = ax_driver::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
-    ax_net_ng::init_vsock(devices);
+    ax_net::init_vsock(devices);
 }
 
 #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_vsock() {
     let devices = ax_driver::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open static vsock devices: {err:?}"));
-    ax_net_ng::init_vsock(devices);
+    ax_net::init_vsock(devices);
 }
 
-#[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
+#[cfg(all(feature = "net", feature = "plat-dyn"))]
 fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     if !rdrive::is_initialized() {
         return alloc::vec::Vec::new();
@@ -202,24 +258,6 @@ fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::Ether
             .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
         devices
             .push(alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>);
-    }
-    devices
-}
-
-#[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
-fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
-    if !rdrive::is_initialized() {
-        return alloc::vec::Vec::new();
-    }
-    let mut devices = alloc::vec::Vec::new();
-    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-            .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-        let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
-            .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
-        devices.push(
-            alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>
-        );
     }
     devices
 }
