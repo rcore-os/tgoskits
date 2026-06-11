@@ -184,7 +184,7 @@ pub struct Thread {
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
 
-    #[cfg(feature = "ebpf-kmod")]
+    #[cfg(any(feature = "ebpf-kmod", feature = "kprobe_test"))]
     pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 
     /// Whether uid_map has been written for this thread's user namespace.
@@ -233,7 +233,7 @@ impl Thread {
             cred: SpinNoIrq::new(cred),
 
             fault_dump_signo: AtomicU8::new(0),
-            #[cfg(feature = "ebpf-kmod")]
+            #[cfg(any(feature = "ebpf-kmod", feature = "kprobe_test"))]
             kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
 
             uid_map_written: AtomicBool::new(false),
