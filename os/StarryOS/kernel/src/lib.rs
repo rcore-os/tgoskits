@@ -3,7 +3,7 @@
 
 #![no_std]
 #![feature(likely_unlikely)]
-#![feature(c_variadic)]
+#![cfg_attr(feature = "ebpf-kmod", feature(c_variadic))]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
