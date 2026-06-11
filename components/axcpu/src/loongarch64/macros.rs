@@ -24,6 +24,8 @@ macro_rules! include_asm_macros {
         .equ LA_CSR_DMW1,          0x181
 
         .equ KSAVE_KSP,            0x30
+        .equ KSAVE_T0,             0x31
+        .equ KSAVE_T1,             0x32
 
         .macro STD rd, rj, off
             st.d   \rd, \rj, \off*8
@@ -74,9 +76,9 @@ macro_rules! include_asm_macros {
 
         .macro _asm_extable, from, to
             .pushsection __ex_table, "a"
-            .balign 8
-            .quad   \from
-            .quad   \to
+            .balign 4
+            .word   \from - .
+            .word   \to - .
             .popsection
         .endm
 

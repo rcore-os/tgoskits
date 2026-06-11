@@ -261,7 +261,11 @@ pub struct TaskContext {
 impl TaskContext {
     /// Creates a new default context for a new task.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            #[cfg(feature = "uspace")]
+            pgdl: crate::asm::read_user_page_table().as_usize(),
+            ..Default::default()
+        }
     }
 
     /// Initializes the context for a new task, with the given entry point and
