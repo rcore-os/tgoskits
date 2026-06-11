@@ -127,9 +127,8 @@ unsafe impl lock_api::RawMutex for RawMutex {
             owner_id,
             current_id,
             "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
-             mutex={self:p}, curr={}, cpu={}",
+             mutex={self:p}, curr={}",
             current().id_name(),
-            ax_hal::percpu::this_cpu_id(),
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
