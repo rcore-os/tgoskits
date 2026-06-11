@@ -1,6 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -81,6 +84,24 @@ int main(void)
     check(nread > 0, "/proc/1/cmdline is non-empty");
     if (nread <= 0) {
         printf("INFO: read /proc/1/cmdline failed: %s\n", strerror(errno));
+    }
+
+    errno = 0;
+    check(kill(1, 0) == 0, "kill(1, 0) finds a real process at PID 1");
+    if (errno != 0) {
+        printf("INFO: kill(1, 0) errno: %s\n", strerror(errno));
+    }
+
+    errno = 0;
+    check(getpgid(1) == 1, "getpgid(1) returns 1 (init leads process group 1)");
+    if (errno != 0) {
+        printf("INFO: getpgid(1) errno: %s\n", strerror(errno));
+    }
+
+    errno = 0;
+    check(getsid(1) == 1, "getsid(1) returns 1 (init leads session 1)");
+    if (errno != 0) {
+        printf("INFO: getsid(1) errno: %s\n", strerror(errno));
     }
 
     printf("RESULT: %d passed / %d failed\n", passed, failed);

@@ -17,6 +17,8 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use starry_signal::Signo;
 use syscalls::Sysno;
 
+use crate::task::AsThread;
+
 pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
     task::*, time::*,
@@ -947,7 +949,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
-            let tid = ax_task::current().id().as_u64() as u32;
+            let tid = ax_task::current().as_thread().tid();
             warn!("Unimplemented syscall: {sysno} (tid={tid})");
             Err(AxError::Unsupported)
         }
