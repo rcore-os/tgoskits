@@ -1,8 +1,13 @@
+#[path = "../../../components/someboot/build_support/linker.rs"]
+mod someboot_linker;
+
 fn main() {
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=../../../platforms/axplat-dyn/link.ld");
     println!("cargo:rerun-if-changed=../../../platforms/somehal/link.ld");
-    println!("cargo:rerun-if-changed=../../../components/someboot/src/arch/aarch64/link.ld");
+    for path in someboot_linker::source_paths() {
+        println!("cargo:rerun-if-changed=../../../components/someboot/{path}");
+    }
     println!("cargo:rerun-if-env-changed=STARRY_KALLSYMS_RESERVED");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
@@ -19,8 +24,13 @@ fn main() {
             include_str!("../../../platforms/somehal/link.ld"),
         )
         .unwrap();
-        let someboot = include_str!("../../../components/someboot/src/arch/aarch64/link.ld")
-            .replace("${kernel_load_vaddr}", "0xffffffff80000000");
+        let someboot = someboot_linker::render_linker_script(
+            someboot_linker::LinkerArch::Aarch64,
+            someboot_linker::LinkerConfig {
+                kernel_load_vaddr: 0xffff_ffff_8000_0000,
+                kernel_load_paddr: 0,
+            },
+        );
         std::fs::write(format!("{out_dir}/someboot.x"), someboot).unwrap();
     }
     println!("cargo:rustc-link-search={out_dir}");
