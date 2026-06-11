@@ -93,6 +93,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
         SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
     });
+    // `/sys/fs/cgroup` is the mount point systemd lays its cgroup hierarchy on
+    // (it mounts tmpfs then cgroup2 here). On Linux the kernel provides this
+    // empty directory inside sysfs; once sysfs is mounted over /sys it shadows
+    // the rootfs's own /sys/fs/cgroup, so the mount point must exist here or
+    // `mount("/sys/fs/cgroup")` fails with ENOENT.
+    root.add("fs", {
+        let mut fs_dir = DirMapping::new();
+        fs_dir.add(
+            "cgroup",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(fs_dir))
+    });
     SimpleDir::new_maker(fs.clone(), Arc::new(root))
 }
 
