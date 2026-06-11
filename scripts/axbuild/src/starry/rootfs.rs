@@ -105,13 +105,13 @@ pub(super) async fn load_patched_qemu_config(
         }
     };
 
-    let mode = rootfs_patch_mode(request, cargo);
+    let mode = rootfs_patch_mode(cargo);
     if let Some(rootfs) = explicit_rootfs {
         patch_qemu_rootfs_path_with_mode(&mut qemu, rootfs, mode);
     } else if apply_default_args {
         patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None, mode)?;
     }
-    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
+    qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
 
     Ok(qemu)
@@ -283,15 +283,13 @@ pub(crate) fn patch_qemu_rootfs_path_with_mode(
     patch_rootfs(qemu, rootfs_path, mode);
 }
 
-fn rootfs_patch_mode(request: &ResolvedStarryRequest, cargo: &Cargo) -> RootfsPatchMode {
-    if request.plat_dyn == Some(true)
-        || cargo.features.iter().any(|feature| {
-            matches!(
-                feature.as_str(),
-                "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
-            )
-        })
-    {
+fn rootfs_patch_mode(cargo: &Cargo) -> RootfsPatchMode {
+    if cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
+        )
+    }) {
         RootfsPatchMode::ReplaceDriveOnly
     } else {
         RootfsPatchMode::EnsureDiskBootNet

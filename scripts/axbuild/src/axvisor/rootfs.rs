@@ -69,7 +69,7 @@ pub(super) async fn load_patched_qemu_config(
         axvisor.app.workspace_root(),
         explicit_rootfs,
     )?;
-    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
+    qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
     Ok(qemu)
 }
 
