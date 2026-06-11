@@ -47,9 +47,69 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
         }
     }
 
-    /// Adds a device to the set.
-    pub fn add_dev(&mut self, dev: Arc<dyn BaseDeviceOps<R>>) {
+    /// Adds a device to the set after validating its range.
+    pub fn add_dev(&mut self, dev: Arc<dyn BaseDeviceOps<R>>) -> AxResult {
+        let new_range = dev.address_range();
+        let new_type = dev.emu_type();
+
+        if new_range.is_empty() {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "failed to register {} device type {} at range {new_range:#x}: range is empty \
+                     or invalid, possibly due to address overflow",
+                    R::BUS_NAME,
+                    new_type,
+                )
+            );
+        }
+
+        for existing in &self.emu_devices {
+            let existing_range = existing.address_range();
+            let existing_type = existing.emu_type();
+
+            if Arc::ptr_eq(existing, &dev) {
+                return ax_err!(
+                    AlreadyExists,
+                    format_args!(
+                        "failed to register {} device type {} at range {new_range:#x}: the same \
+                         device is already registered as type {} at range {existing_range:#x}",
+                        R::BUS_NAME,
+                        new_type,
+                        existing_type,
+                    )
+                );
+            }
+
+            if new_range == existing_range {
+                return ax_err!(
+                    AlreadyExists,
+                    format_args!(
+                        "failed to register {} device type {} at range {new_range:#x}: range is \
+                         already registered by device type {} at range {existing_range:#x}",
+                        R::BUS_NAME,
+                        new_type,
+                        existing_type,
+                    )
+                );
+            }
+
+            if new_range.overlaps(&existing_range) {
+                return ax_err!(
+                    AddrInUse,
+                    format_args!(
+                        "failed to register {} device type {} at range {new_range:#x}: overlaps \
+                         device type {} at range {existing_range:#x}",
+                        R::BUS_NAME,
+                        new_type,
+                        existing_type,
+                    )
+                );
+            }
+        }
+
         self.emu_devices.push(dev);
+        Ok(())
     }
 
     // pub fn remove_dev(&mut self, ...)
@@ -132,7 +192,7 @@ fn panic_device_not_found(
 /// The implemention for AxVmDevices
 impl AxVmDevices {
     /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> Self {
+    pub fn new(config: AxVmDeviceConfig) -> AxResult<Self> {
         let mut this = Self {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
@@ -146,18 +206,18 @@ impl AxVmDevices {
             ivc_channel: None,
         };
 
-        Self::init(&mut this, &config.emu_configs);
-        this
+        Self::init(&mut this, &config.emu_configs)?;
+        Ok(this)
     }
 
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
+    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) -> AxResult {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        this.add_mmio_dev(Arc::new(Vgic::new()));
+                        this.add_mmio_dev(Arc::new(Vgic::new()))?;
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -197,7 +257,7 @@ impl AxVmDevices {
                                 addr.into(),
                                 Some(size),
                                 pcpu_id + i,
-                            )));
+                            )))?;
 
                             info!(
                                 "GPPT Redistributor initialized for vCPU {i} with base GPA \
@@ -220,7 +280,7 @@ impl AxVmDevices {
                         this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
                             config.base_gpa.into(),
                             Some(config.length),
-                        )));
+                        )))?;
 
                         info!(
                             "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
@@ -253,7 +313,7 @@ impl AxVmDevices {
                             Some(config.length),
                             host_gits_base,
                             false,
-                        )));
+                        )))?;
 
                         info!(
                             "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
@@ -283,7 +343,7 @@ impl AxVmDevices {
                             config.base_gpa.into(),
                             Some(config.length),
                             context_num, // Here only 1 core and should be cpu0
-                        )));
+                        )))?;
                         // PLIC Partial Passthrough Global.
                         info!(
                             "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
@@ -303,8 +363,8 @@ impl AxVmDevices {
                     #[cfg(target_arch = "x86_64")]
                     {
                         let serial = Arc::new(EmulatedSerialPort::new());
-                        this.x86_serial = Some(Arc::clone(&serial));
-                        this.add_port_dev(serial);
+                        this.add_port_dev(serial.clone())?;
+                        this.x86_serial = Some(serial);
                         info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
@@ -322,8 +382,8 @@ impl AxVmDevices {
                             config.base_gpa.into(),
                             Some(config.length),
                         ));
-                        this.x86_ioapic = Some(Arc::clone(&ioapic));
-                        this.add_mmio_dev(ioapic);
+                        this.add_mmio_dev(ioapic.clone())?;
+                        this.x86_ioapic = Some(ioapic);
                         info!(
                             "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
                             config.base_gpa, config.length
@@ -341,8 +401,8 @@ impl AxVmDevices {
                     #[cfg(target_arch = "x86_64")]
                     {
                         let pit = Arc::new(EmulatedPit::new());
-                        this.x86_pit = Some(Arc::clone(&pit));
-                        this.add_port_dev(pit);
+                        this.add_port_dev(pit.clone())?;
+                        this.x86_pit = Some(pit);
                         info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
@@ -378,6 +438,7 @@ impl AxVmDevices {
                 }
             }
         }
+        Ok(())
     }
 
     /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
@@ -429,18 +490,18 @@ impl AxVmDevices {
     }
 
     /// Add a MMIO device to the device list
-    pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) {
-        self.emu_mmio_devices.add_dev(dev);
+    pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) -> AxResult {
+        self.emu_mmio_devices.add_dev(dev)
     }
 
     /// Add a system register device to the device list
-    pub fn add_sys_reg_dev(&mut self, dev: Arc<dyn BaseSysRegDeviceOps>) {
-        self.emu_sys_reg_devices.add_dev(dev);
+    pub fn add_sys_reg_dev(&mut self, dev: Arc<dyn BaseSysRegDeviceOps>) -> AxResult {
+        self.emu_sys_reg_devices.add_dev(dev)
     }
 
     /// Add a port device to the device list
-    pub fn add_port_dev(&mut self, dev: Arc<dyn BasePortDeviceOps>) {
-        self.emu_port_devices.add_dev(dev);
+    pub fn add_port_dev(&mut self, dev: Arc<dyn BasePortDeviceOps>) -> AxResult {
+        self.emu_port_devices.add_dev(dev)
     }
 
     /// Iterates over the MMIO devices in the set.
