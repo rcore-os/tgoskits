@@ -126,16 +126,38 @@ fn parse_network_config() -> ax_net::NetworkConfig {
 
     const IP: &str = env_or_default!("AX_IP");
     const GATEWAY: &str = env_or_default!("AX_GW");
+    const PREFIX_LEN: &str = env_or_default!("AX_PREFIX_LEN");
     const DNS: &str = env_or_default!("AX_DNS");
 
-    let static_ip = if !IP.is_empty() && !GATEWAY.is_empty() {
-        Some(ax_net::StaticIpConfig {
-            ip: IP.parse().expect("Invalid AX_IP"),
-            prefix_len: 24,
-            gateway: GATEWAY.parse().expect("Invalid AX_GW"),
-        })
-    } else {
-        None
+    let ip = IP.trim();
+    let gateway = GATEWAY.trim();
+    let prefix_len = PREFIX_LEN.trim();
+
+    let static_ip = match (!ip.is_empty(), !gateway.is_empty()) {
+        (false, false) => {
+            if !prefix_len.is_empty() {
+                panic!("AX_PREFIX_LEN requires AX_IP and AX_GW");
+            }
+            None
+        }
+        (true, true) => {
+            let prefix_len = if prefix_len.is_empty() {
+                24
+            } else {
+                prefix_len.parse().expect("Invalid AX_PREFIX_LEN")
+            };
+            if prefix_len > 32 {
+                panic!("Invalid AX_PREFIX_LEN: prefix length > 32");
+            }
+            Some(ax_net::StaticIpConfig {
+                ip: ip.parse().expect("Invalid AX_IP"),
+                prefix_len,
+                gateway: gateway.parse().expect("Invalid AX_GW"),
+            })
+        }
+        _ => {
+            panic!("AX_IP and AX_GW must be configured together");
+        }
     };
 
     let dns_servers = DNS
