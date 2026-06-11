@@ -16,7 +16,7 @@ license.workspace = true
 [features]
 default = ["dynamic_debug", "ebpf-kmod"]
 dev-log = []
-kprobe_test = []
+kprobe_test = ["dep:kprobe"]
 ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
