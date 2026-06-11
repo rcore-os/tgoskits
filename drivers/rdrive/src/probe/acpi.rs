@@ -1,5 +1,5 @@
 use alloc::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     format,
     rc::Rc,
     string::{String, ToString},
@@ -12,8 +12,10 @@ use acpi::{
     aml::{
         AmlError, Interpreter,
         namespace::{AmlName, NamespaceLevelKind},
-        object::Object,
+        object::{FieldUnit, FieldUnitKind, FieldUpdateRule, Object, ObjectType},
+        op_region::{OpRegion, RegionSpace},
         pci_routing::{IrqDescriptor, PciRoutingTable, Pin},
+        resource::{InterruptPolarity, InterruptTrigger},
     },
     platform::{
         AcpiPlatform,
@@ -159,8 +161,10 @@ mod tests {
     };
 
     use super::{
-        AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting, is_pci_gsi,
-        route_with_irq_descriptor_flags,
+        AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting, LinkIrqResource,
+        LinkIrqResourceKind, PciLinkAllocator, irq_descriptor_gsi,
+        is_buffer_field_to_field_unit_store_gap, pci_link_irq_field_candidates,
+        route_with_irq_descriptor_flags, select_pci_link_irq,
     };
 
     #[test]
@@ -187,14 +191,124 @@ mod tests {
     }
 
     #[test]
-    fn pci_intx_rejects_legacy_pic_irqs() {
-        for irq in 0..16 {
-            assert!(!is_pci_gsi(irq), "IRQ {irq} should use fallback routing");
-        }
+    fn pci_link_irq_can_route_to_legacy_ioapic_gsi() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
 
-        for irq in [16, 17, 23, 24, 32] {
-            assert!(is_pci_gsi(irq), "GSI {irq} should be accepted");
-        }
+        let descriptor = IrqDescriptor {
+            is_consumer: false,
+            trigger: InterruptTrigger::Level,
+            polarity: InterruptPolarity::ActiveLow,
+            is_shared: true,
+            is_wake_capable: false,
+            irq: 1 << 10,
+        };
+        let gsi = irq_descriptor_gsi(&descriptor).unwrap();
+
+        assert_eq!(gsi, 10);
+        let route = routing
+            .resolve_gsi(gsi)
+            .expect("IOAPIC routes the legacy GSI from the ACPI PCI link");
+        assert_eq!(route.gsi, 10);
+        assert_eq!(route.controller_input, 10);
+    }
+
+    #[test]
+    fn pci_link_irq_selects_prs_when_crs_is_unassigned() {
+        let current = LinkIrqResource {
+            kind: LinkIrqResourceKind::ExtendedIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: true,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveHigh,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 0,
+            },
+            irqs: alloc::vec![0],
+        };
+        let possible = LinkIrqResource {
+            kind: LinkIrqResourceKind::ExtendedIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: true,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveHigh,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 5,
+            },
+            irqs: alloc::vec![5, 10, 11],
+        };
+
+        let link = "\\_SB.LNKA".parse().unwrap();
+        let allocator = PciLinkAllocator::default();
+        let selection = select_pci_link_irq(&link, Some(&current), Some(&possible), &allocator)
+            .expect("possible IRQs should allocate a PCI link");
+
+        assert_eq!(selection.irq, 10);
+        assert!(selection.needs_programming);
+        assert_eq!(selection.resource.irqs, alloc::vec![5, 10, 11]);
+    }
+
+    #[test]
+    fn pci_link_irq_allocator_spreads_unassigned_links() {
+        let possible = LinkIrqResource {
+            kind: LinkIrqResourceKind::ExtendedIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: true,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveHigh,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 5,
+            },
+            irqs: alloc::vec![5, 10, 11],
+        };
+        let first = "\\_SB.LNKA".parse().unwrap();
+        let second = "\\_SB.LNKB".parse().unwrap();
+        let mut allocator = PciLinkAllocator::default();
+
+        let first_selection = select_pci_link_irq(&first, None, Some(&possible), &allocator)
+            .expect("first link should allocate");
+        assert_eq!(first_selection.irq, 10);
+        allocator.commit(&first, first_selection.irq);
+
+        let second_selection = select_pci_link_irq(&second, None, Some(&possible), &allocator)
+            .expect("second link should allocate");
+        assert_eq!(second_selection.irq, 11);
+    }
+
+    #[test]
+    fn pci_link_srs_gap_detection_is_narrow() {
+        let gap = acpi::aml::AmlError::ObjectNotOfExpectedType {
+            expected: acpi::aml::object::ObjectType::Integer,
+            got: acpi::aml::object::ObjectType::BufferField,
+        };
+        let other = acpi::aml::AmlError::ObjectNotOfExpectedType {
+            expected: acpi::aml::object::ObjectType::Buffer,
+            got: acpi::aml::object::ObjectType::BufferField,
+        };
+
+        assert!(is_buffer_field_to_field_unit_store_gap(&gap));
+        assert!(!is_buffer_field_to_field_unit_store_gap(&other));
+    }
+
+    #[test]
+    fn qemu_pci_link_names_map_to_pirq_fields() {
+        assert_eq!(
+            pci_link_irq_field_candidates(&"\\_SB.LNKB".parse().unwrap()),
+            ["\\_SB.PRQB", "\\_SB.PRQ1"]
+        );
+        assert_eq!(
+            pci_link_irq_field_candidates(&"\\_SB.LNKG".parse().unwrap()),
+            ["\\_SB.PRQG"]
+        );
+        assert!(pci_link_irq_field_candidates(&"\\_SB.LNKS".parse().unwrap()).is_empty());
     }
 
     #[test]
@@ -525,6 +639,8 @@ unsafe impl Sync for System {}
 
 struct AcpiPciNamespace {
     interpreter: Interpreter<AcpiHandler>,
+    handler: AcpiHandler,
+    link_allocator: Mutex<PciLinkAllocator>,
     roots: Vec<AcpiPciRoot>,
 }
 
@@ -533,6 +649,7 @@ struct AcpiPciRoot {
     bus: u8,
     path: String,
     prt: Option<PciRoutingTable>,
+    link_prt: Option<PciLinkRoutingTable>,
 }
 
 impl System {
@@ -580,7 +697,7 @@ impl System {
                 info.address, intx_route.root_pin, irq
             )));
         };
-        if !is_pci_gsi(gsi) {
+        if gsi == 0 {
             return Ok(None);
         }
 
@@ -618,6 +735,21 @@ impl System {
             let Some(prt) = &root.prt else {
                 continue;
             };
+
+            if let Some(link_prt) = &root.link_prt
+                && let Some(route) = link_prt
+                    .route(
+                        u16::from(route.root_device),
+                        u16::from(route.root_function),
+                        pin,
+                        &pci.interpreter,
+                        &pci.handler,
+                        &mut pci.link_allocator.lock(),
+                    )
+                    .map_err(on_probe_error)?
+            {
+                return Ok(Some(route));
+            }
 
             match prt.route(
                 u16::from(route.root_device),
@@ -736,6 +868,7 @@ fn read_pci_namespace(
 ) -> Result<AcpiPciNamespace, AcpiError> {
     let handler = root.handler_with_pci_ecam(ecam_regions);
     let tables = unsafe { AcpiTables::from_rsdp(handler.clone(), root.rsdp) }?;
+    let namespace_handler = handler.clone();
     let platform = AcpiPlatform::new(tables, handler)?;
     let interpreter = Interpreter::new_from_platform(&platform)?;
     interpreter.initialize_namespace();
@@ -754,6 +887,7 @@ fn read_pci_namespace(
                         bus,
                         path: path.as_string(),
                         prt: None,
+                        link_prt: None,
                     });
                 }
                 Ok(true)
@@ -763,6 +897,7 @@ fn read_pci_namespace(
 
     for root in &mut roots {
         root.prt = read_pci_routing_table(&interpreter, &root.path)?;
+        root.link_prt = read_pci_link_routing_table(&interpreter, &root.path)?;
     }
     for path in PCI_ROOT_FALLBACK_PATHS {
         if roots.iter().any(|root| root.path == *path) {
@@ -771,15 +906,22 @@ fn read_pci_namespace(
         let Some(prt) = read_pci_routing_table(&interpreter, path)? else {
             continue;
         };
+        let link_prt = read_pci_link_routing_table(&interpreter, path)?;
         roots.push(AcpiPciRoot {
             segment: 0,
             bus: 0,
             path: path.to_string(),
             prt: Some(prt),
+            link_prt,
         });
     }
 
-    Ok(AcpiPciNamespace { interpreter, roots })
+    Ok(AcpiPciNamespace {
+        interpreter,
+        handler: namespace_handler,
+        link_allocator: Mutex::new(PciLinkAllocator::default()),
+        roots,
+    })
 }
 
 fn read_pci_routing_table(
@@ -788,6 +930,18 @@ fn read_pci_routing_table(
 ) -> Result<Option<PciRoutingTable>, AcpiError> {
     let prt_path = AmlName::from_str(&format!("{root_path}._PRT")).map_err(AcpiError::Aml)?;
     match PciRoutingTable::from_prt_path(prt_path, interpreter) {
+        Ok(prt) => Ok(Some(prt)),
+        Err(AmlError::ObjectDoesNotExist(_)) | Err(AmlError::LevelDoesNotExist(_)) => Ok(None),
+        Err(err) => Err(AcpiError::Aml(err)),
+    }
+}
+
+fn read_pci_link_routing_table(
+    interpreter: &Interpreter<AcpiHandler>,
+    root_path: &str,
+) -> Result<Option<PciLinkRoutingTable>, AcpiError> {
+    let prt_path = AmlName::from_str(&format!("{root_path}._PRT")).map_err(AcpiError::Aml)?;
+    match PciLinkRoutingTable::from_prt_path(prt_path, interpreter) {
         Ok(prt) => Ok(Some(prt)),
         Err(AmlError::ObjectDoesNotExist(_)) | Err(AmlError::LevelDoesNotExist(_)) => Ok(None),
         Err(err) => Err(AcpiError::Aml(err)),
@@ -860,6 +1014,743 @@ fn decode_eisa_id(raw: u32) -> Option<String> {
     ))
 }
 
+#[derive(Debug)]
+struct PciLinkRoutingTable {
+    entries: Vec<PciLinkRoute>,
+}
+
+#[derive(Debug)]
+struct PciLinkRoute {
+    device: u16,
+    function: u16,
+    pin: Pin,
+    link: AmlName,
+    source_index: usize,
+}
+
+impl PciLinkRoutingTable {
+    fn from_prt_path(
+        prt_path: AmlName,
+        interpreter: &Interpreter<AcpiHandler>,
+    ) -> Result<Self, AmlError> {
+        let prt = interpreter.evaluate(prt_path.clone(), Vec::new())?;
+        let Object::Package(ref entries) = *prt else {
+            return Err(AmlError::InvalidOperationOnObject {
+                op: acpi::aml::Operation::DecodePrt,
+                typ: prt.typ(),
+            });
+        };
+
+        let mut routes = Vec::new();
+        for entry in entries {
+            let Object::Package(ref package) = **entry else {
+                return Err(AmlError::InvalidOperationOnObject {
+                    op: acpi::aml::Operation::DecodePrt,
+                    typ: entry.typ(),
+                });
+            };
+            if package.len() != 4 {
+                return Err(AmlError::UnexpectedResourceType);
+            }
+
+            let Object::Integer(address) = *package[0] else {
+                return Err(AmlError::PrtInvalidAddress);
+            };
+            let entry_device =
+                u16::try_from((address >> 16) & 0xffff).map_err(|_| AmlError::PrtInvalidAddress)?;
+            let entry_function =
+                u16::try_from(address & 0xffff).map_err(|_| AmlError::PrtInvalidAddress)?;
+            let entry_pin = match *package[1] {
+                Object::Integer(0) => Pin::IntA,
+                Object::Integer(1) => Pin::IntB,
+                Object::Integer(2) => Pin::IntC,
+                Object::Integer(3) => Pin::IntD,
+                _ => return Err(AmlError::PrtInvalidPin),
+            };
+            let Object::String(ref source) = *package[2] else {
+                continue;
+            };
+            let Object::Integer(source_index) = *package[3] else {
+                return Err(AmlError::PrtInvalidSource);
+            };
+            let source_index =
+                usize::try_from(source_index).map_err(|_| AmlError::PrtInvalidSource)?;
+            let link = interpreter
+                .namespace
+                .lock()
+                .search_for_level(&AmlName::from_str(source)?, &prt_path)?;
+            routes.push(PciLinkRoute {
+                device: entry_device,
+                function: entry_function,
+                pin: entry_pin,
+                link,
+                source_index,
+            });
+        }
+
+        Ok(Self { entries: routes })
+    }
+
+    fn route(
+        &self,
+        device: u16,
+        function: u16,
+        pin: Pin,
+        interpreter: &Interpreter<AcpiHandler>,
+        handler: &AcpiHandler,
+        allocator: &mut PciLinkAllocator,
+    ) -> Result<Option<IrqDescriptor>, AmlError> {
+        let Some(route) = self.entries.iter().find(|entry| {
+            entry.device == device
+                && (entry.function == 0xffff || entry.function == function)
+                && entry.pin == pin
+        }) else {
+            return Ok(None);
+        };
+
+        resolve_pci_link_irq(
+            interpreter,
+            handler,
+            allocator,
+            &route.link,
+            route.source_index,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinkIrqResourceKind {
+    SmallIrq,
+    ExtendedIrq,
+}
+
+#[derive(Clone, Debug)]
+struct LinkIrqResource {
+    kind: LinkIrqResourceKind,
+    descriptor: IrqDescriptor,
+    irqs: Vec<u32>,
+}
+
+struct LinkIrqSelection<'a> {
+    resource: &'a LinkIrqResource,
+    irq: u32,
+    needs_programming: bool,
+}
+
+#[derive(Default)]
+struct PciLinkAllocator {
+    assigned: BTreeMap<String, u32>,
+    irq_use_count: BTreeMap<u32, usize>,
+}
+
+impl PciLinkAllocator {
+    fn assigned_irq(&self, link: &AmlName) -> Option<u32> {
+        self.assigned.get(&link.as_string()).copied()
+    }
+
+    fn commit(&mut self, link: &AmlName, irq: u32) {
+        let key = link.as_string();
+        match self.assigned.insert(key, irq) {
+            Some(old_irq) if old_irq == irq => return,
+            Some(old_irq) => {
+                if let Some(count) = self.irq_use_count.get_mut(&old_irq) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+            None => {}
+        }
+        *self.irq_use_count.entry(irq).or_default() += 1;
+    }
+
+    fn penalty(&self, irq: u32) -> usize {
+        let isa_penalty = match irq {
+            0..=2 => usize::MAX / 2,
+            3..=8 => 16 * 16 * 16 * 16,
+            9..=11 => 0,
+            12..=15 => 16 * 16 * 16 * 16 * 16,
+            _ => 0,
+        };
+        isa_penalty + self.irq_use_count.get(&irq).copied().unwrap_or(0) * 16 * 16 * 16
+    }
+}
+
+fn resolve_pci_link_irq(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    allocator: &mut PciLinkAllocator,
+    link: &AmlName,
+    source_index: usize,
+) -> Result<Option<IrqDescriptor>, AmlError> {
+    let current = evaluate_link_irq_resource(interpreter, link, "_CRS", source_index)?;
+    let possible = evaluate_link_irq_resource(interpreter, link, "_PRS", source_index)?;
+    let Some(selection) = select_pci_link_irq(link, current.as_ref(), possible.as_ref(), allocator)
+    else {
+        return Ok(None);
+    };
+
+    if selection.needs_programming {
+        let srs = build_link_srs_buffer(selection.resource, selection.irq)?;
+        let srs_path = AmlName::from_str("_SRS")?.resolve(link)?;
+        if let Err(err) = interpreter.evaluate(srs_path.clone(), vec![Object::Buffer(srs).wrap()]) {
+            if is_buffer_field_to_field_unit_store_gap(&err) {
+                let _ = interpreter.namespace.lock().remove_level(srs_path);
+                // Current acpi's AML Store path cannot coerce a BufferField into a FieldUnit.
+                // SeaBIOS PIRQ link _SRS methods use that exact pattern; program the already
+                // decoded link field directly so PCI link allocation still follows _PRS/_SRS.
+                program_known_pci_link_field(interpreter, handler, link, selection.irq)?;
+            } else {
+                let _ = interpreter.namespace.lock().remove_level(srs_path);
+                return Err(err);
+            }
+        }
+    }
+
+    allocator.commit(link, selection.irq);
+    Ok(Some(selection.resource.descriptor_for_irq(selection.irq)))
+}
+
+fn evaluate_link_irq_resource(
+    interpreter: &Interpreter<AcpiHandler>,
+    link: &AmlName,
+    method: &str,
+    source_index: usize,
+) -> Result<Option<LinkIrqResource>, AmlError> {
+    let path = AmlName::from_str(method)?.resolve(link)?;
+    let value = match interpreter.evaluate_if_present(path.clone(), Vec::new()) {
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(None),
+        Err(err) if method == "_CRS" && is_buffer_field_to_field_unit_store_gap(&err) => {
+            let _ = interpreter.namespace.lock().remove_level(path);
+            return Ok(None);
+        }
+        Err(err) => {
+            let _ = interpreter.namespace.lock().remove_level(path);
+            return Err(err);
+        }
+    };
+    let resources = parse_link_irq_resources(&value)?;
+    Ok(resources.into_iter().nth(source_index))
+}
+
+fn is_buffer_field_to_field_unit_store_gap(err: &AmlError) -> bool {
+    matches!(
+        err,
+        AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::Integer,
+            got: ObjectType::BufferField,
+        }
+    )
+}
+
+fn program_known_pci_link_field(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    link: &AmlName,
+    irq: u32,
+) -> Result<(), AmlError> {
+    let Some(field_path) = known_pci_link_irq_field(interpreter, link) else {
+        return Err(AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::Integer,
+            got: ObjectType::BufferField,
+        });
+    };
+    let field = interpreter.namespace.lock().get(field_path)?.clone();
+    let Object::FieldUnit(ref field) = *field else {
+        return Err(AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::FieldUnit,
+            got: field.typ(),
+        });
+    };
+    write_field_unit(interpreter, handler, field, irq as u64)
+}
+
+fn known_pci_link_irq_field(
+    interpreter: &Interpreter<AcpiHandler>,
+    link: &AmlName,
+) -> Option<AmlName> {
+    let mut namespace = interpreter.namespace.lock();
+    for field in pci_link_irq_field_candidates(link) {
+        let path = AmlName::from_str(field).ok()?;
+        if namespace.get(path.clone()).is_ok() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn pci_link_irq_field_candidates(link: &AmlName) -> &'static [&'static str] {
+    match link.as_string().rsplit('.').next().unwrap_or_default() {
+        "LNKA" => &["\\_SB.PRQA", "\\_SB.PRQ0"],
+        "LNKB" => &["\\_SB.PRQB", "\\_SB.PRQ1"],
+        "LNKC" => &["\\_SB.PRQC", "\\_SB.PRQ2"],
+        "LNKD" => &["\\_SB.PRQD", "\\_SB.PRQ3"],
+        "LNKE" => &["\\_SB.PRQE"],
+        "LNKF" => &["\\_SB.PRQF"],
+        "LNKG" => &["\\_SB.PRQG"],
+        "LNKH" => &["\\_SB.PRQH"],
+        _ => &[],
+    }
+}
+
+fn write_field_unit(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    field: &FieldUnit,
+    value: u64,
+) -> Result<(), AmlError> {
+    let access_width_bits = field.flags.access_type_bytes()? * 8;
+    let FieldUnitKind::Normal { ref region } = field.kind else {
+        return Err(AmlError::LibUnimplemented);
+    };
+    let Object::OpRegion(ref region) = **region else {
+        return Err(AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::OpRegion,
+            got: region.typ(),
+        });
+    };
+
+    let value_bytes = value.to_le_bytes();
+    let native_accesses =
+        (field.bit_length + (field.bit_index % access_width_bits)).div_ceil(access_width_bits);
+    let mut written_so_far = 0;
+
+    for i in 0..native_accesses {
+        let aligned_bit = align_down(field.bit_index + i * access_width_bits, access_width_bits);
+        let dst_index = if i == 0 {
+            field.bit_index % access_width_bits
+        } else {
+            0
+        };
+        let remaining = field.bit_length - written_so_far;
+        let length = if i == 0 {
+            usize::min(
+                remaining,
+                access_width_bits - (field.bit_index % access_width_bits),
+            )
+        } else {
+            usize::min(remaining, access_width_bits)
+        };
+
+        let mut bytes = if dst_index > 0 || remaining < access_width_bits {
+            match field.flags.update_rule() {
+                FieldUpdateRule::Preserve => read_native_region(
+                    interpreter,
+                    handler,
+                    region,
+                    aligned_bit / 8,
+                    access_width_bits / 8,
+                )?
+                .to_le_bytes(),
+                FieldUpdateRule::WriteAsOnes => [0xff; 8],
+                FieldUpdateRule::WriteAsZeros => [0; 8],
+            }
+        } else {
+            [0; 8]
+        };
+
+        copy_bits(&value_bytes, written_so_far, &mut bytes, dst_index, length);
+        write_native_region(
+            interpreter,
+            handler,
+            region,
+            aligned_bit / 8,
+            access_width_bits / 8,
+            u64::from_le_bytes(bytes),
+        )?;
+        written_so_far += length;
+    }
+
+    Ok(())
+}
+
+fn read_native_region(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    region: &OpRegion,
+    offset: usize,
+    length: usize,
+) -> Result<u64, AmlError> {
+    match region.space {
+        RegionSpace::SystemMemory => {
+            let address = region.base as usize + offset;
+            match length {
+                1 => Ok(u64::from(handler.read_u8(address))),
+                2 => Ok(u64::from(handler.read_u16(address))),
+                4 => Ok(u64::from(handler.read_u32(address))),
+                8 => Ok(handler.read_u64(address)),
+                _ => Err(AmlError::InvalidFieldFlags),
+            }
+        }
+        RegionSpace::SystemIO => {
+            let address = region.base as u16 + offset as u16;
+            match length {
+                1 => Ok(u64::from(handler.read_io_u8(address))),
+                2 => Ok(u64::from(handler.read_io_u16(address))),
+                4 => Ok(u64::from(handler.read_io_u32(address))),
+                _ => Err(AmlError::InvalidFieldFlags),
+            }
+        }
+        RegionSpace::PciConfig => {
+            let address = pci_address_for_region(interpreter, region)?;
+            let offset = region.base as u16 + offset as u16;
+            match length {
+                1 => Ok(u64::from(handler.read_pci_u8(address, offset))),
+                2 => Ok(u64::from(handler.read_pci_u16(address, offset))),
+                4 => Ok(u64::from(handler.read_pci_u32(address, offset))),
+                _ => Err(AmlError::InvalidFieldFlags),
+            }
+        }
+        _ => Err(AmlError::NoHandlerForRegionAccess(region.space)),
+    }
+}
+
+fn write_native_region(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    region: &OpRegion,
+    offset: usize,
+    length: usize,
+    value: u64,
+) -> Result<(), AmlError> {
+    match region.space {
+        RegionSpace::SystemMemory => {
+            let address = region.base as usize + offset;
+            match length {
+                1 => handler.write_u8(address, value as u8),
+                2 => handler.write_u16(address, value as u16),
+                4 => handler.write_u32(address, value as u32),
+                8 => handler.write_u64(address, value),
+                _ => return Err(AmlError::InvalidFieldFlags),
+            }
+            Ok(())
+        }
+        RegionSpace::SystemIO => {
+            let address = region.base as u16 + offset as u16;
+            match length {
+                1 => handler.write_io_u8(address, value as u8),
+                2 => handler.write_io_u16(address, value as u16),
+                4 => handler.write_io_u32(address, value as u32),
+                _ => return Err(AmlError::InvalidFieldFlags),
+            }
+            Ok(())
+        }
+        RegionSpace::PciConfig => {
+            let address = pci_address_for_region(interpreter, region)?;
+            let offset = region.base as u16 + offset as u16;
+            match length {
+                1 => handler.write_pci_u8(address, offset, value as u8),
+                2 => handler.write_pci_u16(address, offset, value as u16),
+                4 => handler.write_pci_u32(address, offset, value as u32),
+                _ => return Err(AmlError::InvalidFieldFlags),
+            }
+            Ok(())
+        }
+        _ => Err(AmlError::NoHandlerForRegionAccess(region.space)),
+    }
+}
+
+fn pci_address_for_region(
+    interpreter: &Interpreter<AcpiHandler>,
+    region: &OpRegion,
+) -> Result<acpi::PciAddress, AmlError> {
+    let path = &region.parent_device_path;
+    let segment = eval_integer_child(interpreter, path, "_SEG")?.unwrap_or(0) as u16;
+    let bus = eval_integer_child(interpreter, path, "_BBN")?.unwrap_or(0) as u8;
+    let address = eval_integer_child(interpreter, path, "_ADR")?.unwrap_or(0);
+    Ok(acpi::PciAddress::new(
+        segment,
+        bus,
+        ((address >> 16) & 0xff) as u8,
+        (address & 0xff) as u8,
+    ))
+}
+
+fn copy_bits(src: &[u8], src_offset: usize, dst: &mut [u8], dst_offset: usize, length: usize) {
+    for bit in 0..length {
+        let src_bit = src_offset + bit;
+        let dst_bit = dst_offset + bit;
+        let is_set = src[src_bit / 8] & (1 << (src_bit % 8)) != 0;
+        if is_set {
+            dst[dst_bit / 8] |= 1 << (dst_bit % 8);
+        } else {
+            dst[dst_bit / 8] &= !(1 << (dst_bit % 8));
+        }
+    }
+}
+
+fn align_down(value: usize, align: usize) -> usize {
+    assert!(align.is_power_of_two());
+    value & !(align - 1)
+}
+
+fn parse_link_irq_resources(
+    value: &acpi::aml::object::WrappedObject,
+) -> Result<Vec<LinkIrqResource>, AmlError> {
+    let Object::Buffer(ref bytes) = **value else {
+        return Err(AmlError::InvalidOperationOnObject {
+            op: acpi::aml::Operation::ParseResource,
+            typ: value.typ(),
+        });
+    };
+
+    let mut resources = Vec::new();
+    let mut rest = bytes.as_slice();
+    while !rest.is_empty() {
+        if rest[0] & 0x80 != 0 {
+            if rest.len() < 3 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let length = usize::from(u16::from_le_bytes([rest[1], rest[2]]));
+            if rest.len() < length + 3 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let descriptor = &rest[..length + 3];
+            if rest[0] & 0x7f == 0x09 {
+                resources.push(parse_extended_irq_resource(descriptor)?);
+            }
+            rest = &rest[length + 3..];
+        } else {
+            let length = usize::from(rest[0] & 0b111);
+            if rest.len() < length + 1 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let descriptor = &rest[..length + 1];
+            match (rest[0] >> 3) & 0x0f {
+                0x04 => resources.push(parse_small_irq_resource(descriptor)?),
+                0x0f => break,
+                _ => {}
+            }
+            rest = &rest[length + 1..];
+        }
+    }
+    Ok(resources)
+}
+
+fn parse_extended_irq_resource(bytes: &[u8]) -> Result<LinkIrqResource, AmlError> {
+    if bytes.len() < 5 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    let count = usize::from(bytes[4]);
+    if bytes.len() < 5 + count * 4 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+
+    let mut irqs = Vec::new();
+    for idx in 0..count {
+        let start = 5 + idx * 4;
+        irqs.push(u32::from_le_bytes([
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+        ]));
+    }
+
+    Ok(LinkIrqResource {
+        kind: LinkIrqResourceKind::ExtendedIrq,
+        descriptor: IrqDescriptor {
+            is_consumer: bytes[3] & 0b0000_0001 != 0,
+            trigger: if bytes[3] & 0b0000_0010 != 0 {
+                InterruptTrigger::Edge
+            } else {
+                InterruptTrigger::Level
+            },
+            polarity: if bytes[3] & 0b0000_0100 != 0 {
+                InterruptPolarity::ActiveLow
+            } else {
+                InterruptPolarity::ActiveHigh
+            },
+            is_shared: bytes[3] & 0b0000_1000 != 0,
+            is_wake_capable: bytes[3] & 0b0001_0000 != 0,
+            irq: irqs.first().copied().unwrap_or(0),
+        },
+        irqs,
+    })
+}
+
+fn parse_small_irq_resource(bytes: &[u8]) -> Result<LinkIrqResource, AmlError> {
+    if bytes.len() != 3 && bytes.len() != 4 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+
+    let mask = u16::from_le_bytes([bytes[1], bytes[2]]);
+    let mut irqs = Vec::new();
+    for irq in 0..16 {
+        if mask & (1 << irq) != 0 {
+            irqs.push(irq);
+        }
+    }
+
+    let (trigger, polarity, is_shared, is_wake_capable) = if bytes.len() == 4 {
+        (
+            if bytes[3] & 0b0000_0001 != 0 {
+                InterruptTrigger::Edge
+            } else {
+                InterruptTrigger::Level
+            },
+            if bytes[3] & 0b0000_1000 != 0 {
+                InterruptPolarity::ActiveLow
+            } else {
+                InterruptPolarity::ActiveHigh
+            },
+            bytes[3] & 0b0001_0000 != 0,
+            bytes[3] & 0b0010_0000 != 0,
+        )
+    } else {
+        (
+            InterruptTrigger::Edge,
+            InterruptPolarity::ActiveHigh,
+            false,
+            false,
+        )
+    };
+
+    Ok(LinkIrqResource {
+        kind: LinkIrqResourceKind::SmallIrq,
+        descriptor: IrqDescriptor {
+            is_consumer: false,
+            trigger,
+            polarity,
+            is_shared,
+            is_wake_capable,
+            irq: u32::from(mask),
+        },
+        irqs,
+    })
+}
+
+fn select_pci_link_irq<'a>(
+    link: &AmlName,
+    current: Option<&'a LinkIrqResource>,
+    possible: Option<&'a LinkIrqResource>,
+    allocator: &PciLinkAllocator,
+) -> Option<LinkIrqSelection<'a>> {
+    if let Some(irq) = allocator.assigned_irq(link) {
+        let resource = possible
+            .filter(|possible| possible.irqs.contains(&irq))
+            .or(current.filter(|current| current.irqs.contains(&irq)))?;
+        return Some(LinkIrqSelection {
+            resource,
+            irq,
+            needs_programming: current.is_none_or(|current| current.irqs.first() != Some(&irq)),
+        });
+    }
+
+    if let Some(current) = current
+        && let Some(irq) = current.irqs.first().copied().filter(|irq| *irq != 0)
+        && possible.is_none_or(|possible| possible.irqs.contains(&irq))
+    {
+        return Some(LinkIrqSelection {
+            resource: possible.unwrap_or(current),
+            irq,
+            needs_programming: false,
+        });
+    }
+
+    let possible = possible?;
+    let irq = preferred_pci_link_irq(&possible.irqs, allocator)?;
+    Some(LinkIrqSelection {
+        resource: possible,
+        irq,
+        needs_programming: true,
+    })
+}
+
+fn preferred_pci_link_irq(irqs: &[u32], allocator: &PciLinkAllocator) -> Option<u32> {
+    irqs.iter()
+        .copied()
+        .filter(|irq| *irq != 0)
+        .min_by_key(|irq| (allocator.penalty(*irq), link_irq_tiebreaker(*irq)))
+}
+
+fn link_irq_tiebreaker(irq: u32) -> usize {
+    match irq {
+        10 => 0,
+        11 => 1,
+        9 => 2,
+        16.. => 3 + irq as usize,
+        _ => 1024 + irq as usize,
+    }
+}
+
+fn build_link_srs_buffer(resource: &LinkIrqResource, irq: u32) -> Result<Vec<u8>, AmlError> {
+    match resource.kind {
+        LinkIrqResourceKind::ExtendedIrq => {
+            let mut buffer = Vec::new();
+            buffer.extend_from_slice(&[
+                0x89,
+                0x06,
+                0x00,
+                extended_irq_flags(&resource.descriptor),
+                1,
+            ]);
+            buffer.extend_from_slice(&irq.to_le_bytes());
+            buffer.extend_from_slice(&[0x79, 0x00]);
+            Ok(buffer)
+        }
+        LinkIrqResourceKind::SmallIrq => {
+            if irq >= 16 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let mask = 1u16 << irq;
+            let mut buffer = Vec::new();
+            buffer.push((0x04 << 3) | 3);
+            buffer.extend_from_slice(&mask.to_le_bytes());
+            buffer.push(small_irq_flags(&resource.descriptor));
+            buffer.extend_from_slice(&[0x79, 0x00]);
+            Ok(buffer)
+        }
+    }
+}
+
+impl LinkIrqResource {
+    fn descriptor_for_irq(&self, irq: u32) -> IrqDescriptor {
+        let mut descriptor = self.descriptor.clone();
+        descriptor.irq = match self.kind {
+            LinkIrqResourceKind::SmallIrq if irq < 16 => 1u32 << irq,
+            _ => irq,
+        };
+        descriptor
+    }
+}
+
+fn extended_irq_flags(descriptor: &IrqDescriptor) -> u8 {
+    let mut flags = 0;
+    if descriptor.is_consumer {
+        flags |= 1 << 0;
+    }
+    if descriptor.trigger == InterruptTrigger::Edge {
+        flags |= 1 << 1;
+    }
+    if descriptor.polarity == InterruptPolarity::ActiveLow {
+        flags |= 1 << 2;
+    }
+    if descriptor.is_shared {
+        flags |= 1 << 3;
+    }
+    if descriptor.is_wake_capable {
+        flags |= 1 << 4;
+    }
+    flags
+}
+
+fn small_irq_flags(descriptor: &IrqDescriptor) -> u8 {
+    let mut flags = 0;
+    if descriptor.trigger == InterruptTrigger::Edge {
+        flags |= 1 << 0;
+    }
+    if descriptor.polarity == InterruptPolarity::ActiveLow {
+        flags |= 1 << 3;
+    }
+    if descriptor.is_shared {
+        flags |= 1 << 4;
+    }
+    if descriptor.is_wake_capable {
+        flags |= 1 << 5;
+    }
+    flags
+}
+
 fn acpi_pin(interrupt_pin: u8) -> Result<Pin, OnProbeError> {
     match interrupt_pin {
         1 => Ok(Pin::IntA),
@@ -890,10 +1781,6 @@ fn route_with_irq_descriptor_flags(
         polarity: irq_polarity(descriptor.polarity),
         ..route
     }
-}
-
-fn is_pci_gsi(irq: u32) -> bool {
-    irq >= 16
 }
 
 fn irq_trigger(trigger: acpi::aml::resource::InterruptTrigger) -> AcpiIrqTrigger {

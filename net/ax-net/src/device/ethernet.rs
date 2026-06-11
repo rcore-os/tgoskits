@@ -155,6 +155,7 @@ impl EthernetDevice {
                 match registrar.register_shared(&name, irq, action) {
                     Ok(registration) => {
                         inner.irq_registration.call_once(|| registration);
+                        inner.driver.lock().enable_irq();
                     }
                     Err(err) => {
                         warn!(
