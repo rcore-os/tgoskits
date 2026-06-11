@@ -12,13 +12,13 @@ int __fail = 0;
 int __skip = 0;
 int __observe = 0;
 
-/* membarrier command constants matching the StarryOS implementation */
+/* membarrier command constants from Linux UAPI */
 #define MEMBARRIER_CMD_QUERY                     0
-#define MEMBARRIER_CMD_GLOBAL                    1
-#define MEMBARRIER_CMD_GLOBAL_EXPEDITED          2
-#define MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED 3
-#define MEMBARRIER_CMD_PRIVATE_EXPEDITED         4
-#define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED 5
+#define MEMBARRIER_CMD_GLOBAL                    (1 << 0)
+#define MEMBARRIER_CMD_GLOBAL_EXPEDITED          (1 << 1)
+#define MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED (1 << 2)
+#define MEMBARRIER_CMD_PRIVATE_EXPEDITED         (1 << 3)
+#define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED (1 << 4)
 
 /* These are NOT supported by current StarryOS impl */
 #define MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE     32
@@ -27,12 +27,11 @@ int __observe = 0;
 #define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ 256
 
 /*
- * Expected SUPPORTED_COMMANDS bitmask from the StarryOS implementation:
- * (1 << GLOBAL) | (1 << GLOBAL_EXPEDITED) |
- * (1 << REGISTER_GLOBAL_EXPEDITED) | (1 << PRIVATE_EXPEDITED) |
- * (1 << REGISTER_PRIVATE_EXPEDITED) = 0b111110 = 62
+ * Expected SUPPORTED_COMMANDS bitmask from Linux UAPI command values:
+ * GLOBAL | GLOBAL_EXPEDITED | REGISTER_GLOBAL_EXPEDITED |
+ * PRIVATE_EXPEDITED | REGISTER_PRIVATE_EXPEDITED = 0b11111 = 31
  */
-#define EXPECTED_SUPPORTED_MASK 62
+#define EXPECTED_SUPPORTED_MASK 31
 
 static int membarrier(int cmd, unsigned flags, int cpu_id)
 {
@@ -44,9 +43,9 @@ static bool query_advertises(int cmd)
     long ret = membarrier(MEMBARRIER_CMD_QUERY, 0, 0);
     if (ret < 0)
         return false;
-    if (cmd < 0 || cmd >= (int)(8 * sizeof(long)))
+    if (cmd <= 0 || (cmd & (cmd - 1)) != 0)
         return false;
-    return (ret & (1L << cmd)) != 0;
+    return (ret & cmd) != 0;
 }
 
 static void part_01_query(void)
@@ -56,31 +55,29 @@ static void part_01_query(void)
     if (ret < 0)
         return;
 
-    CHECK((ret & (1 << MEMBARRIER_CMD_QUERY)) == 0,
+    CHECK((ret & MEMBARRIER_CMD_QUERY) == 0,
           "QUERY does not include QUERY bit itself");
 
-    CHECK((ret & (1 << MEMBARRIER_CMD_GLOBAL)) != 0,
-          "QUERY advertises GLOBAL (bit 1)");
+    CHECK((ret & MEMBARRIER_CMD_GLOBAL) != 0,
+          "QUERY advertises GLOBAL");
 
-    CHECK((ret & (1 << MEMBARRIER_CMD_GLOBAL_EXPEDITED)) != 0,
-          "QUERY advertises GLOBAL_EXPEDITED (bit 2)");
+    CHECK((ret & MEMBARRIER_CMD_GLOBAL_EXPEDITED) != 0,
+          "QUERY advertises GLOBAL_EXPEDITED");
 
-    CHECK((ret & (1 << MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED)) != 0,
-          "QUERY advertises REGISTER_GLOBAL_EXPEDITED (bit 3)");
+    CHECK((ret & MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED) != 0,
+          "QUERY advertises REGISTER_GLOBAL_EXPEDITED");
 
-    CHECK((ret & (1 << MEMBARRIER_CMD_PRIVATE_EXPEDITED)) != 0,
-          "QUERY advertises PRIVATE_EXPEDITED (bit 4)");
+    CHECK((ret & MEMBARRIER_CMD_PRIVATE_EXPEDITED) != 0,
+          "QUERY advertises PRIVATE_EXPEDITED");
 
-    CHECK((ret & (1 << MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED)) != 0,
-          "QUERY advertises REGISTER_PRIVATE_EXPEDITED (bit 5)");
+    CHECK((ret & MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED) != 0,
+          "QUERY advertises REGISTER_PRIVATE_EXPEDITED");
 
     CHECK(ret == EXPECTED_SUPPORTED_MASK,
-          "QUERY returns exact expected bitmask (62)");
+          "QUERY returns exact expected bitmask (31)");
 
-    CHECK((ret & (1UL << MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE)) == 0,
+    CHECK((ret & MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE) == 0,
           "QUERY does NOT advertise PRIVATE_EXPEDITED_SYNC_CORE (not implemented)");
-    /* RSEQ=128 cannot be tested with bit shift on 64-bit long;
-     * the return value is a 64-bit mask and RSEQ is beyond its range anyway. */
 }
 
 static void part_02_flags_are_rejected(void)
@@ -112,6 +109,8 @@ static void part_03_global_commands(void)
 {
     CHECK_RET(membarrier(MEMBARRIER_CMD_GLOBAL, 0, 0), 0,
               "GLOBAL with flags=0 returns 0");
+    CHECK_ERR(membarrier(MEMBARRIER_CMD_GLOBAL_EXPEDITED, 0, 0), EPERM,
+              "GLOBAL_EXPEDITED before registration returns EPERM");
     CHECK_RET(membarrier(MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, 0, 0), 0,
               "REGISTER_GLOBAL_EXPEDITED succeeds");
     CHECK_RET(membarrier(MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, 0, 0), 0,
