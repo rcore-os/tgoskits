@@ -3,6 +3,7 @@
 These probes are still built and installed into `/usr/bin/starry-known-fail`,
 but the grouped CI runner only executes `/usr/bin/starry-test-suit/*`.
 
+- `test-ebpf-basics`: positive `bpf(2)` map/program operations require `starry-kernel/ebpf-kmod`.
 - `test-ebpf-advanced`: `BPF_OBJ_CLOSE` map/program fd semantics.
 - `test-ebpf-attach`: perf kprobe plus BPF attach/link semantics.
 - `test-epoll-eventfd`: `EPOLLET` eventfd wakeup consumption.
