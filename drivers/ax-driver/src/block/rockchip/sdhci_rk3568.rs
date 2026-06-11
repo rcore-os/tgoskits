@@ -407,18 +407,7 @@ impl rdif_block::Interface for BlockDevice {
     }
 
     fn queue_limits(&self) -> rdif_block::QueueLimits {
-        rdif_block::QueueLimits {
-            dma_mask: u32::MAX as u64,
-            dma_alignment: BLOCK_SIZE,
-            max_inflight: 1,
-            max_blocks_per_request: u16::MAX as u32 + 1,
-            max_segments: 1,
-            max_segment_size: usize::MAX,
-            supported_flags: rdif_block::RequestFlags::NONE,
-            supports_flush: false,
-            supports_discard: false,
-            supports_write_zeroes: false,
-        }
+        rk3568_queue_limits(u32::MAX as u64)
     }
 
     fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
@@ -528,18 +517,7 @@ unsafe impl rdif_block::IQueue for BlockQueue {
                 name: Some("rockchip-rk3568-sdhci"),
                 ..rdif_block::DeviceInfo::new(self.capacity_blocks, BLOCK_SIZE)
             },
-            limits: rdif_block::QueueLimits {
-                dma_mask: self.dma.dma_mask(),
-                dma_alignment: BLOCK_SIZE,
-                max_inflight: 1,
-                max_blocks_per_request: u16::MAX as u32 + 1,
-                max_segments: 1,
-                max_segment_size: usize::MAX,
-                supported_flags: rdif_block::RequestFlags::NONE,
-                supports_flush: false,
-                supports_discard: false,
-                supports_write_zeroes: false,
-            },
+            limits: rk3568_queue_limits(self.dma.dma_mask()),
         }
     }
 
@@ -685,6 +663,26 @@ fn rk3568_block_transfer_mode() -> BlockTransferMode {
     BlockTransferMode::Fifo
 }
 
+fn rk3568_queue_limits(dma_mask: u64) -> rdif_block::QueueLimits {
+    let (max_blocks_per_request, max_segment_size) = match rk3568_block_transfer_mode() {
+        BlockTransferMode::Fifo => (1, BLOCK_SIZE),
+        BlockTransferMode::Dma => (u16::MAX as u32 + 1, usize::MAX),
+        _ => (1, BLOCK_SIZE),
+    };
+    rdif_block::QueueLimits {
+        dma_mask,
+        dma_alignment: BLOCK_SIZE,
+        max_inflight: 1,
+        max_blocks_per_request,
+        max_segments: 1,
+        max_segment_size,
+        supported_flags: rdif_block::RequestFlags::NONE,
+        supports_flush: false,
+        supports_discard: false,
+        supports_write_zeroes: false,
+    }
+}
+
 fn submit_read_request(
     host: &mut Sdhci,
     start_block: u32,
@@ -814,5 +812,14 @@ mod tests {
     #[test]
     fn rk3568_block_io_uses_fifo_transfer_mode() {
         assert_eq!(rk3568_block_transfer_mode(), BlockTransferMode::Fifo);
+    }
+
+    #[test]
+    fn rk3568_fifo_queue_limits_single_block_requests() {
+        let limits = rk3568_queue_limits(u32::MAX as u64);
+
+        assert_eq!(limits.max_blocks_per_request, 1);
+        assert_eq!(limits.max_segment_size, BLOCK_SIZE);
+        assert_eq!(limits.max_segments, 1);
     }
 }
