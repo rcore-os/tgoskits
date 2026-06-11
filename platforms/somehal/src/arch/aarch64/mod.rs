@@ -24,8 +24,8 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn secondary_init_intc(_cpu_idx: usize) {
-        gic::init_current_cpu();
+    fn secondary_init_intc(cpu_idx: usize) {
+        gic::init_cpu(cpu_idx);
     }
 
     fn secondary_init_systick() {
