@@ -280,7 +280,7 @@ fn render_stat() -> String {
 }
 
 fn render_proc_net_arp() -> String {
-    let mut entries = axnet::arp_entries();
+    let mut entries = ax_net::arp_entries();
     entries.sort_by(|a, b| {
         a.device
             .cmp(&b.device)
@@ -1322,6 +1322,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "pid_max",
                 SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
+            );
+            // Linux exposes the kernel release/type here. Apps + libraries read
+            // these at init for feature detection (e.g. modernc.org/fileutil,
+            // pulled in by juicefs's sqlite meta store, panics on open() of a
+            // missing osrelease). Report a recent release so apps take modern
+            // paths starry supports; ostype is always "Linux".
+            kernel.add(
+                "osrelease",
+                SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
+            );
+            kernel.add(
+                "ostype",
+                SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
             );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))

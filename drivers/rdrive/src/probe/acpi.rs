@@ -1,5 +1,5 @@
 use alloc::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     format,
     rc::Rc,
     string::{String, ToString},
@@ -12,7 +12,8 @@ use acpi::{
     aml::{
         AmlError, Interpreter,
         namespace::{AmlName, NamespaceLevelKind},
-        object::Object,
+        object::{FieldUnit, FieldUnitKind, FieldUpdateRule, Object, ObjectType},
+        op_region::{OpRegion, RegionSpace},
         pci_routing::{IrqDescriptor, PciRoutingTable, Pin},
         resource::{InterruptPolarity, InterruptTrigger},
     },
@@ -22,17 +23,21 @@ use acpi::{
         pci::PciConfigRegions,
     },
 };
-pub use rdif_base::irq::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
+pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use spin::{Mutex, Once};
 
 use crate::{
     DeviceId, PlatformDevice,
     error::DriverError,
-    probe::{OnProbeError, ProbeError, pci::PciAddress},
+    probe::{
+        OnProbeError, ProbeError,
+        pci::{PciAddress, PciInfo, PciIntxRoute},
+    },
     register::{DriverRegister, ProbeKind},
 };
 
 pub const PCI_INTX_VECTOR_BASE: usize = 0x30;
+const LOONGARCH_PCH_PIC_GSI_COUNT: u16 = 256;
 const PCI_ROOT_FALLBACK_PATHS: &[&str] = &["\\_SB.PCI0", "\\_SB.PCI1", "\\_SB.PC00", "\\_SB.PC01"];
 
 static SYSTEM: Once<System> = Once::new();
@@ -92,22 +97,80 @@ pub struct AcpiIoApic {
 }
 
 impl AcpiIoApic {
+    fn gsi_source(self) -> AcpiGsiSource {
+        AcpiGsiSource {
+            controller: AcpiGsiController::IoApic,
+            controller_id: u16::from(self.id),
+            controller_address: u64::from(self.address),
+            gsi_base: self.gsi_base,
+            gsi_count: u16::from(self.redirection_entries),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpiPchPic {
+    pub id: u16,
+    pub address: u64,
+    pub mmio_size: u16,
+    pub gsi_count: u16,
+    pub gsi_base: u32,
+}
+
+impl AcpiPchPic {
+    fn gsi_source(self) -> AcpiGsiSource {
+        AcpiGsiSource {
+            controller: AcpiGsiController::PchPic,
+            controller_id: self.id,
+            controller_address: self.address,
+            gsi_base: self.gsi_base,
+            gsi_count: self.gsi_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AcpiGsiSource {
+    controller: AcpiGsiController,
+    controller_id: u16,
+    controller_address: u64,
+    gsi_base: u32,
+    gsi_count: u16,
+}
+
+impl AcpiGsiSource {
     fn contains_gsi(self, gsi: u32) -> bool {
         let start = self.gsi_base;
-        let end = start.saturating_add(u32::from(self.redirection_entries));
+        let end = start.saturating_add(u32::from(self.gsi_count));
         (start..end).contains(&gsi)
+    }
+
+    fn route(self, gsi: u32) -> Option<AcpiGsiRoute> {
+        let controller_input = u8::try_from(gsi.checked_sub(self.gsi_base)?).ok()?;
+        Some(AcpiGsiRoute {
+            gsi,
+            vector: PCI_INTX_VECTOR_BASE + gsi as usize,
+            controller: self.controller,
+            controller_id: self.controller_id,
+            controller_address: self.controller_address,
+            controller_input,
+            trigger: AcpiIrqTrigger::Level,
+            polarity: AcpiIrqPolarity::ActiveLow,
+        })
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpiRouting {
     io_apics: Vec<AcpiIoApic>,
+    pch_pics: Vec<AcpiPchPic>,
 }
 
 impl AcpiRouting {
     pub const fn new() -> Self {
         Self {
             io_apics: Vec::new(),
+            pch_pics: Vec::new(),
         }
     }
 
@@ -119,22 +182,26 @@ impl AcpiRouting {
         &self.io_apics
     }
 
+    pub fn add_pch_pic(&mut self, pch_pic: AcpiPchPic) {
+        self.pch_pics.push(pch_pic);
+    }
+
+    pub fn pch_pics(&self) -> &[AcpiPchPic] {
+        &self.pch_pics
+    }
+
     pub fn resolve_gsi(&self, gsi: u32) -> Option<AcpiGsiRoute> {
-        let io_apic = self
-            .io_apics
+        self.gsi_sources()
+            .find(|source| source.contains_gsi(gsi))?
+            .route(gsi)
+    }
+
+    fn gsi_sources(&self) -> impl Iterator<Item = AcpiGsiSource> + '_ {
+        self.io_apics
             .iter()
             .copied()
-            .find(|io_apic| io_apic.contains_gsi(gsi))?;
-        let input = u8::try_from(gsi.saturating_sub(io_apic.gsi_base)).ok()?;
-        Some(AcpiGsiRoute {
-            gsi,
-            vector: PCI_INTX_VECTOR_BASE + gsi as usize,
-            controller_id: io_apic.id,
-            controller_address: io_apic.address,
-            controller_input: input,
-            trigger: AcpiIrqTrigger::Level,
-            polarity: AcpiIrqPolarity::ActiveLow,
-        })
+            .map(AcpiIoApic::gsi_source)
+            .chain(self.pch_pics.iter().copied().map(AcpiPchPic::gsi_source))
     }
 
     pub fn resolve_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
@@ -151,7 +218,17 @@ impl Default for AcpiRouting {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting};
+    use acpi::aml::{
+        pci_routing::IrqDescriptor,
+        resource::{InterruptPolarity, InterruptTrigger},
+    };
+
+    use super::{
+        AcpiGsiController, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiPchPic, AcpiRouting,
+        LinkIrqResource, LinkIrqResourceKind, PciLinkAllocator, irq_descriptor_gsi,
+        is_buffer_field_to_field_unit_store_gap, pci_link_irq_field_candidates,
+        route_with_irq_descriptor_flags, select_pci_link_irq,
+    };
 
     #[test]
     fn ioapic_routes_map_gsi_to_stable_vector() {
@@ -167,6 +244,7 @@ mod tests {
             .resolve_gsi(16)
             .expect("gsi 16 should be handled by the IOAPIC");
         assert_eq!(irq.gsi, 16);
+        assert_eq!(irq.controller, AcpiGsiController::IoApic);
         assert_eq!(irq.controller_id, 0);
         assert_eq!(irq.controller_address, 0xfec0_0000);
         assert_eq!(irq.controller_input, 16);
@@ -175,21 +253,221 @@ mod tests {
         assert_eq!(irq.polarity, AcpiIrqPolarity::ActiveLow);
         assert!(routing.resolve_gsi(24).is_none());
     }
+
+    #[test]
+    fn pci_link_irq_can_route_to_legacy_ioapic_gsi() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        let descriptor = IrqDescriptor {
+            is_consumer: false,
+            trigger: InterruptTrigger::Level,
+            polarity: InterruptPolarity::ActiveLow,
+            is_shared: true,
+            is_wake_capable: false,
+            irq: 1 << 10,
+        };
+        let gsi = irq_descriptor_gsi(&descriptor).unwrap();
+
+        assert_eq!(gsi, 10);
+        let route = routing
+            .resolve_gsi(gsi)
+            .expect("IOAPIC routes the legacy GSI from the ACPI PCI link");
+        assert_eq!(route.gsi, 10);
+        assert_eq!(route.controller_input, 10);
+    }
+
+    #[test]
+    fn pch_pic_routes_map_acpi_gsi_to_controller_input() {
+        let mut routing = AcpiRouting::new();
+        routing.add_pch_pic(AcpiPchPic {
+            id: 1,
+            address: 0x1000_0000,
+            mmio_size: 0x1000,
+            gsi_count: 64,
+            gsi_base: 64,
+        });
+
+        let route = routing
+            .resolve_gsi(82)
+            .expect("GSI 82 should be covered by the PCH-PIC");
+        assert_eq!(route.controller, AcpiGsiController::PchPic);
+        assert_eq!(route.controller_id, 1);
+        assert_eq!(route.controller_address, 0x1000_0000);
+        assert_eq!(route.controller_input, 18);
+        assert_eq!(route.vector, 0x30 + 82);
+        assert!(routing.resolve_gsi(128).is_none());
+    }
+
+    #[test]
+    fn pci_link_irq_selects_prs_when_crs_is_unassigned() {
+        let current = LinkIrqResource {
+            kind: LinkIrqResourceKind::ExtendedIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: true,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveHigh,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 0,
+            },
+            irqs: alloc::vec![0],
+        };
+        let possible = LinkIrqResource {
+            kind: LinkIrqResourceKind::ExtendedIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: true,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveHigh,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 5,
+            },
+            irqs: alloc::vec![5, 10, 11],
+        };
+
+        let link = "\\_SB.LNKA".parse().unwrap();
+        let allocator = PciLinkAllocator::default();
+        let selection = select_pci_link_irq(&link, Some(&current), Some(&possible), &allocator)
+            .expect("possible IRQs should allocate a PCI link");
+
+        assert_eq!(selection.irq, 10);
+        assert!(selection.needs_programming);
+        assert_eq!(selection.resource.irqs, alloc::vec![5, 10, 11]);
+    }
+
+    #[test]
+    fn pci_link_irq_allocator_spreads_unassigned_links() {
+        let possible = LinkIrqResource {
+            kind: LinkIrqResourceKind::ExtendedIrq,
+            descriptor: IrqDescriptor {
+                is_consumer: true,
+                trigger: InterruptTrigger::Level,
+                polarity: InterruptPolarity::ActiveHigh,
+                is_shared: true,
+                is_wake_capable: false,
+                irq: 5,
+            },
+            irqs: alloc::vec![5, 10, 11],
+        };
+        let first = "\\_SB.LNKA".parse().unwrap();
+        let second = "\\_SB.LNKB".parse().unwrap();
+        let mut allocator = PciLinkAllocator::default();
+
+        let first_selection = select_pci_link_irq(&first, None, Some(&possible), &allocator)
+            .expect("first link should allocate");
+        assert_eq!(first_selection.irq, 10);
+        allocator.commit(&first, first_selection.irq);
+
+        let second_selection = select_pci_link_irq(&second, None, Some(&possible), &allocator)
+            .expect("second link should allocate");
+        assert_eq!(second_selection.irq, 11);
+    }
+
+    #[test]
+    fn pci_link_srs_gap_detection_is_narrow() {
+        let gap = acpi::aml::AmlError::ObjectNotOfExpectedType {
+            expected: acpi::aml::object::ObjectType::Integer,
+            got: acpi::aml::object::ObjectType::BufferField,
+        };
+        let other = acpi::aml::AmlError::ObjectNotOfExpectedType {
+            expected: acpi::aml::object::ObjectType::Buffer,
+            got: acpi::aml::object::ObjectType::BufferField,
+        };
+
+        assert!(is_buffer_field_to_field_unit_store_gap(&gap));
+        assert!(!is_buffer_field_to_field_unit_store_gap(&other));
+    }
+
+    #[test]
+    fn qemu_pci_link_names_map_to_pirq_fields() {
+        assert_eq!(
+            pci_link_irq_field_candidates(&"\\_SB.LNKB".parse().unwrap()),
+            ["\\_SB.PRQB", "\\_SB.PRQ1"]
+        );
+        assert_eq!(
+            pci_link_irq_field_candidates(&"\\_SB.LNKG".parse().unwrap()),
+            ["\\_SB.PRQG"]
+        );
+        assert!(pci_link_irq_field_candidates(&"\\_SB.LNKS".parse().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn pci_irq_route_preserves_descriptor_trigger_and_polarity() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        let route = routing.resolve_gsi(16).unwrap();
+        let descriptor = IrqDescriptor {
+            is_consumer: true,
+            trigger: InterruptTrigger::Edge,
+            polarity: InterruptPolarity::ActiveHigh,
+            is_shared: false,
+            is_wake_capable: false,
+            irq: 16,
+        };
+
+        let route = route_with_irq_descriptor_flags(route, &descriptor);
+
+        assert_eq!(route.trigger, AcpiIrqTrigger::Edge);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveHigh);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiPciIrqRoute {
     pub address: PciAddress,
     pub interrupt_pin: u8,
+    pub intx_route: PciIntxRoute,
     pub gsi: AcpiGsiRoute,
 }
 
 pub struct AcpiInfo<'a> {
     pub root: &'a System,
     pub path: &'a str,
+    pub irq_route: Option<AcpiGsiRoute>,
 }
 
-pub type FnOnProbe = fn(AcpiInfo<'_>, PlatformDevice) -> Result<(), OnProbeError>;
+impl AcpiInfo<'_> {
+    pub const fn irq_route(&self) -> Option<AcpiGsiRoute> {
+        self.irq_route
+    }
+}
+
+pub struct ProbeAcpi<'a> {
+    info: AcpiInfo<'a>,
+    platform: PlatformDevice,
+}
+
+impl<'a> ProbeAcpi<'a> {
+    #[allow(dead_code)]
+    pub(crate) fn new(info: AcpiInfo<'a>, platform: PlatformDevice) -> Self {
+        Self { info, platform }
+    }
+
+    pub const fn info(&self) -> &AcpiInfo<'a> {
+        &self.info
+    }
+
+    pub fn into_platform_device(self) -> PlatformDevice {
+        self.platform
+    }
+
+    pub fn into_parts(self) -> (AcpiInfo<'a>, PlatformDevice) {
+        (self.info, self.platform)
+    }
+}
+
+pub type FnOnProbe = for<'a> fn(ProbeAcpi<'a>) -> Result<(), OnProbeError>;
 
 pub fn check_root(root: AcpiRoot) -> Result<(), DriverError> {
     if root.rsdp == 0 {
@@ -201,9 +479,10 @@ pub fn check_root(root: AcpiRoot) -> Result<(), DriverError> {
 pub fn init(root: AcpiRoot) -> Result<(), DriverError> {
     let system = System::new(root)?;
     info!(
-        "ACPI initialized: {} PCI ECAM region(s), {} IOAPIC(s)",
+        "ACPI initialized: {} PCI ECAM region(s), {} IOAPIC(s), {} PCH-PIC(s)",
         system.pci_ecam_regions().len(),
-        system.routing().io_apics().len()
+        system.routing().io_apics().len(),
+        system.routing().pch_pics().len()
     );
     SYSTEM.call_once(|| system);
     Ok(())
@@ -447,6 +726,8 @@ unsafe impl Sync for System {}
 
 struct AcpiPciNamespace {
     interpreter: Interpreter<AcpiHandler>,
+    handler: AcpiHandler,
+    link_allocator: Mutex<PciLinkAllocator>,
     roots: Vec<AcpiPciRoot>,
 }
 
@@ -455,6 +736,7 @@ struct AcpiPciRoot {
     bus: u8,
     path: String,
     prt: Option<PciRoutingTable>,
+    link_prt: Option<PciLinkRoutingTable>,
 }
 
 impl System {
@@ -488,44 +770,46 @@ impl System {
 
     pub fn pci_irq_for_endpoint(
         &self,
-        address: PciAddress,
-        interrupt_pin: u8,
+        info: PciInfo,
     ) -> Result<Option<AcpiPciIrqRoute>, OnProbeError> {
-        let Some(mut irq) = self.resolve_endpoint_gsi(address, interrupt_pin)? else {
+        let Some(intx_route) = info.intx_route else {
+            return Ok(None);
+        };
+        let Some(irq) = self.resolve_endpoint_gsi(info.address, intx_route)? else {
             return Ok(None);
         };
         let Some(gsi) = irq_descriptor_gsi(&irq) else {
             return Err(OnProbeError::other(format!(
                 "ACPI PCI endpoint {} pin {} returned an invalid IRQ descriptor: {:?}",
-                address, interrupt_pin, irq
+                info.address, intx_route.root_pin, irq
             )));
         };
-        irq.irq = gsi;
+        if gsi == 0 {
+            return Ok(None);
+        }
 
         let Some(route) = self.routing.resolve_gsi(gsi) else {
             return Err(OnProbeError::other(format!(
-                "ACPI GSI {} for PCI endpoint {} is not covered by an IOAPIC",
-                gsi, address
+                "ACPI GSI {} for PCI endpoint {} is not covered by a registered GSI controller",
+                gsi, info.address
             )));
         };
+        let route = route_with_irq_descriptor_flags(route, &irq);
 
         Ok(Some(AcpiPciIrqRoute {
-            address,
-            interrupt_pin,
-            gsi: AcpiGsiRoute {
-                trigger: irq_trigger(irq.trigger),
-                polarity: irq_polarity(irq.polarity),
-                ..route
-            },
+            address: info.address,
+            interrupt_pin: intx_route.root_pin,
+            intx_route,
+            gsi: route,
         }))
     }
 
     fn resolve_endpoint_gsi(
         &self,
         address: PciAddress,
-        interrupt_pin: u8,
+        route: PciIntxRoute,
     ) -> Result<Option<IrqDescriptor>, OnProbeError> {
-        let pin = acpi_pin(interrupt_pin)?;
+        let pin = acpi_pin(route.root_pin)?;
         let Some(pci) = &self.pci else {
             return Ok(None);
         };
@@ -539,9 +823,24 @@ impl System {
                 continue;
             };
 
+            if let Some(link_prt) = &root.link_prt
+                && let Some(route) = link_prt
+                    .route(
+                        u16::from(route.root_device),
+                        u16::from(route.root_function),
+                        pin,
+                        &pci.interpreter,
+                        &pci.handler,
+                        &mut pci.link_allocator.lock(),
+                    )
+                    .map_err(on_probe_error)?
+            {
+                return Ok(Some(route));
+            }
+
             match prt.route(
-                u16::from(address.device()),
-                u16::from(address.function()),
+                u16::from(route.root_device),
+                u16::from(route.root_function),
                 pin,
                 &pci.interpreter,
             ) {
@@ -588,12 +887,9 @@ impl System {
     ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
         let mut out = Vec::new();
         for probe in register.probe_kinds {
-            let ProbeKind::Acpi { ids, on_probe } = probe else {
+            let ProbeKind::Acpi { on_probe, .. } = probe else {
                 continue;
             };
-            if ids.is_empty() {
-                continue;
-            }
             if self.probed_names.lock().contains(register.name) {
                 continue;
             }
@@ -606,8 +902,9 @@ impl System {
             let info = AcpiInfo {
                 root: self,
                 path: "\\",
+                irq_route: None,
             };
-            let res = on_probe(info, PlatformDevice::new(desc));
+            let res = on_probe(ProbeAcpi::new(info, PlatformDevice::new(desc)));
             if res.is_ok() {
                 self.probed_names.lock().insert(register.name);
             }
@@ -646,7 +943,78 @@ fn read_interrupt_routing(tables: &AcpiTables<AcpiHandler>) -> Result<AcpiRoutin
             });
         }
     }
+    read_loongarch_pch_pic_routing(tables, &mut routing);
     Ok(routing)
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct RawMadtEntryHeader {
+    entry_type: u8,
+    length: u8,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct RawMadtBioPic {
+    header: RawMadtEntryHeader,
+    version: u8,
+    address: u64,
+    size: u16,
+    id: u16,
+    gsi_base: u16,
+}
+
+const ACPI_MADT_TYPE_BIO_PIC: u8 = 22;
+const RAW_MADT_HEADER_LEN: usize = core::mem::size_of::<acpi::sdt::SdtHeader>() + 8;
+
+fn read_loongarch_pch_pic_routing(tables: &AcpiTables<AcpiHandler>, routing: &mut AcpiRouting) {
+    let Some(madt) = tables.find_table::<acpi::sdt::madt::Madt>() else {
+        return;
+    };
+
+    let base = madt.virtual_start.as_ptr() as *const u8;
+    let length = madt.region_length;
+    if length < RAW_MADT_HEADER_LEN {
+        return;
+    }
+
+    let mut offset = RAW_MADT_HEADER_LEN;
+    while offset + core::mem::size_of::<RawMadtEntryHeader>() <= length {
+        let header = unsafe { (base.add(offset) as *const RawMadtEntryHeader).read_unaligned() };
+        let entry_len = usize::from(header.length);
+        if entry_len < core::mem::size_of::<RawMadtEntryHeader>() || offset + entry_len > length {
+            break;
+        }
+
+        if header.entry_type == ACPI_MADT_TYPE_BIO_PIC {
+            read_loongarch_bio_pic_entry(base, offset, entry_len, routing);
+        }
+
+        offset += entry_len;
+    }
+}
+
+fn read_loongarch_bio_pic_entry(
+    base: *const u8,
+    offset: usize,
+    entry_len: usize,
+    routing: &mut AcpiRouting,
+) {
+    if entry_len < core::mem::size_of::<RawMadtBioPic>() {
+        warn!("ignore short LoongArch BIO_PIC MADT entry: {entry_len} bytes");
+        return;
+    }
+
+    let entry = unsafe { (base.add(offset) as *const RawMadtBioPic).read_unaligned() };
+
+    routing.add_pch_pic(AcpiPchPic {
+        id: entry.id,
+        address: entry.address,
+        mmio_size: entry.size,
+        gsi_count: LOONGARCH_PCH_PIC_GSI_COUNT,
+        gsi_base: u32::from(entry.gsi_base),
+    });
 }
 
 fn read_pci_namespace(
@@ -655,6 +1023,7 @@ fn read_pci_namespace(
 ) -> Result<AcpiPciNamespace, AcpiError> {
     let handler = root.handler_with_pci_ecam(ecam_regions);
     let tables = unsafe { AcpiTables::from_rsdp(handler.clone(), root.rsdp) }?;
+    let namespace_handler = handler.clone();
     let platform = AcpiPlatform::new(tables, handler)?;
     let interpreter = Interpreter::new_from_platform(&platform)?;
     interpreter.initialize_namespace();
@@ -673,6 +1042,7 @@ fn read_pci_namespace(
                         bus,
                         path: path.as_string(),
                         prt: None,
+                        link_prt: None,
                     });
                 }
                 Ok(true)
@@ -682,6 +1052,7 @@ fn read_pci_namespace(
 
     for root in &mut roots {
         root.prt = read_pci_routing_table(&interpreter, &root.path)?;
+        root.link_prt = read_pci_link_routing_table(&interpreter, &root.path)?;
     }
     for path in PCI_ROOT_FALLBACK_PATHS {
         if roots.iter().any(|root| root.path == *path) {
@@ -690,15 +1061,22 @@ fn read_pci_namespace(
         let Some(prt) = read_pci_routing_table(&interpreter, path)? else {
             continue;
         };
+        let link_prt = read_pci_link_routing_table(&interpreter, path)?;
         roots.push(AcpiPciRoot {
             segment: 0,
             bus: 0,
             path: path.to_string(),
             prt: Some(prt),
+            link_prt,
         });
     }
 
-    Ok(AcpiPciNamespace { interpreter, roots })
+    Ok(AcpiPciNamespace {
+        interpreter,
+        handler: namespace_handler,
+        link_allocator: Mutex::new(PciLinkAllocator::default()),
+        roots,
+    })
 }
 
 fn read_pci_routing_table(
@@ -707,6 +1085,18 @@ fn read_pci_routing_table(
 ) -> Result<Option<PciRoutingTable>, AcpiError> {
     let prt_path = AmlName::from_str(&format!("{root_path}._PRT")).map_err(AcpiError::Aml)?;
     match PciRoutingTable::from_prt_path(prt_path, interpreter) {
+        Ok(prt) => Ok(Some(prt)),
+        Err(AmlError::ObjectDoesNotExist(_)) | Err(AmlError::LevelDoesNotExist(_)) => Ok(None),
+        Err(err) => Err(AcpiError::Aml(err)),
+    }
+}
+
+fn read_pci_link_routing_table(
+    interpreter: &Interpreter<AcpiHandler>,
+    root_path: &str,
+) -> Result<Option<PciLinkRoutingTable>, AcpiError> {
+    let prt_path = AmlName::from_str(&format!("{root_path}._PRT")).map_err(AcpiError::Aml)?;
+    match PciLinkRoutingTable::from_prt_path(prt_path, interpreter) {
         Ok(prt) => Ok(Some(prt)),
         Err(AmlError::ObjectDoesNotExist(_)) | Err(AmlError::LevelDoesNotExist(_)) => Ok(None),
         Err(err) => Err(AcpiError::Aml(err)),
@@ -779,6 +1169,743 @@ fn decode_eisa_id(raw: u32) -> Option<String> {
     ))
 }
 
+#[derive(Debug)]
+struct PciLinkRoutingTable {
+    entries: Vec<PciLinkRoute>,
+}
+
+#[derive(Debug)]
+struct PciLinkRoute {
+    device: u16,
+    function: u16,
+    pin: Pin,
+    link: AmlName,
+    source_index: usize,
+}
+
+impl PciLinkRoutingTable {
+    fn from_prt_path(
+        prt_path: AmlName,
+        interpreter: &Interpreter<AcpiHandler>,
+    ) -> Result<Self, AmlError> {
+        let prt = interpreter.evaluate(prt_path.clone(), Vec::new())?;
+        let Object::Package(ref entries) = *prt else {
+            return Err(AmlError::InvalidOperationOnObject {
+                op: acpi::aml::Operation::DecodePrt,
+                typ: prt.typ(),
+            });
+        };
+
+        let mut routes = Vec::new();
+        for entry in entries {
+            let Object::Package(ref package) = **entry else {
+                return Err(AmlError::InvalidOperationOnObject {
+                    op: acpi::aml::Operation::DecodePrt,
+                    typ: entry.typ(),
+                });
+            };
+            if package.len() != 4 {
+                return Err(AmlError::UnexpectedResourceType);
+            }
+
+            let Object::Integer(address) = *package[0] else {
+                return Err(AmlError::PrtInvalidAddress);
+            };
+            let entry_device =
+                u16::try_from((address >> 16) & 0xffff).map_err(|_| AmlError::PrtInvalidAddress)?;
+            let entry_function =
+                u16::try_from(address & 0xffff).map_err(|_| AmlError::PrtInvalidAddress)?;
+            let entry_pin = match *package[1] {
+                Object::Integer(0) => Pin::IntA,
+                Object::Integer(1) => Pin::IntB,
+                Object::Integer(2) => Pin::IntC,
+                Object::Integer(3) => Pin::IntD,
+                _ => return Err(AmlError::PrtInvalidPin),
+            };
+            let Object::String(ref source) = *package[2] else {
+                continue;
+            };
+            let Object::Integer(source_index) = *package[3] else {
+                return Err(AmlError::PrtInvalidSource);
+            };
+            let source_index =
+                usize::try_from(source_index).map_err(|_| AmlError::PrtInvalidSource)?;
+            let link = interpreter
+                .namespace
+                .lock()
+                .search_for_level(&AmlName::from_str(source)?, &prt_path)?;
+            routes.push(PciLinkRoute {
+                device: entry_device,
+                function: entry_function,
+                pin: entry_pin,
+                link,
+                source_index,
+            });
+        }
+
+        Ok(Self { entries: routes })
+    }
+
+    fn route(
+        &self,
+        device: u16,
+        function: u16,
+        pin: Pin,
+        interpreter: &Interpreter<AcpiHandler>,
+        handler: &AcpiHandler,
+        allocator: &mut PciLinkAllocator,
+    ) -> Result<Option<IrqDescriptor>, AmlError> {
+        let Some(route) = self.entries.iter().find(|entry| {
+            entry.device == device
+                && (entry.function == 0xffff || entry.function == function)
+                && entry.pin == pin
+        }) else {
+            return Ok(None);
+        };
+
+        resolve_pci_link_irq(
+            interpreter,
+            handler,
+            allocator,
+            &route.link,
+            route.source_index,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinkIrqResourceKind {
+    SmallIrq,
+    ExtendedIrq,
+}
+
+#[derive(Clone, Debug)]
+struct LinkIrqResource {
+    kind: LinkIrqResourceKind,
+    descriptor: IrqDescriptor,
+    irqs: Vec<u32>,
+}
+
+struct LinkIrqSelection<'a> {
+    resource: &'a LinkIrqResource,
+    irq: u32,
+    needs_programming: bool,
+}
+
+#[derive(Default)]
+struct PciLinkAllocator {
+    assigned: BTreeMap<String, u32>,
+    irq_use_count: BTreeMap<u32, usize>,
+}
+
+impl PciLinkAllocator {
+    fn assigned_irq(&self, link: &AmlName) -> Option<u32> {
+        self.assigned.get(&link.as_string()).copied()
+    }
+
+    fn commit(&mut self, link: &AmlName, irq: u32) {
+        let key = link.as_string();
+        match self.assigned.insert(key, irq) {
+            Some(old_irq) if old_irq == irq => return,
+            Some(old_irq) => {
+                if let Some(count) = self.irq_use_count.get_mut(&old_irq) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+            None => {}
+        }
+        *self.irq_use_count.entry(irq).or_default() += 1;
+    }
+
+    fn penalty(&self, irq: u32) -> usize {
+        let isa_penalty = match irq {
+            0..=2 => usize::MAX / 2,
+            3..=8 => 16 * 16 * 16 * 16,
+            9..=11 => 0,
+            12..=15 => 16 * 16 * 16 * 16 * 16,
+            _ => 0,
+        };
+        isa_penalty + self.irq_use_count.get(&irq).copied().unwrap_or(0) * 16 * 16 * 16
+    }
+}
+
+fn resolve_pci_link_irq(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    allocator: &mut PciLinkAllocator,
+    link: &AmlName,
+    source_index: usize,
+) -> Result<Option<IrqDescriptor>, AmlError> {
+    let current = evaluate_link_irq_resource(interpreter, link, "_CRS", source_index)?;
+    let possible = evaluate_link_irq_resource(interpreter, link, "_PRS", source_index)?;
+    let Some(selection) = select_pci_link_irq(link, current.as_ref(), possible.as_ref(), allocator)
+    else {
+        return Ok(None);
+    };
+
+    if selection.needs_programming {
+        let srs = build_link_srs_buffer(selection.resource, selection.irq)?;
+        let srs_path = AmlName::from_str("_SRS")?.resolve(link)?;
+        if let Err(err) = interpreter.evaluate(srs_path.clone(), vec![Object::Buffer(srs).wrap()]) {
+            if is_buffer_field_to_field_unit_store_gap(&err) {
+                let _ = interpreter.namespace.lock().remove_level(srs_path);
+                // Current acpi's AML Store path cannot coerce a BufferField into a FieldUnit.
+                // SeaBIOS PIRQ link _SRS methods use that exact pattern; program the already
+                // decoded link field directly so PCI link allocation still follows _PRS/_SRS.
+                program_known_pci_link_field(interpreter, handler, link, selection.irq)?;
+            } else {
+                let _ = interpreter.namespace.lock().remove_level(srs_path);
+                return Err(err);
+            }
+        }
+    }
+
+    allocator.commit(link, selection.irq);
+    Ok(Some(selection.resource.descriptor_for_irq(selection.irq)))
+}
+
+fn evaluate_link_irq_resource(
+    interpreter: &Interpreter<AcpiHandler>,
+    link: &AmlName,
+    method: &str,
+    source_index: usize,
+) -> Result<Option<LinkIrqResource>, AmlError> {
+    let path = AmlName::from_str(method)?.resolve(link)?;
+    let value = match interpreter.evaluate_if_present(path.clone(), Vec::new()) {
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(None),
+        Err(err) if method == "_CRS" && is_buffer_field_to_field_unit_store_gap(&err) => {
+            let _ = interpreter.namespace.lock().remove_level(path);
+            return Ok(None);
+        }
+        Err(err) => {
+            let _ = interpreter.namespace.lock().remove_level(path);
+            return Err(err);
+        }
+    };
+    let resources = parse_link_irq_resources(&value)?;
+    Ok(resources.into_iter().nth(source_index))
+}
+
+fn is_buffer_field_to_field_unit_store_gap(err: &AmlError) -> bool {
+    matches!(
+        err,
+        AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::Integer,
+            got: ObjectType::BufferField,
+        }
+    )
+}
+
+fn program_known_pci_link_field(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    link: &AmlName,
+    irq: u32,
+) -> Result<(), AmlError> {
+    let Some(field_path) = known_pci_link_irq_field(interpreter, link) else {
+        return Err(AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::Integer,
+            got: ObjectType::BufferField,
+        });
+    };
+    let field = interpreter.namespace.lock().get(field_path)?.clone();
+    let Object::FieldUnit(ref field) = *field else {
+        return Err(AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::FieldUnit,
+            got: field.typ(),
+        });
+    };
+    write_field_unit(interpreter, handler, field, irq as u64)
+}
+
+fn known_pci_link_irq_field(
+    interpreter: &Interpreter<AcpiHandler>,
+    link: &AmlName,
+) -> Option<AmlName> {
+    let mut namespace = interpreter.namespace.lock();
+    for field in pci_link_irq_field_candidates(link) {
+        let path = AmlName::from_str(field).ok()?;
+        if namespace.get(path.clone()).is_ok() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn pci_link_irq_field_candidates(link: &AmlName) -> &'static [&'static str] {
+    match link.as_string().rsplit('.').next().unwrap_or_default() {
+        "LNKA" => &["\\_SB.PRQA", "\\_SB.PRQ0"],
+        "LNKB" => &["\\_SB.PRQB", "\\_SB.PRQ1"],
+        "LNKC" => &["\\_SB.PRQC", "\\_SB.PRQ2"],
+        "LNKD" => &["\\_SB.PRQD", "\\_SB.PRQ3"],
+        "LNKE" => &["\\_SB.PRQE"],
+        "LNKF" => &["\\_SB.PRQF"],
+        "LNKG" => &["\\_SB.PRQG"],
+        "LNKH" => &["\\_SB.PRQH"],
+        _ => &[],
+    }
+}
+
+fn write_field_unit(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    field: &FieldUnit,
+    value: u64,
+) -> Result<(), AmlError> {
+    let access_width_bits = field.flags.access_type_bytes()? * 8;
+    let FieldUnitKind::Normal { ref region } = field.kind else {
+        return Err(AmlError::LibUnimplemented);
+    };
+    let Object::OpRegion(ref region) = **region else {
+        return Err(AmlError::ObjectNotOfExpectedType {
+            expected: ObjectType::OpRegion,
+            got: region.typ(),
+        });
+    };
+
+    let value_bytes = value.to_le_bytes();
+    let native_accesses =
+        (field.bit_length + (field.bit_index % access_width_bits)).div_ceil(access_width_bits);
+    let mut written_so_far = 0;
+
+    for i in 0..native_accesses {
+        let aligned_bit = align_down(field.bit_index + i * access_width_bits, access_width_bits);
+        let dst_index = if i == 0 {
+            field.bit_index % access_width_bits
+        } else {
+            0
+        };
+        let remaining = field.bit_length - written_so_far;
+        let length = if i == 0 {
+            usize::min(
+                remaining,
+                access_width_bits - (field.bit_index % access_width_bits),
+            )
+        } else {
+            usize::min(remaining, access_width_bits)
+        };
+
+        let mut bytes = if dst_index > 0 || remaining < access_width_bits {
+            match field.flags.update_rule() {
+                FieldUpdateRule::Preserve => read_native_region(
+                    interpreter,
+                    handler,
+                    region,
+                    aligned_bit / 8,
+                    access_width_bits / 8,
+                )?
+                .to_le_bytes(),
+                FieldUpdateRule::WriteAsOnes => [0xff; 8],
+                FieldUpdateRule::WriteAsZeros => [0; 8],
+            }
+        } else {
+            [0; 8]
+        };
+
+        copy_bits(&value_bytes, written_so_far, &mut bytes, dst_index, length);
+        write_native_region(
+            interpreter,
+            handler,
+            region,
+            aligned_bit / 8,
+            access_width_bits / 8,
+            u64::from_le_bytes(bytes),
+        )?;
+        written_so_far += length;
+    }
+
+    Ok(())
+}
+
+fn read_native_region(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    region: &OpRegion,
+    offset: usize,
+    length: usize,
+) -> Result<u64, AmlError> {
+    match region.space {
+        RegionSpace::SystemMemory => {
+            let address = region.base as usize + offset;
+            match length {
+                1 => Ok(u64::from(handler.read_u8(address))),
+                2 => Ok(u64::from(handler.read_u16(address))),
+                4 => Ok(u64::from(handler.read_u32(address))),
+                8 => Ok(handler.read_u64(address)),
+                _ => Err(AmlError::InvalidFieldFlags),
+            }
+        }
+        RegionSpace::SystemIO => {
+            let address = region.base as u16 + offset as u16;
+            match length {
+                1 => Ok(u64::from(handler.read_io_u8(address))),
+                2 => Ok(u64::from(handler.read_io_u16(address))),
+                4 => Ok(u64::from(handler.read_io_u32(address))),
+                _ => Err(AmlError::InvalidFieldFlags),
+            }
+        }
+        RegionSpace::PciConfig => {
+            let address = pci_address_for_region(interpreter, region)?;
+            let offset = region.base as u16 + offset as u16;
+            match length {
+                1 => Ok(u64::from(handler.read_pci_u8(address, offset))),
+                2 => Ok(u64::from(handler.read_pci_u16(address, offset))),
+                4 => Ok(u64::from(handler.read_pci_u32(address, offset))),
+                _ => Err(AmlError::InvalidFieldFlags),
+            }
+        }
+        _ => Err(AmlError::NoHandlerForRegionAccess(region.space)),
+    }
+}
+
+fn write_native_region(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    region: &OpRegion,
+    offset: usize,
+    length: usize,
+    value: u64,
+) -> Result<(), AmlError> {
+    match region.space {
+        RegionSpace::SystemMemory => {
+            let address = region.base as usize + offset;
+            match length {
+                1 => handler.write_u8(address, value as u8),
+                2 => handler.write_u16(address, value as u16),
+                4 => handler.write_u32(address, value as u32),
+                8 => handler.write_u64(address, value),
+                _ => return Err(AmlError::InvalidFieldFlags),
+            }
+            Ok(())
+        }
+        RegionSpace::SystemIO => {
+            let address = region.base as u16 + offset as u16;
+            match length {
+                1 => handler.write_io_u8(address, value as u8),
+                2 => handler.write_io_u16(address, value as u16),
+                4 => handler.write_io_u32(address, value as u32),
+                _ => return Err(AmlError::InvalidFieldFlags),
+            }
+            Ok(())
+        }
+        RegionSpace::PciConfig => {
+            let address = pci_address_for_region(interpreter, region)?;
+            let offset = region.base as u16 + offset as u16;
+            match length {
+                1 => handler.write_pci_u8(address, offset, value as u8),
+                2 => handler.write_pci_u16(address, offset, value as u16),
+                4 => handler.write_pci_u32(address, offset, value as u32),
+                _ => return Err(AmlError::InvalidFieldFlags),
+            }
+            Ok(())
+        }
+        _ => Err(AmlError::NoHandlerForRegionAccess(region.space)),
+    }
+}
+
+fn pci_address_for_region(
+    interpreter: &Interpreter<AcpiHandler>,
+    region: &OpRegion,
+) -> Result<acpi::PciAddress, AmlError> {
+    let path = &region.parent_device_path;
+    let segment = eval_integer_child(interpreter, path, "_SEG")?.unwrap_or(0) as u16;
+    let bus = eval_integer_child(interpreter, path, "_BBN")?.unwrap_or(0) as u8;
+    let address = eval_integer_child(interpreter, path, "_ADR")?.unwrap_or(0);
+    Ok(acpi::PciAddress::new(
+        segment,
+        bus,
+        ((address >> 16) & 0xff) as u8,
+        (address & 0xff) as u8,
+    ))
+}
+
+fn copy_bits(src: &[u8], src_offset: usize, dst: &mut [u8], dst_offset: usize, length: usize) {
+    for bit in 0..length {
+        let src_bit = src_offset + bit;
+        let dst_bit = dst_offset + bit;
+        let is_set = src[src_bit / 8] & (1 << (src_bit % 8)) != 0;
+        if is_set {
+            dst[dst_bit / 8] |= 1 << (dst_bit % 8);
+        } else {
+            dst[dst_bit / 8] &= !(1 << (dst_bit % 8));
+        }
+    }
+}
+
+fn align_down(value: usize, align: usize) -> usize {
+    assert!(align.is_power_of_two());
+    value & !(align - 1)
+}
+
+fn parse_link_irq_resources(
+    value: &acpi::aml::object::WrappedObject,
+) -> Result<Vec<LinkIrqResource>, AmlError> {
+    let Object::Buffer(ref bytes) = **value else {
+        return Err(AmlError::InvalidOperationOnObject {
+            op: acpi::aml::Operation::ParseResource,
+            typ: value.typ(),
+        });
+    };
+
+    let mut resources = Vec::new();
+    let mut rest = bytes.as_slice();
+    while !rest.is_empty() {
+        if rest[0] & 0x80 != 0 {
+            if rest.len() < 3 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let length = usize::from(u16::from_le_bytes([rest[1], rest[2]]));
+            if rest.len() < length + 3 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let descriptor = &rest[..length + 3];
+            if rest[0] & 0x7f == 0x09 {
+                resources.push(parse_extended_irq_resource(descriptor)?);
+            }
+            rest = &rest[length + 3..];
+        } else {
+            let length = usize::from(rest[0] & 0b111);
+            if rest.len() < length + 1 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let descriptor = &rest[..length + 1];
+            match (rest[0] >> 3) & 0x0f {
+                0x04 => resources.push(parse_small_irq_resource(descriptor)?),
+                0x0f => break,
+                _ => {}
+            }
+            rest = &rest[length + 1..];
+        }
+    }
+    Ok(resources)
+}
+
+fn parse_extended_irq_resource(bytes: &[u8]) -> Result<LinkIrqResource, AmlError> {
+    if bytes.len() < 5 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    let count = usize::from(bytes[4]);
+    if bytes.len() < 5 + count * 4 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+
+    let mut irqs = Vec::new();
+    for idx in 0..count {
+        let start = 5 + idx * 4;
+        irqs.push(u32::from_le_bytes([
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+        ]));
+    }
+
+    Ok(LinkIrqResource {
+        kind: LinkIrqResourceKind::ExtendedIrq,
+        descriptor: IrqDescriptor {
+            is_consumer: bytes[3] & 0b0000_0001 != 0,
+            trigger: if bytes[3] & 0b0000_0010 != 0 {
+                InterruptTrigger::Edge
+            } else {
+                InterruptTrigger::Level
+            },
+            polarity: if bytes[3] & 0b0000_0100 != 0 {
+                InterruptPolarity::ActiveLow
+            } else {
+                InterruptPolarity::ActiveHigh
+            },
+            is_shared: bytes[3] & 0b0000_1000 != 0,
+            is_wake_capable: bytes[3] & 0b0001_0000 != 0,
+            irq: irqs.first().copied().unwrap_or(0),
+        },
+        irqs,
+    })
+}
+
+fn parse_small_irq_resource(bytes: &[u8]) -> Result<LinkIrqResource, AmlError> {
+    if bytes.len() != 3 && bytes.len() != 4 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+
+    let mask = u16::from_le_bytes([bytes[1], bytes[2]]);
+    let mut irqs = Vec::new();
+    for irq in 0..16 {
+        if mask & (1 << irq) != 0 {
+            irqs.push(irq);
+        }
+    }
+
+    let (trigger, polarity, is_shared, is_wake_capable) = if bytes.len() == 4 {
+        (
+            if bytes[3] & 0b0000_0001 != 0 {
+                InterruptTrigger::Edge
+            } else {
+                InterruptTrigger::Level
+            },
+            if bytes[3] & 0b0000_1000 != 0 {
+                InterruptPolarity::ActiveLow
+            } else {
+                InterruptPolarity::ActiveHigh
+            },
+            bytes[3] & 0b0001_0000 != 0,
+            bytes[3] & 0b0010_0000 != 0,
+        )
+    } else {
+        (
+            InterruptTrigger::Edge,
+            InterruptPolarity::ActiveHigh,
+            false,
+            false,
+        )
+    };
+
+    Ok(LinkIrqResource {
+        kind: LinkIrqResourceKind::SmallIrq,
+        descriptor: IrqDescriptor {
+            is_consumer: false,
+            trigger,
+            polarity,
+            is_shared,
+            is_wake_capable,
+            irq: u32::from(mask),
+        },
+        irqs,
+    })
+}
+
+fn select_pci_link_irq<'a>(
+    link: &AmlName,
+    current: Option<&'a LinkIrqResource>,
+    possible: Option<&'a LinkIrqResource>,
+    allocator: &PciLinkAllocator,
+) -> Option<LinkIrqSelection<'a>> {
+    if let Some(irq) = allocator.assigned_irq(link) {
+        let resource = possible
+            .filter(|possible| possible.irqs.contains(&irq))
+            .or(current.filter(|current| current.irqs.contains(&irq)))?;
+        return Some(LinkIrqSelection {
+            resource,
+            irq,
+            needs_programming: current.is_none_or(|current| current.irqs.first() != Some(&irq)),
+        });
+    }
+
+    if let Some(current) = current
+        && let Some(irq) = current.irqs.first().copied().filter(|irq| *irq != 0)
+        && possible.is_none_or(|possible| possible.irqs.contains(&irq))
+    {
+        return Some(LinkIrqSelection {
+            resource: possible.unwrap_or(current),
+            irq,
+            needs_programming: false,
+        });
+    }
+
+    let possible = possible?;
+    let irq = preferred_pci_link_irq(&possible.irqs, allocator)?;
+    Some(LinkIrqSelection {
+        resource: possible,
+        irq,
+        needs_programming: true,
+    })
+}
+
+fn preferred_pci_link_irq(irqs: &[u32], allocator: &PciLinkAllocator) -> Option<u32> {
+    irqs.iter()
+        .copied()
+        .filter(|irq| *irq != 0)
+        .min_by_key(|irq| (allocator.penalty(*irq), link_irq_tiebreaker(*irq)))
+}
+
+fn link_irq_tiebreaker(irq: u32) -> usize {
+    match irq {
+        10 => 0,
+        11 => 1,
+        9 => 2,
+        16.. => 3 + irq as usize,
+        _ => 1024 + irq as usize,
+    }
+}
+
+fn build_link_srs_buffer(resource: &LinkIrqResource, irq: u32) -> Result<Vec<u8>, AmlError> {
+    match resource.kind {
+        LinkIrqResourceKind::ExtendedIrq => {
+            let mut buffer = Vec::new();
+            buffer.extend_from_slice(&[
+                0x89,
+                0x06,
+                0x00,
+                extended_irq_flags(&resource.descriptor),
+                1,
+            ]);
+            buffer.extend_from_slice(&irq.to_le_bytes());
+            buffer.extend_from_slice(&[0x79, 0x00]);
+            Ok(buffer)
+        }
+        LinkIrqResourceKind::SmallIrq => {
+            if irq >= 16 {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+            let mask = 1u16 << irq;
+            let mut buffer = Vec::new();
+            buffer.push((0x04 << 3) | 3);
+            buffer.extend_from_slice(&mask.to_le_bytes());
+            buffer.push(small_irq_flags(&resource.descriptor));
+            buffer.extend_from_slice(&[0x79, 0x00]);
+            Ok(buffer)
+        }
+    }
+}
+
+impl LinkIrqResource {
+    fn descriptor_for_irq(&self, irq: u32) -> IrqDescriptor {
+        let mut descriptor = self.descriptor.clone();
+        descriptor.irq = match self.kind {
+            LinkIrqResourceKind::SmallIrq if irq < 16 => 1u32 << irq,
+            _ => irq,
+        };
+        descriptor
+    }
+}
+
+fn extended_irq_flags(descriptor: &IrqDescriptor) -> u8 {
+    let mut flags = 0;
+    if descriptor.is_consumer {
+        flags |= 1 << 0;
+    }
+    if descriptor.trigger == InterruptTrigger::Edge {
+        flags |= 1 << 1;
+    }
+    if descriptor.polarity == InterruptPolarity::ActiveLow {
+        flags |= 1 << 2;
+    }
+    if descriptor.is_shared {
+        flags |= 1 << 3;
+    }
+    if descriptor.is_wake_capable {
+        flags |= 1 << 4;
+    }
+    flags
+}
+
+fn small_irq_flags(descriptor: &IrqDescriptor) -> u8 {
+    let mut flags = 0;
+    if descriptor.trigger == InterruptTrigger::Edge {
+        flags |= 1 << 0;
+    }
+    if descriptor.polarity == InterruptPolarity::ActiveLow {
+        flags |= 1 << 3;
+    }
+    if descriptor.is_shared {
+        flags |= 1 << 4;
+    }
+    if descriptor.is_wake_capable {
+        flags |= 1 << 5;
+    }
+    flags
+}
+
 fn acpi_pin(interrupt_pin: u8) -> Result<Pin, OnProbeError> {
     match interrupt_pin {
         1 => Ok(Pin::IntA),
@@ -800,17 +1927,28 @@ fn irq_descriptor_gsi(descriptor: &IrqDescriptor) -> Option<u32> {
     }
 }
 
-fn irq_trigger(trigger: InterruptTrigger) -> AcpiIrqTrigger {
-    match trigger {
-        InterruptTrigger::Edge => AcpiIrqTrigger::Edge,
-        InterruptTrigger::Level => AcpiIrqTrigger::Level,
+fn route_with_irq_descriptor_flags(
+    route: AcpiGsiRoute,
+    descriptor: &IrqDescriptor,
+) -> AcpiGsiRoute {
+    AcpiGsiRoute {
+        trigger: irq_trigger(descriptor.trigger),
+        polarity: irq_polarity(descriptor.polarity),
+        ..route
     }
 }
 
-fn irq_polarity(polarity: InterruptPolarity) -> AcpiIrqPolarity {
+fn irq_trigger(trigger: acpi::aml::resource::InterruptTrigger) -> AcpiIrqTrigger {
+    match trigger {
+        acpi::aml::resource::InterruptTrigger::Edge => AcpiIrqTrigger::Edge,
+        acpi::aml::resource::InterruptTrigger::Level => AcpiIrqTrigger::Level,
+    }
+}
+
+fn irq_polarity(polarity: acpi::aml::resource::InterruptPolarity) -> AcpiIrqPolarity {
     match polarity {
-        InterruptPolarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
-        InterruptPolarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
+        acpi::aml::resource::InterruptPolarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
+        acpi::aml::resource::InterruptPolarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
     }
 }
 

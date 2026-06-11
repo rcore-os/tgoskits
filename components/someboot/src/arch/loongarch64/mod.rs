@@ -9,6 +9,7 @@ pub(crate) mod entry;
 mod head;
 pub(crate) mod irq;
 mod paging;
+mod power;
 pub(crate) mod pte;
 mod register;
 mod relocate;
@@ -27,6 +28,16 @@ pub use relocate::relocate;
 use crate::{ArchTrait, DCacheOp, efi_stub, irq::IrqId, power::CpuOnError};
 
 const MIN_TICKS: usize = 4;
+const BOOT_TLS_SIZE: usize = 64 * 1024;
+
+#[repr(C, align(16))]
+struct BootTls {
+    bytes: [u8; BOOT_TLS_SIZE],
+}
+
+static mut BOOT_TLS: BootTls = BootTls {
+    bytes: [0; BOOT_TLS_SIZE],
+};
 
 pub struct Arch;
 
@@ -43,6 +54,41 @@ impl ArchTrait for Arch {
     }
 
     fn post_allocator() {}
+
+    fn init_boot_tls() {
+        unsafe extern "C" {
+            fn _stdata();
+            fn _etdata();
+            fn _etbss();
+        }
+
+        let stdata = _stdata as *const () as usize;
+        let etdata = _etdata as *const () as usize;
+        let etbss = _etbss as *const () as usize;
+        if etdata < stdata || etbss < stdata {
+            return;
+        }
+
+        let tls_size = align_up(etbss - stdata, 16);
+        if tls_size > BOOT_TLS_SIZE {
+            return;
+        }
+
+        unsafe {
+            let boot_tls = core::ptr::addr_of_mut!(BOOT_TLS).cast::<u8>();
+            core::ptr::write_bytes(boot_tls, 0, tls_size);
+            core::ptr::copy_nonoverlapping(stdata as *const u8, boot_tls, etdata - stdata);
+            core::arch::asm!("move $tp, {}", in(reg) boot_tls as usize, options(nostack));
+        }
+    }
+
+    fn init_runtime_percpu_reg(cpu_idx: usize) {
+        if let Some(percpu) = crate::smp::percpu_data_ptr(cpu_idx) {
+            unsafe {
+                core::arch::asm!("move $r21, {}", in(reg) percpu as usize);
+            }
+        }
+    }
 
     fn per_cpu_trap_init(is_primary: bool) {
         trap::per_cpu_trap_init(is_primary);
@@ -76,7 +122,10 @@ impl ArchTrait for Arch {
         tcfg::set_init_val(ticks);
         // 清除可能存在的中断
         ticlr::clear_timer_interrupt();
-        // 不在这里 enable，让调用者通过 systimer_enable() 来使能
+        // Arm the one-shot event. Linux and the static LoongArch platform both
+        // program the next event with TCFG.EN set; leaving it disabled stalls
+        // timer-based sleeps after the first reprogram.
+        tcfg::set_en(true);
     }
 
     fn systimer_ack() {
@@ -183,7 +232,12 @@ impl ArchTrait for Arch {
     }
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
-        addrspace::to_phys(vaddr as usize)
+        let vaddr = vaddr as usize;
+        if vaddr >= addrspace::VM_LOAD_ADDRESS {
+            crate::mem::__kimage_va_to_pa(vaddr as *const u8)
+        } else {
+            addrspace::to_phys(vaddr)
+        }
     }
 
     #[cfg(uspace)]
@@ -230,11 +284,11 @@ impl ArchTrait for Arch {
     }
 
     fn kernel_space() -> core::ops::Range<usize> {
-        0xFFFF_0000_0000_0000..usize::MAX
+        addrspace::PAGE_OFFSET..usize::MAX
     }
 
-    fn cpu_on(_hartid: usize, _entry: usize, _arg: usize) -> Result<(), CpuOnError> {
-        Err(CpuOnError::NotSupported)
+    fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
+        power::cpu_on(hartid, entry, arg)
     }
 
     fn dcache_range(_op: DCacheOp, _addr: usize, _size: usize) {
@@ -249,4 +303,8 @@ impl ArchTrait for Arch {
         unsafe { crate::arch::entry::kernel_entry(1, null(), system_table) };
         unreachable!()
     }
+}
+
+const fn align_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
 }

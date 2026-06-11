@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use rdif_intc::Intc;
-use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
+use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 static mut TIMER_IRQ: Option<rdrive::IrqId> = None;
 static mut TIMER_IRQ_PARENT: Option<rdrive::DeviceId> = None;
@@ -29,7 +29,8 @@ pub(crate) fn setup_systick_irq() {
     crate::irq::irq_set_enable(id, true);
 }
 
-fn probe(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (fdt, dev) = probe.into_parts();
     let intc_id = dev.descriptor.irq_parent.unwrap();
 
     let mut intc = rdrive::get::<Intc>(intc_id).unwrap().lock().unwrap();

@@ -218,19 +218,36 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// #![feature(used_with_arg)]
 ///
-/// use rdrive::{module_driver, register::*};
+/// use rdrive::{driver::*, module_driver, probe::OnProbeError, register::ProbeFdt};
+///
+/// struct DemoDriver {}
+///
+/// impl DriverGeneric for DemoDriver {
+///     fn name(&self) -> &str {
+///         "DemoDriver"
+///     }
+/// }
+///
+/// // Define probe function
+/// fn probe_clk(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+///     // Implement specific device probing logic
+///     let dev = probe.into_platform_device();
+///     dev.register(DemoDriver {});
+///     Ok(())
+/// }
 ///
 /// // Use macro to generate driver registration module
 /// module_driver! {
-///     name: "Example Driver",
+///     name: "CLK Driver",
 ///     level: ProbeLevel::PostKernel,
-///     priority: ProbePriority::DEFAULT,
-///     probe_kinds: &[ProbeKind::Static {
-///         on_probe: |dev| {
-///             dev.register(rdrive::driver::Empty);
+///     priority: ProbePriority::CLK,
+///     probe_kinds: &[ProbeKind::Fdt {
+///         compatibles: &["fixed-clock"],
+///         // Use `probe_clk` above; this usage is because doctests cannot find the parent module.
+///         on_probe: |_probe|{
 ///             Ok(())
 ///         },
 ///     }],

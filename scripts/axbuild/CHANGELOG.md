@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.10...axbuild-v0.4.11) - 2026-06-11
+
+### Added
+
+- *(axbuild)* default dynamic platform builds
+- *(orangepi-5-plus-uvc-rknn)* add RKNN bench validation ([#1189](https://github.com/rcore-os/tgoskits/pull/1189))
+- *(axbuild)* optimize Starry grouped QEMU subcases ([#1201](https://github.com/rcore-os/tgoskits/pull/1201))
+- *(axplat-dyn)* add LoongArch64 UEFI dynamic platform ([#1190](https://github.com/rcore-os/tgoskits/pull/1190))
+
+### Fixed
+
+- *(starry)* support eBPF ringbuf mmap on LoongArch DMW ([#1208](https://github.com/rcore-os/tgoskits/pull/1208))
+- *(axvisor)* avoid svm guest timer calibration stall ([#1205](https://github.com/rcore-os/tgoskits/pull/1205))
+- *(axbuild)* support symlinks in overlay-to-rootfs injection ([#1191](https://github.com/rcore-os/tgoskits/pull/1191))
+
+### Other
+
+- Revert "feat(axplat-dyn): add LoongArch64 UEFI dynamic platform ([#1190](https://github.com/rcore-os/tgoskits/pull/1190))" ([#1202](https://github.com/rcore-os/tgoskits/pull/1202))
+- *(axvisor)* remove obsolete x86 q35 static platform ([#1186](https://github.com/rcore-os/tgoskits/pull/1186))
+
 ## [0.4.10](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.9...axbuild-v0.4.10) - 2026-06-09
 
 ### Added
@@ -117,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(starryos/procfs)* implement /proc/stat, /proc/cpuinfo, /proc/uptime; fix /proc/meminfo and sysinfo() ([#452](https://github.com/rcore-os/tgoskits/pull/452))
 - *(axbuild)* support Starry board examples
 - *(realtek-rtl8125)* complete OrangePi board bringup ([#404](https://github.com/rcore-os/tgoskits/pull/404))
-- *(ax-net-ng)* add ICMP raw socket support ([#368](https://github.com/rcore-os/tgoskits/pull/368))
+- *(ax-net)* add ICMP raw socket support ([#368](https://github.com/rcore-os/tgoskits/pull/368))
 - *(lockdep)* extend lockdep with task-held tracking and qemu regression coverage ([#415](https://github.com/rcore-os/tgoskits/pull/415))
 - *(runtime)* extend IRQ, RTC, and tty event support ([#287](https://github.com/rcore-os/tgoskits/pull/287))
 - *(rockchip-soc)* migrate RK3588 clocks ([#384](https://github.com/rcore-os/tgoskits/pull/384))

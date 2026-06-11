@@ -8,12 +8,9 @@ features = [
     "pipe",
     "epoll",
     "net",
-    "ax-driver/plat-static",
+    "ax-driver/plat-dyn",
     "ax-driver/virtio-net",
 ]
 log = "Info"
 max_cpu_num = 4
 
-[env]
-AX_GW = "10.0.2.2"
-AX_IP = "10.0.2.15"

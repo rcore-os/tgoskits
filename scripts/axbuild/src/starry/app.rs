@@ -964,7 +964,7 @@ mod tests {
             case_name,
             "build-aarch64-unknown-none-softfloat.toml",
             "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = []\nlog = \
-             \"Info\"\nplat_dyn = true\n",
+             \"Info\"\n",
         );
     }
 
@@ -1027,7 +1027,7 @@ mod tests {
             root.path(),
             "demo",
             "build-aarch64-unknown-none-softfloat.toml",
-            "env = {}\nfeatures = []\nlog = \"Info\"\nplat_dyn = true\n",
+            "env = {}\nfeatures = []\nlog = \"Info\"\n",
         );
 
         let case = resolve_board_case(root.path(), "demo", None).unwrap();
@@ -1104,7 +1104,7 @@ mod tests {
             "demo",
             "build-aarch64-unknown-none-softfloat.toml",
             "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = []\nlog = \
-             \"Info\"\nplat_dyn = true\n",
+             \"Info\"\n",
         );
         write_case_file(
             root.path(),
@@ -1170,7 +1170,6 @@ mod tests {
             "codex-cli",
             "build-x86_64-unknown-none.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = []
 log = \"Info\"
 plat_dyn = false
@@ -1211,7 +1210,6 @@ plat_dyn = false
             "qemu-smp1",
             "build-x86_64-unknown-none.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = []
 log = \"Info\"
 plat_dyn = false
@@ -1222,7 +1220,6 @@ plat_dyn = false
             "qemu-smp1/nested",
             "build-x86_64-unknown-none.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = [\"nearest\"]
 log = \"Info\"
 plat_dyn = false
@@ -1264,7 +1261,6 @@ plat_dyn = false
             "codex-cli",
             "build-x86_64.toml",
             "target = \"x86_64-unknown-none\"
-env = {}
 features = []
 log = \"Info\"
 plat_dyn = false

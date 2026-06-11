@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver,
+    DriverGeneric, module_driver,
     probe::{
         OnProbeError,
-        acpi::{AcpiId, AcpiInfo, AcpiIoApic},
+        acpi::{AcpiId, AcpiIoApic, ProbeAcpi},
     },
 };
 use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
@@ -50,30 +50,43 @@ impl X86IoApicIntc {
     }
 
     fn remember_route(&mut self, route: AcpiGsiRoute) {
-        if let Some(existing) = self.routes.iter_mut().find(|r| r.vector == route.vector) {
+        if let Some(existing) = self.routes.iter_mut().find(|r| {
+            r.controller_id == route.controller_id
+                && r.controller_address == route.controller_address
+                && r.gsi == route.gsi
+        }) {
             *existing = route;
         } else {
             self.routes.push(route);
         }
     }
 
-    fn route_for_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
-        self.routes
+    fn routes_for_vector(&self, vector: usize) -> Vec<AcpiGsiRoute> {
+        let routes: Vec<_> = self
+            .routes
             .iter()
             .copied()
-            .find(|r| r.vector == vector)
-            .or_else(|| {
-                rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_vector(vector))
-                    .flatten()
-            })
+            .filter(|r| r.vector == vector)
+            .collect();
+        if !routes.is_empty() {
+            return routes;
+        }
+
+        rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_vector(vector))
+            .flatten()
+            .into_iter()
+            .collect()
     }
 
     fn set_vector_enable(&mut self, vector: usize, enable: bool) -> bool {
-        let Some(route) = self.route_for_vector(vector) else {
+        let routes = self.routes_for_vector(vector);
+        if routes.is_empty() {
             return false;
-        };
+        }
 
-        self.set_route_enable(&route, enable);
+        for route in routes {
+            self.set_route_enable(&route, enable);
+        }
         true
     }
 
@@ -129,8 +142,8 @@ impl X86IoApic {
     }
 
     fn contains_route(&self, route: &AcpiGsiRoute) -> bool {
-        self.info.id == route.controller_id
-            && self.info.address == route.controller_address
+        u16::from(self.info.id) == route.controller_id
+            && u64::from(self.info.address) == route.controller_address
             && self.contains(route.gsi)
     }
 
@@ -144,14 +157,12 @@ impl X86IoApic {
             let mut entry = self.ioapic.table_entry(input);
             entry.set_vector(route.vector as u8);
             entry.set_mode(IrqMode::Fixed);
-            entry.set_flags(intx_flags(route.trigger, route.polarity));
+            entry.set_flags(intx_flags(route.trigger, route.polarity) | IrqFlags::MASKED);
             entry.set_dest(0);
             self.ioapic.set_table_entry(input, entry);
 
             if enable {
                 self.ioapic.enable_irq(input);
-            } else {
-                self.ioapic.disable_irq(input);
             }
         }
     }
@@ -164,6 +175,14 @@ impl DriverGeneric for X86IoApicIntc {
 }
 
 impl rdif_intc::Interface for X86IoApicIntc {
+    fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
+        route.controller == rdif_intc::AcpiGsiController::IoApic
+            && self
+                .ioapics
+                .iter()
+                .any(|ioapic| ioapic.contains_route(route))
+    }
+
     fn setup_irq_by_acpi(&mut self, route: &AcpiGsiRoute) -> rdrive::IrqId {
         self.remember_route(*route);
         self.set_route_enable(route, false);
@@ -171,7 +190,8 @@ impl rdif_intc::Interface for X86IoApicIntc {
     }
 }
 
-fn probe_ioapic(info: AcpiInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    let (info, dev) = probe.into_parts();
     let ioapics = info.root.routing().io_apics();
     if ioapics.is_empty() {
         return Err(OnProbeError::NotMatch);

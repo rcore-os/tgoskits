@@ -3,8 +3,8 @@ use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
+use ax_net::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use ax_runtime::hal::time::wall_time;
-use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::{
     general::timespec,
     net::{
@@ -162,7 +162,7 @@ fn recv_impl(
 
     let Ok(socket) = Socket::from_fd(fd) else {
         if let Ok(netlink) = NetlinkSocket::from_fd(fd) {
-            // Netlink is a FileLike, not an axnet Socket, so the flag-aware recv
+            // Netlink is a FileLike, not an ax_net Socket, so the flag-aware recv
             // path below is unreachable for it. Honor the recv flags here:
             // MSG_PEEK (do not consume the dump — getifaddrs/dnsmasq peek-then-
             // read to size their buffer), MSG_TRUNC (full datagram length),

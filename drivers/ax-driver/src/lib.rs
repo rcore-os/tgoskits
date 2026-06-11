@@ -36,15 +36,26 @@ macro_rules! model_register {
     };
 }
 
-crate::model_register!(
+model_register!(
     name: "ax-driver macro placeholder",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[],
 );
 
+mod binding_info;
+mod binding_resolver;
 pub mod error;
 pub mod mmio;
+#[cfg(any(
+    feature = "block",
+    feature = "display",
+    feature = "input",
+    feature = "net",
+    feature = "usb",
+    feature = "vsock"
+))]
+mod registration;
 
 #[cfg(feature = "block")]
 pub mod block;
@@ -57,6 +68,7 @@ pub mod net;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 
+#[cfg(feature = "pci")]
 pub mod pci;
 #[cfg(feature = "rknpu")]
 pub mod rknpu;
@@ -76,4 +88,12 @@ pub mod usb;
 #[cfg(virtio_dev)]
 pub mod virtio;
 
+pub use binding_info::BindingInfo;
+#[cfg(feature = "pci")]
+pub use binding_info::PciIrqRequirement;
+#[cfg(feature = "pci")]
+pub use binding_resolver::binding_info_from_pci;
+pub use binding_resolver::{
+    binding_info_from_acpi, binding_info_from_acpi_route, binding_info_from_fdt,
+};
 pub use error::{Error, Result};

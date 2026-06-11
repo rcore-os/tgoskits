@@ -4,7 +4,7 @@ use alloc::{borrow::ToOwned, format, string::String};
 
 use rdif_input::{AbsInfo, EventType, InputDeviceId, InputError, InputEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(any(plat_static, plat_dyn))]
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -12,9 +12,11 @@ use virtio_drivers::{
     transport::Transport,
 };
 
-use crate::{input::PlatformDeviceInput, virtio::VirtIoHalImpl};
+use crate::{BindingInfo, input::PlatformDeviceInput, virtio::VirtIoHalImpl};
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 
-#[cfg(any(plat_static, plat_dyn))]
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 crate::model_register!(
     name: "VirtIO Input",
     level: ProbeLevel::PostKernel,
@@ -24,24 +26,30 @@ crate::model_register!(
     }],
 );
 
-#[cfg(any(plat_static, plat_dyn))]
-fn probe_pci(
-    endpoint: &mut rdrive::probe::pci::EndpointRc,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Input)?;
-    register_transport(plat_dev, transport)
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
+    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::Input)?;
+    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
+    register_transport_with_info(probe.into_platform_device(), transport, info)
 }
 
 pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
+    register_transport_with_info(plat_dev, transport, BindingInfo::empty())
+}
+
+pub fn register_transport_with_info<T: Transport + 'static>(
+    plat_dev: PlatformDevice,
+    transport: T,
+    info: BindingInfo,
+) -> Result<(), OnProbeError> {
     let dev = VirtIoInputDevice::new(transport).map_err(|err| {
         OnProbeError::other(format!("failed to initialize virtio-input: {err:?}"))
     })?;
-    plat_dev.register_input(dev);
-    log::info!("registered virtio input device");
+    let irq = plat_dev.register_input_with_info(dev, info);
+    log::info!("registered virtio input device irq={irq:?}");
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use core::{
     sync::atomic::AtomicBool,
 };
 
-use crate::{CpuId, CpuMask, IrqRequest, IrqScope, RawIrqHandler};
+use crate::{AutoEnable, CpuId, CpuMask, IrqRequest, IrqScope, RawIrqHandler};
 
 pub(crate) struct Action {
     pub(crate) id: u64,
@@ -29,7 +29,7 @@ impl Action {
             handler: request.handler,
             data: request.data,
             scope: request.scope,
-            enabled: AtomicBool::new(false),
+            enabled: AtomicBool::new(request.auto_enable == AutoEnable::Yes),
             detached: AtomicBool::new(false),
             pending_enable: UnsafeCell::new(CpuMask::empty()),
             next: ptr::null_mut(),

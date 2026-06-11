@@ -106,6 +106,18 @@ impl Net {
         self.interface().mac_address()
     }
 
+    pub fn enable_irq(&mut self) {
+        self.interface().enable_irq();
+    }
+
+    pub fn disable_irq(&mut self) {
+        self.interface().disable_irq();
+    }
+
+    pub fn is_irq_enabled(&self) -> bool {
+        self.interface().is_irq_enabled()
+    }
+
     pub fn create_tx_queue(&mut self) -> Result<TxQueue, NetError> {
         let irq_guard = self.irq_guard();
         let queue = self
@@ -173,6 +185,16 @@ pub struct IrqHandler {
 unsafe impl Sync for IrqHandler {}
 
 impl IrqHandler {
+    pub fn enable(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.enable_irq();
+    }
+
+    pub fn disable(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        iface.disable_irq();
+    }
+
     pub fn handle(&self) {
         let iface = unsafe { &mut **self.inner.interface.get() };
         let event = iface.handle_irq();

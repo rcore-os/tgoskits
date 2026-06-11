@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.12"
+version = "0.5.13"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
 keywords = ["arceos", "os", "hal", "embedded", "loongarch"]
@@ -27,7 +27,7 @@ uart_16550 = "0.5"
 
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
-ax-driver = { workspace = true, features = ["plat-static"] }
+ax-driver = { workspace = true, features = ["plat-static", "pci"] }
 ax-plat = { workspace = true }
 axklib = { workspace = true, features = ["tlsf"] }
 mmio-api.workspace = true

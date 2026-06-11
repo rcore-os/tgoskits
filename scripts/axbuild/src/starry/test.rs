@@ -683,7 +683,11 @@ impl Starry {
         )?;
         let mut request = Self::qemu_test_request(request);
         if let Some(default_board) = default_board {
-            request.plat_dyn = Some(default_board.build_info.plat_dyn);
+            request.plat_dyn = Some(
+                default_board
+                    .build_info
+                    .effective_plat_dyn(&default_board.target, None),
+            );
             request.build_info_override = Some(default_board.build_info);
         } else {
             anyhow::bail!(
@@ -936,7 +940,7 @@ impl Starry {
                     ("phase", "prepare-qemu-config".to_string()),
                 ],
             );
-            qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
+            qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
             Self::rewrite_qemu_case_managed_rootfs_paths(self.app.workspace_root(), &mut qemu)?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path)?;
@@ -1209,7 +1213,7 @@ impl Starry {
                 ("phase", "apply-dynamic-boot".to_string()),
             ],
         );
-        qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, cargo);
+        qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
         timing_stage.finish();
         let timing_stage = timing::TimingStage::new(
             "qemu-case",
@@ -3732,7 +3736,7 @@ install(TARGETS test-uid-gid-re-setters RUNTIME DESTINATION usr/bin/starry-test-
     }
 
     #[test]
-    fn qemu_group_build_context_uses_group_plat_dyn_over_default_request() {
+    fn qemu_group_build_context_uses_omitted_group_plat_dyn_over_default_request() {
         let root = tempdir().unwrap();
         let build_config = root
             .path()
@@ -3741,7 +3745,7 @@ install(TARGETS test-uid-gid-re-setters RUNTIME DESTINATION usr/bin/starry-test-
         fs::write(
             &build_config,
             "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
-             \"Warn\"\nplat_dyn = true\n",
+             \"Warn\"\n",
         )
         .unwrap();
         let mut request = starry_request(

@@ -61,7 +61,17 @@ init(Platform::Fdt { addr: fdt_addr }).expect("rdrive init failed");
 ### 3. 注册驱动
 
 ```rust
-use rdrive::{register_add, ProbeKind, ProbeLevel, ProbePriority};
+use rdrive::{
+    register_add,
+    probe::OnProbeError,
+    register::{ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
+};
+
+fn my_probe_function(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
+    // 初始化设备并通过 plat_dev.register(...) 注册
+    Ok(())
+}
 
 // 定义 FDT 驱动注册信息
 static MY_DRIVER_REGISTER: DriverRegister = DriverRegister {

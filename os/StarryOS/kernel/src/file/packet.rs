@@ -28,8 +28,6 @@ use crate::{
 };
 const ETH0_NAME: &[u8] = b"eth0";
 const SYNTHETIC_PEER_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
-const UNSPEC_IPV4: [u8; 4] = [0, 0, 0, 0];
-
 const ARPHRD_ETHER: u16 = 1;
 const ETH_P_IP: u16 = 0x0800;
 const ETH_P_ARP: u16 = 0x0806;
@@ -205,21 +203,14 @@ fn build_arp_reply(request: &[u8]) -> Option<PacketFrame> {
 
     let request_sender_protocol: [u8; 4] = request[14..18].try_into().ok()?;
     let request_target_protocol: [u8; 4] = request[24..28].try_into().ok()?;
-    let modeled_peer_protocol = configured_peer_ipv4()?;
-    if request_target_protocol != modeled_peer_protocol {
-        return None;
-    }
-    if let Some(local_protocol) = configured_eth0_ipv4()
-        && request_sender_protocol != local_protocol
-        && request_sender_protocol != UNSPEC_IPV4
-    {
+    if !is_modeled_peer_ipv4(request_target_protocol) {
         return None;
     }
 
     let mut reply = request.to_vec();
     reply[6..8].copy_from_slice(&ARPOP_REPLY.to_be_bytes());
     reply[8..14].copy_from_slice(&SYNTHETIC_PEER_HWADDR);
-    reply[14..18].copy_from_slice(&modeled_peer_protocol);
+    reply[14..18].copy_from_slice(&request_target_protocol);
     reply[18..24].copy_from_slice(&request[8..14]);
     reply[24..28].copy_from_slice(&request_sender_protocol);
 
@@ -229,28 +220,10 @@ fn build_arp_reply(request: &[u8]) -> Option<PacketFrame> {
     Some(PacketFrame { data: reply, from })
 }
 
-fn configured_eth0_ipv4() -> Option<[u8; 4]> {
-    parse_ipv4_addr(option_env!("AX_IP")?)
-}
-
-fn configured_peer_ipv4() -> Option<[u8; 4]> {
-    parse_ipv4_addr(option_env!("AX_GW")?)
-}
-
-fn parse_ipv4_addr(value: &str) -> Option<[u8; 4]> {
-    let mut addr = [0; 4];
-    let mut parts = value.split('.');
-    for octet in &mut addr {
-        let part = parts.next()?;
-        if part.is_empty() {
-            return None;
-        }
-        *octet = part.parse().ok()?;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(addr)
+fn is_modeled_peer_ipv4(ip: [u8; 4]) -> bool {
+    ax_net::eth0_ipv4_config()
+        .and_then(|config| config.gateway)
+        .is_some_and(|gateway| gateway.octets() == ip)
 }
 
 fn read_user_bytes<const N: usize>(ptr: *const u8) -> AxResult<[u8; N]> {

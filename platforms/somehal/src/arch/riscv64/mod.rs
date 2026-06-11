@@ -4,10 +4,6 @@ mod plic;
 
 pub struct Plat;
 
-pub fn register_current_cpu_id(cpu_idx: usize, reader: fn() -> usize) {
-    plic::register_current_cpu_id(cpu_idx, reader);
-}
-
 pub(crate) fn claim_external_irq() -> Option<someboot::irq::IrqId> {
     plic::claim_external_irq()
 }

@@ -142,10 +142,13 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        qemu: Option<QemuConfig>,
+        mut qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
+        if let Some(qemu) = qemu.as_mut() {
+            crate::test::qemu::apply_x86_64_kvm_accel_if_available(qemu, &cargo);
+        }
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
         ostool_build::cargo_run(

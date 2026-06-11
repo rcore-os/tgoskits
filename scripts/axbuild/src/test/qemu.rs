@@ -991,20 +991,80 @@ pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     QemuArgsMut::new(&mut qemu.args).set_option_value("-smp", cpu_num.to_string());
 }
 
-pub(crate) fn apply_dynamic_x86_64_qemu_boot(qemu: &mut QemuConfig, cargo: &Cargo) {
-    if !cargo_uses_dynamic_x86_64_platform(cargo) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DynamicPlatformBootArch {
+    X86_64,
+    LoongArch64,
+}
+
+pub(crate) fn apply_dynamic_platform_qemu_boot(qemu: &mut QemuConfig, cargo: &Cargo) {
+    apply_dynamic_platform_qemu_boot_with_kvm_probe(qemu, cargo, host_kvm_available);
+}
+
+fn apply_dynamic_platform_qemu_boot_with_kvm_probe(
+    qemu: &mut QemuConfig,
+    cargo: &Cargo,
+    kvm_available: impl FnOnce() -> bool,
+) {
+    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, kvm_available);
+
+    let Some(arch) = cargo_dynamic_platform_boot_arch(cargo) else {
         return;
-    }
+    };
 
     qemu.uefi = true;
     qemu.to_bin = true;
+    apply_drive_snapshot_without_global_snapshot(qemu);
+
+    if arch != DynamicPlatformBootArch::X86_64 {
+        return;
+    }
+
     ensure_uefi_drive_bus(qemu);
     keep_qemu_default_devices_for_uefi(qemu);
     disable_unneeded_default_x86_64_devices(qemu);
     disable_dynamic_x86_64_five_level_paging(qemu);
     enable_dynamic_x86_64_nested_virtualization_features(qemu, cargo);
-    apply_drive_snapshot_without_global_snapshot(qemu);
     apply_dynamic_x86_64_qemu_debug_args(qemu);
+}
+
+pub(crate) fn apply_x86_64_kvm_accel_if_available(qemu: &mut QemuConfig, cargo: &Cargo) {
+    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, host_kvm_available);
+}
+
+fn apply_x86_64_kvm_accel_if_available_with_probe(
+    qemu: &mut QemuConfig,
+    cargo: &Cargo,
+    kvm_available: impl FnOnce() -> bool,
+) {
+    if !cargo_target_is_x86_64(&cargo.target) {
+        return;
+    }
+    if qemu.args.iter().any(|arg| arg == "-accel") {
+        return;
+    }
+    if !kvm_available() {
+        return;
+    }
+
+    qemu.args.push("-accel".to_string());
+    qemu.args.push("kvm".to_string());
+}
+
+#[cfg(unix)]
+fn host_kvm_available() -> bool {
+    use std::fs::OpenOptions;
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn host_kvm_available() -> bool {
+    false
 }
 
 fn apply_dynamic_x86_64_qemu_debug_args(qemu: &mut QemuConfig) {
@@ -1174,14 +1234,33 @@ fn ensure_drive_snapshot_on(drive: &mut String) {
     }
 }
 
-pub(crate) fn cargo_uses_dynamic_x86_64_platform(cargo: &Cargo) -> bool {
-    cargo_target_is_dynamic_x86_64(&cargo.target)
-        && cargo_dynamic_platform_features(cargo).any(dynamic_platform_feature)
+fn cargo_dynamic_platform_boot_arch(cargo: &Cargo) -> Option<DynamicPlatformBootArch> {
+    if !cargo_dynamic_platform_features(cargo).any(dynamic_platform_feature) {
+        return None;
+    }
+
+    if cargo_target_is_dynamic_x86_64(&cargo.target) {
+        Some(DynamicPlatformBootArch::X86_64)
+    } else if cargo_target_is_dynamic_loongarch64(&cargo.target) {
+        Some(DynamicPlatformBootArch::LoongArch64)
+    } else {
+        None
+    }
 }
 
 fn cargo_target_is_dynamic_x86_64(target: &str) -> bool {
+    cargo_target_is_x86_64(target)
+}
+
+fn cargo_target_is_x86_64(target: &str) -> bool {
     let target = target.strip_suffix(".json").unwrap_or(target);
     target.ends_with("x86_64-unknown-none") || target.ends_with("x86_64-unknown-linux-musl")
+}
+
+fn cargo_target_is_dynamic_loongarch64(target: &str) -> bool {
+    let target = target.strip_suffix(".json").unwrap_or(target);
+    target.ends_with("loongarch64-unknown-none-softfloat")
+        || target.ends_with("loongarch64-unknown-linux-musl")
 }
 
 fn dynamic_platform_feature(feature: &str) -> bool {
@@ -1572,7 +1651,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(qemu.uefi);
         assert!(qemu.to_bin);
@@ -1594,7 +1673,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(qemu.uefi);
         assert!(qemu.to_bin);
@@ -1622,7 +1701,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1636,6 +1715,84 @@ mod tests {
                 "none",
                 "-vga",
                 "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_loongarch64_cargo_uses_uefi_bin_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "loongarch64-unknown-none-softfloat".to_string(),
+            features: vec!["dyn-plat".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn dynamic_loongarch64_std_cargo_uses_uefi_bin_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+            features: vec!["plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn dynamic_loongarch64_qemu_boot_converts_global_snapshot_to_drive_snapshots() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+            features: vec!["plat-dyn".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-snapshot".to_string(),
+                "-drive".to_string(),
+                "id=disk0,format=raw,file=rootfs.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-machine",
+                "virt",
+                "-drive",
+                "id=disk0,format=raw,file=rootfs.img,snapshot=on"
             ]
         );
     }
@@ -1658,7 +1815,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1685,7 +1842,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1713,8 +1870,8 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1746,8 +1903,8 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1784,7 +1941,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1814,7 +1971,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1847,10 +2004,118 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(!qemu.uefi);
         assert!(!qemu.to_bin);
+    }
+
+    #[test]
+    fn non_dynamic_loongarch64_cargo_keeps_existing_qemu_boot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::set(DYNAMIC_X86_64_QEMU_DEBUG_ENV, "1");
+        let cargo = Cargo {
+            target: "scripts/targets/std/pie/loongarch64-unknown-linux-musl.json".to_string(),
+            features: vec![],
+            to_bin: false,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            uefi: false,
+            to_bin: false,
+            args: vec!["-snapshot".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert!(!qemu.uefi);
+        assert!(!qemu.to_bin);
+        assert_eq!(qemu.args, ["-snapshot"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_kvm_when_available() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "kvm"]);
+    }
+
+    #[test]
+    fn qemu_boot_rewrite_uses_kvm_for_x86_64_when_available() {
+        let cargo = Cargo {
+            target: "scripts/targets/std/x86_64-unknown-linux-musl.json".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "kvm"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_keeps_explicit_accel() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-nographic".to_string(),
+                "-accel".to_string(),
+                "tcg,thread=single".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "tcg,thread=single"]);
+    }
+
+    #[test]
+    fn non_x86_64_qemu_does_not_use_kvm() {
+        let cargo = Cargo {
+            target: "riscv64gc-unknown-none-elf".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_does_not_use_kvm_without_permission() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(qemu.args, ["-nographic"]);
     }
 
     #[test]

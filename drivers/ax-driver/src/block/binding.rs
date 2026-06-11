@@ -1,9 +1,13 @@
+#[cfg(feature = "irq")]
+use alloc::sync::Arc;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
     vec::Vec,
 };
 use core::alloc::Layout;
+#[cfg(feature = "irq")]
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
@@ -13,11 +17,18 @@ use rdif_block::{
     BlkError, Buffer, IQueue, Interface, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
     RequestStatus, TransferChunk, TransferPlan, TransferPlanner, TransferRuntimeCaps,
 };
-use rdrive::Device;
+use rdrive::{Device, probe::OnProbeError};
+
+use crate::{
+    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
+    registration::{BoundDevice, register_bound_device},
+};
+#[cfg(feature = "pci")]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 
 pub struct Block {
     name: String,
-    irq_num: Option<usize>,
+    info: BindingInfo,
     irq_enabled: bool,
     #[cfg(feature = "irq")]
     irq_handler: Option<BlockIrqHandler>,
@@ -28,6 +39,8 @@ pub struct Block {
 struct BlockQueues {
     queue: Box<dyn IQueue>,
     pool: BlockBufferPool,
+    #[cfg(feature = "irq")]
+    irq_events: Arc<BlockIrqEvents>,
 }
 
 struct BlockBufferPool {
@@ -40,17 +53,17 @@ struct BlockBufferPool {
 pub struct PlatformBlockDevice {
     name: String,
     interface: Option<Box<dyn Interface>>,
-    irq_num: Option<usize>,
+    info: BindingInfo,
 }
 
 const MAX_BLOCK_BUFFER_SIZE: usize = 16 * 1024;
 
 impl PlatformBlockDevice {
-    fn new(name: String, interface: Box<dyn Interface>, irq_num: Option<usize>) -> Self {
+    fn new(name: String, interface: Box<dyn Interface>, info: BindingInfo) -> Self {
         Self {
             name,
             interface: Some(interface),
-            irq_num,
+            info,
         }
     }
 }
@@ -61,32 +74,81 @@ impl rdrive::DriverGeneric for PlatformBlockDevice {
     }
 }
 
+impl BoundDevice for PlatformBlockDevice {
+    fn binding_info(&self) -> &BindingInfo {
+        &self.info
+    }
+}
+
 #[cfg(feature = "irq")]
 pub struct BlockIrqHandler {
     handler: Box<dyn rdif_block::IrqHandler>,
+    events: Arc<BlockIrqEvents>,
 }
 
 #[cfg(feature = "irq")]
 impl BlockIrqHandler {
-    fn new(handler: Box<dyn rdif_block::IrqHandler>) -> Self {
-        Self { handler }
+    fn new(handler: Box<dyn rdif_block::IrqHandler>, events: Arc<BlockIrqEvents>) -> Self {
+        Self { handler, events }
     }
 
     pub fn handle(&self) -> rdif_block::Event {
-        self.handler.handle_irq()
+        let event = self.handler.handle_irq();
+        self.events.record(event);
+        event
     }
 }
 
 #[cfg(not(feature = "irq"))]
 pub struct BlockIrqHandler;
 
+#[cfg(feature = "irq")]
+#[derive(Default)]
+struct BlockIrqEvents {
+    queues: AtomicU64,
+}
+
+#[cfg(feature = "irq")]
+impl BlockIrqEvents {
+    fn record(&self, event: rdif_block::Event) {
+        let queues = event.queues.bits();
+        if queues != 0 {
+            self.queues.fetch_or(queues, Ordering::Release);
+        }
+    }
+
+    fn take_queue(&self, id: usize) -> bool {
+        if id >= u64::BITS as usize {
+            return false;
+        }
+        let mask = 1_u64 << id;
+        let mut current = self.queues.load(Ordering::Acquire);
+        while current & mask != 0 {
+            match self.queues.compare_exchange_weak(
+                current,
+                current & !mask,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+        false
+    }
+}
+
 impl Block {
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub const fn irq_num(&self) -> Option<usize> {
-        self.irq_num
+    pub fn irq_num(&self) -> Option<usize> {
+        self.info.irq_num()
+    }
+
+    pub fn binding_info(&self) -> &BindingInfo {
+        &self.info
     }
 
     pub fn enable_irq(&mut self) {
@@ -105,9 +167,9 @@ impl Block {
 
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self) -> Option<(usize, BlockIrqHandler)> {
-        let irq_num = self.irq_num.take()?;
+        let irq = self.info.irq_num()?;
         let handler = self.irq_handler.take()?;
-        Some((irq_num, handler))
+        Some((irq, handler))
     }
 
     #[cfg(not(feature = "irq"))]
@@ -199,7 +261,10 @@ impl Block {
 }
 
 impl BlockQueues {
-    fn new(queue: Box<dyn IQueue>) -> AxResult<Self> {
+    fn new(
+        queue: Box<dyn IQueue>,
+        #[cfg(feature = "irq")] irq_events: Arc<BlockIrqEvents>,
+    ) -> AxResult<Self> {
         let info = queue.info();
         let block_size = info.device.logical_block_size;
         if block_size == 0 {
@@ -215,6 +280,8 @@ impl BlockQueues {
                 size: layout.size(),
                 align: layout.align(),
             },
+            #[cfg(feature = "irq")]
+            irq_events,
         })
     }
 
@@ -225,8 +292,18 @@ impl BlockQueues {
                 .poll_request(request)
                 .map_err(map_blk_err_to_ax_err)?
             {
-                RequestStatus::Complete => return Ok(()),
-                RequestStatus::Pending => core::hint::spin_loop(),
+                RequestStatus::Complete => {
+                    #[cfg(feature = "irq")]
+                    let _ = self.irq_events.take_queue(self.queue.id());
+                    return Ok(());
+                }
+                RequestStatus::Pending => {
+                    #[cfg(feature = "irq")]
+                    if self.irq_events.take_queue(self.queue.id()) {
+                        continue;
+                    }
+                    core::hint::spin_loop();
+                }
             }
         }
     }
@@ -247,30 +324,42 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq_num = dev.irq_num;
+        let info = dev.info.clone();
+        let irq = info.irq_num();
         let mut interface = dev.interface.take().ok_or(AxError::BadState)?;
         let queue = interface.create_queue().ok_or(AxError::BadState)?;
-        let queues = BlockQueues::new(queue)?;
+        #[cfg(feature = "irq")]
+        let irq_events = Arc::new(BlockIrqEvents::default());
+        let queues = BlockQueues::new(
+            queue,
+            #[cfg(feature = "irq")]
+            Arc::clone(&irq_events),
+        )?;
 
         #[cfg(feature = "irq")]
-        let irq_handler = irq_num
+        let irq_handler = irq
+            .as_ref()
             .and_then(|_| take_legacy_irq_handler(interface.as_mut()))
-            .map(BlockIrqHandler::new);
+            .map(|handler| BlockIrqHandler::new(handler, irq_events));
         drop(dev);
 
         #[cfg(feature = "irq")]
-        let irq_num = if irq_handler.is_some() { irq_num } else { None };
+        let info = if irq_handler.is_some() {
+            info
+        } else {
+            BindingInfo::empty()
+        };
         #[cfg(feature = "irq")]
         let irq_handler = irq_handler;
         #[cfg(not(feature = "irq"))]
-        let irq_num = {
-            let _ = irq_num;
-            None
+        let info = {
+            let _ = irq;
+            BindingInfo::empty()
         };
 
         Ok(Self {
             name,
-            irq_num,
+            info,
             irq_enabled: interface.is_irq_enabled(),
             #[cfg(feature = "irq")]
             irq_handler,
@@ -281,36 +370,85 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
 }
 
 pub trait PlatformDeviceBlock {
-    fn register_block<T: Interface>(self, dev: T);
-    fn register_block_with_irq<T: Interface>(self, dev: T, irq_num: Option<usize>);
+    fn register_block<T: Interface>(self, dev: T) -> Option<usize>;
+    fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize>;
 }
 
 impl PlatformDeviceBlock for rdrive::PlatformDevice {
-    fn register_block<T: Interface>(self, dev: T) {
-        self.register_block_with_irq(dev, None);
+    fn register_block<T: Interface>(self, dev: T) -> Option<usize> {
+        self.register_block_with_info(dev, BindingInfo::empty())
     }
 
-    fn register_block_with_irq<T: Interface>(self, dev: T, irq_num: Option<usize>) {
-        let name = dev.name().to_string();
-        self.register(PlatformBlockDevice::new(name, Box::new(dev), irq_num));
+    fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize> {
+        register_block_with_info(self, dev, info)
     }
 }
 
-pub fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
-    let interrupt = interrupts.first()?;
-    decode_irq_cells(&interrupt.specifier)
+pub trait ProbeFdtBlock {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError>;
 }
 
-fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
-    match specifier {
-        [irq] => Some(*irq as usize),
-        [kind, irq, ..] => match *kind {
-            0 => Some(*irq as usize + 32),
-            1 => Some(*irq as usize + 16),
-            _ => Some(*irq as usize),
-        },
-        _ => None,
+impl ProbeFdtBlock for rdrive::probe::fdt::ProbeFdt<'_> {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_fdt(self.info())?;
+        Ok(register_block_with_info(
+            self.into_platform_device(),
+            dev,
+            info,
+        ))
     }
+}
+
+pub trait ProbeAcpiBlock {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError>;
+}
+
+impl ProbeAcpiBlock for rdrive::probe::acpi::ProbeAcpi<'_> {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_acpi(self.info())?;
+        Ok(register_block_with_info(
+            self.into_platform_device(),
+            dev,
+            info,
+        ))
+    }
+}
+
+#[cfg(feature = "pci")]
+pub trait ProbePciBlock {
+    fn register_block<T: Interface>(
+        self,
+        dev: T,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+#[cfg(feature = "pci")]
+impl ProbePciBlock for rdrive::probe::pci::ProbePci<'_> {
+    fn register_block<T: Interface>(
+        self,
+        dev: T,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_pci(self.info(), requirement)?;
+        Ok(register_block_with_info(
+            self.into_platform_device(),
+            dev,
+            info,
+        ))
+    }
+}
+
+fn register_block_with_info<T: Interface>(
+    plat_dev: rdrive::PlatformDevice,
+    dev: T,
+    info: BindingInfo,
+) -> Option<usize> {
+    let name = dev.name().to_string();
+    register_bound_device(
+        plat_dev,
+        PlatformBlockDevice::new(name, Box::new(dev), info),
+    )
 }
 
 pub fn take_block_devices() -> Vec<Block> {
@@ -585,6 +723,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn platform_block_device_exposes_binding_info_irq_num() {
+        let irq = 47;
+        let device = PlatformBlockDevice::new(
+            "test-block".into(),
+            Box::new(TestInterface),
+            BindingInfo::with_irq(Some(irq)),
+        );
+
+        assert_eq!(BoundDevice::binding_info(&device).irq_num(), Some(irq));
+        assert_eq!(BoundDevice::irq_num(&device), Some(irq));
+    }
+
     struct TestQueue {
         dma: &'static TrackingDma,
     }
@@ -680,7 +831,7 @@ mod tests {
         let layout = block_buffer_layout(info, planner.chunk_size()).unwrap();
         Block {
             name: String::from("test-block"),
-            irq_num: None,
+            info: BindingInfo::empty(),
             irq_enabled: false,
             #[cfg(feature = "irq")]
             irq_handler: None,
@@ -693,6 +844,8 @@ mod tests {
                     size: layout.size(),
                     align: layout.align(),
                 },
+                #[cfg(feature = "irq")]
+                irq_events: Arc::new(BlockIrqEvents::default()),
             }),
         }
     }

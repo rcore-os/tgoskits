@@ -1,9 +1,3 @@
-features = [
-  "ax-hal/loongarch64-qemu-virt",
-]
+features = []
 log = "Info"
 max_cpu_num = 1
-
-[env]
-AX_GW = "10.0.2.2"
-AX_IP = "10.0.2.15"

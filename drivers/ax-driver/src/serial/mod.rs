@@ -2,7 +2,7 @@ use alloc::{format, string::String};
 
 use fdt_edit::{Fdt, NodeType, RegFixed, Status};
 use log::{info, warn};
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use some_serial::{
     BSerial, ns16550,
     ns16550::rockchip_fiq::{ROCKCHIP_FIQ_RK3588_UART_CLOCK, RockchipFiqConfig, RockchipFiqSerial},
@@ -29,7 +29,8 @@ crate::model_register!(
     }],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     info!("Probing serial device: {}", info.node.name());
     let base_reg =
         info.node.regs().into_iter().next().ok_or_else(|| {
@@ -66,7 +67,8 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     Ok(())
 }
 
-fn probe_rockchip_fiq(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_rockchip_fiq(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let live_fdt =
         rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))?;
     let fdt_config = rockchip_fiq_fdt_config(&live_fdt, info.node)?;

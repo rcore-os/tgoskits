@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.18"
+version = "0.5.19"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -80,7 +80,6 @@ net = [
     "dep:ax-net",
     "ax-runtime/net",
 ]
-net-ng = ["paging", "irq", "multitask", "dep:ax-net-ng", "ax-runtime/net-ng"]
 vsock = ["ax-runtime/vsock"]
 
 # Display
@@ -96,6 +95,9 @@ input = [
     "dep:ax-input",
     "ax-runtime/input",
 ]
+
+# USB
+usb = ["irq", "ax-driver?/usb"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-hal/rtc", "ax-runtime/rtc"]
@@ -117,7 +119,6 @@ ax-input = { workspace = true, optional = true }
 ax-ipi = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
-ax-net-ng = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync = { workspace = true, optional = true }
 ax-task = { workspace = true, optional = true }

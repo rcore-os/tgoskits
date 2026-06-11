@@ -262,7 +262,7 @@ impl ArceOS {
             None => None,
         };
         if let Some(qemu) = qemu.as_mut() {
-            crate::test::qemu::apply_dynamic_x86_64_qemu_boot(qemu, cargo);
+            crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, cargo);
         }
         Ok(qemu)
     }
@@ -379,7 +379,7 @@ impl ArceOS {
                 )
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
-        crate::test::qemu::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+        crate::test::qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         ensure_qemu_runtime_assets(self.app.workspace_root(), &qemu)?;
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)

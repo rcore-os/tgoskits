@@ -2,7 +2,7 @@ use log::debug;
 use rdrive::{
     driver::clk::*,
     probe::OnProbeError,
-    register::{DriverRegister, FdtInfo, ProbeKind, ProbeLevel, ProbePriority},
+    register::{DriverRegister, ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
     *,
 };
 
@@ -22,7 +22,8 @@ pub fn register() -> DriverRegister {
     }
 }
 
-fn probe(_node: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let plat_dev = probe.into_platform_device();
     plat_dev.register(Clk::new(Clock { rate: 0 }));
 
     Ok(())
@@ -63,6 +64,6 @@ module_driver!(
         }],
 );
 
-fn probe_clk(_fdt: FdtInfo<'_>, _desc: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_clk(_probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     todo!()
 }

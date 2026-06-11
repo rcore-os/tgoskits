@@ -10,8 +10,8 @@ pub use crate::build::LogLevel;
 use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
 
 pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
-    let mut build_info = StarryBuildInfo::default_for_target(target);
-    if build_info.plat_dyn {
+    let mut build_info = StarryBuildInfo::default();
+    if build_info.effective_plat_dyn(target, None) {
         build_info.features = Vec::new();
     } else {
         build_info.features = vec!["qemu".to_string()];
@@ -63,17 +63,12 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
         })?;
         let content = std::fs::read_to_string(&request.build_info_path)?;
         crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
-        let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
+        let build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
             format!(
                 "failed to parse build info {}",
                 request.build_info_path.display()
             )
         })?;
-        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-            &mut build_info,
-            &request.target,
-            &content,
-        );
         build_info
     };
 
@@ -98,17 +93,12 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         })?;
         let content = std::fs::read_to_string(&request.build_info_path)?;
         crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
-        let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
+        let build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
             format!(
                 "failed to parse build info {}",
                 request.build_info_path.display()
             )
         })?;
-        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-            &mut build_info,
-            &request.target,
-            &content,
-        );
         build_info
     };
     crate::build::apply_makefile_features_with_metadata(
@@ -532,8 +522,6 @@ std = false
 features = []
 log = "Info"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();
@@ -557,8 +545,6 @@ app-c = "c"
 features = []
 log = "Info"
 
-[env]
-AX_IP = "10.0.2.15"
 "#,
         )
         .unwrap();

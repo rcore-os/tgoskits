@@ -1436,7 +1436,7 @@ async fn build_and_run_c_test(
     );
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
     let mut qemu = qemu_config;
-    qemu_test::apply_dynamic_x86_64_qemu_boot(&mut qemu, &cargo);
+    qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
     ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
     let _host_http_server = qemu_test::load_qemu_case_host_http_server(&test.qemu_config_path)?
         .as_ref()

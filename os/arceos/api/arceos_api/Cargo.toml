@@ -1,6 +1,6 @@
 [package]
 name = "ax-api"
-version = "0.5.18"
+version = "0.5.19"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -39,6 +39,7 @@ ax-ipi = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-mm = { workspace = true, optional = true }
 ax-net = { workspace = true, optional = true }
+axpoll.workspace = true
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task = { workspace = true, optional = true }

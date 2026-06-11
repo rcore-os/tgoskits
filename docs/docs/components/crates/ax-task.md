@@ -149,7 +149,7 @@ graph LR
 - `ax-sync`：基于 `ax-task` 的阻塞/唤醒机制构建锁和同步原语。
 - `ax-api`、`ax-posix-api`：把任务、睡眠、等待队列等能力对外暴露。
 - `starry-kernel`：在 Linux 兼容线程模型上直接复用 `ax-task`。
-- `ax-net`、`ax-net-ng`：在网络栈阻塞/异步路径上复用调度与等待能力。
+- `ax-net`、`ax-net`：在网络栈阻塞/异步路径上复用调度与等待能力。
 
 ## 开发指南
 ### 接入方式

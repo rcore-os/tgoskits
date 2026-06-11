@@ -100,8 +100,12 @@ pub(crate) fn cpu_meta_addr(idx: usize) -> Option<usize> {
     layout::cpu_meta_addr(idx)
 }
 
+pub(crate) fn percpu_data_phys(idx: usize) -> Option<usize> {
+    layout::percpu_data_phys(idx)
+}
+
 pub fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
-    layout::percpu_data_ptr(idx)
+    percpu_data_phys(idx).map(__percpu)
 }
 
 /// Returns the current hardware CPU ID from the early boot register convention.

@@ -1,6 +1,5 @@
 # Build-time config template for StarryOS on SG2002.
 target = "riscv64gc-unknown-none-elf"
-env = {}
 features = [
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
@@ -10,4 +9,3 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 1
-plat_dyn = true

@@ -121,34 +121,40 @@ impl IrqIf for IrqIfImpl {
 
         trace!("IRQ {irq:?}");
 
-        if let IrqType::Ipi = irq {
-            let mut status = iocsr_read_w(IOCSR_IPI_STATUS);
-            if status != 0 {
-                iocsr_write_w(IOCSR_IPI_CLEAR, status);
-                trace!("IPI status = {:#x}", status);
+        match irq {
+            IrqType::Timer => {
+                // Clear the interrupt before dispatching. The timer handler
+                // programs the next one-shot event; clearing afterwards can
+                // drop a freshly-pending event and leave sleepers blocked.
+                ticlr::clear_timer_interrupt();
+                if !dispatch_irq(irq.as_usize()).handled {
+                    debug!("Unhandled IRQ {irq:?}");
+                }
+            }
+            IrqType::Ipi => {
+                let mut status = iocsr_read_w(IOCSR_IPI_STATUS);
+                if status != 0 {
+                    iocsr_write_w(IOCSR_IPI_CLEAR, status);
+                    trace!("IPI status = {:#x}", status);
 
-                while status != 0 {
-                    let vector = status.trailing_zeros() as usize;
-                    status &= !(1 << vector);
-                    if !dispatch_irq(irq.as_usize()).handled {
-                        warn!("Unhandled IRQ {irq:?}");
+                    while status != 0 {
+                        let vector = status.trailing_zeros() as usize;
+                        status &= !(1 << vector);
+                        if !dispatch_irq(irq.as_usize()).handled {
+                            warn!("Unhandled IRQ {irq:?}");
+                        }
                     }
                 }
             }
-        } else {
-            if !dispatch_irq(irq.as_usize()).handled {
-                debug!("Unhandled IRQ {irq:?}");
+            IrqType::Io | IrqType::Ex(_) => {
+                if !dispatch_irq(irq.as_usize()).handled {
+                    debug!("Unhandled IRQ {irq:?}");
+                }
             }
         }
 
-        match irq {
-            IrqType::Timer => {
-                ticlr::clear_timer_interrupt();
-            }
-            IrqType::Ex(irq) => {
-                eiointc::complete_irq(irq);
-            }
-            _ => {}
+        if let IrqType::Ex(irq) = irq {
+            eiointc::complete_irq(irq);
         }
 
         Some(irq.as_usize())

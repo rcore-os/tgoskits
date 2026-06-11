@@ -3,12 +3,9 @@ extern crate alloc;
 use alloc::format;
 
 use pcie::CommandRegister;
-use rdrive::{
-    PlatformDevice,
-    probe::{
-        OnProbeError,
-        pci::{EndpointRc, FnOnProbe},
-    },
+use rdrive::probe::{
+    OnProbeError,
+    pci::{FnOnProbe, ProbePci},
 };
 use simple_ahci::{AhciDriver as SimpleAhciDriver, Hal as AhciHal};
 
@@ -39,7 +36,8 @@ impl AhciHal for AxAhciHal {
     fn flush_dcache() {}
 }
 
-fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint_mut();
     let class = endpoint.revision_and_class();
     if (class.base_class, class.sub_class) != (0x01, 0x06) {
         return Err(OnProbeError::NotMatch);
@@ -60,7 +58,7 @@ fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), 
     else {
         return Err(OnProbeError::other("failed to initialize AHCI controller"));
     };
-    register_sync_block(plat_dev, AhciBlock(driver));
+    register_sync_block(probe.into_platform_device(), AhciBlock(driver));
     Ok(())
 }
 

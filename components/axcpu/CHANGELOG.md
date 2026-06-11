@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.6...ax-cpu-v0.6.7) - 2026-06-11
+
+### Fixed
+
+- *(axcpu)* support LoongArch user trap recovery
+
 ## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.5...ax-cpu-v0.6.6) - 2026-06-09
 
 ### Added
