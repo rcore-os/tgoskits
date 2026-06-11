@@ -7,8 +7,6 @@ use core::{
 };
 
 use ax_kernel_guard::NoPreemptIrqSave;
-#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
-use rd_net::Interface;
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
@@ -331,10 +329,7 @@ fn register_pci_transport<T: Transport + 'static>(
     transport: T,
 ) -> Result<(), OnProbeError> {
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
-    let mut net = make_net(transport)?;
-    if info.irq_num().is_some() {
-        net.enable_irq();
-    }
+    let net = make_net(transport)?;
     let irq = probe
         .into_platform_device()
         .register_net_with_info("virtio-net", net, info);

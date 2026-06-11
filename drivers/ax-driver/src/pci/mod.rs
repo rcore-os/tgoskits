@@ -240,17 +240,13 @@ fn resolve_intx_irq_with_resolvers(
             if info.intx_route.is_none() {
                 return Ok(None);
             }
-            if let Some(irq) = acpi_irq(info)? {
-                return Ok(Some(irq));
-            }
+            return acpi_irq(info);
         }
         Some(DynamicPciIrqSource::Fdt) => {
             if info.intx_route.is_none() {
                 return Ok(None);
             }
-            if let Some(irq) = fdt_irq(info)? {
-                return Ok(Some(irq));
-            }
+            return fdt_irq(info);
         }
         None => {}
     }
@@ -500,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_intx_irq_fdt_none_falls_back_to_interrupt_line() {
+    fn resolve_intx_irq_fdt_none_does_not_fallback_to_legacy_or_interrupt_line() {
         let info = endpoint_with_intx_route();
         let acpi_called = Cell::new(false);
         let legacy_called = Cell::new(false);
@@ -516,24 +512,23 @@ mod tests {
             |_| Ok(None),
             |_| {
                 legacy_called.set(true);
-                None
+                Some(66)
             },
-            |line| {
+            |_| {
                 line_called.set(true);
-                assert_eq!(line, 9);
                 Some(77)
             },
         )
         .unwrap();
 
-        assert_eq!(irq, Some(77));
+        assert_eq!(irq, None);
         assert!(!acpi_called.get());
-        assert!(legacy_called.get());
-        assert!(line_called.get());
+        assert!(!legacy_called.get());
+        assert!(!line_called.get());
     }
 
     #[test]
-    fn resolve_intx_irq_acpi_none_falls_back_to_interrupt_line() {
+    fn resolve_intx_irq_acpi_none_does_not_fallback_to_legacy_or_interrupt_line() {
         let info = endpoint_with_intx_route();
         let fdt_called = Cell::new(false);
         let legacy_called = Cell::new(false);
@@ -549,33 +544,8 @@ mod tests {
             },
             |_| {
                 legacy_called.set(true);
-                None
+                Some(66)
             },
-            |line| {
-                line_called.set(true);
-                assert_eq!(line, 9);
-                Some(77)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(irq, Some(77));
-        assert!(!fdt_called.get());
-        assert!(legacy_called.get());
-        assert!(line_called.get());
-    }
-
-    #[test]
-    fn resolve_intx_irq_dynamic_none_prefers_legacy_before_interrupt_line() {
-        let info = endpoint_with_intx_route();
-        let line_called = Cell::new(false);
-
-        let irq = resolve_intx_irq_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Fdt),
-            |_| Ok(Some(44)),
-            |_| Ok(None),
-            |_| Some(66),
             |_| {
                 line_called.set(true);
                 Some(77)
@@ -583,7 +553,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(irq, Some(66));
+        assert_eq!(irq, None);
+        assert!(!fdt_called.get());
+        assert!(!legacy_called.get());
         assert!(!line_called.get());
     }
 

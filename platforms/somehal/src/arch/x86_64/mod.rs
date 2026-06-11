@@ -50,30 +50,43 @@ impl X86IoApicIntc {
     }
 
     fn remember_route(&mut self, route: AcpiGsiRoute) {
-        if let Some(existing) = self.routes.iter_mut().find(|r| r.vector == route.vector) {
+        if let Some(existing) = self.routes.iter_mut().find(|r| {
+            r.controller_id == route.controller_id
+                && r.controller_address == route.controller_address
+                && r.gsi == route.gsi
+        }) {
             *existing = route;
         } else {
             self.routes.push(route);
         }
     }
 
-    fn route_for_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
-        self.routes
+    fn routes_for_vector(&self, vector: usize) -> Vec<AcpiGsiRoute> {
+        let routes: Vec<_> = self
+            .routes
             .iter()
             .copied()
-            .find(|r| r.vector == vector)
-            .or_else(|| {
-                rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_vector(vector))
-                    .flatten()
-            })
+            .filter(|r| r.vector == vector)
+            .collect();
+        if !routes.is_empty() {
+            return routes;
+        }
+
+        rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_vector(vector))
+            .flatten()
+            .into_iter()
+            .collect()
     }
 
     fn set_vector_enable(&mut self, vector: usize, enable: bool) -> bool {
-        let Some(route) = self.route_for_vector(vector) else {
+        let routes = self.routes_for_vector(vector);
+        if routes.is_empty() {
             return false;
-        };
+        }
 
-        self.set_route_enable(&route, enable);
+        for route in routes {
+            self.set_route_enable(&route, enable);
+        }
         true
     }
 
@@ -144,14 +157,12 @@ impl X86IoApic {
             let mut entry = self.ioapic.table_entry(input);
             entry.set_vector(route.vector as u8);
             entry.set_mode(IrqMode::Fixed);
-            entry.set_flags(intx_flags(route.trigger, route.polarity));
+            entry.set_flags(intx_flags(route.trigger, route.polarity) | IrqFlags::MASKED);
             entry.set_dest(0);
             self.ioapic.set_table_entry(input, entry);
 
             if enable {
                 self.ioapic.enable_irq(input);
-            } else {
-                self.ioapic.disable_irq(input);
             }
         }
     }
