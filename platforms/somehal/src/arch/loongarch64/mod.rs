@@ -80,8 +80,12 @@ impl PlatOp for Plat {
         let irq = match raw {
             raw if raw == someboot::irq::systimer_irq().raw() => {
                 let irq = someboot::irq::IrqId::new(raw);
-                _handle_irq(raw.into());
+                // Clear the current timer interrupt before dispatching. The
+                // dispatch path reprograms the next one-shot timer; clearing
+                // afterwards can drop a newly-arrived timer edge and strand
+                // timer-based sleeps.
                 someboot::timer::ack();
+                _handle_irq(raw.into());
                 irq
             }
             IPI_IRQ => {
