@@ -495,8 +495,22 @@ impl AddrSpace {
             let flags = area.flags();
             if flags.contains(access_flags) {
                 let page_size = area.backend().page_size();
+                // Readahead: populate a window FORWARD from the faulting page
+                // (clamped to this area), so a large file-backed mapping loads
+                // via the backend's batched read instead of one fault+read per
+                // page. The backend skips already-mapped pages, so overlapping
+                // windows from successive faults are harmless. Only base 4K pages
+                // get the window; huge pages populate exactly one.
+                let fault_page = vaddr.align_down(page_size);
+                let ps = page_size as usize;
+                const READAHEAD_PAGES: usize = 32;
+                let win_end = if page_size == PageSize::Size4K {
+                    (fault_page + READAHEAD_PAGES * ps).min(area.end())
+                } else {
+                    fault_page + ps
+                };
                 let populate_result = area.backend().populate(
-                    VirtAddrRange::from_start_size(vaddr.align_down(page_size), page_size as _),
+                    VirtAddrRange::new(fault_page, win_end),
                     flags,
                     access_flags,
                     &mut self.pt.cursor(),
