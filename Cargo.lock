@@ -1073,6 +1073,7 @@ dependencies = [
  "ax-plat",
  "axklib",
  "chrono",
+ "fdt-raw",
  "log",
  "loongArch64",
  "mmio-api",

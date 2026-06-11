@@ -18,8 +18,11 @@ low-memory-base = 0x0                   # uint
 low-memory-size = 0x1000_0000           # uint
 # Base address of the high physical memory.
 high-memory-base = 0x8000_0000          # uint
-# Size of the whole physical memory. (128M)
-phys-memory-size = 0x800_0000           # uint
+# Fallback size of the whole physical memory when the DTB is absent/unparseable.
+# The DTB (qemu `-m`) is the primary source via MemIf::phys_ram_ranges; this 512 MiB
+# default only applies on FDT failure and stays within the boot page-table's 1 GiB
+# high block (0x8000_0000..0xc000_0000). (was 128M, which OOM'd python/pip/uv.)
+phys-memory-size = 0x2000_0000          # uint
 
 # Linear mapping offset at boot time.
 phys-boot-offset = "0x9000_0000_0000_0000"      # uint
