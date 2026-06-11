@@ -320,6 +320,10 @@ fn current_preempt_count() -> usize {
     }
 }
 
+fn current_task_id() -> Option<u64> {
+    current_may_uninit().map(|curr| curr.id().as_u64())
+}
+
 /// Returns whether the current context is atomic, meaning sleeping or
 /// rescheduling is not allowed.
 ///
@@ -347,9 +351,11 @@ pub fn might_sleep() {
     if in_atomic_context() {
         panic!(
             "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
-             preempt_count={}",
+             preempt_count={}, cpu_id={}, task_id={:?}",
             ax_hal::asm::irqs_enabled(),
-            current_preempt_count()
+            current_preempt_count(),
+            ax_hal::percpu::this_cpu_id(),
+            current_task_id()
         );
     }
 }
