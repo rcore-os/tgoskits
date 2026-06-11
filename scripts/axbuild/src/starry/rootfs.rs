@@ -8,11 +8,13 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
 use clap::Args;
+use log::warn;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Starry, apk, build};
@@ -155,6 +157,14 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
 }
 
 pub(crate) fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
+    if !debugfs_available() {
+        warn!(
+            "`debugfs` is unavailable; skipping rootfs repository/resolver injection for {}",
+            rootfs_img.display()
+        );
+        return Ok(());
+    }
+
     if !looks_like_ext_image(rootfs_img)? {
         return Ok(());
     }
@@ -171,6 +181,10 @@ pub(crate) fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<(
 
 fn sync_qemu_slirp_resolver_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
     replace_rootfs_text_file_if_changed(rootfs_img, "/etc/resolv.conf", QEMU_SLIRP_RESOLV_CONF)
+}
+
+fn debugfs_available() -> bool {
+    Command::new("debugfs").arg("-V").output().is_ok()
 }
 
 fn replace_rootfs_text_file_if_changed(

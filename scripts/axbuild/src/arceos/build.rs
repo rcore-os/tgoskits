@@ -217,6 +217,7 @@ pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosBuil
 }
 
 pub(crate) fn load_arceos_build_mode(path: &Path) -> anyhow::Result<ArceosBuildMode> {
+    build::ensure_build_info(path, ArceosBuildConfig::default_config)?;
     let config = load_arceos_build_config(path)?;
     match config.app_c {
         Some(app_c) => resolve_app_c_mode(path, &app_c),

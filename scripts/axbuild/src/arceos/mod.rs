@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    fs::File,
     path::{Path, PathBuf},
     process::Command as StdCommand,
 };
@@ -22,7 +23,7 @@ pub(super) fn ensure_qemu_runtime_assets(
     qemu: &QemuConfig,
 ) -> anyhow::Result<()> {
     let mut seen = BTreeSet::new();
-    for image in qemu_runtime_disk_images(qemu) {
+    for image in qemu_runtime_disk_images(workspace_root, qemu) {
         if !seen.insert(image.clone()) {
             continue;
         }
@@ -57,20 +58,92 @@ fn ensure_fat32_image(image: &Path, size: &str, recreate: bool) -> anyhow::Resul
             .then_some(())
             .ok_or_else(|| anyhow::anyhow!("`{name}` exited with non-zero status"))
     };
-    ran(StdCommand::new("truncate").args(["-s", size]).arg(image))?;
-    ran(StdCommand::new("mkfs.fat")
-        .args(["-F", "32"])
-        .arg(image)
-        .stdout(std::process::Stdio::null()))?;
+
+    if command_exists("truncate") {
+        ran(StdCommand::new("truncate").args(["-s", size]).arg(image))?;
+    } else {
+        let bytes = parse_size_to_bytes(size)?;
+        let file = File::create(image)
+            .with_context(|| format!("failed to create runtime image {}", image.display()))?;
+        file.set_len(bytes)
+            .with_context(|| format!("failed to resize runtime image {}", image.display()))?;
+    }
+
+    if command_exists("mkfs.fat") {
+        ran(StdCommand::new("mkfs.fat")
+            .args(["-F", "32"])
+            .arg(image)
+            .stdout(std::process::Stdio::null()))?;
+    } else {
+        warn!(
+            "`mkfs.fat` not found in PATH; runtime disk image {} will be an unformatted raw file",
+            image.display()
+        );
+    }
+
     println!("{msg} ... done");
     Ok(())
 }
 
-fn qemu_runtime_disk_images(qemu: &QemuConfig) -> Vec<PathBuf> {
+fn parse_size_to_bytes(size: &str) -> anyhow::Result<u64> {
+    let trimmed = size.trim();
+    let number = trimmed
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+        .trim();
+    let value: u64 = number
+        .parse()
+        .with_context(|| format!("invalid disk image size `{size}`"))?;
+
+    let suffix = trimmed[number.len()..].trim().to_ascii_lowercase();
+    let unit = match suffix.as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1024,
+        "m" | "mb" => 1024 * 1024,
+        "g" | "gb" => 1024 * 1024 * 1024,
+        _ => {
+            anyhow::bail!("unsupported disk image size suffix `{suffix}` in `{size}`");
+        }
+    };
+
+    value
+        .checked_mul(unit)
+        .with_context(|| format!("disk image size `{size}` is too large"))
+}
+
+fn command_exists(command: &str) -> bool {
+    let command_name = format!("{command}{}", std::env::consts::EXE_SUFFIX);
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                let candidate = dir.join(&command_name);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn qemu_runtime_disk_images(workspace_root: &Path, qemu: &QemuConfig) -> Vec<PathBuf> {
     crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
+        .map(|path| expand_workspace_path(workspace_root, &path))
         .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some("disk.img"))
         .collect()
+}
+
+fn expand_workspace_path(workspace_root: &Path, path: &Path) -> PathBuf {
+    let Some(raw) = path.to_str() else {
+        return path.to_path_buf();
+    };
+
+    if raw == "${workspace}" {
+        return workspace_root.to_path_buf();
+    }
+
+    if let Some(relative) = raw.strip_prefix("${workspace}/") {
+        return workspace_root.join(relative);
+    }
+
+    path.to_path_buf()
 }
 
 fn should_recreate_runtime_image(workspace_root: &Path, image: &Path) -> bool {
@@ -259,7 +332,20 @@ impl ArceOS {
                 .read_qemu_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some)?,
-            None => None,
+            None => {
+                let default_path = self
+                    .app
+                    .workspace_member_dir(&request.package)?
+                    .join(format!("qemu-{}.toml", request.arch));
+                if default_path.exists() {
+                    self.app
+                        .read_qemu_config_from_path_for_cargo(cargo, &default_path)
+                        .await
+                        .map(Some)?
+                } else {
+                    None
+                }
+            }
         };
         if let Some(qemu) = qemu.as_mut() {
             crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, cargo);
@@ -436,6 +522,7 @@ mod tests {
 
     #[test]
     fn qemu_runtime_disk_images_finds_disk_img_drive_paths() {
+        let workspace = Path::new("/workspace");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -447,8 +534,29 @@ mod tests {
         };
 
         assert_eq!(
-            qemu_runtime_disk_images(&qemu),
+            qemu_runtime_disk_images(workspace, &qemu),
             vec![PathBuf::from("/tmp/case/disk.img")]
+        );
+    }
+
+    #[test]
+    fn qemu_runtime_disk_images_expands_workspace_placeholder() {
+        let workspace = Path::new("/workspace");
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/apps/\
+                 arceos/helloworld/disk.img"
+                    .to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            qemu_runtime_disk_images(workspace, &qemu),
+            vec![PathBuf::from(
+                "/workspace/tmp/axbuild/runtime-assets/apps/arceos/helloworld/disk.img"
+            )]
         );
     }
 
