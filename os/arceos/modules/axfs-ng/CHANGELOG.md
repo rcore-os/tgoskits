@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.17...ax-fs-ng-v0.5.18) - 2026-06-11
+
+### Fixed
+
+- *(starry-mm)* bound file-backed mmap populate at EOF ([#1164](https://github.com/rcore-os/tgoskits/pull/1164))
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
 ## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.16...ax-fs-ng-v0.5.17) - 2026-06-09
 
 ### Added
