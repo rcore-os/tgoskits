@@ -56,6 +56,15 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     Ok(Filesystem::new(fs))
 }
 
+pub(crate) fn ensure_copy_up(loc: &Location) -> VfsResult<()> {
+    if let Ok(file) = loc.entry().downcast::<OverlayFile>() {
+        file.ensure_upper()?;
+    } else if let Ok(dir) = loc.entry().downcast::<OverlayDir>() {
+        dir.materialize_upper_dir()?;
+    }
+    Ok(())
+}
+
 struct OverlayFs {
     lower_dirs: Vec<Location>,
     upper_dir: Location,

@@ -18,6 +18,7 @@ use starry_vm::{vm_read_slice, vm_write_slice};
 use crate::{
     file::{fd_is_path, resolve_at},
     mm::vm_load_string,
+    pseudofs::overlay,
 };
 
 type XattrMap = BTreeMap<String, Vec<u8>>;
@@ -169,6 +170,21 @@ fn set_xattr(
     let name = read_name(name)?;
     let value = read_value(value, size)?;
 
+    if let Some(store) = existing_store(&loc) {
+        let attrs = store.attrs.lock();
+        let exists = attrs.contains_key(&name);
+        if exists && flags & XATTR_CREATE != 0 {
+            return Err(AxError::AlreadyExists);
+        }
+        if !exists && flags & XATTR_REPLACE != 0 {
+            return Err(linux_errno(LinuxError::ENODATA));
+        }
+    } else if flags & XATTR_REPLACE != 0 {
+        return Err(linux_errno(LinuxError::ENODATA));
+    }
+
+    overlay::ensure_copy_up(&loc)?;
+
     let store = store_for_update(&loc);
     let mut attrs = store.attrs.lock();
     match attrs.entry(name) {
@@ -191,11 +207,16 @@ fn set_xattr(
 fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
     let name = read_name(name)?;
     let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
-    store
-        .attrs
-        .lock()
-        .remove(&name)
-        .ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+    {
+        let attrs = store.attrs.lock();
+        if !attrs.contains_key(&name) {
+            return Err(linux_errno(LinuxError::ENODATA));
+        }
+    }
+
+    overlay::ensure_copy_up(&loc)?;
+
+    store.attrs.lock().remove(&name);
     Ok(0)
 }
 
