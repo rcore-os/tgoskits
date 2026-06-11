@@ -6,8 +6,8 @@ use core::{
 };
 
 use crate::{
-    AutoEnable, CpuId, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest,
-    IrqReturn, IrqScope, IrqStatus,
+    CpuId, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOps, IrqOutcome, IrqRequest, IrqReturn,
+    IrqScope, IrqStatus,
     action::Action,
     descriptor::{Descriptor, action_matches_cpu, recompute_scope_line_desired},
     lock::MetadataLock,
@@ -51,6 +51,7 @@ impl<O: IrqOps> Registry<O> {
     pub fn request(&self, irq: IrqNumber, request: IrqRequest) -> Result<IrqHandle, IrqError> {
         self.validate_request(&request)?;
 
+        let snapshot = self.snapshot_and_disable_scope_line(irq, request.scope)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let action = Box::new(Action::new(id, &request));
         let action = Box::into_raw(action);
@@ -58,17 +59,18 @@ impl<O: IrqOps> Registry<O> {
         let result = self.insert_action_locked(irq, &request, action);
         self.lock.unlock(&self.ops, irq_state);
 
+        let restore_result = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
+
         if let Err(err) = result {
             unsafe {
                 drop(Box::from_raw(action));
             }
+            let _ = restore_result;
             return Err(err);
         }
 
         let handle = IrqHandle { irq, id };
-        if request.auto_enable == AutoEnable::Yes
-            && let Err(err) = self.enable(handle)
-        {
+        if let Err(err) = restore_result {
             self.drop_detached_action(handle);
             return Err(err);
         }
@@ -266,6 +268,7 @@ impl<O: IrqOps> Registry<O> {
             (*action).next = descriptor.head;
         }
         descriptor.head = action;
+        recompute_scope_line_desired(descriptor, request.scope);
         Ok(())
     }
 
@@ -406,6 +409,97 @@ impl<O: IrqOps> Registry<O> {
                 }
                 Ok(())
             }
+        }
+    }
+
+    fn snapshot_and_disable_scope_line(
+        &self,
+        irq: IrqNumber,
+        scope: IrqScope,
+    ) -> Result<LineStateSnapshot, IrqError> {
+        let mut snapshot = LineStateSnapshot::new(scope);
+        match scope {
+            IrqScope::Global => {
+                snapshot.global = self.snapshot_and_disable_line(irq, None)?;
+            }
+            IrqScope::PerCpu { cpus } => {
+                for cpu in cpus.iter() {
+                    if !self.ops.cpu_online(cpu) {
+                        continue;
+                    }
+                    match self.snapshot_and_disable_line(irq, Some(cpu)) {
+                        Ok(was_enabled) => snapshot.percpu.push((cpu, was_enabled)),
+                        Err(err) => {
+                            let _ = self.restore_scope_line_snapshot(irq, scope, &snapshot);
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+
+    fn snapshot_and_disable_line(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+    ) -> Result<bool, IrqError> {
+        let was_enabled = self.controller_line_enabled(irq, cpu)?;
+        self.set_controller_enabled(irq, cpu, false)?;
+        self.set_line_applied_if_present(irq, cpu, false)?;
+        Ok(was_enabled)
+    }
+
+    fn restore_scope_line_snapshot(
+        &self,
+        irq: IrqNumber,
+        scope: IrqScope,
+        snapshot: &LineStateSnapshot,
+    ) -> Result<(), IrqError> {
+        match scope {
+            IrqScope::Global => {
+                self.restore_line_snapshot(irq, None, snapshot.global)?;
+            }
+            IrqScope::PerCpu { cpus } => {
+                for cpu in cpus.iter() {
+                    if let Some((_, was_enabled)) = snapshot
+                        .percpu
+                        .iter()
+                        .find(|(snapshot_cpu, _)| *snapshot_cpu == cpu)
+                    {
+                        self.restore_line_snapshot(irq, Some(cpu), *was_enabled)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_line_snapshot(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+        was_enabled: bool,
+    ) -> Result<(), IrqError> {
+        if was_enabled {
+            self.set_controller_enabled(irq, cpu, true)?;
+        }
+        self.set_line_applied_if_present(irq, cpu, was_enabled)?;
+        Ok(())
+    }
+
+    fn controller_line_enabled(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+    ) -> Result<bool, IrqError> {
+        match self.ops.is_enabled(irq, cpu) {
+            Ok(enabled) => Ok(enabled),
+            Err(IrqError::Unsupported) => {
+                Ok(self.framework_line_enabled(irq, cpu).unwrap_or(false))
+            }
+            Err(err) => Err(err),
         }
     }
 
@@ -552,6 +646,28 @@ impl<O: IrqOps> Registry<O> {
         result
     }
 
+    fn set_line_applied_if_present(
+        &self,
+        irq: IrqNumber,
+        cpu: Option<CpuId>,
+        enabled: bool,
+    ) -> Result<(), IrqError> {
+        let irq_state = self.lock.lock(&self.ops);
+        let result = {
+            let state = unsafe { &mut *self.state.get() };
+            if let Some(descriptor) = state
+                .descriptors
+                .iter_mut()
+                .find(|descriptor| descriptor.irq == irq)
+            {
+                descriptor.set_line_applied(cpu, enabled);
+            }
+            Ok(())
+        };
+        self.lock.unlock(&self.ops, irq_state);
+        result
+    }
+
     fn framework_line_enabled(&self, irq: IrqNumber, cpu: Option<CpuId>) -> Result<bool, IrqError> {
         let irq_state = self.lock.lock(&self.ops);
         let result = (|| {
@@ -578,6 +694,23 @@ impl<O: IrqOps> Registry<O> {
 
     fn state_ref(&self) -> &RegistryState {
         unsafe { &*self.state.get() }
+    }
+}
+
+struct LineStateSnapshot {
+    global: bool,
+    percpu: Vec<(CpuId, bool)>,
+}
+
+impl LineStateSnapshot {
+    fn new(scope: IrqScope) -> Self {
+        Self {
+            global: false,
+            percpu: match scope {
+                IrqScope::Global => Vec::new(),
+                IrqScope::PerCpu { cpus } => Vec::with_capacity(cpus.iter().count()),
+            },
+        }
     }
 }
 
