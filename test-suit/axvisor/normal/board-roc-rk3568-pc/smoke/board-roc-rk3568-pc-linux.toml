@@ -1,4 +1,7 @@
 board_type = "ROC-RK3568-PC"
+kernel_load_addr = "0x80080000"
+fit_load_addr = "0x82000000"
+bootm_addr = "0x82000000"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
