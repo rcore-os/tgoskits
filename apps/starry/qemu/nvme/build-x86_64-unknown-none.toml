@@ -7,4 +7,3 @@ features = [
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
 ]
-plat_dyn = true

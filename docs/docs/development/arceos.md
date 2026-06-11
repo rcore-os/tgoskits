@@ -452,7 +452,6 @@ C 测试位于 `test-suit/arceos/c/`：helloworld, httpclient, memtest, pthread�
 features = ["ax-std"]
 log = "Warn"
 max_cpu_num = 4
-plat_dyn = true
 
 [env]
 AX_IP = "10.0.2.15"

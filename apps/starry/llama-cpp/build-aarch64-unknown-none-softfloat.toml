@@ -8,5 +8,4 @@ features = [
   "ax-driver/virtio-socket",
 ]
 log = "Warn"
-plat_dyn = true
 target = "aarch64-unknown-none-softfloat"

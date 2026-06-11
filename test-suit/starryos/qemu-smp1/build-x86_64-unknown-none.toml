@@ -10,4 +10,3 @@ features = [
   "ax-driver/xhci-pci",
   "starry-kernel/input",
 ]
-plat_dyn = true

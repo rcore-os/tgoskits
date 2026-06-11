@@ -12,5 +12,4 @@ features = [
 ]
 max_cpu_num = 4
 log = "Warn"
-plat_dyn = true
 target = "aarch64-unknown-none-softfloat"

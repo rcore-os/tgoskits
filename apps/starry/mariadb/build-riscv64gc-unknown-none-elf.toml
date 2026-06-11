@@ -14,4 +14,3 @@ features = [
   "starry-kernel/input",
   "starry-kernel/vsock",
 ]
-plat_dyn = true

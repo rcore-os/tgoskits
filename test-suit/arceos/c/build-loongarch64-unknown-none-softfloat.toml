@@ -8,7 +8,7 @@ features = [
     "pipe",
     "epoll",
     "net",
-    "ax-driver/plat-static",
+    "ax-driver/plat-dyn",
     "ax-driver/virtio-net",
 ]
 log = "Info"

@@ -1,5 +1,5 @@
 args = ["-machine", "virt", "-cpu", "la464", "-m", "128M", "-smp", "1", "-nographic", "-device", "virtio-blk-pci,drive=disk0", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/apps/arceos/shell/disk.img", "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0", "-serial", "mon:stdio"]
 uefi = false
-to_bin = false
+to_bin = true
 success_regex = ["Available commands:"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
