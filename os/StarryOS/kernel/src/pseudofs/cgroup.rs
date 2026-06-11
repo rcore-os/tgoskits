@@ -1,4 +1,8 @@
-use alloc::{string::ToString, sync::Arc, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use core::any::Any;
 
 use ax_errno::LinuxError;
@@ -20,6 +24,7 @@ enum CgroupFileKind {
     Controllers,
     Procs,
     SubtreeControl,
+    Type,
 }
 
 impl CgroupFileKind {
@@ -28,6 +33,7 @@ impl CgroupFileKind {
             "cgroup.controllers" => Some(Self::Controllers),
             "cgroup.procs" => Some(Self::Procs),
             "cgroup.subtree_control" => Some(Self::SubtreeControl),
+            "cgroup.type" => Some(Self::Type),
             _ => None,
         }
     }
@@ -37,22 +43,24 @@ impl CgroupFileKind {
             Self::Controllers => "cgroup.controllers",
             Self::Procs => "cgroup.procs",
             Self::SubtreeControl => "cgroup.subtree_control",
+            Self::Type => "cgroup.type",
         }
     }
 
     fn permission(self) -> NodePermission {
         let mode = match self {
-            Self::Controllers => 0o444,
+            Self::Controllers | Self::Type => 0o444,
             Self::Procs | Self::SubtreeControl => 0o644,
         };
         NodePermission::from_bits_truncate(mode)
     }
 }
 
-const CGROUP_FILES: [CgroupFileKind; 3] = [
+const CGROUP_FILES: [CgroupFileKind; 4] = [
     CgroupFileKind::Controllers,
     CgroupFileKind::Procs,
     CgroupFileKind::SubtreeControl,
+    CgroupFileKind::Type,
 ];
 
 struct CgroupFile {
@@ -70,6 +78,7 @@ impl CgroupFile {
             CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(self.id)?
                 .as_bytes()
                 .to_vec(),
+            CgroupFileKind::Type => b"domain\n".to_vec(),
         })
     }
 }
@@ -90,7 +99,7 @@ impl DirectRwFsFileOps for CgroupFile {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         match self.kind {
-            CgroupFileKind::Controllers => {
+            CgroupFileKind::Controllers | CgroupFileKind::Type => {
                 crate::cgroup::ensure_node_exists(self.id)?;
                 return Err(VfsError::from(LinuxError::EACCES));
             }
@@ -98,6 +107,21 @@ impl DirectRwFsFileOps for CgroupFile {
             CgroupFileKind::SubtreeControl => crate::cgroup::write_subtree_control(self.id, buf)?,
         }
         Ok(buf.len())
+    }
+}
+
+struct ControllerAttrFile {
+    id: CgroupId,
+    name: String,
+}
+
+impl DirectRwFsFileOps for ControllerAttrFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        crate::cgroup::read_attr_at(self.id, &self.name, offset as usize, buf)
+    }
+
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        crate::cgroup::write_attr(self.id, &self.name, buf)
     }
 }
 
@@ -145,6 +169,25 @@ impl CgroupDir {
         ))
     }
 
+    fn controller_attr_entry(&self, name: &str) -> VfsResult<DirEntry> {
+        let read_only = crate::cgroup::attr_is_read_only(self.id, name)?.unwrap_or(false);
+        let mode = if read_only { 0o444 } else { 0o644 };
+        let file = SpecialFsFile::new_regular_with_perm(
+            self.fs.clone(),
+            ControllerAttrFile {
+                id: self.id,
+                name: name.to_string(),
+            },
+            NodePermission::from_bits_truncate(mode),
+        );
+        let reference = Reference::new(self.this.upgrade(), name.to_string());
+        Ok(DirEntry::new_file(
+            FileNode::new(file),
+            NodeType::RegularFile,
+            reference,
+        ))
+    }
+
     fn child_dir_entry(&self, name: &str, id: CgroupId) -> DirEntry {
         let maker = Self::new_maker(self.fs.clone(), id);
         let reference = Reference::new(self.this.upgrade(), name.to_string());
@@ -177,6 +220,11 @@ impl DirNodeOps for CgroupDir {
         for kind in CGROUP_FILES {
             names.push(kind.name().to_string());
         }
+        for attr in crate::cgroup::all_attr_names(self.id)? {
+            if !CGROUP_FILES.iter().any(|kind| kind.name() == attr) {
+                names.push(attr);
+            }
+        }
         names.extend(crate::cgroup::child_names(self.id)?);
 
         let this_entry = self.this_entry()?;
@@ -203,6 +251,10 @@ impl DirNodeOps for CgroupDir {
             return self.file_entry(kind);
         }
 
+        if crate::cgroup::is_controller_attr(self.id, name)? {
+            return self.controller_attr_entry(name);
+        }
+
         let child_id = crate::cgroup::lookup_child(self.id, name)?;
         Ok(self.child_dir_entry(name, child_id))
     }
@@ -224,6 +276,9 @@ impl DirNodeOps for CgroupDir {
         _gid: u32,
     ) -> VfsResult<DirEntry> {
         if crate::cgroup::is_interface_file_name(name) {
+            return Err(VfsError::AlreadyExists);
+        }
+        if crate::cgroup::is_controller_attr(self.id, name)? {
             return Err(VfsError::AlreadyExists);
         }
         if node_type != NodeType::Directory {

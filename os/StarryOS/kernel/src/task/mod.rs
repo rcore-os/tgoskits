@@ -650,6 +650,9 @@ pub struct ProcessData {
     /// The futex table.
     futex_table: Arc<FutexTable>,
 
+    /// The cgroup this process belongs to.
+    pub cgroup: RwLock<Arc<crate::cgroup::CgroupNode>>,
+
     /// If this process was created by vfork, this tracks completion state.
     /// The parent waits until `done` becomes true. Protected by the same lock
     /// as the wait queue to avoid lost wakeup races.
@@ -835,6 +838,13 @@ impl ProcessData {
             )),
 
             futex_table: Arc::new(FutexTable::new()),
+
+            cgroup: RwLock::new(
+                crate::cgroup::GLOBAL_CGROUP_ROOT
+                    .get()
+                    .cloned()
+                    .unwrap_or_else(crate::cgroup::CgroupNode::new_root),
+            ),
 
             nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
 

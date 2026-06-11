@@ -210,11 +210,14 @@ impl CloneArgs {
             (parent_tid as *mut Pid).vm_write(tid).ok();
         }
 
-        let new_proc_data = if flags.contains(CloneFlags::THREAD) {
+        let (new_proc_data, cgroup_guard) = if flags.contains(CloneFlags::THREAD) {
+            // Thread: share parent's ProcessData, no cgroup pids charge.
+            // Threads belong to the same process and share cgroup membership;
+            // only the process leader's PID appears in cgroup.procs.
             new_task
                 .ctx_mut()
                 .set_page_table_root(old_proc_data.aspace().lock().page_table_root());
-            old_proc_data.clone()
+            (old_proc_data.clone(), None)
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
                 old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
@@ -260,6 +263,13 @@ impl CloneArgs {
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
+
+            // Inherit parent's cgroup and register child
+            let parent_cgroup = old_proc_data.cgroup.read().clone();
+            *proc_data.cgroup.write() = parent_cgroup.clone();
+
+            let cgroup_guard =
+                crate::cgroup::begin_fork(&parent_cgroup, tid).map_err(|_| AxError::WouldBlock)?;
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -330,7 +340,7 @@ impl CloneArgs {
                 }
             }
 
-            proc_data
+            (proc_data, Some(cgroup_guard))
         };
 
         new_proc_data.proc.add_thread(tid);
@@ -395,6 +405,9 @@ impl CloneArgs {
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
+        if let Some(guard) = cgroup_guard {
+            guard.commit();
+        }
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
