@@ -221,7 +221,7 @@ fn build_arp_reply(request: &[u8]) -> Option<PacketFrame> {
 }
 
 fn is_modeled_peer_ipv4(ip: [u8; 4]) -> bool {
-    axnet::eth0_ipv4_config()
+    ax_net::eth0_ipv4_config()
         .and_then(|config| config.gateway)
         .is_some_and(|gateway| gateway.octets() == ip)
 }

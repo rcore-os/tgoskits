@@ -171,7 +171,6 @@ ax-memory-set = { version = "0.6.10", path = "memory/memory_set" }
 axpanic = { version = "0.1.0", path = "components/axpanic" }
 ax-mm = { version = "0.5.18", path = "os/arceos/modules/axmm" }
 ax-net = { version = "0.7.2", path = "net/ax-net" }
-axnet = { version = "0.7.2", package = "ax-net", path = "net/ax-net" }
 ax-page-table-entry = { version = "0.8.10", path = "memory/page_table_entry" }
 ax-page-table-multiarch = { version = "0.8.12", path = "memory/page_table_multiarch" }
 ax-percpu = { version = "0.4.13", path = "components/percpu/percpu" }
