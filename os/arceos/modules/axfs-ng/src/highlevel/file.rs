@@ -1,4 +1,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+#[cfg(feature = "ext4")]
+use alloc::{collections::BTreeMap, sync::Weak};
 #[cfg(feature = "vfs")]
 use core::sync::atomic::AtomicBool;
 use core::{
@@ -11,6 +13,8 @@ use ax_alloc::{UsageKind, global_allocator};
 use ax_io::{SeekFrom, prelude::*};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_sync::Mutex;
+#[cfg(feature = "ext4")]
+use axfs_ng_vfs::FilesystemOps;
 use axfs_ng_vfs::{
     FileNode, Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path,
 };
@@ -19,6 +23,15 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 use lru::LruCache;
 
 use super::FsContext;
+
+#[cfg(feature = "ext4")]
+type CachedFileKey = (usize, u64);
+#[cfg(feature = "ext4")]
+type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
+
+#[cfg(feature = "ext4")]
+static CACHED_FILE_BY_INODE: spin::LazyLock<spin::Mutex<InodeCacheIndex>> =
+    spin::LazyLock::new(|| spin::Mutex::new(BTreeMap::new()));
 
 bitflags::bitflags! {
     /// Flags describing the access mode of an opened file.
@@ -226,9 +239,6 @@ impl OpenOptions {
         if self.directory {
             loc.check_is_dir()?;
         }
-        if self.truncate {
-            loc.entry().as_file()?.set_len(0)?;
-        }
 
         // ENXIO on opening a UNIX-domain-socket file. man 2 open §"ENXIO":
         // "The file is a UNIX domain socket." Two exclusions:
@@ -247,6 +257,9 @@ impl OpenOptions {
         }
 
         Ok(if loc.is_dir() {
+            if self.truncate {
+                return Err(VfsError::IsADirectory);
+            }
             if flags.contains(FileFlags::WRITE) {
                 return Err(VfsError::IsADirectory);
             }
@@ -267,6 +280,9 @@ impl OpenOptions {
             } else {
                 FileBackend::new_direct(loc)
             };
+            if self.truncate {
+                backend.set_len(0)?;
+            }
             OpenResult::File(File::new(backend, flags))
         })
     }
@@ -987,7 +1003,16 @@ impl CachedFile {
         }
 
         let len = location.len()?;
-        let (created, user_data) = if in_memory {
+        #[cfg(feature = "ext4")]
+        let inode_key =
+            should_share_cached_file_by_inode(&location).then(|| cached_file_key(&location));
+        #[cfg(feature = "ext4")]
+        let inode_shared = inode_key.and_then(lookup_inode_cached_file);
+        #[cfg(not(feature = "ext4"))]
+        let inode_shared: Option<Arc<CachedFileShared>> = None;
+        let (created, user_data) = if let Some(shared) = inode_shared {
+            (shared.clone(), FileUserData::Strong(shared))
+        } else if in_memory {
             let shared = Arc::new(CachedFileShared::new_unbounded(len));
             (shared.clone(), FileUserData::Strong(shared))
         } else {
@@ -1018,6 +1043,10 @@ impl CachedFile {
         }
         #[cfg(not(feature = "vfs"))]
         let _ = is_new;
+        #[cfg(feature = "ext4")]
+        if is_new && let Some(key) = inode_key {
+            insert_inode_cached_file(key, &shared);
+        }
 
         Ok(Self {
             inner: location,
@@ -1206,6 +1235,10 @@ impl CachedFile {
         let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
+        if end > old_len {
+            file.set_len(end)?;
+            self.shared.update_len_max(end);
+        }
 
         let mut scratch = PageCache::new()?;
         let mut written = 0;
@@ -1367,6 +1400,49 @@ impl CachedFile {
     /// Returns a reference to the underlying [`Location`].
     pub fn location(&self) -> &Location {
         &self.inner
+    }
+}
+
+#[cfg(feature = "ext4")]
+fn should_share_cached_file_by_inode(location: &Location) -> bool {
+    location.filesystem().name() == "ext4"
+}
+
+#[cfg(feature = "ext4")]
+fn filesystem_key(filesystem: &dyn FilesystemOps) -> usize {
+    filesystem as *const dyn FilesystemOps as *const () as usize
+}
+
+#[cfg(feature = "ext4")]
+fn cached_file_key(location: &Location) -> CachedFileKey {
+    (filesystem_key(location.filesystem()), location.inode())
+}
+
+#[cfg(feature = "ext4")]
+fn lookup_inode_cached_file(key: CachedFileKey) -> Option<Arc<CachedFileShared>> {
+    let mut cache = CACHED_FILE_BY_INODE.lock();
+    match cache.get(&key).and_then(Weak::upgrade) {
+        Some(shared) => Some(shared),
+        None => {
+            cache.remove(&key);
+            None
+        }
+    }
+}
+
+#[cfg(feature = "ext4")]
+fn insert_inode_cached_file(key: CachedFileKey, shared: &Arc<CachedFileShared>) {
+    CACHED_FILE_BY_INODE
+        .lock()
+        .insert(key, Arc::downgrade(shared));
+}
+
+#[cfg(feature = "ext4")]
+pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64) {
+    if filesystem.name() == "ext4" {
+        CACHED_FILE_BY_INODE
+            .lock()
+            .remove(&(filesystem_key(filesystem), inode));
     }
 }
 

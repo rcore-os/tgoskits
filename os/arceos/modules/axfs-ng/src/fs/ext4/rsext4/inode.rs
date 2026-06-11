@@ -18,6 +18,7 @@ use super::{
     Ext4Filesystem,
     util::{dir_entry_type_to_vfs, inode_to_vfs_type, into_vfs_err, vfs_type_to_dir_entry},
 };
+use crate::highlevel::forget_cached_file_key;
 
 pub struct Inode {
     fs: Arc<Ext4Filesystem>,
@@ -513,6 +514,7 @@ impl DirNodeOps for Inode {
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
+        let mut forget_file_ino = None;
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
@@ -521,7 +523,7 @@ impl DirNodeOps for Inode {
             if inode_info.is_none() {
                 return Err(VfsError::NotFound);
             }
-            let (_ino, inode) = inode_info.unwrap();
+            let (ino, inode) = inode_info.unwrap();
             match (inode.is_dir(), is_dir) {
                 (true, false) => return Err(VfsError::IsADirectory),
                 (false, true) => return Err(VfsError::NotADirectory),
@@ -534,8 +536,14 @@ impl DirNodeOps for Inode {
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
             } else {
+                if inode.i_links_count <= 1 {
+                    forget_file_ino = Some(ino);
+                }
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
             }
+        }
+        if let Some(ino) = forget_file_ino {
+            forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()
     }
@@ -544,10 +552,22 @@ impl DirNodeOps for Inode {
         let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
         let src_path = join_child_path(&self.dir_path()?, src_name);
         let dst_path = join_child_path(&dst_dir.dir_path()?, dst_name);
+        let replaced_file_ino = {
+            let mut state = dst_dir.fs.lock();
+            let (fs, dev) = state.split();
+            rsext4::dir::get_inode_with_num(fs, dev, &dst_path)
+                .map_err(into_vfs_err)?
+                .and_then(|(ino, inode)| {
+                    (!inode.is_dir() && inode.i_links_count <= 1).then_some(ino)
+                })
+        };
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
             rsext4::rename(dev, fs, &src_path, &dst_path).map_err(into_vfs_err)?;
+        }
+        if let Some(ino) = replaced_file_ino {
+            forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()
     }
