@@ -23,7 +23,7 @@ use acpi::{
         pci::PciConfigRegions,
     },
 };
-pub use rdif_base::irq::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
+pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use spin::{Mutex, Once};
 
 use crate::{
@@ -37,6 +37,7 @@ use crate::{
 };
 
 pub const PCI_INTX_VECTOR_BASE: usize = 0x30;
+const LOONGARCH_PCH_PIC_GSI_COUNT: u16 = 256;
 const PCI_ROOT_FALLBACK_PATHS: &[&str] = &["\\_SB.PCI0", "\\_SB.PCI1", "\\_SB.PC00", "\\_SB.PC01"];
 
 static SYSTEM: Once<System> = Once::new();
@@ -96,22 +97,80 @@ pub struct AcpiIoApic {
 }
 
 impl AcpiIoApic {
+    fn gsi_source(self) -> AcpiGsiSource {
+        AcpiGsiSource {
+            controller: AcpiGsiController::IoApic,
+            controller_id: u16::from(self.id),
+            controller_address: u64::from(self.address),
+            gsi_base: self.gsi_base,
+            gsi_count: u16::from(self.redirection_entries),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpiPchPic {
+    pub id: u16,
+    pub address: u64,
+    pub mmio_size: u16,
+    pub gsi_count: u16,
+    pub gsi_base: u32,
+}
+
+impl AcpiPchPic {
+    fn gsi_source(self) -> AcpiGsiSource {
+        AcpiGsiSource {
+            controller: AcpiGsiController::PchPic,
+            controller_id: self.id,
+            controller_address: self.address,
+            gsi_base: self.gsi_base,
+            gsi_count: self.gsi_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AcpiGsiSource {
+    controller: AcpiGsiController,
+    controller_id: u16,
+    controller_address: u64,
+    gsi_base: u32,
+    gsi_count: u16,
+}
+
+impl AcpiGsiSource {
     fn contains_gsi(self, gsi: u32) -> bool {
         let start = self.gsi_base;
-        let end = start.saturating_add(u32::from(self.redirection_entries));
+        let end = start.saturating_add(u32::from(self.gsi_count));
         (start..end).contains(&gsi)
+    }
+
+    fn route(self, gsi: u32) -> Option<AcpiGsiRoute> {
+        let controller_input = u8::try_from(gsi.checked_sub(self.gsi_base)?).ok()?;
+        Some(AcpiGsiRoute {
+            gsi,
+            vector: PCI_INTX_VECTOR_BASE + gsi as usize,
+            controller: self.controller,
+            controller_id: self.controller_id,
+            controller_address: self.controller_address,
+            controller_input,
+            trigger: AcpiIrqTrigger::Level,
+            polarity: AcpiIrqPolarity::ActiveLow,
+        })
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpiRouting {
     io_apics: Vec<AcpiIoApic>,
+    pch_pics: Vec<AcpiPchPic>,
 }
 
 impl AcpiRouting {
     pub const fn new() -> Self {
         Self {
             io_apics: Vec::new(),
+            pch_pics: Vec::new(),
         }
     }
 
@@ -123,22 +182,26 @@ impl AcpiRouting {
         &self.io_apics
     }
 
+    pub fn add_pch_pic(&mut self, pch_pic: AcpiPchPic) {
+        self.pch_pics.push(pch_pic);
+    }
+
+    pub fn pch_pics(&self) -> &[AcpiPchPic] {
+        &self.pch_pics
+    }
+
     pub fn resolve_gsi(&self, gsi: u32) -> Option<AcpiGsiRoute> {
-        let io_apic = self
-            .io_apics
+        self.gsi_sources()
+            .find(|source| source.contains_gsi(gsi))?
+            .route(gsi)
+    }
+
+    fn gsi_sources(&self) -> impl Iterator<Item = AcpiGsiSource> + '_ {
+        self.io_apics
             .iter()
             .copied()
-            .find(|io_apic| io_apic.contains_gsi(gsi))?;
-        let input = u8::try_from(gsi.saturating_sub(io_apic.gsi_base)).ok()?;
-        Some(AcpiGsiRoute {
-            gsi,
-            vector: PCI_INTX_VECTOR_BASE + gsi as usize,
-            controller_id: io_apic.id,
-            controller_address: io_apic.address,
-            controller_input: input,
-            trigger: AcpiIrqTrigger::Level,
-            polarity: AcpiIrqPolarity::ActiveLow,
-        })
+            .map(AcpiIoApic::gsi_source)
+            .chain(self.pch_pics.iter().copied().map(AcpiPchPic::gsi_source))
     }
 
     pub fn resolve_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
@@ -161,8 +224,8 @@ mod tests {
     };
 
     use super::{
-        AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiRouting, LinkIrqResource,
-        LinkIrqResourceKind, PciLinkAllocator, irq_descriptor_gsi,
+        AcpiGsiController, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger, AcpiPchPic, AcpiRouting,
+        LinkIrqResource, LinkIrqResourceKind, PciLinkAllocator, irq_descriptor_gsi,
         is_buffer_field_to_field_unit_store_gap, pci_link_irq_field_candidates,
         route_with_irq_descriptor_flags, select_pci_link_irq,
     };
@@ -181,6 +244,7 @@ mod tests {
             .resolve_gsi(16)
             .expect("gsi 16 should be handled by the IOAPIC");
         assert_eq!(irq.gsi, 16);
+        assert_eq!(irq.controller, AcpiGsiController::IoApic);
         assert_eq!(irq.controller_id, 0);
         assert_eq!(irq.controller_address, 0xfec0_0000);
         assert_eq!(irq.controller_input, 16);
@@ -216,6 +280,28 @@ mod tests {
             .expect("IOAPIC routes the legacy GSI from the ACPI PCI link");
         assert_eq!(route.gsi, 10);
         assert_eq!(route.controller_input, 10);
+    }
+
+    #[test]
+    fn pch_pic_routes_map_acpi_gsi_to_controller_input() {
+        let mut routing = AcpiRouting::new();
+        routing.add_pch_pic(AcpiPchPic {
+            id: 1,
+            address: 0x1000_0000,
+            mmio_size: 0x1000,
+            gsi_count: 64,
+            gsi_base: 64,
+        });
+
+        let route = routing
+            .resolve_gsi(82)
+            .expect("GSI 82 should be covered by the PCH-PIC");
+        assert_eq!(route.controller, AcpiGsiController::PchPic);
+        assert_eq!(route.controller_id, 1);
+        assert_eq!(route.controller_address, 0x1000_0000);
+        assert_eq!(route.controller_input, 18);
+        assert_eq!(route.vector, 0x30 + 82);
+        assert!(routing.resolve_gsi(128).is_none());
     }
 
     #[test]
@@ -393,9 +479,10 @@ pub fn check_root(root: AcpiRoot) -> Result<(), DriverError> {
 pub fn init(root: AcpiRoot) -> Result<(), DriverError> {
     let system = System::new(root)?;
     info!(
-        "ACPI initialized: {} PCI ECAM region(s), {} IOAPIC(s)",
+        "ACPI initialized: {} PCI ECAM region(s), {} IOAPIC(s), {} PCH-PIC(s)",
         system.pci_ecam_regions().len(),
-        system.routing().io_apics().len()
+        system.routing().io_apics().len(),
+        system.routing().pch_pics().len()
     );
     SYSTEM.call_once(|| system);
     Ok(())
@@ -703,7 +790,7 @@ impl System {
 
         let Some(route) = self.routing.resolve_gsi(gsi) else {
             return Err(OnProbeError::other(format!(
-                "ACPI GSI {} for PCI endpoint {} is not covered by an IOAPIC",
+                "ACPI GSI {} for PCI endpoint {} is not covered by a registered GSI controller",
                 gsi, info.address
             )));
         };
@@ -800,12 +887,9 @@ impl System {
     ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
         let mut out = Vec::new();
         for probe in register.probe_kinds {
-            let ProbeKind::Acpi { ids, on_probe } = probe else {
+            let ProbeKind::Acpi { on_probe, .. } = probe else {
                 continue;
             };
-            if ids.is_empty() {
-                continue;
-            }
             if self.probed_names.lock().contains(register.name) {
                 continue;
             }
@@ -859,7 +943,78 @@ fn read_interrupt_routing(tables: &AcpiTables<AcpiHandler>) -> Result<AcpiRoutin
             });
         }
     }
+    read_loongarch_pch_pic_routing(tables, &mut routing);
     Ok(routing)
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct RawMadtEntryHeader {
+    entry_type: u8,
+    length: u8,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct RawMadtBioPic {
+    header: RawMadtEntryHeader,
+    version: u8,
+    address: u64,
+    size: u16,
+    id: u16,
+    gsi_base: u16,
+}
+
+const ACPI_MADT_TYPE_BIO_PIC: u8 = 22;
+const RAW_MADT_HEADER_LEN: usize = core::mem::size_of::<acpi::sdt::SdtHeader>() + 8;
+
+fn read_loongarch_pch_pic_routing(tables: &AcpiTables<AcpiHandler>, routing: &mut AcpiRouting) {
+    let Some(madt) = tables.find_table::<acpi::sdt::madt::Madt>() else {
+        return;
+    };
+
+    let base = madt.virtual_start.as_ptr() as *const u8;
+    let length = madt.region_length;
+    if length < RAW_MADT_HEADER_LEN {
+        return;
+    }
+
+    let mut offset = RAW_MADT_HEADER_LEN;
+    while offset + core::mem::size_of::<RawMadtEntryHeader>() <= length {
+        let header = unsafe { (base.add(offset) as *const RawMadtEntryHeader).read_unaligned() };
+        let entry_len = usize::from(header.length);
+        if entry_len < core::mem::size_of::<RawMadtEntryHeader>() || offset + entry_len > length {
+            break;
+        }
+
+        if header.entry_type == ACPI_MADT_TYPE_BIO_PIC {
+            read_loongarch_bio_pic_entry(base, offset, entry_len, routing);
+        }
+
+        offset += entry_len;
+    }
+}
+
+fn read_loongarch_bio_pic_entry(
+    base: *const u8,
+    offset: usize,
+    entry_len: usize,
+    routing: &mut AcpiRouting,
+) {
+    if entry_len < core::mem::size_of::<RawMadtBioPic>() {
+        warn!("ignore short LoongArch BIO_PIC MADT entry: {entry_len} bytes");
+        return;
+    }
+
+    let entry = unsafe { (base.add(offset) as *const RawMadtBioPic).read_unaligned() };
+
+    routing.add_pch_pic(AcpiPchPic {
+        id: entry.id,
+        address: entry.address,
+        mmio_size: entry.size,
+        gsi_count: LOONGARCH_PCH_PIC_GSI_COUNT,
+        gsi_base: u32::from(entry.gsi_base),
+    });
 }
 
 fn read_pci_namespace(

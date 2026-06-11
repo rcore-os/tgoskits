@@ -142,8 +142,8 @@ impl X86IoApic {
     }
 
     fn contains_route(&self, route: &AcpiGsiRoute) -> bool {
-        self.info.id == route.controller_id
-            && self.info.address == route.controller_address
+        u16::from(self.info.id) == route.controller_id
+            && u64::from(self.info.address) == route.controller_address
             && self.contains(route.gsi)
     }
 
@@ -175,6 +175,14 @@ impl DriverGeneric for X86IoApicIntc {
 }
 
 impl rdif_intc::Interface for X86IoApicIntc {
+    fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
+        route.controller == rdif_intc::AcpiGsiController::IoApic
+            && self
+                .ioapics
+                .iter()
+                .any(|ioapic| ioapic.contains_route(route))
+    }
+
     fn setup_irq_by_acpi(&mut self, route: &AcpiGsiRoute) -> rdrive::IrqId {
         self.remember_route(*route);
         self.set_route_enable(route, false);
