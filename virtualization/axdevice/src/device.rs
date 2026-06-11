@@ -32,7 +32,10 @@ use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
-use crate::{AxVmDeviceConfig, range_alloc::RangeAllocator};
+use crate::{
+    AxVmDeviceConfig, DeviceBundle, DeviceRegistration, PollableDeviceOps,
+    range_alloc::RangeAllocator,
+};
 
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
@@ -47,8 +50,13 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
         }
     }
 
-    /// Adds a device to the set after validating its range.
-    pub fn add_dev(&mut self, dev: Arc<dyn BaseDeviceOps<R>>) -> AxResult {
+    fn validate_dev_against<'a>(
+        dev: &Arc<dyn BaseDeviceOps<R>>,
+        existing_devices: impl IntoIterator<Item = &'a Arc<dyn BaseDeviceOps<R>>>,
+    ) -> AxResult
+    where
+        R: 'a,
+    {
         let new_range = dev.address_range();
         let new_type = dev.emu_type();
 
@@ -64,11 +72,11 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
             );
         }
 
-        for existing in &self.emu_devices {
+        for existing in existing_devices {
             let existing_range = existing.address_range();
             let existing_type = existing.emu_type();
 
-            if Arc::ptr_eq(existing, &dev) {
+            if Arc::ptr_eq(existing, dev) {
                 return ax_err!(
                     AlreadyExists,
                     format_args!(
@@ -108,8 +116,29 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Validates a group of devices without modifying this set.
+    fn validate_devices(&self, devices: &[Arc<dyn BaseDeviceOps<R>>]) -> AxResult {
+        for (index, device) in devices.iter().enumerate() {
+            Self::validate_dev_against(
+                device,
+                self.emu_devices.iter().chain(devices[..index].iter()),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Adds a device to the set after validating its range.
+    pub fn add_dev(&mut self, dev: Arc<dyn BaseDeviceOps<R>>) -> AxResult {
+        self.validate_devices(core::slice::from_ref(&dev))?;
         self.emu_devices.push(dev);
         Ok(())
+    }
+
+    fn commit_devices(&mut self, devices: Vec<Arc<dyn BaseDeviceOps<R>>>) {
+        self.emu_devices.extend(devices);
     }
 
     // pub fn remove_dev(&mut self, ...)
@@ -153,6 +182,7 @@ pub struct AxVmDevices {
     emu_mmio_devices: AxEmuMmioDevices,
     emu_sys_reg_devices: AxEmuSysRegDevices,
     emu_port_devices: AxEmuPortDevices,
+    pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     #[cfg(target_arch = "x86_64")]
     x86_ioapic: Option<Arc<EmulatedIoApic>>,
     #[cfg(target_arch = "x86_64")]
@@ -197,6 +227,7 @@ impl AxVmDevices {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
+            pollable_devices: Vec::new(),
             #[cfg(target_arch = "x86_64")]
             x86_ioapic: None,
             #[cfg(target_arch = "x86_64")]
@@ -489,19 +520,46 @@ impl AxVmDevices {
         }
     }
 
+    /// Registers a bundle atomically after validating all capabilities.
+    pub fn register_bundle(&mut self, bundle: DeviceBundle) -> AxResult {
+        self.emu_mmio_devices.validate_devices(&bundle.mmio)?;
+        self.emu_port_devices.validate_devices(&bundle.port)?;
+        self.emu_sys_reg_devices.validate_devices(&bundle.sysreg)?;
+
+        for (index, pollable) in bundle.pollable.iter().enumerate() {
+            if self
+                .pollable_devices
+                .iter()
+                .chain(bundle.pollable[..index].iter())
+                .any(|existing| Arc::ptr_eq(existing, pollable))
+            {
+                return ax_err!(
+                    AlreadyExists,
+                    "failed to register pollable device: the same capability is already registered"
+                );
+            }
+        }
+
+        self.emu_mmio_devices.commit_devices(bundle.mmio);
+        self.emu_port_devices.commit_devices(bundle.port);
+        self.emu_sys_reg_devices.commit_devices(bundle.sysreg);
+        self.pollable_devices.extend(bundle.pollable);
+        Ok(())
+    }
+
     /// Add a MMIO device to the device list
     pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) -> AxResult {
-        self.emu_mmio_devices.add_dev(dev)
+        self.register_bundle(DeviceRegistration::Mmio(dev).into())
     }
 
     /// Add a system register device to the device list
     pub fn add_sys_reg_dev(&mut self, dev: Arc<dyn BaseSysRegDeviceOps>) -> AxResult {
-        self.emu_sys_reg_devices.add_dev(dev)
+        self.register_bundle(DeviceRegistration::SysReg(dev).into())
     }
 
     /// Add a port device to the device list
     pub fn add_port_dev(&mut self, dev: Arc<dyn BasePortDeviceOps>) -> AxResult {
-        self.emu_port_devices.add_dev(dev)
+        self.register_bundle(DeviceRegistration::Port(dev).into())
     }
 
     /// Iterates over the MMIO devices in the set.
@@ -517,6 +575,11 @@ impl AxVmDevices {
     /// Iterates over the port devices in the set.
     pub fn iter_port_dev(&self) -> impl Iterator<Item = &Arc<dyn BasePortDeviceOps>> {
         self.emu_port_devices.iter()
+    }
+
+    /// Iterates over devices that require periodic polling.
+    pub fn iter_pollable_dev(&self) -> impl Iterator<Item = &Arc<dyn PollableDeviceOps>> {
+        self.pollable_devices.iter()
     }
 
     /// Returns the guest vector programmed for an x86 IOAPIC GSI.
