@@ -541,8 +541,13 @@ impl DirNodeOps for OverlayDir {
         self.build_entry(name, Some(upper), None)
     }
 
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::CrossesDevices)
+    fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
+        self.ensure_no_visible_entry(name)?;
+        self.remove_existing_whiteout(name)?;
+
+        let target = node.downcast::<OverlayFile>()?.ensure_upper()?;
+        let linked = self.materialize_upper_dir()?.link(name, &target)?;
+        self.build_entry(name, Some(linked), None)
     }
 
     fn unlink(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
@@ -564,6 +569,9 @@ impl DirNodeOps for OverlayDir {
             Some(upper) => upper,
             None => {
                 let lower = lookup_lower(&self.lower_dirs, src_name)?.ok_or(VfsError::NotFound)?;
+                if lower.is_dir() {
+                    return Err(VfsError::CrossesDevices);
+                }
                 ensure_upper_from_lower(&self.materialize_upper_dir()?, &lower, src_name)?
             }
         };

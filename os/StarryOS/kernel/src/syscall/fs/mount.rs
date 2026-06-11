@@ -49,6 +49,9 @@ fn parse_overlay_options(
             "lowerdir" => lowerdir = Some(value),
             "upperdir" => upperdir = Some(value),
             "workdir" => workdir = Some(value),
+            "index" | "redirect_dir" if value != "off" => {
+                return Err(AxError::OperationNotSupported);
+            }
             _ => {}
         }
     }
