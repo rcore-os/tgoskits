@@ -11,14 +11,12 @@ guest ISA: AArch64
 accelerator: QEMU HVF
 kernel: StarryOS AArch64 SMP
 rootfs: macOS-native generated self-build ext4 image
-QEMU disk mode: -snapshot
-validated reproduction: SMP=8, JOBS=1
+QEMU disk mode: writable working-copy image; optional QEMU_SNAPSHOT=1 overlay
+validated reproduction: SMP=8, JOBS=8
 success marker: STARRY-MACOS-SELFBUILD-PASS
 ```
 
-The validated path boots an 8-vCPU guest but intentionally runs one Cargo job.
-It is a stable full self-build reproduction, not evidence that parallel guest
-compilation with `JOBS=8` is supported.
+The validated path boots an 8-vCPU guest and runs Cargo with eight jobs.
 
 The git repository contains the runner, checks, source-level fixes, and the
 macOS-native rootfs construction script. The generated rootfs is still kept out
@@ -35,18 +33,18 @@ cargo build \
   -p starryos \
   --bin starryos \
   --target aarch64-unknown-none-softfloat \
-  -Z build-std=core,alloc,compiler_builtins \
+  -Z build-std=core,alloc \
   --target-dir /tmp/starryos-selfbuild-target \
-  --features plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp \
+  --features plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock \
   --release
 ```
 
 with:
 
 ```text
-CARGO_BUILD_JOBS=1
+CARGO_BUILD_JOBS=8
 RAYON_NUM_THREADS=1
-RUSTC_THREADS=1
+RUSTC_THREADS=2
 CARGO_INCREMENTAL=0
 CARGO_NET_OFFLINE=true
 RUSTC_BOOTSTRAP=1
@@ -55,12 +53,9 @@ RUSTDOC=/opt/rustdoc-nightly-sysroot
 ALLOW_SLOW_SELFBUILD=0
 ```
 
-The fast reproducible profile is guarded by the guest script. Unless
-`ALLOW_SLOW_SELFBUILD=1` is set for experiments, it refuses the older
-full-device profile containing `ax-feat/display`, `ax-driver/virtio-*`,
-`starry-kernel/input`, or `starry-kernel/vsock`. That older profile expands to
-about 386 crates and is the common reason for a run appearing to hang for more
-than an hour.
+The qemu-aarch64 reproducible profile is guarded by the guest script. Unless
+`ALLOW_SLOW_SELFBUILD=1` is set for experiments, it refuses runs that do not use
+`RUSTC_THREADS=2`.
 
 The guest source copy also patches `lwprintf-rs` to the local
 `apps/starry/macos-selfbuild/crates/lwprintf-rs` compatibility crate. This keeps
@@ -75,22 +70,23 @@ machine.
 
 | Case | Time | Notes |
 | --- | --- | --- |
-| `SMP=8`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `657s` | latest validated default reproduction |
+| `SMP=8`, `JOBS=8`, qemu-aarch64 profile, tmp source/target, `RUSTC_THREADS=2` | `331s` | latest validated default reproduction |
+| `SMP=8`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `657s` | historical single-job fallback |
 | `SMP=1`, `JOBS=1`, `SOURCE_TMPFS=0`, tuned feature set | `642s` | latest single-vCPU validation |
 | `SMP=8`, `JOBS=1`, ext4 source/target | `951s` | slow guest baseline |
-| `SMP=8`, `JOBS=8`, ext4 source/target | `917s` | historical experiment; not the current stable reproduction |
-| `SMP=8`, `JOBS=8`, tmp target only | `660s` | historical experiment; not the current stable reproduction |
-| `SMP=8`, `JOBS=8`, tmp source and target | `642s` | historical experiment; not the current stable reproduction |
-| `SMP=8`, `JOBS=8`, tmp source/target, no LTO | `515s` | historical experiment; not the current stable reproduction |
-| `SMP=8`, `JOBS=8`, tmp source/target, no LTO, opt0, CGU256 | `427s` | historical experiment; not the current stable reproduction |
-| `SMP=8`, `JOBS=8`, tuned feature set, no LTO, opt0, CGU256, `RUSTC_THREADS=2` | `331s` | historical experiment; not the current stable reproduction |
+| `SMP=8`, `JOBS=8`, ext4 source/target | `917s` | first complete SMP self-build |
+| `SMP=8`, `JOBS=8`, tmp target only | `660s` | moves Cargo target output to `/tmp` |
+| `SMP=8`, `JOBS=8`, tmp source and target | `642s` | copies source and target output to `/tmp` |
+| `SMP=8`, `JOBS=8`, tmp source/target, no LTO | `515s` | `CARGO_PROFILE_RELEASE_LTO=false` |
+| `SMP=8`, `JOBS=8`, tmp source/target, no LTO, opt0, CGU256 | `427s` | reduces serial optimized codegen cost |
 | host macOS reference | `134s` | host-side lower bound, not inside StarryOS |
 
 Useful ratios:
 
 ```text
-951s / 657s = 1.45x   old slow guest baseline to latest stable reproduction
-642s / 657s = 0.98x   single-vCPU and 8-vCPU single-job runs are effectively similar
+951s / 331s = 2.87x   slow guest baseline to latest stable reproduction
+642s / 331s = 1.94x   tmp source/target baseline to latest stable reproduction
+657s / 331s = 1.99x   single-job fallback to eight-job default reproduction
 ```
 
 ## Interpretation

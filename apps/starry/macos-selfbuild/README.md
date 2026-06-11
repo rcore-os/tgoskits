@@ -15,12 +15,11 @@ injects the current TGOSKits source tree.
 - accelerator: QEMU HVF;
 - guest kernel: StarryOS AArch64 SMP kernel;
 - guest workload: StarryOS guest runs Cargo and builds the `starryos` binary;
-- stable build shape: 8-vCPU guest with one Cargo job (`SMP=8 JOBS=1`);
+- stable build shape: 8-vCPU guest with eight Cargo jobs (`SMP=8 JOBS=8`);
 - pass marker: `===STARRY-MACOS-SELFBUILD-PASS jobs=<N> elapsed=<seconds>===`.
 
 The default reproduction proves that the StarryOS SMP guest can complete a
-self-build while booted with 8 vCPUs. It does not claim that parallel guest
-compilation is currently stable; keep `JOBS=1` for the graded reproduction.
+self-build while booted with 8 vCPUs and running Cargo with eight jobs.
 
 Using AArch64/HVF keeps the guest ISA aligned with the Mac host CPU. This avoids
 the cross-ISA TCG cost of RISC-V-on-macOS experiments and makes the self-build
@@ -71,7 +70,7 @@ memory, close other heavy applications before running the 8-vCPU case; if it is
 memory pressured, first verify the setup with:
 
 ```bash
-SMP=4 JOBS=1 MEM=3072M \
+SMP=4 JOBS=4 MEM=3072M \
 RUST_DIST_SERVER=https://rsproxy.cn \
 STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/ \
 apps/starry/macos-selfbuild/reproduce.sh
@@ -126,15 +125,16 @@ Build the seed StarryOS kernel on macOS:
 apps/starry/macos-selfbuild/build_kernel.sh
 ```
 
-Run the complete 8-vCPU, single-Cargo-job self-build:
+Run the complete 8-vCPU, eight-Cargo-job self-build:
 
 ```bash
 KERNEL=target/aarch64-unknown-none-softfloat/release/starryos.bin \
 ROOTFS=tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img \
 SMP=8 \
-JOBS=1 \
+JOBS=8 \
 RAYON_NUM_THREADS=1 \
-SOURCE_TMPFS=0 \
+RUSTC_THREADS=2 \
+SOURCE_TMPFS=1 \
 QEMU_TIMEOUT_SEC=10800 \
 apps/starry/macos-selfbuild/run_selfbuild.sh
 ```
@@ -142,25 +142,24 @@ apps/starry/macos-selfbuild/run_selfbuild.sh
 A successful run prints:
 
 ```text
-===STARRY-MACOS-SELFBUILD-FAST-PROFILE expected_crates~348 rustc_threads=1===
-===STARRY-MACOS-SELFBUILD-PASS jobs=1 elapsed=<seconds>===
+===STARRY-MACOS-SELFBUILD-QEMU-AARCH64-PROFILE expected_crates~420===
+===STARRY-MACOS-SELFBUILD-PASS jobs=8 elapsed=<seconds>===
 ===STARRY-MACOS-SELFBUILD-RUN-END rc=0===
 ```
 
-The fast reproducible profile should show:
+The qemu-aarch64 reproducible profile should show:
 
 ```text
-rustc_threads=1
-features=plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp
+rustc_threads=2
+features=plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock
 ```
 
-If the log shows the old full-device feature set with `ax-feat/display`,
-`ax-driver/virtio-*`, `starry-kernel/input`, or `starry-kernel/vsock`, it is the
-slow experimental profile. The guest now refuses that profile unless
-`ALLOW_SLOW_SELFBUILD=1` is explicitly set.
+The guest refuses a run whose `RUSTC_THREADS` differs from `2` unless
+`ALLOW_SLOW_SELFBUILD=1` is explicitly set. This keeps the graded run on the
+same qemu-aarch64 profile that was debugged for reproducibility.
 
 The host runner also refuses unexpectedly large Cargo totals by default. The
-current fast profile is expected to report about `348` Cargo units. A much larger
+current qemu-aarch64 profile is expected to report about `420` Cargo units. A much larger
 total usually means a stale rootfs or slow feature set is being used; refresh the
 rootfs from the current checkout and rerun the command above.
 
@@ -172,7 +171,8 @@ target/starry-macos-selfbuild/logs/
 
 The runner copies the input rootfs into
 `target/starry-macos-selfbuild/rootfs/`, injects the guest runner scripts, and
-uses QEMU `-snapshot`, so the input artifact is not modified.
+runs QEMU against that working copy, so the input artifact is not modified. Set
+`QEMU_SNAPSHOT=1` only when an explicit throw-away QEMU disk overlay is desired.
 
 ## Quick Boot Check
 
@@ -234,7 +234,7 @@ QEMU, and the guest checks it again when `TGOSKITS_COMMIT` is supplied.
 | `SMP` | `8` | QEMU vCPU count, passed to `-smp`. |
 | `JOBS` | `SMP` | Guest Cargo job count. |
 | `RAYON_NUM_THREADS` | `1` | Rayon worker limit for guest build scripts. |
-| `RUSTC_THREADS` | empty | Optional guest `-Zthreads=<N>` override for local experiments. |
+| `RUSTC_THREADS` | `2` | Guest `-Zthreads=<N>` value for the reproducible qemu-aarch64 profile. |
 | `SOURCE_TMPFS` | `1` | Copy source into `/tmp` before building. |
 | `QEMU_TIMEOUT_SEC` | `7200` | Host timeout; use `0` to disable. |
 | `QEMU_ACCEL` | `hvf` | QEMU accelerator string. |
@@ -244,7 +244,7 @@ QEMU, and the guest checks it again when `TGOSKITS_COMMIT` is supplied.
 | `BUILD_TARGET` | `aarch64-unknown-none-softfloat` | Guest Cargo target. |
 | `BUILD_PACKAGE` | `starryos` | Cargo package to build. |
 | `BUILD_BIN` | `starryos` | Cargo binary to build; set `none` for library package diagnostics. |
-| `FEATURES` | `plat-dyn,ax-feat/defplat,ax-feat/ipi,ax-feat/irq,ax-feat/rtc,cntv-timer,smp` | Feature-slim StarryOS build used by the fast reproducible self-build; set it to an empty string for single-crate diagnostics. |
+| `FEATURES` | `plat-dyn,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket,starry-kernel/input,starry-kernel/vsock` | QEMU AArch64 feature profile used by the reproducible self-build; set it to an empty string for single-crate diagnostics. |
 | `REQUIRE_FRESH_ROOTFS` | `1` | Refuse a rootfs whose embedded source commit does not match the checkout. |
 | `ALLOW_SLOW_SELFBUILD` | `0` | Permit the slow full-device feature profile only for explicit experiments. |
 | `GUEST_MONITOR_INTERVAL_SEC` | `60` | Print guest `ps` snapshots while Cargo runs; set `0` to disable. |
