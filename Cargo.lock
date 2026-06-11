@@ -7571,6 +7571,7 @@ dependencies = [
  "ax-riscv-plic",
  "kernutil",
  "log",
+ "loongArch64",
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
