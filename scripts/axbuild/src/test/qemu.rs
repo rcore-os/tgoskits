@@ -998,6 +998,16 @@ enum DynamicPlatformBootArch {
 }
 
 pub(crate) fn apply_dynamic_platform_qemu_boot(qemu: &mut QemuConfig, cargo: &Cargo) {
+    apply_dynamic_platform_qemu_boot_with_kvm_probe(qemu, cargo, host_kvm_available);
+}
+
+fn apply_dynamic_platform_qemu_boot_with_kvm_probe(
+    qemu: &mut QemuConfig,
+    cargo: &Cargo,
+    kvm_available: impl FnOnce() -> bool,
+) {
+    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, kvm_available);
+
     let Some(arch) = cargo_dynamic_platform_boot_arch(cargo) else {
         return;
     };
@@ -1016,6 +1026,45 @@ pub(crate) fn apply_dynamic_platform_qemu_boot(qemu: &mut QemuConfig, cargo: &Ca
     disable_dynamic_x86_64_five_level_paging(qemu);
     enable_dynamic_x86_64_nested_virtualization_features(qemu, cargo);
     apply_dynamic_x86_64_qemu_debug_args(qemu);
+}
+
+pub(crate) fn apply_x86_64_kvm_accel_if_available(qemu: &mut QemuConfig, cargo: &Cargo) {
+    apply_x86_64_kvm_accel_if_available_with_probe(qemu, cargo, host_kvm_available);
+}
+
+fn apply_x86_64_kvm_accel_if_available_with_probe(
+    qemu: &mut QemuConfig,
+    cargo: &Cargo,
+    kvm_available: impl FnOnce() -> bool,
+) {
+    if !cargo_target_is_x86_64(&cargo.target) {
+        return;
+    }
+    if qemu.args.iter().any(|arg| arg == "-accel") {
+        return;
+    }
+    if !kvm_available() {
+        return;
+    }
+
+    qemu.args.push("-accel".to_string());
+    qemu.args.push("kvm".to_string());
+}
+
+#[cfg(unix)]
+fn host_kvm_available() -> bool {
+    use std::fs::OpenOptions;
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn host_kvm_available() -> bool {
+    false
 }
 
 fn apply_dynamic_x86_64_qemu_debug_args(qemu: &mut QemuConfig) {
@@ -1200,6 +1249,10 @@ fn cargo_dynamic_platform_boot_arch(cargo: &Cargo) -> Option<DynamicPlatformBoot
 }
 
 fn cargo_target_is_dynamic_x86_64(target: &str) -> bool {
+    cargo_target_is_x86_64(target)
+}
+
+fn cargo_target_is_x86_64(target: &str) -> bool {
     let target = target.strip_suffix(".json").unwrap_or(target);
     target.ends_with("x86_64-unknown-none") || target.ends_with("x86_64-unknown-linux-musl")
 }
@@ -1598,7 +1651,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(qemu.uefi);
         assert!(qemu.to_bin);
@@ -1620,7 +1673,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(qemu.uefi);
         assert!(qemu.to_bin);
@@ -1648,7 +1701,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1682,7 +1735,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(qemu.uefi);
         assert!(qemu.to_bin);
@@ -1704,7 +1757,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(qemu.uefi);
         assert!(qemu.to_bin);
@@ -1731,7 +1784,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1762,7 +1815,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1789,7 +1842,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1817,8 +1870,8 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1850,8 +1903,8 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1888,7 +1941,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1918,7 +1971,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert_eq!(
             qemu.args,
@@ -1951,7 +2004,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(!qemu.uefi);
         assert!(!qemu.to_bin);
@@ -1974,11 +2027,95 @@ mod tests {
             ..Default::default()
         };
 
-        apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
 
         assert!(!qemu.uefi);
         assert!(!qemu.to_bin);
         assert_eq!(qemu.args, ["-snapshot"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_kvm_when_available() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "kvm"]);
+    }
+
+    #[test]
+    fn qemu_boot_rewrite_uses_kvm_for_x86_64_when_available() {
+        let cargo = Cargo {
+            target: "scripts/targets/std/x86_64-unknown-linux-musl.json".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "kvm"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_keeps_explicit_accel() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-nographic".to_string(),
+                "-accel".to_string(),
+                "tcg,thread=single".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic", "-accel", "tcg,thread=single"]);
+    }
+
+    #[test]
+    fn non_x86_64_qemu_does_not_use_kvm() {
+        let cargo = Cargo {
+            target: "riscv64gc-unknown-none-elf".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || true);
+
+        assert_eq!(qemu.args, ["-nographic"]);
+    }
+
+    #[test]
+    fn x86_64_qemu_does_not_use_kvm_without_permission() {
+        let cargo = Cargo {
+            target: "x86_64-unknown-none".to_string(),
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_x86_64_kvm_accel_if_available_with_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(qemu.args, ["-nographic"]);
     }
 
     #[test]
