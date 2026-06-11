@@ -9,3 +9,13 @@
 pub fn bootargs() -> Option<&'static str> {
     crate::dtb::get_chosen_bootargs()
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bootargs_facade_is_available() {
+        crate::dtb::init(0);
+
+        assert_eq!(super::bootargs(), None);
+    }
+}
