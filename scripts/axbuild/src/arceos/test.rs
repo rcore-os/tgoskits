@@ -769,7 +769,7 @@ fn rust_qemu_host_symbolize_success_regex(feature: Option<&str>) -> Vec<String> 
 }
 
 fn apply_rust_qemu_feature_overrides(
-    cargo: &mut Cargo,
+    _cargo: &mut Cargo,
     qemu: &mut QemuConfig,
     feature: Option<&str>,
 ) {
