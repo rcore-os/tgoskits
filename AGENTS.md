@@ -20,6 +20,8 @@
 - Use `board-linux-starry-debug` when a physical-board workflow needs Linux-side deployment or inspection before running StarryOS or ArceOS, including `board connect` IP discovery, SSH/rsync while holding a board lease, explicit `sync` before rebooting into StarryOS, diagnosing StarryOS `not found` for files copied into the Linux rootfs, or comparing Linux-visible and StarryOS-visible board rootfs state.
 - `crates-io-owner`: project-local skill at `.claude/skills/crates-io-owner/SKILL.md`
 - Use `crates-io-owner` when the user wants to add or verify `github:rcore-os:crates-io` for branch-added crates, asks which new crates still need the crates.io team owner, or explicitly wants `cargo owner` used instead of `Cargo.toml` metadata.
+- `arch-platform-porting`: project-local skill at `.claude/skills/arch-platform-porting/SKILL.md`
+- Use `arch-platform-porting` when the user wants to add, adapt, debug, or review architecture/platform support for ArceOS, StarryOS, Axvisor, someboot, dynamic UEFI platform boot, SMP startup, QEMU boot configs, target JSON files, axbuild arch mapping, axcpu trap/context code, axplat-dyn, somehal, or LoongArch/x86/aarch64/riscv platform bring-up issues.
 
 ## Other Requirements
 
@@ -40,3 +42,4 @@
 - Before submitting a PR, locally validate the CI flow as much as practical, excluding only physical board tests and self-hosted test flows unless the user explicitly asks to run them. Changes unrelated to building or testing, such as documentation-only updates, do not require local CI validation.
 - After adding or changing commits on a PR branch, update the PR description so it stays synchronized with the committed changes.
 - Do not insert agent-related labels, signatures, branding, or other advertisement-style wording such as `codex`, `agent`, `AI`, or similar self-promotional tags unless the user explicitly requests it.
+- When changing architecture boot logic, someboot startup order, UEFI handoff, SMP bring-up, dynamic platform contracts, target JSON assumptions, or the recommended debugging flow, update `.claude/skills/arch-platform-porting/SKILL.md` or its references in the same change.
