@@ -4,6 +4,5 @@ features = [
   "fs",
 ]
 log = "Info"
-plat_dyn = true
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["os/axvisor/configs/vms/roc-rk3568-pc/linux-smp1.toml"]

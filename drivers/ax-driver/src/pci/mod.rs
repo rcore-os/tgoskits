@@ -5,6 +5,8 @@ use alloc::sync::Arc;
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
 #[cfg(virtio_dev)]
+use pcie::CommandRegister;
+#[cfg(virtio_dev)]
 use rdrive::probe::pci::{Endpoint, EndpointRc};
 use rdrive::{
     PlatformDevice,
@@ -287,12 +289,26 @@ pub fn take_virtio_transport(
         return Err(OnProbeError::NotMatch);
     }
 
+    enable_virtio_pci_command(endpoint);
+
     let mut root = PciRoot::new(EndpointConfigAccess::new(bdf, endpoint.take()));
     PciTransport::new::<VirtIoHalImpl, _>(&mut root, bdf).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create VirtIO PCI transport at {bdf}: {err:?}"
         ))
     })
+}
+
+#[cfg(virtio_dev)]
+fn enable_virtio_pci_command(endpoint: &mut EndpointRc) {
+    endpoint.update_command(|mut command| {
+        command.insert(
+            CommandRegister::IO_ENABLE
+                | CommandRegister::MEMORY_ENABLE
+                | CommandRegister::BUS_MASTER_ENABLE,
+        );
+        command
+    });
 }
 
 #[cfg(virtio_dev)]

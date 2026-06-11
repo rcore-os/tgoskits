@@ -8,7 +8,7 @@ args = [
     "-nographic",
 ]
 uefi = false
-to_bin = false
+to_bin = true
 success_regex = ["ArceOS C test suite run OK!"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_C_TEST_FAIL"]
 timeout = 120

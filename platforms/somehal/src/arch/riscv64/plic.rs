@@ -1,9 +1,5 @@
 use alloc::{format, vec::Vec};
-use core::{
-    num::NonZeroU32,
-    ptr::NonNull,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use core::{num::NonZeroU32, ptr::NonNull};
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
 use kernutil::StaticCell;
@@ -27,7 +23,6 @@ const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
 
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
-static CURRENT_CPU_ID: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -45,10 +40,6 @@ module_driver!(
 
 pub fn systick_irq() -> rdrive::IrqId {
     S_TIMER.into()
-}
-
-pub fn register_current_cpu_id(_cpu_idx: usize, reader: fn() -> usize) {
-    CURRENT_CPU_ID.store(reader as *mut (), Ordering::Release);
 }
 
 pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
@@ -368,22 +359,12 @@ impl RiscvPlic {
 }
 
 fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {
-    let cpu_idx = current_cpu_idx()?;
+    let cpu_idx = crate::cpu::current_cpu_idx()?;
     context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx)
 }
 
-fn current_cpu_idx() -> Option<usize> {
-    let reader = CURRENT_CPU_ID.load(Ordering::Acquire);
-    if !reader.is_null() {
-        let reader = unsafe { core::mem::transmute::<*mut (), fn() -> usize>(reader) };
-        return Some(reader());
-    }
-
-    someboot::smp::try_early_cpu_idx()
-}
-
 fn warn_missing_current_context() {
-    if let Some(cpu_idx) = current_cpu_idx() {
+    if let Some(cpu_idx) = crate::cpu::current_cpu_idx() {
         warn!("PLIC supervisor context for logical CPU {cpu_idx} is not found");
     } else {
         warn!("PLIC supervisor context for current logical CPU is not found");

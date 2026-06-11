@@ -21,6 +21,19 @@ if [[ -d "$cross_bin" ]]; then
 fi
 cc_bin="${cross_prefix}-gcc"
 
+install_loongarch_loader_link() {
+    local rootfs="${STARRY_ROOTFS:-}"
+    if [[ -z "$rootfs" || ! -f "$rootfs" ]]; then
+        echo "kret prebuild: STARRY_ROOTFS is required for loongarch64 loader symlink" >&2
+        exit 1
+    fi
+
+    echo "kret prebuild: installing loongarch64 musl loader compatibility symlink"
+    debugfs -w "$rootfs" -R "mkdir /lib64" 2>/dev/null || true
+    debugfs -w "$rootfs" -R "rm /lib64/ld-musl-loongarch-lp64d.so.1" 2>/dev/null || true
+    debugfs -w "$rootfs" -R "symlink /lib64/ld-musl-loongarch-lp64d.so.1 /lib/ld-musl-loongarch64.so.1"
+}
+
 echo "kret prebuild: building eBPF demo for $musl_target (CC=$cc_bin)"
 (
     cd "$app_dir"
@@ -33,3 +46,7 @@ bin="$app_dir/target/$musl_target/release/kret"
 
 install -Dm0755 "$bin" "$overlay_dir/usr/bin/kret"
 echo "kret prebuild: installed $(basename "$bin") -> /usr/bin/kret"
+
+if [[ "$arch" == "loongarch64" ]]; then
+    install_loongarch_loader_link
+fi

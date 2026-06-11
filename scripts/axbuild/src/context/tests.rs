@@ -369,7 +369,7 @@ fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = true
+plat_dyn = false
 smp = 4
 
 [qemu]
@@ -561,7 +561,7 @@ fn prepare_axvisor_request_prefers_cli_over_snapshot() {
 config = "os/axvisor/.build.toml"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = true
+plat_dyn = false
 vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
@@ -885,7 +885,6 @@ fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
         &explicit,
         r#"
 target = "x86_64-unknown-none"
-env = {}
 features = []
 log = "Info"
 vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
@@ -1107,7 +1106,6 @@ fn prepare_starry_request_explicit_config_target_overrides_snapshot_target() {
         &config,
         r#"
 target = "riscv64gc-unknown-none-elf"
-env = {}
 features = ["sg2002"]
 log = "Info"
 "#,

@@ -3,6 +3,5 @@ features = [
     "phytium-mci",
 ]
 log = "Info"
-plat_dyn = true
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["os/axvisor/configs/vms/phytiumpi/linux-smp1.toml"]

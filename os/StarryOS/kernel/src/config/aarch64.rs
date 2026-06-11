@@ -7,7 +7,10 @@ pub const USER_SPACE_BASE: usize = 0x1000;
 pub const USER_SPACE_SIZE: usize = 0x7fff_ffff_f000;
 
 /// The highest address of the user stack.
-pub const USER_STACK_TOP: usize = 0x7fff_0000_0000;
+///
+/// See x86_64.rs rationale (#242). aarch64 shares the 128 TiB VA layout and
+/// the same 4 GiB-above-stack squeeze that crashed V8 pointer-compression.
+pub const USER_STACK_TOP: usize = 0x0400_0000_0000;
 /// The size of the user stack.
 pub const USER_STACK_SIZE: usize = 0x80_0000;
 

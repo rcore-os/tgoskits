@@ -10,5 +10,4 @@ features = [
   "starry-kernel/vsock",
 ]
 log = "Warn"
-plat_dyn = true
 target = "riscv64gc-unknown-none-elf"
