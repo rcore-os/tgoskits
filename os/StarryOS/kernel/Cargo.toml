@@ -67,6 +67,7 @@ ax-feat = { workspace = true, features = [
 ] }
 
 ax-alloc = { workspace = true }
+ax-cgroup = { workspace = true }
 ax-config.workspace = true
 ax-crate-interface.workspace = true
 ax-display.workspace = true

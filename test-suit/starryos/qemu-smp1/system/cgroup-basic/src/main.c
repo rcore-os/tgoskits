@@ -151,6 +151,20 @@ static void expect_empty_file(const char *path, const char *msg)
     CHECK(nread == 0, msg);
 }
 
+static int buffer_contains_token(const char *buf, const char *token)
+{
+    size_t len = strlen(token);
+    const char *p = buf;
+    while ((p = strstr(p, token)) != NULL) {
+        int at_start = (p == buf || *(p - 1) == ' ' || *(p - 1) == '\n');
+        int at_end = (p[len] == '\0' || p[len] == ' ' || p[len] == '\n');
+        if (at_start && at_end)
+            return 1;
+        p += len;
+    }
+    return 0;
+}
+
 static int buffer_contains_pid(const char *buf, pid_t pid)
 {
     const char *cursor = buf;
@@ -189,6 +203,22 @@ static void expect_write_errno(const char *path, const char *data,
     close(fd);
     errno = saved_errno;
     CHECK(written == -1 && saved_errno == expected_errno, msg);
+}
+
+static void expect_write_ok(const char *path, const char *data, const char *msg)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    errno = 0;
+    ssize_t written = write(fd, data, strlen(data));
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    CHECK(written >= 0, msg);
 }
 
 static void expect_link_errno(const char *old_path, const char *new_path,
@@ -252,8 +282,11 @@ int main(void)
 
     nread = read_text_file(CGROUP2_PATH "/cgroup.controllers", buf, sizeof(buf));
     CHECK(nread >= 0, "read root cgroup.controllers");
-    if (nread >= 0) {
-        CHECK(nread == 0, "root cgroup.controllers is empty before controllers exist");
+    if (nread > 0) {
+        CHECK(buffer_contains_token(buf, "pids"),
+              "root cgroup.controllers contains pids");
+        CHECK(buffer_contains_token(buf, "cpu"),
+              "root cgroup.controllers contains cpu");
     }
 
     nread = read_text_file(CGROUP2_PATH "/cgroup.subtree_control", buf, sizeof(buf));
@@ -262,15 +295,24 @@ int main(void)
         CHECK(nread == 0, "root cgroup.subtree_control is initially empty");
     }
 
-    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
-                       EINVAL, "writing +pids to subtree_control fails with EINVAL");
+    /* Enable pids controller for children — should succeed since pids is available */
+    expect_write_ok(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
+                    "writing +pids to subtree_control succeeds");
+
+    /* Writing a non-existent controller should fail with EINVAL */
+    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+bogus",
+                       EINVAL, "writing +bogus to subtree_control fails with EINVAL");
 
     expect_mkdir_ok(CGROUP2_PATH "/a", "mkdir child cgroup a succeeds");
     expect_path_exists(CGROUP2_PATH "/a", "child cgroup a exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.procs",
                       "child cgroup.procs is empty before migration exists");
-    expect_empty_file(CGROUP2_PATH "/a/cgroup.controllers",
-                      "child cgroup.controllers is empty before controllers exist");
+    nread = read_text_file(CGROUP2_PATH "/a/cgroup.controllers", buf, sizeof(buf));
+    CHECK(nread > 0, "child cgroup.controllers is non-empty after parent enables pids");
+    if (nread > 0) {
+        CHECK(buffer_contains_token(buf, "pids"),
+              "child cgroup.controllers contains pids");
+    }
     expect_empty_file(CGROUP2_PATH "/a/cgroup.subtree_control",
                       "child cgroup.subtree_control is initially empty");
     expect_mkdir_errno(CGROUP2_PATH "/a", EEXIST,

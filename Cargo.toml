@@ -18,6 +18,7 @@ members = [
     "bootloader/axloader",
 
     "components/aic8800",
+    "components/ax-cgroup",
     "components/ax-lazyinit",
     "components/axbacktrace",
     "components/axcpu",
@@ -130,6 +131,7 @@ ax-alloc = { version = "0.8.3", path = "os/arceos/modules/axalloc", default-feat
 ax-allocator = { version = "0.5.3", path = "memory/axallocator" }
 ax-api = { version = "0.6.0", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
+ax-cgroup = { version = "0.1.0", path = "components/ax-cgroup" }
 ax-config = { version = "0.5.13", path = "os/arceos/modules/axconfig" }
 ax-config-gen = { version = "0.4.10", path = "components/axconfig-gen/axconfig-gen" }
 ax-config-macros = { version = "0.4.10", path = "components/axconfig-gen/axconfig-macros" }
