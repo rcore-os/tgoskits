@@ -139,15 +139,28 @@ fn mark_opaque(dir: &Location) -> VfsResult<()> {
     }
 }
 
-fn lookup_visible_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
+enum UpperLookup {
+    Present(Location),
+    Whiteout,
+    Missing,
+}
+
+fn lookup_upper(dir: &Location, name: &str) -> VfsResult<UpperLookup> {
     if name == OPAQUE_MARKER_NAME {
-        return Ok(None);
+        return Ok(UpperLookup::Whiteout);
     }
     match dir.lookup_no_follow(name) {
-        Ok(loc) if is_whiteout(&loc)? => Ok(None),
-        Ok(loc) => Ok(Some(loc)),
-        Err(VfsError::NotFound) => Ok(None),
+        Ok(loc) if is_whiteout(&loc)? => Ok(UpperLookup::Whiteout),
+        Ok(loc) => Ok(UpperLookup::Present(loc)),
+        Err(VfsError::NotFound) => Ok(UpperLookup::Missing),
         Err(err) => Err(err),
+    }
+}
+
+fn lookup_visible_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
+    match lookup_upper(dir, name)? {
+        UpperLookup::Present(loc) => Ok(Some(loc)),
+        UpperLookup::Whiteout | UpperLookup::Missing => Ok(None),
     }
 }
 
@@ -375,6 +388,13 @@ impl OverlayDir {
         }
     }
 
+    fn lookup_upper_child(&self, name: &str) -> VfsResult<UpperLookup> {
+        match self.existing_upper_dir() {
+            Some(upper_dir) => lookup_upper(&upper_dir, name),
+            None => Ok(UpperLookup::Missing),
+        }
+    }
+
     fn lookup_any_upper_child(&self, name: &str) -> VfsResult<Option<Location>> {
         match self.existing_upper_dir() {
             Some(upper_dir) => lookup_any_upper(&upper_dir, name),
@@ -430,12 +450,16 @@ impl OverlayDir {
     }
 
     fn ensure_no_visible_entry(&self, name: &str) -> VfsResult<()> {
-        if self.lookup_visible_upper_child(name)?.is_some()
-            || lookup_lower(&self.lower_dirs, name)?.is_some()
-        {
-            return Err(VfsError::AlreadyExists);
+        match self.lookup_upper_child(name)? {
+            UpperLookup::Present(_) => Err(VfsError::AlreadyExists),
+            UpperLookup::Whiteout => Ok(()),
+            UpperLookup::Missing => {
+                if lookup_lower(&self.lower_dirs, name)?.is_some() {
+                    return Err(VfsError::AlreadyExists);
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     fn remove_existing_whiteout(&self, name: &str) -> VfsResult<()> {
@@ -509,16 +533,19 @@ impl DirNodeOps for OverlayDir {
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
-        let upper = self.lookup_visible_upper_child(name)?;
-        let lower = if upper.is_some() {
-            None
-        } else {
-            lookup_lower(&self.lower_dirs, name)?
-        };
-        if upper.is_none() && lower.is_none() {
-            return Err(VfsError::NotFound);
+        match self.lookup_upper_child(name)? {
+            UpperLookup::Present(upper) => self.build_entry(name, Some(upper), None),
+            UpperLookup::Whiteout => Err(VfsError::NotFound),
+            UpperLookup::Missing => {
+                if let Some(upper_dir) = self.existing_upper_dir()
+                    && is_opaque(&upper_dir)?
+                {
+                    return Err(VfsError::NotFound);
+                }
+                let lower = lookup_lower(&self.lower_dirs, name)?.ok_or(VfsError::NotFound)?;
+                self.build_entry(name, None, Some(lower))
+            }
         }
-        self.build_entry(name, upper, lower)
     }
 
     fn is_cacheable(&self) -> bool {
