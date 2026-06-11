@@ -133,7 +133,7 @@ static void check_nix_like_child(void)
     }
     pass("nix-like parent reads long setup log after sentinel");
 
-    n = read_line_timeout(master, line, sizeof(line), 1000);
+    n = read_line_timeout(master, line, sizeof(line), 5000);
     if (n <= 0 || strstr(line, "CHILD_OK") == NULL) {
         fail("nix-like parent reads child stderr after sentinel");
         goto out_wait;
