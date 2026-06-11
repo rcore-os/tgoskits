@@ -138,8 +138,8 @@ ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
 kprobe = "0.6"
-kmod = { version = "0.2", package = "kmod-tools" }
-kmod-loader = "0.2.1"
+kmod = { version = "0.3", package = "kmod-tools" }
+kmod-loader = "0.3"
 lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true }

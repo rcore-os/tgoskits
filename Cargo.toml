@@ -114,8 +114,10 @@ members = [
     "tools/qperf",
     "tools/qperf/analyzer",
     "xtask",
+    "os/StarryOS/lkm/*",
 ]
 exclude = [
+    "os/StarryOS/lkm/linux-hello",
     "virtualization/test_crates",
 ]
 
@@ -314,3 +316,4 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
+kmod-tools = "0.3"

@@ -25,9 +25,9 @@ pub struct ImageConfig {
 }
 
 impl ImageConfig {
-    pub fn new_default() -> Self {
+    pub fn new_default(base_dir: &Path) -> Self {
         Self {
-            local_storage: std::env::temp_dir().join(".tgos-images"),
+            local_storage: crate::context::axbuild_tmp_dir(base_dir).join("rootfs"),
             registry: DEFAULT_REGISTRY_URL.to_string(),
             auto_sync: true,
             auto_sync_threshold: DEFAULT_AUTO_SYNC_THRESHOLD,
@@ -42,7 +42,7 @@ impl ImageConfig {
         let path = Self::get_config_file_path(base_dir);
 
         let mut config = if !path.exists() {
-            let config = Self::new_default();
+            let config = Self::new_default(base_dir);
             Self::write_config(base_dir, &config)?;
             config
         } else {
@@ -136,7 +136,8 @@ mod tests {
 
         let config = ImageConfig::read_config(dir.path()).unwrap();
 
-        assert_eq!(config, ImageConfig::new_default());
+        assert_eq!(config, ImageConfig::new_default(dir.path()));
+        assert_eq!(config.local_storage, dir.path().join("tmp/axbuild/rootfs"));
         assert_eq!(
             ImageConfig::get_config_file_path(dir.path()),
             dir.path().join("tmp/axbuild/.image.toml")
