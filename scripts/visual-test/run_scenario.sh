@@ -4,13 +4,13 @@
 # Usage:
 #   run_scenario.sh --arch <arch> --scenario <name> [--update-golden]
 #
-# A scenario is a directory under `test-suit/starryos/visual/<name>/`
+# A scenario is a directory under `apps/starry/visual/scenarios/<name>/`
 # that holds:
 #   - `scenario.env`  : shell-sourced knobs (capture_after_secs, etc.)
 #   - `runner.sh`     : the /test_runner.sh written into the rootfs
 #   - (optional) `rootfs_extras/` : extra files copied into the guest
 #
-# Goldens live in `test-suit/starryos/golden/<arch>/<name>.ppm`. With
+# Goldens live in `apps/starry/visual/golden/<arch>/<name>.ppm`. With
 # `--update-golden`, the captured frame overwrites the golden instead
 # of diffing. Intended workflow: make a change, run without the flag,
 # if the diff is intended rerun with `--update-golden` and commit the
@@ -41,8 +41,8 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-SCENARIO_DIR="$REPO_ROOT/test-suit/starryos/visual/$SCENARIO"
-GOLDEN_PATH="$REPO_ROOT/test-suit/starryos/golden/$ARCH/$SCENARIO.ppm"
+SCENARIO_DIR="$REPO_ROOT/apps/starry/visual/scenarios/$SCENARIO"
+GOLDEN_PATH="$REPO_ROOT/apps/starry/visual/golden/$ARCH/$SCENARIO.ppm"
 [[ -d "$SCENARIO_DIR" ]] || die "no scenario dir at $SCENARIO_DIR"
 
 source "$SCENARIO_DIR/scenario.env"

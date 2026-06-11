@@ -11,6 +11,7 @@ use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+static UNUSED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[ctor]
 fn init_percpu() {
@@ -29,6 +30,22 @@ fn scope_init() {
         static DATA: usize = 42;
     }
     assert_eq!(*DATA, 42);
+}
+
+#[test]
+fn scope_init_is_per_item_lazy() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    UNUSED_INIT_COUNT.store(0, Ordering::Relaxed);
+    scope_local! {
+        static DATA: usize = 42;
+        static UNUSED: usize = {
+            UNUSED_INIT_COUNT.fetch_add(1, Ordering::Relaxed);
+            7
+        };
+    }
+
+    assert_eq!(*DATA, 42);
+    assert_eq!(UNUSED_INIT_COUNT.load(Ordering::Relaxed), 0);
 }
 
 #[test]

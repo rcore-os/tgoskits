@@ -1,0 +1,17 @@
+[package]
+name = "syscall_count-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+syscall_count-common = { path = "../syscall_count-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "syscall_count"
+path = "src/main.rs"

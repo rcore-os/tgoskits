@@ -17,16 +17,22 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
+    ioctl::{FIOASYNC, FIONBIO},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{Directory, FD_TABLE, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
     task::AsThread,
     time::TimeValueLike,
 };
+
+/// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
+/// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
+/// use these on freshly-opened fds; Linux implements them generically for any fd.
+const FIOCLEX: u32 = 0x5451;
+const FIONCLEX: u32 = 0x5450;
 
 fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
     with_fs(dirfd, |fs| {
@@ -51,16 +57,27 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         f.set_async_mode(val != 0)?;
         return Ok(0);
     }
+    // FIOCLEX/FIONCLEX are fd-table operations (close-on-exec), not device commands —
+    // handle them here so any fd (not just ttys) accepts them, as Linux does. Without
+    // this, curses/CPython (glances) hit "Unsupported ioctl command".
+    if cmd == FIOCLEX || cmd == FIONCLEX {
+        FD_TABLE
+            .write()
+            .get_mut(fd as _)
+            .ok_or(AxError::BadFileDescriptor)?
+            .cloexec = cmd == FIOCLEX;
+        return Ok(0);
+    }
     f.ioctl(cmd, arg)
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == AxError::NotATty {
-                // Applications commonly probe non-terminal/blobk fds with
-                // these ioctls; suppress noise.
-                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
-                    return;
-                }
-                warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
+                // `NotATty` is a legitimate negative answer to the isatty/termios/winsize/
+                // console probes (TCGETS, KDGKBTYPE, TIOCGPGRP, ...) that libc, ncurses and
+                // CPython fire at every fd — not an unimplemented command. Log at debug
+                // only: a warn per probe spams the serial console and visibly corrupts
+                // full-screen TUIs (htop/glances) drawing on that same console.
+                debug!("ioctl {cmd} on non-tty fd {fd} -> ENOTTY (probe)");
             }
         })
 }
@@ -382,6 +399,7 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
     if result.is_ok()
         && let Some((path, is_dir)) = deleted
     {
+        // Notify watchers only after the filesystem deletion has succeeded.
         crate::file::inotify::notify_delete_path(&path, is_dir);
     }
     result
@@ -751,6 +769,7 @@ pub fn sys_renameat(
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
+// Rename a path, currently supporting Linux RENAME_NOREPLACE.
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: *const c_char,
@@ -784,6 +803,7 @@ pub fn sys_renameat2(
         }
     }
 
+    // Propagate the filesystem errno directly to match renameat2 callers.
     old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
 }

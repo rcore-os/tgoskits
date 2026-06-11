@@ -1,6 +1,6 @@
 [package]
 name = "rsext4"
-version = "0.5.0"
+version = "0.7.0"
 edition.workspace = true
 description = "A lightweight ext4 file system."
 authors = ["Dirinkbottle <2909128143@qq.com>"]
@@ -15,7 +15,7 @@ license = "Apache-2.0"
 [dependencies]
 bitflags = "2.10"
 log = "0.4"
-spin = { workspace = true }
+ax-kspin = { workspace = true }
 
 [features]
 default = ["USE_MULTILEVEL_CACHE"]

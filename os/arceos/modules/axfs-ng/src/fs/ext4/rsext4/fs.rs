@@ -63,12 +63,12 @@ impl Ext4Filesystem {
 
     /// Locks the shared rsext4 state.
     ///
-    /// rsext4 operations may allocate, flush caches, commit journal state, and
-    /// call into the block device while this guard is held. The current rootfs
-    /// setup can also run in early atomic contexts where a blocking mutex trips
-    /// `might_sleep()`, so use `SpinNoIrq` instead of the older
-    /// `SpinNoPreempt` to close same-CPU IRQ reentry without changing the
-    /// boot-time calling contract.
+    /// Uses `SpinNoIrq` rather than a blocking mutex because filesystem
+    /// operations may be called from IRQ context (e.g., DHCP during network
+    /// init), where sleeping is not allowed.  The rsext4 caches (inode,
+    /// data-block, bitmap) provide fine-grained `SpinNoPreempt` for SMP
+    /// concurrency; this global lock protects metadata mutations (allocators,
+    /// superblock, group descriptors, journal commits).
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
         self.inner.lock()
     }
@@ -78,7 +78,7 @@ impl Ext4Filesystem {
         let (fs, dev) = state.split();
         fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
         fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;
-        fs.inodetable_cahce.flush_all(dev).map_err(into_vfs_err)?;
+        fs.inodetable_cache.flush_all(dev).map_err(into_vfs_err)?;
         // Mark the filesystem clean before writing the superblock so the
         // on-disk state reflects a clean sync / unmount.
         fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;

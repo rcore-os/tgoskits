@@ -1,6 +1,12 @@
 use ax_errno::{AxError, AxResult, LinuxError};
-use axnet::options::{Configurable, GetSocketOption, SetSocketOption};
-use linux_raw_sys::net::{IPPROTO_IPV6, IPV6_V6ONLY, socklen_t};
+use ax_net::options::{
+    Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState,
+};
+use linux_raw_sys::net::{
+    IPPROTO_IPV6, IPV6_V6ONLY, TCP_INFO, TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK,
+    TCPI_OPT_SYN_DATA, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, socklen_t, tcp_info,
+};
+use starry_vm::vm_write_slice;
 
 use crate::{
     file::{FileLike, Socket, netlink::NetlinkSocket},
@@ -18,9 +24,96 @@ fn read_int_sockopt(optval: UserConstPtr<u8>, optlen: socklen_t) -> AxResult<i32
     Ok(*optval.cast::<i32>().get_as_ref()?)
 }
 
+fn tcp_state_to_linux(state: TcpState) -> u8 {
+    match state {
+        TcpState::Established => 1,
+        TcpState::SynSent => 2,
+        TcpState::SynReceived => 3,
+        TcpState::FinWait1 => 4,
+        TcpState::FinWait2 => 5,
+        TcpState::TimeWait => 6,
+        TcpState::Closed => 7,
+        TcpState::CloseWait => 8,
+        TcpState::LastAck => 9,
+        TcpState::Listen => 10,
+        TcpState::Closing => 11,
+    }
+}
+
+fn tcp_options_to_linux(options: TcpInfoOptions) -> u8 {
+    let mut raw = 0u8;
+    if options.contains(TcpInfoOptions::TIMESTAMPS) {
+        raw |= TCPI_OPT_TIMESTAMPS as u8;
+    }
+    if options.contains(TcpInfoOptions::SACK) {
+        raw |= TCPI_OPT_SACK as u8;
+    }
+    if options.contains(TcpInfoOptions::WSCALE) {
+        raw |= TCPI_OPT_WSCALE as u8;
+    }
+    if options.contains(TcpInfoOptions::ECN) {
+        raw |= TCPI_OPT_ECN as u8;
+    }
+    if options.contains(TcpInfoOptions::ECN_SEEN) {
+        raw |= TCPI_OPT_ECN_SEEN as u8;
+    }
+    if options.contains(TcpInfoOptions::SYN_DATA) {
+        raw |= TCPI_OPT_SYN_DATA as u8;
+    }
+    raw
+}
+
+fn to_linux_tcp_info(info: TcpInfo) -> tcp_info {
+    // SAFETY: linux-raw-sys tcp_info is a plain C data record. An all-zero
+    // value is a valid baseline before the supported fields are filled below.
+    let mut raw = unsafe { core::mem::zeroed::<tcp_info>() };
+    raw.tcpi_state = tcp_state_to_linux(info.state);
+    raw.tcpi_ca_state = info.ca_state;
+    raw.tcpi_retransmits = info.retransmits;
+    raw.tcpi_probes = info.probes;
+    raw.tcpi_backoff = info.backoff;
+    raw.tcpi_options = tcp_options_to_linux(info.options);
+    raw.set_tcpi_snd_wscale(info.snd_wscale);
+    raw.set_tcpi_rcv_wscale(info.rcv_wscale);
+    raw.tcpi_rto = info.rto_micros;
+    raw.tcpi_ato = info.ato_micros;
+    raw.tcpi_snd_mss = info.snd_mss;
+    raw.tcpi_rcv_mss = info.rcv_mss;
+    raw.tcpi_notsent_bytes = info.notsent_bytes;
+    raw.tcpi_pmtu = info.pmtu;
+    raw.tcpi_advmss = info.advmss;
+    raw.tcpi_snd_cwnd = info.snd_cwnd;
+    raw.tcpi_reordering = info.reordering;
+    raw.tcpi_rcv_space = info.rcv_space;
+    raw.tcpi_snd_wnd = info.snd_wnd;
+    raw.tcpi_rcv_wnd = info.rcv_wnd;
+    raw
+}
+
+fn write_tcp_info(socket: &Socket, optval: UserPtr<u8>, optlen: &mut socklen_t) -> AxResult<()> {
+    let mut info = TcpInfo::default();
+    socket.get_option(GetSocketOption::TcpInfo(&mut info))?;
+
+    let write_len = (*optlen as usize).min(size_of::<tcp_info>());
+    *optlen = write_len as socklen_t;
+    if write_len == 0 {
+        return Ok(());
+    }
+
+    let raw = to_linux_tcp_info(info);
+    // SAFETY: raw lives for the whole copy and is viewed as its C byte layout.
+    let raw_bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw as *const tcp_info).cast::<u8>(),
+            size_of::<tcp_info>(),
+        )
+    };
+    Ok(vm_write_slice(optval.as_ptr(), &raw_bytes[..write_len])?)
+}
+
 mod conv {
     use ax_errno::{AxError, AxResult};
-    use axnet::options::UnixCredentials;
+    use ax_net::options::UnixCredentials;
     use linux_raw_sys::{general::timeval, net::ucred};
 
     use crate::time::TimeValueLike;
@@ -110,7 +203,6 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_KEEPINTVL) => TcpKeepInterval as Int<u32>,
             (PROTO_TCP, TCP_KEEPCNT) => TcpKeepCount as Int<u32>,
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
-            (PROTO_TCP, TCP_INFO) => TcpInfo,  // TODO: stub, returns empty struct
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
@@ -172,7 +264,7 @@ pub fn sys_getsockopt(
     // SO_TYPE is handled at the kernel level because the socket type is
     // known from the Socket enum variant, not from a per-protocol option.
     {
-        use axnet::Socket as SocketInner;
+        use ax_net::Socket as SocketInner;
         use linux_raw_sys::net::{SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET};
 
         if level == SOL_SOCKET && optname == SO_TYPE {
@@ -195,6 +287,11 @@ pub fn sys_getsockopt(
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
         // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
         *get::<i32>(optval, optlen)? = 0;
+        return Ok(0);
+    }
+
+    if level == PROTO_TCP && optname == TCP_INFO {
+        write_tcp_info(&socket, optval, optlen)?;
         return Ok(0);
     }
 
@@ -269,6 +366,10 @@ pub fn sys_setsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
+    if level == PROTO_TCP && optname == TCP_INFO {
+        return Err(AxError::from(LinuxError::ENOPROTOOPT));
+    }
+
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
         // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
         let _ = *get::<i32>(optval, optlen)?;

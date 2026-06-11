@@ -17,7 +17,7 @@ use alloc::format;
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use axvmconfig::AxVMCrateConfig;
 #[cfg(target_arch = "x86_64")]
-use axvmconfig::{VMBootProtocol, VmMemMappingType};
+use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
 use byte_unit::Byte;
 
 use axvm::{AxVMRef, GuestPhysAddr, VMMemoryRegion};
@@ -492,14 +492,18 @@ impl ImageLoader {
             layout,
             x86_linux::X86LinuxRange::new(self.main_memory.gpa.as_usize(), self.main_memory.size()),
         );
-        if let Some(command_line) = self.config.kernel.cmdline.as_deref() {
-            builder.set_command_line(command_line).map_err(|err| {
-                ax_errno::ax_err_type!(
-                    InvalidInput,
-                    format!("invalid x86 Linux command line: {err:?}")
-                )
-            })?;
-        }
+        let command_line = self.config.kernel.cmdline.as_deref().ok_or_else(|| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                "x86 Linux direct boot requires kernel.cmdline in the VM config"
+            )
+        })?;
+        builder.set_command_line(command_line).map_err(|err| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                format!("invalid x86 Linux command line: {err:?}")
+            )
+        })?;
 
         for memory in &self.config.kernel.memory_regions {
             if memory.map_type == VmMemMappingType::MapAlloc {
@@ -518,6 +522,14 @@ impl ImageLoader {
                 address.base_gpa,
                 address.length,
             ));
+        }
+        for device in &self.config.devices.emu_devices {
+            if matches!(device.emu_type, EmulatedDeviceType::X86IoApic) {
+                builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                    device.base_gpa,
+                    device.length,
+                ));
+            }
         }
         builder.add_reserved_range(x86_mptable::reserved_range());
 

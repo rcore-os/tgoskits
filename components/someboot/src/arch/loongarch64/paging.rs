@@ -5,7 +5,7 @@
 
 use core::arch::naked_asm;
 
-use loongArch64::register::{pgdh, pgdl, pwch::*, pwcl::*, stlbps};
+use loongArch64::register::{MemoryAccessType, crmd, pgdh, pgdl, pwch::*, pwcl::*, stlbps};
 use num_align::NumAlign;
 use page_table_generic::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 
@@ -16,6 +16,7 @@ use crate::{
     console::print_mapping,
     consts::PAGE_SIZE,
     mem::{__kimage_va, __va, MB, PageTableInfo},
+    smp::PerCpuMeta,
 };
 
 /// 4KB 页大小的 PS 值
@@ -39,8 +40,7 @@ pub const PTE_INDEX_BITS: usize = PAGE_SHIFT - 3;
 #[inline(always)]
 pub fn local_flush_tlb_all() {
     unsafe {
-        // invtlb op=0x0 (无效化所有 TLB)
-        core::arch::asm!("dbar 0; invtlb 0x00, $r0, $r0", options(nomem, nostack));
+        core::arch::asm!("dbar 0; tlbflush", options(nomem, nostack));
     }
 }
 
@@ -221,6 +221,42 @@ pub fn relocate_kernel_to_vm_code() -> ! {
 
     relocate_kernel(v_entry, v_sp);
     unreachable!()
+}
+
+pub fn enable_mmu_secondary(cpu_meta_paddr: usize) -> ! {
+    let meta = unsafe {
+        let meta_va = super::addrspace::to_cache(cpu_meta_paddr);
+        &*(meta_va as *const PerCpuMeta)
+    };
+    pgdh::set_base(meta.boot_table_paddr);
+    pgdl::set_base(meta.boot_table_paddr);
+    setup();
+    super::trap::init_entries_for_secondary();
+
+    let mut crmd_bits = crmd::read().raw();
+    crmd_bits &= !(1 << 3);
+    crmd_bits |= 1 << 4;
+    crmd_bits &= !(0b11 << 5);
+    crmd_bits |= (MemoryAccessType::CoherentCached as usize) << 5;
+    crmd_bits &= !(0b11 << 7);
+    crmd_bits |= (MemoryAccessType::CoherentCached as usize) << 7;
+    unsafe {
+        core::arch::asm!("csrwr {}, {}", in(reg) crmd_bits, const 0x0);
+    }
+    crate::mem::mmu::set_mmu_enabled();
+    jump_to_secondary_entry(cpu_meta_paddr, meta.stack_top_virt, meta.entry_virt)
+}
+
+#[unsafe(naked)]
+extern "C" fn jump_to_secondary_entry(_arg: usize, _sp: usize, _entry: usize) -> ! {
+    naked_asm!(
+        "
+        ibar 0
+        dbar 0
+        move $sp, $a1
+        jr $a2
+        "
+    )
 }
 
 #[unsafe(naked)]

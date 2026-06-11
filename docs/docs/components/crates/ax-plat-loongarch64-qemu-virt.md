@@ -179,7 +179,7 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：当前 LoongArch 默认平台路径之一。
-- `os/arceos/examples/helloworld-myplat`
+- `apps/arceos/helloworld-myplat`
 
 ### 3.3 依赖关系示意
 
@@ -188,8 +188,8 @@ graph TD
     A[ax-cpu / loongArch64 / ax-page-table-entry / uart_16550] --> B[ax-plat-loongarch64-qemu-virt]
     C[axplat / ax-config-macros / ax-lazyinit / ax-kspin] --> B
     B --> D[ax-hal]
-    B --> E[ax-helloworld-myplat/系统级 smoke test]
-    B --> F[ax-helloworld-myplat]
+    B --> E[arceos-helloworld-myplat/系统级 smoke test]
+    B --> F[arceos-helloworld-myplat]
     D --> G[ArceOS]
 ```
 
@@ -228,8 +228,8 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, features = ["irq", "smp", "r
 ### 测试覆盖
 
 - `ax-hal` 默认平台链路会持续编译和运行它。
-- `ax-helloworld-myplat` 和系统级 smoke test 覆盖最小启动、中断和多核路径。
-- `ax-helloworld-myplat` 提供额外的直接平台验证入口。
+- `arceos-helloworld-myplat` 和系统级 smoke test 覆盖最小启动、中断和多核路径。
+- `arceos-helloworld-myplat` 提供额外的直接平台验证入口。
 
 ### 5.2 推荐测试矩阵
 

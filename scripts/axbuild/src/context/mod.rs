@@ -8,12 +8,15 @@ use std::{
 use anyhow::Context;
 use log::info;
 use ostool::{
-    Tool, ToolConfig,
-    board::{RunBoardOptions, config::BoardRunConfig},
-    build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
+    board::{self as ostool_board, RunBoardOptions, config::BoardRunConfig},
+    build::{
+        self as ostool_build, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
+        config::{BuildConfig, BuildSystem, Cargo},
+    },
+    invocation::{Invocation, InvocationOptions},
     run::{
-        qemu::{QemuConfig, RunQemuOptions},
-        uboot::UbootConfig,
+        qemu::{self as ostool_qemu, QemuConfig, RunQemuOptions},
+        uboot::{self as ostool_uboot, UbootConfig},
     },
 };
 
@@ -69,7 +72,7 @@ fn snapshot_store_disabled() -> bool {
 }
 
 pub struct AppContext {
-    tool: Tool,
+    invocation: Invocation,
     build_config_path: Option<PathBuf>,
     root: PathBuf,
     member_dirs: HashMap<String, PathBuf>,
@@ -84,9 +87,10 @@ impl AppContext {
 
         info!("Workspace root: {}", workspace_root.display());
 
-        let tool = Tool::new(ToolConfig::default()).context("failed to initialize ostool")?;
+        let invocation = Self::new_invocation(&workspace_root, false)
+            .context("failed to initialize ostool invocation")?;
         Ok(Self {
-            tool,
+            invocation,
             build_config_path: None,
             root: workspace_root,
             member_dirs: HashMap::new(),
@@ -97,10 +101,6 @@ impl AppContext {
 
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.root
-    }
-
-    pub(crate) fn tool_mut(&mut self) -> &mut Tool {
-        &mut self.tool
     }
 
     pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
@@ -126,7 +126,8 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
-        self.tool.cargo_build(&cargo).await
+        let build_config_path = self.build_config_path.clone();
+        ostool_build::cargo_build(&mut self.invocation, &cargo, build_config_path.as_deref()).await
     }
 
     pub(crate) async fn prepare_elf_artifact(
@@ -134,29 +135,33 @@ impl AppContext {
         elf_path: PathBuf,
         to_bin: bool,
     ) -> anyhow::Result<()> {
-        self.tool.prepare_elf_artifact(elf_path, to_bin).await
+        self.invocation.prepare_elf_artifact(elf_path, to_bin).await
     }
 
     pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        qemu: Option<QemuConfig>,
+        mut qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
+        if let Some(qemu) = qemu.as_mut() {
+            crate::test::qemu::apply_x86_64_kvm_accel_if_available(qemu, &cargo);
+        }
         self.set_build_config_path(build_config_path);
-        self.tool
-            .cargo_run(
-                &cargo,
-                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
-                    qemu,
-                    debug: self.debug,
-                    dtb_dump: false,
-                    show_output: true,
-                })),
-            )
-            .await
+        let build_config_path = self.build_config_path.clone();
+        ostool_build::cargo_run(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
+                qemu,
+                debug: self.debug,
+                dtb_dump: false,
+            })),
+        )
+        .await
     }
 
     pub(crate) async fn run_qemu(
@@ -171,15 +176,13 @@ impl AppContext {
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
             .context("failed to install backtrace block output capture")?;
-        self.tool
-            .run_qemu(
-                &qemu,
-                RunQemuOptions {
-                    dtb_dump: false,
-                    show_output: true,
-                },
-            )
-            .await
+        self.activate_cargo_build_context(cargo)?;
+        ostool_qemu::run_qemu(
+            &mut self.invocation,
+            &qemu,
+            RunQemuOptions { dtb_dump: false },
+        )
+        .await
     }
 
     pub(crate) async fn run_prepared_qemu(
@@ -192,15 +195,16 @@ impl AppContext {
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
             .context("failed to install backtrace block output capture")?;
-        self.tool
-            .run_qemu(
-                &qemu,
-                RunQemuOptions {
-                    dtb_dump: false,
-                    show_output: true,
-                },
-            )
-            .await
+        ostool_qemu::run_qemu(
+            &mut self.invocation,
+            &qemu,
+            RunQemuOptions { dtb_dump: false },
+        )
+        .await
+    }
+
+    pub(crate) async fn run_prepared_uboot(&mut self, uboot: UbootConfig) -> anyhow::Result<()> {
+        ostool_uboot::run_uboot(&mut self.invocation, &uboot).await
     }
 
     pub(crate) async fn uboot(
@@ -211,15 +215,14 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
-        self.tool
-            .cargo_run(
-                &cargo,
-                &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs {
-                    uboot,
-                    show_output: true,
-                })),
-            )
-            .await
+        let build_config_path = self.build_config_path.clone();
+        ostool_build::cargo_run(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs { uboot })),
+        )
+        .await
     }
 
     pub(crate) async fn board(
@@ -231,9 +234,15 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
-        self.tool
-            .cargo_run_board(&cargo, &board_config, options)
-            .await
+        let build_config_path = self.build_config_path.clone();
+        ostool_board::cargo_run_board(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &board_config,
+            options,
+        )
+        .await
     }
 
     pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
@@ -241,21 +250,74 @@ impl AppContext {
             return Ok(());
         }
 
-        self.tool = Tool::new(ToolConfig {
-            debug,
-            ..ToolConfig::default()
-        })?;
+        self.invocation = Self::new_invocation(&self.root, debug)
+            .context("failed to reinitialize ostool invocation")?;
         self.debug = debug;
-
-        self.tool
-            .set_build_config_path(self.build_config_path.clone());
 
         Ok(())
     }
 
+    pub(crate) async fn read_qemu_config_from_path_for_cargo(
+        &self,
+        cargo: &Cargo,
+        path: &Path,
+    ) -> anyhow::Result<QemuConfig> {
+        ostool_qemu::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
+    }
+
+    pub(crate) async fn read_uboot_config_from_path_for_cargo(
+        &self,
+        cargo: &Cargo,
+        path: &Path,
+    ) -> anyhow::Result<UbootConfig> {
+        ostool_uboot::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
+    }
+
+    pub(crate) async fn ensure_uboot_config_for_cargo(
+        &self,
+        cargo: &Cargo,
+    ) -> anyhow::Result<UbootConfig> {
+        ostool_uboot::ensure_config_for_cargo(&self.invocation, cargo).await
+    }
+
+    pub(crate) async fn read_board_run_config_from_path_for_cargo(
+        &self,
+        cargo: &Cargo,
+        path: &Path,
+    ) -> anyhow::Result<BoardRunConfig> {
+        ostool_board::read_run_config_from_path_for_cargo(&self.invocation, cargo, path).await
+    }
+
+    pub(crate) async fn ensure_board_run_config_in_dir_for_cargo(
+        &self,
+        cargo: &Cargo,
+        dir: &Path,
+    ) -> anyhow::Result<BoardRunConfig> {
+        ostool_board::ensure_run_config_in_dir_for_cargo(&self.invocation, cargo, dir).await
+    }
+
     fn set_build_config_path(&mut self, path: PathBuf) {
-        self.build_config_path = Some(path.clone());
-        self.tool.set_build_config_path(Some(path));
+        self.build_config_path = Some(path);
+    }
+
+    fn activate_cargo_build_context(&mut self, cargo: &Cargo) -> anyhow::Result<()> {
+        let build_config_path = self.build_config_path.clone();
+        ostool_build::activate_build_config(
+            &mut self.invocation,
+            &BuildConfig {
+                system: BuildSystem::Cargo(cargo.clone()),
+            },
+            build_config_path.as_deref(),
+        )
+    }
+
+    fn new_invocation(workspace_root: &Path, debug: bool) -> anyhow::Result<Invocation> {
+        Invocation::new(InvocationOptions::new(
+            Some(workspace_root.join("Cargo.toml")),
+            None,
+            None,
+            debug,
+        ))
     }
 
     fn scoped_qemu_path(&self, cargo: &Cargo) -> anyhow::Result<PathRestoreGuard> {

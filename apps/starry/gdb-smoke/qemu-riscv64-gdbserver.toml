@@ -18,7 +18,11 @@ fail_regex = [
     'gdb: not found',
     'Python Exception',
     'Python initialization failed',
+    'Cannot insert breakpoint',
     'Remote communication error',
     'ptrace: Function not implemented',
+    'No stack',
+    'Program received signal SIGSEGV',
+    '(?i)Segmentation fault',
 ]
-timeout = 120
+timeout = 180

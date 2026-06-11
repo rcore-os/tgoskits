@@ -53,7 +53,7 @@ fn fallback_platform_for_arch(arch: &str) -> &'static str {
     match arch {
         "aarch64" => "aarch64-generic",
         "loongarch64" => "loongarch64-qemu-virt",
-        "x86_64" => "x86-qemu-q35",
+        "x86_64" => "dummy",
         "riscv64" => "riscv64-plat-dyn",
         _ => "dummy",
     }

@@ -1,4 +1,3 @@
-#[cfg(target_os = "none")]
 include!(concat!(env!("OUT_DIR"), "/defines.rs"));
 
 #[cfg(page_size_4k)]

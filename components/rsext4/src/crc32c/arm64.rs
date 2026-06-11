@@ -1,10 +1,32 @@
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 use core::arch::asm;
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
-pub static HARDWARE_SUPPORT_CRC32: spin::LazyLock<bool> = spin::LazyLock::new(has_hardware_crc32);
+static CRC32_HW_CHECKED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static CRC32_HW_SUPPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Returns whether the current CPU supports hardware CRC32C instructions.
+///
+/// The result is computed once on first call and cached for all subsequent calls.
+///
+/// Safety: `CRC32_HW_CHECKED` (Acquire/Release) provides happens-before ordering;
+/// `CRC32_HW_SUPPORTED` uses Relaxed because it is always accessed after
+/// the Acquire load on `CRC32_HW_CHECKED` has observed the init-complete store.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn is_hardware_crc32_supported() -> bool {
+    if CRC32_HW_CHECKED.load(Ordering::Acquire) {
+        return CRC32_HW_SUPPORTED.load(Ordering::Relaxed);
+    }
+    let supported = has_hardware_crc32();
+    CRC32_HW_SUPPORTED.store(supported, Ordering::Relaxed);
+    CRC32_HW_CHECKED.store(true, Ordering::Release);
+    supported
+}
 
 // In `core::arch::aarch64`, the intrinsics with the `c` suffix implement the
 // Castagnoli polynomial used by CRC32C.

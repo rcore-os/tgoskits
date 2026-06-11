@@ -44,7 +44,7 @@ flowchart TB
     subgraph sg_plat["平台层"]
         direction LR
         p1["axplat-dyn"]
-        p2["ax-plat-x86-qemu-q35"]
+        p2["ax-plat-loongarch64-qemu-virt"]
     end
     subgraph sg_comp["组件层 (92 crates)"]
         direction LR
@@ -133,10 +133,10 @@ flowchart TB
 | `ax-fs-vfs` | 组件层 | `components/axfs_crates/axfs_vfs` | 1 | 4 | [查看](crates/ax-fs-vfs) |
 | `ax-hal` | ArceOS 层 | `os/arceos/modules/axhal` | 13 | 15 | [查看](crates/ax-hal) |
 | `ax-handler-table` | 组件层 | `components/handler_table` | 0 | 1 | [查看](crates/ax-handler-table) |
-| `ax-helloworld` | ArceOS 层 | `os/arceos/examples/helloworld` | 1 | 0 | [查看](crates/ax-helloworld) |
-| `ax-helloworld-myplat` | ArceOS 层 | `os/arceos/examples/helloworld-myplat` | 8 | 0 | [查看](crates/ax-helloworld-myplat) |
-| `ax-httpclient` | ArceOS 层 | `os/arceos/examples/httpclient` | 1 | 0 | [查看](crates/ax-httpclient) |
-| `ax-httpserver` | ArceOS 层 | `os/arceos/examples/httpserver` | 1 | 0 | [查看](crates/ax-httpserver) |
+| `arceos-helloworld` | ArceOS 层 | `apps/arceos/helloworld` | 1 | 0 | [查看](crates/arceos-helloworld) |
+| `arceos-helloworld-myplat` | ArceOS 层 | `apps/arceos/helloworld-myplat` | 8 | 0 | [查看](crates/arceos-helloworld-myplat) |
+| `arceos-httpclient` | ArceOS 层 | `apps/arceos/httpclient` | 1 | 0 | [查看](crates/arceos-httpclient) |
+| `arceos-httpserver` | ArceOS 层 | `apps/arceos/httpserver` | 1 | 0 | [查看](crates/arceos-httpserver) |
 | `ax-input` | ArceOS 层 | `os/arceos/modules/axinput` | 3 | 3 | [查看](crates/ax-input) |
 | `ax-int-ratio` | 组件层 | `components/int_ratio` | 0 | 3 | [查看](crates/ax-int-ratio) |
 | `ax-io` | 组件层 | `components/axio` | 1 | 9 | [查看](crates/ax-io) |
@@ -150,8 +150,7 @@ flowchart TB
 | `ax-memory-addr` | 组件层 | `memory/memory_addr` | 0 | 24 | [查看](crates/ax-memory-addr) |
 | `ax-memory-set` | 组件层 | `memory/memory_set` | 2 | 3 | [查看](crates/ax-memory-set) |
 | `ax-mm` | ArceOS 层 | `os/arceos/modules/axmm` | 8 | 4 | [查看](crates/ax-mm) |
-| `ax-net` | ArceOS 层 | `os/arceos/modules/axnet` | 8 | 4 | [查看](crates/ax-net) |
-| `ax-net-ng` | ArceOS 层 | `os/arceos/modules/axnet-ng` | 11 | 2 | [查看](crates/ax-net-ng) |
+| `ax-net` | 组件层 | `net/ax-net` | 11 | 6 | [查看](crates/ax-net) |
 | `ax-page-table-entry` | 组件层 | `memory/page_table_entry` | 1 | 12 | [查看](crates/ax-page-table-entry) |
 | `ax-page-table-multiarch` | 组件层 | `memory/page_table_multiarch` | 3 | 7 | [查看](crates/ax-page-table-multiarch) |
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
@@ -159,11 +158,10 @@ flowchart TB
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
 | `ax-plat-loongarch64-qemu-virt` | 组件层 | `platforms/ax-plat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
 | `ax-plat-macros` | 组件层 | `platforms/ax-plat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
-| `ax-plat-x86-pc` | 组件层 | `platforms/ax-plat-x86-pc` | 7 | 5 | [查看](crates/ax-plat-x86-pc) |
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |
 | `ax-sched` | 组件层 | `components/axsched` | 1 | 1 | [查看](crates/ax-sched) |
-| `ax-shell` | ArceOS 层 | `os/arceos/examples/shell` | 1 | 0 | [查看](crates/ax-shell) |
+| `arceos-shell` | ArceOS 层 | `apps/arceos/shell` | 1 | 0 | [查看](crates/arceos-shell) |
 | `ax-std` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](crates/ax-std) |
 | `ax-sync` | ArceOS 层 | `os/arceos/modules/axsync` | 2 | 9 | [查看](crates/ax-sync) |
 | `ax-task` | ArceOS 层 | `os/arceos/modules/axtask` | 13 | 8 | [查看](crates/ax-task) |
@@ -176,7 +174,6 @@ flowchart TB
 | `axhvc` | 组件层 | `virtualization/axhvc` | 1 | 1 | [查看](crates/axhvc) |
 | `axklib` | 组件层 | `components/axklib` | 2 | 3 | [查看](crates/axklib) |
 | `axplat-dyn` | 平台层 | `platforms/axplat-dyn` | 11 | 2 | [查看](crates/axplat-dyn) |
-| `ax-plat-x86-qemu-q35` | 平台层 | `platforms/ax-plat-x86-qemu-q35` | 7 | 1 | [查看](crates/axplat-x86-qemu-q35) |
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](crates/axpoll) |
 | `axvcpu` | 组件层 | `virtualization/axvcpu` | 5 | 5 | [查看](crates/axvcpu) |
 | `axvisor` | Axvisor 层 | `os/axvisor` | 27 | 0 | [查看](crates/axvisor) |

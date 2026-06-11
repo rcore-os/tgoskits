@@ -41,6 +41,7 @@ pub use transform::EbpfKernelAuxiliary;
 use crate::{
     ebpf::{error::BpfResultExt, map::create_map, prog::load_prog},
     file::add_file_like,
+    kprobe::KernelRawMutex,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
 };
@@ -54,7 +55,15 @@ pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyIni
 /// `kbpf-basic`. Must be called before `sys_bpf(BPF_PROG_LOAD)` so loaded
 /// programs can resolve the helper ids referenced in their instructions.
 pub fn init_ebpf() {
-    let set = kbpf_basic::helper::init_helper_functions::<EbpfKernelAuxiliary>();
+    let mut set = kbpf_basic::helper::init_helper_functions::<EbpfKernelAuxiliary>();
+    // aya emits `bpf_probe_read_kernel` (helper id 113) for reads of kernel
+    // context memory — e.g. `TracePointContext::read_at`, which a cooked
+    // tracepoint program uses to pull fields out of its sample buffer.
+    // kbpf-basic only registers the legacy `bpf_probe_read` (id 4), whose raw
+    // reader is address-space-agnostic in this VM, so alias 113 onto it.
+    if let Some(&probe_read) = set.get(&4) {
+        set.entry(113).or_insert(probe_read);
+    }
     BPF_HELPER_FUN_SET.init_once(set);
 }
 
@@ -86,6 +95,7 @@ fn handle_map_create(attr: &bpf_attr) -> AxResult<isize> {
 
 fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
     let mut meta = BpfProgMeta::try_from_bpf_attr::<EbpfKernelAuxiliary>(attr).into_ax_result()?;
+    debug!("bpf prog load meta: {meta:#?}");
     let prog = load_prog(&mut meta).into_ax_result()?;
     // bpf prog fds are close-on-exec in Linux as well; see `handle_map_create`.
     let fd = add_file_like(Arc::new(prog), true)?;
@@ -94,37 +104,37 @@ fn handle_prog_load(attr: &bpf_attr) -> AxResult<isize> {
 
 fn handle_map_update(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_update_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_update_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_lookup_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_lookup_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_delete_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_get_next_key(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapGetNextKeyArg::from(attr);
-    bpf_map_get_next_key::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_get_next_key::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_freeze(attr: &bpf_attr) -> AxResult<isize> {
     let map_fd = unsafe { attr.__bindgen_anon_2.map_fd };
-    bpf_map_freeze::<EbpfKernelAuxiliary>(map_fd).into_ax_result()?;
+    bpf_map_freeze::<EbpfKernelAuxiliary, KernelRawMutex>(map_fd).into_ax_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup_and_delete(attr: &bpf_attr) -> AxResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary>(arg).into_ax_result()?;
+    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_ax_result()?;
     Ok(0)
 }
 

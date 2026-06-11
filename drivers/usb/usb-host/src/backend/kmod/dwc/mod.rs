@@ -698,6 +698,16 @@ impl CoreOp for Dwc {
         })
     }
 
+    fn enable_irq(&mut self) -> Result<()> {
+        self.xhci.enable_irq();
+        Ok(())
+    }
+
+    fn disable_irq(&mut self) -> Result<()> {
+        self.xhci.disable_irq();
+        Ok(())
+    }
+
     fn new_addressed_device<'a>(
         &'a mut self,
         addr: DeviceAddressInfo,

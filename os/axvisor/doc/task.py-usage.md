@@ -103,7 +103,7 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 ```bash
 --plat aarch64-generic
---plat x86-qemu-q35
+--plat loongarch64-qemu-virt
 ```
 
 **架构特定的 QEMU 参数**：

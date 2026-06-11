@@ -138,17 +138,17 @@ case is being built directly inside an amd64 K230 SDK environment with
 ### 4. K230 QEMU itself
 
 The runtime case also requires the K230 QEMU fork described in
-`test-suit/starryos/k230-qemu/README.md`. Prepare it with:
+`apps/starry/k230-qemu/README.md`. Prepare it with:
 
 ```sh
-bash test-suit/starryos/k230-qemu/prepare-k230-qemu.sh
+bash apps/starry/k230-qemu/prepare-k230-qemu.sh
 ```
 
 Then put that QEMU build before the default QEMU path when running the case:
 
 ```sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+  cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64
 ```
 
 ## Validation
@@ -156,7 +156,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 Run the QEMU case:
 
 ```sh
-cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64
 ```
 
 The expected evidence includes:
@@ -191,11 +191,10 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-The legacy test-suite teacher script path remains as a wrapper for existing
-notes:
+The migrated K230 app-QEMU teacher script path is:
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+bash apps/starry/k230-qemu/qemu-k230/demo-teacher.sh
 ```
 
 ## Current Boundary

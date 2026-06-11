@@ -1,6 +1,6 @@
 [package]
 name = "x86_vcpu"
-version = "0.5.11"
+version = "0.5.12"
 edition.workspace = true
 authors = [
     "Mingxian Su <aarkegz@gmail.com>",
@@ -36,7 +36,6 @@ axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 
 [dev-dependencies]
-ax-kspin = { workspace = true }
 memoffset = "0.9"
 
 [features]

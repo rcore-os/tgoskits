@@ -1,18 +1,25 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::naked_asm;
-use core::{fmt::Write, ptr::null, sync::atomic::AtomicBool};
+use core::{
+    ffi::c_void,
+    fmt::Write,
+    mem::MaybeUninit,
+    ptr::{addr_of_mut, null},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
+pub use uefi::Status;
+#[cfg(target_arch = "loongarch64")]
+pub use uefi::runtime::ResetType;
 use uefi::{
     Result,
     boot::{self, MemoryDescriptor, MemoryType},
-    mem::memory_map::MemoryMap,
     prelude::*,
     proto::loaded_image::LoadedImage,
-    runtime::set_virtual_address_map,
+    runtime::{self, set_virtual_address_map},
     system::with_config_table,
     table::{self, cfg::ConfigTableEntry},
 };
-pub use uefi::{Status, runtime::ResetType};
 
 use crate::{
     ArchTrait,
@@ -21,8 +28,26 @@ use crate::{
     mem::{__io, __va},
 };
 
+const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
+const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
+const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize = 1024;
+const EXIT_BOOT_MEMORY_MAP_RETRIES: usize = 3;
+
+#[repr(align(8))]
+struct AlignedBytes<const N: usize>([u8; N]);
+
+static mut EXIT_BOOT_MEMORY_MAP_BUFFER: AlignedBytes<EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE> =
+    AlignedBytes([0; EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE]);
+static mut EXIT_BOOT_MEMORY_MAP_DESCRIPTORS: [MaybeUninit<MemoryDescriptor>;
+    EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY] =
+    [const { MaybeUninit::uninit() }; EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY];
+static EFI_IMAGE_HANDLE: AtomicUsize = AtomicUsize::new(EFI_IMAGE_HANDLE_UNSET);
+
 pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
     unsafe { table::set_system_table(system_table.cast()) };
+    if let Some(image_handle) = saved_image_handle() {
+        unsafe { boot::set_image_handle(image_handle) };
+    }
     setup_console();
     println!("UEFI console ok.");
     find_acpi_rsdp();
@@ -57,6 +82,7 @@ unsafe extern "C" fn efi_pe_entry_main(
     system_table: *const ::core::ffi::c_void,
 ) -> Status {
     unsafe {
+        save_image_handle(image_handle);
         boot::set_image_handle(image_handle);
         table::set_system_table(system_table.cast());
         setup_console();
@@ -87,8 +113,8 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
 pub(crate) fn exit_boot_services() {
     println!("Exiting UEFI boot services...");
     UEFI_SERVICE_EXIT.store(true, core::sync::atomic::Ordering::Relaxed);
-    let mem_map = unsafe { boot::exit_boot_services(None) };
-    println!("Exited boot services, owned memory map obtained.");
+    let mem_map = unsafe { exit_boot_services_no_alloc() };
+    println!("Exited boot services, memory map obtained.");
 
     let mut new_map: heapless::Vec<MemoryDescriptor, 32> = heapless::Vec::new();
 
@@ -116,6 +142,125 @@ pub(crate) fn exit_boot_services() {
     }
 
     memmap::setup_memory_map(mem_map.entries());
+}
+
+struct ExitBootMemoryMap {
+    entries: &'static [MemoryDescriptor],
+}
+
+impl ExitBootMemoryMap {
+    fn entries(&self) -> core::slice::Iter<'static, MemoryDescriptor> {
+        self.entries.iter()
+    }
+}
+
+unsafe fn exit_boot_services_no_alloc() -> ExitBootMemoryMap {
+    let Some(system_table) = uefi::table::system_table_raw() else {
+        reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER);
+    };
+    let boot_services = unsafe {
+        system_table
+            .as_ref()
+            .boot_services
+            .as_ref()
+            .unwrap_or_else(|| reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER))
+    };
+    let Some(image_handle) = saved_image_handle() else {
+        reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER);
+    };
+
+    let mut status = Status::SUCCESS;
+
+    for _ in 0..EXIT_BOOT_MEMORY_MAP_RETRIES {
+        let mut map_size = EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE;
+        let mut map_key = 0;
+        let mut desc_size = 0;
+        let mut desc_version = 0;
+        let map_ptr =
+            unsafe { addr_of_mut!(EXIT_BOOT_MEMORY_MAP_BUFFER.0).cast::<MemoryDescriptor>() };
+
+        status = unsafe {
+            (boot_services.get_memory_map)(
+                &mut map_size,
+                map_ptr,
+                &mut map_key,
+                &mut desc_size,
+                &mut desc_version,
+            )
+        };
+        if status == Status::BUFFER_TOO_SMALL {
+            continue;
+        }
+        if status != Status::SUCCESS {
+            reset_on_exit_boot_services_failure(status);
+        }
+
+        status = unsafe { (boot_services.exit_boot_services)(image_handle.as_ptr(), map_key) };
+        if status == Status::SUCCESS {
+            let entries =
+                unsafe { copy_exit_boot_memory_map(map_ptr.cast_const(), map_size, desc_size) };
+            return ExitBootMemoryMap { entries };
+        }
+    }
+
+    reset_on_exit_boot_services_failure(status);
+}
+
+unsafe fn copy_exit_boot_memory_map(
+    src: *const MemoryDescriptor,
+    map_size: usize,
+    desc_size: usize,
+) -> &'static [MemoryDescriptor] {
+    assert!(
+        desc_size >= size_of::<MemoryDescriptor>(),
+        "UEFI memory descriptor size is too small"
+    );
+
+    let entry_count = map_size / desc_size;
+    assert!(
+        entry_count <= EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY,
+        "UEFI memory map has too many entries"
+    );
+
+    let dst =
+        addr_of_mut!(EXIT_BOOT_MEMORY_MAP_DESCRIPTORS).cast::<MaybeUninit<MemoryDescriptor>>();
+    for index in 0..entry_count {
+        let entry = unsafe {
+            src.cast::<u8>()
+                .add(index * desc_size)
+                .cast::<MemoryDescriptor>()
+        };
+        unsafe { dst.add(index).write(MaybeUninit::new(entry.read())) };
+    }
+
+    unsafe { core::slice::from_raw_parts(dst.cast::<MemoryDescriptor>(), entry_count) }
+}
+
+fn save_image_handle(image_handle: Handle) {
+    EFI_IMAGE_HANDLE.store(image_handle.as_ptr() as usize, Ordering::Relaxed);
+}
+
+fn saved_image_handle() -> Option<Handle> {
+    let raw = EFI_IMAGE_HANDLE.load(Ordering::Relaxed);
+    if raw == EFI_IMAGE_HANDLE_UNSET {
+        return None;
+    }
+
+    unsafe { Handle::from_ptr(raw as *mut c_void) }
+}
+
+fn reset_on_exit_boot_services_failure(status: Status) -> ! {
+    unsafe {
+        if let Some(system_table) = uefi::table::system_table_raw()
+            && let Some(runtime_services) = system_table.as_ref().runtime_services.as_ref()
+        {
+            (runtime_services.reset_system)(runtime::ResetType::COLD, status, 0, null());
+        }
+    }
+
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 pub(crate) fn setup_console() {
@@ -191,10 +336,12 @@ fn find_acpi_rsdp() {
     })
 }
 
+#[cfg(target_arch = "loongarch64")]
 pub fn is_uefi_available() -> bool {
     uefi::table::system_table_raw().is_some()
 }
 
+#[cfg(target_arch = "loongarch64")]
 pub fn reset(reset_type: ResetType, status: Status, data: Option<&[u8]>) -> ! {
     info!("Resetting system via UEFI...");
     uefi::runtime::reset(reset_type, status, data)

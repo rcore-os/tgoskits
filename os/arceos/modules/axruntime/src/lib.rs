@@ -38,7 +38,7 @@ extern crate ax_log;
 
 extern crate ax_driver as _;
 
-#[cfg(all(target_os = "none", not(test)))]
+#[cfg(all(target_os = "none", not(feature = "std-compat"), not(test)))]
 mod lang_items;
 
 #[cfg(feature = "smp")]
@@ -50,7 +50,12 @@ mod klib;
 #[cfg(any(feature = "fs", feature = "fs-ng", test))]
 mod block;
 mod devices;
+#[cfg(feature = "irq")]
+pub mod irq;
 mod registers;
+
+#[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
+mod unix_ns;
 
 pub use ax_hal as hal;
 
@@ -202,28 +207,29 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     init_allocator();
 
+    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
+
     {
         use core::ops::Range;
 
         unsafe extern "C" {
             safe static _stext: [u8; 0];
             safe static _etext: [u8; 0];
-            safe static _edata: [u8; 0];
         }
 
+        let fp_range_start = kernel_space_start.as_usize();
+        let fp_range_end = fp_range_start.saturating_add(kernel_space_size);
         axbacktrace::init(
             Range {
                 start: _stext.as_ptr() as usize,
                 end: _etext.as_ptr() as usize,
             },
             Range {
-                start: _edata.as_ptr() as usize,
-                end: usize::MAX,
+                start: fp_range_start,
+                end: fp_range_end,
             },
         );
     }
-
-    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
 
     info!(
         "kernel aspace: [{:#x?}, {:#x?})",
@@ -303,11 +309,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     devices::init_static_input();
 
     cfg_if::cfg_if! {
-        if #[cfg(all(feature = "net-ng", feature = "plat-dyn"))] {
-            devices::init_dyn_net_ng();
-        } else if #[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))] {
-            ax_net_ng::init_network(devices::take_static_net_ng_drivers());
-        } else if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
+        if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
             devices::init_dyn_net();
         } else if #[cfg(all(feature = "net", not(feature = "plat-dyn")))] {
             devices::init_static_net();

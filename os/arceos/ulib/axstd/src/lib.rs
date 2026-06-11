@@ -37,8 +37,8 @@
 #![cfg_attr(all(not(test), not(doc)), no_std)]
 #![cfg_attr(doc, feature(doc_cfg))]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
+extern crate ax_driver as _;
 
 #[cfg(feature = "alloc")]
 #[doc(no_inline)]

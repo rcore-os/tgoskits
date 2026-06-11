@@ -6,6 +6,7 @@
 //! - Dispatch C, shell, and Python case flows before rootfs content injection
 
 use std::{
+    collections::BTreeSet,
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -19,7 +20,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use super::build as case_builder;
+use super::{build as case_builder, timing};
 use crate::context::AppContext;
 
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
@@ -56,6 +57,7 @@ pub(crate) struct TestQemuCase {
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
+    pub(crate) grouped_subcase_filter: Option<BTreeSet<String>>,
 }
 
 impl TestQemuCase {
@@ -71,6 +73,10 @@ pub(crate) struct HostHttpServerConfig {
     pub(crate) port: u16,
     #[serde(default = "default_host_http_body")]
     pub(crate) body: String,
+    #[serde(default)]
+    pub(crate) body_size: Option<usize>,
+    #[serde(default = "default_host_http_body_byte")]
+    pub(crate) body_byte: u8,
 }
 
 fn default_host_http_bind() -> String {
@@ -79,6 +85,10 @@ fn default_host_http_bind() -> String {
 
 fn default_host_http_body() -> String {
     "ArceOS local HTTP fixture\n".to_string()
+}
+
+fn default_host_http_body_byte() -> u8 {
+    b'a'
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +152,12 @@ pub(crate) struct PreparedCaseAssets {
     pub(crate) run_dir_to_remove: Option<PathBuf>,
     pub(crate) pipeline: CasePipeline,
     pub(crate) cache_hit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunPreparedQemuCaseOptions {
+    pub(crate) prepare_elapsed: Duration,
+    pub(crate) qemu_timing_fields: Option<Vec<(&'static str, String)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,17 +358,31 @@ pub(crate) fn prepare_case_assets_sync(
     shared_rootfs: &Path,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<PreparedCaseAssetParts> {
+    let timing_stage = timing::TimingStage::new(
+        "qemu-asset",
+        [
+            ("case", case.display_name.clone()),
+            ("phase", "resolve-pipeline".to_string()),
+        ],
+    );
     let pipeline = resolve_case_pipeline(case)?;
+    timing_stage.finish();
 
     // Pipeline cases need per-case layout for injection work; plain cases boot
     // directly from the shared image without any layout.
     let needs_injection = pipeline != CasePipeline::Plain;
     let layout = if needs_injection {
-        Some(case_asset_layout(
-            workspace_root,
-            target,
-            &case.display_name,
-        )?)
+        let timing_stage = timing::TimingStage::new(
+            "qemu-asset",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "create-layout".to_string()),
+                ("pipeline", pipeline.as_str().to_string()),
+            ],
+        );
+        let layout = case_asset_layout(workspace_root, target, &case.display_name)?;
+        timing_stage.finish();
+        Some(layout)
     } else {
         None
     };
@@ -364,40 +394,102 @@ pub(crate) fn prepare_case_assets_sync(
         // The cached image is the post-injection rootfs — ready for QEMU to boot
         // from directly.  On a cache hit we skip inject_overlay entirely, which
         // is the dominant cost for Python/C pipeline cases.
+        let timing_stage = timing::TimingStage::new(
+            "qemu-asset",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "rootfs-cache-key".to_string()),
+                ("pipeline", pipeline.as_str().to_string()),
+            ],
+        );
         let rootfs_cache_img =
             rootfs_cache_image_path(layout, arch, target, pipeline, case, shared_rootfs, config)?;
+        timing_stage.finish();
 
+        let timing_stage = timing::TimingStage::new(
+            "qemu-asset",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "create-run-dir".to_string()),
+                ("pipeline", pipeline.as_str().to_string()),
+            ],
+        );
         fs::create_dir_all(&layout.run_dir)
             .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
+        timing_stage.finish();
 
         let cache_hit = if is_valid_rootfs_cache_image(&rootfs_cache_img) {
             // Cache HIT: copy/reflink the cached post-injection image.
             // No need to copy shared_rootfs, build an overlay, or run inject_overlay.
-            copy_file_fast(&rootfs_cache_img, &layout.case_rootfs_copy)?;
+            let timing_stage = timing::TimingStage::new(
+                "qemu-asset",
+                [
+                    ("case", case.display_name.clone()),
+                    ("phase", "cache-hit-copy".to_string()),
+                    ("pipeline", pipeline.as_str().to_string()),
+                    ("cache", "hit".to_string()),
+                ],
+            );
+            let result = copy_file_fast(&rootfs_cache_img, &layout.case_rootfs_copy);
+            timing_stage.finish();
+            result?;
             true
         } else {
             // Cache MISS: full pipeline build, then save result to cache.
-            copy_shared_rootfs_for_case(shared_rootfs, layout)?;
+            let timing_stage = timing::TimingStage::new(
+                "qemu-asset",
+                [
+                    ("case", case.display_name.clone()),
+                    ("phase", "copy-shared-rootfs".to_string()),
+                    ("pipeline", pipeline.as_str().to_string()),
+                    ("cache", "miss".to_string()),
+                ],
+            );
+            let result = copy_shared_rootfs_for_case(shared_rootfs, layout);
+            timing_stage.finish();
+            result?;
             let copy = &layout.case_rootfs_copy;
-            match pipeline {
-                CasePipeline::Grouped => case_builder::prepare_grouped_case_assets_sync(
-                    arch, case, copy, layout, config,
-                )?,
-                CasePipeline::C => {
-                    case_builder::prepare_c_case_assets_sync(arch, case, copy, layout, config)?
+            let timing_stage = timing::TimingStage::new(
+                "qemu-asset",
+                [
+                    ("case", case.display_name.clone()),
+                    ("phase", "pipeline-prepare".to_string()),
+                    ("pipeline", pipeline.as_str().to_string()),
+                    ("cache", "miss".to_string()),
+                ],
+            );
+            let result = match pipeline {
+                CasePipeline::Grouped => {
+                    case_builder::prepare_grouped_case_assets_sync(arch, case, copy, layout, config)
                 }
-                CasePipeline::Sh => prepare_sh_case_assets_sync(case, copy, layout)?,
+                CasePipeline::C => {
+                    case_builder::prepare_c_case_assets_sync(arch, case, copy, layout, config)
+                }
+                CasePipeline::Sh => prepare_sh_case_assets_sync(case, copy, layout),
                 CasePipeline::Python => {
-                    case_builder::prepare_python_case_assets_sync(arch, case, copy, layout, config)?
+                    case_builder::prepare_python_case_assets_sync(arch, case, copy, layout, config)
                 }
                 CasePipeline::Rust => {
-                    case_builder::prepare_rust_case_assets_sync(arch, case, copy, layout, config)?
+                    case_builder::prepare_rust_case_assets_sync(arch, case, copy, layout, config)
                 }
                 CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
-            }
+            };
+            timing_stage.finish();
+            result?;
             // Save the post-injection rootfs to cache so future runs can skip
             // the overlay build and inject_overlay steps entirely.
-            save_rootfs_cache_image(&layout.case_rootfs_copy, &rootfs_cache_img)?;
+            let timing_stage = timing::TimingStage::new(
+                "qemu-asset",
+                [
+                    ("case", case.display_name.clone()),
+                    ("phase", "save-rootfs-cache".to_string()),
+                    ("pipeline", pipeline.as_str().to_string()),
+                    ("cache", "miss".to_string()),
+                ],
+            );
+            let result = save_rootfs_cache_image(&layout.case_rootfs_copy, &rootfs_cache_img);
+            timing_stage.finish();
+            result?;
             false
         };
 
@@ -412,6 +504,15 @@ pub(crate) fn prepare_case_assets_sync(
         // No injection needed — boot directly from the shared image.
         // QEMU's -snapshot (below) ensures the shared image is never modified
         // by guest writes, so no copy is required at all.
+        timing::print_timing_line(
+            "qemu-asset",
+            &[
+                ("case", case.display_name.clone()),
+                ("phase", "plain-rootfs".to_string()),
+                ("pipeline", pipeline.as_str().to_string()),
+            ],
+            Duration::ZERO,
+        );
         (shared_rootfs.to_path_buf(), None, None, false)
     };
 
@@ -618,6 +719,7 @@ fn case_asset_cache_key(
     }
     if pipeline == CasePipeline::Grouped {
         hash_grouped_runner_config(&mut hasher, &config.grouped_runner);
+        hash_grouped_subcase_filter(&mut hasher, case.grouped_subcase_filter.as_ref());
     }
 
     hash_rootfs_fingerprint(&mut hasher, shared_rootfs)?;
@@ -647,6 +749,18 @@ fn hash_grouped_runner_config(hasher: &mut Sha256, config: &GroupedCaseRunnerCon
     hash_token(hasher, &config.all_failed_marker);
     hash_token(hasher, &config.success_regex);
     hash_token(hasher, &config.fail_regex);
+}
+
+fn hash_grouped_subcase_filter(hasher: &mut Sha256, filter: Option<&BTreeSet<String>>) {
+    let Some(filter) = filter.filter(|filter| !filter.is_empty()) else {
+        hash_token(hasher, "no_grouped_subcase_filter");
+        return;
+    };
+
+    hash_token(hasher, "grouped_subcase_filter");
+    for name in filter {
+        hash_token(hasher, name);
+    }
 }
 
 fn hash_tree(hasher: &mut Sha256, root: &Path) -> anyhow::Result<()> {
@@ -769,11 +883,11 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     qemu_config_path: &Path,
     prepared_assets: PreparedCaseAssets,
-    prepare_elapsed: Duration,
+    options: RunPreparedQemuCaseOptions,
 ) -> anyhow::Result<()> {
     println!(
         "  prepare assets: {:.2?} (pipeline={}, cache={})",
-        prepare_elapsed,
+        options.prepare_elapsed,
         prepared_assets.pipeline.as_str(),
         if prepared_assets.cache_hit {
             "hit"
@@ -790,7 +904,12 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
 
     let qemu_started = std::time::Instant::now();
     let result = app.run_qemu(cargo, qemu, capture_backtrace).await;
-    println!("  qemu run: {:.2?}", qemu_started.elapsed());
+    let qemu_elapsed = qemu_started.elapsed();
+    println!("  qemu run: {:.2?}", qemu_elapsed);
+    if let Some(mut fields) = options.qemu_timing_fields {
+        fields.push(("phase", "qemu-run".to_string()));
+        timing::print_timing_line("qemu-case", &fields, qemu_elapsed);
+    }
 
     remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
     remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
@@ -1036,6 +1155,7 @@ mod tests {
             host_symbolize_success_regex: Vec::new(),
             host_http_server: None,
             subcases: Vec::new(),
+            grouped_subcase_filter: None,
         }
     }
 
@@ -1170,6 +1290,39 @@ mod tests {
         .unwrap();
 
         assert_ne!(without_autorun, with_autorun);
+    }
+
+    #[test]
+    fn grouped_cache_key_tracks_subcase_filter() {
+        let root = tempdir().unwrap();
+        let shared_img = root.path().join("rootfs.img");
+        fs::write(&shared_img, b"rootfs").unwrap();
+        let case = fake_case(root.path(), "grouped");
+        let config = fake_config();
+
+        let full_group = case_asset_cache_key(
+            "x86_64",
+            "x86_64-unknown-none",
+            CasePipeline::Grouped,
+            &case,
+            &shared_img,
+            &config,
+        )
+        .unwrap();
+
+        let mut filtered_case = case.clone();
+        filtered_case.grouped_subcase_filter = Some(BTreeSet::from(["alpha".to_string()]));
+        let single_subcase = case_asset_cache_key(
+            "x86_64",
+            "x86_64-unknown-none",
+            CasePipeline::Grouped,
+            &filtered_case,
+            &shared_img,
+            &config,
+        )
+        .unwrap();
+
+        assert_ne!(full_group, single_subcase);
     }
 
     #[test]

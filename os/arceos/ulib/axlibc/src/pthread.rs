@@ -54,8 +54,20 @@ pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut ctypes::pthread_mutex_t)
     e(api::sys_pthread_mutex_lock(mutex))
 }
 
+/// Try locking the given mutex.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_mutex_trylock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
+    e(api::sys_pthread_mutex_trylock(mutex))
+}
+
 /// Unlock the given mutex.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_mutex_unlock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
     e(api::sys_pthread_mutex_unlock(mutex))
+}
+
+/// Destroy the given mutex.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_mutex_destroy(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
+    e(api::sys_pthread_mutex_destroy(mutex))
 }

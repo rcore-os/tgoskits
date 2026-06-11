@@ -25,6 +25,10 @@ static IOAPIC_IRQ_HANDLES: [AtomicUsize; IOAPIC_GSI_COUNT] =
     [const { AtomicUsize::new(0) }; IOAPIC_GSI_COUNT];
 
 pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
+    if vector == IOAPIC_VECTOR_BASE + PIT_TIMER_GSI {
+        return;
+    }
+
     if !ioapic_irq_hook_registered(vector) {
         forward_passthrough_irq(vm, vcpu, vector);
     }
@@ -45,7 +49,6 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     };
 
-    trace!("Injecting x86 PIT IRQ0 vector {:#x}", irq.vector);
     vcpu.inject_interrupt_with_trigger(
         irq.vector as _,
         if irq.level_triggered {
@@ -214,11 +217,6 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
         return;
     };
 
-    debug!(
-        "Forwarding x86 passthrough IRQ host GSI {host_gsi} vector {vector:#x} to guest vector \
-         {:#x}",
-        guest_irq.vector
-    );
     vcpu.inject_interrupt_with_trigger(
         guest_irq.vector as _,
         if guest_irq.level_triggered {

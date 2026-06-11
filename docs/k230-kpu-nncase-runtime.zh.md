@@ -133,17 +133,17 @@ K230 SDK 构建环境并显式传入 `-DK230_CXX=...`。
 ### 4. 准备 K230 QEMU
 
 runtime case 还需要带 K230 machine/KPU model 的 QEMU fork。该 QEMU 的详细
-说明在 `test-suit/starryos/k230-qemu/README.md` 中。准备命令是：
+说明在 `apps/starry/k230-qemu/README.md` 中。准备命令是：
 
 ```sh
-bash test-suit/starryos/k230-qemu/prepare-k230-qemu.sh
+bash apps/starry/k230-qemu/prepare-k230-qemu.sh
 ```
 
 运行 case 时，需要把该 QEMU build 目录放在默认 QEMU 路径之前：
 
 ```sh
 PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
-  cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+  cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64
 ```
 
 ## 验证
@@ -151,7 +151,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 运行 QEMU case：
 
 ```sh
-cargo xtask starry test qemu --test-group k230-qemu --arch riscv64 -c kpu-nncase-runtime
+cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-nncase-runtime --arch riscv64
 ```
 
 预期关键证据包括：
@@ -186,10 +186,10 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-旧的 test-suit 教师脚本路径保留为 wrapper，已有笔记仍然可用：
+迁移后的 K230 app-QEMU 教师脚本路径是：
 
 ```sh
-bash test-suit/starryos/k230-qemu/qemu-k230/demo-teacher.sh
+bash apps/starry/k230-qemu/qemu-k230/demo-teacher.sh
 ```
 
 ## 当前边界

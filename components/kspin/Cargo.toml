@@ -1,6 +1,6 @@
 [package]
 name = "ax-kspin"
-version = "0.3.10"
+version = "0.3.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -12,6 +12,7 @@ license = "Apache-2.0"
 [features]
 # To use in the multi-core environment
 smp = []
+host-test = ["ax-kernel-guard/host-test"]
 lockdep = ["dep:ax-lockdep"]
 # Expose raw spin locks implementing `lock_api::RawMutex`.
 lock_api = ["dep:lock_api"]

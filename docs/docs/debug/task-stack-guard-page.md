@@ -250,26 +250,10 @@ guard page 页表更新与 secondary CPU 上线之间的竞态窗口。
 
 ## 回归测试
 
-当前已添加 QEMU 回归用例：
-
-```bash
-cargo xtask arceos test qemu --arch riscv64 --test-group rust \
-  --test-case task/stack_guard_page --no-symbolize
-cargo xtask arceos test qemu --arch x86_64 --test-group rust \
-  --test-case task/stack_guard_page --no-symbolize
-cargo xtask arceos test qemu --arch aarch64 --test-group rust \
-  --test-case task/stack_guard_page --no-symbolize
-```
-
-该用例启用 `ax-std/stack-guard-page`，创建小栈动态任务，并从当前 SP 向下执行
-volatile 写，直到触发 guard page。RISC-V 和 x86_64 以 4 CPU SMP 配置启动，
-主线程记录创建 CPU，并把触发 guard page 的任务 pin 到另一个 CPU，用来覆盖
-远端 CPU 上的 TLB shootdown；aarch64 当前测试套件走 `plat-dyn`，其 IPI
-发送路径尚未实现，因此先以单核配置覆盖 aarch64 页表和本地 TLB 语义。
-
-QEMU 成功条件匹配 `task stack guard page hit` 诊断日志；随后 page fault
-仍会进入原有 fatal 路径，这是预期行为。如果 SMP 用例的 pin/migrate 失败，
-测试会先 panic 并被默认 fail regex 捕获。
+当前统一 ArceOS Rust QEMU 测试集只保留能在一次启动中顺序返回的 feature
+用例，不再保留会以 fatal page fault 结束的 `task/stack_guard_page` 专项
+case。Guard page 诊断的专项验证需要作为 fail-type 用例单独恢复或新增；
+普通回归主要确认默认构建和启用 guard page 后的常规任务路径不受影响。
 
 ### 启用态手动回归
 
@@ -280,13 +264,13 @@ ArceOS 可以在常规 Rust 用例上加 `ax-std/stack-guard-page`：
 
 ```bash
 FEATURES=ax-std/stack-guard-page cargo xtask arceos test qemu --arch riscv64 \
-  --test-group rust --test-case task/yield
+  --test-group rust --test-case task-yield
 FEATURES=ax-std/stack-guard-page cargo xtask arceos test qemu --arch riscv64 \
-  --test-group rust --test-case task/parallel
+  --test-group rust --test-case task-parallel
 FEATURES=ax-std/stack-guard-page cargo xtask arceos test qemu --arch riscv64 \
-  --test-group rust --test-case task/affinity
+  --test-group rust --test-case task-affinity
 FEATURES=ax-std/stack-guard-page cargo xtask arceos test qemu --arch riscv64 \
-  --test-group rust --test-case task/ipi
+  --test-group rust --test-case task-ipi
 ```
 
 StarryOS 可以加 `starry-kernel/stack-guard-page`。不要只写裸

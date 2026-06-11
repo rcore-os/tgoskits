@@ -86,7 +86,7 @@ impl InodeAllocator {
         if let Some(resu) = bitmap.is_allocated(inode_in_group.raw()) {
             return Ok(resu);
         }
-        error!("bitmap allocted check failed!");
+        error!("bitmap allocated check failed!");
         Err(Ext4Error::invalid_input())
     }
 

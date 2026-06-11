@@ -80,6 +80,34 @@ bitflags! {
     }
 }
 
+// The `sched:sched_process_fork` tracepoint is defined here, next to its sole
+// emission site in `CloneArgs::do_clone` (which all of clone/clone3/fork/vfork
+// funnel through), so the event schema and the fast-path call stay together.
+// Registration into the global `.tracepoint` section is by link section, so
+// the definition's module location is immaterial to discovery.
+ktracepoint::define_event_trace!(
+    sched_process_fork,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(sched),
+    TP_PROTO(parent_tid: u64, child_tid: u64),
+    TP_STRUCT__entry {
+        parent_tid: u64,
+        child_tid: u64,
+    },
+    TP_fast_assign {
+        parent_tid: parent_tid,
+        child_tid: child_tid,
+    },
+    TP_ident(__entry),
+    TP_printk({
+        alloc::format!(
+            "parent_tid={} child_tid={}",
+            __entry.parent_tid,
+            __entry.child_tid,
+        )
+    })
+);
+
 /// Unified arguments for clone/clone3/fork/vfork.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CloneArgs {
@@ -172,7 +200,8 @@ impl CloneArgs {
         };
 
         let curr = current();
-        let old_proc_data = &curr.as_thread().proc_data;
+        let curr_thread = curr.as_thread();
+        let old_proc_data = &curr_thread.proc_data;
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
 
@@ -305,9 +334,14 @@ impl CloneArgs {
 
         new_proc_data.proc.add_thread(tid);
 
-        let parent_cred = Some(curr.as_thread().cred());
-        let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
-        if curr.as_thread().no_new_privs() {
+        let parent_cred = Some(curr_thread.cred());
+        let thr = Thread::new(
+            tid,
+            new_proc_data.clone(),
+            parent_cred,
+            curr_thread.signal.blocked(),
+        );
+        if curr_thread.no_new_privs() {
             thr.set_no_new_privs();
         }
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
@@ -344,20 +378,20 @@ impl CloneArgs {
         } else {
             super::ptrace::PTRACE_EVENT_FORK
         };
-        let trace_clone = super::ptrace::ptrace_notify_clone(parent_pid, tid as Pid, ptrace_event);
-        if trace_clone
-            && !flags.contains(CloneFlags::THREAD)
-            && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid()
-        {
-            new_proc_data.set_ptrace_tracer_pid(tracer_pid);
-            new_proc_data.set_ptrace_attached();
-            new_proc_data.set_ptrace_stop(starry_signal::Signo::SIGSTOP, &new_uctx);
+        let trace_clone =
+            super::ptrace::ptrace_notify_clone(parent_pid, parent_tid, tid as Pid, ptrace_event);
+        if trace_clone && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid() {
+            if !flags.contains(CloneFlags::THREAD) {
+                new_proc_data.set_ptrace_tracer_pid(tracer_pid);
+                new_proc_data.set_ptrace_attached();
+            }
+            new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 
-        if trace_clone {
+        if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
                 None,
                 parent_tid,
@@ -367,23 +401,43 @@ impl CloneArgs {
             );
         }
 
+        // Fire before any potential vfork-wait so observers see the fork edge
+        // even when the parent blocks below.
+        trace_sched_process_fork(curr.id().as_u64(), tid as u64);
+
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();
-            if super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid) {
-                let _ = crate::task::send_signal_to_thread(
-                    None,
-                    parent_tid,
-                    Some(starry_signal::SignalInfo::new_kernel(
-                        starry_signal::Signo::SIGTRAP,
-                    )),
-                );
-            }
+            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, tid as Pid);
         }
 
         Ok(tid as _)
     }
 }
+
+ktracepoint::define_event_trace!(
+    sys_clone,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(syscalls),
+    TP_PROTO(flags:u32, stack:usize, parent_tid:usize),
+    TP_STRUCT__entry {
+        stack: usize,
+        parent_tid: usize,
+        flags: u32,
+    },
+    TP_fast_assign {
+        flags: flags,
+        stack: stack,
+        parent_tid: parent_tid,
+    },
+    TP_ident(__entry),
+    TP_printk({
+        let flags = __entry.flags;
+        let stack = __entry.stack;
+        let parent_tid = __entry.parent_tid;
+        alloc::format!("clone with flags: {flags}, stack: {stack:#x}, parent_tid: {parent_tid:#x}")
+    })
+);
 
 pub fn sys_clone(
     uctx: &UserContext,
@@ -397,6 +451,8 @@ pub fn sys_clone(
     const FLAG_MASK: u32 = 0xff;
     let clone_flags = CloneFlags::from_bits_truncate((flags & !FLAG_MASK) as u64);
     let exit_signal = (flags & FLAG_MASK) as u64;
+
+    trace_sys_clone(clone_flags.bits() as _, stack, parent_tid);
 
     if clone_flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
         return Err(AxError::InvalidInput);

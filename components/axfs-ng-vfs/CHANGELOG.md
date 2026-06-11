@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.3...axfs-ng-vfs-v0.5.0) - 2026-06-09
+
+### Added
+
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
+### Fixed
+
+- *(locking)* narrow spinlock scope in VFS and Starry paths ([#1146](https://github.com/rcore-os/tgoskits/pull/1146))
+- *(lockdep)* resolve Starry lock ordering and log print issues ([#1103](https://github.com/rcore-os/tgoskits/pull/1103))
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.2...axfs-ng-vfs-v0.4.3) - 2026-06-03
 
 ### Added

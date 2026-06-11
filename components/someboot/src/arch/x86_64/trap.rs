@@ -15,7 +15,10 @@ use x86::{
 };
 
 use super::irq::{LAPIC_SPURIOUS_VECTOR, LAPIC_TIMER_VECTOR};
-use crate::{irq, mem::page_size};
+use crate::{
+    irq,
+    mem::{page_size, phys_to_virt},
+};
 
 const IA32_EFER: u32 = 0xc000_0080;
 const IA32_EFER_NXE: u64 = 1 << 11;
@@ -71,6 +74,7 @@ pub fn trap_addr() -> usize {
 pub fn init_local() {
     mask_legacy_pic();
     enable_nxe();
+    enable_xsave_features();
     init_tsc_freq();
     init_lapic();
 }
@@ -374,13 +378,41 @@ fn write_lapic_reg(offset: u32, value: u32) {
 
 fn lapic_ptr(offset: u32) -> *mut u32 {
     let base = unsafe { rdmsr(msr::IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
-    (base + offset as usize) as *mut u32
+    unsafe { phys_to_virt(base).add(offset as usize) }.cast()
 }
 
 fn enable_nxe() {
     let efer = unsafe { rdmsr(IA32_EFER) } | IA32_EFER_NXE;
     unsafe {
         wrmsr(IA32_EFER, efer);
+    }
+}
+
+/// Enable `CR4.OSXSAVE` and program `XCR0.{X87,SSE,AVX}` so userspace
+/// (VEX-encoded) AVX instructions don't fault with `#UD` even when the CPU
+/// reports `CPUID.01H:ECX.AVX`. Runs per-CPU from [`init_local`] (primary and,
+/// via [`per_cpu_trap_init`], every secondary core — `XCR0` is per-core).
+///
+/// Everything is gated on `CPUID.01H:ECX.XSAVE` (bit 26): setting `CR4.OSXSAVE`
+/// or executing `XSETBV` when XSAVE is unsupported `#GP`s, and the default
+/// `qemu64` model has no XSAVE (so this is a no-op there). `OSXSAVE` must be set
+/// before `XSETBV`; `X87` is mandatory and `SSE` must precede `AVX` in `XCR0`.
+fn enable_xsave_features() {
+    let Some(info) = CpuId::new().get_feature_info() else {
+        return;
+    };
+    if !info.has_xsave() {
+        return;
+    }
+    // SAFETY: XSAVE is supported (CPUID-checked above), so enabling CR4.OSXSAVE
+    // and the subsequent XSETBV are well-defined and will not #GP.
+    unsafe {
+        controlregs::cr4_write(controlregs::cr4() | controlregs::Cr4::CR4_ENABLE_OS_XSAVE);
+        let mut bits = controlregs::Xcr0::XCR0_FPU_MMX_STATE | controlregs::Xcr0::XCR0_SSE_STATE;
+        if info.has_avx() {
+            bits |= controlregs::Xcr0::XCR0_AVX_STATE;
+        }
+        controlregs::xcr0_write(bits);
     }
 }
 

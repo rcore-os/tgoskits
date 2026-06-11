@@ -3,6 +3,7 @@ use ax_task::current;
 
 use crate::task::AsThread;
 
+#[inline(never)]
 pub fn sys_getpid() -> AxResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
@@ -56,7 +57,7 @@ pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: usize) -> AxResult<isi
 
 /// ARCH_PRCTL codes
 ///
-/// It is only avaliable on x86_64, and is not convenient
+/// It is only available on x86_64, and is not convenient
 /// to generate automatically via c_to_rust binding.
 #[cfg(target_arch = "x86_64")]
 #[derive(Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]

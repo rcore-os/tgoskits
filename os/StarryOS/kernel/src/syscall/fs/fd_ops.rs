@@ -11,6 +11,7 @@ use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{
@@ -124,7 +125,6 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     device.inner().open(true)?;
                 }
                 let inner = device.inner().as_any();
-                #[cfg(feature = "plat-dyn")]
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
                     if flags & O_NONBLOCK != 0 {
@@ -336,6 +336,7 @@ pub fn sys_openat(
             Err(err) => Err(err),
         })?;
 
+    // Open first, then install the file so filesystem errors propagate unchanged.
     let fd =
         with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
     if should_notify_create {
@@ -557,6 +558,33 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             memfd.add_seals(arg as u32)?;
             Ok(0)
         }
+        // F_GET_RW_HINT (1035), F_SET_RW_HINT (1036), F_GET_FILE_RW_HINT (1037),
+        // F_SET_FILE_RW_HINT (1038) — Linux 4.13+ I/O priority hints. They are
+        // advisory and we keep no per-file/inode hint state, but the ABI is not a
+        // bare no-op: the `arg` is a user `u64 *`. GET must write the current hint
+        // back (so callers read a defined value, and a bad/NULL pointer faults);
+        // SET must read the requested hint and reject unknown values with EINVAL.
+        // RocksDB/BookKeeper/Pulsar use these for WAL/SST files.
+        1035 | 1037 => {
+            // No stored hint → report the implicit default RWH_WRITE_LIFE_NOT_SET.
+            (arg as *mut u64).vm_write(0u64)?;
+            Ok(0)
+        }
+        1036 | 1038 => {
+            let hint = (arg as *const u64).vm_read()?;
+            // Valid hints are RWH_WRITE_LIFE_NOT_SET..=RWH_WRITE_LIFE_EXTREME (0..=5).
+            if hint > 5 {
+                return Err(AxError::InvalidInput);
+            }
+            Ok(0)
+        }
+        // Advisory fcntl commands with no per-fd state in StarryOS, reported as
+        // no-op success to match common Linux feature-detection usage:
+        // F_SETSIG (10) / F_GETSIG (11) / F_SETOWN_EX (15) / F_GETOWN_EX (16).
+        // (F_GETLK=5 / F_SETLK=6 are POSIX file locks already handled earlier by
+        // `dispatch_fcntl`, and F_GETOWN=8 / F_SETOWN=9 are handled above — none
+        // of those reach this arm.)
+        10 | 11 | 15 | 16 => Ok(0),
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
             Err(AxError::InvalidInput)

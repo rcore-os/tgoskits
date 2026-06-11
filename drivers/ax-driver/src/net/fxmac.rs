@@ -20,7 +20,7 @@ const PAGE_SIZE: usize = 0x1000;
 
 pub fn register(plat_dev: PlatformDevice) {
     let dev = FxmacNet::new();
-    plat_dev.register_net(DRIVER_NAME, dev, None);
+    plat_dev.register_net(DRIVER_NAME, dev);
     log::info!("registered FXmac network device");
 }
 

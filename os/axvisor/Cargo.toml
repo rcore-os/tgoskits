@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.5.9"
+version = "0.5.11"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -54,7 +54,7 @@ serial = []
 [dependencies]
 spin = { workspace = true }
 
-[target.'cfg(not(any(windows, unix)))'.dependencies]
+[target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 ax-kspin = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = "0.4"
@@ -75,7 +75,7 @@ ax-memory-addr = { workspace = true }
 ax-driver.workspace = true
 
 # xtask dependencies (only used on host platforms)
-[target.'cfg(any(windows, unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow.workspace = true
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }

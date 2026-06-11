@@ -2,6 +2,8 @@ args = [
   "-m",
   "512M",
   "-nographic",
+  "-machine",
+  "q35",
   "-device",
   "virtio-blk-pci,drive=disk0",
   "-drive",
@@ -11,7 +13,7 @@ args = [
   "-netdev",
   "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 success_regex = []
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

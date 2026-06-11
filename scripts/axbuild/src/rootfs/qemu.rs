@@ -101,6 +101,32 @@ pub(crate) fn drive_file_paths(qemu: &QemuConfig) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Rewrites all `-drive ...file=...` paths selected by the callback.
+pub(crate) fn rewrite_drive_file_paths<F>(
+    qemu: &mut QemuConfig,
+    mut rewrite: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&Path) -> anyhow::Result<Option<PathBuf>>,
+{
+    let mut index = 0;
+    while index + 1 < qemu.args.len() {
+        if qemu.args[index] != "-drive" {
+            index += 1;
+            continue;
+        }
+
+        let drive_arg = qemu.args[index + 1].clone();
+        if let Some(file) = drive_file_value(&drive_arg)
+            && let Some(new_path) = rewrite(Path::new(file))?
+        {
+            qemu.args[index + 1] = replace_drive_file_arg(&drive_arg, &new_path);
+        }
+        index += 2;
+    }
+    Ok(())
+}
+
 fn drive_file_value(drive_arg: &str) -> Option<&str> {
     drive_arg
         .split(',')
@@ -312,6 +338,42 @@ mod tests {
         };
 
         assert!(drive_file_paths(&qemu).is_empty());
+    }
+
+    #[test]
+    fn rewrite_drive_file_paths_replaces_selected_drive_files() {
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
+                "-drive".to_string(),
+                "id=usbdisk,if=none,format=raw,snapshot=on,file=/tmp/usb.img".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0,file=/tmp/not-a-drive.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        rewrite_drive_file_paths(&mut qemu, |path| {
+            if path == Path::new("/tmp/usb.img") {
+                Ok(Some(PathBuf::from("/cache/rootfs.img")))
+            } else {
+                Ok(None)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
+                "-drive".to_string(),
+                "id=usbdisk,if=none,format=raw,snapshot=on,file=/cache/rootfs.img".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0,file=/tmp/not-a-drive.img".to_string(),
+            ]
+        );
     }
 
     #[test]

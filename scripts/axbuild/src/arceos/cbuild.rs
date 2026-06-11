@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -15,6 +15,14 @@ use crate::{
 };
 
 const AX_LIBC_PACKAGE: &str = "ax-libc";
+const PIC_RUSTFLAG: &str = "-Crelocation-model=pic";
+const C_DEFINE_FEATURE_PREFIX: &str = "c-define:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArceosCArtifactPaths {
+    pub(crate) target_dir: PathBuf,
+    pub(crate) out_dir: PathBuf,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArceosCBuildInput {
@@ -30,15 +38,37 @@ pub(crate) struct ArceosCBuildOutput {
     pub(crate) elf_path: PathBuf,
 }
 
+pub(crate) fn default_c_app_artifact_paths(
+    workspace_root: &Path,
+    app_name: &str,
+) -> ArceosCArtifactPaths {
+    let target_dir = crate::context::axbuild_tmp_dir(workspace_root)
+        .join("arceos-c")
+        .join("cargo");
+    let out_dir = crate::context::axbuild_tmp_dir(workspace_root)
+        .join("arceos-c")
+        .join("apps")
+        .join(sanitize_name(app_name))
+        .join("out");
+
+    ArceosCArtifactPaths {
+        target_dir,
+        out_dir,
+    }
+}
+
 pub(crate) fn build_c_app(
     workspace_root: &Path,
     request: &ResolvedBuildRequest,
     input: &ArceosCBuildInput,
 ) -> anyhow::Result<ArceosCBuildOutput> {
-    let mut cargo = build::load_cargo_config(request)?;
+    let mut cargo = build::load_c_app_cargo_config(request)?;
     cargo.package = AX_LIBC_PACKAGE.to_string();
+    cargo.target = request.target.clone();
     cargo.to_bin = false;
     cargo.features = map_c_app_features(&input.features, &cargo.features);
+    let c_features = c_compiler_features(&cargo.features, &input.features);
+    let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
 
     let mode = if request.debug { "debug" } else { "release" };
     let arch = request.arch.as_str();
@@ -61,7 +91,13 @@ pub(crate) fn build_c_app(
     fs::create_dir_all(&input.out_dir)
         .with_context(|| format!("failed to create {}", input.out_dir.display()))?;
 
-    build_axlibc_staticlib(workspace_root, &cargo, &input.target_dir, request.debug)?;
+    build_axlibc_staticlib(
+        workspace_root,
+        &cargo,
+        &input.target_dir,
+        request.debug,
+        dynamic_pie,
+    )?;
     write_pthread_mutex_header(&generated_include_dir, &cargo.features)?;
     let rust_lib = input
         .target_dir
@@ -84,15 +120,16 @@ pub(crate) fn build_c_app(
     )
     .context("failed to locate ArceOS C app linker scripts")?;
 
-    let cflags = cflags(
+    let cflags = cflags(CFlagsInput {
         workspace_root,
         arch,
         mode,
-        &generated_include_dir,
-        &include_dir,
-        &cargo.features,
-        cargo.log,
-    );
+        generated_include_dir: &generated_include_dir,
+        include_dir: &include_dir,
+        features: &c_features,
+        log: cargo.log,
+        dynamic_pie,
+    });
     let lib_objects =
         compile_dir_c_sources(&c_source_dir, &axlibc_obj_dir, &cflags, None, "axlibc")?;
     let app_objects = compile_dir_c_sources(&input.app_dir, &app_obj_dir, &cflags, None, "app")?;
@@ -109,7 +146,7 @@ pub(crate) fn build_c_app(
         &rust_lib,
         &libc,
         &app_objects,
-        libgcc(arch, &input.features)?,
+        libgcc(arch, &cargo.features)?,
     )?;
 
     Ok(ArceosCBuildOutput { elf_path })
@@ -153,8 +190,13 @@ fn build_axlibc_staticlib(
     cargo: &Cargo,
     target_dir: &Path,
     debug: bool,
+    dynamic_pie: bool,
 ) -> anyhow::Result<()> {
     let mut command = Command::new("cargo");
+    let mut env = cargo.env.clone();
+    if dynamic_pie {
+        append_pic_rustflag(&mut env);
+    }
     command
         .current_dir(workspace_root)
         .arg("build")
@@ -174,12 +216,39 @@ fn build_axlibc_staticlib(
     for arg in &cargo.args {
         command.arg(arg);
     }
-    for (key, value) in &cargo.env {
+    for (key, value) in &env {
         command.env(key, value);
     }
     command
         .exec()
         .context("failed to build ax-libc static library")
+}
+
+fn dynamic_pie_for_c_app(features: &[String]) -> bool {
+    has_feature(features, "plat-dyn")
+}
+
+fn append_pic_rustflag(env: &mut HashMap<String, String>) {
+    const ENCODED_RUSTFLAGS: &str = "CARGO_ENCODED_RUSTFLAGS";
+    const RUSTFLAGS: &str = "RUSTFLAGS";
+
+    if let Some(flags) = env.get_mut(ENCODED_RUSTFLAGS) {
+        if !flags.is_empty() {
+            flags.push('\x1f');
+        }
+        flags.push_str(PIC_RUSTFLAG);
+        return;
+    }
+
+    if let Some(flags) = env.get_mut(RUSTFLAGS) {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str(PIC_RUSTFLAG);
+        return;
+    }
+
+    env.insert(ENCODED_RUSTFLAGS.to_string(), PIC_RUSTFLAG.to_string());
 }
 
 fn find_final_linker_script(
@@ -334,52 +403,63 @@ fn platform_linker_owner_prefix(platform: &str, features: &[String]) -> &'static
 
     match platform {
         "loongarch64-qemu-virt" => "ax-plat-loongarch64-qemu-virt-",
-        "x86-qemu-q35" => "ax-plat-x86-qemu-q35-",
         _ => "ax-hal-",
     }
 }
 
-fn cflags(
-    workspace_root: &Path,
-    arch: &str,
-    mode: &str,
-    generated_include_dir: &Path,
-    include_dir: &Path,
-    features: &[String],
+struct CFlagsInput<'a> {
+    workspace_root: &'a Path,
+    arch: &'a str,
+    mode: &'a str,
+    generated_include_dir: &'a Path,
+    include_dir: &'a Path,
+    features: &'a [String],
     log: Option<LogLevel>,
-) -> Vec<String> {
+    dynamic_pie: bool,
+}
+
+fn cflags(input: CFlagsInput<'_>) -> Vec<String> {
     let mut flags = vec![
         "-nostdinc".to_string(),
         "-fno-builtin".to_string(),
         "-ffreestanding".to_string(),
         "-Wall".to_string(),
-        format!("-I{}", generated_include_dir.display()),
-        format!("-I{}", include_dir.display()),
+        format!("-I{}", input.generated_include_dir.display()),
+        format!("-I{}", input.include_dir.display()),
     ];
-    for feature in c_config_features(features) {
+    for feature in c_config_features(input.features) {
         flags.push(format!("-DAX_CONFIG_{}", c_define_name(&feature)));
+    }
+    for define in c_defines(input.features) {
+        flags.push(format!("-D{define}=1"));
     }
     flags.push(format!(
         "-DAX_LOG_{}",
-        format!("{:?}", log.unwrap_or(LogLevel::Warn)).to_uppercase()
+        format!("{:?}", input.log.unwrap_or(LogLevel::Warn)).to_uppercase()
     ));
-    if mode == "release" {
+    if input.mode == "release" {
         flags.push("-O3".to_string());
     }
-    match arch {
+    if input.dynamic_pie {
+        flags.push("-fPIE".to_string());
+    }
+    match input.arch {
         "riscv64" => flags.extend([
             "-march=rv64gc".to_string(),
             "-mabi=lp64d".to_string(),
             "-mcmodel=medany".to_string(),
         ]),
         "loongarch64" => flags.push("-msoft-float".to_string()),
-        "x86_64" if !has_feature(features, "fp-simd") => flags.push("-mno-sse".to_string()),
-        "aarch64" if !has_feature(features, "fp-simd") => {
+        "x86_64" if !has_feature(input.features, "fp-simd") => flags.push("-mno-sse".to_string()),
+        "aarch64" if !has_feature(input.features, "fp-simd") => {
             flags.push("-mgeneral-regs-only".to_string())
         }
         _ => {}
     }
-    flags.push(format!("-I{}", workspace_root.join("include").display()));
+    flags.push(format!(
+        "-I{}",
+        input.workspace_root.join("include").display()
+    ));
     flags
 }
 
@@ -387,6 +467,9 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
     let mut config_features: BTreeSet<_> = features
         .iter()
         .filter_map(|feature| {
+            if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
+                return None;
+            }
             if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
                 return None;
             }
@@ -408,6 +491,25 @@ fn c_config_features(features: &[String]) -> BTreeSet<String> {
         config_features.insert("smp".to_string());
     }
     config_features
+}
+
+fn c_defines(features: &[String]) -> BTreeSet<String> {
+    features
+        .iter()
+        .filter_map(|feature| feature.strip_prefix(C_DEFINE_FEATURE_PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
+fn c_compiler_features(cargo_features: &[String], case_features: &[String]) -> Vec<String> {
+    let mut features = cargo_features.to_vec();
+    features.extend(
+        case_features
+            .iter()
+            .filter(|feature| feature.starts_with(C_DEFINE_FEATURE_PREFIX))
+            .cloned(),
+    );
+    features
 }
 
 fn has_feature(features: &[String], name: &str) -> bool {
@@ -574,6 +676,9 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
         }
     }
     for feature in case_features {
+        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
+            continue;
+        }
         let normalized = feature
             .strip_prefix("ax-feat/")
             .or_else(|| feature.strip_prefix("ax-std/"))
@@ -691,6 +796,54 @@ mod tests {
     }
 
     #[test]
+    fn c_config_features_skips_case_define_features() {
+        let features = c_config_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]));
+
+        assert_eq!(
+            features.into_iter().collect::<Vec<_>>(),
+            vec!["alloc".to_string()]
+        );
+    }
+
+    #[test]
+    fn c_defines_extracts_case_define_features() {
+        let defines = c_defines(&strings(&[
+            "alloc",
+            "c-define:ARCEOS_C_TEST_CASE_MEM",
+            "c-define:ARCEOS_C_TEST_CASE_NET_HTTP",
+        ]));
+
+        assert_eq!(
+            defines.into_iter().collect::<Vec<_>>(),
+            vec![
+                "ARCEOS_C_TEST_CASE_MEM".to_string(),
+                "ARCEOS_C_TEST_CASE_NET_HTTP".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn c_compiler_features_keep_case_defines_for_cflags() {
+        let features = c_compiler_features(
+            &strings(&["alloc"]),
+            &strings(&["c-define:ARCEOS_C_TEST_CASE_MEM"]),
+        );
+        let flags = cflags(CFlagsInput {
+            workspace_root: std::path::Path::new("/workspace"),
+            arch: "x86_64",
+            mode: "release",
+            generated_include_dir: std::path::Path::new("/generated"),
+            include_dir: std::path::Path::new("/include"),
+            features: &features,
+            log: Some(LogLevel::Info),
+            dynamic_pie: false,
+        });
+
+        assert!(flags.contains(&"-DAX_CONFIG_ALLOC".to_string()));
+        assert!(flags.contains(&"-DARCEOS_C_TEST_CASE_MEM=1".to_string()));
+    }
+
+    #[test]
     fn map_c_app_features_preserves_driver_features() {
         let features = map_c_app_features(
             &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
@@ -705,12 +858,57 @@ mod tests {
     }
 
     #[test]
+    fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
+        let features =
+            map_c_app_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]), &[]);
+
+        assert_eq!(features, vec!["alloc".to_string()]);
+    }
+
+    #[test]
     fn map_c_app_features_maps_dynamic_platform_for_axlibc() {
         let features = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"]));
 
         assert!(features.contains(&"plat-dyn".to_string()));
         assert!(features.contains(&"alloc".to_string()));
         assert!(features.contains(&"smp".to_string()));
+    }
+
+    #[test]
+    fn dynamic_c_apps_use_pie_for_every_dynamic_platform() {
+        assert!(dynamic_pie_for_c_app(&strings(&["plat-dyn"])));
+        assert!(dynamic_pie_for_c_app(&strings(&["ax-std/plat-dyn"])));
+        assert!(!dynamic_pie_for_c_app(&strings(&["smp"])));
+    }
+
+    #[test]
+    fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
+        let mut env = std::collections::HashMap::new();
+        append_pic_rustflag(&mut env);
+        assert_eq!(
+            env.get("CARGO_ENCODED_RUSTFLAGS"),
+            Some(&PIC_RUSTFLAG.to_string())
+        );
+
+        let mut env = std::collections::HashMap::from([(
+            "CARGO_ENCODED_RUSTFLAGS".to_string(),
+            "-Cforce-frame-pointers=yes".to_string(),
+        )]);
+        append_pic_rustflag(&mut env);
+        assert_eq!(
+            env.get("CARGO_ENCODED_RUSTFLAGS"),
+            Some(&format!("-Cforce-frame-pointers=yes\x1f{PIC_RUSTFLAG}"))
+        );
+
+        let mut env = std::collections::HashMap::from([(
+            "RUSTFLAGS".to_string(),
+            "-Cforce-frame-pointers=yes".to_string(),
+        )]);
+        append_pic_rustflag(&mut env);
+        assert_eq!(
+            env.get("RUSTFLAGS"),
+            Some(&format!("-Cforce-frame-pointers=yes {PIC_RUSTFLAG}"))
+        );
     }
 
     #[test]
@@ -770,17 +968,17 @@ mod tests {
         let mode = "release";
         let build_dir = target_dir.join(target).join(mode).join("build");
         let axhal_out = build_dir.join("ax-hal-abc/out");
-        let q35_out = build_dir.join("ax-plat-x86-qemu-q35-abc/out");
-        let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
+        let loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
+        let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-old/out");
         let runtime_out = build_dir.join("ax-runtime-def/out");
         let unrelated_out = build_dir.join("unrelated-ghi/out");
         fs::create_dir_all(&axhal_out).unwrap();
-        fs::create_dir_all(&q35_out).unwrap();
+        fs::create_dir_all(&loong_out).unwrap();
         fs::create_dir_all(&stale_loong_out).unwrap();
         fs::create_dir_all(&runtime_out).unwrap();
         fs::create_dir_all(&unrelated_out).unwrap();
         fs::write(axhal_out.join("axplat.x"), "").unwrap();
-        fs::write(q35_out.join("axplat.x"), "").unwrap();
+        fs::write(loong_out.join("axplat.x"), "").unwrap();
         fs::write(stale_loong_out.join("axplat.x"), "").unwrap();
         fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
         fs::write(unrelated_out.join("note.txt"), "").unwrap();
@@ -789,12 +987,12 @@ mod tests {
             &target_dir,
             target,
             mode,
-            "x86-qemu-q35",
-            &strings(&["ax-hal/x86-qemu-q35"]),
+            "loongarch64-qemu-virt",
+            &strings(&["ax-hal/loongarch64-qemu-virt"]),
         )
         .unwrap();
 
-        assert_eq!(dirs, vec![q35_out, runtime_out]);
+        assert_eq!(dirs, vec![loong_out, runtime_out]);
     }
 
     #[test]

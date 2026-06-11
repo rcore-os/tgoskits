@@ -69,7 +69,7 @@ flowchart TB
     subgraph Consumers["消费方"]
         Runtime["ax-runtime"]
         Fs["ax-fs / ax-fs-ng"]
-        Net["ax-net / ax-net-ng"]
+        Net["ax-net / ax-net"]
         Starry["starry-kernel"]
         Axvisor["axvisor"]
     end
@@ -115,7 +115,7 @@ pub enum ProbeKind {
 | --- | --- | --- | --- | --- |
 | `probe::static_` | `System { probed_names }` | `ProbeKind::Static` register name | `PlatformDevice` | 平台 crate 自己注册静态 model driver 并在回调中使用平台常量 |
 | `probe::fdt` | `System { fdt, phandle_map, probed }` | compatible + node status | `FdtInfo` + `PlatformDevice` | 保留当前 FDT 能力 |
-| `probe::acpi` | `System { root, probed }` | HID/CID + ACPI device | `AcpiInfo` + `PlatformDevice` | API 存在，返回 unsupported |
+| `probe::acpi` | `System { root, routing, pci, probed }` | HID/CID + ACPI device，或空 `ids` 的全局 table probe | `AcpiInfo` + `PlatformDevice` | ACPI source 初始化、MCFG/GSI controller routing、PCI `_PRT` 和普通设备 IRQ route |
 | `probe::pci` | PCIe controller enumerator | vendor/device/class | endpoint + `PlatformDevice` | 保留当前 PCIe 二阶段 probe |
 
 `probe_pre_kernel()` 只运行 `ProbeLevel::PreKernel`，并通过 backend 分发器执行 Static、FDT、ACPI 中的早期 probe。PCI endpoint 枚举依赖已注册的 PCIe controller，因此仍在普通 probe 阶段触发。
@@ -159,6 +159,63 @@ sequenceDiagram
 
 `ax-runtime` 不再拆 `AllDevices.block/net/display/input/vsock` 后逐个传给模块。它只触发 probe 和领域 service 初始化。
 
+## IRQ 解析与统一注册模型
+
+修改后的 IRQ 路径把平台中断解析收敛到 `ax-driver` probe / 注册阶段。FDT、ACPI、PCI、manual/static 注册都会先得到一个 `BindingInfo`，再经 `register_*_with_info` 注册到 `rdrive`。`BindingInfo` 是纯注册载荷，只公开已经解析好的 `Option<usize>` IRQ number，不再携带 FDT/ACPI/PCI IRQ source 描述，也不直接执行平台解析副作用；解析和 interrupt-controller setup 由 `ax-driver` 的 binding resolver / PCI resolver 完成。`rdrive` 只把 ACPI/FDT probe metadata 交给 resolver，不保存平台 IRQ route/source 记录。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Probe as rdrive probe
+    participant Resolver as ax-driver binding resolver
+    participant Binding as BindingInfo payload
+    participant Pci as ax-driver pci resolver
+    participant Intc as rdif-intc device
+    participant Registry as rdrive typed registry
+    participant Runtime as ax-runtime / domain runtime
+    participant Hal as ax-hal irq
+
+    alt FDT device
+        Probe->>Resolver: binding_info_from_fdt(FdtInfo)
+        Resolver->>Probe: read first interrupts() entry
+        Resolver->>Registry: get Intc by interrupt_parent phandle
+        Registry-->>Resolver: rdif_intc::Intc
+        Resolver->>Intc: setup_irq_by_fdt(specifier)
+        Intc-->>Resolver: irq number
+    else ACPI device
+        Probe->>Resolver: binding_info_from_acpi(AcpiInfo)
+        Resolver->>Probe: read first AcpiGsiRoute
+        Resolver->>Registry: get matching ACPI GSI Intc
+        Registry-->>Resolver: rdif_intc::Intc
+        Resolver->>Intc: setup_irq_by_acpi(route)
+        Intc-->>Resolver: irq number
+    else PCI endpoint
+        Probe->>Resolver: binding_info_from_pci(PciInfo, requirement)
+        Resolver->>Pci: resolve_intx_irq(PciInfo)
+        Pci->>Intc: setup_irq_by_acpi/_by_fdt(route)
+        Pci-->>Resolver: Option<usize>
+    else Manual / Static
+        Probe->>Binding: BindingInfo::empty() / with_irq(...)
+    end
+
+    Resolver-->>Probe: BindingInfo(irq = Option usize)
+    Probe->>Registry: register_*_with_info(device, BindingInfo)
+    Registry-->>Probe: Option<usize>
+    Runtime->>Registry: get PlatformDevice
+    Registry-->>Runtime: device + irq_num()
+    Runtime->>Hal: request_shared_irq(irq, handler)
+```
+
+这个边界让平台解析和中断控制器 setup 留在 `ax-driver` 侧：
+
+- FDT 设备读取第一个 `interrupts()` 项，通过 `interrupt_parent` phandle 找到 `rdif-intc`，并在 probe 时调用 `setup_irq_by_fdt()`。
+- ACPI 设备从 `AcpiInfo` 读取首个 `AcpiGsiRoute`，通过能匹配该 route 的 `rdif-intc` 调用 `setup_irq_by_acpi()`，把 trigger/polarity/vector 等控制器参数配置好后只返回数字 IRQ。
+- PCI 设备先在枚举阶段计算 INTx swizzle route，再由 `ax-driver::pci::resolve_intx_irq()` 按 ACPI route、FDT `interrupt-map`、已注册 legacy route、`interrupt_line` fallback 的顺序解析；ACPI/FDT 命中后仍交给对应 `rdif-intc` 完成 setup。
+- 无中断的设备注册为 `None`；声明了中断但无法解析的 FDT 设备返回 probe error；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
+- `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层只消费 `Option<usize>` / `usize`，不再处理 FDT/ACPI/PCI IRQ source。
+
+网络 IRQ 的 runtime 适配也遵循同一方向。`ax-net-ng` 只暴露网络领域自己的 `EthernetIrqAction`、`EthernetIrqOutcome` 和注册错误类型，不再在公开 registrar trait 中泄漏 `ax-hal::irq::{RawIrqHandler, IrqContext, IrqReturn, IrqError}`。`ax-runtime` 持有 HAL IRQ registration，并把 HAL raw handler trampoline 适配到 `EthernetIrqAction`；因此网络 runtime 只描述“是否需要唤醒 poll 方”，HAL ABI 留在 ArceOS runtime 边界内。
+
 ## Capability Boundary
 
 `rdif-*` 是能力边界，只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载设备 LBA 语义的 submit/poll block capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
@@ -174,7 +231,7 @@ sequenceDiagram
 
 `rdif-block` 的块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
 
-块 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回可用 IRQ source 列表，每个 `IrqSourceInfo { id, queues }` 描述该 source 可能影响的 queue mask；`take_irq_handler(source_id)` 只能取走对应 handler。单 INTx/legacy 设备使用 source `0`，未来 NVMe MSI-X 可以把不同 vector 暴露为不同 source。当前 ArceOS `ax-driver` / `ax-runtime` glue 仍只消费 legacy source `0`，保持一个 block 设备一个 IRQ handler 的注册方式。
+块设备内部的 IRQ 事件仍按 source 和 queue 分离。`Interface::irq_sources()` 返回的是 `rdif-block` 能力边界内的事件 source 列表，每个 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask；它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。当前 ArceOS `ax-driver` glue 只取 legacy source `0` 的 handler，并把它绑定到 `BindingInfo::irq_num()` 已解析出的数字 IRQ；`ax-runtime` 最终只看到 `(irq, handler)`。
 
 `IrqHandler::handle_irq()` 只确认中断源并返回可 poll 的 queue mask，不做 OS wake、不阻塞、不持有 OS 锁，也不在中断上下文推进慢路径完成。收到事件后，runtime 或 task-side wrapper 再对相应 queue 调用 `poll_request()`。
 
@@ -234,7 +291,7 @@ IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执
 | --- | --- | --- | --- |
 | Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`axplat-dyn`、`rdrive::PlatformDevice` |
 | Capability Boundary | `drivers/interface/rdif-*` | `rdif-base`、小型错误和事件类型 | 平台、runtime、任务调度 |
-| OS Glue | `platforms/axplat-dyn/src/drivers/*` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ 注册、DMA op | 上层 FS/NET 策略 |
+| OS Glue | `drivers/ax-driver` 或平台 crate | `rdrive::module_driver!`、FDT/PCI/Static probe、iomap、IRQ setup、DMA op | 上层 FS/NET 策略 |
 | Runtime | `drivers/*/rd-*`，块设备除外 | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
 
 Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::register(...)` 注册。除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
@@ -333,7 +390,7 @@ src/
 Phase 1: `rdrive` backend 分发
 
 - 增加 `PlatformSource::{Static,Fdt,Acpi}` 和 `ProbeKind::{Static,Fdt,Acpi,Pci}`。
-- 新增 `probe::static_` 与 `probe::acpi` 模块；ACPI 第一版返回 unsupported error。
+- 新增 `probe::static_` 与 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
 - `probe_pre_kernel()` 和 `probe_all()` 改为 backend 分发，保留当前 FDT 与 PCI 能力。
 - `Manager` 保持只管理 register 和 typed device registry。
 
@@ -351,7 +408,7 @@ Phase 3: block volume service
 
 Phase 4: NET / NET-NG 硬切
 
-- `ax-net` / `ax-net-ng` 从 `AxNetDevice` 切到 `rd-net` 或 net service。
+- `ax-net` / `ax-net` 从 `AxNetDevice` 切到 `rd-net` 或 net service。
 - DHCP/static IP policy 留在 net service 或 NET/NET-NG，不回到 platform glue。
 
 Phase 5: display / input / vsock 硬切
@@ -388,7 +445,7 @@ yarn build
 cargo xtask clippy --package rdrive
 cargo xtask clippy --package ax-runtime
 cargo xtask clippy --package ax-fs-ng
-cargo xtask clippy --package ax-net-ng
+cargo xtask clippy --package ax-net
 cargo xtask clippy --package starry-kernel
 cargo xtask clippy --package axvisor
 ```
@@ -406,6 +463,6 @@ rg "rdrive::get_|rdrive::get_one|rdrive::get_list" os/arceos/modules os/StarryOS
 
 - StarryOS QEMU smoke。
 - ext4 rootfs 启动与读写。
-- `net-ng` / DHCP。
-- `qemu-aarch64-plat-dyn` 动态平台。
+- `net` / DHCP。
+- aarch64 QEMU 动态平台配置。
 - Axvisor QEMU / GIC / `rdif-intc` 路径。

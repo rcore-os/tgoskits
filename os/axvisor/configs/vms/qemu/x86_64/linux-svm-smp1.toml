@@ -27,9 +27,9 @@ kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
-# SVM phase-1 smoke keeps a dedicated command line so later stages can
-# adjust SVM bring-up independently from the VMX baseline.
-cmdline = "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi nox2apic tsc=unstable initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0 dumb"
+# Linux direct boot needs an explicit cmdline; keep no_timer_check from the old
+# default to avoid PIT/HPET calibration stalls when Linux marks the TSC unstable.
+cmdline = "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0 dumb"
 
 ## The path of the disk image.
 # disk_path = ""
@@ -75,6 +75,9 @@ passthrough_addresses = [
   [0xfe00_0000, 0x00c0_0000],
   # Linux probes a q35/ICH system MMIO page at 0xfed8_03c0 after the PIT/HLT path is fixed.
   [0xfed8_0000, 0x1000],
+  # QEMU q35 may assign the virtio PCI 64-bit MMIO BAR differently across hosts.
+  [0x70_0000_0000, 0x10_0000],
+  [0x3800_0000_0000, 0x10_0000],
 ]
 
 # Devices that are not desired to be passed through to the guest

@@ -20,8 +20,8 @@ All builds, runs, and tests go through `cargo xtask` (implemented in `scripts/ax
 
 ```bash
 # ArceOS
-cargo xtask arceos qemu --package ax-helloworld --arch aarch64
-cargo xtask arceos build --package ax-helloworld --arch riscv64
+cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
 
 # StarryOS (prepare rootfs once first)
 cargo xtask starry rootfs --arch aarch64
@@ -85,7 +85,7 @@ Organized by device type: `blk/`, `net/`, `pci/`, `intc/`, `serial/`, `usb/`, `s
 
 ### Platform (`platform/`)
 
-Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv64-visionfive2`, `x86-qemu-q35`; RISC-V QEMU uses the dynamic platform path.
+Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, and RISC-V / LoongArch static board packages; RISC-V QEMU, x86_64 QEMU, and Axvisor x86_64 use the dynamic platform path.
 
 ## CI
 
@@ -101,6 +101,8 @@ Board-level platform crates: `axplat-dyn` (dynamic dispatch), `somehal`, `riscv6
 
 - PR titles: Conventional Commits `type(scope): content`, e.g. `feat(axbuild): add board test flow`, `fix(starry-process): correct tty cleanup`
 - PR titles in English, bodies in Chinese
+- For any PR review, fully read (完整阅读) `.claude/skills/review-single-pr/SKILL.md` first; `AGENTS.md` and that skill are the review source of truth.
+- Before deciding merge readiness, create a todo/checklist from the full `review-single-pr` requirements and verify each applicable item as satisfied, not applicable with reason, or blocking with evidence.
 - Do not silence clippy warnings with `allow`; fix the root cause
 - Do not add agent/AI branding or signatures to commits/PRs
 - Read and strictly follow all conventions in AGENTS.md

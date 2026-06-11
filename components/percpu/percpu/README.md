@@ -43,8 +43,8 @@ cargo fmt --all
 # Run clippy
 cargo clippy --all-targets --all-features
 
-# Run tests
-cargo test --all-features
+# Run Linux host tests
+cargo test --features host-test,non-zero-vma
 
 # Build documentation
 cargo doc --no-deps

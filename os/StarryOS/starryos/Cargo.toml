@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.13"
+version = "0.5.15"
 
 [features]
 default = []
@@ -22,7 +22,7 @@ qemu = [
   "ax-feat/rtc",
   "ax-feat/display",
   "starry-kernel/input",
-  "starry-kernel/vsock", # auxilary features
+  "starry-kernel/vsock", # auxiliary features
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 
@@ -46,6 +46,7 @@ plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 cntv-timer = ["ax-feat/cntv-timer", "axplat-dyn?/cntv-timer", "ax-hal/cntv-timer"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
+std-compat = ["starry-kernel/std-compat"]
 vf2 = ["ax-hal/riscv64-visionfive2"]
 
 [[bin]]
@@ -58,12 +59,13 @@ path = "xtask/main.rs"
 
 [dependencies]
 ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
+ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { version = "0.5.13", path = "../kernel", default-features = false, features = ["dev-log", "ext4"] }
 
-[target.'cfg(any(windows,unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow = "1.0"
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }

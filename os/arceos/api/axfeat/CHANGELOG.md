@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.18...ax-feat-v0.5.19) - 2026-06-11
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-driver, ax-config, ax-hal, ax-task, ax-fs-ng, ax-ipi, ax-sync, ax-display, ax-fs, ax-input, ax-net-ng, ax-net, ax-runtime
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.17...ax-feat-v0.5.18) - 2026-06-09
+
+### Added
+
+- *(starry-kernel)* eBPF kernel runtime (tracepoint / kprobe / perf) ([#886](https://github.com/rcore-os/tgoskits/pull/886))
+
 ## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.16...ax-feat-v0.5.17) - 2026-06-03
 
 ### Added

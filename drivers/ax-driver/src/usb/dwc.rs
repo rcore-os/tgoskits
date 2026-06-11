@@ -13,10 +13,13 @@ use crab_usb::{
 };
 use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{
+    probe::OnProbeError,
+    register::{FdtInfo, ProbeFdt},
+};
 use rockchip_pm::{PowerDomain, RockchipPM};
 
-use super::{PlatformDeviceUsbHost, decode_fdt_irq, usb_kernel};
+use super::{ProbeFdtUsbHost, usb_kernel};
 use crate::{
     mmio::iomap,
     soc::{RockchipPinCtrl, rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
@@ -87,7 +90,6 @@ struct UsbdpPhyResources {
 
 struct DwcResources {
     ctrl: RegFixed,
-    irq_num: Option<usize>,
     power_domains: Vec<usize>,
     clocks: Vec<ClockSpec>,
     ctrl_resets: Vec<ResetSpec>,
@@ -96,7 +98,8 @@ struct DwcResources {
     params: DwcParams,
 }
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
     match prop_str(info.node.as_node(), "dr_mode") {
         Some("host") => {}
         Some(mode) => {
@@ -113,7 +116,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     }
 
     let fdt = live_fdt()?;
-    let resources = collect_resources(&info, &fdt)?;
+    let resources = collect_resources(info, &fdt)?;
 
     enable_power_domains(&resources.power_domains)?;
     enable_clocks(&resources.clocks);
@@ -168,11 +171,11 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         ))
     })?;
 
-    plat_dev.register_usb_host(DRIVER_NAME, host, resources.irq_num);
+    let node_name = probe.info().node.name().to_string();
+    let irq = probe.register_usb_host(DRIVER_NAME, host)?;
     info!(
         "DWC xHCI driver initialized successfully for {} with irq {:?}",
-        info.node.name(),
-        resources.irq_num
+        node_name, irq
     );
     Ok(())
 }
@@ -184,7 +187,6 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<DwcResources, OnPr
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let irq_num = decode_fdt_irq(&info.interrupts());
     let (usb2_port, usbdp_port) = parse_phys(info.node.as_node())?;
     let usb2 = collect_usb2_phy(fdt, usb2_port)?;
     let usbdp = collect_usbdp_phy(fdt, usbdp_port)?;
@@ -199,7 +201,6 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<DwcResources, OnPr
 
     Ok(DwcResources {
         ctrl,
-        irq_num,
         power_domains: parse_power_domains(info.node.as_node())?,
         clocks,
         ctrl_resets: parse_resets(info.node)?,

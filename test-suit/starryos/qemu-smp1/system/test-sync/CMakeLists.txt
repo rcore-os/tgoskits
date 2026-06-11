@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-sync-basic C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-sync-basic src/main.c)
+target_compile_options(test-sync-basic PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-sync-basic RUNTIME DESTINATION usr/bin/starry-test-suit)

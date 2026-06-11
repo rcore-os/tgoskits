@@ -13,6 +13,7 @@ mod build;
 mod clippy;
 mod config;
 pub mod context;
+pub mod image;
 mod rootfs;
 pub mod starry;
 mod support;
@@ -68,6 +69,8 @@ enum Commands {
         #[command(subcommand)]
         command: backtrace::Command,
     },
+    /// TGOS image management
+    Image(image::ImageArgs),
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -98,6 +101,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Board { command } => board::execute(command).await,
         Commands::Config { command } => config::execute(command),
         Commands::Backtrace { command } => backtrace::execute(command),
+        Commands::Image(args) => image::run(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,

@@ -479,11 +479,40 @@ pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> AxResult<(
     Ok(())
 }
 
+// The `sched:sched_process_exit` tracepoint is defined here, next to its sole
+// emission site in `do_exit`, so the event schema and the fast-path call stay
+// together. Registration into the global `.tracepoint` section is by link
+// section, so the definition's module location is immaterial to discovery.
+ktracepoint::define_event_trace!(
+    sched_process_exit,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(sched),
+    TP_PROTO(tid: u64, exit_code: i32),
+    TP_STRUCT__entry {
+        tid: u64,
+        exit_code: i32,
+    },
+    TP_fast_assign {
+        tid: tid,
+        exit_code: exit_code,
+    },
+    TP_ident(__entry),
+    TP_printk({
+        alloc::format!(
+            "tid={} exit_code={}",
+            __entry.tid,
+            __entry.exit_code,
+        )
+    })
+);
+
 pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current();
     let thr = curr.as_thread();
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
+
+    trace_sched_process_exit(curr.id().as_u64(), exit_code);
 
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the
@@ -506,6 +535,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     if process.exit_thread(thr.tid(), exit_code) {
+        // AIO contexts pin the process address space and may have worker tasks
+        // waiting on outstanding requests. Tear them down before releasing the
+        // process address-space slot.
+        crate::syscall::cleanup_aio_contexts_for_pid(process.pid());
+
         // Close all file descriptors before marking the process as exited.
         // This ensures pipe write ends and other resources are properly released,
         // so parent processes blocking on pipe reads will receive EOF.

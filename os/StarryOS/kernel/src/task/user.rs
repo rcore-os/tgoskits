@@ -8,7 +8,7 @@ use syscalls::Sysno;
 use super::{
     AsThread, SyscallRestartInfo, SyscallTraceState, TimerState, check_signals,
     ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
-    unblock_next_signal,
+    unblock_next_signal, wait_existing_ptrace_stop_current,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
@@ -25,15 +25,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
 
             let thr = curr.as_thread();
-            if thr.proc_data.ptrace_stop_signo().is_some() {
+            if thr.proc_data.ptrace_stop_signo_for(thr.tid()).is_some() {
+                wait_existing_ptrace_stop_current(thr, &mut uctx);
+            } else if thr.tid() == thr.proc_data.proc.pid()
+                && thr.proc_data.ptrace_stop_signo().is_some()
+            {
                 let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
             }
             while !thr.pending_exit() {
-                if thr.proc_data.is_ptrace_singlestep()
+                if thr.proc_data.is_ptrace_singlestep_for(thr.tid())
                     && (thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached())
                 {
                     #[cfg(target_arch = "riscv64")]
-                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, &mut uctx);
+                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, thr.tid(), &mut uctx);
                 }
 
                 let reason = uctx.run();
@@ -46,14 +50,18 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
 
                 match reason {
                     ReturnReason::Syscall => {
-                        let trace_state = thr.proc_data.take_ptrace_syscall_trace();
+                        let tid = thr.tid();
+                        let trace_state = thr.proc_data.take_ptrace_syscall_trace_for(tid);
                         if matches!(trace_state, SyscallTraceState::Entry)
                             && ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
                         {
-                            match thr.proc_data.take_ptrace_syscall_trace() {
-                                SyscallTraceState::Entry | SyscallTraceState::Exit => thr
-                                    .proc_data
-                                    .set_ptrace_syscall_trace_state(SyscallTraceState::Exit),
+                            match thr.proc_data.take_ptrace_syscall_trace_for(tid) {
+                                SyscallTraceState::Entry | SyscallTraceState::Exit => {
+                                    thr.proc_data.set_ptrace_syscall_trace_state_for(
+                                        tid,
+                                        SyscallTraceState::Exit,
+                                    )
+                                }
                                 SyscallTraceState::None => {}
                             }
                         }
@@ -68,8 +76,14 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
 
                         handle_syscall(&mut uctx);
+                        if thr.proc_data.has_ptrace_pending_event_for(tid)
+                            && let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                        {
+                            continue;
+                        }
                         if matches!(
-                            thr.proc_data.take_ptrace_syscall_trace(),
+                            thr.proc_data.take_ptrace_syscall_trace_for(tid),
                             SyscallTraceState::Exit
                         ) {
                             let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
@@ -98,11 +112,36 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     #[allow(unused_labels)]
                     ReturnReason::Exception(exc_info) => 'exc: {
                         let kind = exc_info.kind();
+                        // A uprobe plants an `int3` in user text (delivered as a
+                        // #BP / Breakpoint exception) and completes its
+                        // out-of-line single-step via a #DB / Debug exception.
+                        // Route both to this process' uprobe manager before any
+                        // ptrace / signal handling: if a uprobe owns the
+                        // faulting address it fixes up `uctx` (sets the
+                        // out-of-line PC + single-step, or restores PC after the
+                        // step) and we resume directly. If not, fall through.
+                        match kind {
+                            ExceptionKind::Breakpoint
+                                if crate::uprobe::break_uprobe_handler(&mut uctx).is_some() =>
+                            {
+                                break 'exc;
+                            }
+                            // x86_64 completes the out-of-line single-step via a
+                            // #DB; other arches handle stepping inside the
+                            // breakpoint path, so the debug hook is x86_64-only.
+                            #[cfg(target_arch = "x86_64")]
+                            ExceptionKind::Debug
+                                if crate::uprobe::debug_uprobe_handler(&mut uctx).is_some() =>
+                            {
+                                break 'exc;
+                            }
+                            _ => {}
+                        }
                         if matches!(kind, ExceptionKind::Breakpoint)
                             && (thr.proc_data.is_ptrace_traceme()
                                 || thr.proc_data.is_ptrace_attached())
                         {
-                            let saved_insn = thr.proc_data.take_ptrace_ss_saved_insn();
+                            let saved_insn = thr.proc_data.take_ptrace_ss_saved_insn_for(thr.tid());
                             if let Some((addr, insn)) = saved_insn {
                                 if addr == uctx.ip() {
                                     let aspace = thr.proc_data.aspace();
@@ -114,7 +153,10 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                     #[cfg(target_arch = "riscv64")]
                                     ax_runtime::hal::cpu::asm::flush_icache_all();
                                 } else {
-                                    thr.proc_data.set_ptrace_ss_saved_insn(Some((addr, insn)));
+                                    thr.proc_data.set_ptrace_ss_saved_insn_for(
+                                        thr.tid(),
+                                        Some((addr, insn)),
+                                    );
                                 }
                             }
                             if let Some(_resume_sig) =
@@ -143,7 +185,17 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 Signo::SIGBUS
                             }
                             ExceptionKind::Breakpoint => Signo::SIGTRAP,
-                            ExceptionKind::IllegalInstruction => Signo::SIGILL,
+                            ExceptionKind::IllegalInstruction => {
+                                // AArch64 EL0 reads of ID_AA64*_EL1 (CPU feature
+                                // detection, e.g. the Go runtime) trap as EC=0 /
+                                // IllegalInstruction. Emulate them like Linux
+                                // instead of killing the program with SIGILL.
+                                #[cfg(target_arch = "aarch64")]
+                                if unsafe { uctx.emulate_mrs_id_reg() } {
+                                    break 'exc;
+                                }
+                                Signo::SIGILL
+                            }
                             _ => Signo::SIGTRAP,
                         };
                         raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
@@ -246,12 +298,12 @@ fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
 
 #[cfg(target_arch = "loongarch64")]
 fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
+    _exc_info.ecode as u64
 }
 
 #[cfg(target_arch = "loongarch64")]
 fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
-    0
+    _exc_info.esubcode as u64
 }
 
 #[cfg(target_arch = "x86_64")]

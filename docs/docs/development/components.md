@@ -63,7 +63,7 @@ flowchart TD
    例如 `ax-hal`、`ax-task`、`ax-driver`、`ax-net`
 
 3. 通过平台和配置接到最终系统  
-   例如 `axplat-*`、`platforms/ax-plat-x86-qemu-q35`、Axvisor 的 `configs/board/*.toml`
+   例如 `axplat-*`、`platforms/axplat-dyn`、Axvisor 的 `configs/board/*.toml`
 
 ### 2.1 依赖统计
 
@@ -119,8 +119,8 @@ flowchart TD
 
 | 改动位置 | 第一步验证 | 第二步验证 |
 | --- | --- | --- |
-| `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package ax-helloworld --arch riscv64` |
-| `os/arceos/modules/*` | `cargo xtask arceos run --package ax-helloworld --arch riscv64` | 需要功能时换成 `ax-httpserver --net` 或 `ax-shell --blk` |
+| `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
+| `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 需要功能时换成 `arceos-httpserver --net` 或 `arceos-shell --blk` |
 | `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo starry test qemu --target riscv64` |
 | `virtualization/axvm`、`virtualization/axvcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
 
@@ -283,14 +283,14 @@ my_component = { path = "components/my_component" }
 
 ## 6. ArceOS 集成
 
-在 ArceOS 中集成组件的典型链路为：在 `components/` 或 `os/arceos/modules/` 实现复用逻辑，若需作为可选能力暴露则接入 `os/arceos/api/axfeat`，若需直接供应用使用则接入 `os/arceos/ulib/axstd` 或 `ax-libc`，最后通过 `os/arceos/examples/*` 或 `test-suit/arceos/*` 进行验证。
+在 ArceOS 中集成组件的典型链路为：在 `components/` 或 `os/arceos/modules/` 实现复用逻辑，若需作为可选能力暴露则接入 `os/arceos/api/axfeat`，若需直接供应用使用则接入 `os/arceos/ulib/axstd` 或 `ax-libc`，最后通过 `apps/arceos/*` 或 `test-suit/arceos/*` 进行验证。
 
 最常用的三个验证入口：
 
 ```bash
-cargo xtask arceos run --package ax-helloworld --arch riscv64
-cargo xtask arceos run --package ax-httpserver --arch riscv64 --net
-cargo xtask arceos run --package ax-shell --arch riscv64 --blk
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
+cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
+cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 ```
 
 各层适用场景：
@@ -298,7 +298,7 @@ cargo xtask arceos run --package ax-shell --arch riscv64 --blk
 - 仅修改内部实现：通常只需修改 `components/` 或 `modules/`
 - 新增 feature 开关：修改 `os/arceos/api/axfeat`
 - 新增应用侧 API：修改 `os/arceos/ulib/axstd` 或 `ax-libc`
-- 新增示例：添加至 `os/arceos/examples/`
+- 新增示例：添加至 `apps/arceos/`
 
 ## 7. StarryOS 集成
 
@@ -347,7 +347,7 @@ cargo xtask qemu \
 若修改涉及板级能力，还需同时关注：
 
 - `platforms/*`
-- `platforms/ax-plat-x86-qemu-q35`
+- `platforms/axplat-dyn`
 - `os/axvisor/configs/board/*.toml`
 
 ## 9. 测试与质量检查

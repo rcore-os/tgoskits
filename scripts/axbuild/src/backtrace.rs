@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use object::{Object, ObjectSymbol, SymbolKind};
 use regex::Regex;
 
 #[derive(Subcommand)]
@@ -61,7 +62,7 @@ pub fn execute(command: Command) -> anyhow::Result<()> {
 
 const HOST_SYMBOLIZE_HEADER: &str = "=== host backtrace symbolize ===";
 
-/// Resolved ELF path for an ArceOS Rust test package built via the workspace `target/` dir.
+/// Resolved ELF path for an ArceOS Rust package built via the workspace `target/` dir.
 pub(crate) fn arceos_rust_elf_path(
     workspace_root: &Path,
     target: &str,
@@ -74,6 +75,30 @@ pub(crate) fn arceos_rust_elf_path(
         .join(target)
         .join(profile)
         .join(package)
+}
+
+/// Resolved ELF path for an ArceOS std test package built via the workspace `target/` dir.
+pub(crate) fn std_test_elf_path(
+    workspace_root: &Path,
+    target: &str,
+    package: &str,
+    debug: bool,
+) -> PathBuf {
+    arceos_rust_elf_path(workspace_root, std_test_target_dir(target), package, debug)
+}
+
+fn std_test_target_dir(target: &str) -> &str {
+    if target.starts_with("x86_64-") {
+        "x86_64-unknown-linux-musl"
+    } else if target.starts_with("aarch64-") {
+        "aarch64-unknown-linux-musl"
+    } else if target.starts_with("riscv64") {
+        "riscv64gc-unknown-linux-musl"
+    } else if target.starts_with("loongarch64-") {
+        "loongarch64-unknown-linux-musl"
+    } else {
+        target
+    }
 }
 
 fn case_name_kind_hint(case_name: &str) -> Option<&'static str> {
@@ -183,7 +208,7 @@ pub(crate) struct BacktraceSymbolizeSession {
     header_printed: AtomicBool,
     symbolized: AtomicBool,
     failed: AtomicBool,
-    loader: OnceLock<Option<addr2line::Loader>>,
+    symbolizer: OnceLock<Option<HostSymbolizer>>,
 }
 
 impl BacktraceSymbolizeSession {
@@ -205,8 +230,8 @@ impl BacktraceSymbolizeSession {
             );
             return None;
         }
-        let loader = match addr2line::Loader::new(elf) {
-            Ok(loader) => Some(loader),
+        let symbolizer = match HostSymbolizer::new(elf) {
+            Ok(symbolizer) => Some(symbolizer),
             Err(err) => {
                 eprintln!(
                     "warning: failed to load symbols from {} for stream backtrace symbolize: {err}",
@@ -216,23 +241,23 @@ impl BacktraceSymbolizeSession {
             }
         };
         let once = OnceLock::new();
-        once.set(loader).ok(); // always succeeds (first set)
+        once.set(symbolizer).ok(); // always succeeds (first set)
         Some(Arc::new(Self {
             elf: elf.to_path_buf(),
             case_name: case_name.to_string(),
             header_printed: AtomicBool::new(false),
             symbolized: AtomicBool::new(false),
             failed: AtomicBool::new(false),
-            loader: once,
+            symbolizer: once,
         }))
     }
 
-    /// Get or lazily initialize the cached Loader.
-    fn loader(&self) -> Option<&addr2line::Loader> {
+    /// Get or lazily initialize the cached symbolizer.
+    fn symbolizer(&self) -> Option<&HostSymbolizer> {
         let opt = self
-            .loader
-            .get_or_init(|| match addr2line::Loader::new(&self.elf) {
-                Ok(loader) => Some(loader),
+            .symbolizer
+            .get_or_init(|| match HostSymbolizer::new(&self.elf) {
+                Ok(symbolizer) => Some(symbolizer),
                 Err(err) => {
                     eprintln!(
                         "warning: failed to load symbols from {} for stream backtrace symbolize: \
@@ -271,7 +296,7 @@ impl BacktraceSymbolizeSession {
             }
         };
 
-        let Some(loader) = self.loader() else {
+        let Some(symbolizer) = self.symbolizer() else {
             self.failed.store(true, Ordering::SeqCst);
             return;
         };
@@ -284,7 +309,7 @@ impl BacktraceSymbolizeSession {
         let mut stdout = std::io::stdout().lock();
         if let Err(err) = write_symbolized_blocks(
             &mut stdout,
-            loader,
+            symbolizer,
             &blocks,
             kind_filter.as_deref(),
             true,
@@ -331,13 +356,20 @@ pub(crate) fn symbolize_text_to_string(
         return Ok(None);
     }
 
-    let loader = addr2line::Loader::new(elf_path).map_err(|err| {
+    let symbolizer = HostSymbolizer::new(elf_path).map_err(|err| {
         anyhow::anyhow!("failed to load symbols from {}: {err}", elf_path.display())
     })?;
     let mut out = Vec::new();
     writeln!(&mut out, "{HOST_SYMBOLIZE_HEADER}")?;
     let kind_filter = infer_kind_filter(case_name, &blocks);
-    write_symbolized_blocks(&mut out, &loader, &blocks, kind_filter.as_deref(), true, 0)?;
+    write_symbolized_blocks(
+        &mut out,
+        &symbolizer,
+        &blocks,
+        kind_filter.as_deref(),
+        true,
+        0,
+    )?;
     Ok(Some(String::from_utf8(out)?))
 }
 
@@ -451,8 +483,8 @@ pub(crate) fn maybe_symbolize_after_qemu(
     };
 
     let kind_filter = infer_kind_filter(case_name, &blocks);
-    let loader = match addr2line::Loader::new(elf) {
-        Ok(loader) => loader,
+    let symbolizer = match HostSymbolizer::new(elf) {
+        Ok(symbolizer) => symbolizer,
         Err(err) => {
             eprintln!(
                 "warning: failed to load symbols from {} for backtrace symbolize: {err}",
@@ -468,7 +500,7 @@ pub(crate) fn maybe_symbolize_after_qemu(
     let mut stdout = std::io::stdout().lock();
     if let Err(err) = write_symbolized_blocks(
         &mut stdout,
-        &loader,
+        &symbolizer,
         &blocks,
         kind_filter.as_deref(),
         true,
@@ -780,7 +812,7 @@ fn symbolize_cli(args: SymbolizeArgs) -> anyhow::Result<()> {
         bail!("no backtrace blocks found");
     }
 
-    let loader = addr2line::Loader::new(&args.elf).map_err(|err| {
+    let symbolizer = HostSymbolizer::new(&args.elf).map_err(|err| {
         anyhow::anyhow!(
             "failed to load dwarf/symbols from {}: {}",
             args.elf.display(),
@@ -790,7 +822,7 @@ fn symbolize_cli(args: SymbolizeArgs) -> anyhow::Result<()> {
 
     write_symbolized_blocks(
         &mut std::io::stdout().lock(),
-        &loader,
+        &symbolizer,
         &blocks,
         args.kind.as_deref(),
         args.adjust_ip,
@@ -812,7 +844,7 @@ fn ip_adjustment_for_arch(arch: Option<&str>) -> u64 {
 
 fn write_symbolized_blocks(
     out: &mut impl Write,
-    loader: &addr2line::Loader,
+    symbolizer: &HostSymbolizer,
     blocks: &[Block],
     kind_filter: Option<&str>,
     adjust_ip: bool,
@@ -836,12 +868,12 @@ fn write_symbolized_blocks(
         let adj = ip_adjustment_for_arch(block.arch.as_deref());
         for frame in &block.frames {
             let ip = if adjust_ip && frame.ip > 0 {
-                frame.ip - adj
+                frame.ip.checked_sub(adj).unwrap_or(frame.ip)
             } else {
                 frame.ip
             };
             let ip = ip.wrapping_add_signed(ip_bias);
-            let symbolized = maybe_symbolize_with_loader(loader, ip);
+            let symbolized = symbolizer.maybe_symbolize(ip);
 
             match (&frame.fp, symbolized) {
                 (Some(fp), Some(sym)) => {
@@ -871,42 +903,124 @@ fn write_symbolized_blocks(
     Ok(())
 }
 
-fn maybe_symbolize_with_loader(loader: &addr2line::Loader, ip: u64) -> Option<String> {
-    if ip == 0 {
-        return None;
-    }
-    symbolize_with_loader(loader, ip)
+#[derive(Debug, Clone)]
+struct TextSymbol {
+    address: u64,
+    size: u64,
+    name: String,
 }
 
-fn symbolize_with_loader(loader: &addr2line::Loader, ip: u64) -> Option<String> {
-    let mut frames = loader.find_frames(ip).ok()?;
-    let mut out = Vec::new();
-    while let Some(frame) = frames.next().ok()? {
-        let name = frame
-            .function
-            .as_ref()
-            .and_then(|f| f.raw_name().ok())
-            .map(|s| rustc_demangle::demangle(s.as_ref()).to_string());
-        let loc = frame.location.as_ref().and_then(|l| {
-            let file = l.file?;
-            let line = l.line?;
-            Some(format!("{file}:{line}"))
-        });
-        match (name, loc) {
-            (Some(name), Some(loc)) => out.push(format!("{name} ({loc})")),
-            (Some(name), None) => out.push(name),
-            (None, Some(loc)) => out.push(loc),
-            (None, None) => {}
-        }
-    }
-    if out.is_empty() {
-        let sym = loader
-            .find_symbol(ip)
-            .map(|s| rustc_demangle::demangle(s).to_string());
-        return sym;
+struct HostSymbolizer {
+    loader: addr2line::Loader,
+    text_symbols: Vec<TextSymbol>,
+}
+
+impl HostSymbolizer {
+    fn new(elf: &Path) -> anyhow::Result<Self> {
+        let loader = addr2line::Loader::new(elf).map_err(|err| anyhow::anyhow!("{err}"))?;
+        let text_symbols = load_text_symbols(elf)?;
+        Ok(Self {
+            loader,
+            text_symbols,
+        })
     }
 
-    Some(out.join(" ; "))
+    fn maybe_symbolize(&self, ip: u64) -> Option<String> {
+        if ip == 0 {
+            return None;
+        }
+        self.symbolize(ip)
+    }
+
+    fn symbolize(&self, ip: u64) -> Option<String> {
+        let mut frames = self.loader.find_frames(ip).ok()?;
+        let mut out = Vec::new();
+        while let Some(frame) = frames.next().ok()? {
+            let name = frame.function.as_ref().and_then(|f| {
+                let raw = f.raw_name().ok()?;
+                self.display_symbol_name(raw.as_ref(), ip)
+            });
+            let loc = frame.location.as_ref().and_then(|l| {
+                let file = l.file?;
+                let line = l.line?;
+                Some(format!("{file}:{line}"))
+            });
+            match (name, loc) {
+                (Some(name), Some(loc)) => out.push(format!("{name} ({loc})")),
+                (Some(name), None) => out.push(name),
+                (None, Some(loc)) => out.push(loc),
+                (None, None) => {}
+            }
+        }
+        if out.is_empty() {
+            let sym = self
+                .loader
+                .find_symbol(ip)
+                .and_then(|name| self.display_symbol_name(name, ip))
+                .or_else(|| self.nearest_text_symbol(ip));
+            return sym;
+        }
+
+        Some(out.join(" ; "))
+    }
+
+    fn display_symbol_name(&self, raw: &str, ip: u64) -> Option<String> {
+        if is_compiler_local_symbol(raw) {
+            self.nearest_text_symbol(ip)
+        } else {
+            Some(rustc_demangle::demangle(raw).to_string())
+        }
+    }
+
+    fn nearest_text_symbol(&self, ip: u64) -> Option<String> {
+        let idx = self.text_symbols.partition_point(|sym| sym.address <= ip);
+        for sym in self.text_symbols[..idx].iter().rev() {
+            if sym.size == 0 || ip < sym.address.saturating_add(sym.size) {
+                return Some(rustc_demangle::demangle(&sym.name).to_string());
+            }
+        }
+        None
+    }
+}
+
+fn load_text_symbols(elf: &Path) -> anyhow::Result<Vec<TextSymbol>> {
+    let bytes = fs::read(elf)?;
+    let file = object::File::parse(bytes.as_slice())?;
+    let mut symbols = Vec::new();
+
+    for sym in file.symbols() {
+        if sym.kind() != SymbolKind::Text || sym.address() == 0 {
+            continue;
+        }
+        let Ok(name) = sym.name() else {
+            continue;
+        };
+        if is_compiler_local_symbol(name) {
+            continue;
+        }
+        symbols.push(TextSymbol {
+            address: sym.address(),
+            size: sym.size(),
+            name: name.to_string(),
+        });
+    }
+
+    symbols.sort_by(|a, b| {
+        a.address
+            .cmp(&b.address)
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    symbols.dedup_by(|a, b| a.address == b.address && a.name == b.name);
+    Ok(symbols)
+}
+
+fn is_compiler_local_symbol(name: &str) -> bool {
+    let name = name.trim();
+    // Covered target-local labels include LLVM/GNU `.L*` labels observed on
+    // x86_64/riscv64/loongarch64 and ARM/AArch64 mapping symbols such as
+    // `$x`/`$d`; all are rendering noise for host backtrace output.
+    name.starts_with(".L") || name.starts_with('$')
 }
 
 #[cfg(test)]
@@ -1066,8 +1180,8 @@ BACKTRACE_END
         let bias = file_ip as i64 - runtime_ip as i64;
         let ip_for_file = runtime_ip.wrapping_add_signed(bias);
 
-        let loader = addr2line::Loader::new(&exe).unwrap();
-        let sym = symbolize_with_loader(&loader, ip_for_file).unwrap();
+        let symbolizer = HostSymbolizer::new(&exe).unwrap();
+        let sym = symbolizer.symbolize(ip_for_file).unwrap();
         assert!(sym.contains("bt_symbolize_probe"));
     }
 
@@ -1108,23 +1222,104 @@ BACKTRACE_END
 
     #[test]
     fn arceos_rust_elf_path_uses_release_profile() {
-        let path = arceos_rust_elf_path(
+        let path = arceos_rust_elf_path(Path::new("/ws"), "x86_64-unknown-none", "app", false);
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-none/release/app")
+        );
+    }
+
+    #[test]
+    fn std_test_elf_path_uses_release_profile() {
+        let path = std_test_elf_path(
             Path::new("/ws"),
             "x86_64-unknown-none",
-            "arceos-backtrace-raw-normal",
+            "arceos-test-suit",
             false,
         );
         assert_eq!(
             path,
-            PathBuf::from("/ws/target/x86_64-unknown-none/release/arceos-backtrace-raw-normal")
+            PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
+        );
+    }
+
+    #[test]
+    fn std_test_elf_path_maps_arceos_none_target_to_std_target_dir() {
+        let path = std_test_elf_path(
+            Path::new("/ws"),
+            "x86_64-unknown-none",
+            "arceos-test-suit",
+            false,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
         );
     }
 
     #[test]
     fn symbolize_skips_zero_ip() {
         let exe = std::env::current_exe().unwrap();
-        let loader = addr2line::Loader::new(&exe).unwrap();
-        assert!(maybe_symbolize_with_loader(&loader, 0).is_none());
+        let symbolizer = HostSymbolizer::new(&exe).unwrap();
+        assert!(symbolizer.maybe_symbolize(0).is_none());
+    }
+
+    #[test]
+    fn write_symbolized_blocks_tolerates_adjustment_exceeding_ip() {
+        let exe = std::env::current_exe().unwrap();
+        let symbolizer = HostSymbolizer::new(&exe).unwrap();
+        let blocks = parse_blocks(
+            "BACKTRACE_BEGIN kind=raw arch=riscv64\nBT 0 ip=0x1 fp=0x2\nBACKTRACE_END\n",
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        write_symbolized_blocks(&mut out, &symbolizer, &blocks, None, true, 0).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("BACKTRACE_BLOCK 0 kind=raw arch=riscv64"));
+        assert!(out.contains("BT 0 ip=0x1 fp=0x2"));
+    }
+
+    #[test]
+    fn compiler_local_symbols_are_not_display_names() {
+        assert!(is_compiler_local_symbol(".Lpcrel_hi31487"));
+        assert!(is_compiler_local_symbol(".L0"));
+        assert!(is_compiler_local_symbol(".Ltmp142"));
+        assert!(is_compiler_local_symbol("$x"));
+        assert!(is_compiler_local_symbol("$d"));
+        assert!(!is_compiler_local_symbol(
+            "starry_memtrack_sample_hard_leaf"
+        ));
+        assert!(!is_compiler_local_symbol(
+            "_RNvNtNtNtCs66o47AdWPbf_13starry_kernel8pseudofs3dev8memtrack29record_hard_sample_allocation"
+        ));
+    }
+
+    #[test]
+    fn local_symbol_names_fall_back_to_nearest_text_symbol() {
+        let exe = std::env::current_exe().unwrap();
+        let mut symbolizer = HostSymbolizer::new(&exe).unwrap();
+        symbolizer.text_symbols = vec![
+            TextSymbol {
+                address: 0x1000,
+                size: 0x40,
+                name: "starry_memtrack_sample_hard_mid".to_string(),
+            },
+            TextSymbol {
+                address: 0x1040,
+                size: 0x80,
+                name: "starry_memtrack_sample_hard_leaf".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            symbolizer.display_symbol_name(".Lpcrel_hi31487", 0x1060),
+            Some("starry_memtrack_sample_hard_leaf".to_string())
+        );
+        assert_eq!(
+            symbolizer.display_symbol_name(".Lpcrel_hi31487", 0x2000),
+            None
+        );
     }
 
     #[test]

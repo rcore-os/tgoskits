@@ -44,10 +44,10 @@
 
 这些命令已登记到以下 grouped syscall 配置：
 
-- `test-suit/starryos/normal/qemu-smp1/syscall/qemu-x86_64.toml`
-- `test-suit/starryos/normal/qemu-smp1/syscall/qemu-riscv64.toml`
-- `test-suit/starryos/normal/qemu-smp1/syscall/qemu-aarch64.toml`
-- `test-suit/starryos/normal/qemu-smp1/syscall/qemu-loongarch64.toml`
+- `test-suit/starryos/qemu-smp1/system/qemu-x86_64.toml`
+- `test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml`
+- `test-suit/starryos/qemu-smp1/system/qemu-aarch64.toml`
+- `test-suit/starryos/qemu-smp1/system/qemu-loongarch64.toml`
 
 ## 验证结果
 
@@ -61,13 +61,13 @@
 | Linux 参考 | `env -u LD_PRELOAD /tmp/test-sigtimedwait` | 10 passed, 0 failed |
 | Linux 参考 | `env -u LD_PRELOAD /tmp/test-sigreturn` | 9 passed, 0 failed |
 | CMake | `cmake -S <test>/c -B /tmp/<test>-cmake && cmake --build /tmp/<test>-cmake` | 6 个 signal 测试全部通过 |
-| StarryOS 发现 | `cargo xtask starry test qemu -l -g normal --arch x86_64` | 通过，能发现 `normal/syscall` |
-| StarryOS grouped syscall | `env -u LD_PRELOAD cargo xtask starry test qemu --arch x86_64 -g normal -c syscall` | 失败于既有 `test-raw-msg-peek/c/prebuild.sh`，未执行到 signal 测试 |
+| StarryOS 发现 | `cargo xtask starry test qemu -l --arch x86_64` | 通过，能发现 `qemu-smp1/system` |
+| StarryOS grouped syscall | `env -u LD_PRELOAD cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/system` | 失败于既有 `test-raw-msg-peek/c/prebuild.sh`，未执行到 signal 测试 |
 
 StarryOS grouped case 的具体阻塞点：
 
 ```text
-test-suit/starryos/normal/qemu-smp1/syscall/test-raw-msg-peek/c/prebuild.sh: line 4: apk: Symbolic link loop
+test-suit/starryos/qemu-smp1/system/syscall-test-raw-msg-peek/c/prebuild.sh: line 4: apk: Symbolic link loop
 failed to run test-raw-msg-peek prebuild.sh
 ```
 

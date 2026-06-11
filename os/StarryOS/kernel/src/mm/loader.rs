@@ -460,12 +460,10 @@ impl ElfCacheEntry {
 ///
 /// Per-arch policy:
 /// - **loongarch64**: report the baseline the kernel actually provides. The
-///   platform enables LSX (128-bit vectors) at boot via `enable_lsx()`
-///   (`EUEN.SXE`), so we set `CPUCFG | LAM | UAL | FPU | LSX`. This is required:
-///   numpy on Alpine loongarch is built with an LSX baseline and refuses to
-///   import unless `HWCAP_LOONGARCH_LSX` (bit 4) is set. LASX (256-bit, bit 5)
-///   is intentionally *not* set because the kernel does not enable `EUEN.ASXE`;
-///   claiming it could trap when userspace executes 256-bit ops.
+///   platform enables LSX (128-bit vectors) and LASX (256-bit vectors) at boot
+///   via `EUEN.SXE`/`EUEN.ASXE`, and the task/signal save paths preserve all 256
+///   vector bits. Therefore we set `CPUCFG | LAM | UAL | FPU | LSX | LASX`.
+///   This matters for feature-dispatching libraries such as OpenSSL and numpy.
 /// - **riscv64**: report the baseline ISA bits expected by Linux-compatible
 ///   user space (`IMAFDC`).
 /// - **x86_64 / aarch64**: 0. x86 uses CPUID; aarch64 ASIMD/NEON is mandatory.
@@ -478,11 +476,13 @@ const fn hwcap_value() -> usize {
         const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
         const HWCAP_LOONGARCH_FPU: usize = 1 << 3;
         const HWCAP_LOONGARCH_LSX: usize = 1 << 4;
+        const HWCAP_LOONGARCH_LASX: usize = 1 << 5;
         HWCAP_LOONGARCH_CPUCFG
             | HWCAP_LOONGARCH_LAM
             | HWCAP_LOONGARCH_UAL
             | HWCAP_LOONGARCH_FPU
             | HWCAP_LOONGARCH_LSX
+            | HWCAP_LOONGARCH_LASX
     }
     #[cfg(target_arch = "riscv64")]
     {
@@ -503,9 +503,7 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, path: &str) -> AxResult<LoadResult> {
-        let loc = FS_CONTEXT.lock().resolve(path)?;
-
+    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> AxResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
@@ -600,10 +598,19 @@ pub fn clear_elf_cache() {
 
 /// Load the user app to the user address space.
 ///
+/// The executable is identified by an already-resolved [`Location`] — the
+/// caller resolves and opens it once (mirroring Linux's `do_open_execat`,
+/// which honors `AT_SYMLINK_NOFOLLOW` at that single lookup), and this never
+/// re-resolves the main executable from its pathname. Interpreters reached
+/// through a `.sh` redirect or a `#!` shebang are resolved here by path, which
+/// is Linux's `open_exec(interp)` and legitimately follows symlinks.
+///
 /// # Arguments
 /// - `uspace`: The address space of the user app.
-/// - `args`: The arguments of the user app. The first argument is the path of
-///   the user app.
+/// - `loc`: The resolved executable to load.
+/// - `path`: The pathname the executable was invoked as, used for the `.sh`
+///   redirect and for the script name an interpreter receives in `argv`.
+/// - `args`: The arguments of the user app.
 /// - `envs`: The environment variables of the user app.
 ///
 /// # Returns
@@ -611,14 +618,11 @@ pub fn clear_elf_cache() {
 /// - The stack pointer of the user app.
 pub fn load_user_app(
     uspace: &mut AddrSpace,
-    path: Option<&str>,
+    loc: Location,
+    path: &str,
     args: &[String],
     envs: &[String],
 ) -> AxResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    let path = path
-        .or_else(|| args.first().map(String::as_str))
-        .ok_or(AxError::InvalidInput)?;
-
     // `/proc/self/exe` is available in procfs; busybox can `readlink` it
     // to re-exec itself as a shell on ENOEXEC, provided the busybox build
     // includes that fallback (Alpine's prebuilt binary may not).
@@ -626,10 +630,11 @@ pub fn load_user_app(
         let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
             .chain(args.iter().cloned())
             .collect();
-        return load_user_app(uspace, None, &new_args, envs);
+        let sh = FS_CONTEXT.lock().resolve("/bin/sh")?;
+        return load_user_app(uspace, sh, "/bin/sh", &new_args, envs);
     }
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, path)? } {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -644,7 +649,10 @@ pub fn load_user_app(
                     .chain(iter::once(path.to_owned()))
                     .chain(args.iter().skip(1).cloned())
                     .collect();
-                return load_user_app(uspace, None, &new_args, envs);
+                // Open the interpreter by path (Linux's `open_exec` on the
+                // shebang interpreter) and load it as the new executable.
+                let interp = FS_CONTEXT.lock().resolve(&new_args[0])?;
+                return load_user_app(uspace, interp, &new_args[0], &new_args, envs);
             }
             return Err(AxError::InvalidExecutable);
         }

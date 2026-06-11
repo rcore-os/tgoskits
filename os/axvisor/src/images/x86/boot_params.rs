@@ -51,17 +51,6 @@ const E820_TYPE_RESERVED: u32 = 2;
 const LEGACY_RESERVED_START: usize = 0x000a_0000;
 const LEGACY_RESERVED_SIZE: usize = 0x0006_0000;
 
-// The x86 Linux bring-up path still relies on these default boot parameters to keep the
-// guest on the currently supported surface: ACPI and MSI are disabled, x2APIC and TSC deadline
-// timer are avoided, TSC is marked unstable, and AHCI/i8042 init is skipped until the x86 timer,
-// IRQ routing, and device-topology support are complete.
-pub const DEFAULT_COMMAND_LINE: &str = concat!(
-    "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty ",
-    "acpi=off pci=conf1 pci=nomsi nox2apic ",
-    "tsc=unstable initcall_blacklist=ahci_pci_driver_init,i8042_init ",
-    "-- -n -l /bin/sh -L 115200 ttyS0 dumb"
-);
-
 /// Builds a Linux x86 boot_params page for the direct-boot path.
 pub struct BootParamsBuilder<'a> {
     kernel_image: &'a [u8],
@@ -69,7 +58,7 @@ pub struct BootParamsBuilder<'a> {
     layout: X86LinuxLoadLayout,
     ram_ranges: Vec<X86LinuxRange>,
     reserved_ranges: Vec<X86LinuxRange>,
-    command_line: &'a str,
+    command_line: Option<&'a str>,
 }
 
 impl<'a> BootParamsBuilder<'a> {
@@ -89,7 +78,7 @@ impl<'a> BootParamsBuilder<'a> {
                 layout.boot_stub,
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
             ],
-            command_line: DEFAULT_COMMAND_LINE,
+            command_line: None,
         }
     }
 
@@ -101,7 +90,7 @@ impl<'a> BootParamsBuilder<'a> {
 
     pub fn set_command_line(&mut self, command_line: &'a str) -> Result<(), BootParamsError> {
         self.validate_command_line(command_line)?;
-        self.command_line = command_line;
+        self.command_line = Some(command_line);
         Ok(())
     }
 
@@ -184,8 +173,11 @@ impl<'a> BootParamsBuilder<'a> {
     }
 
     fn write_command_line(&self, boot_params: &mut [u8]) -> Result<(), BootParamsError> {
-        self.validate_command_line(self.command_line)?;
-        let bytes = self.command_line.as_bytes();
+        let command_line = self
+            .command_line
+            .ok_or(BootParamsError::CommandLineMissing)?;
+        self.validate_command_line(command_line)?;
+        let bytes = command_line.as_bytes();
         let end = COMMAND_LINE_OFFSET + bytes.len();
         boot_params[COMMAND_LINE_OFFSET..end].copy_from_slice(bytes);
         write_u8(boot_params, end, 0);
@@ -286,6 +278,7 @@ impl<'a> BootParamsBuilder<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootParamsError {
     SetupHeaderTruncated { image_size: usize, required: usize },
+    CommandLineMissing,
     CommandLineContainsNul,
     CommandLineTooLong { len: usize, max: usize },
     AddressOverflow,
@@ -463,22 +456,15 @@ mod tests {
     }
 
     #[test]
-    fn uses_default_command_line_when_not_overridden() {
+    fn rejects_missing_command_line() {
         let image = valid_image();
         let header = X86LinuxHeader::parse(&image).unwrap();
         let layout = valid_layout(&header);
-        let params =
-            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x80_0000))
-                .build()
-                .unwrap();
 
         assert_eq!(
-            &params[COMMAND_LINE_OFFSET..COMMAND_LINE_OFFSET + DEFAULT_COMMAND_LINE.len()],
-            DEFAULT_COMMAND_LINE.as_bytes()
-        );
-        assert_eq!(
-            read_u8(&params, COMMAND_LINE_OFFSET + DEFAULT_COMMAND_LINE.len()),
-            0
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x80_0000))
+                .build(),
+            Err(BootParamsError::CommandLineMissing)
         );
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "axdevice"
-version = "0.4.11"
+version = "0.4.12"
 description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
 homepage = "https://github.com/arceos-hypervisor/axdevice"
 repository = "https://github.com/arceos-hypervisor/axdevice"
@@ -30,6 +30,3 @@ arm_vgic = { workspace = true, features = ["vgicv3"] }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_vlapic = { workspace = true }
-
-[dev-dependencies]
-ax-crate-interface = { workspace = true }

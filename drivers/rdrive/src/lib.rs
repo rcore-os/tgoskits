@@ -218,35 +218,24 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// #![feature(used_with_arg)]
 ///
-/// use rdrive::{
-///     PlatformDevice, driver::*, module_driver, probe::OnProbeError, register::FdtInfo,
-/// };
+/// use rdrive::{driver::*, module_driver, probe::OnProbeError, register::ProbeFdt};
 ///
-/// struct ClkDriver {}
+/// struct DemoDriver {}
 ///
-/// impl DriverGeneric for ClkDriver {
+/// impl DriverGeneric for DemoDriver {
 ///     fn name(&self) -> &str {
-///         "ClkDriver"
-///     }
-/// }
-///
-/// impl rdif_clk::Interface for ClkDriver {
-///     fn perper_enable(&mut self) {}
-///     fn get_rate(&self, _id: rdif_clk::ClockId) -> Result<u64, rdrive::KError> {
-///         Ok(1000000)
-///     }
-///     fn set_rate(&mut self, _id: rdif_clk::ClockId, _rate: u64) -> Result<(), rdrive::KError> {
-///         Ok(())
+///         "DemoDriver"
 ///     }
 /// }
 ///
 /// // Define probe function
-/// fn probe_clk(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+/// fn probe_clk(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 ///     // Implement specific device probing logic
-///     dev.register(rdif_clk::Clk::new(ClkDriver {}));
+///     let dev = probe.into_platform_device();
+///     dev.register(DemoDriver {});
 ///     Ok(())
 /// }
 ///
@@ -258,7 +247,7 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///     probe_kinds: &[ProbeKind::Fdt {
 ///         compatibles: &["fixed-clock"],
 ///         // Use `probe_clk` above; this usage is because doctests cannot find the parent module.
-///         on_probe: |fdt, dev|{
+///         on_probe: |_probe|{
 ///             Ok(())
 ///         },
 ///     }],

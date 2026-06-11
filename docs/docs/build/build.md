@@ -15,7 +15,7 @@ sidebar_label: "构建过程"
 
 ```mermaid
 flowchart TD
-    A["cargo xtask arceos build<br/>--package ax-helloworld"] --> B[1. 初始化 AppContext]
+    A["cargo xtask arceos build<br/>--package arceos-helloworld"] --> B[1. 初始化 AppContext]
     B --> C["2. 参数解析"]
     C --> C1["Snapshot 不存在 → 空 Snapshot<br/>CLI 参数 + 子系统默认值"]
     C1 --> C2["创建并写回 Snapshot<br/>(tmp/axbuild/.arceos.toml)"]
@@ -178,7 +178,7 @@ flowchart TD
     E --> F["注入 AX_CONFIG_PATH<br/>和 AX_PLATFORM 环境变量"]
 ```
 
-ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `axbuild` 复用配置引擎库从平台包配置文件中合并生成 `.axconfig.toml`。在动态平台模式下（`plat_dyn = true`），这些配置由运行时动态加载；在静态模式下，必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的配置宏能在编译期读取配置。
+ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `axbuild` 复用配置引擎库从平台包配置文件中合并生成 `.axconfig.toml`。动态平台模式是支持动态平台 target 的默认构建方式，配置可省略 `plat_dyn`；在静态模式下（`plat_dyn = false`），必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的配置宏能在编译期读取配置。
 
 ### 6a. 平台包解析
 
@@ -198,8 +198,8 @@ flowchart TD
     C --> D["返回匹配的依赖包名"]
     B -->|否| E{feature 包含 myplat?}
     E -->|是| F{是 Axvisor?}
-    F -->|x86_64| G["→ ax-plat-x86-qemu-q35"]
-    F -->|其他架构| I["在依赖中查找<br/>架构前缀匹配的平台包"]
+    F -->|是| G["要求动态平台<br/>或显式平台包"]
+    F -->|否| I["在依赖中查找<br/>架构前缀匹配的平台包"]
     E -->|否| J["回退到默认平台"]
     J --> K[default_platform_package]
 ```
@@ -208,9 +208,9 @@ flowchart TD
 
 | 架构 | 默认平台包 |
 |------|-----------|
-| `aarch64` | 无静态默认平台；默认使用 `plat_dyn = true` |
-| `x86_64` | `ax-plat-x86-pc` |
-| `riscv64` | 无静态默认平台；默认使用 `plat_dyn = true` |
+| `aarch64` | 无静态默认平台；默认使用动态平台 |
+| `x86_64` | 无静态默认平台；默认使用动态平台 |
+| `riscv64` | 无静态默认平台；默认使用动态平台 |
 | `loongarch64` | `ax-plat-loongarch64-qemu-virt` |
 
 **平台包命名规则**：
@@ -302,7 +302,7 @@ flowchart TD
 
 ### 编译期文件写入（write_if_changed）
 
-axbuild 在生成构建辅助文件（如 ArceOS std 的 `.cargo/config.toml` 和 `loongarch64-unknown-hermit.json`）时使用 `write_if_changed` 模式：写入前先读取已有内容，内容相同时跳过写入。这避免了因时间戳更新导致 cargo 不必要的重建——cargo 的增量编译依赖文件 mtime 判断是否需要重新编译，`write_if_changed` 确保只有真正变化的配置才会触发重建。
+axbuild 在生成构建辅助文件（如 ArceOS std 的 `.cargo/config.toml`、fake libc 预构建脚本和 linker wrapper）时使用 `write_if_changed` 模式：写入前先读取已有内容，内容相同时跳过写入。这避免了因时间戳更新导致 cargo 不必要的重建——cargo 的增量编译依赖文件 mtime 判断是否需要重新编译，`write_if_changed` 确保只有真正变化的配置才会触发重建。
 
 ### 环境变量作用域保护（EnvRestoreGuard）
 

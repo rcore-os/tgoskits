@@ -6,6 +6,7 @@ base_rootfs="${STARRY_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-apk-cache"
+host_artifact_dir="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-host"
 qemu_runner=""
 lld_linker=""
 lld_linker_dir=""
@@ -197,9 +198,19 @@ populate_overlay() {
         /usr/bin/gdb-native-smoke-target \
         -Wall -Wextra -Werror -O0 -g
     compile_target \
+        "$app_dir/native-thread/src/main.c" \
+        /usr/bin/gdb-native-thread-target \
+        -Wall -Wextra -Werror -O0 -g -pthread
+    compile_target \
         "$app_dir/gdbserver/src/main.c" \
         /usr/bin/gdbserver-smoke-target \
-        -Wall -Wextra -Werror -g0 -s
+        -Wall -Wextra -Werror -O0 -g
+    compile_target \
+        "$app_dir/stress/src/thread-breakpoint-wall.c" \
+        /usr/bin/gdb-ptrace-thread-breakpoint-stress \
+        -Wall -Wextra -Werror -O0 -g -pthread
+    install -Dm0755 "$overlay_dir/usr/bin/gdbserver-smoke-target" \
+        "$host_artifact_dir/gdbserver-smoke-target"
 
     copy_file_to_overlay /usr/bin/gdb 0755
     copy_file_to_overlay /usr/bin/gdbserver 0755
@@ -216,8 +227,12 @@ populate_overlay() {
 
     install -Dm0755 "$app_dir/native/gdb-native-smoke.gdb" \
         "$overlay_dir/usr/bin/gdb-native-smoke.gdb"
+    install -Dm0755 "$app_dir/native-thread/gdb-native-threads.gdb" \
+        "$overlay_dir/usr/bin/gdb-native-threads.gdb"
     install -Dm0644 "$app_dir/gdbserver/gdbserver-smoke.gdb" \
         "$overlay_dir/usr/bin/gdbserver-smoke.gdb"
+    install -Dm0644 "$app_dir/gdbserver/gdbserver-threads.gdb" \
+        "$overlay_dir/usr/bin/gdbserver-threads.gdb"
     install -Dm0755 "$app_dir/gdbserver/gdbserver-smoke.sh" \
         "$overlay_dir/usr/bin/gdbserver-smoke.sh"
 }

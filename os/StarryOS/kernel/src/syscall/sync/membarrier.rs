@@ -50,6 +50,10 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
             Ok(0)
         }
         MEMBARRIER_CMD_GLOBAL_EXPEDITED => {
+            let proc_data = current().as_thread().proc_data.clone();
+            if proc_data.membarrier_state() & MEMBARRIER_STATE_GLOBAL_EXPEDITED == 0 {
+                return Err(AxError::OperationNotPermitted);
+            }
             smp_mb();
             Ok(0)
         }

@@ -2,6 +2,7 @@ pub mod epoll;
 pub mod event;
 mod fs;
 pub mod inotify;
+pub mod io_uring;
 #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
 pub mod ion;
 pub mod memfd;
@@ -38,6 +39,7 @@ use spin::RwLock;
 
 pub use self::{
     fs::{Directory, File, resolve_at, with_fs},
+    io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,
     packet::{PacketSocket, SockAddrLl},
@@ -181,7 +183,7 @@ pub trait FileLike: Pollable + DowncastSync {
         Err(AxError::NoSuchDevice)
     }
 
-    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
+    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
         Err(AxError::BadFileDescriptor)
     }
 
@@ -330,7 +332,7 @@ pub fn close_file_like(fd: c_int) -> AxResult {
         release_locks_on_close(f);
         return Ok(());
     }
-    Ok(())
+    Err(AxError::BadFileDescriptor)
 }
 
 fn notify_close_write(fd: &FileDescriptor) {

@@ -30,12 +30,10 @@ pub fn init(args: &[String], envs: &[String]) {
         crate::ebpf::init_ebpf();
         crate::perf::perf_event_init();
         crate::kmod::init_kmod();
-
-        // FIXME: loongarch64 selftest hangs on QEMU; the kprobe crate's loongarch64
-        // breakpoint handling needs upstream fixes before selftest can be enabled.
-        #[cfg(not(target_arch = "loongarch64"))]
-        crate::kprobe::run_selftest();
     }
+
+    #[cfg(feature = "kprobe_test")]
+    crate::kprobe::kprobe_test();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
@@ -58,7 +56,7 @@ pub fn init(args: &[String], envs: &[String]) {
         })
         .expect("Failed to create user address space");
 
-    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, None, args, envs)
+    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, loc, &args[0], args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
@@ -86,7 +84,7 @@ pub fn init(args: &[String], envs: &[String]) {
             .expect("Failed to add stdio");
     }
 
-    let thr = Thread::new(pid, proc, None);
+    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = spawn_task(task);

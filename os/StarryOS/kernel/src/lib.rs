@@ -38,3 +38,4 @@ mod time;
 mod tracepoint;
 #[cfg(feature = "ebpf-kmod")]
 mod trap;
+mod uprobe;

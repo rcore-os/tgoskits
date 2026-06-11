@@ -208,15 +208,15 @@ graph LR
 
 ### 被依赖情况
 - `arceos-affinity`
-- `ax-helloworld`
-- `ax-helloworld-myplat`
-- `ax-httpclient`
-- `ax-httpserver`
+- `arceos-helloworld`
+- `arceos-helloworld-myplat`
+- `arceos-httpclient`
+- `arceos-httpserver`
 - `arceos-irq`
 - `arceos-memtest`
 - `arceos-parallel`
 - `arceos-priority`
-- `ax-shell`
+- `arceos-shell`
 - `arceos-sleep`
 - `arceos-wait-queue`
 - 另外还有 `31` 个同类项未在此展开
@@ -258,7 +258,7 @@ ax-arm-pl031 = { workspace = true }
 
 ## 跨项目定位
 ### ArceOS
-`ax-arm-pl031` 主要通过 `arceos-affinity`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+`ax-arm-pl031` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
 
 ### StarryOS
 `ax-arm-pl031` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。

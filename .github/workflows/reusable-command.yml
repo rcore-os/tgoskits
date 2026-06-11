@@ -52,6 +52,21 @@ on:
         required: false
         type: number
         default: 360
+      upload_xtask_bin_artifact:
+        description: Upload the tg-xtask binary as a workflow artifact after the command succeeds.
+        required: false
+        type: boolean
+        default: false
+      download_xtask_bin_artifact:
+        description: Download and restore the tg-xtask binary artifact before running the command.
+        required: false
+        type: boolean
+        default: false
+      xtask_bin_artifact_name:
+        description: Artifact name used for the tarred tg-xtask binary.
+        required: false
+        type: string
+        default: tg-xtask-bin
     secrets:
       CLAW_API_KEY:
         required: false
@@ -150,11 +165,61 @@ jobs:
           shared-key: ${{ inputs.cache_key }}
           save-if: ${{ github.event_name == 'push' }}
 
+      - name: Download tg-xtask binary artifact
+        if: inputs.download_xtask_bin_artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.xtask_bin_artifact_name }}
+          path: ${{ runner.temp }}/xtask-bin
+
+      - name: Restore tg-xtask binary artifact
+        if: inputs.download_xtask_bin_artifact
+        shell: bash
+        run: |
+          set -eux
+          tar -xf "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" -C "${GITHUB_WORKSPACE}"
+          chmod +x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          test -x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+
       - name: Show Rust version
         run: rustc --version
 
       - name: Run command
+        shell: bash
         env:
           STARRY_APK_REGION: ${{ inputs.apk_region }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
-        run: ${{ inputs.command }}
+          REUSABLE_COMMAND: ${{ inputs.command }}
+          USE_XTASK_BIN: ${{ inputs.download_xtask_bin_artifact }}
+        run: |
+          set -eo pipefail
+
+          command_text="${REUSABLE_COMMAND}"
+          if [ "${USE_XTASK_BIN}" = "true" ] && [[ "${command_text}" != *$'\n'* ]]; then
+            if [[ "${command_text}" == "cargo xtask" || "${command_text}" == cargo\ xtask\ * ]]; then
+              command_text="target/debug/tg-xtask${command_text#cargo xtask}"
+            fi
+          fi
+
+          command_file="${RUNNER_TEMP}/reusable-command.sh"
+          printf '%s\n' "${command_text}" > "${command_file}"
+          echo "Resolved command:"
+          sed 's/^/+ /' "${command_file}"
+          bash -e -o pipefail "${command_file}"
+
+      - name: Package tg-xtask binary artifact
+        if: success() && inputs.upload_xtask_bin_artifact
+        shell: bash
+        run: |
+          set -eux
+          test -x target/debug/tg-xtask
+          tar -cf "${RUNNER_TEMP}/tg-xtask-bin.tar" target/debug/tg-xtask
+
+      - name: Upload tg-xtask binary artifact
+        if: success() && inputs.upload_xtask_bin_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.xtask_bin_artifact_name }}
+          path: ${{ runner.temp }}/tg-xtask-bin.tar
+          if-no-files-found: error
+          retention-days: 1

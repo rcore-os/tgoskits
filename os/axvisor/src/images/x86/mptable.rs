@@ -142,11 +142,13 @@ fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
 }
 
 const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
-    // Keep the guest MP table aligned with the host q35 IOAPIC line observed
-    // for the current smoke device. This is intentionally narrow; a later PCI
-    // IRQ router should derive it from platform/device topology instead.
+    // The current x86 smoke setup passes the outer q35 00:03.0 virtio-blk
+    // device through to the guest. QEMU routes that device's INTA# to host
+    // IOAPIC GSI 18, and Axvisor forwards host IOAPIC GSIs by number. Keep the
+    // guest MP table on the same line until a PCI IRQ router derives this from
+    // platform/device topology.
     if dev == 3 && pin == 0 {
-        23
+        18
     } else {
         16 + ((dev + pin) & 3)
     }

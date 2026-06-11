@@ -1,0 +1,29 @@
+[package]
+name = "driver-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+autotests = false
+
+[dependencies]
+
+[dev-dependencies]
+ax-kspin.workspace = true
+eth-intel.workspace = true
+fdt-edit.workspace = true
+nvme-driver.workspace = true
+pcie.workspace = true
+rdif-block.workspace = true
+rdif-intc.workspace = true
+rdif-serial.workspace = true
+rdrive.workspace = true
+rockchip-soc.workspace = true
+some-serial.workspace = true
+spin.workspace = true
+num-align = "0.1.0"
+
+# These bare-test cases stay disabled by default. To run one manually, add the
+# required bare-test dependency in this test crate and enable the matching
+# [[test]] target locally.

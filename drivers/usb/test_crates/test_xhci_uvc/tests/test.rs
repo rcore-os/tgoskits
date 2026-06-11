@@ -347,7 +347,7 @@ mod tests {
                     println!("bar0: {:#x}", bar_addr);
                     println!("bar0 size: {:#x}", bar_size);
                     bar_size = bar_size.align_up(0x1000);
-                    println!("bar0 size algin: {:#x}", bar_size);
+                    println!("bar0 size align: {:#x}", bar_size);
 
                     let addr = iomap(bar_addr.into(), bar_size);
                     trace!("pin {:?}", ep.interrupt_pin);

@@ -10,8 +10,8 @@ pub use crate::build::LogLevel;
 use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
 
 pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
-    let mut build_info = StarryBuildInfo::default_for_target(target);
-    if build_info.plat_dyn {
+    let mut build_info = StarryBuildInfo::default();
+    if build_info.effective_plat_dyn(target, None) {
         build_info.features = Vec::new();
     } else {
         build_info.features = vec!["qemu".to_string()];
@@ -39,6 +39,8 @@ pub(crate) fn resolve_build_info_path(
 pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow!("failed to read Starry build config {}: {e}", path.display()))?;
+    crate::build::reject_removed_std_field(path, &content)?;
+    crate::build::reject_arceos_app_c_field(path, &content)?;
 
     if let Ok(board_file) = toml::from_str::<board::StarryBoardFile>(&content) {
         return Ok(Some(board_file.target));
@@ -60,17 +62,13 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
             default_starry_build_info_for_target(&request.target)
         })?;
         let content = std::fs::read_to_string(&request.build_info_path)?;
-        let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
+        crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
+        let build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
             format!(
                 "failed to parse build info {}",
                 request.build_info_path.display()
             )
         })?;
-        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-            &mut build_info,
-            &request.target,
-            &content,
-        );
         build_info
     };
 
@@ -94,17 +92,13 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
             default_starry_build_info_for_target(&request.target)
         })?;
         let content = std::fs::read_to_string(&request.build_info_path)?;
-        let mut build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
+        crate::build::reject_arceos_app_c_field(&request.build_info_path, &content)?;
+        let build_info: StarryBuildInfo = toml::from_str(&content).with_context(|| {
             format!(
                 "failed to parse build info {}",
                 request.build_info_path.display()
             )
         })?;
-        crate::build::apply_target_defaults_if_plat_dyn_unspecified(
-            &mut build_info,
-            &request.target,
-            &content,
-        );
         build_info
     };
     crate::build::apply_makefile_features_with_metadata(
@@ -305,7 +299,7 @@ fn uses_default_qemu_platform(features: &[String]) -> bool {
 
 fn default_starry_qemu_platform_feature(feature: &str) -> Option<&str> {
     match feature.strip_prefix("ax-hal/")? {
-        "x86-pc" | "loongarch64-qemu-virt" => Some(feature),
+        "loongarch64-qemu-virt" => Some(feature),
         _ => None,
     }
 }
@@ -483,11 +477,11 @@ mod tests {
     }
 
     #[test]
-    fn default_x86_starry_build_info_keeps_static_qemu_feature() {
+    fn default_x86_starry_build_info_uses_dynamic_platform() {
         let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
 
-        assert!(!build_info.plat_dyn);
-        assert_eq!(build_info.features, vec!["qemu".to_string()]);
+        assert!(build_info.plat_dyn);
+        assert!(build_info.features.is_empty());
     }
 
     #[test]
@@ -514,6 +508,52 @@ HELLO = "world"
         assert_eq!(
             build_info.env.get("HELLO").map(String::as_str),
             Some("world")
+        );
+    }
+
+    #[test]
+    fn load_target_from_build_config_rejects_removed_std_field() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        fs::write(
+            &path,
+            r#"
+std = false
+features = []
+log = "Info"
+
+"#,
+        )
+        .unwrap();
+
+        let err = load_target_from_build_config(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("uses removed `std` field"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn load_target_from_build_config_rejects_arceos_app_c_field() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        fs::write(
+            &path,
+            r#"
+app-c = "c"
+features = []
+log = "Info"
+
+"#,
+        )
+        .unwrap();
+
+        let err = load_target_from_build_config(&path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("uses ArceOS-only `app-c` field"),
+            "{err:#}"
         );
     }
 
@@ -549,7 +589,6 @@ HELLO = "world"
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
             plat_dyn: false,
-            std_build: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
@@ -628,15 +667,11 @@ HELLO = "world"
             max_cpu_num: Some(8),
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
-            std_build: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
-            StarryBuildInfo::build_cargo_args(
-                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-                &[],
-            ),
+            "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
+            Vec::new(),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -656,7 +691,7 @@ HELLO = "world"
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
         assert_eq!(
             cargo.target,
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json"
+            "scripts/targets/std/pie/aarch64-unknown-linux-musl.json"
         );
     }
 
@@ -674,15 +709,11 @@ HELLO = "world"
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
-            std_build: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
-            "scripts/targets/pie/aarch64-unknown-none-softfloat.json".to_string(),
-            StarryBuildInfo::build_cargo_args(
-                "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
-                &[],
-            ),
+            "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
+            Vec::new(),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -720,7 +751,7 @@ HELLO = "world"
     fn uimage_load_paddr_uses_dynamic_riscv64_fallback_without_axconfig() {
         let cargo = Cargo {
             env: HashMap::new(),
-            target: "scripts/targets/pie/riscv64gc-unknown-none-elf.json".to_string(),
+            target: "scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json".to_string(),
             package: STARRY_PACKAGE.to_string(),
             bin: None,
             features: vec!["plat-dyn".to_string()],
@@ -847,11 +878,8 @@ HELLO = "world"
         let build_info = default_starry_build_info_for_target(&request.target);
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
-            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json".to_string(),
-            StarryBuildInfo::build_cargo_args(
-                "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
-                &[],
-            ),
+            "scripts/targets/std/aarch64-unknown-linux-musl.json".to_string(),
+            vec!["-Z".to_string(), "json-target-spec".to_string()],
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -859,7 +887,7 @@ HELLO = "world"
 
         assert_eq!(
             cargo.target,
-            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json"
+            "scripts/targets/std/aarch64-unknown-linux-musl.json"
         );
         assert_eq!(cargo.env.get("AX_TARGET"), Some(&request.target));
     }

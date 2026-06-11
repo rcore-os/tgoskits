@@ -1,6 +1,6 @@
 [package]
 name = "starry-signal"
-version = "0.8.0"
+version = "0.8.2"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"
@@ -25,4 +25,5 @@ starry-vm = { workspace = true }
 strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }
 extern-trait = "0.4"

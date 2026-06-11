@@ -12,6 +12,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: release-plz-${{ github.ref }}
+  queue: max
+
 jobs:
   release-plz-release:
     name: Release-plz release
@@ -48,9 +52,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    concurrency:
-      group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - *checkout
       - *install-rust

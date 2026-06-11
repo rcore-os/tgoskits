@@ -7,7 +7,6 @@ use core::{
 
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use crab_usb::{Event, EventHandler};
 use rdrive::DeviceId as RDriveDeviceId;
 
 use super::manager::UsbFsManager;
@@ -19,13 +18,13 @@ pub(super) struct PendingUsbIrqSlot {
     pub(super) irq_num: usize,
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
-    pub(super) handler: EventHandler,
+    pub(super) handler: ax_driver::usb::UsbHostIrqHandler,
 }
 
 pub(super) struct UsbIrqSlot {
     device_id: RDriveDeviceId,
     bus_num: u8,
-    handler: EventHandler,
+    handler: ax_driver::usb::UsbHostIrqHandler,
     dirty: AtomicBool,
     handle: SpinNoIrq<Option<ax_runtime::hal::irq::IrqHandle>>,
 }
@@ -156,29 +155,29 @@ fn usbfs_irq_handler(irq_num: usize) {
     let mut stopped_events = 0usize;
     loop {
         handler_calls += 1;
-        match slot.handler.handle_event() {
-            Event::PortChange { port } => {
+        match slot.handler.handle() {
+            crab_usb::Event::PortChange { port } => {
                 port_events += 1;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: port change on port {}",
                     irq_num, slot.bus_num, slot.device_id, port
                 );
             }
-            Event::TransferActivity { count } => {
+            crab_usb::Event::TransferActivity { count } => {
                 transfer_events += count;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: {} transfer event(s)",
                     irq_num, slot.bus_num, slot.device_id, count
                 );
             }
-            Event::Stopped => {
+            crab_usb::Event::Stopped => {
                 stopped_events += 1;
                 trace!(
                     "usbfs: IRQ {} bus {} host {:?}: event handler stopped",
                     irq_num, slot.bus_num, slot.device_id
                 );
             }
-            Event::Nothing => break,
+            crab_usb::Event::Nothing => break,
         }
     }
 

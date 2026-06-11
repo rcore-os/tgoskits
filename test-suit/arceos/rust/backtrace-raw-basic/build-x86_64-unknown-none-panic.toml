@@ -1,6 +1,0 @@
-features = ["ax-std", "panic-path"]
-log = "Warn"
-max_cpu_num = 4
-
-[env]
-DWARF = "y"

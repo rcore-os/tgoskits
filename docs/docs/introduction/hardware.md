@@ -108,7 +108,7 @@ flowchart TD
 
 | 优先级 | 系统 | 命令 | 预期结果 |
 |--------|------|------|---------|
-| 1 | ArceOS | `cargo xtask arceos qemu --package ax-helloworld --arch riscv64` | QEMU 输出 "Hello, world!" 后退出 |
+| 1 | ArceOS | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` | QEMU 输出 "Hello, world!" 后退出 |
 | 2 | StarryOS | `cargo xtask starry qemu --target riscv64` | 启动 Shell 并执行冒烟命令（首次自动准备 rootfs） |
 | 3 | Axvisor | `cargo xtask axvisor test qemu --target aarch64` | Guest 输出 "guest test pass!"（首次自动下载 Guest 镜像） |
 

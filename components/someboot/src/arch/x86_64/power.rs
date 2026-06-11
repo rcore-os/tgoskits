@@ -51,8 +51,9 @@ __x86_ap_trampoline_start:
 
     lgdt (__x86_ap_gdt_ptr - __x86_ap_trampoline_start)
 
+    # Enable PAE plus OS-managed FXSAVE/SSE state before entering long mode.
     movl %cr4, %eax
-    orl $0x20, %eax
+    orl $0x620, %eax
     movl %eax, %cr4
 
     movl (__x86_ap_trampoline_cr3 - __x86_ap_trampoline_start), %eax
@@ -63,8 +64,10 @@ __x86_ap_trampoline_start:
     orl $0x00000100, %eax
     wrmsr
 
+    # Clear EM/TS and enable protected mode, paging, MP, and native FP errors.
     movl %cr0, %eax
-    orl $0x80000001, %eax
+    andl $0xfffffff3, %eax
+    orl $0x80000023, %eax
     movl %eax, %cr0
 
     ljmpl *(__x86_ap_ljmp_ptr - __x86_ap_trampoline_start)
@@ -145,10 +148,10 @@ pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), Cpu
     }
     let apic_id = u8::try_from(apic_id).map_err(|_| CpuOnError::InvalidParameters)?;
     let meta = unsafe { &*(phys_to_virt(arg) as *const PerCpuMeta) };
-    if meta.primary_table_paddr > u32::MAX as usize {
+    if meta.boot_table_paddr > u32::MAX as usize {
         return Err(CpuOnError::Other(anyhow::anyhow!(
             "x86 AP startup requires <4G CR3, got {:#x}",
-            meta.primary_table_paddr
+            meta.boot_table_paddr
         )));
     }
 
@@ -156,7 +159,7 @@ pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), Cpu
     AP_BOOTED_ID.store(usize::MAX, Ordering::Release);
     let entry_virt = crate::mem::__kimage_va(entry) as usize;
     prepare_trampoline(
-        meta.primary_table_paddr as u64,
+        meta.boot_table_paddr as u64,
         meta.stack_top_virt as u64,
         arg as u64,
         entry_virt as u64,
@@ -213,7 +216,7 @@ fn prepare_trampoline(cr3: u64, stack: u64, arg: u64, entry: u64) {
     let len = src_end as usize - src_start as usize;
     assert!(len <= AP_TRAMPOLINE_SIZE);
 
-    let dst = AP_TRAMPOLINE_PADDR as *mut u8;
+    let dst = phys_to_virt(AP_TRAMPOLINE_PADDR);
     unsafe {
         core::ptr::copy_nonoverlapping(src_start, dst, len);
     }
@@ -274,19 +277,20 @@ unsafe fn write_u64(base: *mut u8, offset: usize, value: u64) {
     }
 }
 
-fn lapic_base() -> usize {
-    (unsafe { rdmsr(IA32_APIC_BASE) } as usize) & !(crate::mem::page_size() - 1)
+fn lapic_base() -> *mut u8 {
+    let base = (unsafe { rdmsr(IA32_APIC_BASE) } as usize) & !(crate::mem::page_size() - 1);
+    phys_to_virt(base)
 }
 
 unsafe fn lapic_write(offset: u32, value: u32) {
-    let ptr = (lapic_base() + offset as usize) as *mut u32;
+    let ptr = unsafe { lapic_base().add(offset as usize) }.cast::<u32>();
     unsafe {
         ptr.write_volatile(value);
     }
 }
 
 unsafe fn lapic_read(offset: u32) -> u32 {
-    let ptr = (lapic_base() + offset as usize) as *const u32;
+    let ptr = unsafe { lapic_base().add(offset as usize) }.cast::<u32>();
     unsafe { ptr.read_volatile() }
 }
 

@@ -12,6 +12,7 @@ use toml::Value;
 const ROOT_MANIFEST: &str = "Cargo.toml";
 const WORKSPACE_TABLE: &str = "workspace";
 const WORKSPACE_DEPENDENCIES_TABLE: &str = "dependencies";
+const ZERO_SINCE_REF: &str = "0000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IncrementalPackageSelection {
@@ -30,36 +31,40 @@ pub(crate) fn select_incremental_packages(
     workspace_packages: &[Package],
     since: &str,
 ) -> anyhow::Result<IncrementalPackageSelection> {
-    let changed_paths = match changed_paths_since(workspace_root, since) {
-        Ok(paths) => paths,
-        Err(err) => {
-            return Ok(IncrementalPackageSelection::Full {
-                reason: format!("failed to diff against `{since}`: {err:#}"),
-            });
-        }
-    };
-    let root_manifest_change = if changed_paths
-        .iter()
-        .any(|path| path == Path::new(ROOT_MANIFEST))
-    {
-        Some(root_manifest_change_since(workspace_root, since)?)
-    } else {
-        None
-    };
+    match changed_paths_since_with_base(workspace_root, since) {
+        Ok((paths, diff_base)) => {
+            let root_manifest_change = if paths.iter().any(|path| path == Path::new(ROOT_MANIFEST))
+            {
+                Some(root_manifest_change_since(workspace_root, &diff_base)?)
+            } else {
+                None
+            };
 
-    select_incremental_packages_for_paths_with_root_manifest_change(
-        workspace_root,
-        metadata,
-        workspace_packages,
-        changed_paths,
-        root_manifest_change,
-    )
+            select_incremental_packages_for_paths_with_root_manifest_change(
+                workspace_root,
+                metadata,
+                workspace_packages,
+                paths,
+                root_manifest_change,
+            )
+        }
+        Err(err) => Ok(IncrementalPackageSelection::Full {
+            reason: format!("failed to diff against `{since}`: {err:#}"),
+        }),
+    }
 }
 
 pub(crate) fn changed_paths_since(
     workspace_root: &Path,
     since: &str,
 ) -> anyhow::Result<Vec<PathBuf>> {
+    changed_paths_since_with_base(workspace_root, since).map(|(paths, _)| paths)
+}
+
+fn changed_paths_since_with_base(
+    workspace_root: &Path,
+    since: &str,
+) -> anyhow::Result<(Vec<PathBuf>, String)> {
     ensure_git_work_tree(workspace_root)?;
 
     let diff_base = resolve_since_diff_base(workspace_root, since)?;
@@ -90,21 +95,47 @@ pub(crate) fn changed_paths_since(
         );
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect())
+    Ok((
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+        diff_base,
+    ))
 }
 
 fn resolve_since_diff_base(workspace_root: &Path, since: &str) -> anyhow::Result<String> {
-    if since.is_empty() || since == "0000000000000000000000000000000000000000" {
-        bail!("since ref is empty or zero");
+    if since.is_empty() {
+        bail!("since ref is empty");
+    }
+    if since == ZERO_SINCE_REF {
+        let diff_base = infer_zero_since_diff_base(workspace_root)
+            .context("failed to infer diff base for zero since ref")?;
+        println!("input ref `{since}` is zero; inferred `{diff_base}` as incremental diff base");
+        return Ok(diff_base);
     }
 
-    let since_commit = git_commit_for_ref(workspace_root, since)
-        .with_context(|| format!("failed to resolve `{since}` to a commit"))?;
+    let since_commit = match git_commit_for_ref(workspace_root, since) {
+        Ok(commit) => commit,
+        Err(err) if is_unresolved_commit_sha_candidate(since) => {
+            let diff_base = infer_zero_since_diff_base(workspace_root).with_context(|| {
+                format!(
+                    "failed to infer diff base for unresolved input ref `{since}` after commit \
+                     resolution failed: {err:#}"
+                )
+            })?;
+            println!(
+                "input ref `{since}` could not be resolved; inferred `{diff_base}` as incremental \
+                 diff base"
+            );
+            return Ok(diff_base);
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to resolve `{since}` to a commit"));
+        }
+    };
     if git_ref_is_ancestor_of_head(workspace_root, &since_commit)? {
         println!("using input ref `{since}` (`{since_commit}`) as incremental diff base");
         return Ok(since_commit);
@@ -117,6 +148,101 @@ fn resolve_since_diff_base(workspace_root: &Path, since: &str) -> anyhow::Result
          `{merge_base}` as incremental diff base"
     );
     Ok(merge_base)
+}
+
+fn is_unresolved_commit_sha_candidate(since: &str) -> bool {
+    since.len() == 40
+        && since != ZERO_SINCE_REF
+        && since.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn infer_zero_since_diff_base(workspace_root: &Path) -> anyhow::Result<String> {
+    let head_commit = git_commit_for_ref(workspace_root, "HEAD")
+        .context("failed to resolve HEAD for zero since inference")?;
+    let remote_refs = git_remote_refs_not_at_commit(workspace_root, &head_commit)
+        .context("failed to list remote refs for zero since inference")?;
+    if remote_refs.is_empty() {
+        bail!("no remote refs remain after excluding refs at HEAD");
+    }
+
+    let mut args = vec!["rev-list", "--reverse", "--parents", "HEAD", "--not"];
+    args.extend(remote_refs.iter().map(String::as_str));
+    let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
+        .arg("-C")
+        .arg(workspace_root)
+        .args(args)
+        .output()
+        .context("failed to run git rev-list for zero since inference")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "git rev-list exited with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        );
+    }
+
+    let first_unique = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+        .context("HEAD has no commits outside remote refs not at HEAD")?;
+    let mut parts = first_unique.split_whitespace();
+    let commit = parts
+        .next()
+        .context("git rev-list returned an empty line")?;
+    let parent = parts
+        .next()
+        .with_context(|| format!("first unique commit `{commit}` has no parent"))?;
+
+    git_commit_for_ref(workspace_root, parent)
+        .with_context(|| format!("failed to resolve inferred parent `{parent}` to a commit"))
+}
+
+fn git_remote_refs_not_at_commit(
+    workspace_root: &Path,
+    excluded_commit: &str,
+) -> anyhow::Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/remotes",
+        ])
+        .output()
+        .context("failed to run git for-each-ref for remote refs")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "git for-each-ref exited with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        );
+    }
+
+    let refs = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let git_ref = parts.next()?;
+            let commit = parts.next()?;
+            (commit != excluded_commit).then(|| git_ref.to_string())
+        })
+        .collect();
+    Ok(refs)
 }
 
 fn git_commit_for_ref(workspace_root: &Path, git_ref: &str) -> anyhow::Result<String> {
@@ -408,7 +534,6 @@ impl PackagePathIndex {
                     RootManifestChange::Hard => return Ok(ChangedPackages::Full { path }),
                     RootManifestChange::LocalWorkspaceDependencies(dependencies) => {
                         packages.extend(dependencies);
-                        soft_global_inputs.push(path);
                     }
                 }
                 continue;
@@ -518,22 +643,27 @@ fn classify_root_manifest_change(
     let old_dependencies = workspace_dependencies(&old);
     let new_dependencies = workspace_dependencies(&new);
     let mut changed = BTreeSet::new();
-    for dependency in old_dependencies
+    for dependency_key in old_dependencies
         .keys()
         .chain(new_dependencies.keys())
         .collect::<BTreeSet<_>>()
     {
-        let old_dependency = old_dependencies.get(dependency.as_str());
-        let new_dependency = new_dependencies.get(dependency.as_str());
+        let old_dependency = old_dependencies.get(dependency_key.as_str());
+        let new_dependency = new_dependencies.get(dependency_key.as_str());
         if old_dependency == new_dependency {
             continue;
         }
-        if !old_dependency.is_some_and(is_local_workspace_dependency)
-            && !new_dependency.is_some_and(is_local_workspace_dependency)
-        {
+        let old_package = old_dependency.and_then(|dependency| {
+            local_workspace_dependency_package_name(dependency_key, dependency)
+        });
+        let new_package = new_dependency.and_then(|dependency| {
+            local_workspace_dependency_package_name(dependency_key, dependency)
+        });
+        if old_package.is_none() && new_package.is_none() {
             return Ok(RootManifestChange::Hard);
         }
-        changed.insert(dependency.to_string());
+        changed.extend(old_package);
+        changed.extend(new_package);
     }
 
     Ok(RootManifestChange::LocalWorkspaceDependencies(changed))
@@ -563,6 +693,24 @@ fn is_local_workspace_dependency(dependency: &Value) -> bool {
         .as_table()
         .and_then(|table| table.get("path"))
         .is_some_and(Value::is_str)
+}
+
+fn local_workspace_dependency_package_name(
+    dependency_key: &str,
+    dependency: &Value,
+) -> Option<String> {
+    if !is_local_workspace_dependency(dependency) {
+        return None;
+    }
+
+    Some(
+        dependency
+            .as_table()
+            .and_then(|table| table.get("package"))
+            .and_then(Value::as_str)
+            .unwrap_or(dependency_key)
+            .to_string(),
+    )
 }
 
 fn normalize_git_path(path: PathBuf) -> anyhow::Result<PathBuf> {
@@ -943,6 +1091,258 @@ mod tests {
     }
 
     #[test]
+    fn zero_since_on_new_branch_resolves_to_first_unique_parent() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+        let base = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/dev", &base],
+        );
+
+        run_git(root.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(root.path().join("feature.txt"), "feature 1\n").unwrap();
+        run_git(root.path(), &["add", "feature.txt"]);
+        run_git(root.path(), &["commit", "-m", "feature 1"]);
+        std::fs::write(root.path().join("feature.txt"), "feature 2\n").unwrap();
+        run_git(root.path(), &["commit", "-am", "feature 2"]);
+        let head = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/feature", &head],
+        );
+
+        assert_eq!(
+            resolve_since_diff_base(root.path(), "0000000000000000000000000000000000000000")
+                .unwrap(),
+            base
+        );
+    }
+
+    #[test]
+    fn zero_since_ignores_default_branch_tip_after_branch_fork() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+        let fork_point = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+
+        run_git(root.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(root.path().join("feature.txt"), "feature\n").unwrap();
+        run_git(root.path(), &["add", "feature.txt"]);
+        run_git(root.path(), &["commit", "-m", "feature"]);
+        let feature_head = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+
+        run_git(root.path(), &["checkout", "-b", "dev", &fork_point]);
+        std::fs::write(root.path().join("file.txt"), "dev 1\n").unwrap();
+        run_git(root.path(), &["commit", "-am", "dev 1"]);
+        std::fs::write(root.path().join("file.txt"), "dev 2\n").unwrap();
+        run_git(root.path(), &["commit", "-am", "dev 2"]);
+        let dev_head = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        assert_ne!(dev_head, fork_point);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/dev", &dev_head],
+        );
+
+        run_git(root.path(), &["checkout", "feature"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/feature", &feature_head],
+        );
+
+        assert_eq!(
+            resolve_since_diff_base(root.path(), "0000000000000000000000000000000000000000")
+                .unwrap(),
+            fork_point
+        );
+    }
+
+    #[test]
+    fn unresolved_push_before_sha_resolves_like_new_branch_since() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+        let base = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/dev", &base],
+        );
+
+        run_git(root.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(root.path().join("feature.txt"), "feature 1\n").unwrap();
+        run_git(root.path(), &["add", "feature.txt"]);
+        run_git(root.path(), &["commit", "-m", "feature 1"]);
+        std::fs::write(root.path().join("feature.txt"), "feature 2\n").unwrap();
+        run_git(root.path(), &["commit", "-am", "feature 2"]);
+        let head = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/feature", &head],
+        );
+
+        assert_eq!(
+            resolve_since_diff_base(root.path(), "1111111111111111111111111111111111111111")
+                .unwrap(),
+            base
+        );
+    }
+
+    #[test]
+    fn unresolved_push_before_sha_without_remote_refs_returns_error() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+
+        let err = resolve_since_diff_base(root.path(), "1111111111111111111111111111111111111111")
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("no remote refs remain"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn unresolved_named_ref_does_not_use_push_before_sha_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+        let base = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/dev", &base],
+        );
+
+        let err = resolve_since_diff_base(root.path(), "missing-branch").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("failed to resolve `missing-branch` to a commit"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn unresolved_short_sha_does_not_use_push_before_sha_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+        let base = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/dev", &base],
+        );
+
+        let err = resolve_since_diff_base(root.path(), "1111111").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("failed to resolve `1111111` to a commit"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn zero_since_root_manifest_change_uses_inferred_base() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\", \
+             \"crates/gamma\"]\n\n[workspace.dependencies]\nalpha = { path = \"crates/alpha\" }\n",
+        )
+        .unwrap();
+        run_git(root.path(), &["add", "."]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+        let base = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/dev", &base],
+        );
+
+        run_git(root.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\", \
+             \"crates/gamma\"]\n\n[workspace.dependencies]\nalpha = { path = \"crates/alpha\", \
+             package = \"alpha\" }\n",
+        )
+        .unwrap();
+        run_git(root.path(), &["commit", "-am", "feature"]);
+        let head = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            root.path(),
+            &["update-ref", "refs/remotes/origin/feature", &head],
+        );
+
+        let selected = select_incremental_packages(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            "0000000000000000000000000000000000000000",
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages {
+                changed: vec!["alpha".into()],
+                affected: vec!["alpha".into(), "beta".into(), "gamma".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn zero_since_without_remote_refs_returns_error() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"]);
+        run_git(root.path(), &["config", "user.email", "test@example.com"]);
+        run_git(root.path(), &["config", "user.name", "Test User"]);
+        std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
+        run_git(root.path(), &["add", "file.txt"]);
+        run_git(root.path(), &["commit", "-m", "base"]);
+
+        let err = resolve_since_diff_base(root.path(), "0000000000000000000000000000000000000000")
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("no remote refs remain"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
     fn changed_top_level_crate_affected_set_is_only_itself() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
@@ -1187,6 +1587,74 @@ mod tests {
     }
 
     #[test]
+    fn root_cargo_toml_semantic_noop_selects_no_packages() {
+        let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+        "#;
+        let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            # Comment-only edits should not force all clippy packages.
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+        "#;
+        let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+        assert_eq!(
+            change,
+            RootManifestChange::LocalWorkspaceDependencies(BTreeSet::new())
+        );
+
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [PathBuf::from("Cargo.toml")],
+            Some(change),
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages {
+                changed: Vec::new(),
+                affected: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn root_cargo_toml_semantic_noop_keeps_incremental_package_selection() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from("Cargo.toml"),
+                PathBuf::from("crates/beta/src/lib.rs"),
+            ],
+            Some(RootManifestChange::LocalWorkspaceDependencies(
+                BTreeSet::new(),
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages {
+                changed: vec!["beta".into()],
+                affected: vec!["beta".into(), "gamma".into()],
+            }
+        );
+    }
+
+    #[test]
     fn root_cargo_toml_workspace_dependency_change_skips_removed_packages() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths_with_root_manifest_change(
@@ -1206,6 +1674,59 @@ mod tests {
                 changed: vec!["beta".into()],
                 affected: vec!["beta".into(), "gamma".into()],
             }
+        );
+    }
+
+    #[test]
+    fn root_manifest_classifier_uses_package_name_for_local_dependency_alias() {
+        let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha_alias = { version = "0.1.0", path = "crates/alpha", package = "alpha" }
+        "#;
+        let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha_alias = { version = "0.2.0", path = "crates/alpha", package = "alpha" }
+        "#;
+
+        let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+
+        assert_eq!(
+            change,
+            RootManifestChange::LocalWorkspaceDependencies(BTreeSet::from(["alpha".to_string()]))
+        );
+    }
+
+    #[test]
+    fn root_manifest_classifier_tracks_local_dependency_alias_package_change() {
+        let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta"]
+
+            [workspace.dependencies]
+            local_alias = { version = "0.1.0", path = "crates/alpha", package = "alpha" }
+        "#;
+        let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta"]
+
+            [workspace.dependencies]
+            local_alias = { version = "0.1.0", path = "crates/beta", package = "beta" }
+        "#;
+
+        let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+
+        assert_eq!(
+            change,
+            RootManifestChange::LocalWorkspaceDependencies(BTreeSet::from([
+                "alpha".to_string(),
+                "beta".to_string()
+            ]))
         );
     }
 

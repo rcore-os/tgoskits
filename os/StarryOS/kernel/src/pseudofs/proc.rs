@@ -16,7 +16,7 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::PAGE_SIZE_4K;
+use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -30,10 +30,10 @@ use zerocopy::IntoBytes;
 
 use crate::{
     file::FD_TABLE,
-    mm::BackendFileInfo,
+    mm::{BackendFileInfo, ProcessMemStats},
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir, SimpleDirOps, SimpleFile,
-        SimpleFileOperation, SimpleFs, SpecialFsFile,
+        DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
+        SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
         AsThread, ProcessData, TaskStat, Thread, get_process_data, get_task, processes, tasks,
@@ -106,12 +106,16 @@ fn render_meminfo() -> String {
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let cached = usages.get(ax_alloc::UsageKind::PageCache);
+    let page_tables = usages.get(ax_alloc::UsageKind::PageTable);
+    let anon_pages = usages.get(ax_alloc::UsageKind::VirtMem);
     let free = total.saturating_sub(used);
 
     let total_kb = total / 1024;
     let free_kb = free / 1024;
     let cached_kb = cached / 1024;
     let available_kb = free_kb + cached_kb;
+    let page_tables_kb = page_tables / 1024;
+    let anon_pages_kb = anon_pages / 1024;
 
     format!(
         "MemTotal:       {total_kb:>10} kB\n\
@@ -124,7 +128,7 @@ fn render_meminfo() -> String {
          SwapFree:                0 kB\n\
          Dirty:                   0 kB\n\
          Writeback:               0 kB\n\
-         AnonPages:               0 kB\n\
+         AnonPages:      {anon_pages_kb:>10} kB\n\
          Mapped:                  0 kB\n\
          Shmem:                   0 kB\n\
          KReclaimable:            0 kB\n\
@@ -132,7 +136,7 @@ fn render_meminfo() -> String {
          SReclaimable:            0 kB\n\
          SUnreclaim:              0 kB\n\
          KernelStack:             0 kB\n\
-         PageTables:              0 kB\n\
+         PageTables:     {page_tables_kb:>10} kB\n\
          NFS_Unstable:            0 kB\n\
          Bounce:                  0 kB\n\
          WritebackTmp:            0 kB\n\
@@ -200,10 +204,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf, "Virtual Machine\t\t: no");
     let _ = writeln!(buf, "Model Name\t\t: QEMU Virtual Machine");
     let _ = writeln!(buf, "ISA\t\t\t: loongarch32 loongarch64");
-    let _ = writeln!(
-        buf,
-        "Feat\t\t\t: cpucfg lam ual fpu lsx lasx crc32 complex crypto lvz"
-    );
+    let _ = writeln!(buf, "Feat\t\t\t: cpucfg lam ual fpu lsx lasx");
     let _ = writeln!(buf);
 }
 
@@ -279,7 +280,7 @@ fn render_stat() -> String {
 }
 
 fn render_proc_net_arp() -> String {
-    let mut entries = axnet::arp_entries();
+    let mut entries = ax_net::arp_entries();
     entries.sort_by(|a, b| {
         a.device
             .cmp(&b.device)
@@ -367,47 +368,78 @@ impl SimpleDirOps for ProcessTaskDir {
 fn task_status(task: &AxTaskRef) -> String {
     let thread = task.as_thread();
     let cred = thread.cred();
+    let name = task.name();
     let num_threads = thread.proc_data.proc.threads().len() as u32;
+    let mem = ProcessMemStats::collect(&thread.proc_data.aspace().lock());
+    let tracer_pid = thread.proc_data.ptrace_tracer_pid().unwrap_or(0);
+    let ppid = thread
+        .proc_data
+        .proc
+        .parent()
+        .map_or(0, |parent| parent.pid());
     render_task_status(
-        thread.proc_data.proc.pid(),
-        thread.tid() as u64,
-        &cred,
-        num_threads,
+        TaskStatusBase {
+            name: &name,
+            state: task_status_state(task),
+            tgid: thread.proc_data.proc.pid(),
+            pid: thread.tid() as u64,
+            ppid,
+            tracer_pid,
+            cred: &cred,
+            num_threads,
+        },
         task.cpumask(),
         ax_runtime::hal::cpu_num(),
+        &mem,
     )
 }
 
-fn render_task_status(
+fn task_status_state(task: &AxTaskRef) -> &'static str {
+    match task.state() {
+        TaskState::Running | TaskState::Ready => "R (running)",
+        TaskState::Blocked => "S (sleeping)",
+        TaskState::Exited => "Z (zombie)",
+    }
+}
+
+struct TaskStatusBase<'a> {
+    name: &'a str,
+    state: &'a str,
     tgid: u32,
     pid: u64,
-    cred: &crate::task::Cred,
+    ppid: u32,
+    tracer_pid: u32,
+    cred: &'a crate::task::Cred,
     num_threads: u32,
+}
+
+struct TaskStatusFields<'a> {
+    base: TaskStatusBase<'a>,
+    cpus_allowed: &'a str,
+    cpus_allowed_list: &'a str,
+    mem: &'a ProcessMemStats,
+}
+
+fn render_task_status(
+    base: TaskStatusBase<'_>,
     cpumask: AxCpuMask,
     cpu_num: usize,
+    mem: &ProcessMemStats,
 ) -> String {
     let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
     let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
 
-    render_task_status_fields(
-        tgid,
-        pid,
-        cred,
-        num_threads,
-        &cpus_allowed,
-        &cpus_allowed_list,
-    )
+    render_task_status_fields(&TaskStatusFields {
+        base,
+        cpus_allowed: &cpus_allowed,
+        cpus_allowed_list: &cpus_allowed_list,
+        mem,
+    })
 }
 
 #[rustfmt::skip]
-fn render_task_status_fields(
-    tgid: u32,
-    pid: u64,
-    cred: &crate::task::Cred,
-    num_threads: u32,
-    cpus_allowed: &str,
-    cpus_allowed_list: &str,
-) -> String {
+fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
+    let base = &status.base;
     // NOTE: `Threads:\t<n>` is REQUIRED by psutil. `Process.num_threads()`
     // does `int(re.compile(br'Threads:\t(\d+)').findall(data)[0])`, which
     // raises an *uncaught* IndexError (not NoSuchProcess/AccessDenied/
@@ -416,17 +448,34 @@ fn render_task_status_fields(
     // The tab-separated `Uid:`/`Gid:` lines are likewise mandatory for
     // `Process.uids()`/`gids()`, which also index `findall(...)[0]` blindly.
     format!(
-        "Tgid:\t{tgid}\n\
-        Pid:\t{pid}\n\
+        "Name:\t{}\n\
+        State:\t{}\n\
+        Tgid:\t{}\n\
+        Pid:\t{}\n\
+        PPid:\t{}\n\
+        TracerPid:\t{}\n\
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
-        Threads:\t{num_threads}\n\
-        Cpus_allowed:\t{cpus_allowed}\n\
-        Cpus_allowed_list:\t{cpus_allowed_list}\n\
+        Threads:\t{}\n\
+        {}\
+        Cpus_allowed:\t{}\n\
+        Cpus_allowed_list:\t{}\n\
         Mems_allowed:\t1\n\
-        Mems_allowed_list:\t0",
-        cred.uid, cred.euid, cred.suid, cred.fsuid,
-        cred.gid, cred.egid, cred.sgid, cred.fsgid,
+        Mems_allowed_list:\t0\n\
+        voluntary_ctxt_switches:\t0\n\
+        nonvoluntary_ctxt_switches:\t0",
+        base.name,
+        base.state,
+        base.tgid,
+        base.pid,
+        base.ppid,
+        base.tracer_pid,
+        base.cred.uid, base.cred.euid, base.cred.suid, base.cred.fsuid,
+        base.cred.gid, base.cred.egid, base.cred.sgid, base.cred.fsgid,
+        base.num_threads,
+        status.mem.format_status_vm_lines(),
+        status.cpus_allowed,
+        status.cpus_allowed_list,
     )
 }
 
@@ -701,12 +750,11 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
 /// `Process.as_dict()`), crashing any `process_iter` (glances / top-likes).
 ///
 /// `size` (VSS) is summed exactly from the mapped areas. `resident` (RSS) is
-/// reported as the full VSS — an honest upper bound rather than a fabricated
-/// figure; StarryOS' file-backed areas are lazily/cache populated, so a precise
-/// per-page page-table walk for every process on every refresh would be far too
-/// expensive under emulation. `shared`/`lib`/`dirty` are 0 (Linux also reports 0
-/// for `lib`/`dirty` since 2.6); `text` and `data` are derived from the areas'
-/// executable / writable flags.
+/// currently the VSS upper bound (see `mm/stats.rs` `FIXME(plan2-rss)`); Plan2
+/// will report real resident pages. `shared` is the virtual size of shared
+/// backends (not Linux mapcount sharing). `lib`/`dirty` are 0 (Linux also
+/// reports 0 for `lib`/`dirty` since 2.6); `text` and `data` are derived from
+/// the areas' executable / writable flags.
 fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
     let task = match task.upgrade() {
         Some(t) => t,
@@ -715,25 +763,7 @@ fn render_thread_statm(task: &WeakAxTaskRef) -> VfsResult<String> {
 
     let aspace_arc = task.as_thread().proc_data.aspace();
     let mm = aspace_arc.lock();
-
-    let mut size_pages: u64 = 0;
-    let mut text_pages: u64 = 0;
-    let mut data_pages: u64 = 0;
-    for area in mm.areas() {
-        let pages = (area.size() / PAGE_SIZE_4K) as u64;
-        size_pages += pages;
-        let flags = area.flags();
-        if flags.contains(MappingFlags::EXECUTE) {
-            text_pages += pages;
-        } else if flags.contains(MappingFlags::WRITE) {
-            data_pages += pages;
-        }
-    }
-
-    // size resident shared text lib data dirty
-    Ok(format!(
-        "{size_pages} {size_pages} 0 {text_pages} 0 {data_pages} 0\n"
-    ))
+    Ok(ProcessMemStats::collect(&mm).format_statm())
 }
 
 fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
@@ -746,6 +776,74 @@ fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
     bytes
 }
 
+struct ProcMemFile {
+    proc_data: Arc<ProcessData>,
+}
+
+impl ProcMemFile {
+    fn check_access(&self) -> VfsResult<()> {
+        let current_task = current();
+        let current_proc = &current_task.as_thread().proc_data;
+        if current_proc.proc.pid() == self.proc_data.proc.pid() {
+            return Ok(());
+        }
+
+        let is_tracer = (self.proc_data.is_ptrace_traceme() || self.proc_data.is_ptrace_attached())
+            && self
+                .proc_data
+                .ptrace_tracer_pid()
+                .is_some_and(|pid| pid == current_proc.proc.pid())
+            && self.proc_data.ptrace_stop_signo().is_some();
+        if is_tracer {
+            Ok(())
+        } else {
+            Err(VfsError::PermissionDenied)
+        }
+    }
+
+    fn populate_remote_range(&self, addr: usize, len: usize, flags: MappingFlags) -> VfsResult<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        let start = VirtAddr::from_usize(addr);
+        let end = VirtAddr::from_usize(addr.checked_add(len).ok_or(VfsError::BadAddress)?);
+        let page_start = start.align_down_4k();
+        let page_end = end.align_up_4k();
+        let aspace = self.proc_data.aspace();
+        let mut aspace = aspace.lock();
+        aspace.populate_area(page_start, page_end - page_start, flags)
+    }
+}
+
+impl DirectRwFsFileOps for ProcMemFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        self.check_access()?;
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let addr = usize::try_from(offset).map_err(|_| VfsError::BadAddress)?;
+        self.populate_remote_range(addr, buf.len(), MappingFlags::READ)?;
+        let aspace = self.proc_data.aspace();
+        let aspace = aspace.lock();
+        aspace.read(VirtAddr::from_usize(addr), buf)?;
+        Ok(buf.len())
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        self.check_access()?;
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let addr = usize::try_from(offset).map_err(|_| VfsError::BadAddress)?;
+        self.populate_remote_range(addr, buf.len(), MappingFlags::WRITE)?;
+        let aspace = self.proc_data.aspace();
+        let aspace = aspace.lock();
+        aspace.write(VirtAddr::from_usize(addr), buf)?;
+        ax_runtime::hal::cpu::asm::flush_icache_all();
+        Ok(buf.len())
+    }
+}
+
 impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
@@ -756,6 +854,7 @@ impl SimpleDirOps for ThreadDir {
                 "oom_score_adj",
                 "task",
                 "maps",
+                "mem",
                 "auxv",
                 "mounts",
                 "cmdline",
@@ -798,14 +897,28 @@ impl SimpleDirOps for ThreadDir {
                     if let Some(pid) = procfs_pid {
                         let thread = task.as_thread();
                         let cred = thread.cred();
+                        let name = task.name();
                         let num_threads = thread.proc_data.proc.threads().len() as u32;
+                        let mem = ProcessMemStats::collect(&thread.proc_data.aspace().lock());
+                        let ppid = thread
+                            .proc_data
+                            .proc
+                            .parent()
+                            .map_or(0, |parent| parent.pid());
                         Ok(render_task_status(
-                            pid,
-                            pid as u64,
-                            &cred,
-                            num_threads,
+                            TaskStatusBase {
+                                name: &name,
+                                state: task_status_state(&task),
+                                tgid: pid,
+                                pid: pid as u64,
+                                ppid,
+                                tracer_pid: thread.proc_data.ptrace_tracer_pid().unwrap_or(0),
+                                cred: &cred,
+                                num_threads,
+                            },
                             task.cpumask(),
                             ax_runtime::hal::cpu_num(),
+                            &mem,
                         ))
                     } else {
                         Ok(task_status(&task))
@@ -850,6 +963,14 @@ impl SimpleDirOps for ThreadDir {
                 )
                 .into()
             }
+            "mem" => SpecialFsFile::new_regular_with_perm(
+                fs,
+                ProcMemFile {
+                    proc_data: task.as_thread().proc_data.clone(),
+                },
+                NodePermission::from_bits_truncate(0o600),
+            )
+            .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
@@ -1101,6 +1222,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
         }),
     );
+    // /proc/filesystems — list of registered filesystem types. Tools like
+    // `mount`/`findmnt` and some container runtimes read it to decide what they
+    // can mount; absence (ENOENT) made those probes fail.
+    root.add(
+        "filesystems",
+        SimpleFile::new_regular(fs.clone(), || {
+            Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
+        }),
+    );
     root.add(
         "stat",
         SimpleFile::new_regular(fs.clone(), || Ok(render_stat())),
@@ -1189,8 +1319,65 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "pid_max",
                 SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
             );
+            // Linux exposes the kernel release/type here. Apps + libraries read
+            // these at init for feature detection (e.g. modernc.org/fileutil,
+            // pulled in by juicefs's sqlite meta store, panics on open() of a
+            // missing osrelease). Report a recent release so apps take modern
+            // paths starry supports; ostype is always "Linux".
+            kernel.add(
+                "osrelease",
+                SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
+            );
+            kernel.add(
+                "ostype",
+                SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+            );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+        });
+
+        // /proc/sys/vm — read-only constants several runtimes probe at startup.
+        // `max_map_count` in particular is read by Elasticsearch/Lucene and some
+        // JVMs as a preflight check; its absence (ENOENT) trips those checks.
+        sys.add("vm", {
+            let mut vm = DirMapping::new();
+            vm.add(
+                "overcommit_memory",
+                SimpleFile::new_regular(fs.clone(), || Ok("0\n")),
+            );
+            vm.add(
+                "max_map_count",
+                SimpleFile::new_regular(fs.clone(), || Ok("65530\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(vm))
+        });
+
+        // /proc/sys/fs — file-descriptor limits some servers read to size tables.
+        sys.add("fs", {
+            let mut fs_sys = DirMapping::new();
+            fs_sys.add(
+                "file-max",
+                SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
+            );
+            fs_sys.add(
+                "nr_open",
+                SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))
+        });
+
+        // /proc/sys/net/core/somaxconn — listen-backlog clamp some servers read.
+        sys.add("net", {
+            let mut net = DirMapping::new();
+            net.add("core", {
+                let mut core = DirMapping::new();
+                core.add(
+                    "somaxconn",
+                    SimpleFile::new_regular(fs.clone(), || Ok("4096\n")),
+                );
+                SimpleDir::new_maker(fs.clone(), Arc::new(core))
+            });
+            SimpleDir::new_maker(fs.clone(), Arc::new(net))
         });
 
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
@@ -1297,10 +1484,18 @@ mod tests {
     use alloc::{format, string::String};
 
     use super::{
-        collect_cpu_presence, format_cpu_presence_hex, format_cpu_presence_list,
-        render_task_status_fields,
+        TaskStatusBase, TaskStatusFields, collect_cpu_presence, format_cpu_presence_hex,
+        format_cpu_presence_list, render_task_status_fields,
     };
-    use crate::task::Cred;
+    use crate::{mm::ProcessMemStats, task::Cred};
+
+    fn sample_mem_stats() -> ProcessMemStats {
+        ProcessMemStats {
+            vss_pages: 128,
+            resident_pages: 128,
+            ..Default::default()
+        }
+    }
 
     fn legacy_render_task_status(tgid: u32, pid: u64) -> String {
         format!(
@@ -1315,14 +1510,21 @@ mod tests {
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
 
-        render_task_status_fields(
-            tgid,
-            pid,
-            &Cred::root(),
-            1,
-            &cpus_allowed,
-            &cpus_allowed_list,
-        )
+        render_task_status_fields(&TaskStatusFields {
+            base: TaskStatusBase {
+                name: "proc-status-test",
+                state: "R (running)",
+                tgid,
+                pid,
+                ppid: 0,
+                tracer_pid: 0,
+                cred: &Cred::root(),
+                num_threads: 1,
+            },
+            cpus_allowed: &cpus_allowed,
+            cpus_allowed_list: &cpus_allowed_list,
+            mem: &sample_mem_stats(),
+        })
     }
 
     #[test]
@@ -1362,6 +1564,9 @@ mod tests {
 
         assert!(status.contains("Tgid:\t42\n"));
         assert!(status.contains("Pid:\t84\n"));
+        assert!(status.contains("Name:\tproc-status-test\n"));
+        assert!(status.contains("State:\tR (running)\n"));
+        assert!(status.contains("PPid:\t0\n"));
         assert!(status.contains("Cpus_allowed:\t0000000a\n"));
         assert!(status.contains("Cpus_allowed_list:\t1,3\n"));
     }
@@ -1374,11 +1579,80 @@ mod tests {
         let cpu_presence = collect_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
-        let status =
-            render_task_status_fields(1, 1, &Cred::root(), 3, &cpus_allowed, &cpus_allowed_list);
+        let status = render_task_status_fields(&TaskStatusFields {
+            base: TaskStatusBase {
+                name: "proc-status-test",
+                state: "S (sleeping)",
+                tgid: 1,
+                pid: 1,
+                ppid: 0,
+                tracer_pid: 0,
+                cred: &Cred::root(),
+                num_threads: 3,
+            },
+            cpus_allowed: &cpus_allowed,
+            cpus_allowed_list: &cpus_allowed_list,
+            mem: &sample_mem_stats(),
+        });
 
         assert!(status.contains("Threads:\t3\n"));
         // Tab-separated, exactly as the psutil regex expects (not space).
         assert!(!status.contains("Threads: 3"));
+        assert!(status.contains("State:\tS (sleeping)\n"));
+    }
+
+    #[test]
+    fn task_status_reports_tracer_pid_for_debuggers() {
+        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+        let status = render_task_status_fields(&TaskStatusFields {
+            base: TaskStatusBase {
+                name: "proc-status-test",
+                state: "R (running)",
+                tgid: 10,
+                pid: 11,
+                ppid: 9,
+                tracer_pid: 42,
+                cred: &Cred::root(),
+                num_threads: 1,
+            },
+            cpus_allowed: &cpus_allowed,
+            cpus_allowed_list: &cpus_allowed_list,
+            mem: &sample_mem_stats(),
+        });
+
+        assert!(status.contains("PPid:\t9\n"));
+        assert!(status.contains("TracerPid:\t42\n"));
+    }
+
+    #[test]
+    fn status_includes_vm_size_from_mem_stats() {
+        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+        let mem = ProcessMemStats {
+            vss_pages: 128,
+            resident_pages: 128,
+            ..Default::default()
+        };
+        let status = render_task_status_fields(&TaskStatusFields {
+            base: TaskStatusBase {
+                name: "proc-status-test",
+                state: "R (running)",
+                tgid: 1,
+                pid: 1,
+                ppid: 0,
+                tracer_pid: 0,
+                cred: &Cred::root(),
+                num_threads: 1,
+            },
+            cpus_allowed: &cpus_allowed,
+            cpus_allowed_list: &cpus_allowed_list,
+            mem: &mem,
+        });
+
+        assert!(status.contains("VmSize:\t512 kB\n"));
+        assert!(status.contains("VmRSS:\t512 kB\n"));
     }
 }

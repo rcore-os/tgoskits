@@ -11,6 +11,8 @@ This skill is a normative review specification, not a suggestion list. When it t
 
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
+After reading the full skill, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, duplicate and overlap analysis, validation, blocking findings, submission rules, reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
 ## Goal
@@ -211,15 +213,15 @@ Review the PR against its stated intent, the current base branch, existing proje
 - `starry-test-suit` rules when StarryOS test cases or `qemu-*.toml` files change.
 - `cross-kernel-driver` architecture rules when portable driver crates or driver glue change.
 
-For bug fixes, require a reproduction test that fails before the fix and passes after it unless the environment makes that impossible. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
+For bug fixes (修复 bug), require a regression or reproduction test that fails on the unfixed behavior and passes only after the fix unless concrete evidence shows the environment makes such a test impossible. The reviewer must verify this from the test code, author-provided red/green evidence, or local red/green validation when practical. If the PR fixes a bug but lacks a post-fix-only regression test and no concrete impossibility is documented, treat that as blocking. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
 
 For PRs that add StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
 
 - App-level smoke, demo, rootfs preparation, board/QEMU run scripts, and long-running or opt-in workflows belong under `apps/starry/<app-or-scenario>/`, following `apps/starry/README.md`.
-- Kernel ABI, syscall, filesystem, process, networking, or other bugfix coverage exposed while enabling the app belongs under `test-suit/starryos/normal` in the matching existing case group, such as `qemu-smp1/syscall`, `qemu-smp1/bugfix`, `qemu-smp1/c-regression`, networking, DRM, evdev, or another closest semantic group.
-- If the PR adds a syscall or changes syscall semantics for the app, require a minimal normal syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
-- If the PR fixes a bug found through the app, require a normal bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
-- Do not approve app-support PRs that put app workflows only into `test-suit/starryos/normal`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
+- Kernel ABI, syscall, filesystem, process, networking, or other bugfix coverage exposed while enabling the app belongs under `test-suit/starryos/<case>` or the closest existing grouped wrapper, such as a `qemu-smp*/system/<subcase>` grouped C subcase.
+- If the PR adds a syscall or changes syscall semantics for the app, require a minimal test-suit syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
+- If the PR fixes a bug found through the app, require a test-suit bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
+- Do not approve app-support PRs that put app workflows only into `test-suit/starryos`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
 - If the PR adds or changes an app-oriented Starry QEMU case under either `apps/starry` or `test-suit/starryos`, run the actual documented app command or exact `cargo xtask starry test qemu ... -c <case>` path in QEMU for at least the changed/claimed architecture. For multi-arch `qemu-*.toml` additions, run the architecture most likely to fail from CI or PR history; if any newly added required architecture is already failing in CI, reproduce or classify that architecture before approval.
 - Do not approve when the app/test cannot be run as described by the PR, when its success depends on an unavailable or unstable external service without a controlled fallback, or when the command only passes on a narrower target than the PR claims. Report the exact command, architecture, guest-visible failure marker, and whether the failure matches remote CI.
 
@@ -229,7 +231,9 @@ Do not approve changes that are only shaped to satisfy the added tests, such as 
 
 Do not accept "success path" tests that silently skip on unexpected failure, such as returning early when `brk`, `sbrk`, I/O, or socket setup returns `ENOMEM`/`EAGAIN`, unless the test prints an explicit skip marker and the review explains why the environment legitimately cannot require success. Bugfix reproduction tests should fail loudly when the fixed behavior is absent.
 
-Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from normal groups, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving normal regression coverage.
+Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from required test-suit coverage, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving regression coverage.
+
+For PRs that add or change Starry QEMU tests, `qemu-*.toml`, grouped wrappers, generated QEMU runners, or QEMU `success_regex`/`fail_regex`, verify failure propagation as a hard gate. A guest test failure must be observable by `cargo xtask starry test qemu ...` as a failed case, not only as a log line. Treat this as blocking when a QEMU test binary fails but the wrapper still prints the grouped success marker, the command exits zero, `fail_regex` cannot match the failure marker, `$?` is overwritten before being captured, or a failing subcase is converted into an unreviewed skip. Board config changes should still be reviewed against the existing board runner semantics, but do not force them into the QEMU grouped/C runner failure-propagation model.
 
 ### Crates.io Patch Policy
 
@@ -340,17 +344,19 @@ Required manual flow:
 4. Verify guest-visible behavior and the tool's real output: success markers, app command output, generated logs, symbolized blocks, packaged artifacts, or other documented postconditions. A command that exits 0 but skips the app behavior is not sufficient.
 5. For multi-architecture support, run the newly added or most failure-prone architecture, prioritizing any architecture skipped or failing in CI. If the PR claims all-arch support and CI covers only part of it, local validation must cover at least one CI-missing or highest-risk architecture.
 6. If the workflow cannot be run because required documentation, rootfs preparation, assets, or tool outputs are missing or wrong, submit `REQUEST_CHANGES`; that is a PR problem, not an environment limitation.
-7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a normal regression test, or explicit user acceptance before approval.
+7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a test-suit regression test, or explicit user acceptance before approval.
 
-For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. Running the containing grouped case is the preferred check, for example `cargo xtask starry test qemu --arch x86_64 -c syscall`. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, unreliable `success_regex`/`fail_regex`, or tests that accept both broken and fixed behavior as blocking.
+For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. For current `qemu-smp*/system` grouped C cases, prefer the smallest current-structure command that covers the change, such as `cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/<subcase>`, or run the aggregate `-c qemu-smp1/system` when wrapper-level behavior is changed. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, unreliable `success_regex`/`fail_regex`, hidden exit status, or tests that accept both broken and fixed behavior as blocking.
+
+When reviewing Starry grouped/system shell wrappers, inspect failure branches as code, not only by looking at a successful run. The wrapper must capture `$?` immediately after the test command, print `STARRY_GROUPED_TEST_FAILED` or the configured failure marker on failure, avoid printing the all-passed marker after any failure, and cause the outer xtask run to fail.
 
 For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
 
 For StarryOS app-support PRs, validate both sides when both are present:
 
 - Run the relevant `apps/starry` command or an equivalent documented app workflow when the PR adds or changes app support, unless it needs unavailable hardware, credentials, or long-running services; record any limitation.
-- Run the corresponding `cargo xtask starry test qemu --test-group normal ...` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims normal test coverage. App validation does not replace normal regression validation.
-- If the app scenario and normal regression cover different risks, mention both results in the review body.
+- Run the corresponding `cargo xtask starry test qemu --arch <arch> -c <case>` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims test-suit coverage. For `qemu-smp*/system` subcases, use `-c qemu-smp*/<subcase>` when possible. App validation does not replace test-suit regression validation.
+- If the app scenario and test-suit regression cover different risks, mention both results in the review body.
 - Do not stop at `--list`, TOML parsing, script inspection, or another reviewer saying an older head passed. Those checks prove discovery only, not that the app works. Run the current head in QEMU whenever the changed app/test is intended to run in QEMU.
 - If `tmp/axbuild/rootfs` is empty, still try the relevant `cargo xtask starry rootfs --arch <arch>` or `cargo xtask starry test qemu ...` path before declaring QEMU unavailable; the xtask flow can download managed rootfs images automatically. Record a blocker only after the xtask download/run path itself fails for an environmental reason.
 - Do not run multiple Starry QEMU cases concurrently in one worktree. Run one architecture/case to completion, then move to the next architecture if needed.
@@ -380,6 +386,7 @@ Treat these as blocking unless clearly non-blocking:
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
 - targeted tests, formatting, clippy, or PR-related CI fail;
 - a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
+- a Starry QEMU test failure is visible in guest logs but does not make `cargo xtask starry test qemu ...` fail, including hidden `$?`, missing failure marker, overly loose `success_regex`, or missing `fail_regex` coverage;
 - a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
 - a PR adds or changes CI-missing StarryOS user-space support, an ArceOS app, or an app-facing tool/wrapper, but the documented preparation plus QEMU/runtime workflow was not run on the current head;
 - an app/tool workflow's documentation is incomplete or wrong enough that the reviewer cannot prepare the environment, launch QEMU, or verify the documented postcondition;
@@ -387,10 +394,10 @@ Treat these as blocking unless clearly non-blocking:
 - a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
-- bug fixes lack meaningful reproduction coverage;
+- a bug-fix PR lacks a regression or reproduction test that fails on the unfixed behavior and passes only after the fix, unless concrete evidence shows such a test is impossible;
 - the PR adds, changes, or relies on any `[patch.crates-io]` override, instead of using normal dependency resolution, an upstream fix, a dependency upgrade, or an explicit local boundary adapter;
 - merge conflicts are unresolved, conflict repair resurrects outdated base APIs instead of adapting PR intent to current base, or the repaired head was not revalidated after push;
-- StarryOS app-support PRs place app workflows under `test-suit/starryos/normal` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching normal test-suit case;
+- StarryOS app-support PRs place app workflows under `test-suit/starryos` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching test-suit case;
 - the implementation is a test-only or fake fix that does not implement the intended behavior;
 - submitted buffers, DMA memory, queue tokens, or IRQ ownership can leak, be freed too early, or cross the wrong abstraction layer;
 - a change silently makes CI hang, time out, or skip the new coverage;
@@ -448,7 +455,7 @@ Review body must explain in Chinese:
 - duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
 - conflict handling status when applicable: conflicted files, resolution logic, validation after repair, and whether a repair commit was pushed or the work was intentionally kept as a dry run;
 - for PR-related CI failures, the failing check, failure mode, and expected fix direction;
-- reproduction coverage status for bug fixes;
+- reproduction coverage status for bug fixes, including whether the regression test fails on the unfixed behavior and passes only after the fix;
 - unresolved review conversations that were resolved, and conversations intentionally left open and why;
 - any behavior that remains unimplemented, partial, or should be completed in future work;
 - any known environment limitation.
@@ -480,7 +487,7 @@ Map PR content to reviewer directions from the "人员方向整理" table:
 - If a PR matches several domains, request one primary reviewer for the highest-risk domain and one secondary reviewer for integration or test coverage. Avoid over-requesting reviewers.
 - Drop the PR author from targets. Preserve existing bot review requests and unrelated existing human reviewer requests unless the user explicitly asks to rebalance them.
 
-For StarryOS normal QEMU app tests like PR 795 (`test-suit/starryos/normal/qemu-smp1/git`, `apk add`, app/rootfs behavior), a good mapping is `测试` + `发行版/rootfs` + `starry`: `@ZCShou` for test/rootfs/axbuild ownership and `@luodeb` for Starry/rootfs experience. Use this as a pattern, not as a hard-coded rule; still inspect the current discussion table and PR contents.
+For StarryOS QEMU app/rootfs tests such as an `apk` or `git` case under `test-suit/starryos/<case>`, a good mapping is `测试` + `发行版/rootfs` + `starry`: `@ZCShou` for test/rootfs/axbuild ownership and `@luodeb` for Starry/rootfs experience. Use this as a pattern, not as a hard-coded rule; still inspect the current discussion table and PR contents.
 
 Before writing reviewer requests, check current requested reviewers and permissions:
 

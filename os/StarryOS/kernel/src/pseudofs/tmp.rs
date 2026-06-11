@@ -1,4 +1,4 @@
-use alloc::{borrow::ToOwned, string::String, sync::Arc};
+use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use ax_kspin::SpinNoIrq;
@@ -12,12 +12,10 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::pseudofs::dummy_stat_fs;
-
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
-struct FileName(String);
+struct FileName(Arc<str>);
 
 impl PartialOrd for FileName {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -34,7 +32,7 @@ impl Ord for FileName {
                 _ => 2,
             }
         }
-        (index(&self.0), &self.0).cmp(&(index(&other.0), &other.0))
+        (index(self.0.as_ref()), self.0.as_ref()).cmp(&(index(other.0.as_ref()), other.0.as_ref()))
     }
 }
 
@@ -43,13 +41,13 @@ where
     T: Into<String>,
 {
     fn from(name: T) -> Self {
-        Self(name.into())
+        Self(Arc::from(name.into().into_boxed_str()))
     }
 }
 
 impl Borrow<str> for FileName {
     fn borrow(&self) -> &str {
-        &self.0
+        self.0.as_ref()
     }
 }
 
@@ -129,7 +127,27 @@ impl FilesystemOps for MemoryFs {
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
-        Ok(dummy_stat_fs(0x01021994))
+        // Override dummy_stat_fs (which reports 50 KiB total = 100 blocks * 512 B):
+        // BookKeeper / RocksDB / many Java servers refuse to allocate ledger / SST
+        // / WAL when File.getUsableSpace() < minUsableSizeForEntryLogCreation
+        // (default 1 GiB), throwing NoWritableLedgerDirException from a critical
+        // bookie thread that exits the JVM silently. Pulsar standalone died here.
+        // Linux tmpfs reports total = total_RAM / 2 by default; we lack a proper
+        // accounting layer, so advertise 4 GiB / 4 GiB free with realistic block
+        // size, which is enough to unblock every Java server we've hit and remains
+        // accurate when the guest VM has >= 2 GiB.
+        Ok(StatFs {
+            fs_type: 0x01021994,
+            block_size: 4096,
+            blocks: 1 << 20,
+            blocks_free: 1 << 20,
+            blocks_available: 1 << 20,
+            file_count: 0,
+            free_file_count: 1 << 16,
+            name_length: axfs_ng_vfs::path::MAX_NAME_LEN as _,
+            fragment_size: 4096,
+            mount_flags: 0,
+        })
     }
 }
 
@@ -222,10 +240,13 @@ impl Inode {
         drop(inodes);
         if let NodeContent::Dir(dir) = &result.content {
             let mut entries = dir.entries.lock_nested(dir_entries_subclass);
-            entries.insert(".".into(), InodeRef::new(fs.clone(), ino));
+            entries.insert(
+                ".".into(),
+                InodeRef::new(fs.clone(), ino, NodeType::Directory),
+            );
             entries.insert(
                 "..".into(),
-                InodeRef::new(fs.clone(), parent.unwrap_or(ino)),
+                InodeRef::new(fs.clone(), parent.unwrap_or(ino), NodeType::Directory),
             );
         }
         result
@@ -249,16 +270,21 @@ impl Inode {
 struct InodeRef {
     fs: Arc<MemoryFs>,
     ino: u64,
+    node_type: NodeType,
 }
 
 impl InodeRef {
-    pub fn new(fs: Arc<MemoryFs>, ino: u64) -> Self {
+    pub fn new(fs: Arc<MemoryFs>, ino: u64, node_type: NodeType) -> Self {
         fs.get(ino).metadata.lock().nlink += 1;
-        Self { fs, ino }
+        Self { fs, ino, node_type }
     }
 
     fn get(&self) -> Arc<Inode> {
         self.fs.get(self.ino)
+    }
+
+    fn metadata_for_readdir(&self) -> (u64, NodeType) {
+        (self.ino, self.node_type)
     }
 }
 
@@ -407,22 +433,32 @@ impl Pollable for MemoryNode {
 
 impl DirNodeOps for MemoryNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let dir = self.inode.as_dir()?;
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let entries = loop {
+            let entries = dir.entries.lock();
+            let count = entries.len().saturating_sub(offset);
+            drop(entries);
+
+            let mut snapshot = Vec::new();
+            snapshot
+                .try_reserve(count)
+                .map_err(|_| VfsError::NoMemory)?;
+
+            let entries = dir.entries.lock();
+            if entries.len().saturating_sub(offset) > snapshot.capacity() {
+                continue;
+            }
+            for (i, (name, entry)) in entries.iter().enumerate().skip(offset) {
+                let (ino, node_type) = entry.metadata_for_readdir();
+                snapshot.push((name.0.clone(), ino, node_type, i as u64 + 1));
+            }
+            break snapshot;
+        };
+
         let mut count = 0;
-        for (i, (name, entry)) in self
-            .inode
-            .as_dir()?
-            .entries
-            .lock()
-            .iter()
-            .enumerate()
-            .skip(offset as usize)
-        {
-            if !sink.accept(
-                &name.0,
-                entry.ino,
-                entry.get().metadata.lock().node_type,
-                i as u64 + 1,
-            ) {
+        for (name, ino, node_type, next_offset) in entries {
+            if !sink.accept(name.as_ref(), ino, node_type, next_offset) {
                 return Ok(count);
             }
             count += 1;
@@ -463,7 +499,10 @@ impl DirNodeOps for MemoryNode {
             gid,
             TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
         );
-        entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
+        entries.insert(
+            name.into(),
+            InodeRef::new(self.fs.clone(), inode.ino, node_type),
+        );
         self.new_entry(name, node_type, inode)
     }
 
@@ -478,11 +517,14 @@ impl DirNodeOps for MemoryNode {
         }
         let inode = target.inode.clone();
         let node_type = inode.metadata.lock().node_type;
-        entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
+        entries.insert(
+            name.into(),
+            InodeRef::new(self.fs.clone(), inode.ino, node_type),
+        );
         self.new_entry(name, node_type, inode)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
+    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir = self.inode.as_dir()?;
 
         let (entry, inode) = {
@@ -491,10 +533,15 @@ impl DirNodeOps for MemoryNode {
                 return Err(VfsError::NotFound);
             };
             let inode = entry.get();
-            if let NodeContent::Dir(DirContent { entries }) = &inode.content
-                && entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2
-            {
-                return Err(VfsError::DirectoryNotEmpty);
+            match (&inode.content, is_dir) {
+                (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
+                (NodeContent::Dir(DirContent { entries }), true)
+                    if entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2 =>
+                {
+                    return Err(VfsError::DirectoryNotEmpty);
+                }
+                (NodeContent::File(_), true) => return Err(VfsError::NotADirectory),
+                _ => {}
             }
             let entry = entries.remove(name).ok_or(VfsError::NotFound)?;
             (entry, inode)

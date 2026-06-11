@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.5.17"
+version = "0.5.19"
 
 [features]
 default = []
@@ -39,13 +39,20 @@ lockdep = [
 ]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
+# Cross-crate tracepoint hook for the scheduler context switch.
+# Enabling this exposes a `SchedTracepoint` interface (via `ax-crate-interface`)
+# that another crate (e.g. starry-kernel) must implement; otherwise the link
+# step will fail with an unresolved symbol. Pure ArceOS unikernels leave this
+# off and pay no cost.
+tracepoint-hooks = ["multitask"]
 uspace = ["ax-hal/uspace"]
 
 sched-cfs = ["multitask", "preempt"]
 sched-fifo = ["multitask"]
 sched-rr = ["multitask", "preempt"]
 
-test = ["ax-percpu?/sp-naive"]
+host-test = ["ax-kspin?/host-test", "ax-percpu?/sp-naive"]
+test = ["host-test"]
 
 [dependencies]
 ax-alloc = {workspace = true, optional = true}

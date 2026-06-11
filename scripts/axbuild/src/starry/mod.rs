@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
@@ -88,22 +91,107 @@ pub struct ArgsQemu {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsPerf {
+    /// Profile case name used in the default output path.
+    #[arg(long, default_value = "boot")]
+    pub case: String,
     #[arg(long)]
     pub arch: Option<String>,
     #[arg(long, default_value_t = 99)]
     pub freq: u32,
-    #[arg(long)]
+    #[arg(long = "out", hide = true)]
     pub out: Option<PathBuf>,
+    /// Output root. Final reports go under <DIR>/perf/<arch>/latest.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = PerfFormat::All)]
     pub format: PerfFormat,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 128)]
     pub max_depth: usize,
     #[arg(long, value_name = "SECONDS", default_value_t = 20)]
     pub timeout: u64,
-    #[arg(long, default_value = "tb")]
-    pub mode: String,
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, value_enum, default_value_t = PerfMode::Tb)]
+    pub mode: PerfMode,
+    #[arg(long, default_value_t = 80)]
     pub top: usize,
+    #[arg(long, default_value_t = 0.3)]
+    pub min_percent: f64,
+    #[arg(long)]
+    pub debug: bool,
+    #[arg(long)]
+    pub kernel_filter: bool,
+    /// Collect host wall/user/system CPU time metrics for the QEMU process wrapper.
+    #[arg(long)]
+    pub host_time: bool,
+    /// Disable the cargo starry perf default host-time metrics.
+    #[arg(long)]
+    pub no_host_time: bool,
+    /// Run QEMU under host perf stat. These are host/QEMU process metrics, not guest PMU values.
+    #[arg(long)]
+    pub host_perf: bool,
+    /// Comma-separated host perf stat events used with --host-perf.
+    #[arg(
+        long,
+        default_value = "task-clock,cycles,instructions,cache-references,cache-misses,\
+                         context-switches,cpu-migrations,page-faults"
+    )]
+    pub host_perf_events: String,
+    /// Send this command to the guest shell after the qperf boot prompt appears.
+    #[arg(long, visible_alias = "workload")]
+    pub shell_init_cmd: Option<String>,
+    /// Prompt substring used before sending --shell-init-cmd.
+    #[arg(long)]
+    pub shell_prefix: Option<String>,
+    /// Append one raw QEMU argument. Repeat for options and values.
+    #[arg(long = "qemu-arg", value_name = "ARG", allow_hyphen_values = true)]
+    pub qemu_args: Vec<String>,
+    /// Guest stdout marker that starts the workload sampling window.
+    #[arg(long)]
+    pub start_marker: Option<String>,
+    /// Guest stdout marker that stops the workload sampling window.
+    #[arg(long)]
+    pub stop_marker: Option<String>,
+    /// Stop QEMU if the workload window stays open longer than this many seconds.
+    #[arg(long, value_name = "SECONDS")]
+    pub workload_timeout: Option<u64>,
+    /// Enable feature-gated in-guest qperf metric counters.
+    #[arg(long)]
+    pub qperf_metrics: bool,
+    /// Request SVG flamegraph generation even when --format is folded.
+    #[arg(long)]
+    pub flamegraph: bool,
+    /// Flamegraph view format.
+    #[arg(long, value_enum, default_value_t = PerfFlamegraphKind::Svg)]
+    pub flamegraph_kind: PerfFlamegraphKind,
+    /// Preserve the deepest stack qperf can collect for this build.
+    #[arg(long)]
+    pub full_stack: bool,
+    /// qperf callchain collection mode. `leaf` is fastest; `fp` requires frame pointers.
+    #[arg(long = "perf-callchain", visible_alias = "callchain", value_enum)]
+    pub callchain: Option<PerfCallchain>,
+    /// Add DWARF debug info and keep symbols for qperf symbolization.
+    #[arg(long = "perf-debuginfo")]
+    pub debuginfo: bool,
+    /// Force frame pointers for qperf FP unwinding.
+    #[arg(long = "perf-force-frame-pointers")]
+    pub force_frame_pointers: bool,
+    /// Force Rust demangling in qperf-analyzer.
+    #[arg(long)]
+    pub demangle: bool,
+    /// Keep tiny frames in SVG output by setting flamegraph min width to zero.
+    #[arg(long)]
+    pub no_truncate: bool,
+    /// Include kernel symbols in symbolized stacks. This is the default for StarryOS kernels.
+    #[arg(long)]
+    pub include_kernel_symbols: bool,
+    /// Include user symbols when available. Current StarryOS qperf only resolves the kernel ELF.
+    #[arg(long)]
+    pub include_user_symbols: bool,
+    /// Folded-stack symbol style.
+    #[arg(long, value_enum, default_value_t = PerfSymbolStyle::Full)]
+    pub symbol_style: PerfSymbolStyle,
+    /// Generate an additional focused folded stack/flamegraph for matching frames.
+    #[arg(long, value_name = "REGEX")]
+    pub focus: Option<String>,
     #[arg(long, value_name = "CPUS")]
     pub smp: Option<usize>,
 }
@@ -114,6 +202,72 @@ pub enum PerfFormat {
     Svg,
     Pprof,
     All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfMode {
+    Tb,
+    Insn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfCallchain {
+    Leaf,
+    Fp,
+    Logical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfFlamegraphKind {
+    Svg,
+    Html,
+    Folded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfSymbolStyle {
+    Full,
+    Short,
+    Module,
+}
+
+impl fmt::Display for PerfMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Tb => "tb",
+            Self::Insn => "insn",
+        })
+    }
+}
+
+impl fmt::Display for PerfCallchain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Leaf => "leaf",
+            Self::Fp => "fp",
+            Self::Logical => "logical",
+        })
+    }
+}
+
+impl fmt::Display for PerfFlamegraphKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Svg => "svg",
+            Self::Html => "html",
+            Self::Folded => "folded",
+        })
+    }
+}
+
+impl fmt::Display for PerfSymbolStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Full => "full",
+            Self::Short => "short",
+            Self::Module => "module",
+        })
+    }
 }
 
 #[derive(Args)]
@@ -398,11 +552,11 @@ impl Starry {
             && test_case.test_commands.is_empty()
             && test_case.subcases.is_empty()
         {
-            let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+            let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
                 self.app.workspace_root(),
                 &request.arch,
                 case.rootfs_path,
-            );
+            )?;
             rootfs::ensure_qemu_rootfs_ready(
                 &request,
                 self.app.workspace_root(),
@@ -413,7 +567,6 @@ impl Starry {
             let cargo = build::load_cargo_config(&request)?;
             let mut qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
                 .await?;
             rootfs::patch_rootfs(
@@ -436,11 +589,11 @@ impl Starry {
                 .qemu(cargo, request.build_info_path, Some(qemu))
                 .await;
         }
-        let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+        let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
             self.app.workspace_root(),
             &request.arch,
             case.rootfs_path,
-        );
+        )?;
         rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs_path))
             .await?;
         self.app.set_debug_mode(request.debug)?;
@@ -448,7 +601,6 @@ impl Starry {
         let asset_config = test::starry_case_asset_config();
         let mut qemu = self
             .app
-            .tool_mut()
             .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
             .await?;
         qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
@@ -517,7 +669,9 @@ impl Starry {
         let mut board_config = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        board_config.shell_init_cmd = Some(case.init_cmd);
+        if board_config.shell_init_cmd.is_none() {
+            board_config.shell_init_cmd = Some(case.init_cmd);
+        }
         self.app
             .board(
                 cargo,
@@ -569,7 +723,6 @@ impl Starry {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .tool_mut()
                 .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
@@ -585,14 +738,12 @@ impl Starry {
         match board_config_path {
             Some(path) => {
                 self.app
-                    .tool_mut()
                     .read_board_run_config_from_path_for_cargo(cargo, path)
                     .await
             }
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
-                    .tool_mut()
                     .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
             }
@@ -768,8 +919,6 @@ mod tests {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.target.as_deref(), Some("x86_64"));
-                    assert_eq!(args.test_group, None);
-                    assert!(!args.stress);
                 }
                 _ => panic!("expected qemu test command"),
             },
@@ -823,8 +972,6 @@ mod tests {
             "starry",
             "test",
             "board",
-            "-g",
-            "normal",
             "-c",
             "smoke",
             "--board",
@@ -841,7 +988,6 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Board(args) => {
-                    assert_eq!(args.test_group.as_deref(), Some("normal"));
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
                     assert_eq!(args.board.as_deref(), Some("orangepi-5-plus"));
                     assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
@@ -855,7 +1001,37 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_test_qemu_with_group_and_case() {
+    fn command_rejects_test_qemu_group_flag() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "starry", "test", "qemu", "--arch", "x86_64", "-g", "stress", "-c", "smoke",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn command_rejects_test_qemu_stress_alias() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from(["starry", "test", "qemu", "--arch", "x86_64", "--stress"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn command_parses_test_qemu_with_case() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -863,7 +1039,13 @@ mod tests {
         }
 
         let cli = Cli::try_parse_from([
-            "starry", "test", "qemu", "--arch", "x86_64", "-g", "stress", "-c", "smoke",
+            "starry",
+            "test",
+            "qemu",
+            "--arch",
+            "x86_64",
+            "-c",
+            "qemu-smp1/system",
         ])
         .unwrap();
 
@@ -872,33 +1054,7 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
                     assert_eq!(args.target, None);
-                    assert_eq!(args.test_group.as_deref(), Some("stress"));
-                    assert_eq!(args.test_case, Some("smoke".to_string()));
-                    assert!(!args.stress);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu_with_stress_alias() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "test", "qemu", "--arch", "x86_64", "--stress"])
-            .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
-                    assert_eq!(args.test_group, None);
-                    assert!(args.stress);
+                    assert_eq!(args.test_case, Some("qemu-smp1/system".to_string()));
                 }
                 _ => panic!("expected qemu test command"),
             },
