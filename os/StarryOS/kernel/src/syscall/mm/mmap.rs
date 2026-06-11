@@ -216,6 +216,7 @@ pub fn sys_mmap(
                 {
                     Ok(DeviceMmap::Physical(..))
                     | Ok(DeviceMmap::PhysicalResolved(..))
+                    | Ok(DeviceMmap::PhysicalPages(..))
                     | Ok(DeviceMmap::Cache(_)) => false,
                     Ok(DeviceMmap::None) | Err(_) => true,
                 }
@@ -351,6 +352,13 @@ pub fn sys_mmap(
                             None => Backend::new_linear(start, pa_va_offset, true),
                         }
                     }
+                    Ok(DeviceMmap::PhysicalPages(pages, retain)) => {
+                        length = length.min(pages.len() * PAGE_SIZE_4K);
+                        Backend::new_shared(
+                            start,
+                            Arc::new(SharedPages::borrowed(pages, PageSize::Size4K, retain)?),
+                        )
+                    }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
@@ -426,6 +434,17 @@ pub fn sys_mmap(
                                             ),
                                             None => Backend::new_linear(start, pa_va_offset, true),
                                         }
+                                    }
+                                    DeviceMmap::PhysicalPages(pages, retain) => {
+                                        length = length.min(pages.len() * PAGE_SIZE_4K);
+                                        Backend::new_shared(
+                                            start,
+                                            Arc::new(SharedPages::borrowed(
+                                                pages,
+                                                PageSize::Size4K,
+                                                retain,
+                                            )?),
+                                        )
                                     }
                                     DeviceMmap::Cache(cache) => Backend::new_file(
                                         start,

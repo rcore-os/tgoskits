@@ -27,7 +27,7 @@ pub use mmio::*;
 pub use pio::*;
 pub use rockchip_fiq::*;
 
-use crate::{RawReciever, RawSender};
+use crate::{RawReceiver, RawSender};
 
 pub trait Kind: Clone + Send + Sync + 'static {
     fn read_reg(&self, reg: u8) -> u8;
@@ -92,12 +92,12 @@ pub struct Ns16550<T: Kind> {
     pub(crate) clock_freq: u32,
     pub(crate) irq: Option<Ns16550IrqHandler<T>>,
     pub(crate) tx: Option<crate::Sender>,
-    pub(crate) rx: Option<crate::Reciever>,
+    pub(crate) rx: Option<crate::Receiver>,
 }
 
 impl<T: Kind> InterfaceRaw for Ns16550<T> {
     type Sender = crate::Sender;
-    type Reciever = crate::Reciever;
+    type Receiver = crate::Receiver;
     type IrqHandler = Ns16550IrqHandler<T>;
 
     fn name(&self) -> &str {
@@ -253,7 +253,7 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
         self.tx.take()
     }
 
-    fn take_rx(&mut self) -> Option<Self::Reciever> {
+    fn take_rx(&mut self) -> Option<Self::Receiver> {
         self.rx.take()
     }
 
@@ -293,30 +293,30 @@ impl<T: Kind> InterfaceRaw for Ns16550<T> {
         Ok(())
     }
 
-    fn set_rx(&mut self, rx: Self::Reciever) -> Result<(), SetBackError> {
+    fn set_rx(&mut self, rx: Self::Receiver) -> Result<(), SetBackError> {
         let want = self.base.get_base();
         match rx {
             #[cfg(target_arch = "x86_64")]
-            crate::Reciever::Ns16550Reciever(ref reciever) => {
-                let actual = reciever.base.get_base();
+            crate::Receiver::Ns16550Receiver(ref receiver) => {
+                let actual = receiver.base.get_base();
                 if actual != want {
                     return Err(SetBackError::new(want, actual));
                 }
             }
-            crate::Reciever::Ns16550MmioReciever(ref reciever) => {
-                let actual = reciever.base.get_base();
+            crate::Receiver::Ns16550MmioReceiver(ref receiver) => {
+                let actual = receiver.base.get_base();
                 if actual != want {
                     return Err(SetBackError::new(want, actual));
                 }
             }
-            crate::Reciever::Ns16550DwApbReciever(ref reciever) => {
-                let actual = reciever.base.get_base();
+            crate::Receiver::Ns16550DwApbReceiver(ref receiver) => {
+                let actual = receiver.base.get_base();
                 if actual != want {
                     return Err(SetBackError::new(want, actual));
                 }
             }
-            crate::Reciever::Ns16550RockchipFiqReciever(ref reciever) => {
-                let actual = reciever.base_addr();
+            crate::Receiver::Ns16550RockchipFiqReceiver(ref receiver) => {
+                let actual = receiver.base_addr();
                 if actual != want {
                     return Err(SetBackError::new(want, actual));
                 }
@@ -479,11 +479,11 @@ impl<T: Kind> TSender for Ns16550Sender<T> {
     }
 }
 
-pub struct Ns16550Reciever<T: Kind> {
+pub struct Ns16550Receiver<T: Kind> {
     pub(crate) base: T,
 }
 
-impl<T: Kind> RawReciever for Ns16550Reciever<T> {
+impl<T: Kind> RawReceiver for Ns16550Receiver<T> {
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
         let lsr: LineStatusFlags = self.base.read_flags(UART_LSR);
 

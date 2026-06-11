@@ -41,9 +41,6 @@ ax-riscv-plic = { workspace = true }
 riscv.workspace = true
 sbi-rt = { workspace = true, features = ["legacy"] }
 
-[target.'cfg(target_arch = "loongarch64")'.dependencies]
-loongArch64 = "0.2"
-
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x2apic = "0.5"
 x86 = "0.52"

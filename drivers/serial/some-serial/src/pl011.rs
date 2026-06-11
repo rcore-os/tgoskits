@@ -7,7 +7,7 @@ use rdif_serial::{
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
 use crate::{
-    Config, ConfigError, DataBits, InterruptMask, Parity, RawReciever, RawSender, StopBits,
+    Config, ConfigError, DataBits, InterruptMask, Parity, RawReceiver, RawSender, StopBits,
 };
 
 register_bitfields! [
@@ -145,7 +145,7 @@ pub struct Pl011 {
     base: Reg,
     clock_freq: u32,
     tx: Option<Pl011Sender>,
-    rx: Option<Pl011Reciever>,
+    rx: Option<Pl011Receiver>,
     irq: Option<Pl011IrqHandler>,
 }
 
@@ -167,7 +167,7 @@ impl Pl011 {
             base,
             clock_freq,
             tx: Some(Pl011Sender { base }),
-            rx: Some(Pl011Reciever { base }),
+            rx: Some(Pl011Receiver { base }),
             irq: Some(Pl011IrqHandler { base }),
         }
     }
@@ -324,8 +324,8 @@ impl Pl011 {
         self.tx.take().map(crate::Sender::Pl011Sender)
     }
 
-    pub fn task_rx(&mut self) -> Option<crate::Reciever> {
-        self.rx.take().map(crate::Reciever::Pl011Reciever)
+    pub fn task_rx(&mut self) -> Option<crate::Receiver> {
+        self.rx.take().map(crate::Receiver::Pl011Receiver)
     }
 }
 
@@ -362,11 +362,11 @@ impl RawSender for Pl011Sender {
     }
 }
 
-pub struct Pl011Reciever {
+pub struct Pl011Receiver {
     base: Reg,
 }
 
-impl RawReciever for Pl011Reciever {
+impl RawReceiver for Pl011Receiver {
     fn read_byte(&mut self) -> Option<Result<u8, TransferError>> {
         if self.base.registers().uartfr.is_set(UARTFR::RXFE) {
             return None;
@@ -459,7 +459,7 @@ impl InterfaceRaw for Pl011 {
 
     type Sender = crate::Sender;
 
-    type Reciever = crate::Reciever;
+    type Receiver = crate::Receiver;
 
     fn name(&self) -> &str {
         "PL011 UART"
@@ -623,7 +623,7 @@ impl InterfaceRaw for Pl011 {
         self.task_tx()
     }
 
-    fn take_rx(&mut self) -> Option<Self::Reciever> {
+    fn take_rx(&mut self) -> Option<Self::Receiver> {
         self.task_rx()
     }
 
@@ -649,9 +649,9 @@ impl InterfaceRaw for Pl011 {
         Ok(())
     }
 
-    fn set_rx(&mut self, rx: Self::Reciever) -> Result<(), SetBackError> {
+    fn set_rx(&mut self, rx: Self::Receiver) -> Result<(), SetBackError> {
         let rx = match rx {
-            crate::Reciever::Pl011Reciever(r) => r,
+            crate::Receiver::Pl011Receiver(r) => r,
             _ => {
                 return Err(SetBackError::new(
                     self.base.0.as_ptr() as _,

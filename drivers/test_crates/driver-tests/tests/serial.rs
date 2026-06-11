@@ -24,7 +24,7 @@ mod tests {
     use fdt_edit::{ClockType, Fdt, InterruptRef, NodeType};
     use ax_kspin::SpinNoIrq as Mutex;
     use rdif_intc::Intc;
-    use rdif_serial::{BIrqHandler, BReciever, BSender, BSerial, TransferError};
+    use rdif_serial::{BIrqHandler, BReceiver, BSender, BSerial, TransferError};
     use rdrive::fdt_phandle_to_device_id;
     use some_serial::{Config, DataBits, InterruptMask, Parity, StopBits};
 
@@ -337,7 +337,7 @@ mod tests {
         false
     }
 
-    fn clean_rx(rx: &mut BReciever) {
+    fn clean_rx(rx: &mut BReceiver) {
         let mut buffer = [0u8; 64];
         loop {
             match rx.read_bytes(&mut buffer) {
@@ -350,7 +350,7 @@ mod tests {
     fn test_serial_tx_rx_one(
         serial: &mut BSerial,
         tx: &mut BSender,
-        rx: &mut BReciever,
+        rx: &mut BReceiver,
         expected: &[u8],
     ) -> Result<(), TransferError> {
         serial.enable_loopback();

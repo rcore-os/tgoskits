@@ -92,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Refactor architecture and enhance commands for incremental checks ([#532](https://github.com/rcore-os/tgoskits/pull/532))
 - Refactor QEMU build configuration and test execution flow ([#527](https://github.com/rcore-os/tgoskits/pull/527))
-- fmt vm conifg file and  organize annotations ([#393](https://github.com/rcore-os/tgoskits/pull/393))
+- fmt vm config file and  organize annotations ([#393](https://github.com/rcore-os/tgoskits/pull/393))
 - Implement QEMU test orchestration and refactor Axvisor/Starry tests ([#394](https://github.com/rcore-os/tgoskits/pull/394))
 - *(axvisor)* inherit workspace dependencies
 - Update rootfs archive format and boot arguments for configurations ([#380](https://github.com/rcore-os/tgoskits/pull/380))

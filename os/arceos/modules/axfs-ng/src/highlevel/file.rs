@@ -705,6 +705,11 @@ impl CachedFile {
         self.in_memory
     }
 
+    /// Returns the current length (in bytes) of the backing file.
+    pub fn file_len(&self) -> VfsResult<u64> {
+        self.inner.len()
+    }
+
     /// Registers a listener that is called when a page is evicted from cache.
     ///
     /// Returns a handle that can later be passed to
@@ -777,7 +782,16 @@ impl CachedFile {
         if self.in_memory {
             page.data().fill(0);
         } else {
-            file.read_at(page.data(), pn as u64 * PAGE_SIZE as u64)?;
+            // `PageCache::new()` does not zero the freshly allocated frame, and
+            // `FileNodeOps::read_at` short-reads at EOF (rsext4/fat return only the
+            // bytes actually read, leaving the rest of the buffer untouched). Zero the
+            // tail beyond the read length so a partial last page never exposes stale
+            // physical memory past EOF — POSIX/Linux require those bytes to read as 0
+            // (e.g. an mmap of a 100-byte file must see `[100, PAGE_SIZE)` as zero).
+            let read = file.read_at(page.data(), pn as u64 * PAGE_SIZE as u64)?;
+            if read < PAGE_SIZE {
+                page.data()[read..].fill(0);
+            }
         }
         cache.put(pn, page);
         Ok((cache.get_mut(&pn).unwrap(), evicted))

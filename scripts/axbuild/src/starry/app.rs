@@ -401,6 +401,7 @@ pub(crate) fn app_qemu_test_case(
         host_symbolize_success_regex: case.host_symbolize_success_regex.clone(),
         host_http_server: None,
         subcases: case.subcases.clone(),
+        grouped_subcase_filter: None,
     })
 }
 
@@ -963,7 +964,7 @@ mod tests {
             case_name,
             "build-aarch64-unknown-none-softfloat.toml",
             "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = []\nlog = \
-             \"Info\"\n",
+             \"Info\"\nplat_dyn = true\n",
         );
     }
 
@@ -1026,7 +1027,7 @@ mod tests {
             root.path(),
             "demo",
             "build-aarch64-unknown-none-softfloat.toml",
-            "env = {}\nfeatures = []\nlog = \"Info\"\n",
+            "env = {}\nfeatures = []\nlog = \"Info\"\nplat_dyn = true\n",
         );
 
         let case = resolve_board_case(root.path(), "demo", None).unwrap();
@@ -1103,7 +1104,7 @@ mod tests {
             "demo",
             "build-aarch64-unknown-none-softfloat.toml",
             "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = []\nlog = \
-             \"Info\"\n",
+             \"Info\"\nplat_dyn = true\n",
         );
         write_case_file(
             root.path(),

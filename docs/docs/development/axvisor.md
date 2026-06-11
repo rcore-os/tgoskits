@@ -300,6 +300,7 @@ passthrough_devices = [["/"]]
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ept-level-4", "ax-std/bus-mmio", "fs"]
 log = "Info"
+plat_dyn = true
 vm_configs = []   # 注意：默认为空，需手动指定或通过 setup_qemu.sh 生成
 ```
 

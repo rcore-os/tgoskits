@@ -3,7 +3,7 @@
 use rdif_serial::InterfaceRaw;
 
 use super::{
-    Config, DataBits, Kind, Ns16550, Ns16550IrqHandler, Ns16550Reciever, Ns16550Sender, Parity,
+    Config, DataBits, Kind, Ns16550, Ns16550IrqHandler, Ns16550Receiver, Ns16550Sender, Parity,
     StopBits, registers::*,
 };
 
@@ -139,7 +139,7 @@ impl Ns16550<DwApb> {
             tx: Some(crate::Sender::Ns16550DwApbSender(Ns16550Sender {
                 base: DwApb::new(base),
             })),
-            rx: Some(crate::Reciever::Ns16550DwApbReciever(Ns16550Reciever {
+            rx: Some(crate::Receiver::Ns16550DwApbReceiver(Ns16550Receiver {
                 base: DwApb::new(base),
             })),
         }

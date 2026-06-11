@@ -1,5 +1,5 @@
 /*
- * Max avaliable Page Size is 64K, so we set SectionAlignment
+ * Max available Page Size is 64K, so we set SectionAlignment
  * field of EFI application to 64K.
  */
 PECOFF_FILE_ALIGN = 0x200;
@@ -41,13 +41,6 @@ SECTIONS
     } :text
     . = __exception_vectors + 0x10000;
     __exception_vectors_end = .;
-
-    . = ALIGN(PAGE_SIZE);
-    .vectors : {
-        KEEP(*(.vectors))
-        KEEP(*(.vectors.*))
-    } :text
-
     . = ALIGN(PAGE_SIZE);
     _etext = .;
     _srodata = .; 

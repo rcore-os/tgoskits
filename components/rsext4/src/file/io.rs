@@ -6,7 +6,7 @@ pub fn truncate<B: BlockDevice>(
     path: &str,
     truncate_size: u64,
 ) -> Ext4Result<()> {
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
 
     // Resolve the target inode once, then delegate to the inode-based helper.
     let (inode_num, _inode) = match get_inode_with_num(fs, device, &norm_path).ok().flatten() {
@@ -26,7 +26,7 @@ fn truncate_inode<B: BlockDevice>(
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
     if !inode.is_file() {
-        warn!("trubcate abnormal file")
+        warn!("truncate abnormal file")
     } else if inode.is_symlink() {
         error!("Can't truncate symlink file!");
         return Err(Ext4Error::unsupported());
@@ -250,7 +250,7 @@ fn read_symlink_target<B: BlockDevice>(
 
 fn resolve_symlink_path(current_path: &str, target: &str) -> String {
     if target.starts_with('/') {
-        return split_paren_child_and_tranlatevalid(target);
+        return split_paren_child_and_translatevalid(target);
     }
     let parent = match current_path.rfind('/') {
         Some(0) | None => "/",
@@ -265,7 +265,7 @@ fn resolve_symlink_path(current_path: &str, target: &str) -> String {
         combined.push('/');
         combined.push_str(target);
     }
-    split_paren_child_and_tranlatevalid(&combined)
+    split_paren_child_and_translatevalid(&combined)
 }
 
 fn read_file_follow<B: BlockDevice>(
@@ -295,7 +295,7 @@ fn read_file_follow<B: BlockDevice>(
     }
 
     if !inode.is_file() {
-        error!("Entry:{path} not aa file");
+        error!("Entry:{path} not a file");
         return Err(if inode.is_dir() {
             Ext4Error::is_dir()
         } else {
@@ -398,7 +398,7 @@ pub fn write_inode_data<B: BlockDevice>(
     }
 
     if offset > old_size {
-        info!("Expend write!");
+        info!("Expand write!");
     }
 
     let end = offset.saturating_add(data.len() as u64);

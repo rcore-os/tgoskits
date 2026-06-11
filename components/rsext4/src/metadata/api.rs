@@ -3,7 +3,7 @@
 use super::Ext4InodeMetadataUpdate;
 use crate::{
     blockdev::{BlockDevice, Jbd2Dev},
-    dir::{get_inode_with_num, split_paren_child_and_tranlatevalid},
+    dir::{get_inode_with_num, split_paren_child_and_translatevalid},
     disknode::Ext4TimeSpec,
     error::{Ext4Error, Ext4Result},
     ext4::Ext4FileSystem,
@@ -16,7 +16,7 @@ pub fn chmod<B: BlockDevice>(
     path: &str,
     mode: u16,
 ) -> Ext4Result<()> {
-    let path = split_paren_child_and_tranlatevalid(path);
+    let path = split_paren_child_and_translatevalid(path);
     let (inode_num, _) = get_inode_with_num(fs, device, &path)?.ok_or(Ext4Error::invalid_input())?;
     let _ = fs.apply_inode_metadata(device, inode_num, Ext4InodeMetadataUpdate::chmod(mode))?;
     Ok(())
@@ -30,7 +30,7 @@ pub fn chown<B: BlockDevice>(
     uid: Option<u32>,
     gid: Option<u32>,
 ) -> Ext4Result<()> {
-    let path = split_paren_child_and_tranlatevalid(path);
+    let path = split_paren_child_and_translatevalid(path);
     let (inode_num, _) = get_inode_with_num(fs, device, &path)?.ok_or(Ext4Error::invalid_input())?;
     let _ = fs.apply_inode_metadata(device, inode_num, Ext4InodeMetadataUpdate::chown(uid, gid))?;
     Ok(())
@@ -44,7 +44,7 @@ pub fn utimens<B: BlockDevice>(
     atime: Ext4TimeSpec,
     mtime: Ext4TimeSpec,
 ) -> Ext4Result<()> {
-    let path = split_paren_child_and_tranlatevalid(path);
+    let path = split_paren_child_and_translatevalid(path);
     let (inode_num, _) = get_inode_with_num(fs, device, &path)?.ok_or(Ext4Error::invalid_input())?;
     let _ = fs.apply_inode_metadata(
         device,
@@ -61,7 +61,7 @@ pub fn set_project<B: BlockDevice>(
     path: &str,
     projid: u32,
 ) -> Ext4Result<()> {
-    let path = split_paren_child_and_tranlatevalid(path);
+    let path = split_paren_child_and_translatevalid(path);
     let (inode_num, _) = get_inode_with_num(fs, device, &path)?.ok_or(Ext4Error::invalid_input())?;
     let _ = fs.apply_inode_project(device, inode_num, projid)?;
     Ok(())
@@ -74,7 +74,7 @@ pub fn set_flags<B: BlockDevice>(
     path: &str,
     flags: u32,
 ) -> Ext4Result<()> {
-    let path = split_paren_child_and_tranlatevalid(path);
+    let path = split_paren_child_and_translatevalid(path);
     let (inode_num, _) = get_inode_with_num(fs, device, &path)?.ok_or(Ext4Error::invalid_input())?;
     let _ = fs.apply_inode_flags(device, inode_num, flags)?;
     Ok(())

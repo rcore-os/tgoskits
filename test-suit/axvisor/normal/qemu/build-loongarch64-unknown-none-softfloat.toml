@@ -8,5 +8,4 @@ features = [
 log = "Info"
 max_cpu_num = 1
 target = "loongarch64-unknown-none-softfloat"
-plat_dyn = false
 vm_configs = []

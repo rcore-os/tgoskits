@@ -200,6 +200,7 @@ target = "aarch64-unknown-none-softfloat"
 env = {}
 features = ["common"]
 log = "Info"
+plat_dyn = true
 "#,
         );
         write_board(
@@ -221,6 +222,7 @@ target = "riscv64gc-unknown-none-elf"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ax-driver/serial", "ax-driver/virtio-blk"]
 log = "Warn"
+plat_dyn = true
 "#,
         );
 

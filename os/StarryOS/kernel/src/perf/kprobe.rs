@@ -5,7 +5,7 @@
 //! Symbol resolution goes through the real in-kernel `.kallsyms` blob
 //! (`crate::pseudofs::proc::KALLSYMS`), the same table `/proc/kallsyms` reads.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicU32, Ordering},
@@ -120,7 +120,7 @@ impl PerfEventOps for ProbePerfEvent {
         static CALLBACK_ID: AtomicU32 = AtomicU32::new(0);
         let id = CALLBACK_ID.fetch_add(1, Ordering::Relaxed);
 
-        let callback = Box::new(KprobePerfCallBack::new(vm));
+        let callback = Arc::new(KprobePerfCallBack::new(vm));
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.register_event_callback(id, callback),
             ProbeTy::Kretprobe(ref k) => k.register_event_callback(id, callback),

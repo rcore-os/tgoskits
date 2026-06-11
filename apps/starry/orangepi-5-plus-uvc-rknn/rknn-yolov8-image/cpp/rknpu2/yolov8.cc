@@ -17,6 +17,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "yolov8.h"
 #include "common.h"
@@ -30,6 +31,13 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            attr->index, attr->name, attr->n_dims, attr->dims[0], attr->dims[1], attr->dims[2], attr->dims[3],
            attr->n_elems, attr->size, get_format_string(attr->fmt), get_type_string(attr->type),
            get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
+}
+
+static double monotonic_ms()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
 
 static bool rknn_dump_stats_enabled()
@@ -210,12 +218,22 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
 int inference_yolov8_model_with_thresholds(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results,
                                            float box_conf_threshold, float nms_threshold)
 {
+    return inference_yolov8_model_with_thresholds_profile(app_ctx, img, od_results, box_conf_threshold, nms_threshold, NULL);
+}
+
+int inference_yolov8_model_with_thresholds_profile(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results,
+                                                   float box_conf_threshold, float nms_threshold,
+                                                   rknn_inference_profile_t *profile)
+{
     int ret;
     image_buffer_t dst_img;
     letterbox_t letter_box;
     rknn_input inputs[app_ctx->io_num.n_input];
     rknn_output outputs[app_ctx->io_num.n_output];
     int bg_color = 114;
+    bool outputs_acquired = false;
+    bool dump_stats = false;
+    const double total_start = monotonic_ms();
 
     if ((!app_ctx) || !(img) || (!od_results))
     {
@@ -227,27 +245,47 @@ int inference_yolov8_model_with_thresholds(rknn_app_context_t *app_ctx, image_bu
     memset(&dst_img, 0, sizeof(image_buffer_t));
     memset(inputs, 0, sizeof(inputs));
     memset(outputs, 0, sizeof(outputs));
+    if (profile != NULL)
+    {
+        memset(profile, 0, sizeof(*profile));
+        profile->perf_run_query_ret = -1;
+        profile->rknn_perf_run_ms = -1.0;
+    }
 
     // Pre Process
+    double stage_start = monotonic_ms();
     dst_img.width = app_ctx->model_width;
     dst_img.height = app_ctx->model_height;
     dst_img.format = IMAGE_FORMAT_RGB888;
     dst_img.size = get_image_size(&dst_img);
     dst_img.virt_addr = (unsigned char *)malloc(dst_img.size);
+    if (profile != NULL)
+    {
+        profile->malloc_ms = monotonic_ms() - stage_start;
+    }
     if (dst_img.virt_addr == NULL)
     {
         printf("malloc buffer size:%d fail!\n", dst_img.size);
+        if (profile != NULL)
+        {
+            profile->total_ms = monotonic_ms() - total_start;
+        }
         return -1;
     }
 
     // letterbox
+    stage_start = monotonic_ms();
     ret = convert_image_with_letterbox(img, &dst_img, &letter_box, bg_color);
+    if (profile != NULL)
+    {
+        profile->letterbox_ms = monotonic_ms() - stage_start;
+    }
     if (ret < 0)
     {
         printf("convert_image_with_letterbox fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
-    bool dump_stats = rknn_dump_stats_enabled();
+    dump_stats = rknn_dump_stats_enabled();
     if (dump_stats)
     {
         printf("RKNN_LETTERBOX x_pad=%d y_pad=%d input=%dx%d resize=%dx%d scale=%.8f\n",
@@ -268,19 +306,29 @@ int inference_yolov8_model_with_thresholds(rknn_app_context_t *app_ctx, image_bu
     inputs[0].size = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel;
     inputs[0].buf = dst_img.virt_addr;
 
+    stage_start = monotonic_ms();
     ret = rknn_inputs_set(app_ctx->rknn_ctx, app_ctx->io_num.n_input, inputs);
+    if (profile != NULL)
+    {
+        profile->inputs_set_ms = monotonic_ms() - stage_start;
+    }
     if (ret < 0)
     {
         printf("rknn_input_set fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Run
+    stage_start = monotonic_ms();
     ret = rknn_run(app_ctx->rknn_ctx, nullptr);
+    if (profile != NULL)
+    {
+        profile->run_ms = monotonic_ms() - stage_start;
+    }
     if (ret < 0)
     {
         printf("rknn_run fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Get Output
@@ -290,11 +338,27 @@ int inference_yolov8_model_with_thresholds(rknn_app_context_t *app_ctx, image_bu
         outputs[i].index = i;
         outputs[i].want_float = (!app_ctx->is_quant);
     }
+    stage_start = monotonic_ms();
     ret = rknn_outputs_get(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs, NULL);
+    if (profile != NULL)
+    {
+        profile->outputs_get_ms = monotonic_ms() - stage_start;
+    }
     if (ret < 0)
     {
         printf("rknn_outputs_get fail! ret=%d\n", ret);
         goto out;
+    }
+    outputs_acquired = true;
+    if (profile != NULL)
+    {
+        rknn_perf_run perf_run;
+        memset(&perf_run, 0, sizeof(perf_run));
+        profile->perf_run_query_ret = rknn_query(app_ctx->rknn_ctx, RKNN_QUERY_PERF_RUN, &perf_run, sizeof(perf_run));
+        if (profile->perf_run_query_ret == RKNN_SUCC)
+        {
+            profile->rknn_perf_run_ms = (double)perf_run.run_duration / 1000.0;
+        }
     }
     if (dump_stats)
     {
@@ -308,15 +372,39 @@ int inference_yolov8_model_with_thresholds(rknn_app_context_t *app_ctx, image_bu
     }
 
     // Post Process
+    stage_start = monotonic_ms();
     post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
+    if (profile != NULL)
+    {
+        profile->postprocess_ms = monotonic_ms() - stage_start;
+    }
 
     // Remeber to release rknn output
+    stage_start = monotonic_ms();
     rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);
+    if (profile != NULL)
+    {
+        profile->outputs_release_ms = monotonic_ms() - stage_start;
+    }
+    outputs_acquired = false;
 
 out:
+    if (outputs_acquired)
+    {
+        stage_start = monotonic_ms();
+        rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);
+        if (profile != NULL)
+        {
+            profile->outputs_release_ms = monotonic_ms() - stage_start;
+        }
+    }
     if (dst_img.virt_addr != NULL)
     {
         free(dst_img.virt_addr);
+    }
+    if (profile != NULL)
+    {
+        profile->total_ms = monotonic_ms() - total_start;
     }
 
     return ret;

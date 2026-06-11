@@ -55,7 +55,7 @@ fn set_by_stdout() -> Option<()> {
                 let rx = serial.take_rx()?;
 
                 crate::console::set_earlycon_sender(tx);
-                crate::console::set_earlycon_reciever(rx);
+                crate::console::set_earlycon_receiver(rx);
                 installed = true;
                 break;
             }
@@ -66,7 +66,7 @@ fn set_by_stdout() -> Option<()> {
                 let rx = serial.take_rx()?;
 
                 crate::console::set_earlycon_sender(tx);
-                crate::console::set_earlycon_reciever(rx);
+                crate::console::set_earlycon_receiver(rx);
                 installed = true;
                 break;
             }
