@@ -54,7 +54,7 @@ pub trait Device: Send + Sync {
     ///
     /// Used by SDIO WiFi where RX arrives out-of-band (the SDIO CARD_INT
     /// thread is outside the ethernet IRQ framework), so the poll task pokes
-    /// the device after `notify_wifi_rx`. Default is a no-op.
+    /// the device after `notify_oob_rx`. Default is a no-op.
     fn wake_rx(&self) {}
 
     fn register_waker(&self, waker: &Waker);

@@ -16,7 +16,6 @@ members = [
     "apps/starry/orangepi-5-plus-uvc/uvc-fps",
 
     "components/aic8800",
-    "components/aic8800-arceos",
     "components/ax-lazyinit",
     "components/axbacktrace",
     "components/axcpu",
@@ -42,14 +41,12 @@ members = [
     "components/rsext4",
     "components/scope-local",
     "components/sdhci-cv1800",
-    "components/sdhci-cv1800-arceos",
     "components/sdio-host",
     "components/someboot",
     "components/somehal-macros",
     "components/starry-process",
     "components/starry-signal",
     "components/starry-vm",
-    "components/wifi-host",
     "components/timer_list",
     "components/axconfig-gen/axconfig-gen",
     "components/axconfig-gen/axconfig-macros",
@@ -258,10 +255,7 @@ rsext4 = { version = "0.7.0", path = "components/rsext4" }
 scope-local = { version = "0.4.0", path = "components/scope-local" }
 sdio-host = { version = "0.1.0", path = "components/sdio-host" }
 sdhci-cv1800 = { version = "0.1.0", path = "components/sdhci-cv1800" }
-sdhci-cv1800-arceos = { version = "0.1.0", path = "components/sdhci-cv1800-arceos" }
 aic8800 = { version = "0.1.0", path = "components/aic8800" }
-aic8800-arceos = { version = "0.1.0", path = "components/aic8800-arceos" }
-wifi-host = { version = "0.1.0", path = "components/wifi-host" }
 crab-usb = { version = "0.9.5", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }

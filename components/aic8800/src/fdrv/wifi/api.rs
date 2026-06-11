@@ -17,16 +17,11 @@
 //! // 3. 扫描 → 连接
 //! let config = WifiConfig::wpa2_psk("SSID", "password");
 //! client.connect(&config, 15000)?;
-//!
-//! // 4. 暂存网络设备 (上层通过 take_wifi_net_device 取出并注册到 ax_net)
-//! client.store_net_device();
 //! ```
 
 use alloc::{format, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-// 网络设备注册（net 模块启用后可用）
-use crate::fdrv::net::device::store_wifi_net_device;
 use crate::{
     common::ChipVariant,
     fdrv::{
@@ -692,18 +687,6 @@ impl WifiClient {
     pub fn get_rssi(&self) -> Option<i8> {
         // TODO: 从 bus 状态获取当前信号强度
         None
-    }
-
-    // ================================================================
-    // Phase 5: 网络注册 (需要启用 net feature)
-    // ================================================================
-
-    /// 创建并暂存 WiFi 网络设备
-    ///
-    /// 设备存入全局，由 StarryOS 上层通过 `take_wifi_net_device()` 取出注册。
-    pub fn store_net_device(&self) {
-        let mac = self.sta_mac.unwrap_or([0; 6]);
-        store_wifi_net_device(Arc::clone(&self.bus), mac);
     }
 }
 

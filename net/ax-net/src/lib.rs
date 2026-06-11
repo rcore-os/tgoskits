@@ -93,9 +93,10 @@ static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 
-/// Signalled by [`notify_wifi_rx`] (AIC8800 RX thread) to wake `wlan0-poll`.
-static WIFI_RX_SIGNAL: PollSet = PollSet::new();
-static WIFI_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+/// Signalled by [`notify_oob_rx`] to wake the out-of-band RX poll task, for
+/// devices whose RX arrives outside the ethernet IRQ framework (e.g. SDIO).
+static OOB_RX_SIGNAL: PollSet = PollSet::new();
+static OOB_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -274,7 +275,7 @@ pub struct NetConfig {
     pub prefix_len: u8,
     /// If set, run a built-in DHCP server handing out this single address.
     pub dhcp_server_client_ip: Option<[u8; 4]>,
-    /// Spawn a dedicated poll task woken via [`notify_wifi_rx`]. Needed for
+    /// Spawn a dedicated poll task woken via [`notify_oob_rx`]. Needed for
     /// out-of-band RX devices (e.g. SDIO) that sit outside the ethernet IRQ
     /// framework.
     pub dedicated_poll: bool,
@@ -305,60 +306,39 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
 
     info!("{}: up, mac {mac}, ip {cidr}", config.name);
     if config.dedicated_poll {
-        start_wifi_poll_task();
+        start_oob_poll_task(config.name);
     }
 }
 
-/// Registers the AIC8800 Wi-Fi device as a SoftAP `wlan0` with a static IPv4
-/// and a built-in single-client DHCP server.
+/// Wakes the out-of-band RX poll task; intended as a device RX-data callback.
 ///
-/// `dev` is the already-wrapped ethernet driver (an `RdNetDriver` around the
-/// AIC8800 `Interface`). `server_ip` becomes wlan0's address and gateway;
-/// `client_ip` is handed out over DHCP. The network service must already be
-/// initialized (via [`init_network`]).
-pub fn register_wifi_ap_device(
-    dev: Box<dyn EthernetDriver>,
-    server_ip: [u8; 4],
-    client_ip: [u8; 4],
-    prefix_len: u8,
-) {
-    register_device_with_config(
-        dev,
-        NetConfig {
-            name: "wlan0".to_owned(),
-            ip: server_ip,
-            prefix_len,
-            dhcp_server_client_ip: Some(client_ip),
-            dedicated_poll: true,
-        },
-    );
+/// A device whose RX path sits outside the ethernet IRQ framework (e.g. an SDIO
+/// chip owning its own card interrupt) registers this as its RX callback. It
+/// only signals here; the dedicated poll task does the actual stack polling, so
+/// the device's RX thread is never blocked on the stack.
+pub fn notify_oob_rx() {
+    OOB_RX_SIGNAL.wake();
 }
 
-/// Wakes the `wlan0` poll task; registered as the AIC8800 RX-data callback.
+/// Spawns the out-of-band RX poll task (idempotent across all such devices).
 ///
-/// The AIC8800 RX thread owns the SDIO CARD_INT and is outside the ethernet
-/// IRQ framework, so it only signals here; the `wlan0-poll` task does the
-/// actual stack polling to avoid starving SDIO RX.
-pub fn notify_wifi_rx() {
-    WIFI_RX_SIGNAL.wake();
-}
-
-/// Spawns the `wlan0-poll` task (idempotent).
-pub fn start_wifi_poll_task() {
-    if WIFI_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
+/// `ifname` names the task (e.g. `wlan0` → `wlan0-poll`). One shared task drives
+/// `poll_interfaces()` for every dedicated-poll device, woken by [`notify_oob_rx`].
+fn start_oob_poll_task(ifname: alloc::string::String) {
+    if OOB_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     ax_task::spawn_with_name(
         || {
             block_on(poll_fn(|cx| {
                 // Register first to avoid lost wakeups.
-                WIFI_RX_SIGNAL.register(cx.waker());
+                OOB_RX_SIGNAL.register(cx.waker());
                 poll_interfaces();
                 get_service().wake_all_devices();
                 Poll::<()>::Pending
             }));
         },
-        "wlan0-poll".to_owned(),
+        alloc::format!("{ifname}-poll"),
     );
 }
 

@@ -19,14 +19,18 @@
 //! mapping, SDIO1 SoC init, controller IRQ, SDHCI init, chip probe + SoftAP
 //! start) now happens here, behind the standard rdrive probe path.
 //!
-//! The data plane (`rd_net::Net`) and the control plane
-//! (`Box<dyn WifiDriver>`) plus the board's link policy ([`ApConfig`]) are
-//! stashed in a [`PlatformWifiDevice`]; the runtime takes them out after the
-//! network service comes up (see `axruntime::devices`).
+//! The chip probe returns a single [`aic8800::AicWifiNetDev`] that is *both* the
+//! data plane (it implements `rd_net::Interface`) and the control plane (it
+//! implements `rd_net::WifiControl`: STA/SoftAP control, RX wake, link policy).
+//! It is registered through the ordinary [`register_net`] path used by every
+//! NIC — no Wi-Fi-specific device type. The board's SoftAP link policy is
+//! attached to the device via `WifiLinkPolicy`, which the runtime reads back
+//! generically through `wifi_control()` once the network service is up.
 
 use core::ptr::NonNull;
 
 use log::{error, info};
+use rd_net::WifiLinkPolicy;
 use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use sdhci_cv1800::{
     CviSdhci,
@@ -34,7 +38,7 @@ use sdhci_cv1800::{
 };
 use sdio_host::SdioHost;
 
-use crate::net::{ApConfig, PlatformWifiDevice};
+use crate::net::PlatformDeviceNet;
 
 // SG2002 SoC-level register bases (physical). These are *SoC* subsystem
 // registers (clock/reset/pinmux), not part of the SDIO1 controller's own `reg`
@@ -150,15 +154,17 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     info!("[wifi] SDIO device: vendor={vid:#06x} device={did:#06x}");
     sdio.prepare_first_data_xfer();
 
-    // Hand the initialized SDIO host to the chip driver. From here the rest of
-    // the system only talks to the generic `WifiDriver` trait.
+    // Hand the initialized SDIO host to the chip driver. It returns a single
+    // device that is both data plane (`Interface`) and control plane
+    // (`WifiControl`).
     let mut wifi = aic8800::probe(sdio)
-        .map_err(|e| OnProbeError::other(alloc::format!("[wifi] chip probe failed: {e:?}")))?;
+        .map_err(|e| OnProbeError::other(alloc::format!("[wifi] chip probe failed: {e}")))?;
     info!("[wifi] chip probe complete");
 
-    // Start an open SoftAP. The link policy (SSID/channel and the IP/DHCP
-    // config below) is board policy expressed here, not in the protocol stack.
-    if let Err(e) = wifi.start_ap_open(AP_SSID, AP_CHANNEL) {
+    // Start an open SoftAP. SSID/channel are board policy expressed here, not in
+    // the protocol stack. `start_ap_open` comes from the device's `WifiControl`
+    // control plane.
+    if let Err(e) = rd_net::WifiControl::start_ap_open(&mut wifi, AP_SSID, AP_CHANNEL) {
         error!("[wifi] AP start failed: {e:?}");
         return Err(OnProbeError::other(alloc::format!(
             "[wifi] AP start failed: {e:?}"
@@ -166,22 +172,16 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     }
     info!("[wifi] SoftAP started, channel {AP_CHANNEL}");
 
-    // Take the data-plane device and register it together with the control
-    // handle and the AP policy. The runtime wires it into the stack later.
-    let net = wifi
-        .take_net(axklib::dma::op())
-        .ok_or_else(|| OnProbeError::other("[wifi] no net device"))?;
+    // Attach the board's SoftAP link policy to the device, then register it
+    // through the ordinary net device path. The runtime reads the policy back
+    // generically via `wifi_control()` — the stack stays Wi-Fi-agnostic.
+    let wifi = wifi.with_link_policy(WifiLinkPolicy {
+        ip: AP_SERVER_IP,
+        prefix_len: AP_PREFIX_LEN,
+        dhcp_server_client_ip: Some(AP_CLIENT_IP),
+    });
 
-    plat_dev.register(PlatformWifiDevice::new(
-        "wlan0",
-        net,
-        wifi,
-        ApConfig {
-            server_ip: AP_SERVER_IP,
-            client_ip: AP_CLIENT_IP,
-            prefix_len: AP_PREFIX_LEN,
-        },
-    ));
+    plat_dev.register_net("wlan0", wifi, None);
     info!("[wifi] wlan0 device registered (probe stage done)");
     Ok(())
 }

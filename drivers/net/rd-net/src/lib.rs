@@ -106,6 +106,17 @@ impl Net {
         self.interface().mac_address()
     }
 
+    /// Access the device's optional wireless control plane.
+    ///
+    /// Returns `None` for a plain wired NIC. Forwards to
+    /// [`Interface::wifi_control`] so the upper layers can drive a wireless
+    /// device (STA/SoftAP control, link policy, RX wake) through the same net
+    /// device handle as any other NIC.
+    #[allow(clippy::mut_from_ref)]
+    pub fn wifi_control(&self) -> Option<&mut dyn WifiControl> {
+        self.interface().wifi_control()
+    }
+
     pub fn create_tx_queue(&mut self) -> Result<TxQueue, NetError> {
         let irq_guard = self.irq_guard();
         let queue = self

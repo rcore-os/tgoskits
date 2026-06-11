@@ -219,7 +219,7 @@ impl Service {
         info!("eth0: DHCP enabled");
     }
 
-    /// 注册一个带静态 IPv4 的设备(用于 SoftAP 的 wlan0),返回设备索引。
+    /// 注册一个带静态 IPv4 的设备(如 SoftAP 接口),返回设备索引。
     pub fn register_static_device(
         &mut self,
         name: alloc::string::String,
@@ -242,7 +242,7 @@ impl Service {
         subnet_mask: Ipv4Address,
     ) {
         self.dhcp_server = Some(DhcpServer::new(dev, server_ip, client_ip, subnet_mask));
-        info!("wlan0: DHCP server enabled (lease {client_ip})");
+        info!("dev {dev}: DHCP server enabled (lease {client_ip})");
     }
 
     /// 唤醒所有设备的 RX 就绪(SDIO WiFi 带外收包后由 poll 任务调用)。

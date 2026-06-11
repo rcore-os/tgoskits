@@ -13,8 +13,8 @@ pub mod wifi;
 
 pub use core::{BusState, WifiBus, init, sdio1_irq_handler};
 
-// 网络设备注册
-pub use net::device::{AicWifiNetDev, store_wifi_net_device, take_wifi_net_device};
+// 网络设备(同时实现数据面 Interface 与控制面 WifiControl)
+pub use net::device::AicWifiNetDev;
 // RX 数据帧回调注册(上层用其驱动网络栈 poll)
 pub use thread::rx::register_rx_data_callback;
 // WiFi 客户端 + 配置类型

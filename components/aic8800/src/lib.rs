@@ -16,6 +16,5 @@ pub mod fw;
 pub mod runtime;
 pub mod wireless;
 
-pub use runtime::set_runtime;
-pub use wifi_host;
-pub use wireless::{Aic8800Wifi, probe};
+pub use runtime::{PollFn, SendPollFn, TimedOut, WifiRuntime, set_runtime};
+pub use wireless::probe;

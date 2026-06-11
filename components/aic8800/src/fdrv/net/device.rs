@@ -4,14 +4,30 @@
 //! stack via the `rd_net::Interface` + `ITxQueue`/`IRxQueue` traits. The
 //! device is copy-based (frames are memcpy'd between the runtime's DMA buffers
 //! and the SDIO TX/RX paths), modelled on the `fxmac` net driver.
+//!
+//! The same device object also carries the Wi-Fi *control plane* by
+//! implementing [`rd_net::WifiControl`] (STA connect, SoftAP start, RX wake,
+//! link policy). Data plane and control plane share one `Arc<WifiBus>`, so a
+//! single object is both an [`Interface`] and a [`WifiControl`] — the upper
+//! layers drive it through the generic net device model, with no Wi-Fi-specific
+//! device type or registration path.
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
+use rd_net::{
+    DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig, WifiControl,
+    WifiLinkPolicy,
+};
 use rdif_eth::DriverGeneric;
 
-use crate::fdrv::{core::bus::WifiBus, thread::tx};
+use crate::{
+    common::ChipVariant,
+    fdrv::{
+        core::bus::WifiBus, thread::rx::register_rx_data_callback, thread::tx,
+        wifi::api::WifiClient, wifi::api::WifiConfig,
+    },
+};
 
 const DEVICE_NAME: &str = "aic8800-wifi";
 const QUEUE_ID: usize = 0;
@@ -19,13 +35,22 @@ const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 const MAX_TX_QUEUE_LEN: usize = 128;
 
+fn net_err(e: crate::fdrv::wifi::api::WifiError) -> NetError {
+    NetError::Other(Box::new(e))
+}
+
 /// AIC8800 Wi-Fi network device.
 ///
-/// Wraps a shared `WifiBus` and implements `rd_net::Interface` so the upstream
-/// `RdNetDriver` adapter can drive Ethernet-level TX/RX.
+/// Wraps a shared `WifiBus` and implements both `rd_net::Interface` (data
+/// plane: Ethernet-level TX/RX) and `rd_net::WifiControl` (control plane:
+/// STA/SoftAP control, RX wake, link policy). The control plane operates the
+/// same `WifiBus` as the queues, so one object serves both roles.
 pub struct AicWifiNetDev {
     bus: Arc<WifiBus>,
+    client: WifiClient,
+    chip: ChipVariant,
     mac: [u8; 6],
+    link_policy: Option<WifiLinkPolicy>,
     tx_created: bool,
     rx_created: bool,
     irq_enabled: bool,
@@ -36,14 +61,25 @@ unsafe impl Send for AicWifiNetDev {}
 unsafe impl Sync for AicWifiNetDev {}
 
 impl AicWifiNetDev {
-    pub fn new(bus: Arc<WifiBus>, mac: [u8; 6]) -> Self {
+    pub fn new(bus: Arc<WifiBus>, chip: ChipVariant, mac: [u8; 6]) -> Self {
         Self {
+            client: WifiClient::new(Arc::clone(&bus)),
             bus,
+            chip,
             mac,
+            link_policy: None,
             tx_created: false,
             rx_created: false,
             irq_enabled: false,
         }
+    }
+
+    /// Sets the link policy this device reports via
+    /// [`WifiControl::link_policy`] (e.g. a board's SoftAP static IP + DHCP
+    /// lease). Returns `self` for builder-style construction.
+    pub fn with_link_policy(mut self, policy: WifiLinkPolicy) -> Self {
+        self.link_policy = Some(policy);
+        self
     }
 }
 
@@ -53,9 +89,71 @@ impl DriverGeneric for AicWifiNetDev {
     }
 }
 
+impl WifiControl for AicWifiNetDev {
+    fn connect(&mut self, ssid: &str, password: &str) -> Result<(), NetError> {
+        // STA mode needs LMAC configured first (SoftAP's start_ap_open does its
+        // own configuration).
+        self.client
+            .lmac_configure(self.chip, 6000)
+            .map_err(net_err)?;
+
+        let config = if password.is_empty() {
+            WifiConfig::open(ssid)
+        } else {
+            WifiConfig::wpa2_psk(ssid, password)
+        };
+
+        let mut last_err = None;
+        for attempt in 0..2 {
+            if attempt > 0 {
+                log::info!("[aic8800] retrying connect (attempt {})...", attempt + 1);
+                crate::runtime::runtime().sleep_ms(3000);
+            }
+            match self.client.connect(&config, 15000) {
+                Ok(()) => {
+                    log::info!("[aic8800] connected to '{}'", ssid);
+                    return Ok(());
+                }
+                Err(e) => {
+                    log::warn!("[aic8800] connect attempt {} failed: {:?}", attempt + 1, e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(net_err(last_err.unwrap_or(
+            crate::fdrv::wifi::api::WifiError::OperationFailed("connect failed".into()),
+        )))
+    }
+
+    fn disconnect(&mut self) -> Result<(), NetError> {
+        self.client.disconnect().map_err(net_err)?;
+        log::info!("[aic8800] disconnected");
+        Ok(())
+    }
+
+    fn start_ap_open(&mut self, ssid: &[u8], channel: u8) -> Result<(), NetError> {
+        let cfm = self
+            .client
+            .start_ap_open(self.chip, ssid, channel, 6000)
+            .map_err(net_err)?;
+        log::info!("[aic8800] AP started, APM_START_CFM={:02x?}", cfm);
+        Ok(())
+    }
+
+    fn set_rx_wake(&mut self, wake: fn()) {
+        register_rx_data_callback(wake);
+    }
+
+    fn link_policy(&self) -> Option<WifiLinkPolicy> {
+        self.link_policy
+    }
+}
+
 impl Interface for AicWifiNetDev {
     fn mac_address(&self) -> [u8; 6] {
-        self.mac
+        // Prefer the live MAC the firmware reported on the bus; fall back to the
+        // value captured at construction.
+        self.bus.conn.sta_mac.lock().unwrap_or(self.mac)
     }
 
     fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
@@ -97,6 +195,10 @@ impl Interface for AicWifiNetDev {
         event.tx_queue.insert(QUEUE_ID);
         event.rx_queue.insert(QUEUE_ID);
         event
+    }
+
+    fn wifi_control(&mut self) -> Option<&mut dyn WifiControl> {
+        Some(self)
     }
 }
 
@@ -196,21 +298,4 @@ impl IRxQueue for AicRxQueue {
         }
         Some((buffer.bus_addr, len))
     }
-}
-
-use spin::Mutex;
-
-/// 全局暂存：WiFi 网络设备（由集成层取出并通过 `register_net` 注册）
-static PENDING_NET_DEV: Mutex<Option<AicWifiNetDev>> = Mutex::new(None);
-
-/// 创建 WiFi 网络设备并存入全局，等待集成层取出注册。
-pub fn store_wifi_net_device(bus: Arc<WifiBus>, mac: [u8; 6]) {
-    let dev = AicWifiNetDev::new(bus, mac);
-    *PENDING_NET_DEV.lock() = Some(dev);
-    log::debug!("[aic8800] Wi-Fi net device stored");
-}
-
-/// 取出暂存的 WiFi 网络设备（一次性，取后清空）。
-pub fn take_wifi_net_device() -> Option<AicWifiNetDev> {
-    PENDING_NET_DEV.lock().take()
 }

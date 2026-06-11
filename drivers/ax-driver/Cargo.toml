@@ -46,7 +46,6 @@ aic8800-wifi = [
     "dep:aic8800",
     "dep:sdhci-cv1800",
     "dep:sdio-host",
-    "dep:wifi-host",
 ]
 
 usb = ["dep:crab-usb"]
@@ -152,7 +151,6 @@ simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
 virtio-drivers = { workspace = true, optional = true }
-wifi-host = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"
