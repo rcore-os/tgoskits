@@ -76,6 +76,9 @@ pub trait ArchTrait {
 
     fn post_allocator();
 
+    fn init_boot_tls() {}
+    fn init_runtime_percpu_reg(_cpu_idx: usize) {}
+
     fn per_cpu_trap_init(is_primary: bool);
     fn trap_addr() -> usize;
 
@@ -176,9 +179,9 @@ fn prime_entry() -> ! {
     }
 
     let entry = __someboot_main as *const () as usize;
-    let sp = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx())
-        .unwrap()
-        .stack_top;
+    let cpu_idx = crate::smp::early_current_cpu_idx();
+    arch::Arch::init_runtime_percpu_reg(cpu_idx);
+    let sp = crate::smp::cpu_meta(cpu_idx).unwrap().stack_top;
     let sp = __percpu(sp);
     println!(
         "Jumping to main entry point at {:#x} with SP {:#p}",
