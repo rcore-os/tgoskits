@@ -5,7 +5,7 @@ pub(crate) struct AxFsUnixNamespace;
 impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     fn resolve(&self, path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use ax_errno::AxError;
-        use ax_fs_ng::FS_CONTEXT;
+        use ax_fs_ng::vfs::FS_CONTEXT;
         use axfs_ng_vfs::NodeType;
 
         let loc = FS_CONTEXT.lock().resolve(path)?;
@@ -19,7 +19,7 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
 
     fn bind(&self, path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use ax_errno::AxError;
-        use ax_fs_ng::{FS_CONTEXT, OpenOptions};
+        use ax_fs_ng::vfs::{FS_CONTEXT, OpenOptions};
         use axfs_ng_vfs::NodeType;
 
         let loc = OpenOptions::new()
@@ -37,7 +37,7 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     }
 
     fn unbind(&self, path: &str) -> ax_errno::AxResult<()> {
-        use ax_fs_ng::FS_CONTEXT;
+        use ax_fs_ng::vfs::FS_CONTEXT;
         FS_CONTEXT.lock().remove_file(path)
     }
 }
