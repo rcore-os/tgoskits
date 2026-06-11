@@ -124,7 +124,8 @@ unsafe impl lock_api::RawMutex for RawMutex {
         let owner_id = self.owner_id.load(Ordering::Acquire);
         let current_id = current().id().as_u64();
         assert_eq!(
-            owner_id, current_id,
+            owner_id,
+            current_id,
             "Thread({current_id}) tried to release mutex it doesn't own (owner={owner_id}), \
              mutex={self:p}, curr={}, cpu={}",
             current().id_name(),

@@ -673,10 +673,7 @@ impl AxRunQueue {
                 let mut sched = get_run_queue(target).scheduler.lock();
                 sched
                     .pick_next_task_matching(|t| t.cpumask().get(current_cpu))
-                    .map(|task| {
-                        task.set_cpu_id(current_cpu as _);
-                        task
-                    })
+                    .inspect(|task| task.set_cpu_id(current_cpu as _))
             };
             if let Some(task) = task {
                 info!(
