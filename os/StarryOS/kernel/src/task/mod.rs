@@ -613,8 +613,10 @@ pub struct ProcessData {
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// The per-process uprobe manager. Each process has its own because user
     /// code can be modified independently.
+    #[cfg(feature = "ebpf-kmod")]
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
+    #[cfg(feature = "ebpf-kmod")]
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The resource scope
     pub scope: RwLock<Scope>,
@@ -817,7 +819,9 @@ impl ProcessData {
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
+            #[cfg(feature = "ebpf-kmod")]
             uprobe_manager: crate::kprobe::KprobeManager::new(),
+            #[cfg(feature = "ebpf-kmod")]
             uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
