@@ -6,7 +6,10 @@ use core::{ffi::c_void, ptr, time::Duration};
 use uefi::{
     Handle, Status,
     boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
-    proto::network::http::{Http, HttpBinding},
+    proto::network::{
+        http::{Http, HttpBinding},
+        ip4config2::Ip4Config2,
+    },
 };
 use uefi_raw::protocol::network::http::{
     HttpHeader, HttpMessage, HttpMethod, HttpRequestData, HttpResponseData, HttpStatusCode,
@@ -58,6 +61,8 @@ fn download_body_to_addr(
     dst: *mut u8,
     expected_size: usize,
 ) -> Result<usize, DownloadError> {
+    prepare_network();
+
     let mut client = HttpClient::new()?;
     let mut downloaded = 0usize;
     let mut progress = DownloadProgress::new(expected_size);
@@ -103,6 +108,47 @@ fn download_body_to_addr(
     Ok(downloaded)
 }
 
+fn prepare_network() {
+    let handles = match boot::find_handles::<Ip4Config2>() {
+        Ok(handles) => handles,
+        Err(err) => {
+            crate::logln!("network_ifup_failed: {:?}", err.status());
+            return;
+        }
+    };
+
+    let mut last_error = None;
+    for handle in handles.iter().copied() {
+        let mut protocol = match unsafe {
+            boot::open_protocol::<Ip4Config2>(
+                OpenProtocolParams {
+                    handle,
+                    agent: boot::image_handle(),
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        } {
+            Ok(protocol) => protocol,
+            Err(err) => {
+                last_error = Some(err.status());
+                continue;
+            }
+        };
+
+        match protocol.ifup() {
+            Ok(()) => return,
+            Err(err) => last_error = Some(err.status()),
+        }
+    }
+
+    if let Some(status) = last_error {
+        crate::logln!("network_ifup_failed: {status:?}");
+    } else {
+        crate::logln!("network_ifup_failed: no IPv4 config handle");
+    }
+}
+
 struct DownloadProgress {
     expected_size: usize,
     next_percent: usize,
@@ -146,11 +192,10 @@ impl DownloadProgress {
 }
 
 fn download_percent(downloaded: usize, expected_size: usize) -> usize {
-    if expected_size == 0 {
-        0
-    } else {
-        downloaded.saturating_mul(100) / expected_size
-    }
+    downloaded
+        .saturating_mul(100)
+        .checked_div(expected_size)
+        .unwrap_or(0)
 }
 
 fn print_human_size(bytes: usize) {
@@ -263,14 +308,21 @@ impl HttpClient {
         self.request_get(url, Some(range.as_str()))?;
         let (status, body) = self.response_first(KERNEL_RANGE_CHUNK_SIZE)?;
         if status != HttpStatusCode::STATUS_206_PARTIAL_CONTENT {
+            crate::logln!(
+                "http_unexpected_status: {:?} range={}-{} body_len={}",
+                status,
+                start,
+                end,
+                body.len()
+            );
             return Err(DownloadError::UnexpectedStatus);
         }
         Ok(body)
     }
 
     fn request_get(&mut self, url: &str, range: Option<&str>) -> Result<(), DownloadError> {
-        let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
         let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
+        let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
         let mut host = String::from(host);
         host.push('\0');
 

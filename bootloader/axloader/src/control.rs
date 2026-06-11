@@ -3,14 +3,13 @@ extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
 use core::str;
 
+use httpboot_protocol::{SERIAL_BOOT_PREFIX, SERIAL_PROTOCOL_VERSION, SERIAL_READY_PREFIX};
+
 use crate::{boards, console};
 
-const SERIAL_PROTOCOL_VERSION: u64 = 1;
-const SERIAL_READY_PREFIX: &str = "AXLOADER READY ";
-const SERIAL_BOOT_PREFIX: &str = "AXLOADER BOOT ";
 const SERIAL_BOOT_LINE_LIMIT: usize = 4096;
-const SERIAL_BOOT_WAIT_POLLS: usize = 600;
-const SERIAL_BOOT_POLL_STALL: core::time::Duration = core::time::Duration::from_millis(100);
+const SERIAL_BOOT_WAIT_POLLS: usize = 60_000;
+const SERIAL_BOOT_POLL_STALL: core::time::Duration = core::time::Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlError {
@@ -34,10 +33,9 @@ pub struct BootOffer {
 }
 
 pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
-    announce_ready();
     crate::logln!("serial_control_wait: waiting for AXLOADER BOOT");
+    announce_ready();
     let line = read_boot_line()?;
-    crate::logln!("serial_control_received");
     parse_boot_offer(&line)
 }
 
@@ -93,7 +91,7 @@ fn parse_boot_offer(input: &str) -> Result<BootOffer, ControlError> {
         .ok_or(ControlError::MissingField("serial_boot_prefix"))?;
     let protocol_version = json_u64_field(input, "protocol_version")
         .ok_or(ControlError::InvalidNumber("protocol_version"))?;
-    if protocol_version != SERIAL_PROTOCOL_VERSION {
+    if protocol_version != u64::from(SERIAL_PROTOCOL_VERSION) {
         return Err(ControlError::InvalidProtocolVersion);
     }
     let arch = json_string_field(input, "arch").ok_or(ControlError::MissingField("arch"))?;

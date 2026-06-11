@@ -1,10 +1,15 @@
-[build]
-rustflags = [
-    "--cfg",
-    "no_zerocopy_simd_x86_avx12_1_89_0",
-    "--check-cfg",
-    "cfg(no_zerocopy_simd_x86_avx12_1_89_0)",
-]
+include = [{path = ".config-local.toml", optional = true}]
 
 [net]
+# 使用系统 git 拉取依赖，可利用已配置的 git 凭证（如 gh auth、credential helper）
 git-fetch-with-cli = true
+
+[resolver]
+incompatible-rust-versions = "allow"
+
+[alias]
+arceos = "run -p tg-xtask -- arceos"
+axvisor = "run -p tg-xtask -- axvisor"
+starry = "run -p tg-xtask -- starry"
+xtask = "run -p tg-xtask --"
+board = "run -p tg-xtask -- board"
