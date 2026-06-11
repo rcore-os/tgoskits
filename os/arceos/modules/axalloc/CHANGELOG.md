@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.1...ax-alloc-v0.8.2) - 2026-06-11
+
+### Fixed
+
+- *(kernel)* harden early allocation and virtio PCI setup
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.0...ax-alloc-v0.8.1) - 2026-06-09
 
 ### Added

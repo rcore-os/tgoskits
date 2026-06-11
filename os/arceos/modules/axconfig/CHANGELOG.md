@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-config-v0.5.12...ax-config-v0.5.13) - 2026-06-11
+
+### Added
+
+- *(axbuild)* default dynamic platform builds
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-config-v0.5.11...ax-config-v0.5.12) - 2026-06-09
 
 ### Fixed

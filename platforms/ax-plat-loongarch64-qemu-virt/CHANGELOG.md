@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.12...ax-plat-loongarch64-qemu-virt-v0.5.13) - 2026-06-11
+
+### Fixed
+
+- *(starry)* support eBPF ringbuf mmap on LoongArch DMW ([#1208](https://github.com/rcore-os/tgoskits/pull/1208))
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-plat-loongarch64-qemu-virt-v0.5.11...ax-plat-loongarch64-qemu-virt-v0.5.12) - 2026-06-09
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -59,14 +59,14 @@ ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-crate-interface.workspace = true
 ax-display.workspace = true
-ax-fs = { version = "0.5.17", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-fs = { version = "0.5.18", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
-axnet = { version = "0.7.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
+axnet = { version = "0.7.2", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 ax-driver = { workspace = true, features = ["usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.17...someboot-v0.2.0) - 2026-06-11
+
+### Added
+
+- *(someboot)* boot LoongArch dynamic UEFI with SMP
+
+### Fixed
+
+- *(ax-plat-x86-pc)* enable XCR0 AVX/SSE state for userspace AVX ([#1112](https://github.com/rcore-os/tgoskits/pull/1112))
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
 ## [0.1.17](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.16...someboot-v0.1.17) - 2026-06-09
 
 ### Added

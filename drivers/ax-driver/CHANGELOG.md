@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.7.0...ax-driver-v0.7.1) - 2026-06-11
+
+### Fixed
+
+- *(kernel)* harden early allocation and virtio PCI setup
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.6.1...ax-driver-v0.7.0) - 2026-06-09
 
 ### Added
