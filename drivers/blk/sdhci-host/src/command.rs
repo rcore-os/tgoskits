@@ -194,14 +194,28 @@ impl Sdhci {
         (normal, error)
     }
 
-    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> u16 {
+    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> (u16, u16) {
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
+        let consume_error = mask & NORMAL_INT_ERROR != 0;
+        let error_hw = if consume_error && normal_hw & NORMAL_INT_ERROR != 0 {
+            self.read_u16(REG_ERROR_INT_STATUS)
+        } else {
+            0
+        };
         let consume_normal = normal_hw & mask;
         if consume_normal != 0 {
             self.write_u16(REG_NORMAL_INT_STATUS, consume_normal);
         }
+        if error_hw != 0 {
+            self.write_u16(REG_ERROR_INT_STATUS, error_hw);
+        }
 
-        take_cached_irq_status(&mut self.irq_pending_normal, normal_hw, mask)
+        let normal = take_cached_irq_status(&mut self.irq_pending_normal, normal_hw, mask);
+        let error = self.irq_pending_error | error_hw;
+        if consume_error && error != 0 && normal & NORMAL_INT_ERROR != 0 {
+            self.irq_pending_error = 0;
+        }
+        (normal, error)
     }
 
     fn translate_error_bits(&self, err: u16, cmd_index: u8) -> Error {
@@ -480,6 +494,31 @@ mod tests {
             0,
             "transfer completion belongs to the data-complete poll step"
         );
+    }
+
+    #[test]
+    fn fifo_status_consumes_irq_cached_error_bits() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.irq_pending_normal = NORMAL_INT_ERROR;
+        host.irq_pending_error = ERROR_INT_DATA_TIMEOUT;
+
+        let (status, error) =
+            host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
+
+        assert_ne!(
+            status & NORMAL_INT_ERROR,
+            0,
+            "FIFO poll must observe error status cached by the IRQ handler"
+        );
+        assert_ne!(
+            error & ERROR_INT_DATA_TIMEOUT,
+            0,
+            "FIFO poll must preserve error bits after the IRQ handler clears hardware status"
+        );
+        assert_eq!(host.irq_pending_normal & NORMAL_INT_ERROR, 0);
+        assert_eq!(host.irq_pending_error, 0);
     }
 
     #[test]
