@@ -69,10 +69,15 @@ fn setup_acpi_irq(
 ) -> Result<usize, OnProbeError> {
     let intc = rdrive::get_list::<rdif_intc::Intc>()
         .into_iter()
-        .find(|intc| intc.descriptor().name.starts_with("ACPI IOAPIC"))
+        .find(|intc| {
+            intc.try_lock()
+                .map(|intc| intc.supports_acpi_gsi(route))
+                .unwrap_or(false)
+        })
         .ok_or_else(|| {
             OnProbeError::other(format!(
-                "ACPI interrupt controller is not registered for {path}"
+                "ACPI interrupt controller for route {:?} is not registered for {path}",
+                route.controller
             ))
         })?;
     let mut intc = intc.lock().map_err(|err| {

@@ -10,6 +10,10 @@ pub trait Interface: DriverGeneric {
         unimplemented!();
     }
 
+    fn supports_acpi_gsi(&self, _route: &AcpiGsiRoute) -> bool {
+        false
+    }
+
     fn setup_irq_by_acpi(&mut self, _route: &AcpiGsiRoute) -> IrqId {
         unimplemented!();
     }

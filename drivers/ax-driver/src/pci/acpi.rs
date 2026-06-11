@@ -68,10 +68,11 @@ pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<usize>, OnPr
         .irq_num()
         .expect("Some ACPI GSI route must resolve to an IRQ");
     log::info!(
-        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} IOAPIC {} input {} vector {:#x}",
+        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} {:?} {} input {} vector {:#x}",
         info.address,
         route.intx_route.root_pin,
         route.gsi.gsi,
+        route.gsi.controller,
         route.gsi.controller_id,
         route.gsi.controller_input,
         irq

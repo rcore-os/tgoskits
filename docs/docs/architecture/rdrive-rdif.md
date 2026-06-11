@@ -115,7 +115,7 @@ pub enum ProbeKind {
 | --- | --- | --- | --- | --- |
 | `probe::static_` | `System { probed_names }` | `ProbeKind::Static` register name | `PlatformDevice` | 平台 crate 自己注册静态 model driver 并在回调中使用平台常量 |
 | `probe::fdt` | `System { fdt, phandle_map, probed }` | compatible + node status | `FdtInfo` + `PlatformDevice` | 保留当前 FDT 能力 |
-| `probe::acpi` | `System { root, routing, pci, probed }` | HID/CID + ACPI device | `AcpiInfo` + `PlatformDevice` | ACPI source 初始化、MCFG/IOAPIC routing、PCI `_PRT` 和普通设备 IRQ route |
+| `probe::acpi` | `System { root, routing, pci, probed }` | HID/CID + ACPI device，或空 `ids` 的全局 table probe | `AcpiInfo` + `PlatformDevice` | ACPI source 初始化、MCFG/GSI controller routing、PCI `_PRT` 和普通设备 IRQ route |
 | `probe::pci` | PCIe controller enumerator | vendor/device/class | endpoint + `PlatformDevice` | 保留当前 PCIe 二阶段 probe |
 
 `probe_pre_kernel()` 只运行 `ProbeLevel::PreKernel`，并通过 backend 分发器执行 Static、FDT、ACPI 中的早期 probe。PCI endpoint 枚举依赖已注册的 PCIe controller，因此仍在普通 probe 阶段触发。
@@ -185,7 +185,7 @@ sequenceDiagram
     else ACPI device
         Probe->>Resolver: binding_info_from_acpi(AcpiInfo)
         Resolver->>Probe: read first AcpiGsiRoute
-        Resolver->>Registry: get ACPI IOAPIC Intc
+        Resolver->>Registry: get matching ACPI GSI Intc
         Registry-->>Resolver: rdif_intc::Intc
         Resolver->>Intc: setup_irq_by_acpi(route)
         Intc-->>Resolver: irq number
@@ -209,7 +209,7 @@ sequenceDiagram
 这个边界让平台解析和中断控制器 setup 留在 `ax-driver` 侧：
 
 - FDT 设备读取第一个 `interrupts()` 项，通过 `interrupt_parent` phandle 找到 `rdif-intc`，并在 probe 时调用 `setup_irq_by_fdt()`。
-- ACPI 设备从 `AcpiInfo` 读取首个 `AcpiGsiRoute`，通过 `ACPI IOAPIC` 类型的 `rdif-intc` 调用 `setup_irq_by_acpi()`，把 trigger/polarity/vector 等控制器参数配置好后只返回数字 IRQ。
+- ACPI 设备从 `AcpiInfo` 读取首个 `AcpiGsiRoute`，通过能匹配该 route 的 `rdif-intc` 调用 `setup_irq_by_acpi()`，把 trigger/polarity/vector 等控制器参数配置好后只返回数字 IRQ。
 - PCI 设备先在枚举阶段计算 INTx swizzle route，再由 `ax-driver::pci::resolve_intx_irq()` 按 ACPI route、FDT `interrupt-map`、已注册 legacy route、`interrupt_line` fallback 的顺序解析；ACPI/FDT 命中后仍交给对应 `rdif-intc` 完成 setup。
 - 无中断的设备注册为 `None`；声明了中断但无法解析的 FDT 设备返回 probe error；PCI required IRQ 最终无结果时返回 probe error，optional IRQ 允许注册为 `None`。
 - `ax-runtime`、`ax-hal`、`ax-net-ng`、StarryOS usbfs 等上层只消费 `Option<usize>` / `usize`，不再处理 FDT/ACPI/PCI IRQ source。
@@ -390,7 +390,7 @@ src/
 Phase 1: `rdrive` backend 分发
 
 - 增加 `PlatformSource::{Static,Fdt,Acpi}` 和 `ProbeKind::{Static,Fdt,Acpi,Pci}`。
-- 新增 `probe::static_` 与 `probe::acpi` 模块；ACPI 初始化提供 MCFG、IOAPIC routing、PCI `_PRT` 和普通设备 IRQ metadata。
+- 新增 `probe::static_` 与 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
 - `probe_pre_kernel()` 和 `probe_all()` 改为 backend 分发，保留当前 FDT 与 PCI 能力。
 - `Manager` 保持只管理 register 和 typed device registry。
 

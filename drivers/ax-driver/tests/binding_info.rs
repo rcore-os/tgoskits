@@ -21,7 +21,7 @@ use {
         DriverGeneric, Platform, PlatformDevice,
         probe::{
             OnProbeError,
-            acpi::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger},
+            acpi::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger},
         },
         register::{DriverRegister, ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
     },
@@ -224,6 +224,10 @@ impl DriverGeneric for TestIntc {
 
 #[cfg(feature = "plat-dyn")]
 impl rdif_intc::Interface for TestIntc {
+    fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
+        *route == acpi_route()
+    }
+
     fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> rdif_intc::IrqId {
         *SETUP_SPECIFIER.lock().unwrap() = Some(irq_prop.to_vec());
         77.into()
@@ -323,6 +327,7 @@ fn acpi_route() -> AcpiGsiRoute {
     AcpiGsiRoute {
         gsi: 32,
         vector: 0x50,
+        controller: AcpiGsiController::IoApic,
         controller_id: 0,
         controller_address: 0xfec0_0000,
         controller_input: 32,
