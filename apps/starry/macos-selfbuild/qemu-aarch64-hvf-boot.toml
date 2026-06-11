@@ -1,0 +1,33 @@
+# Apple Silicon macOS boot-only QEMU config for externally built StarryOS kernels.
+args = [
+    "-snapshot",
+    "-nographic",
+    "-accel",
+    "hvf",
+    "-machine",
+    "virt,gic-version=3",
+    "-cpu",
+    "host",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-hvf-selfbuild.img,file.locking=off",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+success_regex = ["root@starry:"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)\\bunhandled trap\\b",
+    "(?i)\\btrap frame\\b",
+    "(?i)fatal",
+    "(?i)segmentation fault",
+]
+timeout = 300
