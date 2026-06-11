@@ -26,6 +26,7 @@ use ax_memory_addr::MemoryAddr;
 use fdt_parser::{Fdt, Node};
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::images::load_vm_image_from_memory;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use axvm::AxVMRef;
