@@ -327,6 +327,18 @@ pub(crate) async fn ensure_managed_rootfs(
         .ok_or_else(|| anyhow!("invalid managed rootfs path `{}`", path.display()))?;
     ensure_rootfs_image_name(image_name)?;
     let storage = Storage::new_from_config(&ImageConfig::read_config(workspace_root)?).await?;
+    // A managed rootfs that is not a registry image but already exists locally was
+    // produced on-host (e.g. by a Starry app `prebuild.sh` that bakes its own
+    // rootfs into the canonical image-storage path). Accept the prepared file
+    // as-is; only registry-backed images are (re)pulled. A non-registry image that
+    // is missing locally still falls through to the error path below.
+    if storage
+        .resolve_image(ImageSpecRef::parse(image_name))
+        .is_err()
+        && path.is_file()
+    {
+        return Ok(());
+    }
     let prepared = storage
         .pull_rootfs_image(ImageSpecRef::parse(image_name))
         .await?;
@@ -798,6 +810,47 @@ url = "https://example.com/{image_name}.tar.gz"
             resolved,
             Some(config.local_storage.join(image_name).join(image_name))
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_managed_rootfs_accepts_locally_prepared_non_registry_image() {
+        // A Starry app `prebuild.sh` bakes its own rootfs into the canonical image
+        // storage path under a name that is not in the image registry. The
+        // launch-time ensure must accept that prepared file instead of trying to
+        // pull a (non-existent) registry image.
+        let workspace = tempdir().unwrap();
+        let image_name = "rootfs-aarch64-pipuvapp.img";
+        let config = ImageConfig {
+            local_storage: workspace.path().join(".tgos-images"),
+            registry: "https://example.com/registry.toml".to_string(),
+            auto_sync: false,
+            auto_sync_threshold: 60,
+        };
+        ImageConfig::write_config(workspace.path(), &config).unwrap();
+        fs::create_dir_all(&config.local_storage).unwrap();
+        fs::write(
+            config.local_storage.join(REGISTRY_FILENAME),
+            sample_registry(),
+        )
+        .unwrap();
+
+        let legacy_path = workspace.path().join("tmp/axbuild/rootfs").join(image_name);
+
+        // Not in registry and not present locally -> still an error.
+        assert!(
+            ensure_managed_rootfs(workspace.path(), "aarch64", &legacy_path)
+                .await
+                .is_err()
+        );
+
+        // Once the app prebuild has produced the rootfs at the canonical path, the
+        // ensure accepts it as-is (no registry pull).
+        let prepared = config.local_storage.join(image_name).join(image_name);
+        fs::create_dir_all(prepared.parent().unwrap()).unwrap();
+        fs::write(&prepared, b"prepared-app-rootfs").unwrap();
+        ensure_managed_rootfs(workspace.path(), "aarch64", &legacy_path)
+            .await
+            .expect("locally-prepared non-registry app rootfs should be accepted");
     }
 
     #[tokio::test]
