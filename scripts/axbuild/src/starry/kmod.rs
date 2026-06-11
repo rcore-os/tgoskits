@@ -12,10 +12,9 @@
 //! architecture matches the host architecture.
 
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -573,7 +572,10 @@ fn inject_modules_into_rootfs(
         bail!("rootfs image not found: {}", rootfs.display());
     }
 
-    let overlay_dir = TempOverlayDir::new()?;
+    let overlay_dir = tempfile::Builder::new()
+        .prefix("axbuild-kmod-overlay-")
+        .tempdir()
+        .context("failed to create temporary kmod overlay directory")?;
     let modules_dir = overlay_dir.path().join("modules");
     fs::create_dir_all(&modules_dir)
         .with_context(|| format!("failed to create {}", modules_dir.display()))?;
@@ -595,45 +597,6 @@ fn inject_modules_into_rootfs(
         rootfs.display()
     );
     Ok(())
-}
-
-struct TempOverlayDir {
-    path: PathBuf,
-}
-
-impl TempOverlayDir {
-    fn new() -> Result<Self> {
-        let base = std::env::temp_dir();
-        let pid = std::process::id();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-
-        for attempt in 0..100 {
-            let path = base.join(format!("axbuild-kmod-overlay-{pid}-{nanos}-{attempt}"));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("failed to create {}", path.display()));
-                }
-            }
-        }
-
-        bail!("failed to create a unique temporary kmod overlay directory");
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempOverlayDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }
 
 /// Linker (and any leading args) for the partial-link (`-r`) step.

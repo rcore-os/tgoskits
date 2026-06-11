@@ -102,8 +102,6 @@ unsafe extern "C" {
 fn alloc_kmod_frames(num_pages: usize) -> AxResult<VirtAddr> {
     let page_size = PageSize::Size4K as usize;
     let total = page_size * num_pages;
-    // TODO: use a proper allocator here. For now we just find a free virtual address
-    // const KMOD_ALLOC_SIZE: usize = 1024 * 1024 * 1024 * 2;
     let kernel_end = (_ekernel as *const () as usize).align_up_4k();
     // The kernel virtual address space is laid out like this:
     // ┌──────────────────────────────┐
@@ -111,7 +109,6 @@ fn alloc_kmod_frames(num_pages: usize) -> AxResult<VirtAddr> {
     // ├──────────────────────────────┤
     // │       Kernel text/data       │ high addresses
     // ├──────────────────────────────┤
-    // Try to find a free virtual address range within 2 GiB of the kernel end, to stay within reach of 32-bit relative relocations.
     let kmod_alloc_start = VirtAddr::from_usize(kernel_end);
     let vaddr = {
         let kspace = ax_mm::kernel_aspace();

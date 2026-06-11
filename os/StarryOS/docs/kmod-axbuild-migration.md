@@ -252,7 +252,7 @@ rmmod hello
 ```
 
 
-## kmod app migration 
+## kmod app migration
 
 | kmod        | x86_64             | riscv64            | aarch64            | loongarch64        |
 | ----------- | ------------------ | ------------------ | ------------------ | ------------------ |
