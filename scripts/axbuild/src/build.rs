@@ -481,12 +481,8 @@ impl BuildInfo {
 
 impl Default for BuildInfo {
     fn default() -> Self {
-        let mut env = HashMap::new();
-        env.insert("AX_IP".to_string(), "10.0.2.15".to_string());
-        env.insert("AX_GW".to_string(), "10.0.2.2".to_string());
-
         Self {
-            env,
+            env: HashMap::new(),
             log: LogLevel::Warn,
             features: vec!["ax-std".to_string()],
             max_cpu_num: None,
@@ -2084,6 +2080,25 @@ mod tests {
         info.env.clear();
         info.env.insert("DWARF".to_string(), "1".to_string());
         assert!(build_info_enables_backtrace(&info));
+    }
+
+    #[test]
+    fn build_info_defaults_to_empty_env() {
+        let info = BuildInfo::default();
+        assert!(info.env.is_empty());
+    }
+
+    #[test]
+    fn build_info_accepts_missing_env() {
+        let info: BuildInfo = toml::from_str(
+            r#"
+features = []
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        assert!(info.env.is_empty());
     }
 
     #[test]

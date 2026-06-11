@@ -13,6 +13,7 @@ use smoltcp::{
 
 use crate::{
     LISTEN_TABLE,
+    config::Ipv4InterfaceConfig,
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
 };
@@ -163,6 +164,31 @@ impl Router {
             entries.extend(device.arp_entries(timestamp));
         }
         entries
+    }
+
+    pub fn ipv4_config_for_dev(&self, dev: usize) -> Option<Ipv4InterfaceConfig> {
+        self.table.rules.iter().find_map(|rule| match rule.filter {
+            IpCidr::Ipv4(address) if rule.dev == dev && address.prefix_len() != 0 => {
+                Some(Ipv4InterfaceConfig {
+                    address,
+                    gateway: self.table.rules.iter().find_map(|default_rule| {
+                        matches!(
+                            default_rule.filter,
+                            IpCidr::Ipv4(filter)
+                                if default_rule.dev == dev
+                                    && filter.address() == Ipv4Address::UNSPECIFIED
+                                    && filter.prefix_len() == 0
+                        )
+                        .then(|| match default_rule.via {
+                            Some(IpAddress::Ipv4(gateway)) => Some(gateway),
+                            _ => None,
+                        })
+                        .flatten()
+                    }),
+                })
+            }
+            _ => None,
+        })
     }
 
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {

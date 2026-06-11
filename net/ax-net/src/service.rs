@@ -17,7 +17,9 @@ use smoltcp::{
     },
 };
 
-use crate::{SOCKET_SET, consts::STANDARD_MTU, device::ArpEntry, router::Router};
+use crate::{
+    SOCKET_SET, config::Ipv4InterfaceConfig, consts::STANDARD_MTU, device::ArpEntry, router::Router,
+};
 
 fn now() -> Instant {
     Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
@@ -341,6 +343,10 @@ impl Service {
 
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
+    }
+
+    pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
+        self.router.ipv4_config_for_dev(1)
     }
 
     pub fn device_mask_for(&self, endpoint: &IpListenEndpoint) -> u32 {

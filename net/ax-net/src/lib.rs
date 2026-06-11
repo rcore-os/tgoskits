@@ -63,7 +63,7 @@ use spin::{LazyLock, Once};
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
 pub use self::{
-    config::{NetworkConfig, StaticIpConfig},
+    config::{Ipv4InterfaceConfig, NetworkConfig, StaticIpConfig},
     device::{
         ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult,
         NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
@@ -248,6 +248,10 @@ pub fn poll_interfaces() {
 
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
+}
+
+pub fn eth0_ipv4_config() -> Option<Ipv4InterfaceConfig> {
+    get_service().eth0_ipv4_config()
 }
 
 /// Returns the list of configured DNS servers.
