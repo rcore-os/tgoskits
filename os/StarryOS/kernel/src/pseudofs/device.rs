@@ -41,6 +41,7 @@ pub enum DeviceMmap {
     /// mmap callers must map these pages in order without adding the offset
     /// again. This covers layouts that are not a single contiguous physical
     /// range, such as BPF ringbuf maps that expose mirrored data pages.
+    #[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
     PhysicalPages(Vec<PhysAddr>, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
