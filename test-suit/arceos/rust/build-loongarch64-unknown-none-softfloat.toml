@@ -1,6 +1,5 @@
 features = [
-    "ax-hal/loongarch64-qemu-virt",
-    "ax-driver/plat-static",
+    "ax-driver/plat-dyn",
 ]
 log = "Info"
 max_cpu_num = 4

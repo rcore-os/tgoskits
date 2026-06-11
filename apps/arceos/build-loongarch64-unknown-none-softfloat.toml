@@ -1,6 +1,4 @@
-features = [
-  "ax-hal/loongarch64-qemu-virt",
-]
+features = []
 log = "Info"
 max_cpu_num = 1
 

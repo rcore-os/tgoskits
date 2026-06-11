@@ -6,6 +6,5 @@ features = [
     "vmx",
 ]
 log = "Info"
-plat_dyn = true
 target = "x86_64-unknown-none"
 vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
