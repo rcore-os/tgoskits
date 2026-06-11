@@ -97,6 +97,8 @@ pub fn phys_to_virt(paddr: usize) -> *mut u8 {
         } else {
             __va(paddr)
         }
+    } else if cfg!(target_arch = "loongarch64") {
+        __va(paddr)
     } else {
         paddr as *mut u8
     }

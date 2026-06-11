@@ -2,7 +2,7 @@ use core::arch::naked_asm;
 
 // use super::entry::kernel_entry;
 use crate::{
-    arch::addrspace::{VM_LOAD_ADDRESS, to_phys},
+    arch::addrspace::KERNEL_LOAD_ADDRESS,
     efi_stub::{efi_pe_entry, pe::*},
 };
 
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn _head() {
 
         dos_signature = const IMAGE_DOS_SIGNATURE,
         linux_pe_magic = const LINUX_PE_MAGIC,
-        phys_link_kaddr = const to_phys(VM_LOAD_ADDRESS),
+        phys_link_kaddr = const KERNEL_LOAD_ADDRESS,
         efi_pe_entry = sym efi_pe_entry,
         image_nt_signature = const IMAGE_NT_SIGNATURE,
         file_machine = const IMAGE_FILE_MACHINE_LOONGARCH64,
