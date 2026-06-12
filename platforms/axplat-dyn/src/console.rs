@@ -40,14 +40,27 @@ impl ConsoleIf for ConsoleIfImpl {
     /// Returns `None` if input interrupt is not supported.
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
-        None
+        somehal::console::irq_num()
     }
 
     #[cfg(feature = "irq")]
-    fn set_input_irq_enabled(_enabled: bool) {}
+    fn set_input_irq_enabled(enabled: bool) {
+        somehal::console::set_input_irq_enabled(enabled);
+    }
 
     #[cfg(feature = "irq")]
     fn handle_irq() -> ConsoleIrqEvent {
-        ConsoleIrqEvent::empty()
+        let raw = somehal::console::handle_irq();
+        let mut event = ConsoleIrqEvent::empty();
+        if raw & somehal::console::CONSOLE_IRQ_RX_READY != 0 {
+            event |= ConsoleIrqEvent::RX_READY;
+        }
+        if raw & somehal::console::CONSOLE_IRQ_RX_ERROR != 0 {
+            event |= ConsoleIrqEvent::RX_ERROR;
+        }
+        if raw & somehal::console::CONSOLE_IRQ_OVERRUN != 0 {
+            event |= ConsoleIrqEvent::OVERRUN;
+        }
+        event
     }
 }

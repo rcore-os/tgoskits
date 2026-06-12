@@ -111,8 +111,8 @@ flowchart TD
 `irq.rs` 把 `HandlerTable<1024>` 和 `somehal` 的中断入口拼在一起：
 
 - `register()` / `unregister()` 负责维护处理函数表并同步开关 IRQ。
-- `handle()` 只负责报告当前正在处理的原始 IRQ 编号。
-- 真正的公共中断入口是 `#[somehal::irq_handler] fn somehal_handle_irq(...)`，它再调用 `IRQ_HANDLER_TABLE.handle(...)` 进行分发。
+- `handle()` 通过 `somehal::irq::begin_irq(raw)` 开启一次硬件中断事务，持有返回的 `ActiveIrq`，并在作用域内调用 `IRQ_HANDLER_TABLE.handle(...)` 进行分发。
+- `ActiveIrq` 在 drop 时执行架构相关的 EOI/complete，因此中断控制器收尾发生在 `ax-hal` 顶层 IRQ guard 释放、允许调度之前。
 
 也就是说，这里的 `IrqIf` 只接上了“注册表 + 分发桥”，底层 ACK/EOI 语义仍然由 `somehal` 负责。
 

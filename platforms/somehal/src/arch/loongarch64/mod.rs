@@ -1,6 +1,6 @@
 use loongArch64::iocsr::{iocsr_read_w, iocsr_write_w};
 
-use crate::{common::PlatOp, irq::_handle_irq};
+use crate::common::PlatOp;
 
 mod eiointc;
 mod irq_common;
@@ -38,6 +38,8 @@ fn ack_pending_ipi() -> u32 {
 }
 
 impl PlatOp for Plat {
+    type ActiveIrq = ActiveIrq;
+
     fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
         let raw = irq.raw();
 
@@ -72,50 +74,36 @@ impl PlatOp for Plat {
         }
     }
 
-    fn irq_handler() -> someboot::irq::IrqId {
-        someboot::irq::systimer_irq()
-    }
-
-    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
-        let irq = match raw {
+    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
+        match raw {
             raw if raw == someboot::irq::systimer_irq().raw() => {
-                let irq = someboot::irq::IrqId::new(raw);
                 // Clear the current timer interrupt before dispatching. The
                 // dispatch path reprograms the next one-shot timer; clearing
                 // afterwards can drop a newly-arrived timer edge and strand
                 // timer-based sleeps.
                 someboot::timer::ack();
-                _handle_irq(raw.into());
-                irq
+                Some(ActiveIrq::new(raw.into(), Completion::None))
             }
             IPI_IRQ => {
-                let mut status = ack_pending_ipi();
-                let irq = someboot::irq::IrqId::new(raw);
-                while status != 0 {
-                    let ipi_bit = status.trailing_zeros();
-                    status &= !(1 << ipi_bit);
-                    _handle_irq(raw.into());
-                }
-                irq
+                let _status = ack_pending_ipi();
+                Some(ActiveIrq::new(raw.into(), Completion::None))
             }
             EIOINTC_IRQ => {
                 let Some(external) = eiointc::claim_irq() else {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
                 };
-                let irq = someboot::irq::IrqId::new(external);
-                _handle_irq(external.into());
-                eiointc::complete_irq(external);
-                irq
+                Some(ActiveIrq::new(
+                    external.into(),
+                    Completion::EioIntc { irq: external },
+                ))
             }
-            external => {
-                let irq = someboot::irq::IrqId::new(external);
-                _handle_irq(external.into());
-                irq
-            }
-        };
+            external => Some(ActiveIrq::new(external.into(), Completion::None)),
+        }
+    }
 
-        Some(irq)
+    fn active_irq_id(active: &Self::ActiveIrq) -> rdrive::IrqId {
+        active.id()
     }
 
     fn systick_irq() -> rdrive::IrqId {
@@ -133,5 +121,34 @@ impl PlatOp for Plat {
             IOCSR_IPI_SEND,
             make_ipi_send_value(cpu_id, IPI_VECTOR, false),
         );
+    }
+}
+
+enum Completion {
+    None,
+    EioIntc { irq: usize },
+}
+
+pub struct ActiveIrq {
+    irq: rdrive::IrqId,
+    completion: Completion,
+}
+
+impl ActiveIrq {
+    const fn new(irq: rdrive::IrqId, completion: Completion) -> Self {
+        Self { irq, completion }
+    }
+
+    pub fn id(&self) -> rdrive::IrqId {
+        self.irq
+    }
+}
+
+impl Drop for ActiveIrq {
+    fn drop(&mut self) {
+        match self.completion {
+            Completion::None => {}
+            Completion::EioIntc { irq } => eiointc::complete_irq(irq),
+        }
     }
 }

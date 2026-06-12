@@ -75,7 +75,7 @@ pub fn dispatch_page_fault(addr: VirtAddr, flags: PageFaultFlags) -> bool {
 /// IRQ handler.
 #[eii]
 pub fn irq_handler(irq: usize) -> bool {
-    default_irq_handler(irq)
+    dispatch_irq(irq)
 }
 
 /// Page fault handler.

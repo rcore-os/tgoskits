@@ -8,12 +8,7 @@ use super::context::Context;
 
 #[aarch64_trap_handler(kind = "irq")]
 fn handle_irq(_ctx: &Context) {
-    unsafe extern "Rust" {
-        fn __aarch64_irq_handler();
-    }
-    unsafe {
-        __aarch64_irq_handler();
-    }
+    panic!("unexpected AArch64 IRQ in someboot before runtime trap setup");
 }
 
 #[aarch64_trap_handler(kind = "fiq")]
