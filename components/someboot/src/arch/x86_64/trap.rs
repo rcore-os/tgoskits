@@ -32,6 +32,18 @@ const LAPIC_SVR_ENABLE: u32 = 1 << 8;
 const LAPIC_BASE_MASK: u64 = 0xffff_f000;
 const IA32_APIC_BASE_ENABLE: u64 = 1 << 11;
 const LAPIC_TIMER_DIVIDE_BY_16: u32 = 0b0011;
+const PIT_CHANNEL2_PORT: u16 = 0x42;
+const PIT_COMMAND_PORT: u16 = 0x43;
+const PIT_CONTROL_PORT: u16 = 0x61;
+const PIT_CHANNEL2_GATE: u8 = 0x01;
+const PIT_SPEAKER_ENABLE: u8 = 0x02;
+const PIT_CHANNEL2_OUT: u8 = 0x20;
+const PIT_MODE0_CHANNEL2: u8 = 0xb0;
+const PIT_TICK_RATE_HZ: u64 = 1_193_182;
+const TSC_PIT_CALIBRATION_MS: u64 = 50;
+const TSC_PIT_MAX_POLL_COUNT: usize = 5_000_000;
+const MIN_VALID_TSC_FREQ_HZ: u64 = 10_000_000;
+const MAX_VALID_TSC_FREQ_HZ: u64 = 10_000_000_000;
 
 static TSC_FREQ_HZ: AtomicU64 = AtomicU64::new(0);
 static APIC_COUNTS_PER_TSC_Q32: AtomicU64 = AtomicU64::new(0);
@@ -161,45 +173,15 @@ fn init_tsc_freq() {
     }
 
     let cpuid = CpuId::new();
-    let freq_hz = cpuid
-        .get_tsc_info()
-        .and_then(|info| {
-            if let Some(freq) = info.tsc_frequency() {
-                return Some(freq);
-            }
-
-            if info.numerator() != 0 && info.denominator() != 0 {
-                let base_hz = cpuid
-                    .get_processor_frequency_info()
-                    .map(|pinfo| pinfo.processor_base_frequency() as u64 * 1_000_000)
-                    .or_else(|| {
-                        cpuid
-                            .get_hypervisor_info()
-                            .and_then(|hv| hv.tsc_frequency().map(|khz| khz as u64 * 1_000))
-                    })?;
-                let crystal_hz = base_hz * info.denominator() as u64 / info.numerator() as u64;
-                return Some(crystal_hz * info.numerator() as u64 / info.denominator() as u64);
-            }
-
-            None
-        })
-        .or_else(|| {
-            cpuid
-                .get_processor_frequency_info()
-                .map(|pinfo| pinfo.processor_base_frequency() as u64 * 1_000_000)
-        })
-        .or_else(|| {
-            cpuid
-                .get_hypervisor_info()
-                .and_then(|hv| hv.tsc_frequency().map(|khz| khz as u64 * 1_000))
-        })
-        .filter(|freq| *freq != 0)
+    let freq_hz = hypervisor_tsc_freq_hz(&cpuid)
+        .or_else(|| cpuid_tsc_freq_hz(&cpuid))
+        .or_else(pit_calibrate_tsc_freq_hz)
+        .or_else(|| processor_base_freq_hz(&cpuid))
         .unwrap_or_else(|| {
             let fallback = 1_000_000_000u64;
             warn!("x86_64 TSC frequency unavailable, fallback to {fallback} Hz");
             fallback
         });
-
     let has_deadline = cpuid
         .get_feature_info()
         .is_some_and(|info| info.has_tsc_deadline());
@@ -211,6 +193,85 @@ fn init_tsc_freq() {
 
     TSC_FREQ_HZ.store(freq_hz, Ordering::Release);
     TSC_INFO_STATE.store(2, Ordering::Release);
+}
+
+fn valid_tsc_freq_hz(freq: u64) -> Option<u64> {
+    (MIN_VALID_TSC_FREQ_HZ..=MAX_VALID_TSC_FREQ_HZ)
+        .contains(&freq)
+        .then_some(freq)
+}
+
+fn hypervisor_tsc_freq_hz(cpuid: &CpuId) -> Option<u64> {
+    cpuid
+        .get_hypervisor_info()
+        .and_then(|hv| hv.tsc_frequency())
+        .map(|khz| khz as u64 * 1_000)
+        .and_then(valid_tsc_freq_hz)
+}
+
+fn cpuid_tsc_freq_hz(cpuid: &CpuId) -> Option<u64> {
+    cpuid
+        .get_tsc_info()
+        .and_then(|info| {
+            if let Some(freq) = info.tsc_frequency().and_then(valid_tsc_freq_hz) {
+                return Some(freq);
+            }
+
+            let numerator = info.numerator();
+            let denominator = info.denominator();
+            if numerator == 0 || denominator == 0 {
+                return None;
+            }
+
+            let base_hz = processor_base_freq_hz(cpuid)? as u128;
+            let crystal_hz = base_hz * denominator as u128 / numerator as u128;
+            Some((crystal_hz * numerator as u128 / denominator as u128) as u64)
+        })
+        .and_then(valid_tsc_freq_hz)
+}
+
+fn processor_base_freq_hz(cpuid: &CpuId) -> Option<u64> {
+    cpuid
+        .get_processor_frequency_info()
+        .map(|pinfo| pinfo.processor_base_frequency() as u64 * 1_000_000)
+        .and_then(valid_tsc_freq_hz)
+}
+
+fn pit_calibrate_tsc_freq_hz() -> Option<u64> {
+    let latch = ((PIT_TICK_RATE_HZ * TSC_PIT_CALIBRATION_MS) / 1_000) as u16;
+
+    unsafe {
+        let control = x86::io::inb(PIT_CONTROL_PORT);
+        x86::io::outb(
+            PIT_CONTROL_PORT,
+            (control & !PIT_SPEAKER_ENABLE) | PIT_CHANNEL2_GATE,
+        );
+        x86::io::outb(PIT_COMMAND_PORT, PIT_MODE0_CHANNEL2);
+        x86::io::outb(PIT_CHANNEL2_PORT, (latch & 0xff) as u8);
+        x86::io::outb(PIT_CHANNEL2_PORT, (latch >> 8) as u8);
+    }
+
+    let start = ticks_now();
+    let mut end = start;
+    let mut done = false;
+    for _ in 0..TSC_PIT_MAX_POLL_COUNT {
+        if unsafe { x86::io::inb(PIT_CONTROL_PORT) } & PIT_CHANNEL2_OUT != 0 {
+            end = ticks_now();
+            done = true;
+            break;
+        }
+        end = ticks_now();
+        spin_loop();
+    }
+
+    if !done {
+        return None;
+    }
+
+    end.wrapping_sub(start)
+        .checked_mul(1_000)?
+        .checked_div(TSC_PIT_CALIBRATION_MS)
+        .and_then(valid_tsc_freq_hz)
 }
 
 fn init_idt_once() {

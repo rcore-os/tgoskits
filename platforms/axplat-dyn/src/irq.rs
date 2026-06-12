@@ -3,9 +3,6 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use ax_plat::irq::{IrqIf, dispatch_irq};
 
-#[cfg(target_arch = "aarch64")]
-const GIC_SPECIAL_IRQ_START: usize = 1020;
-
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
 
@@ -32,12 +29,6 @@ impl IrqIf for IrqIfImpl {
             let active = somehal::irq::begin_irq(irq_num)?;
             let irq = active.id();
             let irq_num = irq.raw();
-
-            #[cfg(target_arch = "aarch64")]
-            if irq_num >= GIC_SPECIAL_IRQ_START {
-                trace!("Ignoring special IRQ {irq:?}");
-                return Some(irq_num);
-            }
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
             if (irq_num & RISCV_INTERRUPT_BIT == 0) && inject_virtual_irq(irq_num) {
