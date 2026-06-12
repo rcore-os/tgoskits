@@ -592,7 +592,7 @@ impl JitBackend for Riscv64Backend {
             }
             BPF_END => {
                 // BPF_TO_BE: byte swap to big-endian (RISC-V is little-endian native)
-                let to_be = (insn.code & BPF_X) != 0;
+                let to_be = (insn.code & BPF_X) == 0;
                 match (to_be, insn.imm) {
                     (true, 16) => {
                         // 16-bit: rev8 then shift
