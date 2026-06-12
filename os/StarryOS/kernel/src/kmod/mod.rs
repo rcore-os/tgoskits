@@ -16,6 +16,7 @@
 //! `perf::kprobe` resolves names against.
 
 mod kprint;
+mod kshim;
 
 use alloc::{
     boxed::Box,
@@ -24,13 +25,11 @@ use alloc::{
     string::{String, ToString},
 };
 
-use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoPreempt;
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
     cpu::asm::{flush_icache_all, flush_tlb},
-    mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize},
 };
 use kmod_loader::{KernelModuleHelper, ModuleLoader, ModuleOwner, SectionMemOps};
@@ -56,13 +55,12 @@ fn section_perms_to_mapping_flags(perms: kmod_loader::SectionPerm) -> MappingFla
 /// Owned region of physical frames mapped into the kernel address space.
 /// Implements `kmod_loader::SectionMemOps` so the loader can write code /
 /// data into the section and later re-protect it.
-struct KmodMem {
-    paddr: PhysAddr,
+struct KmodMemSection {
     vaddr: VirtAddr,
     num_pages: usize,
 }
 
-impl SectionMemOps for KmodMem {
+impl SectionMemOps for KmodMemSection {
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.vaddr.as_mut_ptr()
     }
@@ -81,53 +79,53 @@ impl SectionMemOps for KmodMem {
     }
 }
 
-impl Drop for KmodMem {
+impl Drop for KmodMemSection {
     fn drop(&mut self) {
         let total = PAGE_SIZE_4K * self.num_pages;
-
-        // While the module was live, `change_perms()` re-protected its sections
-        // (e.g. `.text` → RX, `.rodata` → RO) in the kernel address space. The
-        // global page allocator only maintains a free-page list — it never
-        // touches the kernel PTEs — so handing back still-RO/RX pages would
-        // corrupt a later reuse: `alloc_kmod_frames()`'s zeroing `write_bytes()`
-        // would fault on a read-only page, or a non-writable page would be
-        // handed to some other kernel object. Restore a plain RW mapping (and
-        // flush the now-stale TLB entries) before returning the frames.
-        let restored = {
-            let kspace = ax_mm::kernel_aspace();
-            let mut guard = kspace.lock();
-            guard
-                .protect(self.vaddr, total, MappingFlags::READ | MappingFlags::WRITE)
-                .is_ok()
-        };
-        if !restored {
-            // Don't silently return RO/RX pages to the general allocator pool;
-            // leak them instead so a later allocation can't fault on them.
-            error!(
-                "kmod: failed to restore RW mapping for module section at {:#x} ({} pages); \
-                 leaking frames",
-                self.vaddr.as_usize(),
-                self.num_pages
-            );
-            return;
-        }
+        ax_mm::kernel_aspace()
+            .lock()
+            .unmap(self.vaddr, total)
+            .unwrap_or_else(|_| {
+                error!(
+                    "kmod: failed to unmap module section at {:#x} ({} pages)",
+                    self.vaddr.as_usize(),
+                    self.num_pages
+                );
+            });
         crate::mm::flush_tlb_range(self.vaddr, total);
-
-        let vaddr = phys_to_virt(self.paddr);
-        global_allocator().dealloc_pages(vaddr.as_usize(), self.num_pages, UsageKind::Global);
     }
 }
 
-fn alloc_kmod_frames(num_pages: usize) -> AxResult<(PhysAddr, VirtAddr)> {
+unsafe extern "C" {
+    fn _ekernel();
+}
+
+fn alloc_kmod_frames(num_pages: usize) -> AxResult<VirtAddr> {
     let page_size = PageSize::Size4K as usize;
     let total = page_size * num_pages;
-    let vaddr_usize = global_allocator()
-        .alloc_pages(num_pages, page_size, UsageKind::Global)
-        .map_err(|_| AxError::NoMemory)?;
-    let vaddr = VirtAddr::from(vaddr_usize);
-    // SAFETY: just-allocated, page-aligned region of `total` bytes.
+    let kernel_end = (_ekernel as *const () as usize).align_up_4k();
+    // The kernel virtual address space is laid out like this:
+    // ┌──────────────────────────────┐
+    // │       Free for modules       │
+    // ├──────────────────────────────┤
+    // │       Kernel text/data       │ high addresses
+    // ├──────────────────────────────┤
+    let kmod_alloc_start = VirtAddr::from_usize(kernel_end);
+    let vaddr = {
+        let kspace = ax_mm::kernel_aspace();
+        let mut guard = kspace.lock();
+        let vaddr = guard
+            .find_free_area(
+                kmod_alloc_start,
+                total,
+                VirtAddrRange::new(guard.base(), guard.end()),
+            )
+            .ok_or(AxError::NoMemory)?;
+        guard.map_alloc(vaddr, total, MappingFlags::READ | MappingFlags::WRITE, true)?;
+        vaddr
+    };
     unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, total) };
-    Ok((virt_to_phys(vaddr), vaddr))
+    Ok(vaddr)
 }
 
 fn linux_code_to_ax_error(code: i32) -> AxError {
@@ -143,12 +141,8 @@ impl KernelModuleHelper for KmodHelper {
             "kmod vmalloc size must be page-aligned"
         );
         let num_pages = size / PAGE_SIZE_4K;
-        let (paddr, vaddr) = alloc_kmod_frames(num_pages).expect("kmod vmalloc: out of memory");
-        Box::new(KmodMem {
-            paddr,
-            vaddr,
-            num_pages,
-        })
+        let vaddr = alloc_kmod_frames(num_pages).expect("kmod vmalloc: out of memory");
+        Box::new(KmodMemSection { vaddr, num_pages })
     }
 
     fn resolve_symbol(name: &str) -> Option<usize> {

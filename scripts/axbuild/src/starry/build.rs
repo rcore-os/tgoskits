@@ -838,6 +838,30 @@ log = "Info"
     }
 
     #[test]
+    fn load_cargo_config_keeps_pie_target_for_non_kmod_plat_dyn_request() {
+        let mut request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        request.build_info_override = Some(StarryBuildInfo {
+            plat_dyn: true,
+            features: vec!["ax-driver/virtio-blk".to_string()],
+            ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
+        });
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert!(
+            cargo
+                .target
+                .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json"),
+            "expected pie target, got {}",
+            cargo.target
+        );
+    }
+
+    #[test]
     fn resolve_build_info_path_supports_starry_subworkspace_root() {
         let root = tempdir().unwrap();
         let starry_dir = root.path().join("starryos");
