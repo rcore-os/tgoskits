@@ -839,6 +839,23 @@ impl ProcessData {
         crate::mm::release_process_slot(&aspace);
     }
 
+    /// Mutate the process scope from the current task.
+    ///
+    /// `TaskExt::on_enter` leaves the current task's active scope installed by
+    /// holding one read count on [`Self::scope`]. A syscall running in that task
+    /// must temporarily release that read count before taking the write side.
+    pub fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
+        ActiveScope::set_global();
+        unsafe { self.scope.force_read_decrement() };
+        let mut scope = self.scope.write();
+        let ret = f(&mut scope);
+        drop(scope);
+        let scope = self.scope.read();
+        unsafe { ActiveScope::set(&scope) };
+        core::mem::forget(scope);
+        ret
+    }
+
     /// Get the top address of the user heap.
     pub fn get_heap_top(&self) -> usize {
         self.heap_top.load(Ordering::Acquire)

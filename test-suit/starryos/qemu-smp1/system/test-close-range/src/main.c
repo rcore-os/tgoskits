@@ -5,6 +5,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <sched.h>
 #include <string.h>
 #include <errno.h>
 
@@ -16,6 +19,12 @@ int __observe = 0;
 #ifndef CLOSE_RANGE_CLOEXEC
 #define CLOSE_RANGE_CLOEXEC (1U << 2)
 #endif
+
+#ifndef CLOSE_RANGE_UNSHARE
+#define CLOSE_RANGE_UNSHARE (1U << 1)
+#endif
+
+#define STACK_SIZE (64 * 1024)
 
 static int do_close_range(unsigned int first, unsigned int last, unsigned int flags)
 {
@@ -222,6 +231,66 @@ static int part_05_negative(void)
     return 0;
 }
 
+static int close_range_unshare_child(void *arg)
+{
+    int fd = (int)(long)arg;
+    int ret = do_close_range((unsigned int)fd, (unsigned int)fd, CLOSE_RANGE_UNSHARE);
+    if (ret != 0) {
+        _exit(10);
+    }
+    errno = 0;
+    if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
+        _exit(11);
+    }
+    _exit(0);
+}
+
+/* Part 6: CLOSE_RANGE_UNSHARE must detach the fd table before closing. */
+static int part_06_unshare_keeps_parent_fd(void)
+{
+    unlink(TMPFILE);
+    CHECK_RET(create_temp_file("close_range_unshare"), 0,
+              "Part 6: create temp file");
+
+    int fd = open(TMPFILE, O_RDONLY);
+    CHECK_TRUE(fd >= 0, "Part 6: open shared fd");
+    if (fd < 0) {
+        unlink(TMPFILE);
+        return 1;
+    }
+
+    void *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK_TRUE(stack != MAP_FAILED, "Part 6: allocate clone stack");
+    if (stack == MAP_FAILED) {
+        safe_close(&fd);
+        unlink(TMPFILE);
+        return 1;
+    }
+
+    int child = clone(close_range_unshare_child, (char *)stack + STACK_SIZE,
+                      CLONE_FILES | SIGCHLD, (void *)(long)fd);
+    CHECK_TRUE(child >= 0, "Part 6: clone with CLONE_FILES");
+
+    int status = 0;
+    if (child >= 0) {
+        CHECK_TRUE(waitpid(child, &status, 0) == child,
+                   "Part 6: wait clone child");
+        CHECK_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                   "Part 6: child closed only its unshared fd table");
+    }
+
+    char buf[1] = {0};
+    errno = 0;
+    ssize_t n = read(fd, buf, sizeof(buf));
+    CHECK_TRUE(n == 1, "Part 6: parent fd remains readable after child unshare close");
+
+    safe_close(&fd);
+    munmap(stack, STACK_SIZE);
+    unlink(TMPFILE);
+    return 0;
+}
+
 int main(void)
 {
     TEST_START("close_range: semantic validation");
@@ -231,6 +300,7 @@ int main(void)
     part_03_empty_fd_range();
     part_04_cloexec();
     part_05_negative();
+    part_06_unshare_keeps_parent_fd();
 
     TEST_DONE();
 }
