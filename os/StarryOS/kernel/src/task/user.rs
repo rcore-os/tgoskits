@@ -6,7 +6,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use super::{
-    AsThread, SyscallRestartInfo, SyscallTraceState, TimerState, check_signals,
+    AsThread, SyscallRestartInfo, SyscallTraceState, TimerState, check_signals, poll_process_timer,
     ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
     unblock_next_signal, wait_existing_ptrace_stop_current,
 };
@@ -210,6 +210,11 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 }
 
                 if !unblock_next_signal() {
+                    // POSIX timers are also driven by the alarm task, but polling
+                    // here closes the window where an expired timer is only noticed
+                    // after the current syscall returns to userspace.
+                    poll_process_timer(thr.proc_data.proc.pid());
+
                     let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
                     let restart = if is_syscall
                         && (uctx.retval() as isize) == eintr_code

@@ -7,7 +7,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_task::{
     WeakAxTaskRef, current,
-    future::{block_on, timeout_at},
+    future::{block_on, timeout_at_wall},
 };
 use event_listener::{Event, listener};
 use spin::LazyLock;
@@ -319,7 +319,7 @@ async fn alarm_task() {
             {
                 continue;
             }
-            let _ = timeout_at(Some(deadline), listener).await;
+            let _ = timeout_at_wall(Some(deadline), listener).await;
         }
     }
 }
