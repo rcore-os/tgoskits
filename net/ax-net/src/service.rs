@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use core::{
     pin::Pin,
     task::{Context, Waker},
@@ -133,10 +133,12 @@ impl NetControl {
                     .map(|interface_id| DeviceBinding {
                         bound_if: Some(interface_id),
                     })
-                    .ok_or(ax_err_type!(
-                        NoSuchDeviceOrAddress,
-                        "local address is not assigned to any interface"
-                    ))
+                    .ok_or_else(|| {
+                        ax_err_type!(
+                            NoSuchDeviceOrAddress,
+                            format!("local address {addr} is not assigned to any interface")
+                        )
+                    })
             }
             None => Ok(DeviceBinding::default()),
         }
@@ -153,10 +155,12 @@ impl NetControl {
                     .find(|interface| interface.id == interface_id)
                     .is_some_and(|interface| interface.flags.contains(InterfaceFlags::UP))
             })
-            .ok_or(ax_err_type!(
-                NoSuchDeviceOrAddress,
-                "no route to destination"
-            ))?;
+            .ok_or_else(|| {
+                ax_err_type!(
+                    NoSuchDeviceOrAddress,
+                    format!("no route to destination {dst_addr}")
+                )
+            })?;
         if let Some(interface) = state
             .interfaces
             .iter()
@@ -278,6 +282,8 @@ enum DhcpPhase {
 
 const DHCP_PARAMETER_REQUEST_LIST: &[u8] = &[1, 3, 6, 42];
 const DHCP_MAX_RETRY_SHIFT: usize = 4;
+const DHCP_MAX_IPV4_HEADER_LEN: usize = 60;
+const DHCP_UDP_HEADER_LEN: usize = 8;
 
 impl DhcpState {
     fn new(
@@ -414,6 +420,7 @@ impl DhcpState {
         let retry_delay_secs = 1usize << self.retry.min(DHCP_MAX_RETRY_SHIFT);
         self.retry = self.retry.saturating_add(1);
         self.retry_at = timestamp + SmolDuration::from_secs(retry_delay_secs as u64);
+        debug!("{}: DHCP sending {:?}", self.ifname, message_type);
 
         Some((
             self.dev,
@@ -483,6 +490,7 @@ impl Service {
         let timestamp = now();
         let mut dhcp_events = Vec::new();
 
+        self.router.wake_rx_workers();
         {
             let dhcp = &mut self.dhcp;
             self.router
@@ -708,13 +716,13 @@ fn build_dhcp_packet(
         router: None,
         subnet_mask: None,
         relay_agent_ip: Ipv4Address::UNSPECIFIED,
-        broadcast: true,
+        broadcast: false,
         requested_ip,
         client_identifier: Some(mac),
         server_identifier,
         parameter_request_list: Some(DHCP_PARAMETER_REQUEST_LIST),
         dns_servers: None,
-        max_size: Some(STANDARD_MTU as u16),
+        max_size: Some((STANDARD_MTU - DHCP_MAX_IPV4_HEADER_LEN - DHCP_UDP_HEADER_LEN) as u16),
         lease_duration: None,
         renew_duration: None,
         rebind_duration: None,

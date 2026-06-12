@@ -8,7 +8,10 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::task::Waker;
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Waker,
+};
 
 use ax_hal::time::{NANOS_PER_MICROS, wall_time_nanos};
 use ax_sync::Mutex;
@@ -79,6 +82,7 @@ type PacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
 struct BoundedPacketQueue<T> {
     inner: Mutex<VecDeque<T>>,
     capacity: usize,
+    len: AtomicUsize,
 }
 
 impl<T> BoundedPacketQueue<T> {
@@ -86,6 +90,7 @@ impl<T> BoundedPacketQueue<T> {
         Self {
             inner: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
+            len: AtomicUsize::new(0),
         }
     }
 
@@ -95,11 +100,19 @@ impl<T> BoundedPacketQueue<T> {
             return Err(packet);
         }
         inner.push_back(packet);
+        self.len.store(inner.len(), Ordering::Release);
         Ok(())
     }
 
     fn pop(&self) -> Option<T> {
-        self.inner.lock().pop_front()
+        let mut inner = self.inner.lock();
+        let packet = inner.pop_front();
+        self.len.store(inner.len(), Ordering::Release);
+        packet
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len.load(Ordering::Acquire) == 0
     }
 }
 
@@ -466,6 +479,12 @@ impl Router {
         }
     }
 
+    pub fn wake_rx_workers(&self) {
+        for device in &self.devices {
+            device.rx_wake.notify_one(true);
+        }
+    }
+
     pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
         for device in &self.devices {
             if binding.bound_if.is_none_or(|id| id == device.interface_id) {
@@ -547,7 +566,7 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
                 crate::request_poll();
             }
         } else {
-            device.tx_wake.wait();
+            device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
         }
     }
 }

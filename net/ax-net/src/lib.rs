@@ -321,7 +321,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
     ax_task::spawn_with_name(net_poll_worker, "net-poll".to_owned());
     if dhcp_enabled {
-        ax_task::spawn_with_name(dhcp_bootstrap, "dhcp-bootstrap".to_owned());
+        wait_for_dhcp_bootstrap();
     }
 }
 
@@ -444,7 +444,7 @@ fn next_poll_delay() -> Duration {
     let Some(next) = next else {
         return IDLE_POLL_INTERVAL;
     };
-    let now_micros = ax_hal::time::wall_time_nanos() / 1_000;
+    let now_micros = ax_hal::time::monotonic_time_nanos() / 1_000;
     let next_micros = next.total_micros().max(0) as u64;
     if next_micros <= now_micros {
         Duration::ZERO
@@ -583,7 +583,7 @@ impl Drop for DnsSocketGuard {
     }
 }
 
-fn dhcp_bootstrap() {
+fn wait_for_dhcp_bootstrap() {
     for _ in 0..DHCP_BOOTSTRAP_ATTEMPTS {
         request_poll();
         if get_service().dhcp_configured() {
