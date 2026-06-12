@@ -778,7 +778,7 @@ impl JitBackend for Aarch64Backend {
             }
             BPF_END => {
                 // BPF_TO_BE: byte swap to big-endian (AArch64 is little-endian native)
-                let to_be = (insn.code & BPF_X) == 0;
+                let to_be = (insn.code & BPF_X) != 0;
                 match (to_be, insn.imm) {
                     (true, 16) => {
                         // 16-bit: REV16 Wd, Wn — swap bytes in each 16-bit halfword
