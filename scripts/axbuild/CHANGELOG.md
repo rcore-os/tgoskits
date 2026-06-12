@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.11...axbuild-v0.4.12) - 2026-06-12
+
+### Added
+
+- *(starry)* add axbuild kmod support ([#1232](https://github.com/rcore-os/tgoskits/pull/1232))
+- *(axbuild)* extend sync-lint relaxed synchronization checks ([#1236](https://github.com/rcore-os/tgoskits/pull/1236))
+- *(axbuild)* enable x86 kvm acceleration ([#1221](https://github.com/rcore-os/tgoskits/pull/1221))
+
+### Fixed
+
+- *(starry)* reprogram timer for short deadlines ([#1250](https://github.com/rcore-os/tgoskits/pull/1250))
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+- *(axruntime)* ensure aarch64 SMP IPI readiness before app init ([#1196](https://github.com/rcore-os/tgoskits/pull/1196))
+
+### Other
+
+- *(someboot)* share linker script fragments ([#1218](https://github.com/rcore-os/tgoskits/pull/1218))
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.4.11](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.10...axbuild-v0.4.11) - 2026-06-11
 
 ### Added

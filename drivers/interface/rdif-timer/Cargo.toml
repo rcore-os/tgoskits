@@ -1,6 +1,6 @@
 [package]
 name = "rdif-timer"
-version = "0.6.2"
+version = "0.6.3"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true

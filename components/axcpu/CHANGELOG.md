@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.7...ax-cpu-v0.6.8) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
 ## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.6...ax-cpu-v0.6.7) - 2026-06-11
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.15...starryos-v0.5.16) - 2026-06-12
+
+### Added
+
+- *(starry)* add axbuild kmod support ([#1232](https://github.com/rcore-os/tgoskits/pull/1232))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.14...starryos-v0.5.15) - 2026-06-11
 
 ### Fixed

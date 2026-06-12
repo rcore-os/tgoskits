@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.2...ax-alloc-v0.8.3) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-plat
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.1...ax-alloc-v0.8.2) - 2026-06-11
 
 ### Fixed
