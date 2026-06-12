@@ -10,7 +10,6 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _dtb: usize) {
-        ax_cpu::init::init_trap();
         enable_fp_simd();
         somehal::timer::enable();
     }
@@ -18,7 +17,6 @@ impl InitIf for InitIfImpl {
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
-        ax_cpu::init::init_trap();
         enable_fp_simd();
         somehal::timer::enable();
     }

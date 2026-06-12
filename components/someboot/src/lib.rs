@@ -49,7 +49,7 @@ pub mod timer;
 pub use acpi::rsdp_addr_phys;
 pub use fdt::{fdt_addr, fdt_addr_phys};
 pub use page_table_generic::*;
-pub use somehal_macros::{entry, irq_handler, someboot_secondary_entry as secondary_entry};
+pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
 use crate::{
     irq::IrqId,

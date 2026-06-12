@@ -8,16 +8,13 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _mbi: usize) {
-        ax_cpu::init::init_trap();
         crate::console::init_early();
         crate::time::init_early();
     }
 
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
-    fn init_early_secondary(_cpu_id: usize) {
-        ax_cpu::init::init_trap();
-    }
+    fn init_early_secondary(_cpu_id: usize) {}
 
     /// Initializes the platform at the later stage for the primary core.
     ///

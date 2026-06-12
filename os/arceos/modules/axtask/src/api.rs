@@ -166,11 +166,32 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
 #[cfg(feature = "irq")]
 #[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
+    on_timer_irq(true);
+}
+
+/// Handles a hardware timer interrupt.
+#[cfg(feature = "irq")]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
+pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
-    crate::timers::check_events();
-    // Since irq and preemption are both disabled here,
-    // we can get current run queue with the default `ax_kernel_guard::NoOp`.
-    current_run_queue::<NoOp>().scheduler_timer_tick();
+    crate::timers::check_events(scheduler_tick);
+    if scheduler_tick {
+        // Since irq and preemption are both disabled here,
+        // we can get current run queue with the default `ax_kernel_guard::NoOp`.
+        current_run_queue::<NoOp>().scheduler_timer_tick();
+    }
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn next_timer_deadline_nanos() -> Option<u64> {
+    crate::timers::next_deadline_nanos()
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
+    crate::timers::note_programmed_deadline_nanos(deadline_nanos);
 }
 
 /// Adds the given task to the run queue, returns the task reference.
