@@ -470,7 +470,9 @@ impl JitBackend for Riscv64Backend {
                 if !buf.counting() {
                     unsafe {
                         let beq_ptr = buf.entry().add(skip) as *mut u32;
-                        let beq_off = (end - skip) as u32;
+                        // beq must jump to addi dst,zero,0 (one instruction before end),
+                        // not to end itself. Offset from beq to addi = end - skip - 4.
+                        let beq_off = (end - skip - 4) as u32;
                         *beq_ptr = rv_b(beq_off, RV_ZERO, src, 0);
                     }
                 }
