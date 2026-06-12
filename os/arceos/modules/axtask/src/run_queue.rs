@@ -673,7 +673,20 @@ impl AxRunQueue {
                 let mut sched = get_run_queue(target).scheduler.lock();
                 sched
                     .pick_next_task_matching(|t| t.cpumask().get(current_cpu))
-                    .inspect(|task| task.set_cpu_id(current_cpu as _))
+                    .and_then(|task| {
+                        if task.is_ready() {
+                            task.set_cpu_id(current_cpu as _);
+                            Some(task)
+                        } else {
+                            warn!(
+                                "work-steal: task {} (state={:?}) not ready, skipping",
+                                task.id_name(),
+                                task.state()
+                            );
+                            sched.put_prev_task(task, false);
+                            None
+                        }
+                    })
             };
             if let Some(task) = task {
                 info!(
