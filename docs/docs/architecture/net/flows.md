@@ -984,6 +984,22 @@ Connection Manager（[vsock/connection_manager.rs](net/ax-net/src/vsock/connecti
 
 Vsock stream 的 send/recv 直接从 `Connection` 的 ring buffer 读写数据。
 
+### 11.1 Driver 事件处理（vsock-poll worker）
+
+`vsock-poll` 是独立的 vsock 轮询线程（[device/vsock.rs](net/ax-net/src/device/vsock.rs)），引用计数管理（`start_vsock_poll`/`stop_vsock_poll`），自适应轮询频率（100μs → 500μs → 2ms → 10ms 的四级退避）。
+
+`handle_vsock_event()` 将 driver 的 4 类事件分派给 `VSOCK_CONN_MANAGER`：
+
+| 事件 | handler | 动作 |
+| --- | --- | --- |
+| `VsockEvent::ConnectionRequest` | `on_connection_request()` | 查 `listen_queues` → 创建新 `Connection`（state=Connected） → 推入 `AcceptQueue` → `wake()` 唤醒 accept 等待者 |
+| `VsockEvent::Received` | `on_data_received()` | 查 `connections` → `push_rx_data()` 写入 RX ring buffer → `wake_rx()` 唤醒 recv 等待者 |
+| `VsockEvent::Disconnected` | `on_disconnected()` | 查 `connections` → state=Closed, rx_closed=true, tx_closed=true → `wake_rx()` 通知 recv 端 EOF |
+| `VsockEvent::Connected` | `on_connected()` | 查 `connections` → state=Connected → `wake_connect()` 唤醒 connect 等待者 |
+| `VsockEvent::CreditUpdate` | `on_credit_update()` | 查 `connections` → `tx_wait_queue_notify()` 唤醒因 buffer 空间不足而等待的 send 调用 |
+
+`VsockEvent::Received` 的特殊处理：如果 `Connection` RX buffer 已满（`rx_buffer_free() == 0`），事件重新推入 `PENDING_EVENTS` 全局队列，下次 poll 再尝试，避免数据丢失。
+
 ---
 
 ## 12. ICMP Loopback Echo 流程
