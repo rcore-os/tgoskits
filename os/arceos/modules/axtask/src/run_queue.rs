@@ -684,7 +684,8 @@ impl AxRunQueue {
                             Some(task)
                         } else {
                             warn!(
-                                "work-steal: task {} (state={:?}, on_cpu={}) not stealable, skipping",
+                                "work-steal: task {} (state={:?}, on_cpu={}) not stealable, \
+                                 skipping",
                                 task.id_name(),
                                 task.state(),
                                 task.on_cpu()
