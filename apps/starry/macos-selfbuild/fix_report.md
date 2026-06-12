@@ -3,8 +3,8 @@
 ## 背景
 
 目标是在 Apple Silicon macOS 上用 QEMU HVF 启动 AArch64 StarryOS guest，
-然后在 StarryOS guest 内运行 Cargo，重新编译 StarryOS，并把 guest 编译出的
-kernel 提取出来，再按普通 `cargo xtask starry qemu --arch aarch64` 路径启动。
+然后在 StarryOS guest 内运行 Cargo，重新编译 StarryOS。guest 编译出的
+kernel 可以从工作 rootfs 中提取出来做留档或后续手工验证。
 
 最终目标不是让 macOS 宿主机交叉编译成功，而是验证 StarryOS 作为运行环境时，
 能支撑 Cargo、rustc、链接工具、文件系统写入、进程/pipe/wait、kallsyms 以及
@@ -170,19 +170,12 @@ RAYON_NUM_THREADS=1
 区分开来：同一份源码在 macOS 宿主机能编译，但在 StarryOS guest 卡住，说明
 核心问题还是 StarryOS 作为构建 OS 时暴露出的系统能力问题。
 
-### 5. 对齐 xtask qemu-aarch64 配置
+### 5. 对齐 qemu-aarch64 动态平台配置
 
-用户明确要求最终按：
-
-```bash
-cargo xtask starry qemu --arch aarch64
-```
-
-对应的普通 StarryOS 启动路径来验证，而不是在这个命令里再次跑自举编译。
-
-因此排查时检查了 xtask 的 qemu-aarch64 board 配置，确认默认 dynamic platform
-features、rootfs、内存和启动方式，并新增 `--kernel-elf` 支持，使 xtask 可以直接
-启动已经编译好的外部 kernel ELF。
+最终复现脚本不修改公共 `xtask starry qemu` 入口，而是在
+`apps/starry/macos-selfbuild/run_selfbuild.sh` 内部显式传入本场景需要的 QEMU/HVF
+参数、rootfs、内存和 dynamic platform features。这样 macOS self-build 的编译
+配置只存在于这个 app 的脚本和配置文件里，不影响其它 StarryOS QEMU 使用者。
 
 ### 6. 使用 debugfs/提取脚本验证 rootfs 产物
 
@@ -381,25 +374,21 @@ kernel_bin=...
 
 - `os/StarryOS/kernel/src/kprobe.rs`
 
-### P1-1. 问题：guest-built kernel 提取和启动流程不标准
+### P1-1. 问题：guest-built kernel 提取流程不标准
 
 排查依据：
 
 - 手写 debugfs dump 命令容易写错路径；
-- xtask 原先不能直接启动一个已经编译好的外部 kernel ELF；
-- 最终验证需要按普通 qemu-aarch64 xtask 路径启动，而不是在 xtask 里重新自举编译。
+- 需要稳定拿到 guest 内 self-build 产物，便于留档、对比和后续手工 boot-test。
 
 修复：
 
 - 新增 `extract_kernel.sh`，默认从最新 rootfs copy 中提取 ELF 和 `.bin`；
-- 输出 `rootfs_copy`、`kernel_elf`、`kernel_bin` shell 变量，方便直接接 xtask；
-- xtask 增加 `--kernel-elf`，支持启动外部 ELF。
+- 输出 `rootfs_copy`、`kernel_elf`、`kernel_bin` shell 变量，方便后续脚本或手工检查。
 
 涉及文件：
 
 - `apps/starry/macos-selfbuild/extract_kernel.sh`
-- `scripts/axbuild/src/starry/mod.rs`
-- `scripts/axbuild/src/starry/rootfs.rs`
 
 ### P2-1. 问题：复现命令和排查结论不成体系
 
@@ -467,21 +456,8 @@ kernel_elf=target/starry-macos-selfbuild/extracted/starryos-selfbuilt-...
 kernel_bin=target/starry-macos-selfbuild/extracted/starryos-selfbuilt-....bin
 ```
 
-按普通 xtask qemu-aarch64 路径启动：
-
-```bash
-cargo xtask starry qemu \
-  --arch aarch64 \
-  -c os/StarryOS/configs/board/qemu-aarch64.toml \
-  --rootfs "$rootfs_copy" \
-  --kernel-elf "$kernel_elf"
-```
-
-已验证进入 shell：
-
-```text
-root@starry:/root #
-```
+提取出的 `kernel_elf` 和 `kernel_bin` 用于留档、大小/符号检查，或在后续专门的
+boot-test 环境中手工使用。PR 本身不再修改公共 xtask 来支持外部 kernel ELF。
 
 ## 当前推荐复现流程
 
@@ -499,12 +475,6 @@ STARRY_CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/ \
 apps/starry/macos-selfbuild/reproduce.sh
 
 eval "$(apps/starry/macos-selfbuild/extract_kernel.sh)"
-
-cargo xtask starry qemu \
-  --arch aarch64 \
-  -c os/StarryOS/configs/board/qemu-aarch64.toml \
-  --rootfs "$rootfs_copy" \
-  --kernel-elf "$kernel_elf"
 ```
 
 如果只是更新源码，不需要重建完整工具链 rootfs，可以用：

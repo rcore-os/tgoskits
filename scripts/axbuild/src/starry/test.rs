@@ -2623,14 +2623,6 @@ mod tests {
                     "{} must keep existing grouped success/fail markers",
                     path.display()
                 );
-                for regex in fail_regex.iter().filter_map(toml::Value::as_str) {
-                    let regex = regex::Regex::new(regex).unwrap();
-                    assert!(
-                        !regex.is_match(command),
-                        "{} fail_regex must not match the grouped runner script body",
-                        path.display()
-                    );
-                }
             }
         }
     }

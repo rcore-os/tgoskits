@@ -314,7 +314,3 @@ simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"
-
-[patch.crates-io]
-fdt-edit = { path = "apps/starry/macos-selfbuild/crates/fdt-edit" }
-lwprintf-rs = { path = "apps/starry/macos-selfbuild/crates/lwprintf-rs" }

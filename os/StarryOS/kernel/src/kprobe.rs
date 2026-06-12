@@ -230,14 +230,12 @@ pub type KernelKprobe = kprobe::Kprobe<KernelRawMutex, KernelKprobeOps>;
 /// Concrete `kprobe::Kretprobe`.
 pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
 /// The `KprobeAuxiliaryOps` impl, aliased under the name the perf module uses.
-#[cfg_attr(feature = "kprobe_test", allow(dead_code))]
 pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
 static KPROBE_POINT_LIST: SpinNoIrq<KprobePointList> = SpinNoIrq::new(KprobePointList::new());
 static INSTANCE: SpinNoIrq<Vec<RetprobeInstance>> = SpinNoIrq::new(Vec::new());
 
-#[cfg_attr(feature = "kprobe_test", allow(dead_code))]
 fn with_manager<F, R>(f: F) -> R
 where
     F: FnOnce(&KprobeManager) -> R,
@@ -277,7 +275,6 @@ pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }
 
-#[cfg_attr(feature = "kprobe_test", allow(dead_code))]
 pub(crate) fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
@@ -407,7 +404,6 @@ pub(crate) fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprob
     }
 }
 
-#[cfg_attr(feature = "kprobe_test", allow(dead_code))]
 pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
     #[cfg(target_arch = "x86_64")]
     {
@@ -513,7 +509,6 @@ pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::c
     }
 }
 
-#[cfg_attr(feature = "kprobe_test", allow(dead_code))]
 pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
@@ -525,7 +520,6 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(feature = "kprobe_test", allow(dead_code))]
 pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
     let mut pt_regs = trapframe_to_ptregs(tf);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));

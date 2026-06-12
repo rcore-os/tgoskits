@@ -83,10 +83,6 @@ pub struct ArgsQemu {
     /// Override the rootfs disk image path (skips auto-download).
     #[arg(long, value_name = "IMAGE")]
     pub rootfs: Option<PathBuf>,
-
-    /// Run an already-built StarryOS kernel ELF instead of rebuilding it.
-    #[arg(long, value_name = "ELF")]
-    pub kernel_elf: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -377,9 +373,7 @@ impl Starry {
                 board.name
             );
         }
-        if let Some(kernel_elf) = args.kernel_elf {
-            rootfs::qemu_with_external_kernel(self, request, args.rootfs, kernel_elf).await
-        } else if let Some(rootfs) = args.rootfs {
+        if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
             self.run_qemu_request(request).await
