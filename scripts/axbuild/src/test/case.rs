@@ -77,6 +77,12 @@ pub(crate) struct HostHttpServerConfig {
     pub(crate) body_size: Option<usize>,
     #[serde(default = "default_host_http_body_byte")]
     pub(crate) body_byte: u8,
+    /// When set, serve files from this host directory (path-routed static file
+    /// server with an autoindex at `/`) instead of a fixed body. Lets a guest
+    /// drive a real online `pip/uv install --find-links http://10.0.2.2:PORT/`
+    /// against a local wheel index over real TCP — hermetic (no internet).
+    #[serde(default)]
+    pub(crate) dir: Option<String>,
 }
 
 fn default_host_http_bind() -> String {

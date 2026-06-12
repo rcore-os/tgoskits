@@ -1,6 +1,8 @@
 use std::{
+    fs,
     io::{Read, Write},
     net::TcpListener,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -39,7 +41,8 @@ impl HostHttpServerGuard {
 
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
-        let body = HostHttpBody::from_config(config);
+        let body = HostHttpBody::from_config(config)
+            .with_context(|| format!("invalid host HTTP server config for `{case_name}`"))?;
         let (ready_tx, ready_rx) = mpsc::channel();
         let thread = thread::spawn(move || {
             let _ = ready_tx.send(());
@@ -48,20 +51,9 @@ impl HostHttpServerGuard {
                     Ok((mut stream, _peer)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                         let _ = stream.set_write_timeout(Some(BODY_WRITE_TIMEOUT));
-                        let mut request = [0; 1024];
-                        let _ = stream.read(&mut request);
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len(),
-                        );
-                        if stream.write_all(response.as_bytes()).is_ok() {
-                            // Surface a truncated send instead of silently closing
-                            // the connection mid-body, which the client would only
-                            // see as an opaque short read.
-                            if let Err(err) = body.write_to(&mut stream) {
-                                eprintln!("  host http server: body write failed: {err}");
-                            }
-                        }
+                        let mut request = [0; 2048];
+                        let n = stream.read(&mut request).unwrap_or(0);
+                        body.respond(&mut stream, &request[..n]);
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
@@ -119,24 +111,57 @@ fn bind_listener(addr: &str, case_name: &str) -> anyhow::Result<TcpListener> {
 #[derive(Debug, Clone)]
 enum HostHttpBody {
     Static(Vec<u8>),
-    Generated { size: usize, byte: u8 },
+    Generated {
+        size: usize,
+        byte: u8,
+    },
+    /// Path-routed static file server: `/` returns an autoindex of the directory
+    /// and `/<file>` returns that file's bytes (404 otherwise). Used to serve a
+    /// local wheel index for hermetic online `pip/uv install --find-links`.
+    Dir(PathBuf),
 }
 
 impl HostHttpBody {
-    fn from_config(config: &HostHttpServerConfig) -> Self {
-        match config.body_size {
+    fn from_config(config: &HostHttpServerConfig) -> anyhow::Result<Self> {
+        if let Some(dir) = &config.dir {
+            let dir = resolve_serve_dir(dir)?;
+            return Ok(Self::Dir(dir));
+        }
+        Ok(match config.body_size {
             Some(size) => Self::Generated {
                 size,
                 byte: config.body_byte,
             },
             None => Self::Static(config.body.as_bytes().to_vec()),
-        }
+        })
     }
 
     fn len(&self) -> usize {
         match self {
             Self::Static(body) => body.len(),
             Self::Generated { size, .. } => *size,
+            Self::Dir(_) => 0,
+        }
+    }
+
+    /// Write a complete HTTP/1.1 response for one request to `stream`.
+    fn respond(&self, stream: &mut impl Write, request: &[u8]) {
+        match self {
+            Self::Dir(dir) => serve_from_dir(stream, request, dir),
+            _ => {
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    self.len(),
+                );
+                if stream.write_all(head.as_bytes()).is_ok() {
+                    // Surface a truncated send instead of silently closing the
+                    // connection mid-body, which the client would only see as an
+                    // opaque short read.
+                    if let Err(err) = self.write_to(stream) {
+                        eprintln!("  host http server: body write failed: {err}");
+                    }
+                }
+            }
         }
     }
 
@@ -153,7 +178,102 @@ impl HostHttpBody {
                 }
                 Ok(())
             }
+            Self::Dir(_) => Ok(()),
         }
+    }
+}
+
+/// Resolve a `[host_http_server] dir` value to a deterministic absolute path and
+/// fail fast if it does not exist or cannot be read.
+///
+/// `dir` is interpreted as workspace-root-relative (matching the `qemu-*.toml`
+/// comment) when given as a relative path, so the served directory does not
+/// depend on the process CWD. Absolute paths are used verbatim. A missing or
+/// unreadable directory is a hard error here rather than a silent empty `200`
+/// index that would leak into the guest as a confusing install failure.
+fn resolve_serve_dir(dir: &str) -> anyhow::Result<PathBuf> {
+    let raw = Path::new(dir);
+    let resolved = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        crate::context::workspace_root_path()
+            .context("failed to resolve workspace root for host HTTP server `dir`")?
+            .join(raw)
+    };
+
+    let canonical = resolved.canonicalize().with_context(|| {
+        format!(
+            "host HTTP server `dir` does not exist or is not accessible: {}",
+            resolved.display()
+        )
+    })?;
+    if !canonical.is_dir() {
+        bail!(
+            "host HTTP server `dir` is not a directory: {}",
+            canonical.display()
+        );
+    }
+    // Confirm the directory is actually readable now, so a hard error surfaces at
+    // startup instead of an empty autoindex once the guest starts requesting it.
+    fs::read_dir(&canonical).with_context(|| {
+        format!(
+            "host HTTP server `dir` is not readable: {}",
+            canonical.display()
+        )
+    })?;
+    Ok(canonical)
+}
+
+/// Parse the request line, then serve an autoindex (for `/`) or a single file.
+/// Only flat filenames are served; any `/` or `..` in the name yields 404, so a
+/// request cannot escape `dir`.
+fn serve_from_dir(stream: &mut impl Write, request: &[u8], dir: &Path) {
+    let head = String::from_utf8_lossy(request);
+    let raw_path = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let path = raw_path.split('?').next().unwrap_or("/");
+
+    if path == "/" || path.is_empty() {
+        let mut names: Vec<String> = match fs::read_dir(dir) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        names.sort();
+        let mut html = String::from("<!DOCTYPE html><html><body>\n");
+        for name in &names {
+            html.push_str(&format!("<a href=\"{name}\">{name}</a>\n"));
+        }
+        html.push_str("</body></html>\n");
+        write_dir_response(stream, "200 OK", "text/html", html.as_bytes());
+        return;
+    }
+
+    let name = path.trim_start_matches('/');
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        write_dir_response(stream, "404 Not Found", "text/plain", b"not found\n");
+        return;
+    }
+    match fs::read(dir.join(name)) {
+        Ok(bytes) => write_dir_response(stream, "200 OK", "application/octet-stream", &bytes),
+        Err(_) => write_dir_response(stream, "404 Not Found", "text/plain", b"not found\n"),
+    }
+}
+
+fn write_dir_response(stream: &mut impl Write, status: &str, content_type: &str, body: &[u8]) {
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: \
+         close\r\n\r\n",
+        body.len(),
+    );
+    if stream.write_all(head.as_bytes()).is_ok() {
+        let _ = stream.write_all(body);
     }
 }
 
@@ -186,6 +306,7 @@ mod tests {
             body: "unused".to_string(),
             body_size: Some(7),
             body_byte: b'X',
+            dir: None,
         };
 
         let _guard = HostHttpServerGuard::start(&config, "generated-body").unwrap();
@@ -216,6 +337,7 @@ mod tests {
             body: "first".to_string(),
             body_size: None,
             body_byte: b'A',
+            dir: None,
         };
 
         let first_guard = HostHttpServerGuard::start(&config, "first").unwrap();
@@ -241,6 +363,68 @@ mod tests {
             .expect("second host HTTP guard did not start after the first guard dropped");
         assert!(result.is_ok(), "{result:?}");
         second_thread.join().unwrap();
+    }
+
+    #[test]
+    fn relative_dir_resolves_against_workspace_root() {
+        // The pip-uv online wheel index is a committed, workspace-root-relative
+        // directory; resolving it must yield an absolute path under the workspace
+        // root regardless of the test process CWD.
+        let rel = "apps/starry/pip-uv/online-index";
+        let resolved = resolve_serve_dir(rel).expect("relative dir should resolve");
+        let workspace_root =
+            crate::context::workspace_root_path().expect("workspace root should resolve");
+
+        assert!(resolved.is_absolute(), "resolved dir must be absolute");
+        assert!(resolved.starts_with(&workspace_root));
+        assert_eq!(resolved, workspace_root.join(rel).canonicalize().unwrap());
+
+        match HostHttpBody::from_config(&HostHttpServerConfig {
+            bind: "127.0.0.1".to_string(),
+            port: 0,
+            body: "unused".to_string(),
+            body_size: None,
+            body_byte: b'a',
+            dir: Some(rel.to_string()),
+        })
+        .expect("from_config should accept the committed relative dir")
+        {
+            HostHttpBody::Dir(path) => assert_eq!(path, resolved),
+            other => panic!("expected Dir body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn absolute_dir_is_used_verbatim() {
+        let temp = std::env::temp_dir();
+        let resolved = resolve_serve_dir(&temp.to_string_lossy())
+            .expect("an existing absolute dir should resolve");
+        assert_eq!(resolved, temp.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn missing_dir_errors_at_start() {
+        let config = HostHttpServerConfig {
+            bind: "127.0.0.1".to_string(),
+            port: free_local_port(),
+            body: "unused".to_string(),
+            body_size: None,
+            body_byte: b'a',
+            // A path that cannot exist under the workspace root.
+            dir: Some("apps/starry/pip-uv/__definitely_missing_index__".to_string()),
+        };
+
+        let err = match HostHttpServerGuard::start(&config, "missing-dir") {
+            Ok(_) => {
+                panic!("a missing host HTTP dir must be a hard error, not a silent empty index")
+            }
+            Err(err) => err,
+        };
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("does not exist or is not accessible"),
+            "unexpected error message: {message}"
+        );
     }
 
     fn free_local_port() -> u16 {

@@ -2924,6 +2924,7 @@ mod tests {
                 body: "fixture".to_string(),
                 body_size: Some(4),
                 body_byte: b'Z',
+                dir: None,
             }),
             subcases: Vec::new(),
             grouped_subcase_filter: None,
@@ -2996,6 +2997,7 @@ mod tests {
                 body: "fixture".to_string(),
                 body_size: Some(4),
                 body_byte: b'Z',
+                dir: None,
             }),
             subcases: grouped_subcase_filter
                 .as_ref()
