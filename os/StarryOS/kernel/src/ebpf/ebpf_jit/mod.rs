@@ -120,6 +120,12 @@ impl JitBuffer {
         self.ptr
     }
 
+    /// Returns true when the buffer is in counting mode (sizing pass).
+    /// Backends should skip direct memory writes when this returns true.
+    pub fn counting(&self) -> bool {
+        self.counting
+    }
+
     pub fn finalize(&mut self) {
         #[cfg(target_arch = "aarch64")]
         {

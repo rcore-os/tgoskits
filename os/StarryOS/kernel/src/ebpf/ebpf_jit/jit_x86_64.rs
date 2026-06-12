@@ -477,10 +477,12 @@ fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool)
             emit_mov_reg64(buf, dst, X86_RDX);
         }
         let after = buf.offset();
-        unsafe {
-            let ptr = buf.entry().add(skip) as *mut u8;
-            let off = (after - skip - 6) as i32;
-            core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
+        if !buf.counting() {
+            unsafe {
+                let ptr = buf.entry().add(skip) as *mut u8;
+                let off = (after - skip - 6) as i32;
+                core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
+            }
         }
         emit_pop(buf, X86_RCX);
         if is_div {
@@ -506,10 +508,12 @@ fn emit_divmod(buf: &mut JitBuffer, dst: u8, src: u8, is_div: bool, is_64: bool)
             emit_mov_reg32(buf, dst, X86_RDX);
         }
         let after = buf.offset();
-        unsafe {
-            let ptr = buf.entry().add(skip) as *mut u8;
-            let off = (after - skip - 6) as i32;
-            core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
+        if !buf.counting() {
+            unsafe {
+                let ptr = buf.entry().add(skip) as *mut u8;
+                let off = (after - skip - 6) as i32;
+                core::ptr::copy_nonoverlapping(off.to_le_bytes().as_ptr(), ptr.add(2), 4);
+            }
         }
         emit_pop(buf, X86_RCX);
         if is_div {
