@@ -1,3 +1,15 @@
+//! Minimal overlay filesystem implementation for StarryOS.
+//!
+//! The overlay view is built from an optional writable upper directory and one
+//! or more read-only lower directories. Reads prefer upper entries and then
+//! fall back to lower entries. Mutating operations materialize the relevant
+//! upper path and copy lower-backed files up before applying changes.
+//!
+//! This implementation intentionally keeps some Linux overlayfs features
+//! conservative: hard links are forced through upper, lower-backed directory
+//! rename is rejected, and index/redirect_dir are handled by mount option
+//! validation rather than by full semantic support here.
+
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
@@ -24,11 +36,15 @@ const OPAQUE_MARKER_NAME: &str = ".wh..wh..opq";
 
 #[derive(Clone)]
 pub struct OverlayOptions {
+    /// Lower layers ordered from topmost to bottommost.
     pub lower_dirs: Vec<Location>,
+    /// Writable upper layer. `None` creates a read-only lower-only overlay.
     pub upper_dir: Option<Location>,
+    /// Work directory required by the mount ABI when an upper layer exists.
     pub work_dir: Option<Location>,
 }
 
+/// Build an overlay filesystem from resolved lower, upper, and work dirs.
 pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     if options.lower_dirs.is_empty() {
         return Err(VfsError::InvalidInput);
@@ -63,6 +79,11 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     Ok(Filesystem::new(fs))
 }
 
+/// Return the real entry currently backing an overlay location.
+///
+/// This is used by metadata side stores such as xattrs: overlay dir entries are
+/// non-cacheable, so storing data on the temporary overlay entry would be lost
+/// after the next path lookup.
 pub(crate) fn visible_target(loc: &Location) -> VfsResult<Location> {
     if let Ok(file) = loc.entry().downcast::<OverlayFile>() {
         file.current()
@@ -73,6 +94,11 @@ pub(crate) fn visible_target(loc: &Location) -> VfsResult<Location> {
     }
 }
 
+/// Ensure an overlay location is writable and return the real upper entry.
+///
+/// Non-overlay locations are returned unchanged. For overlay files this may
+/// copy a lower-backed file into upper; for overlay directories this
+/// materializes the corresponding upper directory path.
 pub(crate) fn ensure_copy_up_target(loc: &Location) -> VfsResult<Location> {
     if let Ok(file) = loc.entry().downcast::<OverlayFile>() {
         file.ensure_upper()
@@ -111,6 +137,7 @@ fn is_whiteout(loc: &Location) -> VfsResult<bool> {
     Ok(loc.metadata()?.rdev == WHITEOUT_DEVICE)
 }
 
+/// Check whether an upper directory hides all lower entries under the same dir.
 fn is_opaque(dir: &Location) -> VfsResult<bool> {
     match dir.lookup_no_follow(OPAQUE_MARKER_NAME) {
         Ok(_) => Ok(true),
@@ -119,6 +146,7 @@ fn is_opaque(dir: &Location) -> VfsResult<bool> {
     }
 }
 
+/// Create the Linux overlayfs whiteout marker: char device with rdev 0:0.
 fn create_whiteout(dir: &Location, name: &str) -> VfsResult<()> {
     let whiteout = dir.create(
         name,
@@ -133,6 +161,7 @@ fn create_whiteout(dir: &Location, name: &str) -> VfsResult<()> {
     })
 }
 
+/// Mark an upper directory as opaque by creating the `.wh..wh..opq` marker.
 fn mark_opaque(dir: &Location) -> VfsResult<()> {
     match dir.lookup_no_follow(OPAQUE_MARKER_NAME) {
         Ok(_) => Ok(()),
@@ -151,11 +180,15 @@ fn mark_opaque(dir: &Location) -> VfsResult<()> {
 }
 
 enum UpperLookup {
+    /// A normal visible upper entry exists.
     Present(Location),
+    /// A whiteout exists and must hide any lower entry with the same name.
     Whiteout,
+    /// Upper has no entry for this name.
     Missing,
 }
 
+/// Lookup in upper without collapsing whiteout and missing into one state.
 fn lookup_upper(dir: &Location, name: &str) -> VfsResult<UpperLookup> {
     if name == OPAQUE_MARKER_NAME {
         return Ok(UpperLookup::Whiteout);
@@ -168,6 +201,8 @@ fn lookup_upper(dir: &Location, name: &str) -> VfsResult<UpperLookup> {
     }
 }
 
+/// Lookup a visible upper entry, hiding whiteouts from callers that only need
+/// a normal entry or no entry.
 fn lookup_visible_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
     match lookup_upper(dir, name)? {
         UpperLookup::Present(loc) => Ok(Some(loc)),
@@ -175,6 +210,7 @@ fn lookup_visible_upper(dir: &Location, name: &str) -> VfsResult<Option<Location
     }
 }
 
+/// Lookup raw upper entries, including whiteout markers.
 fn lookup_any_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
     match dir.lookup_no_follow(name) {
         Ok(loc) => Ok(Some(loc)),
@@ -183,6 +219,7 @@ fn lookup_any_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
     }
 }
 
+/// Lookup lower layers from topmost to bottommost.
 fn lookup_lower(dirs: &[Location], name: &str) -> VfsResult<Option<Location>> {
     for dir in dirs {
         match dir.lookup_no_follow(name) {
@@ -195,6 +232,10 @@ fn lookup_lower(dirs: &[Location], name: &str) -> VfsResult<Option<Location>> {
     Ok(None)
 }
 
+/// Merge one directory's names into a read_dir map.
+///
+/// Whiteouts remove earlier lower names from the merged view, while opaque
+/// markers are hidden from users.
 fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsResult<()> {
     dir.read_dir(0, &mut |name: &str, ino, node_type, _| {
         if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
@@ -213,6 +254,7 @@ fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsRe
     Ok(())
 }
 
+/// Copy regular file contents from lower to a newly-created upper file.
 fn copy_file_contents(src: &Location, dst: &Location) -> VfsResult<()> {
     let src_file = OpenOptions::new()
         .read(true)
@@ -252,6 +294,7 @@ fn open_write(loc: Location) -> VfsResult<ax_fs::File> {
     OpenOptions::new().write(true).open_loc(loc)?.into_file()
 }
 
+/// Copy metadata that should survive copy-up.
 fn copy_metadata(src: &Location, dst: &Location) -> VfsResult<()> {
     let meta = src.metadata()?;
     dst.update_metadata(MetadataUpdate {
@@ -263,6 +306,7 @@ fn copy_metadata(src: &Location, dst: &Location) -> VfsResult<()> {
     })
 }
 
+/// Copy a lower entry into an upper directory.
 fn copy_entry(src: &Location, dst_dir: &Location, name: &str) -> VfsResult<Location> {
     let meta = src.metadata()?;
     let dst = dst_dir.create(name, meta.node_type, meta.mode, meta.uid, meta.gid)?;
@@ -276,6 +320,7 @@ fn copy_entry(src: &Location, dst_dir: &Location, name: &str) -> VfsResult<Locat
     Ok(dst)
 }
 
+/// Return an existing upper entry or copy the lower entry up.
 fn ensure_upper_from_lower(
     upper_dir: &Location,
     lower: &Location,
@@ -295,13 +340,17 @@ struct DirentInfo {
 
 struct OverlayDir {
     fs: Arc<OverlayFs>,
+    /// Materialized upper directory for this overlay path, if it exists.
     upper_dir: Mutex<Option<Location>>,
+    /// Lower directories that still participate in this overlay directory.
     lower_dirs: Vec<Location>,
+    /// Path from overlay root to this directory, used for deferred copy-up.
     path: Vec<String>,
     this: Option<WeakDirEntry>,
 }
 
 impl OverlayDir {
+    /// Build an overlay directory entry with the corresponding upper/lower set.
     fn entry(
         fs: Arc<OverlayFs>,
         upper_dir: Option<Location>,
@@ -330,6 +379,10 @@ impl OverlayDir {
         )
     }
 
+    /// Collect lower child directories that should be visible below `name`.
+    ///
+    /// The list is used when constructing an overlay child directory. A lower
+    /// whiteout stops the search because it hides lower layers beneath it.
     fn lower_dirs_for_child_in(dirs: &[Location], name: &str) -> Vec<Location> {
         let mut result = Vec::new();
         for lower_dir in dirs {
@@ -359,6 +412,11 @@ impl OverlayDir {
         self.upper_dir.lock().clone()
     }
 
+    /// Ensure this overlay directory has a real upper directory.
+    ///
+    /// Lower-only lookups should not create upper state. This is called only by
+    /// operations that must write into upper or need an upper parent for a
+    /// copied-up child.
     fn materialize_upper_dir(&self) -> VfsResult<Location> {
         if let Some(upper_dir) = self.existing_upper_dir() {
             return Ok(upper_dir);
@@ -413,6 +471,11 @@ impl OverlayDir {
         }
     }
 
+    /// Build the overlay child direntry that users see.
+    ///
+    /// Directory children keep both their upper and lower candidates. File
+    /// children store the current upper/lower locations and copy up lazily on
+    /// writes or metadata changes.
     fn build_entry(
         &self,
         name: &str,
@@ -473,6 +536,8 @@ impl OverlayDir {
         }
     }
 
+    /// Remove an old whiteout before creating a fresh upper entry of the same
+    /// name.
     fn remove_existing_whiteout(&self, name: &str) -> VfsResult<()> {
         if let Some(upper) = self.lookup_any_upper_child(name)?
             && is_whiteout(&upper)?
@@ -518,6 +583,11 @@ impl NodeOps for OverlayDir {
 }
 
 impl DirNodeOps for OverlayDir {
+    /// Return the merged directory view.
+    ///
+    /// Lower layers are merged first from bottom to top, then upper entries
+    /// override them. Whiteouts delete lower names, and opaque upper dirs skip
+    /// lower merging entirely.
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut entries = BTreeMap::new();
         let is_opaque = match self.existing_upper_dir() {
@@ -543,6 +613,11 @@ impl DirNodeOps for OverlayDir {
         Ok(emitted)
     }
 
+    /// Lookup one merged child name.
+    ///
+    /// Unlike read_dir, lookup must explicitly distinguish upper whiteout from
+    /// upper missing so path lookup cannot re-expose lower files hidden by
+    /// unlink or opaque directory semantics.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         match self.lookup_upper_child(name)? {
             UpperLookup::Present(upper) => self.build_entry(name, Some(upper), None),
@@ -579,6 +654,7 @@ impl DirNodeOps for OverlayDir {
         self.build_entry(name, Some(upper), None)
     }
 
+    /// Create a hard link by first ensuring the source lives in upper.
     fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
         self.ensure_no_visible_entry(name)?;
         self.remove_existing_whiteout(name)?;
@@ -588,6 +664,8 @@ impl DirNodeOps for OverlayDir {
         self.build_entry(name, Some(linked), None)
     }
 
+    /// Unlink a visible upper entry and create a whiteout when a lower entry
+    /// with the same name exists.
     fn unlink(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
         if let Some(upper) = self.lookup_visible_upper_child(name)?
             && let Some(upper_dir) = self.existing_upper_dir()
@@ -601,6 +679,11 @@ impl DirNodeOps for OverlayDir {
         Ok(())
     }
 
+    /// Rename overlay entries with conservative lower-backed directory rules.
+    ///
+    /// Lower-backed files are copied up before rename. Lower-backed
+    /// directories are rejected because full redirect_dir/index semantics are
+    /// not implemented.
     fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
         let dst = dst_dir.downcast::<Self>()?;
         let src = match self.lookup_visible_upper_child(src_name)? {
@@ -630,10 +713,14 @@ impl DirNodeOps for OverlayDir {
 
 struct OverlayFile {
     fs: Arc<OverlayFs>,
+    /// Materialized upper parent directory, if one exists.
     upper_dir: Mutex<Option<Location>>,
+    /// Parent path from overlay root, used to materialize the upper parent.
     parent_path: Vec<String>,
     name: String,
+    /// Upper file captured when the entry was built.
     upper: Option<Location>,
+    /// Lower file captured when the entry was built.
     lower: Option<Location>,
 }
 
@@ -642,6 +729,7 @@ impl OverlayFile {
         self.upper_dir.lock().clone()
     }
 
+    /// Ensure the parent directory for this file exists in upper.
     fn materialize_upper_dir(&self) -> VfsResult<Location> {
         if let Some(upper_dir) = self.existing_upper_dir() {
             return Ok(upper_dir);
@@ -669,6 +757,7 @@ impl OverlayFile {
         Ok(upper_dir)
     }
 
+    /// Return the currently visible backing file.
     fn current(&self) -> VfsResult<Location> {
         if let Some(upper_dir) = self.existing_upper_dir()
             && let Some(upper) = lookup_visible_upper(&upper_dir, &self.name)?
@@ -678,6 +767,7 @@ impl OverlayFile {
         self.lower.clone().ok_or(VfsError::NotFound)
     }
 
+    /// Ensure this file has a writable upper backing file.
     fn ensure_upper(&self) -> VfsResult<Location> {
         if let Some(upper_dir) = self.existing_upper_dir()
             && let Some(upper) = lookup_visible_upper(&upper_dir, &self.name)?

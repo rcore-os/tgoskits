@@ -1,3 +1,11 @@
+//! Extended attribute syscalls backed by per-node `user_data`.
+//!
+//! Only the `user.*` namespace is supported here. Attributes are stored in a
+//! VFS node side map rather than in the underlying on-disk filesystem. Overlay
+//! paths need special handling: overlay entries are non-cacheable, so xattrs
+//! must be read from the current real target and written to the copy-up target
+//! instead of the temporary overlay entry.
+
 use alloc::{
     collections::{BTreeMap, btree_map::Entry},
     string::String,
@@ -36,14 +44,20 @@ fn existing_store(loc: &Location) -> Option<Arc<XattrStore>> {
     loc.user_data().get::<XattrStore>()
 }
 
+/// Return the existing xattr store or attach a new one to this real node.
 fn store_for_update(loc: &Location) -> Arc<XattrStore> {
     loc.user_data().get_or_insert_with(XattrStore::default)
 }
 
+/// Snapshot existing attrs before copy-up.
+///
+/// Copy-up creates a different upper `Location`, so metadata kept in
+/// `user_data` must be transferred explicitly when the upper store is empty.
 fn existing_attrs(loc: &Location) -> Option<XattrMap> {
     existing_store(loc).map(|store| store.attrs.lock().clone())
 }
 
+/// Read and validate an xattr name from userspace.
 fn read_name(name: *const c_char) -> AxResult<String> {
     let name = vm_load_string(name)?;
     let bytes = name.as_bytes();
@@ -56,6 +70,7 @@ fn read_name(name: *const c_char) -> AxResult<String> {
     Ok(name)
 }
 
+/// Read an xattr value from userspace with Linux size limits.
 fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
     if size > XATTR_SIZE_MAX as usize {
         return Err(AxError::ArgumentListTooLong);
@@ -71,6 +86,7 @@ fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
     Ok(value_buf)
 }
 
+/// Resolve a path argument used by path-based xattr syscalls.
 fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
     let path = vm_load_string(path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
@@ -79,6 +95,7 @@ fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
         .ok_or(AxError::BadFileDescriptor)
 }
 
+/// Resolve an fd argument used by fd-based xattr syscalls.
 fn resolve_fd(fd: i32) -> AxResult<Location> {
     if fd_is_path(fd) {
         return Err(AxError::BadFileDescriptor);
@@ -88,6 +105,7 @@ fn resolve_fd(fd: i32) -> AxResult<Location> {
         .ok_or(AxError::BadFileDescriptor)
 }
 
+/// Copy a single xattr value to userspace, or return its required size.
 fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResult<isize> {
     if size == 0 {
         return Ok(value.len() as isize);
@@ -101,6 +119,7 @@ fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResul
     Ok(value.len() as isize)
 }
 
+/// Serialize xattr names as a nul-separated Linux listxattr buffer.
 fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
     let mut names = Vec::new();
     if let Some(attrs) = attrs {
@@ -115,6 +134,7 @@ fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
     Ok(names)
 }
 
+/// Copy a listxattr buffer to userspace, or return its required size.
 fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> AxResult<isize> {
     if size == 0 {
         return Ok(names.len() as isize);
@@ -128,6 +148,7 @@ fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> AxResult<isize
     Ok(names.len() as isize)
 }
 
+/// Get an xattr from the currently visible real node.
 fn get_xattr(
     loc: Location,
     name: *const c_char,
@@ -148,6 +169,7 @@ fn get_xattr(
     copy_value_to_user(&value, user_value, size)
 }
 
+/// List xattrs from the currently visible real node.
 fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
     let loc = overlay::visible_target(&loc)?;
     let names = {
@@ -159,6 +181,7 @@ fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
     copy_list_to_user(&names, list, size)
 }
 
+/// Set an xattr, copying lower-backed overlay files up before writing.
 fn set_xattr(
     loc: Location,
     name: *const c_char,
@@ -214,6 +237,7 @@ fn set_xattr(
     Ok(0)
 }
 
+/// Remove an xattr, copying lower-backed overlay files up before mutation.
 fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
     let name = read_name(name)?;
     let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
