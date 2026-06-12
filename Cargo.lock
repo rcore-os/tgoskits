@@ -695,6 +695,7 @@ dependencies = [
  "rk3588-pci",
  "rockchip-npu",
  "rockchip-pm",
+ "rockchip-rga",
  "rockchip-soc",
  "sdhci-host",
  "sdmmc-protocol",
@@ -6767,6 +6768,14 @@ dependencies = [
  "mbarrier",
  "rdif-base",
  "tock-registers 0.10.1",
+]
+
+[[package]]
+name = "rockchip-rga"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "rdif-base",
 ]
 
 [[package]]
