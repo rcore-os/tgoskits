@@ -16,6 +16,7 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
+ebpf-kmod = []
 kprobe_test = []
 ext4 = ["ax-fs-ng/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]

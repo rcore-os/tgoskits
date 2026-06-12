@@ -20,11 +20,15 @@ pub mod entry;
 
 mod cgroup;
 mod config;
+#[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 mod ebpf;
 mod file;
+#[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 mod kmod;
+#[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 pub mod kprobe;
 mod mm;
+#[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 mod perf;
 mod pseudofs;
 mod stop_machine;
@@ -33,4 +37,5 @@ mod task;
 mod time;
 mod tracepoint;
 mod trap;
+#[cfg_attr(not(feature = "ebpf-kmod"), allow(dead_code))]
 mod uprobe;
