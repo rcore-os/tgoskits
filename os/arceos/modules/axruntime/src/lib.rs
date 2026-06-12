@@ -421,11 +421,9 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
     }
 
     ax_hal::irq::cpu_online(cpu_id).expect("failed to mark CPU online for IRQ framework");
+    ax_hal::irq::init_common_irq_handler();
 
     if ax_hal::percpu::this_cpu_is_bsp() {
-        #[cfg(target_arch = "loongarch64")]
-        ax_hal::irq::init_common_irq_handler();
-
         let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
         ax_hal::irq::request_percpu_irq(
             ax_hal::time::irq_num(),

@@ -15,10 +15,7 @@ use x86::{
 };
 
 use super::irq::{LAPIC_SPURIOUS_VECTOR, LAPIC_TIMER_VECTOR};
-use crate::{
-    irq,
-    mem::{page_size, phys_to_virt},
-};
+use crate::mem::{page_size, phys_to_virt};
 
 const IA32_EFER: u32 = 0xc000_0080;
 const IA32_EFER_NXE: u64 = 1 << 11;
@@ -439,7 +436,6 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
 
 extern "x86-interrupt" fn lapic_timer_handler(_frame: InterruptStackFrame) {
     timer_ack();
-    irq::handle_irq(irq::systimer_irq());
 }
 
 extern "x86-interrupt" fn spurious_handler(_frame: InterruptStackFrame) {}

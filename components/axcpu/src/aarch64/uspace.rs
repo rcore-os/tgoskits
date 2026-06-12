@@ -170,7 +170,7 @@ impl UserContext {
 
         let ret = match kind {
             TrapKind::Irq => {
-                crate::trap::irq_handler(0);
+                crate::trap::dispatch_irq(0);
                 ReturnReason::Interrupt
             }
             TrapKind::Fiq | TrapKind::SError => ReturnReason::Unknown,

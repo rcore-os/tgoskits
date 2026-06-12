@@ -12,7 +12,7 @@ use rdrive::{
 use riscv::register::{sie, sip};
 use sbi_rt::HartMask;
 
-use crate::{common::ioremap, irq::_handle_irq};
+use crate::common::ioremap;
 
 const INTC_IRQ_BASE: usize = 1usize << (usize::BITS as usize - 1);
 const S_SOFT: usize = INTC_IRQ_BASE | 1;
@@ -71,24 +71,50 @@ pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
     }
 }
 
-pub fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
-    match raw {
-        S_TIMER => {
-            _handle_irq(S_TIMER.into());
-            Some(S_TIMER.into())
+enum Completion {
+    None,
+    Plic(NonZeroU32),
+}
+
+pub struct ActiveIrq {
+    irq: rdrive::IrqId,
+    completion: Completion,
+}
+
+impl ActiveIrq {
+    pub fn id(&self) -> rdrive::IrqId {
+        self.irq
+    }
+}
+
+impl Drop for ActiveIrq {
+    fn drop(&mut self) {
+        if let Completion::Plic(source) = self.completion {
+            complete_external_irq_source(source);
         }
+    }
+}
+
+pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
+    match raw {
+        S_TIMER => Some(ActiveIrq {
+            irq: S_TIMER.into(),
+            completion: Completion::None,
+        }),
         S_SOFT => {
             unsafe {
                 sip::clear_ssoft();
             }
-            _handle_irq(S_SOFT.into());
-            Some(S_SOFT.into())
+            Some(ActiveIrq {
+                irq: S_SOFT.into(),
+                completion: Completion::None,
+            })
         }
-        S_EXT => handle_external_irq(),
-        external if external & INTC_IRQ_BASE == 0 => {
-            _handle_irq(external.into());
-            Some(external.into())
-        }
+        S_EXT => begin_external_irq(),
+        external if external & INTC_IRQ_BASE == 0 => Some(ActiveIrq {
+            irq: external.into(),
+            completion: Completion::None,
+        }),
         other => {
             warn!("unsupported RISC-V interrupt cause {other:#x}");
             None
@@ -96,15 +122,15 @@ pub fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
     }
 }
 
-pub fn claim_external_irq() -> Option<someboot::irq::IrqId> {
+fn begin_external_irq() -> Option<ActiveIrq> {
     let source = claim_external_irq_source()?;
-    Some(someboot::irq::IrqId::new(source.get() as usize))
+    Some(ActiveIrq {
+        irq: (source.get() as usize).into(),
+        completion: Completion::Plic(source),
+    })
 }
 
-pub fn complete_external_irq(irq: someboot::irq::IrqId) {
-    let Some(source) = NonZeroU32::new(irq.raw() as u32) else {
-        return;
-    };
+fn complete_external_irq_source(source: NonZeroU32) {
     if let Some(handler) = get_irq_handler() {
         handler.complete_current(source);
     } else {
@@ -229,14 +255,6 @@ fn set_external_irq_enable(irq: usize, enable: bool) {
             plic.disable_source(source);
         }
     });
-}
-
-fn handle_external_irq() -> Option<someboot::irq::IrqId> {
-    let source = claim_external_irq_source()?;
-    let irq = someboot::irq::IrqId::new(source.get() as usize);
-    _handle_irq(irq.raw().into());
-    complete_external_irq(irq);
-    Some(irq)
 }
 
 fn claim_external_irq_source() -> Option<NonZeroU32> {

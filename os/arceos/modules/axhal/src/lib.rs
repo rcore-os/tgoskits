@@ -92,13 +92,21 @@ pub use ax_cpu::asm;
 pub use ax_cpu::uspace;
 pub use ax_plat::init::init_later;
 #[cfg(feature = "smp")]
-pub use ax_plat::init::{init_early_secondary, init_later_secondary};
+pub use ax_plat::init::init_later_secondary;
 
 /// Initializes the platform and boot argument.
 /// This function should be called as early as possible.
 pub fn init_early(cpu_id: usize, arg: usize) {
     dtb::init(arg);
+    ax_cpu::init::init_trap();
     ax_plat::init::init_early(cpu_id, arg);
+}
+
+/// Initializes the CPU trap vector and platform early state for a secondary CPU.
+#[cfg(feature = "smp")]
+pub fn init_early_secondary(cpu_id: usize) {
+    ax_cpu::init::init_trap();
+    ax_plat::init::init_early_secondary(cpu_id);
 }
 
 /// Gets the number of CPUs running in the system.

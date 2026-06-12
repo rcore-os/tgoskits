@@ -2,7 +2,7 @@
 
 #[cfg(feature = "ipi")]
 pub use ax_config::devices::IPI_IRQ;
-use ax_cpu::trap::{irq_handler, set_irq_handler};
+use ax_cpu::trap::set_irq_handler;
 pub use ax_plat::irq::{
     AutoEnable, CpuId, CpuMask, IrqContext, IrqError, IrqHandle, IrqNumber, IrqOutcome, IrqRequest,
     IrqReturn, IrqScope, IrqStatus, RawIrqHandler, ShareMode, cpu_online, disable_irq,
@@ -17,7 +17,6 @@ pub use ax_plat::irq::{IpiTarget, send_ipi};
 /// # Warn
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
-#[irq_handler]
 pub fn handle_irq(vector: usize) -> bool {
     let guard = ax_kernel_guard::NoPreempt::new();
     let handled = handle(vector).is_some();
