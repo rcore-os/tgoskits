@@ -11,7 +11,7 @@ use proc_macro2::Span;
 use quote::ToTokens;
 use syn::{
     Block, Expr, ExprCall, ExprClosure, ExprForLoop, ExprMethodCall, ExprPath, ExprWhile, File,
-    FnArg, Ident, ImplItemFn, ItemFn, ItemMacro, Local, Member, Pat, Stmt,
+    FnArg, Ident, ImplItemFn, ItemFn, ItemImpl, ItemMacro, Local, Member, Pat, Stmt, Type,
     spanned::Spanned,
     visit::{self, Visit},
 };
@@ -378,6 +378,7 @@ struct Analyzer<'a> {
     lines: Vec<&'a str>,
     result: AnalysisResult,
     bindings: BindingContext,
+    impl_self_types: Vec<String>,
 }
 
 impl<'a> Analyzer<'a> {
@@ -387,6 +388,7 @@ impl<'a> Analyzer<'a> {
             lines: source.lines().collect(),
             result: AnalysisResult::default(),
             bindings: BindingContext::default(),
+            impl_self_types: Vec::new(),
         }
     }
 
@@ -504,14 +506,22 @@ impl<'a> Analyzer<'a> {
 impl Visit<'_> for Analyzer<'_> {
     fn visit_item_fn(&mut self, node: &ItemFn) {
         self.bindings.push_scope();
-        self.bindings.bind_fn_inputs(&node.sig.inputs);
+        self.bindings.bind_fn_inputs(&node.sig.inputs, None);
         self.visit_block(&node.block);
         self.bindings.pop_scope();
     }
 
+    fn visit_item_impl(&mut self, node: &ItemImpl) {
+        self.impl_self_types.push(type_key(&node.self_ty));
+        visit::visit_item_impl(self, node);
+        self.impl_self_types.pop();
+    }
+
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
+        let receiver_key = self.impl_self_types.last().cloned();
         self.bindings.push_scope();
-        self.bindings.bind_fn_inputs(&node.sig.inputs);
+        self.bindings
+            .bind_fn_inputs(&node.sig.inputs, receiver_key.as_deref());
         self.visit_block(&node.block);
         self.bindings.pop_scope();
     }
@@ -608,7 +618,7 @@ impl Visit<'_> for Analyzer<'_> {
 
 #[derive(Debug, Default)]
 struct BindingContext {
-    scopes: Vec<HashMap<String, usize>>,
+    scopes: Vec<HashMap<String, String>>,
     next_binding_id: usize,
 }
 
@@ -621,10 +631,14 @@ impl BindingContext {
         self.scopes.pop();
     }
 
-    fn bind_fn_inputs(&mut self, inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>) {
+    fn bind_fn_inputs(
+        &mut self,
+        inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>,
+        receiver_key: Option<&str>,
+    ) {
         for input in inputs {
             match input {
-                FnArg::Receiver(_) => self.bind_name("self"),
+                FnArg::Receiver(_) => self.bind_receiver(receiver_key),
                 FnArg::Typed(pat_type) => self.bind_pat(&pat_type.pat),
             }
         }
@@ -634,7 +648,20 @@ impl BindingContext {
         if let Some(scope) = self.scopes.last_mut() {
             let id = self.next_binding_id;
             self.next_binding_id += 1;
-            scope.insert(name.to_string(), id);
+            scope.insert(name.to_string(), format!("binding#{id}"));
+        }
+    }
+
+    fn bind_receiver(&mut self, receiver_key: Option<&str>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            let key = receiver_key
+                .map(|receiver_key| format!("receiver:{receiver_key}"))
+                .unwrap_or_else(|| {
+                    let id = self.next_binding_id;
+                    self.next_binding_id += 1;
+                    format!("binding#{id}")
+                });
+            scope.insert("self".to_string(), key);
         }
     }
 
@@ -678,12 +705,12 @@ impl BindingContext {
         }
     }
 
-    fn resolve_ident(&self, ident: &Ident) -> Option<usize> {
+    fn resolve_ident(&self, ident: &Ident) -> Option<&str> {
         let name = ident.to_string();
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(&name).copied())
+            .find_map(|scope| scope.get(&name).map(String::as_str))
     }
 }
 
@@ -869,12 +896,16 @@ fn path_key(expr: &ExprPath, bindings: &BindingContext) -> String {
         && expr.path.leading_colon.is_none()
         && expr.path.segments.len() == 1
         && let Some(segment) = expr.path.segments.first()
-        && let Some(binding_id) = bindings.resolve_ident(&segment.ident)
+        && let Some(binding_key) = bindings.resolve_ident(&segment.ident)
     {
-        return format!("binding#{binding_id}");
+        return binding_key.to_string();
     }
 
     format!("path:{}", expr.path.to_token_stream())
+}
+
+fn type_key(ty: &Type) -> String {
+    ty.to_token_stream().to_string()
 }
 
 fn member_key(member: &Member) -> String {
@@ -1226,6 +1257,68 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
                 .iter()
                 .any(|finding| finding.rule == Rule::MixedOrdering)
         );
+    }
+
+    #[test]
+    fn reports_mixed_ordering_for_receiver_field_across_methods() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+struct Runtime {
+    ready: AtomicBool,
+    wq: WaitQueue,
+}
+
+impl Runtime {
+    fn wait(&self) {
+        self.wq.wait_until(|| self.ready.load(Ordering::Acquire));
+    }
+
+    fn check(&self) {
+        let _ = self.ready.load(Ordering::Relaxed);
+    }
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::MixedOrdering)
+        );
+    }
+
+    #[test]
+    fn keeps_same_receiver_field_names_separate_across_impl_types() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+struct Runtime {
+    ready: AtomicBool,
+    wq: WaitQueue,
+}
+
+struct Stats {
+    ready: AtomicBool,
+}
+
+impl Runtime {
+    fn wait(&self) {
+        self.wq.wait_until(|| self.ready.load(Ordering::Acquire));
+    }
+}
+
+impl Stats {
+    fn check(&self) {
+        let _ = self.ready.load(Ordering::Relaxed);
+    }
+}
+"#,
+        );
+
+        assert!(findings.is_empty());
     }
 
     #[test]
