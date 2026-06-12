@@ -2554,7 +2554,7 @@ mod tests {
     }
 
     #[test]
-    fn starry_system_grouped_qemu_configs_report_subcase_timing() {
+    fn starry_system_grouped_qemu_configs_use_low_overhead_runner_markers() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
         for group in ["qemu-smp1", "qemu-smp4"] {
@@ -2574,24 +2574,23 @@ mod tests {
                     .unwrap_or_default();
 
                 assert!(
-                    command.contains("STARRY_SYSTEM_TEST_TIMING_BEGIN"),
-                    "{} must start a grouped subcase timing section",
+                    command.contains("STARRY_SYSTEM_TEST_BEGIN: $bin"),
+                    "{} must report when each grouped subcase starts",
                     path.display()
                 );
                 assert!(
-                    command.contains("STARRY_SYSTEM_TEST_TIMING: elapsed_s="),
-                    "{} must report per-subcase elapsed seconds",
+                    command.contains("STARRY_SYSTEM_TEST_PASSED: $bin"),
+                    "{} must report each grouped subcase pass marker",
                     path.display()
                 );
                 assert!(
-                    command.contains("status=passed bin=")
-                        && command.contains("status=failed bin="),
-                    "{} must include pass/fail status in timing lines",
+                    !command.contains("$(date") && !command.contains("timing_file"),
+                    "{} must avoid per-subcase timing commands in the guest runner",
                     path.display()
                 );
                 assert!(
-                    command.contains("STARRY_SYSTEM_TEST_TIMING_END"),
-                    "{} must end a grouped subcase timing section",
+                    !command.contains("STARRY_SYSTEM_TEST_TIMING"),
+                    "{} must not emit grouped timing lines from the low-overhead runner",
                     path.display()
                 );
                 let failure_branch = command.find("else\n").unwrap_or_else(|| {
@@ -2608,13 +2607,14 @@ mod tests {
                             path.display()
                         )
                     });
-                let status_failed_position =
-                    failure_command.find("status=failed").unwrap_or_else(|| {
+                let status_failed_position = failure_command
+                    .find("$system_fail_marker")
+                    .unwrap_or_else(|| {
                         panic!("{} must mark failed grouped subcases", path.display())
                     });
                 assert!(
                     exit_status_position < status_failed_position,
-                    "{} must capture `$?` before assigning shell variables in the failure branch",
+                    "{} must capture `$?` before printing grouped failure state",
                     path.display()
                 );
                 assert!(
@@ -2748,11 +2748,11 @@ mod tests {
                 && script.contains("APK_CURL_EQUIVALENCE_TEST_FAILED")
                 && script.contains("curl --connect-timeout")
                 && script.contains("10.0.2.2")
-                && script.contains("20971520")
+                && script.contains("4194304")
                 && script.contains("sha256sum -c")
                 && script
-                    .contains("48b6fb8f1c2fec38d030604889d674722c4af237733c913b698400b59c9294b4"),
-            "{} must download the local 20MiB HTTP fixture, write it to disk, then read it back \
+                    .contains("299285fc41a44cdb038b9fdaf494c76ca9d0c866672b2b266c1a0c17dda60a05"),
+            "{} must download the local 4MiB HTTP fixture, write it to disk, then read it back \
              and compare sha256",
             script_path.display()
         );
@@ -2790,7 +2790,7 @@ mod tests {
                 host_http_server
                     .get("body_size")
                     .and_then(toml::Value::as_integer),
-                Some(20 * 1024 * 1024)
+                Some(4 * 1024 * 1024)
             );
             assert_eq!(
                 host_http_server
