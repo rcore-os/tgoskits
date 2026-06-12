@@ -8,7 +8,7 @@ ccflags-remove-y += -fpatchable-function-entry=%
 # Kbuild enables this flag when CONFIG_RETHUNK=y, which makes the module emit
 # jumps to __x86_return_thunk. Use normal function returns for this compatibility
 # module so StarryOS can resolve all external symbols itself.
-ccflags-remove-y += -mfunction-return=thunk-extern
+# ccflags-remove-y += -mfunction-return=thunk-extern
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules

@@ -16,6 +16,7 @@
 //! `perf::kprobe` resolves names against.
 
 mod kprint;
+mod kshim;
 
 use alloc::{
     boxed::Box,
@@ -119,7 +120,7 @@ fn alloc_kmod_frames(num_pages: usize) -> AxResult<VirtAddr> {
                 total,
                 VirtAddrRange::new(guard.base(), guard.end()),
             )
-            .expect("kmod vmalloc: failed to find free area for module section");
+            .ok_or(AxError::NoMemory)?;
         guard.map_alloc(vaddr, total, MappingFlags::READ | MappingFlags::WRITE, true)?;
         vaddr
     };
