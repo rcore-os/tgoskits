@@ -255,7 +255,7 @@ fn file_findings(path: &Path) -> anyhow::Result<Vec<Finding>> {
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax = syn::parse_file(&source)
         .with_context(|| format!("failed to parse Rust file {}", path.display()))?;
-    Ok(analyze_file(path, &source, &syntax))
+    Ok(analyze_file(path, &source, &syntax).findings)
 }
 
 fn files_findings(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>> {
@@ -315,11 +315,10 @@ fn files_findings_sequential(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>
     Ok(findings)
 }
 
-fn analyze_file(path: &Path, source: &str, syntax: &File) -> Vec<Finding> {
+fn analyze_file(path: &Path, source: &str, syntax: &File) -> AnalysisResult {
     let mut analyzer = Analyzer::new(path, source);
     analyzer.visit_file(syntax);
-    analyzer.finish();
-    analyzer.findings
+    analyzer.finish()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,12 +366,17 @@ struct Finding {
     message: String,
 }
 
-struct Analyzer<'a> {
-    path: &'a Path,
-    lines: Vec<&'a str>,
+#[derive(Debug, Default)]
+struct AnalysisResult {
     accesses: Vec<AtomicAccess>,
     sync_intent_keys: HashSet<String>,
     findings: Vec<Finding>,
+}
+
+struct Analyzer<'a> {
+    path: &'a Path,
+    lines: Vec<&'a str>,
+    result: AnalysisResult,
     bindings: BindingContext,
 }
 
@@ -381,16 +385,14 @@ impl<'a> Analyzer<'a> {
         Self {
             path,
             lines: source.lines().collect(),
-            accesses: Vec::new(),
-            sync_intent_keys: HashSet::new(),
-            findings: Vec::new(),
+            result: AnalysisResult::default(),
             bindings: BindingContext::default(),
         }
     }
 
-    fn finish(&mut self) {
+    fn finish(mut self) -> AnalysisResult {
         let mut summaries: HashMap<String, AccessSummary> = HashMap::new();
-        for access in &self.accesses {
+        for access in &self.result.accesses {
             let summary = summaries.entry(access.key.clone()).or_default();
             match access.ordering {
                 AccessOrdering::Relaxed => summary.has_relaxed = true,
@@ -399,10 +401,11 @@ impl<'a> Analyzer<'a> {
         }
 
         let spans = self
+            .result
             .accesses
             .iter()
             .filter(|access| access.ordering == AccessOrdering::Relaxed)
-            .filter(|access| self.sync_intent_keys.contains(&access.key))
+            .filter(|access| self.result.sync_intent_keys.contains(&access.key))
             .filter(|access| {
                 summaries
                     .get(&access.key)
@@ -419,6 +422,8 @@ impl<'a> Analyzer<'a> {
                  synchronization variable",
             );
         }
+
+        self.result
     }
 
     fn report(&mut self, span: Span, rule: Rule, message: &'static str) {
@@ -427,7 +432,7 @@ impl<'a> Analyzer<'a> {
             return;
         }
 
-        self.findings.push(Finding {
+        self.result.findings.push(Finding {
             path: self.path.to_path_buf(),
             line: start.line,
             column: start.column + 1,
@@ -455,7 +460,7 @@ impl<'a> Analyzer<'a> {
 
     fn mark_sync_intent_expr(&mut self, expr: &Expr) {
         for access in atomic_accesses_in_expr(expr, &self.bindings) {
-            self.sync_intent_keys.insert(access.key);
+            self.result.sync_intent_keys.insert(access.key);
         }
     }
 
@@ -483,7 +488,7 @@ impl<'a> Analyzer<'a> {
             if let Some(access) = atomic_write_access(first, &self.bindings)
                 && is_notify_expr(second)
             {
-                self.sync_intent_keys.insert(access.key);
+                self.result.sync_intent_keys.insert(access.key);
                 if access.ordering == AccessOrdering::Relaxed {
                     self.report(
                         access.span,
@@ -547,7 +552,7 @@ impl Visit<'_> for Analyzer<'_> {
 
     fn visit_expr_method_call(&mut self, node: &ExprMethodCall) {
         if let Some(access) = atomic_access_from_method_call(node, &self.bindings) {
-            self.accesses.push(access);
+            self.result.accesses.push(access);
         }
         if is_wait_method(node.method.clone()) {
             for arg in &node.args {
@@ -982,7 +987,7 @@ mod tests {
 
     fn findings(source: &str) -> Vec<Finding> {
         let syntax = syn::parse_file(source).unwrap();
-        analyze_file(Path::new("test.rs"), source, &syntax)
+        analyze_file(Path::new("test.rs"), source, &syntax).findings
     }
 
     #[test]
