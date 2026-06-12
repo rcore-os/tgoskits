@@ -70,6 +70,20 @@ impl IrqIf for IrqIfImpl {
     }
 }
 
+#[cfg(all(target_arch = "loongarch64", feature = "hv"))]
+#[impl_plat_interface]
+impl ax_plat::irq::LoongArchHvIrqIf for IrqIfImpl {
+    fn register_virtual_irq_injector(_injector: fn(usize, usize, usize)) {}
+
+    fn register_guest_irq_route(
+        _physical_irq: usize,
+        _vm_id: usize,
+        _vcpu_id: usize,
+        _guest_vector: usize,
+    ) {
+    }
+}
+
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 fn inject_virtual_irq(irq: usize) -> bool {
     let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);

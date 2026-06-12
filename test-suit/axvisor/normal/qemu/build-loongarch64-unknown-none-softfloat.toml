@@ -5,6 +5,6 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 1
-plat_dyn = false
+plat_dyn = true
 target = "loongarch64-unknown-none-softfloat"
-vm_configs = ["os/axvisor/configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml"]
+vm_configs = []

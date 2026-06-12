@@ -11,8 +11,6 @@ args = [
   "-serial",
   "mon:stdio",
   "-no-reboot",
-  "-net",
-  "none",
   "-device",
   "virtio-blk-pci,drive=disk0",
   "-drive",
@@ -20,5 +18,5 @@ args = [
 ]
 fail_regex = []
 success_regex = []
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true

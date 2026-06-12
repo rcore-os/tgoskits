@@ -56,12 +56,14 @@ pub mod irq;
     ax_hal_any_platform_feature
 ))]
 pub mod loongarch64_hv_irq {
+    const EIOINTC_IRQ: usize = 3;
+
     pub fn register_virtual_irq_injector(injector: fn(usize, usize, usize)) {
         ax_plat::irq::register_loongarch_virtual_irq_injector(injector);
     }
 
     pub fn enable_external_irq_line() {
-        crate::irq::set_enable(ax_config::devices::EIOINTC_IRQ, true);
+        crate::irq::set_enable(EIOINTC_IRQ, true);
     }
 
     pub fn register_guest_irq_route(
