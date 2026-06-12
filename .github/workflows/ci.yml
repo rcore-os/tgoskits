@@ -295,6 +295,14 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: "1"
+          - name: Check cargo publish dry-run
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
+            command: cargo publish --workspace --dry-run --no-verify
+            cache_key: ""
+            container_image: base
+            fetch_depth: "1"
           - name: Run sync-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
