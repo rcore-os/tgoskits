@@ -23,6 +23,7 @@ net = ["dep:rd-net"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]
+rtc = ["plat-dyn"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
@@ -149,3 +150,6 @@ riscv_goldfish = "0.1"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 ax-arm-pl031.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86.workspace = true

@@ -57,6 +57,7 @@ pub mod net;
         feature = "task-parallel",
         feature = "task-priority",
         feature = "task-sleep",
+        feature = "task-smp-online",
         feature = "task-stack-guard-page",
         feature = "task-tls",
         feature = "task-wait-queue",
@@ -118,6 +119,11 @@ test_runner!("task-irq", run_task_irq, task::irq::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-priority", run_task_priority, task::priority::run);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
+test_runner!(
+    "task-smp-online",
+    run_task_smp_online,
+    task::smp_online::run
+);
 test_runner!(
     "task-stack-guard-page",
     run_task_stack_guard_page,
@@ -212,6 +218,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "task-sleep")]
     TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),
+    #[cfg(feature = "task-smp-online")]
+    TestCase::new(
+        "task-smp-online",
+        "SMP online CPU and IPI readiness",
+        run_task_smp_online,
+    ),
     #[cfg(feature = "task-stack-guard-page")]
     TestCase::new(
         "task-stack-guard-page",

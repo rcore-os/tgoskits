@@ -32,6 +32,7 @@ pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
         ax_runtime::hal::cpu::asm::irqs_enabled(),
         "faultable user memory access requires IRQs enabled"
     );
+    might_sleep();
 
     let curr = current();
     let Some(thr) = curr.try_as_thread() else {

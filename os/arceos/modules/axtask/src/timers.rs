@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_hal::time::{TimeValue, wall_time};
+use ax_hal::time::{TimeValue, monotonic_time};
 use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
 use ax_timer_list::{TimerEvent, TimerList};
 
@@ -69,7 +69,7 @@ where
 
 fn check_callbacks() {
     for callback in unsafe { TIMER_CALLBACKS.current_ref_raw().iter() } {
-        callback(wall_time());
+        callback(monotonic_time());
     }
 }
 
@@ -87,7 +87,7 @@ pub(crate) fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
 pub fn check_events() {
     check_callbacks();
     loop {
-        let now = wall_time();
+        let now = monotonic_time();
         let event = unsafe {
             // Safety: IRQs are disabled at this time.
             TIMER_LIST.current_ref_mut_raw()

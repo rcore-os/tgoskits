@@ -58,6 +58,8 @@ struct ZombieEntry {
     proc: Arc<Process>,
     cred: Arc<Cred>,
     ptrace_tracer_pid: Option<Pid>,
+    is_clone_child: bool,
+    wait_parent_tid: Pid,
 }
 
 /// Zombie processes: exited but not yet reaped by waitpid().
@@ -161,6 +163,8 @@ pub fn register_zombie(
     proc: Arc<Process>,
     cred: Arc<Cred>,
     ptrace_tracer_pid: Option<Pid>,
+    is_clone_child: bool,
+    wait_parent_tid: Pid,
 ) {
     ZOMBIE_TABLE.write().insert(
         pid,
@@ -168,6 +172,8 @@ pub fn register_zombie(
             proc,
             cred,
             ptrace_tracer_pid,
+            is_clone_child,
+            wait_parent_tid,
         },
     );
 }
@@ -199,6 +205,14 @@ pub fn get_zombie_process(pid: Pid) -> Option<Arc<Process>> {
 /// (and its `cred`) lives until the zombie is reaped by `waitpid`.
 pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
     ZOMBIE_TABLE.read().get(&pid).map(|e| e.cred.clone())
+}
+
+pub fn is_zombie_clone_child(pid: Pid) -> Option<bool> {
+    ZOMBIE_TABLE.read().get(&pid).map(|e| e.is_clone_child)
+}
+
+pub fn zombie_wait_parent_tid(pid: Pid) -> Option<Pid> {
+    ZOMBIE_TABLE.read().get(&pid).map(|e| e.wait_parent_tid)
 }
 
 pub fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
@@ -560,11 +574,15 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // after the task has been GC'd (mirrors Linux task_struct lifetime).
         let zombie_cred = thr.cred();
         let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
+        let is_clone_child = thr.proc_data.is_clone_child();
+        let wait_parent_tid = thr.proc_data.wait_parent_tid;
         register_zombie(
             process.pid(),
             process.clone(),
             zombie_cred,
             ptrace_tracer_pid,
+            is_clone_child,
+            wait_parent_tid,
         );
         process.exit();
         if let Some(parent) = process.parent() {

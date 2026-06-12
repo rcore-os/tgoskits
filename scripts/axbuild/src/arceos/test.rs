@@ -53,6 +53,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-parallel",
     "task-priority",
     "task-sleep",
+    "task-smp-online",
     ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
     "task-tls",
     "task-wait-queue",
@@ -2053,6 +2054,19 @@ BT 0 ip=0x1 fp=0x2
         );
         assert_eq!(qemu.fail_regex, vec!["stack guard page was not hit"]);
         assert_eq!(qemu.timeout, Some(30));
+    }
+
+    #[test]
+    fn arceos_rust_aarch64_qemu_config_enables_smp_for_ipi_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust");
+        let qemu_path = root.join("qemu-aarch64.toml");
+        let config = load_c_test_qemu_config(&qemu_path).unwrap();
+        let smp = qemu_test::smp_from_qemu_arg(&config).unwrap();
+        assert!(
+            smp >= 2,
+            "aarch64 task-ipi, task-smp-online, and task-stack-guard-page require SMP >= 2, got \
+             {smp}"
+        );
     }
 
     #[test]

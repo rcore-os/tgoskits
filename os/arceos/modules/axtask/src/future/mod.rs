@@ -55,6 +55,7 @@ impl Wake for AxWaker {
 /// from signal delivery), this function yields the CPU to allow signal
 /// processing on the return-to-userspace path. The future will be re-polled
 /// after the yield.
+#[track_caller]
 pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     crate::api::might_sleep();
 

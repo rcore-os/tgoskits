@@ -10,6 +10,8 @@ pub mod parallel;
 pub mod priority;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
+#[cfg(feature = "task-smp-online")]
+pub mod smp_online;
 #[cfg(feature = "task-stack-guard-page")]
 pub mod stack_guard_page;
 #[cfg(feature = "task-tls")]

@@ -1,8 +1,7 @@
 use alloc::{format, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
-    mem,
-    ops::{Deref, DerefMut},
+    ops::DerefMut,
 };
 
 use ax_errno::{AxError, AxResult};
@@ -381,12 +380,12 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
-        // TODO: optimize
         let curr = current();
-        let mut scope = curr.as_thread().proc_data.scope.write();
-        let mut guard = FD_TABLE.scope_mut(&mut scope);
-        let old_files = mem::take(guard.deref_mut());
-        old_files.write().clone_from(old_files.read().deref());
+        let proc_data = &curr.as_thread().proc_data;
+        let new_files = Arc::new(spin::RwLock::new(FD_TABLE.read().clone()));
+        proc_data.with_current_scope_mut(|scope| {
+            *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
+        });
     }
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);

@@ -27,6 +27,7 @@ Current Axvisor LoongArch QEMU tests intentionally use the static `ax-hal/loonga
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
 - **Platform bridge**: update `platforms/axplat-dyn`, `platforms/somehal`, platform config, memory regions, IRQ routing, timer source, power operations, and CPU boot operations.
+- **Dynamic firmware devices**: for `rdrive` ACPI probes, real non-empty ACPI ID lists enumerate namespace `Device` nodes and expose `_CRS` memory, I/O port, and IRQ resources through `AcpiInfo`; empty ID lists or synthetic root IDs are reserved for root-table style callbacks.
 - **Page tables and memory**: check PTE flags, huge page support, direct map, kernel high map, MMIO map, TLB/cache barriers, and early `phys_to_virt` behavior before MMU state is fully recorded.
 - **Drivers and rootfs**: check PCI command bits, MMIO/iomap, DMA address width, virtio transport, block device visibility, rootfs patching, and console/input feature flags.
 - **OS configs and test cases**: update ArceOS, StarryOS, and Axvisor configs only for validated architectures. Keep `qemu-<arch>.toml` runtime config separate from `build-*.toml`.
@@ -38,6 +39,7 @@ Current Axvisor LoongArch QEMU tests intentionally use the static `ax-hal/loonga
 - Capture the memory map and kernel image physical range before address translation helpers depend on them.
 - Treat relocated symbols carefully. After relocation or high-half switch, use runtime-safe symbol address helpers instead of raw compile-time addresses.
 - Clear BSS exactly once and after preserving any entry data that lives there.
+- On LoongArch OVMF, capture the EFI FDT configuration table as well as ACPI RSDP. QEMU exposes LS7A RTC through the preserved FDT node `loongson,ls7a-rtc`; its ACPI DSDT may not contain a `LOON0001` RTC device.
 - Allocate and align boot stack, per-CPU areas, secondary stacks, boot arguments, and page tables before enabling SMP.
 - Install trap vectors before enabling interrupts, timer interrupts, MMU faults, or secondary CPU execution.
 - Build page tables for identity/firmware access, direct map, kernel high map, MMIO, and per-CPU data as the arch requires.

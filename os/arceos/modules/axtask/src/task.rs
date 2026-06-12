@@ -304,6 +304,7 @@ impl TaskInner {
     /// Wait for the task to exit, and return the exit code.
     ///
     /// It will return immediately if the task has already exited (but not dropped).
+    #[track_caller]
     pub fn join(&self) -> i32 {
         crate::api::might_sleep();
         self.wait_for_exit
@@ -930,7 +931,11 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
     while ack_count.load(Ordering::Acquire) != remote_cpu_count {
         core::hint::spin_loop();
         if ax_hal::time::monotonic_time_nanos() - start > MAX_WAIT_NS {
-            panic!("task stack guard page TLB shootdown timeout");
+            let acked = ack_count.load(Ordering::Acquire);
+            panic!(
+                "task stack guard page TLB shootdown timeout: CPU {current_cpu} got \
+                 {acked}/{remote_cpu_count} ack(s) for vaddr={vaddr:#x}"
+            );
         }
     }
 }
