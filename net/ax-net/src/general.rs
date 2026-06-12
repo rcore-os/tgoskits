@@ -229,3 +229,28 @@ impl Configurable for GeneralOptions {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_binding_round_trips_none_and_some_interface() {
+        let options = GeneralOptions::new(1, 2, 6);
+        assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
+
+        let interface_id = InterfaceId::new(7);
+        options.set_device_binding(DeviceBinding {
+            bound_if: Some(interface_id),
+        });
+        assert_eq!(
+            options.device_binding(),
+            DeviceBinding {
+                bound_if: Some(interface_id)
+            }
+        );
+
+        options.set_device_binding(DeviceBinding { bound_if: None });
+        assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
+    }
+}

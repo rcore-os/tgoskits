@@ -482,8 +482,13 @@ impl Service {
         !self.dhcp.is_empty()
     }
 
+    /// Returns true once DHCP has produced at least one usable interface.
+    ///
+    /// Startup should not block on every DHCP-enabled NIC: one isolated or
+    /// disconnected NIC must not delay unrelated interfaces that are already
+    /// routable.
     pub fn dhcp_configured(&self) -> bool {
-        self.dhcp.iter().all(|state| state.address.is_some())
+        self.dhcp.iter().any(|state| state.address.is_some())
     }
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
@@ -759,4 +764,43 @@ fn build_dhcp_packet(
     );
 
     buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, sync::Arc, vec::Vec};
+
+    use smoltcp::wire::EthernetAddress;
+
+    use super::*;
+    use crate::{device::LoopbackDevice, router::RouteTable};
+
+    #[test]
+    fn dhcp_configured_is_true_once_any_interface_has_address() {
+        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let mut router = Router::new(routes.clone());
+        let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
+        let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
+        let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
+        let mut service = Service::new(router, control);
+
+        service.enable_dhcp(
+            InterfaceId::new(2),
+            dev0,
+            "eth0".into(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 1]),
+            100,
+        );
+        service.enable_dhcp(
+            InterfaceId::new(3),
+            dev1,
+            "eth1".into(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+            100,
+        );
+        assert!(!service.dhcp_configured());
+
+        service.dhcp[1].address = Some(Ipv4Cidr::new(Ipv4Address::new(192, 0, 2, 10), 24));
+        assert!(service.dhcp_configured());
+    }
 }

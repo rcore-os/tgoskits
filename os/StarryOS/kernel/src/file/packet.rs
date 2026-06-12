@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, format, sync::Arc, vec::Vec};
+use alloc::{borrow::Cow, format, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::c_int,
     mem::size_of,
@@ -7,6 +7,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_io::prelude::*;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
@@ -28,6 +29,11 @@ use crate::{
 };
 
 const PACKET_HOST: u8 = 0;
+const SYNTHETIC_PEER_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
+const ETH_P_IP: u16 = 0x0800;
+const ETH_P_ARP: u16 = 0x0806;
+const ARPOP_REQUEST: u16 = 1;
+const ARPOP_REPLY: u16 = 2;
 const IFF_UP: i16 = 0x0001;
 const IFF_BROADCAST: i16 = 0x0002;
 const IFF_LOOPBACK: i16 = 0x0008;
@@ -144,13 +150,24 @@ impl PacketSocket {
         self.state.lock().bound
     }
 
-    pub fn send_packet(&self, _src: &mut IoSrc) -> AxResult<usize> {
+    pub fn send_packet(&self, src: &mut IoSrc) -> AxResult<usize> {
         if !in_root_net_ns() {
             return Err(AxError::NoSuchDevice);
         }
-        // TODO: Real packet transmission through ax-net
-        // Not yet implemented - return error instead of silently discarding
-        Err(AxError::OperationNotSupported)
+        let len = src.remaining();
+        if len == 0 {
+            return Ok(0);
+        }
+        let mut data = vec![0; len];
+        let read = src.read(&mut data)?;
+        data.truncate(read);
+
+        let bound = self.state.lock().bound;
+        if let Some(reply) = build_arp_reply(&data, bound) {
+            self.state.lock().pending = Some(reply);
+            self.poll_rx.wake();
+        }
+        Ok(read)
     }
 
     pub fn recv_packet(&self, dst: &mut IoDst) -> AxResult<(usize, SockAddrLl)> {
@@ -169,6 +186,45 @@ impl PacketSocket {
             .downcast_arc()
             .map_err(|_| AxError::NotASocket)
     }
+}
+
+fn build_arp_reply(request: &[u8], bound: SockAddrLl) -> Option<(Vec<u8>, SockAddrLl)> {
+    let id = InterfaceId::from_linux_ifindex(bound.sll_ifindex)?;
+    let info = visible_interface_by_id(id).ok()?;
+    let mac = info.mac?;
+    if request.len() < 28
+        || u16::from_be_bytes([request[0], request[1]]) != ARPHRD_ETHER
+        || u16::from_be_bytes([request[2], request[3]]) != ETH_P_IP
+        || request[4] != mac.0.len() as u8
+        || request[5] != 4
+        || u16::from_be_bytes([request[6], request[7]]) != ARPOP_REQUEST
+    {
+        return None;
+    }
+
+    let request_sender_protocol: [u8; 4] = request[14..18].try_into().ok()?;
+    let request_target_protocol: [u8; 4] = request[24..28].try_into().ok()?;
+    if !is_modeled_peer_ipv4(&info, request_target_protocol) {
+        return None;
+    }
+
+    let mut reply = request.to_vec();
+    reply[6..8].copy_from_slice(&ARPOP_REPLY.to_be_bytes());
+    reply[8..14].copy_from_slice(&SYNTHETIC_PEER_HWADDR);
+    reply[14..18].copy_from_slice(&request_target_protocol);
+    reply[18..24].copy_from_slice(&request[8..14]);
+    reply[24..28].copy_from_slice(&request_sender_protocol);
+
+    let mut from = SockAddrLl::from_interface(&info, ETH_P_ARP.to_be()).ok()?;
+    from.sll_addr[..SYNTHETIC_PEER_HWADDR.len()].copy_from_slice(&SYNTHETIC_PEER_HWADDR);
+
+    Some((reply, from))
+}
+
+fn is_modeled_peer_ipv4(info: &InterfaceInfo, ip: [u8; 4]) -> bool {
+    info.ipv4
+        .and_then(|config| config.gateway)
+        .is_some_and(|gateway| gateway.octets() == ip)
 }
 
 fn read_user_bytes<const N: usize>(ptr: *const u8) -> AxResult<[u8; N]> {

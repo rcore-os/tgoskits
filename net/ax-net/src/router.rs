@@ -78,6 +78,7 @@ impl Rule {
 }
 
 type PacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
+const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
 
 struct BoundedPacketQueue<T> {
     inner: Mutex<VecDeque<T>>,
@@ -612,9 +613,11 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        // TX metadata is ignored: Router::dispatch parses the emitted IP
+        // packet and selects the actual egress interface from the route table.
         f(self
             .0
-            .enqueue(len, InterfaceId::new(0))
+            .enqueue(len, TX_INTERFACE_PLACEHOLDER)
             .expect("This was checked before creating the TxToken"))
     }
 }
@@ -701,5 +704,176 @@ impl smoltcp::phy::Device for Router {
         caps.max_transmission_unit = STANDARD_MTU;
         caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
         caps
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IF0: InterfaceId = InterfaceId::new(2);
+    const IF1: InterfaceId = InterfaceId::new(3);
+    const SRC0: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 2));
+    const SRC1: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 2));
+
+    fn ipv4_cidr(addr: Ipv4Address, prefix_len: u8) -> IpCidr {
+        Ipv4Cidr::new(addr, prefix_len).into()
+    }
+
+    #[test]
+    fn route_lookup_uses_longest_prefix() {
+        let mut table = RouteTable::new();
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::new(10, 0, 1, 0), 24),
+            None,
+            1,
+            IF1,
+            SRC1,
+            200,
+        ));
+
+        let route = table
+            .select_route(&IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 99)))
+            .unwrap();
+        assert_eq!(route.dev, 1);
+        assert_eq!(route.interface_id, IF1);
+        assert_eq!(route.source, SRC1);
+        assert_eq!(
+            route.next_hop,
+            IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 99))
+        );
+    }
+
+    #[test]
+    fn route_lookup_uses_metric_for_same_prefix() {
+        let mut table = RouteTable::new();
+        let dst = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            200,
+        ));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 1))),
+            1,
+            IF1,
+            SRC1,
+            100,
+        ));
+
+        let route = table.select_route(&dst).unwrap();
+        assert_eq!(route.interface_id, IF1);
+        assert_eq!(route.metric, 100);
+        assert_eq!(
+            route.next_hop,
+            IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 1))
+        );
+    }
+
+    #[test]
+    fn route_lookup_keeps_stable_order_for_equal_metric() {
+        let mut table = RouteTable::new();
+        let dst = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 1))),
+            1,
+            IF1,
+            SRC1,
+            100,
+        ));
+
+        let route = table.select_route(&dst).unwrap();
+        assert_eq!(route.interface_id, IF0);
+        assert_eq!(
+            route.next_hop,
+            IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))
+        );
+    }
+
+    #[test]
+    fn route_lookup_skips_unusable_interface() {
+        let mut table = RouteTable::new();
+        let dst = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 1))),
+            1,
+            IF1,
+            SRC1,
+            200,
+        ));
+
+        let route = table
+            .select_route_if(&dst, |interface_id| interface_id != IF0)
+            .unwrap();
+        assert_eq!(route.interface_id, IF1);
+    }
+
+    #[test]
+    fn default_routes_only_reports_zero_prefix_ipv4_rules() {
+        let mut table = RouteTable::new();
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::new(10, 0, 1, 0), 24),
+            None,
+            1,
+            IF1,
+            SRC1,
+            100,
+        ));
+
+        let routes = table.default_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].interface_id, IF0);
+    }
+
+    #[test]
+    fn bounded_packet_queue_reports_full_and_preserves_order() {
+        let queue = BoundedPacketQueue::new(2);
+        assert!(queue.is_empty());
+        assert!(queue.push(1).is_ok());
+        assert!(queue.push(2).is_ok());
+        assert!(queue.push(3).is_err());
+        assert!(!queue.is_empty());
+        assert_eq!(queue.pop(), Some(1));
+        assert_eq!(queue.pop(), Some(2));
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
     }
 }
