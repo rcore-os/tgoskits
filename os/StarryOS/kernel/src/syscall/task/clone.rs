@@ -255,6 +255,7 @@ impl CloneArgs {
                 aspace,
                 signal_actions,
                 exit_signal,
+                curr_thread.tid(),
                 flags.contains(CloneFlags::VM),
             );
             proc_data.set_umask(old_proc_data.umask());

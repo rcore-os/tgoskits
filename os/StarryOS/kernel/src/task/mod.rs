@@ -25,7 +25,7 @@ use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
-use starry_process::Process;
+use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
@@ -611,6 +611,12 @@ pub struct ProcessData {
     pub exec_lock: Mutex<()>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
+    /// The thread in the parent thread group that created this process.
+    ///
+    /// Linux's `__WNOTHREAD` wait option restricts child selection to children
+    /// created by the calling thread, while the default wait may reap children
+    /// created by any thread in the same thread group.
+    pub wait_parent_tid: Pid,
 
     /// The process signal manager
     pub signal: Arc<ProcessSignalManager>,
@@ -736,6 +742,7 @@ impl ProcessData {
         aspace: Arc<Mutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
+        wait_parent_tid: Pid,
         vm_aspace_shared: bool,
     ) -> Arc<Self> {
         let this = Arc::new(Self {
@@ -756,6 +763,7 @@ impl ProcessData {
             thread_exit_event: Arc::default(),
             exec_lock: Mutex::new(()),
             exit_signal,
+            wait_parent_tid,
 
             signal: Arc::new(ProcessSignalManager::new(
                 signal_actions,

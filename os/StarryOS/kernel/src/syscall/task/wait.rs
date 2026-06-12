@@ -19,7 +19,8 @@ use crate::{
     file::{PidFd, get_file_like},
     task::{
         AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
-        get_zombie_cred, processes, remove_process, traced_zombies_for, unregister_zombie,
+        get_zombie_cred, is_zombie_clone_child, processes, remove_process, traced_zombies_for,
+        unregister_zombie, zombie_wait_parent_tid,
     },
 };
 
@@ -143,11 +144,65 @@ fn child_uid(child: &Process) -> u32 {
         .unwrap_or(0)
 }
 
-fn waitable_processes(proc: &Process, target: WaitTarget, tracer_pid: Pid) -> Vec<Arc<Process>> {
+#[derive(Debug, Clone, Copy)]
+struct WaitChildFilter {
+    wall: bool,
+    clone: bool,
+    no_thread: bool,
+}
+
+impl WaitChildFilter {
+    fn from_waitpid_options(options: &WaitPidOptions) -> Self {
+        Self {
+            wall: options.contains(WaitPidOptions::WALL),
+            clone: options.contains(WaitPidOptions::WCLONE),
+            no_thread: options.contains(WaitPidOptions::WNOTHREAD),
+        }
+    }
+
+    fn from_waitid_options(options: &WaitIdOptions) -> Self {
+        Self {
+            wall: options.contains(WaitIdOptions::WALL),
+            clone: options.contains(WaitIdOptions::WCLONE),
+            no_thread: options.contains(WaitIdOptions::WNOTHREAD),
+        }
+    }
+
+    fn matches_clone_kind(&self, is_clone_child: bool) -> bool {
+        self.wall || is_clone_child == self.clone
+    }
+
+    fn matches_process(&self, child: &Process, current_tid: Pid) -> bool {
+        if self.no_thread {
+            let wait_parent_tid = get_process_data(child.pid())
+                .ok()
+                .map(|data| data.wait_parent_tid)
+                .or_else(|| zombie_wait_parent_tid(child.pid()));
+            if wait_parent_tid != Some(current_tid) {
+                return false;
+            }
+        }
+
+        let is_clone_child = get_process_data(child.pid())
+            .ok()
+            .map(|data| data.is_clone_child())
+            .or_else(|| is_zombie_clone_child(child.pid()))
+            .unwrap_or(false);
+        self.matches_clone_kind(is_clone_child)
+    }
+}
+
+fn waitable_processes(
+    proc: &Process,
+    target: WaitTarget,
+    tracer_pid: Pid,
+    current_tid: Pid,
+    filter: WaitChildFilter,
+) -> Vec<Arc<Process>> {
     let mut candidates = proc
         .children()
         .into_iter()
-        .filter(|child| target.matches(child))
+        .filter(|child| target.matches(child) && filter.matches_process(child, current_tid))
         .collect::<Vec<_>>();
 
     for data in processes() {
@@ -155,6 +210,7 @@ fn waitable_processes(proc: &Process, target: WaitTarget, tracer_pid: Pid) -> Ve
         let proc = data.proc.clone();
         if traced
             && target.matches_process_or_thread(&proc)
+            && filter.matches_process(&proc, current_tid)
             && !candidates
                 .iter()
                 .any(|candidate| candidate.pid() == proc.pid())
@@ -165,6 +221,7 @@ fn waitable_processes(proc: &Process, target: WaitTarget, tracer_pid: Pid) -> Ve
 
     for zombie in traced_zombies_for(tracer_pid) {
         if target.matches(&zombie)
+            && filter.matches_process(&zombie, current_tid)
             && !candidates
                 .iter()
                 .any(|candidate| candidate.pid() == zombie.pid())
@@ -181,7 +238,8 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     let curr = current();
-    let proc = &curr.as_thread().proc_data.proc;
+    let thr = curr.as_thread();
+    let proc = &thr.proc_data.proc;
 
     let target = if pid == -1 {
         WaitTarget::Any
@@ -193,7 +251,13 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         WaitTarget::Pgid(-pid as _)
     };
 
-    let children = waitable_processes(proc, target, proc.pid());
+    let children = waitable_processes(
+        proc,
+        target,
+        proc.pid(),
+        thr.tid(),
+        WaitChildFilter::from_waitpid_options(&options),
+    );
     if children.is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
@@ -300,7 +364,8 @@ pub fn sys_waitid(
     options: u32,
 ) -> AxResult<isize> {
     let curr = current();
-    let proc = &curr.as_thread().proc_data.proc;
+    let thr = curr.as_thread();
+    let proc = &thr.proc_data.proc;
 
     // Validate idtype
     let target = match idtype {
@@ -335,7 +400,13 @@ pub fn sys_waitid(
 
     info!("sys_waitid <= idtype: {idtype}, id: {id}, options: {options:?}");
 
-    let children = waitable_processes(proc, target, proc.pid());
+    let children = waitable_processes(
+        proc,
+        target,
+        proc.pid(),
+        thr.tid(),
+        WaitChildFilter::from_waitid_options(&options),
+    );
     if children.is_empty() {
         return Err(AxError::from(LinuxError::ECHILD));
     }
