@@ -19,7 +19,6 @@ but the grouped CI runner only executes `/usr/bin/starry-test-suit/*`.
 - `test-splice`: offset and same-pipe edge cases.
 - `test-sync-file-range`: errno precedence for invalid fd plus invalid flags.
 - `test-tgsigqueueinfo`: queued thread signal delivery with `siginfo`.
-- `test-timerfd`: multi-reader single-consumer timerfd expiration semantics.
 - `test-uid-gid-direct-setters`: uid/gid setter boundary matrix semantics.
 - `test-uid-gid-groups`: user namespace `setgroups=deny` behavior.
 - `test-uid-gid-res-setters`: setresuid/setresgid boundary matrix semantics.
