@@ -72,13 +72,21 @@ src/
 
 ## 固件
 
-固件二进制不随 crate 分发；在本仓库内由 `cargo xtask` 按需下载到
-`components/aic8800/firmware/`。因此该 crate 标记为 `publish = false`，仅用于
-仓库内板级集成。
+固件二进制（AICSemi 厂商 blob）**不随 crate 分发**，也不提交到仓库。编译本 crate
+时需要它们位于 `components/aic8800/firmware/`，按 SHA-256 摘要逐字节校验后经
+`include_bytes!` 嵌入。
+
+在本仓库内，任何编译 `aic8800` 的 `cargo xtask starry ...` / `cargo xtask clippy ...`
+会自动按需下载这些 blob（清单、摘要与上游 pin 见
+[`scripts/axbuild/src/firmware.rs`](../../scripts/axbuild/src/firmware.rs)，
+来源与文件列表见 [`firmware/README.md`](firmware/README.md)）。
+
+> 从 crates.io 独立使用本 crate 时，需自行将这些固件 blob 放入
+> `firmware/` 目录后再编译，否则 `include_bytes!` 会因找不到文件而构建失败。
 
 ## 依赖
 
-- `sdio-host` — SDIO 总线抽象 trait
+- `sdio-host-cv1800` — SDIO 总线抽象 trait
 - `sdhci-cv1800` — SG2002 SDHCI 控制器实现
 - `wifi-host` — `WifiDriver` / `WifiRuntime` trait
 - `rd-net` / `rdif-eth` / `dma-api` — 网络设备能力

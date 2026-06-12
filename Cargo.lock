@@ -159,7 +159,7 @@ dependencies = [
  "rd-net",
  "rdif-eth",
  "sdhci-cv1800",
- "sdio-host",
+ "sdio-host-cv1800",
  "sha1 0.10.6",
  "spin 0.12.0",
 ]
@@ -729,7 +729,7 @@ dependencies = [
  "rockchip-soc",
  "sdhci-cv1800",
  "sdhci-host",
- "sdio-host",
+ "sdio-host-cv1800",
  "sdmmc-protocol",
  "sg200x-bsp",
  "simple-ahci",
@@ -7168,7 +7168,7 @@ name = "sdhci-cv1800"
 version = "0.1.0"
 dependencies = [
  "log",
- "sdio-host",
+ "sdio-host-cv1800",
 ]
 
 [[package]]
@@ -7183,7 +7183,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sdio-host"
+name = "sdio-host-cv1800"
 version = "0.1.0"
 
 [[package]]
