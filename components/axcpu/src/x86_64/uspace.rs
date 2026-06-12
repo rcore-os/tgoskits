@@ -6,7 +6,7 @@ use ax_memory_addr::VirtAddr;
 use x86_64::{
     registers::{
         control::Cr2,
-        model_specific::{Efer, EferFlags, KernelGsBase, LStar, SFMask, Star},
+        model_specific::{Efer, EferFlags, LStar, SFMask, Star},
         rflags::RFlags,
     },
     structures::idt::ExceptionVector,
@@ -14,7 +14,9 @@ use x86_64::{
 
 use super::{
     TrapFrame,
-    asm::{read_thread_pointer, write_thread_pointer},
+    asm::{
+        read_inactive_gs_base, read_thread_pointer, write_inactive_gs_base, write_thread_pointer,
+    },
     gdt,
     trap::{IRQ_VECTOR_END, IRQ_VECTOR_START, LEGACY_SYSCALL_VECTOR, err_code_to_flags},
 };
@@ -87,11 +89,11 @@ impl UserContext {
 
         let kernel_fs_base = read_thread_pointer();
         unsafe { write_thread_pointer(self.fs_base as _) };
-        KernelGsBase::write(x86_64::VirtAddr::new_truncate(self.gs_base));
+        unsafe { write_inactive_gs_base(self.gs_base as _) };
 
         unsafe { enter_user(self) };
 
-        self.gs_base = KernelGsBase::read().as_u64();
+        self.gs_base = unsafe { read_inactive_gs_base() as _ };
         self.fs_base = read_thread_pointer() as _;
         unsafe { write_thread_pointer(kernel_fs_base) };
 

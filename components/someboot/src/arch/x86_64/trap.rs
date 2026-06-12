@@ -83,6 +83,7 @@ pub fn trap_addr() -> usize {
 pub fn init_local() {
     mask_legacy_pic();
     enable_nxe();
+    enable_fsgsbase();
     enable_xsave_features();
     init_tsc_freq();
     init_lapic();
@@ -443,6 +444,19 @@ fn enable_nxe() {
     let efer = unsafe { rdmsr(IA32_EFER) } | IA32_EFER_NXE;
     unsafe {
         wrmsr(IA32_EFER, efer);
+    }
+}
+
+fn enable_fsgsbase() {
+    let Some(info) = CpuId::new().get_extended_feature_info() else {
+        return;
+    };
+    if !info.has_fsgsbase() {
+        return;
+    }
+
+    unsafe {
+        controlregs::cr4_write(controlregs::cr4() | controlregs::Cr4::CR4_ENABLE_FSGSBASE);
     }
 }
 

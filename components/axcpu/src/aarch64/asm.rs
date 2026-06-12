@@ -114,6 +114,12 @@ pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
     TTBR0_EL1.set(root_paddr.as_usize() as _);
 }
 
+/// Returns whether [`write_user_page_table`] flushes the current CPU's TLB.
+#[inline]
+pub const fn write_user_page_table_flushes_tlb() -> bool {
+    false
+}
+
 /// Flushes the TLB.
 ///
 /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB

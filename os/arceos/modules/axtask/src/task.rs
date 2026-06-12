@@ -236,7 +236,9 @@ impl TaskInner {
         // SAFETY: we are the current task and no other thread touches our ctx.
         unsafe { (*self.ctx.get()).set_page_table_root(root) };
         unsafe { ax_hal::asm::write_user_page_table(root) };
-        ax_hal::asm::flush_tlb(None);
+        if !ax_hal::asm::write_user_page_table_flushes_tlb() {
+            ax_hal::asm::flush_tlb(None);
+        }
     }
 
     #[cfg(feature = "lockdep")]

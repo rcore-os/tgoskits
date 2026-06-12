@@ -44,6 +44,7 @@ Current Axvisor LoongArch QEMU tests intentionally use the static `ax-hal/loonga
 - Allocate and align boot stack, per-CPU areas, secondary stacks, boot arguments, and page tables before enabling SMP.
 - Install trap vectors before enabling interrupts, timer interrupts, MMU faults, or secondary CPU execution.
 - On x86 QEMU, do not trust CPUID timing leaves unless the reported TSC frequency is plausible; some virtual CPU combinations expose invalid zero or tiny values. Prefer a trusted hypervisor timing leaf, then CPUID timing data, then PIT-based TSC calibration before falling back to processor base frequency.
+- On x86, enable `CR4.FSGSBASE` per CPU when CPUID advertises it so runtime TLS and inactive GS-base switches can use `RDFSBASE`/`WRFSBASE`/`RDGSBASE`/`WRGSBASE` instead of MSR reads and writes; keep the MSR fallback for older CPU models.
 - Build page tables for identity/firmware access, direct map, kernel high map, MMIO, and per-CPU data as the arch requires.
 - Flush TLB/cache and use architecture barriers around page table writes, boot argument writes, and secondary CPU release.
 - After `ExitBootServices`, do not call UEFI Boot Services. Retry only through the correct memory-map-key sequence before exit.

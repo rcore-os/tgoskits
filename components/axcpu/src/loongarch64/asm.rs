@@ -66,6 +66,12 @@ pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
     pgdl::set_base(root_paddr.as_usize() as _);
 }
 
+/// Returns whether [`write_user_page_table`] flushes the current CPU's TLB.
+#[inline]
+pub const fn write_user_page_table_flushes_tlb() -> bool {
+    false
+}
+
 /// Writes the register to update the current page table root for kernel space
 /// (`PGDH`).
 ///

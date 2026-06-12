@@ -1,10 +1,19 @@
 //! Wrapper functions for assembly instructions.
 
-use core::arch::asm;
+use core::{
+    arch::asm,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
-use x86::{controlregs, msr, tlb};
+use x86::{bits64::segmentation, controlregs, cpuid::CpuId, msr, tlb};
 use x86_64::instructions::interrupts;
+
+const FSGSBASE_UNKNOWN: u8 = 0;
+const FSGSBASE_UNSUPPORTED: u8 = 1;
+const FSGSBASE_SUPPORTED: u8 = 2;
+
+static FSGSBASE_STATE: AtomicU8 = AtomicU8::new(FSGSBASE_UNKNOWN);
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]
@@ -77,6 +86,12 @@ pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
     unsafe { controlregs::cr3_write(root_paddr.as_usize() as _) }
 }
 
+/// Returns whether [`write_user_page_table`] flushes the current CPU's TLB.
+#[inline]
+pub const fn write_user_page_table_flushes_tlb() -> bool {
+    true
+}
+
 /// Writes the register to update the current page table root for kernel space
 /// (`CR3`).
 ///
@@ -115,7 +130,11 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 /// It is used to implement TLS (Thread Local Storage).
 #[inline]
 pub fn read_thread_pointer() -> usize {
-    unsafe { msr::rdmsr(msr::IA32_FS_BASE) as usize }
+    if fsgsbase_enabled() {
+        unsafe { segmentation::rdfsbase() as usize }
+    } else {
+        unsafe { msr::rdmsr(msr::IA32_FS_BASE) as usize }
+    }
 }
 
 /// Writes the thread pointer of the current CPU (`FS_BASE`).
@@ -127,7 +146,85 @@ pub fn read_thread_pointer() -> usize {
 /// This function is unsafe as it changes the CPU states.
 #[inline]
 pub unsafe fn write_thread_pointer(fs_base: usize) {
-    unsafe { msr::wrmsr(msr::IA32_FS_BASE, fs_base as u64) }
+    if fsgsbase_enabled() {
+        unsafe { segmentation::wrfsbase(fs_base as u64) };
+    } else {
+        unsafe { msr::wrmsr(msr::IA32_FS_BASE, fs_base as u64) };
+    }
+}
+
+/// Reads the inactive GS base, which `swapgs` will load on the next user entry.
+///
+/// # Safety
+///
+/// The FSGSBASE fast path temporarily swaps GS bases, so interrupts must stay
+/// disabled while this function runs.
+#[inline]
+pub unsafe fn read_inactive_gs_base() -> usize {
+    if fsgsbase_enabled() {
+        let gs_base: u64;
+        unsafe {
+            asm!(
+                "swapgs",
+                "rdgsbase {gs_base}",
+                "swapgs",
+                gs_base = out(reg) gs_base,
+                options(nostack, preserves_flags),
+            );
+        }
+        gs_base as usize
+    } else {
+        unsafe { msr::rdmsr(msr::IA32_KERNEL_GSBASE) as usize }
+    }
+}
+
+/// Writes the inactive GS base, which `swapgs` will load on the next user entry.
+///
+/// # Safety
+///
+/// This function is unsafe as it changes the CPU states. The FSGSBASE fast path
+/// temporarily swaps GS bases, so interrupts must stay disabled while it runs.
+#[inline]
+pub unsafe fn write_inactive_gs_base(gs_base: usize) {
+    if fsgsbase_enabled() {
+        unsafe {
+            asm!(
+                "swapgs",
+                "wrgsbase {gs_base}",
+                "swapgs",
+                gs_base = in(reg) gs_base as u64,
+                options(nostack, preserves_flags),
+            );
+        }
+    } else {
+        unsafe { msr::wrmsr(msr::IA32_KERNEL_GSBASE, gs_base as u64) };
+    }
+}
+
+#[inline]
+fn fsgsbase_enabled() -> bool {
+    match FSGSBASE_STATE.load(Ordering::Relaxed) {
+        FSGSBASE_SUPPORTED => true,
+        FSGSBASE_UNSUPPORTED => false,
+        _ => detect_fsgsbase_enabled(),
+    }
+}
+
+#[cold]
+fn detect_fsgsbase_enabled() -> bool {
+    let supported = CpuId::new()
+        .get_extended_feature_info()
+        .is_some_and(|info| info.has_fsgsbase())
+        && unsafe { controlregs::cr4() }.contains(controlregs::Cr4::CR4_ENABLE_FSGSBASE);
+    FSGSBASE_STATE.store(
+        if supported {
+            FSGSBASE_SUPPORTED
+        } else {
+            FSGSBASE_UNSUPPORTED
+        },
+        Ordering::Relaxed,
+    );
+    supported
 }
 
 #[cfg(feature = "uspace")]
