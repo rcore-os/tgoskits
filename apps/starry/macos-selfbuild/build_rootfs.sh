@@ -604,14 +604,6 @@ CARGO_CFG
         sed -i.bak "s#$source_dir/vendor#$prefetch_source_dir/vendor#g" "$prefetch_source_dir/.cargo/config.toml" || true
         rm -f "$prefetch_source_dir/.cargo/config.toml.bak"
     fi
-    if [[ -d "$prefetch_source_dir/apps/starry/macos-selfbuild/crates/lwprintf-rs" ]] \
-        && ! grep -q "apps/starry/macos-selfbuild/crates/lwprintf-rs" "$prefetch_source_dir/Cargo.toml"; then
-        cat >>"$prefetch_source_dir/Cargo.toml" <<'PATCH_CARGO'
-
-[patch.crates-io]
-lwprintf-rs = { path = "apps/starry/macos-selfbuild/crates/lwprintf-rs" }
-PATCH_CARGO
-    fi
     prefetch_manifest="$prefetch_source_dir/Cargo.toml"
 
     env -u CARGO_REGISTRY_INDEX "${cargo_env[@]}" \

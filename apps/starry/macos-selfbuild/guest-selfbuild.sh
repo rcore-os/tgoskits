@@ -349,15 +349,6 @@ else
     cd "$source_dir"
 fi
 
-if [ -d "apps/starry/macos-selfbuild/crates/lwprintf-rs" ] \
-    && ! grep -q "apps/starry/macos-selfbuild/crates/lwprintf-rs" Cargo.toml; then
-    cat >>Cargo.toml <<'PATCH_CARGO'
-
-[patch.crates-io]
-lwprintf-rs = { path = "apps/starry/macos-selfbuild/crates/lwprintf-rs" }
-PATCH_CARGO
-fi
-
 if [ -n "${AX_CONFIG_PATH:-}" ]; then
     export AX_CONFIG_PATH
 elif [ -f "$(pwd)/os/StarryOS/.axconfig.toml" ]; then

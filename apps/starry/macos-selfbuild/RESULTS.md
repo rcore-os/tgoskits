@@ -57,11 +57,6 @@ The qemu-aarch64 reproducible profile is guarded by the guest script. Unless
 `ALLOW_SLOW_SELFBUILD=1` is set for experiments, it refuses runs that do not use
 `RUSTC_THREADS=2`.
 
-The guest source copy also patches `lwprintf-rs` to the local
-`apps/starry/macos-selfbuild/crates/lwprintf-rs` compatibility crate. This keeps
-the self-build path from requiring guest `dlopen`, because upstream
-`lwprintf-rs` runs bindgen and dynamically loads libclang in its build script.
-
 ## Reference Numbers
 
 These are local Apple Silicon reference measurements from the macOS/HVF
