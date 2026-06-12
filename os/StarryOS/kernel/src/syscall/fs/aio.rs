@@ -23,7 +23,7 @@ use ax_runtime::hal::{
 use ax_sync::Mutex;
 use ax_task::{
     WaitQueue,
-    future::{block_on, interruptible, timeout_at},
+    future::{block_on, interruptible, timeout_at_wall},
 };
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
@@ -1082,7 +1082,7 @@ fn wait_for_completion(
         }
     });
 
-    match block_on(interruptible(timeout_at(deadline, wait))) {
+    match block_on(interruptible(timeout_at_wall(deadline, wait))) {
         Ok(Ok(())) => Ok(true),
         Ok(Err(_)) => Ok(false),
         Err(_) => Err(AxError::Interrupted),

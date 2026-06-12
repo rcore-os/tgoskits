@@ -555,8 +555,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         assert!(curr.is_running());
         assert!(!curr.is_idle());
 
-        let now = ax_hal::time::wall_time();
-        if now < deadline {
+        while ax_hal::time::monotonic_time() < deadline {
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
             curr.set_state(TaskState::Blocked);
             self.inner.resched();

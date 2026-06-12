@@ -30,10 +30,11 @@ pub fn exit(exit_code: i32) -> ! {
 /// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
 /// instead.
 pub fn sleep(dur: core::time::Duration) {
-    sleep_until(ax_api::time::ax_wall_time() + dur);
+    sleep_until(ax_api::time::ax_monotonic_time() + dur);
 }
 
 /// Current thread is going to sleep, it will be woken up at the given deadline.
+/// The deadline is measured against the monotonic clock.
 ///
 /// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
 /// instead.
