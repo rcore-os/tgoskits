@@ -1,23 +1,18 @@
 extern crate alloc;
 
-use alloc::{string::String, vec, vec::Vec};
-use core::{ffi::c_void, ptr, time::Duration};
+use alloc::{vec, vec::Vec};
+use core::time::Duration;
 
 use uefi::{
-    Handle, Status,
-    boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
+    boot::{self, OpenProtocolAttributes, OpenProtocolParams},
     proto::network::{
-        http::{Http, HttpBinding},
+        http::{HttpBinding, HttpHelper},
         ip4config2::Ip4Config2,
     },
 };
-use uefi_raw::protocol::network::http::{
-    HttpHeader, HttpMessage, HttpMethod, HttpRequestData, HttpResponseData, HttpStatusCode,
-    HttpToken,
-};
+use uefi_raw::protocol::network::http::HttpStatusCode;
 
 const MAX_KERNEL_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
-const KERNEL_RANGE_CHUNK_SIZE: usize = 1024;
 const HTTP_RETRY_LIMIT: usize = 8;
 const HTTP_RETRY_STALL: Duration = Duration::from_millis(250);
 const KERNEL_PROGRESS_STEP_PERCENT: usize = 1;
@@ -31,8 +26,6 @@ pub enum DownloadError {
     RequestFailed,
     ResponseFailed,
     BodyTooLarge,
-    InvalidUrl,
-    RangeHeaderTooLarge,
     UnexpectedStatus,
 }
 
@@ -68,11 +61,22 @@ fn download_body_to_addr(
     let mut progress = DownloadProgress::new(expected_size);
     progress.print(downloaded);
 
+    client.request_get(url)?;
+    let first = client.response_first()?;
+    if first.status != HttpStatusCode::STATUS_200_OK {
+        progress.finish_line();
+        crate::logln!(
+            "http_unexpected_status: {:?} first_body_len={}",
+            first.status,
+            first.body.len()
+        );
+        return Err(DownloadError::UnexpectedStatus);
+    }
+    downloaded = append_download_chunk(dst, expected_size, downloaded, &first.body)?;
+    progress.maybe_print(downloaded);
+
     while downloaded < expected_size {
-        let chunk_len = (expected_size - downloaded).min(KERNEL_RANGE_CHUNK_SIZE);
-        let range_start = downloaded;
-        let range_end = downloaded + chunk_len - 1;
-        let chunk = match retry_http(|| client.get_range(url, range_start, range_end)) {
+        let chunk = match retry_http(|| client.response_more_vec()) {
             Ok(chunk) => chunk,
             Err(err) => {
                 progress.finish_line();
@@ -83,29 +87,35 @@ fn download_body_to_addr(
                 return Err(err);
             }
         };
-        if chunk.len() > chunk_len {
-            progress.finish_line();
-            crate::logln!(
-                "kernel_download_stopped: offset={} chunk_too_large={}",
-                downloaded,
-                chunk.len()
-            );
-            return Err(DownloadError::BodyTooLarge);
-        }
         if chunk.is_empty() {
             progress.finish_line();
             crate::logln!("kernel_download_stopped: offset={} zero_chunk", downloaded);
             return Err(DownloadError::ResponseFailed);
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst.add(downloaded), chunk.len());
-        }
-        downloaded += chunk.len();
+        downloaded = append_download_chunk(dst, expected_size, downloaded, &chunk)?;
         progress.maybe_print(downloaded);
     }
 
     progress.finish_line();
     Ok(downloaded)
+}
+
+fn append_download_chunk(
+    dst: *mut u8,
+    expected_size: usize,
+    downloaded: usize,
+    chunk: &[u8],
+) -> Result<usize, DownloadError> {
+    let next = downloaded
+        .checked_add(chunk.len())
+        .ok_or(DownloadError::BodyTooLarge)?;
+    if next > expected_size {
+        return Err(DownloadError::BodyTooLarge);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst.add(downloaded), chunk.len());
+    }
+    Ok(next)
 }
 
 fn prepare_network() {
@@ -240,9 +250,7 @@ fn retry_http<T>(mut op: impl FnMut() -> Result<T, DownloadError>) -> Result<T, 
 }
 
 struct HttpClient {
-    child_handle: Handle,
-    binding: ScopedProtocol<HttpBinding>,
-    protocol: Option<ScopedProtocol<Http>>,
+    helper: HttpHelper,
 }
 
 impl HttpClient {
@@ -253,229 +261,33 @@ impl HttpClient {
             .first()
             .copied()
             .ok_or(DownloadError::NoHttpBinding)?;
-        let mut binding = unsafe {
-            boot::open_protocol::<HttpBinding>(
-                OpenProtocolParams {
-                    handle: nic_handle,
-                    agent: boot::image_handle(),
-                    controller: None,
-                },
-                OpenProtocolAttributes::GetProtocol,
-            )
-        }
-        .map_err(|_| DownloadError::HttpUnavailable)?;
-
-        let child_handle = binding
-            .create_child()
-            .map_err(|_| DownloadError::HttpUnavailable)?;
-        let protocol = match unsafe {
-            boot::open_protocol::<Http>(
-                OpenProtocolParams {
-                    handle: child_handle,
-                    agent: boot::image_handle(),
-                    controller: None,
-                },
-                OpenProtocolAttributes::GetProtocol,
-            )
-        } {
-            Ok(protocol) => protocol,
-            Err(_) => {
-                let _ = binding.destroy_child(child_handle);
-                return Err(DownloadError::HttpUnavailable);
-            }
-        };
-
-        let mut client = Self {
-            child_handle,
-            binding,
-            protocol: Some(protocol),
-        };
-        client.configure()?;
-        Ok(client)
+        let mut helper = HttpHelper::new(nic_handle).map_err(|_| DownloadError::HttpUnavailable)?;
+        helper
+            .configure()
+            .map_err(|_| DownloadError::ConfigureFailed)?;
+        Ok(Self { helper })
     }
 
-    fn configure(&mut self) -> Result<(), DownloadError> {
-        let mut helper = HttpHelperProxy {
-            protocol: self.protocol.take(),
-        };
-        let result = helper.configure();
-        self.protocol = helper.protocol;
-        result
-    }
-
-    fn get_range(&mut self, url: &str, start: usize, end: usize) -> Result<Vec<u8>, DownloadError> {
-        let range = range_header_value(start, end)?;
-        self.request_get(url, Some(range.as_str()))?;
-        let (status, body) = self.response_first(KERNEL_RANGE_CHUNK_SIZE)?;
-        if status != HttpStatusCode::STATUS_206_PARTIAL_CONTENT {
-            crate::logln!(
-                "http_unexpected_status: {:?} range={}-{} body_len={}",
-                status,
-                start,
-                end,
-                body.len()
-            );
-            return Err(DownloadError::UnexpectedStatus);
-        }
-        Ok(body)
-    }
-
-    fn request_get(&mut self, url: &str, range: Option<&str>) -> Result<(), DownloadError> {
-        let host = url.split('/').nth(2).ok_or(DownloadError::InvalidUrl)?;
-        let url16 = uefi::CString16::try_from(url).map_err(|_| DownloadError::InvalidUrl)?;
-        let mut host = String::from(host);
-        host.push('\0');
-
-        let mut request = HttpRequestData {
-            method: HttpMethod::GET,
-            url: url16.as_ptr().cast::<u16>(),
-        };
-        let mut headers = vec![HttpHeader {
-            field_name: c"Host".as_ptr().cast::<u8>(),
-            field_value: host.as_ptr(),
-        }];
-
-        let range = range.map(|range| {
-            let mut range = String::from(range);
-            range.push('\0');
-            range
-        });
-        if let Some(range) = range.as_ref() {
-            headers.push(HttpHeader {
-                field_name: c"Range".as_ptr().cast::<u8>(),
-                field_value: range.as_ptr(),
-            });
-        }
-
-        let mut message = HttpMessage::default();
-        message.data.request = &mut request;
-        message.header_count = headers.len();
-        message.header = headers.as_mut_ptr();
-
-        let mut token = HttpToken {
-            status: Status::NOT_READY,
-            message: &mut message,
-            ..Default::default()
-        };
-
-        let protocol = self.protocol.as_mut().unwrap();
-        protocol
-            .request(&mut token)
-            .map_err(|_| DownloadError::RequestFailed)?;
-        wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::RequestFailed)
+    fn request_get(&mut self, url: &str) -> Result<(), DownloadError> {
+        self.helper
+            .request_get(url)
+            .map_err(|_| DownloadError::RequestFailed)
     }
 
     fn response_first(
         &mut self,
-        max_len: usize,
-    ) -> Result<(HttpStatusCode, Vec<u8>), DownloadError> {
-        let mut response_data = HttpResponseData {
-            status_code: HttpStatusCode::STATUS_UNSUPPORTED,
-        };
-        let mut body = vec![0; max_len];
-        let mut message = HttpMessage::default();
-        message.data.response = &mut response_data;
-        message.body_length = body.len();
-        message.body = if body.is_empty() {
-            ptr::null_mut()
-        } else {
-            body.as_mut_ptr().cast::<c_void>()
-        };
+    ) -> Result<uefi::proto::network::http::HttpHelperResponse, DownloadError> {
+        self.helper
+            .response_first(true)
+            .map_err(|_| DownloadError::ResponseFailed)
+    }
 
-        let mut token = HttpToken {
-            status: Status::NOT_READY,
-            message: &mut message,
-            ..Default::default()
-        };
-
-        let protocol = self.protocol.as_mut().unwrap();
-        protocol
-            .response(&mut token)
+    fn response_more_vec(&mut self) -> Result<Vec<u8>, DownloadError> {
+        let mut body = Vec::new();
+        self.helper
+            .response_more(&mut body)
             .map_err(|_| DownloadError::ResponseFailed)?;
-        wait_for_http_token(protocol, &mut token).map_err(|_| DownloadError::ResponseFailed)?;
-
-        body.truncate(message.body_length);
-        Ok((response_data.status_code, body))
-    }
-}
-
-impl Drop for HttpClient {
-    fn drop(&mut self) {
-        self.protocol = None;
-        let _ = self.binding.destroy_child(self.child_handle);
-    }
-}
-
-struct HttpHelperProxy {
-    protocol: Option<ScopedProtocol<Http>>,
-}
-
-impl HttpHelperProxy {
-    fn configure(&mut self) -> Result<(), DownloadError> {
-        use uefi_raw::protocol::network::http::{
-            HttpAccessPoint, HttpConfigData, HttpV4AccessPoint, HttpVersion,
-        };
-
-        let ip4 = HttpV4AccessPoint {
-            use_default_addr: true.into(),
-            ..Default::default()
-        };
-        let config = HttpConfigData {
-            http_version: HttpVersion::HTTP_VERSION_10,
-            time_out_millisec: 10_000,
-            local_addr_is_ipv6: false.into(),
-            access_point: HttpAccessPoint { ipv4_node: &ip4 },
-        };
-
-        self.protocol
-            .as_mut()
-            .unwrap()
-            .configure(&config)
-            .map_err(|_| DownloadError::ConfigureFailed)
-    }
-}
-
-fn wait_for_http_token(protocol: &mut Http, token: &mut HttpToken) -> Result<(), Status> {
-    loop {
-        if token.status != Status::NOT_READY {
-            break;
-        }
-        protocol.poll().map_err(|err| err.status())?;
-    }
-
-    if token.status == Status::SUCCESS || token.status == Status::HTTP_ERROR {
-        Ok(())
-    } else {
-        Err(token.status)
-    }
-}
-
-fn range_header_value(start: usize, end: usize) -> Result<String, DownloadError> {
-    let mut range = String::from("bytes=");
-    push_usize(&mut range, start);
-    range.push('-');
-    push_usize(&mut range, end);
-    if range.len() >= 64 {
-        return Err(DownloadError::RangeHeaderTooLarge);
-    }
-    Ok(range)
-}
-
-fn push_usize(output: &mut String, mut value: usize) {
-    let mut digits = [0u8; 20];
-    let mut len = 0usize;
-    if value == 0 {
-        output.push('0');
-        return;
-    }
-    while value > 0 && len < digits.len() {
-        digits[len] = b'0' + (value % 10) as u8;
-        value /= 10;
-        len += 1;
-    }
-    while len > 0 {
-        len -= 1;
-        output.push(char::from(digits[len]));
+        Ok(body)
     }
 }
 
