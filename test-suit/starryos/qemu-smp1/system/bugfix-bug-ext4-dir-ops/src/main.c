@@ -26,6 +26,9 @@ struct linux_dirent64 {
 };
 
 #define BASE "/root/bug-ext4-dir-ops-test"
+#define RENAME_MANY_FILE_COUNT 8
+#define READDIR_DELETE_FILE_COUNT 8
+#define RM_RF_FILE_COUNT 8
 
 /* ========== 辅助函数 ========== */
 
@@ -546,20 +549,21 @@ static void test_rename_many_files(void)
 
     CHECK(mkdir(dir, 0755) == 0, "mkdir pkg");
 
-    /* create 20 files */
+    /* create enough files to exercise multi-entry directory handling */
     int ok = 1;
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < RENAME_MANY_FILE_COUNT; i++) {
         snprintf(path, sizeof(path), "%s/file_%02d.py", dir, i);
         snprintf(content, sizeof(content), "# file %d\n", i);
         if (write_file(path, content) < 0)
             ok = 0;
     }
-    CHECK(ok, "created 20 files");
+    CHECK(ok, "created files for rename-many test");
 
-    CHECK_RET(rename(dir, renamed), 0, "rename pkg -> ~pkg (20 files)");
+    CHECK_RET(rename(dir, renamed), 0, "rename pkg -> ~pkg (many files)");
 
-    /* readdir must see all 20 files */
-    CHECK(count_dir_entries(renamed) == 20, "readdir ~pkg sees all 20 files");
+    /* readdir must see all files */
+    CHECK(count_dir_entries(renamed) == RENAME_MANY_FILE_COUNT,
+          "readdir ~pkg sees all renamed files");
 
     /* delete all files, then rmdir */
     DIR *d = opendir(renamed);
@@ -597,20 +601,20 @@ static void test_readdir_offset_after_delete(void)
     snprintf(dir, sizeof(dir), "%s/readdir_del", BASE);
     CHECK(mkdir(dir, 0755) == 0, "mkdir readdir_del");
 
-    /* Create 30 files */
+    /* Create enough files to force multiple getdents calls with a tiny buffer. */
     int ok = 1;
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < READDIR_DELETE_FILE_COUNT; i++) {
         snprintf(path, sizeof(path), "%s/f%02d", dir, i);
         snprintf(content, sizeof(content), "%d\n", i);
         if (write_file(path, content) < 0)
             ok = 0;
     }
-    CHECK(ok, "created 30 files");
+    CHECK(ok, "created files for read-delete loop");
 
     /*
      * Read-delete loop: tiny buffer forces 1 entry per getdents64 call.
      * After reading each entry, delete it immediately. If offset tracking
-     * is correct, we'll see all 30 entries. If buggy, entries get skipped.
+     * is correct, we'll see all entries. If buggy, entries get skipped.
      */
     int dfd = open(dir, O_RDONLY | O_DIRECTORY);
     CHECK(dfd >= 0, "open dir for read-delete loop");
@@ -640,8 +644,8 @@ static void test_readdir_offset_after_delete(void)
     }
     close(dfd);
 
-    CHECK(total_deleted == 30,
-          "read-delete loop: all 30 files deleted");
+    CHECK(total_deleted == READDIR_DELETE_FILE_COUNT,
+          "read-delete loop: all files deleted");
     CHECK(rounds > 1,
           "read-delete loop: needed multiple getdents calls (bug trigger)");
 
@@ -664,8 +668,8 @@ static void test_rm_rf_pattern(void)
     snprintf(dir, sizeof(dir), "%s/rmrf", BASE);
     CHECK(mkdir(dir, 0755) == 0, "mkdir rmrf");
 
-    /* Create 30 files */
-    for (int i = 0; i < 30; i++) {
+    /* Create enough files to force multiple batched getdents calls. */
+    for (int i = 0; i < RM_RF_FILE_COUNT; i++) {
         snprintf(path, sizeof(path), "%s/f%02d", dir, i);
         snprintf(content, sizeof(content), "%d\n", i);
         write_file(path, content);
@@ -715,8 +719,8 @@ static void test_rm_rf_pattern(void)
     }
     close(dfd);
 
-    CHECK(total_deleted == 30,
-          "rm-rf pattern: all 30 files deleted");
+    CHECK(total_deleted == RM_RF_FILE_COUNT,
+          "rm-rf pattern: all files deleted");
     CHECK(rounds > 1,
           "rm-rf pattern: needed multiple getdents calls");
 

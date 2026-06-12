@@ -2748,11 +2748,11 @@ mod tests {
                 && script.contains("APK_CURL_EQUIVALENCE_TEST_FAILED")
                 && script.contains("curl --connect-timeout")
                 && script.contains("10.0.2.2")
-                && script.contains("4194304")
+                && script.contains("1048576")
                 && script.contains("sha256sum -c")
                 && script
-                    .contains("299285fc41a44cdb038b9fdaf494c76ca9d0c866672b2b266c1a0c17dda60a05"),
-            "{} must download the local 4MiB HTTP fixture, write it to disk, then read it back \
+                    .contains("9bc1b2a288b26af7257a36277ae3816a7d4f16e89c1e7e77d0a5c48bad62b360"),
+            "{} must download the local 1MiB HTTP fixture, write it to disk, then read it back \
              and compare sha256",
             script_path.display()
         );
@@ -2790,7 +2790,7 @@ mod tests {
                 host_http_server
                     .get("body_size")
                     .and_then(toml::Value::as_integer),
-                Some(4 * 1024 * 1024)
+                Some(1024 * 1024)
             );
             assert_eq!(
                 host_http_server

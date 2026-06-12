@@ -1144,11 +1144,16 @@ fn disable_dynamic_x86_64_five_level_paging(qemu: &mut QemuConfig) {
 }
 
 fn enable_dynamic_x86_64_nested_virtualization_features(qemu: &mut QemuConfig, cargo: &Cargo) {
+    let features = dynamic_x86_64_nested_virtualization_features(cargo);
+    if features.is_empty() {
+        return;
+    }
+
     for index in 0..qemu.args.len() {
         if qemu.args.get(index).is_some_and(|arg| arg == "-cpu")
             && let Some(cpu) = qemu.args.get_mut(index + 1)
         {
-            for feature in dynamic_x86_64_nested_virtualization_features(cargo) {
+            for feature in features {
                 enable_qemu_cpu_feature(cpu, feature);
             }
         }
@@ -1163,8 +1168,15 @@ fn dynamic_x86_64_nested_virtualization_features(cargo: &Cargo) -> &'static [&'s
         )
     }) {
         &["svm", "npt", "nrip-save"]
-    } else {
+    } else if cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "vmx" | "axvm/vmx" | "x86_vcpu/vmx" | "x86-vcpu/vmx"
+        )
+    }) {
         &["vmx-ept", "vmx-unrestricted-guest", "vmx-flexpriority"]
+    } else {
+        &[]
     }
 }
 
@@ -1851,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_x86_64_qemu_boot_disables_five_level_paging_cpu_feature() {
+    fn dynamic_x86_64_qemu_boot_disables_five_level_paging_without_default_nested_features() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
         let cargo = Cargo {
@@ -1877,9 +1889,40 @@ mod tests {
             qemu.args,
             [
                 "-cpu",
-                "host,+x2apic,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
+                "host,+x2apic,-la57",
                 "-machine",
                 "q35",
+                "-net",
+                "none",
+                "-vga",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_x86_64_qemu_boot_enables_vmx_nested_features_for_vmx_backend() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _debug = TempEnvVar::unset(DYNAMIC_X86_64_QEMU_DEBUG_ENV);
+        let cargo = Cargo {
+            target: "scripts/targets/pie/x86_64-unknown-none.json".to_string(),
+            features: vec!["dyn-plat".to_string(), "vmx".to_string()],
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut qemu = QemuConfig {
+            args: vec!["-cpu".to_string(), "host".to_string()],
+            ..Default::default()
+        };
+
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+        apply_dynamic_platform_qemu_boot_with_kvm_probe(&mut qemu, &cargo, || false);
+
+        assert_eq!(
+            qemu.args,
+            [
+                "-cpu",
+                "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
                 "-net",
                 "none",
                 "-vga",
