@@ -1,20 +1,28 @@
 //! 固件二进制数据 — 编译时嵌入
 //!
 //! 所有固件文件通过 include_bytes!() 在编译时嵌入内核镜像。
-//! 路径相对于本文件 (src/firmware/data.rs)，
-//! 即 ../../firmware/ 指向 firmware/
+//! 固件 blob 由 `build.rs` 准备到 `OUT_DIR/firmware/`（来源优先级：
+//! `$AIC8800_FIRMWARE_DIR` → 仓库内 `firmware/`（xtask 预下载）→ 上游下载），
+//! 每个文件均按 SHA-256 校验，因此 blob 不必随源码/发布包分发。
 //!
 //! 运行时通过 get_firmware_set() 根据芯片型号和版本选择正确的固件组合。
 
 use super::super::chip::{ChipRevision, ChipVariant};
+
+/// `build.rs` 写入固件 blob 的目录（`OUT_DIR/firmware`）。
+macro_rules! fw_path {
+    ($name:literal) => {
+        concat!(env!("OUT_DIR"), "/firmware/", $name)
+    };
+}
 
 // ============================================================
 // AIC8801 固件 (U02/U03/U04 通用)
 // ============================================================
 
 /// AIC8801
-pub static FW_8801: &[u8] = include_bytes!("../../../firmware/fmacfw.bin");
-pub static FW_8801_PATCH: &[u8] = include_bytes!("../../../firmware/fmacfw_patch.bin");
+pub static FW_8801: &[u8] = include_bytes!(fw_path!("fmacfw.bin"));
+pub static FW_8801_PATCH: &[u8] = include_bytes!(fw_path!("fmacfw_patch.bin"));
 pub static FW_8801_PATCH_TBL: &[u8] = &[];
 
 // ============================================================
@@ -22,28 +30,25 @@ pub static FW_8801_PATCH_TBL: &[u8] = &[];
 // ============================================================
 
 /// AIC8800DC U01/U02/H U02
-pub static FW_DC: &[u8] = include_bytes!("../../../firmware/fmacfw_patch_8800dc_u02.bin");
-pub static FW_DC_PATCH: &[u8] = include_bytes!("../../../firmware/fw_patch_8800dc_u02.bin");
-pub static FW_DC_PATCH_TBL: &[u8] =
-    include_bytes!("../../../firmware/fw_patch_table_8800dc_u02.bin");
+pub static FW_DC: &[u8] = include_bytes!(fw_path!("fmacfw_patch_8800dc_u02.bin"));
+pub static FW_DC_PATCH: &[u8] = include_bytes!(fw_path!("fw_patch_8800dc_u02.bin"));
+pub static FW_DC_PATCH_TBL: &[u8] = include_bytes!(fw_path!("fw_patch_table_8800dc_u02.bin"));
 
 // ============================================================
 // AIC8800D80 固件
 // ============================================================
 
 /// AIC8800D80 U01/U02/H U02 固件
-pub static FW_D80: &[u8] = include_bytes!("../../../firmware/fmacfw_8800d80_u02.bin");
-pub static FW_D80_PATCH: &[u8] = include_bytes!("../../../firmware/fw_patch_8800d80_u02.bin");
-pub static FW_D80_PATCH_TBL: &[u8] =
-    include_bytes!("../../../firmware/fw_patch_table_8800d80_u02.bin");
+pub static FW_D80: &[u8] = include_bytes!(fw_path!("fmacfw_8800d80_u02.bin"));
+pub static FW_D80_PATCH: &[u8] = include_bytes!(fw_path!("fw_patch_8800d80_u02.bin"));
+pub static FW_D80_PATCH_TBL: &[u8] = include_bytes!(fw_path!("fw_patch_table_8800d80_u02.bin"));
 
 // ============================================================
 // AIC8800D80X2 固件
 // ============================================================
-pub static FW_D80X2: &[u8] = include_bytes!("../../../firmware/fmacfw_8800d80_u02.bin");
-pub static FW_D80X2_PATCH: &[u8] = include_bytes!("../../../firmware/fw_patch_8800d80_u02.bin");
-pub static FW_D80X2_PATCH_TBL: &[u8] =
-    include_bytes!("../../../firmware/fw_patch_table_8800d80_u02.bin");
+pub static FW_D80X2: &[u8] = include_bytes!(fw_path!("fmacfw_8800d80_u02.bin"));
+pub static FW_D80X2_PATCH: &[u8] = include_bytes!(fw_path!("fw_patch_8800d80_u02.bin"));
+pub static FW_D80X2_PATCH_TBL: &[u8] = include_bytes!(fw_path!("fw_patch_table_8800d80_u02.bin"));
 
 /// 选中的固件集合
 pub struct FirmwareSet {

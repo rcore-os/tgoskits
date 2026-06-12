@@ -6,9 +6,19 @@ license = "Apache-2.0"
 repository.workspace = true
 readme = "README.md"
 description = "AIC8800 Wi-Fi driver core (SDIO, firmware, WPA2, SoftAP). OS-independent; runtime capabilities are injected via aic8800::WifiRuntime."
+# Vendor firmware blobs are not vendored into git or the package tarball; the
+# build script provisions them into OUT_DIR (from $AIC8800_FIRMWARE_DIR, the
+# in-tree `firmware/` dir populated by `cargo xtask`, or the pinned upstream
+# source) and verifies each against its SHA-256. The `firmware/` dir is excluded
+# from the package so the tarball stays blob-free and builds standalone.
+exclude = ["firmware/"]
 
 [features]
 default = []
+
+[build-dependencies]
+ureq = "3"
+sha2 = "0.10"
 
 [dependencies]
 log = { workspace = true }

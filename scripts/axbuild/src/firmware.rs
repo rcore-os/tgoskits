@@ -3,10 +3,15 @@
 //! The AIC8800 firmware blobs are vendor binaries that we do not vendor into
 //! the git tree. Instead they are fetched on demand (and integrity-checked
 //! against pinned SHA-256 digests) from the upstream LicheeRV Nano firmware
-//! package, pinned to a specific commit. Any build/lint/test command that
-//! compiles the `aic8800` crate calls [`ensure_aic8800_firmware`] first so the
-//! `include_bytes!` paths in `components/aic8800/src/fw/firmware/data.rs`
-//! resolve without the blobs ever living in version control.
+//! package, pinned to a specific commit.
+//!
+//! This is a workspace-level *cache warmer*: any build/lint/test command that
+//! compiles the `aic8800` crate calls [`ensure_aic8800_firmware`] first to
+//! populate `components/aic8800/firmware/`. The `aic8800` crate's own
+//! `build.rs` then prefers that in-tree dir (so in-repo, incl. offline, builds
+//! never hit the network), falling back to its own download only when the dir
+//! is absent (e.g. a standalone crates.io build). Keep this manifest in sync
+//! with `components/aic8800/build.rs`.
 
 use std::path::{Path, PathBuf};
 
