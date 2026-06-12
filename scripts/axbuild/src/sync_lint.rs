@@ -488,14 +488,15 @@ impl<'a> Analyzer<'a> {
                 continue;
             };
             if let Some(access) = atomic_write_access(first, &self.bindings)
-                && is_notify_expr(second)
+                && is_observer_event_expr(second)
             {
                 self.result.sync_intent_keys.insert(access.key);
                 if access.ordering == AccessOrdering::Relaxed {
                     self.report(
                         access.span,
                         Rule::PublishBeforeNotify,
-                        "Relaxed atomic write is immediately followed by a wake/notify operation",
+                        "Relaxed atomic write is immediately followed by a wake/notify/scheduling \
+                         event",
                     );
                 }
             }
@@ -746,26 +747,41 @@ fn function_name(expr: &Expr) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn is_notify_expr(expr: &Expr) -> bool {
+fn is_observer_event_expr(expr: &Expr) -> bool {
     match expr {
-        Expr::MethodCall(method) => matches!(
-            method.method.to_string().as_str(),
-            "notify_one" | "notify_all" | "wake" | "wake_one" | "wake_all" | "unpark"
-        ),
-        Expr::Call(call) => function_name(&call.func).is_some_and(|name| {
-            matches!(
-                name.as_str(),
-                "ax_wait_queue_wake"
-                    | "notify_one"
-                    | "notify_all"
-                    | "wake"
-                    | "wake_one"
-                    | "wake_all"
-                    | "unpark"
-            )
-        }),
+        Expr::MethodCall(method) => is_observer_event_name(&method.method.to_string()),
+        Expr::Call(call) => {
+            function_name(&call.func).is_some_and(|name| is_observer_event_name(&name))
+        }
         _ => false,
     }
+}
+
+fn is_observer_event_name(name: &str) -> bool {
+    matches!(
+        name,
+        "notify_one"
+            | "notify_all"
+            | "notify_one_with"
+            | "ax_wait_queue_wake"
+            | "ax_wait_queue_wake_one_with"
+            | "wake"
+            | "wake_by_ref"
+            | "wake_one"
+            | "wake_all"
+            | "wake_task"
+            | "wake_task_from_timer"
+            | "unblock_task"
+            | "unpark"
+            | "send_ipi"
+            | "send_ipi_to_cpu"
+            | "futex_wake"
+            | "wake_robust_futex"
+            | "send_signal_thread_inner"
+            | "send_signal_to_thread"
+            | "send_signal_to_process"
+            | "send_signal_to_process_group"
+    )
 }
 
 fn atomic_write_access(expr: &Expr, bindings: &BindingContext) -> Option<AtomicAccess> {
@@ -1156,6 +1172,86 @@ use core::sync::atomic::{AtomicBool, Ordering};
 fn demo(flag: &AtomicBool, wq: WaitQueue) {
     flag.store(true, Ordering::Relaxed);
     wq.notify_all(true);
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_ipi() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, target: IpiTarget) {
+    flag.store(true, Ordering::Relaxed);
+    ax_hal::irq::send_ipi(IPI_IRQ, target);
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_waker() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, waker: &core::task::Waker) {
+    flag.store(true, Ordering::Relaxed);
+    waker.wake_by_ref();
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_task_wake() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, task: &AxTaskRef) {
+    flag.store(true, Ordering::Relaxed);
+    ax_task::wake_task(task);
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_publish_before_signal_wake_entrypoint() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, tid: Pid, sig: SignalInfo) -> AxResult<()> {
+    flag.store(true, Ordering::Relaxed);
+    send_signal_to_thread(None, tid, Some(sig))
 }
 "#,
         );

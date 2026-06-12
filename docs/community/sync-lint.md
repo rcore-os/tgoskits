@@ -44,7 +44,7 @@ while !READY.load(Ordering::Relaxed) {
 - 当前阶段是否已经完成
 - 另一个执行流是否已经把状态准备好
 
-### 2. 用 `Relaxed` 写状态后立刻 `notify` / `wake`
+### 2. 用 `Relaxed` 写状态后立刻触发唤醒或调度事件
 
 这类代码也会被报告：
 
@@ -54,14 +54,21 @@ WQ.notify_one(true);
 
 GO.store(true, Ordering::Relaxed);
 WQ.notify_all(true);
+
+READY.store(true, Ordering::Relaxed);
+ax_hal::irq::send_ipi(IPI_IRQ, target);
+
+HAS_SIGNAL.store(true, Ordering::Relaxed);
+send_signal_to_thread(None, tid, Some(sig));
 ```
 
 这种模式通常表示：
 
 1. 先发布状态
-2. 再唤醒等待者去观察这个状态
+2. 再唤醒等待者、远端 CPU 或被调度任务去观察这个状态
 
 如果发布动作还是 `Relaxed`，等待者就可能虽然被唤醒了，但看不到你刚刚写入的最新状态。
+当前高置信事件包括 wait queue `notify` / `wake`、`Waker::wake*`、task unblock、IPI、futex wake，以及 StarryOS 中明确会唤醒目标任务的信号发送入口。
 
 ### 3. 同一个同步原子混用了强序和 `Relaxed`
 
