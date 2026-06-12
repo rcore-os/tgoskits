@@ -1,14 +1,12 @@
 use super::{
-    super::{
-        HelperFn,
-        bpf_insn::{
-            BPF_ADD, BPF_ALU, BPF_ALU64, BPF_AND, BPF_ARSH, BPF_B, BPF_DIV, BPF_DW, BPF_END,
-            BPF_EXIT, BPF_H, BPF_JA, BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JMP,
-            BPF_JMP32, BPF_JNE, BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_LD, BPF_LDX,
-            BPF_LSH, BPF_MEM, BPF_MOD, BPF_MOV, BPF_MUL, BPF_NEG, BPF_OR, BPF_RSH, BPF_ST, BPF_STX,
-            BPF_SUB, BPF_W, BPF_X, BPF_XOR, BpfInsn,
-        },
+    bpf_insn::{
+        BPF_ADD, BPF_ALU, BPF_ALU64, BPF_AND, BPF_ARSH, BPF_B, BPF_DIV, BPF_DW, BPF_END,
+        BPF_EXIT, BPF_H, BPF_JA, BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JMP,
+        BPF_JMP32, BPF_JNE, BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_LD, BPF_LDX,
+        BPF_LSH, BPF_MEM, BPF_MOD, BPF_MOV, BPF_MUL, BPF_NEG, BPF_OR, BPF_RSH, BPF_ST, BPF_STX,
+        BPF_SUB, BPF_W, BPF_X, BPF_XOR, BpfInsn,
     },
+    HelperFn,
     JitBackend, JitBuffer,
 };
 
@@ -558,8 +556,12 @@ fn emit_add_offset(buf: &mut JitBuffer, rd: u32, rn: u32, off: i32) {
     }
 }
 
-/// Patch a 32-bit value at a given offset in the buffer
+/// Patch a 32-bit value at a given offset in the buffer.
+/// Does nothing in counting (sizing) mode.
 unsafe fn patch_u32(buf: &JitBuffer, offset: usize, val: u32) {
+    if buf.counting() {
+        return;
+    }
     let ptr = buf.entry().add(offset) as *mut u32;
     *ptr = val.to_le();
 }

@@ -37,6 +37,9 @@ pub struct JitBuffer {
     counting: bool,
 }
 
+// SAFETY: JitBuffer owns a single heap allocation. After finalize(), the
+// buffer is read-only. The Send/Sync impls are safe because the buffer is
+// never mutated concurrently.
 unsafe impl Send for JitBuffer {}
 unsafe impl Sync for JitBuffer {}
 
@@ -158,6 +161,11 @@ struct JitCompiler<'a> {
     helpers: &'a BTreeMap<u32, HelperFn>,
 }
 
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+))]
 impl<'a> JitCompiler<'a> {
     fn new(insns: &'a [BpfInsn], helpers: &'a BTreeMap<u32, HelperFn>) -> Self {
         let offsets = vec![0; insns.len()];
@@ -315,7 +323,24 @@ impl<'a> JitCompiler<'a> {
     }
 }
 
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+))]
 pub fn try_jit_compile(insns: &[BpfInsn], helpers: &BTreeMap<u32, HelperFn>) -> Option<JitBuffer> {
     let mut compiler = JitCompiler::new(insns, helpers);
     compiler.compile().ok()
+}
+
+#[cfg(not(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+)))]
+pub fn try_jit_compile(
+    _insns: &[BpfInsn],
+    _helpers: &BTreeMap<u32, HelperFn>,
+) -> Option<JitBuffer> {
+    None
 }
