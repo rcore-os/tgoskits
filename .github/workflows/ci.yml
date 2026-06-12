@@ -434,6 +434,7 @@ jobs:
             command: target/debug/tg-xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: base
+            container_options: --device /dev/kvm
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
@@ -697,6 +698,7 @@ jobs:
           && format('{0}:latest', needs.detect_changes.outputs.axvisor_lvz_container_image)
           || matrix.container_image
         }}
+      container_options: ${{ matrix.container_options || '' }}
       apk_region: ${{ matrix.apk_region || 'china' }}
       limit_to_owner: ${{ matrix.limit_to_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}

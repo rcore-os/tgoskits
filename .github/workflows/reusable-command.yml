@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: ""
+      container_options:
+        description: Additional docker create options used when use_container is true.
+        required: false
+        type: string
+        default: ""
       apk_region:
         description: APK mirror region passed through to Starry prebuild flows.
         required: false
@@ -113,6 +118,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
+      options: ${{ inputs.container_options }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -183,6 +189,15 @@ jobs:
 
       - name: Show Rust version
         run: rustc --version
+
+      - name: Show KVM device
+        if: contains(inputs.container_options, '/dev/kvm')
+        shell: bash
+        run: |
+          set -eux
+          ls -l /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
 
       - name: Run command
         shell: bash
