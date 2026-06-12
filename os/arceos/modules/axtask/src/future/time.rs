@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_hal::time::{TimeValue, wall_time};
+use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use futures_util::{FutureExt, select_biased};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,7 +30,7 @@ impl TimerRuntime {
     }
 
     fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
-        if deadline <= wall_time() {
+        if deadline <= monotonic_time() {
             return None;
         }
 
@@ -62,7 +62,7 @@ impl TimerRuntime {
             return;
         }
 
-        let now = wall_time();
+        let now = monotonic_time();
 
         let pending = self.wheel.split_off(&TimerKey {
             deadline: now,
@@ -112,10 +112,10 @@ impl Drop for TimerFuture {
 
 /// Waits until `duration` has elapsed.
 pub async fn sleep(duration: Duration) {
-    sleep_until(wall_time() + duration).await
+    sleep_until(monotonic_time() + duration).await
 }
 
-/// Waits until `deadline` is reached.
+/// Waits until the monotonic `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
     let key = with_current(|r| r.add(deadline));
     if let Some(key) = key {
@@ -147,13 +147,13 @@ pub async fn timeout<F: IntoFuture>(
     f: F,
 ) -> Result<F::Output, Elapsed> {
     timeout_at(
-        duration.and_then(|x| x.checked_add(ax_hal::time::wall_time())),
+        duration.and_then(|x| x.checked_add(ax_hal::time::monotonic_time())),
         f,
     )
     .await
 }
 
-/// Requires a `Future` to complete before the specified deadline.
+/// Requires a `Future` to complete before the specified monotonic deadline.
 pub async fn timeout_at<F: IntoFuture>(
     deadline: Option<TimeValue>,
     f: F,
@@ -165,5 +165,25 @@ pub async fn timeout_at<F: IntoFuture>(
         }
     } else {
         Ok(f.await)
+    }
+}
+
+/// Requires a `Future` to complete before the specified wall-clock deadline.
+pub async fn timeout_at_wall<F: IntoFuture>(
+    deadline: Option<TimeValue>,
+    f: F,
+) -> Result<F::Output, Elapsed> {
+    timeout_at(deadline.map(wall_deadline_to_monotonic), f).await
+}
+
+fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
+    let now_wall = wall_time();
+    let now_mono = monotonic_time();
+    if deadline <= now_wall {
+        now_mono
+    } else {
+        now_mono
+            .checked_add(deadline - now_wall)
+            .unwrap_or(TimeValue::MAX)
     }
 }

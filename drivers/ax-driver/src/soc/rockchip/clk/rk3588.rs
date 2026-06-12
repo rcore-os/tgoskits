@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use log::info;
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{Cru, SocType};
 
 use super::ClkDrv;
@@ -34,7 +34,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let base_reg = info
         .node
         .regs()

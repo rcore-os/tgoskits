@@ -2,9 +2,16 @@ extern crate alloc;
 
 use core::time::Duration;
 
-use crab_usb::USBHost;
+use crab_usb::{EventHandler, USBHost};
 use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
-use rdrive::DriverGeneric;
+use rdrive::{DriverGeneric, probe::OnProbeError};
+
+use crate::{
+    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
+    registration::{BoundDevice, register_bound_device},
+};
+#[cfg(feature = "pci")]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 
 #[cfg(feature = "rockchip-dwc-xhci")]
 mod dwc;
@@ -128,16 +135,18 @@ pub fn usb_kernel() -> &'static dyn crab_usb::KernelOp {
 
 pub struct PlatformUsbHost {
     name: &'static str,
-    irq_num: Option<usize>,
+    info: BindingInfo,
     host: USBHost,
+    irq_handler_taken: bool,
 }
 
 impl PlatformUsbHost {
-    fn new(name: &'static str, host: USBHost, irq_num: Option<usize>) -> Self {
+    fn new(name: &'static str, host: USBHost, info: BindingInfo) -> Self {
         Self {
             name,
-            irq_num,
+            info,
             host,
+            irq_handler_taken: false,
         }
     }
 
@@ -150,7 +159,30 @@ impl PlatformUsbHost {
     }
 
     pub fn irq_num(&self) -> Option<usize> {
-        self.irq_num
+        self.info.irq_num()
+    }
+
+    pub fn binding_info(&self) -> &BindingInfo {
+        &self.info
+    }
+
+    pub fn enable_irq(&mut self) -> crab_usb::err::Result {
+        self.host.enable_irq()
+    }
+
+    pub fn disable_irq(&mut self) -> crab_usb::err::Result {
+        self.host.disable_irq()
+    }
+
+    pub fn take_irq_handler(&mut self) -> Option<(usize, UsbHostIrqHandler)> {
+        let irq = self.info.irq_num()?;
+        if self.irq_handler_taken {
+            return None;
+        }
+
+        self.irq_handler_taken = true;
+        let handler = UsbHostIrqHandler::new(self.host.create_event_handler());
+        Some((irq, handler))
     }
 }
 
@@ -160,66 +192,141 @@ impl DriverGeneric for PlatformUsbHost {
     }
 }
 
+impl BoundDevice for PlatformUsbHost {
+    fn binding_info(&self) -> &BindingInfo {
+        &self.info
+    }
+}
+
+pub struct UsbHostIrqHandler {
+    handler: EventHandler,
+}
+
+impl UsbHostIrqHandler {
+    fn new(handler: EventHandler) -> Self {
+        Self { handler }
+    }
+
+    pub fn handle(&self) -> crab_usb::Event {
+        self.handler.handle_event()
+    }
+}
+
 pub trait PlatformDeviceUsbHost {
-    fn register_usb_host(self, name: &'static str, host: USBHost, irq_num: Option<usize>);
+    fn register_usb_host(self, name: &'static str, host: USBHost) -> Option<usize>;
+
+    fn register_usb_host_with_info(
+        self,
+        name: &'static str,
+        host: USBHost,
+        info: BindingInfo,
+    ) -> Option<usize>;
 }
 
 impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
-    fn register_usb_host(self, name: &'static str, host: USBHost, irq_num: Option<usize>) {
-        self.register(PlatformUsbHost::new(name, host, irq_num));
+    fn register_usb_host(self, name: &'static str, host: USBHost) -> Option<usize> {
+        self.register_usb_host_with_info(name, host, BindingInfo::empty())
     }
+
+    fn register_usb_host_with_info(
+        self,
+        name: &'static str,
+        host: USBHost,
+        info: BindingInfo,
+    ) -> Option<usize> {
+        register_usb_host_with_info(self, name, host, info)
+    }
+}
+
+pub trait ProbeFdtUsbHost {
+    fn register_usb_host(
+        self,
+        name: &'static str,
+        host: USBHost,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
+    fn register_usb_host(
+        self,
+        name: &'static str,
+        host: USBHost,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_fdt(self.info())?;
+        Ok(register_usb_host_with_info(
+            self.into_platform_device(),
+            name,
+            host,
+            info,
+        ))
+    }
+}
+
+pub trait ProbeAcpiUsbHost {
+    fn register_usb_host(
+        self,
+        name: &'static str,
+        host: USBHost,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+impl ProbeAcpiUsbHost for rdrive::probe::acpi::ProbeAcpi<'_> {
+    fn register_usb_host(
+        self,
+        name: &'static str,
+        host: USBHost,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_acpi(self.info())?;
+        Ok(register_usb_host_with_info(
+            self.into_platform_device(),
+            name,
+            host,
+            info,
+        ))
+    }
+}
+
+#[cfg(feature = "pci")]
+pub trait ProbePciUsbHost {
+    fn register_usb_host(
+        self,
+        name: &'static str,
+        host: USBHost,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+#[cfg(feature = "pci")]
+impl ProbePciUsbHost for rdrive::probe::pci::ProbePci<'_> {
+    fn register_usb_host(
+        self,
+        name: &'static str,
+        host: USBHost,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_pci(self.info(), requirement)?;
+        Ok(register_usb_host_with_info(
+            self.into_platform_device(),
+            name,
+            host,
+            info,
+        ))
+    }
+}
+
+fn register_usb_host_with_info(
+    plat_dev: rdrive::PlatformDevice,
+    name: &'static str,
+    host: USBHost,
+    info: BindingInfo,
+) -> Option<usize> {
+    register_bound_device(plat_dev, PlatformUsbHost::new(name, host, info))
 }
 
 #[cfg(feature = "xhci-pci")]
 pub(crate) fn align_up_4k(size: usize) -> usize {
     const MASK: usize = 0xfff;
     (size + MASK) & !MASK
-}
-
-pub fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
-    let interrupt = interrupts.first()?;
-    decode_irq_cells(&interrupt.specifier)
-}
-
-fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
-    match specifier {
-        [irq] => Some(*irq as usize),
-        [kind, irq, ..] => match *kind {
-            0 => Some(*irq as usize + 32),
-            1 => Some(*irq as usize + 16),
-            _ => Some(*irq as usize),
-        },
-        _ => None,
-    }
-}
-
-#[cfg(feature = "xhci-pci")]
-fn pci_static_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
-    let interrupt_pin = endpoint.interrupt_pin();
-    if let Some(irq) = crate::pci::legacy_irq_for_endpoint(endpoint.address(), interrupt_pin) {
-        return Some(irq);
-    }
-    let line = endpoint.interrupt_line();
-    (line != 0 && line != u8::MAX).then_some(crate::pci::legacy_line_to_irq(line))
-}
-
-#[cfg(feature = "xhci-pci")]
-pub(crate) fn pci_irq_or_error(
-    endpoint: &rdrive::probe::pci::EndpointRc,
-) -> Result<usize, rdrive::probe::OnProbeError> {
-    #[cfg(pci_dyn_intx_route)]
-    if let Some(irq) =
-        crate::pci::fdt_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())?
-    {
-        return Ok(irq);
-    }
-
-    pci_static_irq(endpoint).ok_or_else(|| {
-        rdrive::probe::OnProbeError::other(alloc::format!(
-            "failed to resolve IRQ for USB endpoint {}",
-            endpoint.address()
-        ))
-    })
 }
 
 pub fn usb_host_device() -> Option<UsbHostDevice> {

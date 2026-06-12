@@ -1,18 +1,16 @@
 extern crate alloc;
 
-#[cfg(pci_dyn_acpi_intx_route)]
+#[cfg(plat_dyn)]
 use alloc::format;
 
 use log::debug;
-#[cfg(pci_dyn_acpi_intx_route)]
-use rdrive::probe::acpi::AcpiGsiRoute;
-#[cfg(pci_dyn_acpi_intx_route)]
-use rdrive::probe::pci::PciAddress;
+#[cfg(plat_dyn)]
+use rdrive::probe::pci::PciInfo;
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
-        acpi::{AcpiId, AcpiInfo},
+        acpi::{AcpiId, ProbeAcpi},
     },
 };
 
@@ -31,7 +29,8 @@ crate::model_register!(
     ],
 );
 
-fn probe_acpi_ecam(info: AcpiInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_acpi_ecam(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let mut registered = false;
     for region in info.root.pci_ecam_regions() {
         debug!("ACPI MCFG PCI ECAM region: {region:?}");
@@ -54,13 +53,9 @@ fn probe_acpi_ecam(info: AcpiInfo<'_>, plat_dev: PlatformDevice) -> Result<(), O
     }
 }
 
-#[cfg(pci_dyn_acpi_intx_route)]
-pub(crate) fn acpi_irq_for_endpoint(
-    address: PciAddress,
-    interrupt_pin: u8,
-) -> Result<Option<usize>, OnProbeError> {
-    let Some(result) =
-        rdrive::probe::acpi::with_acpi(|acpi| acpi.pci_irq_for_endpoint(address, interrupt_pin))
+#[cfg(plat_dyn)]
+pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
+    let Some(result) = rdrive::probe::acpi::with_acpi(|acpi| acpi.pci_irq_for_endpoint(info))
     else {
         return Ok(None);
     };
@@ -69,27 +64,18 @@ pub(crate) fn acpi_irq_for_endpoint(
         return Ok(None);
     };
 
-    let irq = setup_acpi_intx_irq(&route.gsi)?;
+    let irq = crate::binding_info_from_acpi_route("PCI endpoint", Some(route.gsi))?
+        .irq_num()
+        .expect("Some ACPI GSI route must resolve to an IRQ");
     log::info!(
-        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} IOAPIC {} input {} vector {:#x}",
-        address,
-        interrupt_pin,
+        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} {:?} {} input {} vector {:#x}",
+        info.address,
+        route.intx_route.root_pin,
         route.gsi.gsi,
+        route.gsi.controller,
         route.gsi.controller_id,
         route.gsi.controller_input,
-        usize::from(irq)
+        irq
     );
-    Ok(Some(usize::from(irq)))
-}
-
-#[cfg(pci_dyn_acpi_intx_route)]
-fn setup_acpi_intx_irq(route: &AcpiGsiRoute) -> Result<rdrive::IrqId, OnProbeError> {
-    let intc = rdrive::get_list::<rdif_intc::Intc>()
-        .into_iter()
-        .find(|intc| intc.descriptor().name.starts_with("ACPI IOAPIC"))
-        .ok_or_else(|| OnProbeError::other("ACPI IOAPIC interrupt controller is not registered"))?;
-    let mut intc = intc
-        .lock()
-        .map_err(|_| OnProbeError::other("ACPI IOAPIC interrupt controller is locked"))?;
-    Ok(intc.setup_irq_by_acpi(route))
+    Ok(Some(irq))
 }

@@ -31,7 +31,7 @@ use core::ptr::NonNull;
 
 use log::{error, info};
 use rd_net::WifiLinkPolicy;
-use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use sdhci_cv1800::{
     CviSdhci,
     hw_init::{Sdio1HwConfig, sdio1_hw_init},
@@ -106,11 +106,12 @@ unsafe fn sdio1_raw_irq_handler(
     axklib::irq::IrqReturn::Handled
 }
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // NOTE: the ArceOS runtime glue (timing / delay / yield / task spawn) for
     // the aic8800 and sdhci-cv1800 cores is installed by `axruntime` *before*
     // device probing — ax-driver sits below `ax-hal` in the crate graph and
     // cannot pull the `arceos` glue itself without forming a dependency cycle.
+    let (info, plat_dev) = probe.into_parts();
 
     // The SDIO1 controller base + IRQ come from the FDT node; the SoC subsystem
     // bases are fixed silicon constants (not in this node's `reg`).
@@ -181,7 +182,11 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         dhcp_server_client_ip: Some(AP_CLIENT_IP),
     });
 
-    plat_dev.register_net("wlan0", wifi, None);
+    // Register through the ordinary net path with an empty binding (no
+    // rx/tx-queue IRQ): the SDIO1 controller IRQ is registered manually above
+    // and Wi-Fi RX is delivered out-of-band, so the net device itself carries
+    // no IRQ.
+    plat_dev.register_net("wlan0", wifi);
     info!("[wifi] wlan0 device registered (probe stage done)");
     Ok(())
 }

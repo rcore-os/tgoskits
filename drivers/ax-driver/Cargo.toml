@@ -16,6 +16,7 @@ default = []
 plat-static = []
 plat-dyn = ["dep:fdt-edit"]
 irq = []
+pci = ["dep:pcie", "dep:rdif-pcie"]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
 net = ["dep:rd-net"]
@@ -25,21 +26,21 @@ vsock = ["dep:ax-errno", "dep:rdif-vsock"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["block", "virtio"]
-virtio-net = ["net", "virtio", "dep:ax-kernel-guard"]
-virtio-gpu = ["display", "virtio"]
-virtio-input = ["input", "virtio"]
-virtio-socket = ["vsock", "virtio"]
+virtio-blk = ["block", "virtio", "pci"]
+virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
+virtio-gpu = ["display", "virtio", "pci"]
+virtio-input = ["input", "virtio", "pci"]
+virtio-socket = ["vsock", "virtio", "pci"]
 
 ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
-ahci = ["block", "dep:simple-ahci"]
-nvme = ["block", "dep:nvme-driver"]
+ahci = ["block", "pci", "dep:simple-ahci"]
+nvme = ["block", "pci", "dep:nvme-driver"]
 cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
-ixgbe = ["net", "dep:ax-alloc", "dep:ixgbe-driver"]
+ixgbe = ["net", "pci", "dep:ax-alloc", "dep:ixgbe-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
-intel-net = ["net", "dep:eth-intel"]
-realtek-rtl8125 = ["net", "dep:realtek-rtl8125"]
+intel-net = ["net", "pci", "dep:eth-intel"]
+realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
 aic8800-wifi = [
     "net",
     "plat-dyn",
@@ -51,7 +52,7 @@ aic8800-wifi = [
 usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb", "plat-dyn"]
-xhci-pci = ["usb"]
+xhci-pci = ["usb", "pci"]
 serial = ["plat-dyn", "dep:some-serial"]
 sg2002-placeholder = ["plat-dyn"]
 rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
@@ -92,6 +93,7 @@ rockchip-dwmmc = [
     "sdmmc-protocol/sdio",
 ]
 rk3588-pcie = [
+    "pci",
     "plat-dyn",
     "rockchip-soc",
     "rockchip-pm",
@@ -99,7 +101,7 @@ rk3588-pcie = [
 ]
 rockchip-soc = ["plat-dyn", "dep:rdif-clk", "dep:rockchip-soc"]
 rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
-list-pci-devices = []
+list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
@@ -124,7 +126,7 @@ ixgbe-driver = { workspace = true, optional = true }
 log.workspace = true
 mmio-api.workspace = true
 nvme-driver = { workspace = true, optional = true }
-pcie.workspace = true
+pcie = { workspace = true, optional = true }
 ramdisk = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdif-block = { workspace = true, optional = true }
@@ -132,7 +134,7 @@ rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
 rdif-intc.workspace = true
-rdif-pcie.workspace = true
+rdif-pcie = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true

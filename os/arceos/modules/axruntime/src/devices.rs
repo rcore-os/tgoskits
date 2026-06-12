@@ -91,6 +91,8 @@ pub(crate) fn init_static_input() {
 
 #[cfg(all(feature = "net", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_net() {
+    #[cfg(feature = "irq")]
+    ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
     register_unix_namespace();
     let config = parse_network_config();
     let (nics, wireless) = collect_dyn_net_devices();
@@ -100,6 +102,8 @@ pub(crate) fn init_dyn_net() {
 
 #[cfg(all(feature = "net", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_net() {
+    #[cfg(feature = "irq")]
+    ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
     register_unix_namespace();
     let config = parse_network_config();
     let (nics, wireless) = collect_static_net_devices();

@@ -24,8 +24,9 @@ use rdif_eth::DriverGeneric;
 use crate::{
     common::ChipVariant,
     fdrv::{
-        core::bus::WifiBus, thread::rx::register_rx_data_callback, thread::tx,
-        wifi::api::WifiClient, wifi::api::WifiConfig,
+        core::bus::WifiBus,
+        thread::{rx::register_rx_data_callback, tx},
+        wifi::api::{WifiClient, WifiConfig},
     },
 };
 

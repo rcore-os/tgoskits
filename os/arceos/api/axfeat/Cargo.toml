@@ -97,6 +97,9 @@ input = [
     "ax-runtime/input",
 ]
 
+# USB
+usb = ["irq", "ax-driver?/usb"]
+
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-hal/rtc", "ax-runtime/rtc"]
 

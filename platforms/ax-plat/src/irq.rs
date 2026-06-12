@@ -104,7 +104,12 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Requests an IRQ action through the dynamic IRQ framework.
 pub fn request_irq(irq: usize, request: IrqRequest) -> Result<IrqHandle, IrqError> {
-    registry().request(IrqNumber(irq), request)
+    let handle = registry().request(IrqNumber(irq), request)?;
+    if let Err(err) = registry().enable(handle) {
+        let _ = registry().free(handle);
+        return Err(err);
+    }
+    Ok(handle)
 }
 
 /// Requests a shared IRQ action.

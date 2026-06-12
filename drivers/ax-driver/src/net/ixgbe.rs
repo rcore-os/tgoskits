@@ -9,14 +9,14 @@ use ixgbe_driver::{
 use pcie::CommandRegister;
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{
-    DriverGeneric, PlatformDevice,
+    DriverGeneric,
     probe::{
         OnProbeError,
-        pci::{EndpointRc, FnOnProbe},
+        pci::{FnOnProbe, ProbePci},
     },
 };
 
-use crate::net::{PlatformDeviceNet, pci_legacy_irq};
+use crate::{PciIrqRequirement, net::ProbePciNet};
 
 const DRIVER_NAME: &str = "ixgbe";
 const QUEUE_SIZE: usize = 512;
@@ -36,14 +36,13 @@ crate::model_register!(
     }],
 );
 
-fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint_mut();
     if endpoint.vendor_id() != INTEL_VEND || endpoint.device_id() != INTEL_82599 {
         return Err(OnProbeError::NotMatch);
     }
 
     let address = endpoint.address();
-    let irq = pci_legacy_irq(endpoint)
-        .ok_or_else(|| OnProbeError::other(format!("failed to resolve IRQ for ixgbe {address}")))?;
     let Some(bar) = endpoint.bar_mmio(0) else {
         return Err(OnProbeError::other("ixgbe BAR0 MMIO region missing"));
     };
@@ -61,8 +60,8 @@ fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), 
 
     let dev = IxgbeNet::new(mmio.as_ptr() as usize, bar_len)
         .map_err(|err| OnProbeError::other(format!("failed to initialize ixgbe: {err:?}")))?;
-    plat_dev.register_net(DRIVER_NAME, dev, Some(irq));
-    log::info!("registered ixgbe PCI network device at {address} with irq {irq:#x}");
+    let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
+    log::info!("registered ixgbe PCI network device at {address} with irq {irq:?}");
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use alloc::format;
 
 use arm_gic_driver::v2::*;
 use kernutil::StaticCell;
-use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
+use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 use crate::common::ioremap;
 
@@ -28,7 +28,8 @@ module_driver!(
     ],
 );
 
-fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, dev) = probe.into_parts();
     let mut reg = info.node.regs().into_iter();
     let gicd_reg = reg.next().ok_or(OnProbeError::other(format!(
         "[{}] has no reg",

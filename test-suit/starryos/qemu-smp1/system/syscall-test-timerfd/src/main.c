@@ -221,25 +221,23 @@ int main(void) {
     CHECK(bexp >= 1, "preserved expiration count >= 1 after failed read");
     close(bfd);
 
-    /* Concurrent-reader single-consumer semantics: a batch of pending
-     * expirations must be claimed in full by exactly one read(). Linux's
-     * timerfd_read takes the timerfd spinlock across the count clear so
-     * two parallel readers cannot both observe the same ticks. Reproduce
-     * by forking once parent + child share the same open file
-     * description, racing on a TFD_NONBLOCK read, and reporting their
-     * counts back through a pipe. The pre-fork accumulated count must
-     * equal the sum across both, and at most one side may have a
-     * non-zero result. */
+    /* Concurrent-reader single-consumer semantics: a pending expiration must
+     * be claimed in full by exactly one read(). Use a one-shot timer so no
+     * new tick can appear between the parent and child reads and make the
+     * test result depend only on timerfd count consumption. */
     int cfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     CHECK(cfd >= 0, "create CLOCK_MONOTONIC TFD_NONBLOCK for concurrency");
     struct itimerspec cspec = {
-        .it_interval = {0, 10 * 1000 * 1000},  /* 10ms */
+        .it_interval = {0, 0},
         .it_value    = {0, 10 * 1000 * 1000},
     };
     CHECK_RET(timerfd_settime(cfd, 0, &cspec, NULL), 0,
-              "settime periodic 10ms for concurrency");
-    struct timespec accum_sleep = {.tv_sec = 0, .tv_nsec = 80 * 1000 * 1000};
-    nanosleep(&accum_sleep, NULL);
+              "settime oneshot 10ms for concurrency");
+
+    struct pollfd cpf = {.fd = cfd, .events = POLLIN};
+    int cpr = poll(&cpf, 1, 500);
+    CHECK(cpr == 1 && (cpf.revents & POLLIN),
+          "one-shot concurrency timer became readable");
 
     int pipefd[2];
     CHECK_RET(pipe(pipefd), 0, "pipe for concurrent-reader coordination");
@@ -267,10 +265,10 @@ int main(void) {
     read(pipefd[0], &child_got, sizeof(child_got));
     close(pipefd[0]);
     waitpid(pid, NULL, 0);
-    CHECK(parent_got > 0 || child_got > 0,
-          "at least one concurrent reader saw expirations");
+    CHECK(parent_got + child_got == 1,
+          "exactly one expiration consumed by concurrent readers");
     CHECK(parent_got == 0 || child_got == 0,
-          "single-consumer: only one reader observed the batch");
+          "single-consumer: only one reader observed the expiration");
     /* Disarm before close so any deferred timer task stops touching cfd. */
     struct itimerspec cdisarm = {.it_interval = {0, 0}, .it_value = {0, 0}};
     timerfd_settime(cfd, 0, &cdisarm, NULL);

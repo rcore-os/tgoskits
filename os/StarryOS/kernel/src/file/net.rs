@@ -8,7 +8,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use axnet::{
+use ax_net::{
     RecvOptions, SendOptions, Socket as SocketInner, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
@@ -31,7 +31,7 @@ use crate::{
 };
 
 /// Real eth0 MAC address. Uses the QEMU default; TODO: query
-/// `EthernetDriver::mac_address()` from axnet at init time once the API is
+/// `EthernetDriver::mac_address()` from ax_net at init time once the API is
 /// exposed, then replace this with a `static` or `LazyLock`.
 pub const ETH0_REAL_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 
@@ -82,8 +82,8 @@ enum NetInterface {
     Loopback,
 }
 
-fn eth0_ipv4_config() -> AxResult<axnet::Ipv4InterfaceConfig> {
-    axnet::eth0_ipv4_config().ok_or(AxError::NoSuchDevice)
+fn eth0_ipv4_config() -> AxResult<ax_net::Ipv4InterfaceConfig> {
+    ax_net::eth0_ipv4_config().ok_or(AxError::NoSuchDevice)
 }
 
 fn eth0_ipv4_addr() -> AxResult<[u8; 4]> {
@@ -97,7 +97,7 @@ fn ipv4_netmask(prefix_len: u8) -> [u8; 4] {
     (!0u32 << (32 - prefix_len)).to_be_bytes()
 }
 
-fn ipv4_broadcast(config: axnet::Ipv4InterfaceConfig) -> [u8; 4] {
+fn ipv4_broadcast(config: ax_net::Ipv4InterfaceConfig) -> [u8; 4] {
     let ip = u32::from_be_bytes(config.address.address().octets());
     let mask = u32::from_be_bytes(ipv4_netmask(config.address.prefix_len()));
     (ip | !mask).to_be_bytes()

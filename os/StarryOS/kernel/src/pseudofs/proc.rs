@@ -280,7 +280,7 @@ fn render_stat() -> String {
 }
 
 fn render_proc_net_arp() -> String {
-    let mut entries = axnet::arp_entries();
+    let mut entries = ax_net::arp_entries();
     entries.sort_by(|a, b| {
         a.device
             .cmp(&b.device)

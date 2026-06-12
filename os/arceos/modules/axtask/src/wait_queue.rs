@@ -110,17 +110,25 @@ impl WaitQueue {
         crate::api::might_sleep();
         let mut rq = current_run_queue::<NoPreemptIrqSave>();
         let curr = crate::current();
-        let deadline = ax_hal::time::wall_time() + dur;
+        let deadline = ax_hal::time::monotonic_time() + dur;
         debug!(
             "task wait_timeout: {} deadline={:?}",
             curr.id_name(),
             deadline
         );
-        crate::timers::set_alarm_wakeup(deadline, curr.clone());
+        let timeout = loop {
+            crate::timers::set_alarm_wakeup(deadline, curr.clone());
+            rq.blocked_resched(self.queue.lock());
 
-        rq.blocked_resched(self.queue.lock());
-
-        let timeout = curr.in_wait_queue(); // still in the wait queue, must have timed out
+            // Still in the wait queue means the timer path woke us. Re-check
+            // the monotonic deadline so an early wake cannot truncate sleeps.
+            if !curr.in_wait_queue() {
+                break false;
+            }
+            if ax_hal::time::monotonic_time() >= deadline {
+                break true;
+            }
+        };
 
         // Always try to remove the task from the timer list.
         self.cancel_events(curr, true);
@@ -139,18 +147,16 @@ impl WaitQueue {
     {
         crate::api::might_sleep();
         let curr = crate::current();
-        let deadline = ax_hal::time::wall_time() + dur;
+        let deadline = ax_hal::time::monotonic_time() + dur;
         debug!(
             "task wait_timeout: {}, deadline={:?}",
             curr.id_name(),
             deadline
         );
-        crate::timers::set_alarm_wakeup(deadline, curr.clone());
-
         let mut timeout = true;
         loop {
             let mut rq = current_run_queue::<NoPreemptIrqSave>();
-            if ax_hal::time::wall_time() >= deadline {
+            if ax_hal::time::monotonic_time() >= deadline {
                 break;
             }
             let wq = self.queue.lock();
@@ -159,6 +165,7 @@ impl WaitQueue {
                 break;
             }
 
+            crate::timers::set_alarm_wakeup(deadline, curr.clone());
             rq.blocked_resched(wq);
             // Preemption may occur here.
         }

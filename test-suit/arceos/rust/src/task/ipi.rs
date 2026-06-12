@@ -94,13 +94,6 @@ fn send_recovery_ipi(target_cpu: usize, sender_cpu: usize) {
     .unwrap();
 }
 
-#[cfg(target_arch = "aarch64")]
-pub fn run() -> crate::TestResult {
-    println!("task_ipi: skipped on aarch64");
-    Ok(())
-}
-
-#[cfg(not(target_arch = "aarch64"))]
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {

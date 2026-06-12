@@ -93,7 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(starry-task)* implement sys_getcpu ([#924](https://github.com/rcore-os/tgoskits/pull/924))
 - *(starry-kernel)* add inotifywait support ([#894](https://github.com/rcore-os/tgoskits/pull/894))
 - *(starry)* add userspace test for prlimit64 syscall ([#801](https://github.com/rcore-os/tgoskits/pull/801))
-- *(axnet)* implement SO_TYPE, SO_PROTOCOL, SO_DOMAIN socket options ([#884](https://github.com/rcore-os/tgoskits/pull/884))
+- *(ax-net)* implement SO_TYPE, SO_PROTOCOL, SO_DOMAIN socket options ([#884](https://github.com/rcore-os/tgoskits/pull/884))
 - *(starry-kernel)* implement xattr syscall stubs for rsext4 ([#882](https://github.com/rcore-os/tgoskits/pull/882))
 - *(starry-kernel)* add /proc/self/statm and /proc/loadavg, add procps test ([#853](https://github.com/rcore-os/tgoskits/pull/853))
 - *(starry)* expose dumpable in procfs status and complete uid/gid tests ([#757](https://github.com/rcore-os/tgoskits/pull/757))

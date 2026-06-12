@@ -7,12 +7,14 @@ use core::{
 };
 
 use ax_kernel_guard::NoPreemptIrqSave;
-use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
+use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(any(plat_static, plat_dyn))]
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::Transport};
 
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 use crate::{
     net::PlatformDeviceNet,
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
@@ -21,7 +23,7 @@ use crate::{
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 
-#[cfg(any(plat_static, plat_dyn))]
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
 crate::model_register!(
     name: "VirtIO Net",
     level: ProbeLevel::PostKernel,
@@ -305,39 +307,42 @@ struct RxInflight {
     len: usize,
 }
 
-#[cfg(any(plat_static, plat_dyn))]
-fn probe_pci(
-    endpoint: &mut rdrive::probe::pci::EndpointRc,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    let irq = crate::net::pci_legacy_irq(endpoint);
-    let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Network)?;
-    register_transport_with_irq(plat_dev, transport, irq)
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
+    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::Network)?;
+    register_pci_transport(probe, transport)
 }
 
 pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
-    register_transport_with_irq(plat_dev, transport, None)
+    let net = make_net(transport)?;
+    let irq = plat_dev.register_net("virtio-net", net);
+    log::info!("registered virtio network device irq={irq:?}");
+    Ok(())
 }
 
-pub fn register_transport_with_irq<T: Transport + 'static>(
-    plat_dev: PlatformDevice,
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+fn register_pci_transport<T: Transport + 'static>(
+    probe: rdrive::probe::pci::ProbePci<'_>,
     transport: T,
-    irq_num: Option<usize>,
 ) -> Result<(), OnProbeError> {
-    let mut net = VirtIoNetDevice::new(transport).map_err(|err| {
+    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
+    let net = make_net(transport)?;
+    let irq = probe
+        .into_platform_device()
+        .register_net_with_info("virtio-net", net, info);
+    log::info!("registered virtio network device irq={irq:?}");
+    Ok(())
+}
+
+fn make_net<T: Transport + 'static>(transport: T) -> Result<VirtIoNetDevice<T>, OnProbeError> {
+    VirtIoNetDevice::new(transport).map_err(|err| {
         OnProbeError::other(format!(
             "failed to initialize static VirtIO net device: {err:?}"
         ))
-    })?;
-    if irq_num.is_some() {
-        net.enable_irq();
-    }
-    plat_dev.register_net("virtio-net", net, irq_num);
-    log::info!("registered virtio network device irq={irq_num:?}");
-    Ok(())
+    })
 }
 
 fn map_net_error(err: VirtIoError) -> NetError {

@@ -1,7 +1,9 @@
 use loongArch64::iocsr::{iocsr_read_d, iocsr_write_d, iocsr_write_w};
 use rdif_intc::Interface;
 use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+    DriverGeneric, PlatformDevice, module_driver,
+    probe::OnProbeError,
+    register::{ProbeAcpi, ProbeFdt},
 };
 
 use super::irq_common::{EIOINTC_VECTOR_COUNT, eiointc_reg_bit, fdt_first_cell_vector};
@@ -24,14 +26,20 @@ module_driver!(
     name: "Loongson EIOINTC",
     level: ProbeLevel::PreKernel,
     priority: ProbePriority::INTC,
-    probe_kinds: &[ProbeKind::Fdt {
-        compatibles: &[
-            "loongson,ls2k2000-eiointc",
-            "loongson,ls3a5000-eiointc",
-            "loongson,eiointc",
-        ],
-        on_probe: probe_eiointc
-    }],
+    probe_kinds: &[
+        ProbeKind::Fdt {
+            compatibles: &[
+                "loongson,ls2k2000-eiointc",
+                "loongson,ls3a5000-eiointc",
+                "loongson,eiointc",
+            ],
+            on_probe: probe_eiointc_fdt
+        },
+        ProbeKind::Acpi {
+            ids: &[],
+            on_probe: probe_eiointc_acpi
+        },
+    ],
 );
 
 pub fn set_irq_enable(irq: usize, enable: bool) {
@@ -52,7 +60,18 @@ pub fn complete_irq(irq: usize) {
     with_eiointc("completing EIOINTC IRQ", |intc| intc.complete_irq(irq));
 }
 
-fn probe_eiointc(_info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_eiointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    register_eiointc(probe.into_platform_device())
+}
+
+fn probe_eiointc_acpi(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    if probe.info().root.routing().pch_pics().is_empty() {
+        return Err(OnProbeError::NotMatch);
+    }
+    register_eiointc(probe.into_platform_device())
+}
+
+fn register_eiointc(dev: PlatformDevice) -> Result<(), OnProbeError> {
     let intc = EioIntc::new(EIOINTC_VECTOR_COUNT);
     intc.init();
     someboot::irq::irq_set_enable(someboot::irq::IrqId::new(EIOINTC_IRQ), true);

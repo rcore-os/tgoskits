@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::format;
 
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(any(plat_dyn, plat_static))]
+#[cfg(all(feature = "pci", any(plat_dyn, plat_static)))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -18,8 +18,8 @@ use crate::{
 
 const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 32 * SECTOR_SIZE;
 
-#[cfg(any(plat_static, plat_dyn))]
-crate::model_register!(
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+model_register!(
     name: "VirtIO Block",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -28,17 +28,14 @@ crate::model_register!(
     }],
 );
 
-#[cfg(any(plat_static, plat_dyn))]
-fn probe_pci(
-    endpoint: &mut rdrive::probe::pci::EndpointRc,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
-    let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Block)?;
-    register_transport(plat_dev, transport)
+#[cfg(all(feature = "pci", any(plat_static, plat_dyn)))]
+fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
+    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::Block)?;
+    register_transport(probe.into_platform_device(), transport)
 }
 
 #[cfg(plat_dyn)]
-crate::model_register!(
+model_register!(
     name: "VirtIO MMIO Block",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -49,10 +46,8 @@ crate::model_register!(
 );
 
 #[cfg(plat_dyn)]
-fn probe_fdt(
-    info: rdrive::register::FdtInfo<'_>,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
+fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let (ty, transport) = crate::virtio::probe_fdt_mmio_device(&info)?;
     if ty != DeviceType::Block {
         return Err(OnProbeError::NotMatch);

@@ -50,6 +50,8 @@ mod klib;
 #[cfg(any(feature = "fs", feature = "fs-ng", test))]
 mod block;
 mod devices;
+#[cfg(feature = "irq")]
+pub mod irq;
 mod registers;
 
 #[cfg(all(feature = "net", any(feature = "fs", feature = "fs-ng")))]
@@ -348,6 +350,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     while !is_init_ok() {
         core::hint::spin_loop();
     }
+
+    #[cfg(all(feature = "irq", feature = "ipi"))]
+    ax_ipi::wait_for_all_cpus_ready();
 
     ax_app_entry();
 

@@ -283,10 +283,11 @@ pub(crate) fn yield_now_unchecked() {
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep(dur: core::time::Duration) {
-    sleep_until(ax_hal::time::wall_time() + dur);
+    sleep_until(ax_hal::time::monotonic_time() + dur);
 }
 
 /// Current task is going to sleep, it will be woken up at the given deadline.
+/// The deadline is measured against the monotonic clock.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {

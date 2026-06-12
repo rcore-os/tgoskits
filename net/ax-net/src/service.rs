@@ -4,7 +4,7 @@ use core::{
     task::{Context, Waker},
 };
 
-use ax_hal::time::{NANOS_PER_MICROS, TimeValue, wall_time_nanos};
+use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
 use ax_task::future::sleep_until;
 use smoltcp::{
     iface::{Interface, SocketSet},
@@ -23,7 +23,7 @@ use crate::{
 };
 
 fn now() -> Instant {
-    Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
+    Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
 
 pub struct Service {

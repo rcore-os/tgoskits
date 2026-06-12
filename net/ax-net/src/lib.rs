@@ -70,8 +70,10 @@ pub use self::device::{VsockDevice, VsockDeviceList};
 pub use self::{
     config::{Ipv4InterfaceConfig, NetworkConfig, StaticIpConfig},
     device::{
-        ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult,
-        NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
+        ArpEntry, EthernetDeviceList, EthernetDriver, EthernetIrqAction, EthernetIrqOutcome,
+        EthernetIrqRegistrar, EthernetIrqRegistration, EthernetIrqRegistrationError,
+        NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
+        set_ethernet_irq_registrar,
     },
     socket::{
         CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket, SocketAddrEx,
@@ -292,7 +294,14 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
 
     let mac = EthernetAddress(dev.mac_address());
-    let eth_dev = EthernetDevice::new(config.name.clone(), dev, Some(cidr));
+    // A dedicated-poll device gets RX out-of-band (via `notify_oob_rx` →
+    // `wake_rx`), so its socket wakers must be armed even though it has no
+    // ethernet IRQ registration.
+    let eth_dev = if config.dedicated_poll {
+        EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
+    } else {
+        EthernetDevice::new(config.name.clone(), dev, Some(cidr))
+    };
 
     {
         let mut s = get_service();
