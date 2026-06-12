@@ -17,7 +17,9 @@ pub mod setup;
 
 pub use page_table_generic::{PagingError, PagingResult};
 pub use setup::KernelOp;
-pub use someboot::*;
+pub use someboot::{
+    console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys, smp, timer,
+};
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 
 use crate::common::PlatOp;

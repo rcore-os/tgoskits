@@ -16,6 +16,10 @@ use crate::test::case::HostHttpServerConfig;
 
 const BIND_RETRY_TIMEOUT: Duration = Duration::from_secs(180);
 const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const READ_TIMEOUT: Duration = Duration::from_secs(1);
+const MIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_WRITE_TIMEOUT: Duration = Duration::from_secs(300);
+const MIN_WRITE_BYTES_PER_SEC: usize = 128 * 1024;
 
 pub(crate) struct HostHttpServerGuard {
     stop: Arc<AtomicBool>,
@@ -39,8 +43,8 @@ impl HostHttpServerGuard {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _peer)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-                        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+                        let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(body.write_timeout()));
                         let mut request = [0; 1024];
                         let _ = stream.read(&mut request);
                         let response = format!(
@@ -143,6 +147,13 @@ impl HostHttpBody {
             }
         }
     }
+
+    fn write_timeout(&self) -> Duration {
+        let transfer_secs = self.len().div_ceil(MIN_WRITE_BYTES_PER_SEC) as u64;
+        Duration::from_secs(
+            transfer_secs.clamp(MIN_WRITE_TIMEOUT.as_secs(), MAX_WRITE_TIMEOUT.as_secs()),
+        )
+    }
 }
 
 impl Drop for HostHttpServerGuard {
@@ -192,6 +203,24 @@ mod tests {
         let headers = String::from_utf8_lossy(&response[..body_offset]);
         assert!(headers.contains("Content-Length: 7"));
         assert_eq!(&response[body_offset..], b"XXXXXXX");
+    }
+
+    #[test]
+    fn write_timeout_scales_with_generated_body_size() {
+        let small = HostHttpBody::Generated {
+            size: 7,
+            byte: b'X',
+        };
+        let starry_apk_curl_fixture = HostHttpBody::Generated {
+            size: 20 * 1024 * 1024,
+            byte: b'a',
+        };
+
+        assert_eq!(small.write_timeout(), MIN_WRITE_TIMEOUT);
+        assert_eq!(
+            starry_apk_curl_fixture.write_timeout(),
+            Duration::from_secs(160)
+        );
     }
 
     #[test]

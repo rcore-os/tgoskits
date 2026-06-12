@@ -10,7 +10,7 @@ use rdrive::{
 };
 use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
 
-use crate::{common::PlatOp, irq::_handle_irq};
+use crate::common::PlatOp;
 
 pub struct Plat;
 
@@ -202,6 +202,8 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
 }
 
 impl PlatOp for Plat {
+    type ActiveIrq = ActiveIrq;
+
     fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
         let raw = irq.raw();
 
@@ -238,20 +240,16 @@ impl PlatOp for Plat {
         }
     }
 
-    fn irq_handler() -> someboot::irq::IrqId {
-        someboot::irq::systimer_irq()
-    }
-
-    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
+    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
         if raw == APIC_TIMER_VECTOR {
-            _handle_irq(raw.into());
-            lapic_eoi();
-            return Some(someboot::irq::systimer_irq());
+            return Some(ActiveIrq::new(someboot::irq::systimer_irq().raw().into()));
         }
 
-        _handle_irq(raw.into());
-        lapic_eoi();
-        Some(someboot::irq::IrqId::new(raw))
+        Some(ActiveIrq::new(raw.into()))
+    }
+
+    fn active_irq_id(active: &Self::ActiveIrq) -> rdrive::IrqId {
+        active.id()
     }
 
     fn systick_irq() -> rdrive::IrqId {
@@ -269,6 +267,26 @@ impl PlatOp for Plat {
             APIC_TIMER_VECTOR.into(),
             crate::irq::IpiTarget::Other { cpu_id },
         );
+    }
+}
+
+pub struct ActiveIrq {
+    irq: rdrive::IrqId,
+}
+
+impl ActiveIrq {
+    const fn new(irq: rdrive::IrqId) -> Self {
+        Self { irq }
+    }
+
+    pub fn id(&self) -> rdrive::IrqId {
+        self.irq
+    }
+}
+
+impl Drop for ActiveIrq {
+    fn drop(&mut self) {
+        lapic_eoi();
     }
 }
 
