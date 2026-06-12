@@ -17,8 +17,6 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use starry_signal::Signo;
 use syscalls::Sysno;
 
-use crate::task::AsThread;
-
 pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
     task::*, time::*,
