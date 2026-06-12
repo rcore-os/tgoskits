@@ -433,10 +433,11 @@ impl Router {
 
     pub fn poll(
         &mut self,
-        _timestamp: Instant,
+        timestamp: Instant,
         sockets: &mut SocketSet<'_>,
         mut snoop: impl FnMut(InterfaceId, &[u8]),
     ) {
+        self.poll_loopback(timestamp, sockets, &mut snoop);
         while !self.rx_buffer.is_full() {
             let Some(packet) = self.queues.rx.pop() else {
                 break;
@@ -454,6 +455,35 @@ impl Router {
         }
     }
 
+    fn poll_loopback(
+        &mut self,
+        timestamp: Instant,
+        sockets: &mut SocketSet<'_>,
+        snoop: &mut dyn FnMut(InterfaceId, &[u8]),
+    ) {
+        while !self.rx_buffer.is_full() {
+            let mut received = false;
+            for device in &self.devices {
+                if device.interface_id != InterfaceId::LOOPBACK {
+                    continue;
+                }
+                let mut loopback_snoop = |packet: &[u8]| {
+                    snoop_tcp_packet(packet, sockets);
+                    snoop(InterfaceId::LOOPBACK, packet);
+                };
+                received |= device.inner.lock().recv(
+                    device.interface_id,
+                    &mut self.rx_buffer,
+                    timestamp,
+                    &mut loopback_snoop,
+                );
+            }
+            if !received {
+                break;
+            }
+        }
+    }
+
     pub fn send_on_device(
         &mut self,
         dev: usize,
@@ -461,7 +491,12 @@ impl Router {
         packet: &[u8],
         timestamp: Instant,
     ) -> bool {
-        let _ = timestamp;
+        if self.devices[dev].interface_id == InterfaceId::LOOPBACK {
+            return self.devices[dev]
+                .inner
+                .lock()
+                .send(next_hop, packet, timestamp);
+        }
         self.devices[dev].enqueue_tx(next_hop, packet)
     }
 
@@ -524,7 +559,8 @@ impl Router {
                         };
 
                         let dev = &self.devices[route.dev];
-                        poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                        poll_next |=
+                            Self::dispatch_packet(dev, route.next_hop, packet.into_inner());
                     }
                 }
                 IpVersion::Ipv6 => {
@@ -547,12 +583,21 @@ impl Router {
                         };
 
                         let dev = &self.devices[route.dev];
-                        poll_next |= dev.enqueue_tx(route.next_hop, packet.into_inner());
+                        poll_next |=
+                            Self::dispatch_packet(dev, route.next_hop, packet.into_inner());
                     }
                 }
             }
         }
         poll_next
+    }
+
+    fn dispatch_packet(device: &DeviceHandle, next_hop: IpAddress, packet: &[u8]) -> bool {
+        if device.interface_id == InterfaceId::LOOPBACK {
+            device.inner.lock().send(next_hop, packet, now())
+        } else {
+            device.enqueue_tx(next_hop, packet)
+        }
     }
 }
 
@@ -601,6 +646,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         if !received {
+            device.inner.lock().register_waker(&device.rx_waker);
             device.rx_wake.wait();
         }
     }
