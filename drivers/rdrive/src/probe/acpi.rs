@@ -148,7 +148,12 @@ impl AcpiGsiSource {
         (start..end).contains(&gsi)
     }
 
-    fn route(self, gsi: u32) -> Option<AcpiGsiRoute> {
+    fn route(
+        self,
+        gsi: u32,
+        trigger: AcpiIrqTrigger,
+        polarity: AcpiIrqPolarity,
+    ) -> Option<AcpiGsiRoute> {
         let controller_input = u8::try_from(gsi.checked_sub(self.gsi_base)?).ok()?;
         Some(AcpiGsiRoute {
             gsi,
@@ -157,8 +162,8 @@ impl AcpiGsiSource {
             controller_id: self.controller_id,
             controller_address: self.controller_address,
             controller_input,
-            trigger: AcpiIrqTrigger::Level,
-            polarity: AcpiIrqPolarity::ActiveLow,
+            trigger,
+            polarity,
         })
     }
 }
@@ -167,6 +172,15 @@ impl AcpiGsiSource {
 pub struct AcpiRouting {
     io_apics: Vec<AcpiIoApic>,
     pch_pics: Vec<AcpiPchPic>,
+    isa_overrides: Vec<AcpiIsaIrqOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpiIsaIrqOverride {
+    pub source: u8,
+    pub gsi: u32,
+    pub trigger: AcpiIrqTrigger,
+    pub polarity: AcpiIrqPolarity,
 }
 
 impl AcpiRouting {
@@ -174,6 +188,7 @@ impl AcpiRouting {
         Self {
             io_apics: Vec::new(),
             pch_pics: Vec::new(),
+            isa_overrides: Vec::new(),
         }
     }
 
@@ -193,10 +208,14 @@ impl AcpiRouting {
         &self.pch_pics
     }
 
+    pub fn add_isa_irq_override(&mut self, irq_override: AcpiIsaIrqOverride) {
+        self.isa_overrides.push(irq_override);
+    }
+
     pub fn resolve_gsi(&self, gsi: u32) -> Option<AcpiGsiRoute> {
         self.gsi_sources()
             .find(|source| source.contains_gsi(gsi))?
-            .route(gsi)
+            .route(gsi, self.default_trigger(gsi), self.default_polarity(gsi))
     }
 
     fn gsi_sources(&self) -> impl Iterator<Item = AcpiGsiSource> + '_ {
@@ -210,6 +229,30 @@ impl AcpiRouting {
     pub fn resolve_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
         let gsi = vector.checked_sub(PCI_INTX_VECTOR_BASE)?;
         self.resolve_gsi(gsi as u32)
+    }
+
+    fn default_trigger(&self, gsi: u32) -> AcpiIrqTrigger {
+        self.isa_overrides
+            .iter()
+            .find(|irq_override| irq_override.gsi == gsi)
+            .map(|irq_override| irq_override.trigger)
+            .unwrap_or(if gsi < 16 {
+                AcpiIrqTrigger::Edge
+            } else {
+                AcpiIrqTrigger::Level
+            })
+    }
+
+    fn default_polarity(&self, gsi: u32) -> AcpiIrqPolarity {
+        self.isa_overrides
+            .iter()
+            .find(|irq_override| irq_override.gsi == gsi)
+            .map(|irq_override| irq_override.polarity)
+            .unwrap_or(if gsi < 16 {
+                AcpiIrqPolarity::ActiveHigh
+            } else {
+                AcpiIrqPolarity::ActiveLow
+            })
     }
 }
 
@@ -242,9 +285,10 @@ mod tests {
 
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
-        AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource, LinkIrqResourceKind,
-        PciLinkAllocator, System, irq_descriptor_gsi, is_buffer_field_to_field_unit_store_gap,
-        pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
+        AcpiIsaIrqOverride, AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
+        LinkIrqResourceKind, PciLinkAllocator, System, irq_descriptor_gsi,
+        is_buffer_field_to_field_unit_store_gap, pci_link_irq_field_candidates,
+        route_with_irq_descriptor_flags, select_pci_link_irq,
     };
     use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
 
@@ -441,6 +485,14 @@ mod tests {
             redirection_entries: 24,
         });
 
+        let legacy_irq = routing
+            .resolve_gsi(4)
+            .expect("legacy ISA GSI 4 should be handled by the IOAPIC");
+        assert_eq!(legacy_irq.vector, 0x34);
+        assert_eq!(legacy_irq.controller_input, 4);
+        assert_eq!(legacy_irq.trigger, AcpiIrqTrigger::Edge);
+        assert_eq!(legacy_irq.polarity, AcpiIrqPolarity::ActiveHigh);
+
         let irq = routing
             .resolve_gsi(16)
             .expect("gsi 16 should be handled by the IOAPIC");
@@ -503,6 +555,31 @@ mod tests {
         assert_eq!(route.controller_input, 18);
         assert_eq!(route.vector, 0x30 + 82);
         assert!(routing.resolve_gsi(128).is_none());
+    }
+
+    #[test]
+    fn ioapic_routes_apply_isa_interrupt_source_overrides() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        routing.add_isa_irq_override(AcpiIsaIrqOverride {
+            source: 0,
+            gsi: 2,
+            trigger: AcpiIrqTrigger::Level,
+            polarity: AcpiIrqPolarity::ActiveLow,
+        });
+
+        let route = routing
+            .resolve_gsi(2)
+            .expect("overridden ISA GSI should still route through the IOAPIC");
+        assert_eq!(route.vector, 0x32);
+        assert_eq!(route.controller_input, 2);
+        assert_eq!(route.trigger, AcpiIrqTrigger::Level);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveLow);
     }
 
     #[test]
@@ -1255,6 +1332,22 @@ fn read_interrupt_routing(tables: &AcpiTables<AcpiHandler>) -> Result<AcpiRoutin
                 address: io_apic.address,
                 gsi_base: io_apic.global_system_interrupt_base,
                 redirection_entries: 24,
+            });
+        }
+        for irq_override in &apic.interrupt_source_overrides {
+            routing.add_isa_irq_override(AcpiIsaIrqOverride {
+                source: irq_override.isa_source,
+                gsi: irq_override.global_system_interrupt,
+                trigger: match irq_override.trigger_mode {
+                    TriggerMode::Edge => AcpiIrqTrigger::Edge,
+                    TriggerMode::Level => AcpiIrqTrigger::Level,
+                    _ => AcpiIrqTrigger::Edge,
+                },
+                polarity: match irq_override.polarity {
+                    Polarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
+                    Polarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
+                    _ => AcpiIrqPolarity::ActiveHigh,
+                },
             });
         }
     }
