@@ -3,6 +3,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
+use acpi::{
+    address::{AddressSpace, GenericAddress},
+    sdt::fadt::Fadt,
+};
 use page_table_generic::PhysAddr;
 use x86::{
     bits64::{rflags, segmentation::Descriptor64},
@@ -40,8 +44,11 @@ const PIT_SPEAKER_ENABLE: u8 = 0x02;
 const PIT_CHANNEL2_OUT: u8 = 0x20;
 const PIT_MODE0_CHANNEL2: u8 = 0xb0;
 const PIT_TICK_RATE_HZ: u64 = 1_193_182;
-const TSC_PIT_CALIBRATION_MS: u64 = 50;
-const TSC_PIT_MAX_POLL_COUNT: usize = 5_000_000;
+const ACPI_PM_TIMER_HZ: u64 = 3_579_545;
+const TSC_CALIBRATION_MS: u64 = 50;
+const TSC_CALIBRATION_ROUNDS: usize = 3;
+const TSC_CALIBRATION_MAX_POLL_COUNT: usize = 10_000_000;
+const TSC_CALIBRATION_MAX_JITTER_PCT: u64 = 10;
 const MIN_VALID_TSC_FREQ_HZ: u64 = 10_000_000;
 const MAX_VALID_TSC_FREQ_HZ: u64 = 10_000_000_000;
 
@@ -173,15 +180,18 @@ fn init_tsc_freq() {
     }
 
     let cpuid = CpuId::new();
-    let freq_hz = hypervisor_tsc_freq_hz(&cpuid)
-        .or_else(|| cpuid_tsc_freq_hz(&cpuid))
-        .or_else(pit_calibrate_tsc_freq_hz)
-        .or_else(|| processor_base_freq_hz(&cpuid))
+    let (freq_hz, source) = hypervisor_tsc_freq_hz(&cpuid)
+        .map(|freq| (freq, "hypervisor"))
+        .or_else(|| cpuid_tsc_freq_hz(&cpuid).map(|freq| (freq, "cpuid.15")))
+        .or_else(|| acpi_pm_timer_calibrate_tsc_freq_hz().map(|freq| (freq, "acpi-pm-timer")))
+        .or_else(|| pit_calibrate_tsc_freq_hz().map(|freq| (freq, "pit")))
+        .or_else(|| processor_base_freq_hz(&cpuid).map(|freq| (freq, "cpuid-base")))
         .unwrap_or_else(|| {
             let fallback = 1_000_000_000u64;
             warn!("x86_64 TSC frequency unavailable, fallback to {fallback} Hz");
-            fallback
+            (fallback, "fallback")
         });
+    debug!("x86_64 TSC frequency from {source}: {freq_hz} Hz");
     let has_deadline = cpuid
         .get_feature_info()
         .is_some_and(|info| info.has_tsc_deadline());
@@ -212,21 +222,7 @@ fn hypervisor_tsc_freq_hz(cpuid: &CpuId) -> Option<u64> {
 fn cpuid_tsc_freq_hz(cpuid: &CpuId) -> Option<u64> {
     cpuid
         .get_tsc_info()
-        .and_then(|info| {
-            if let Some(freq) = info.tsc_frequency().and_then(valid_tsc_freq_hz) {
-                return Some(freq);
-            }
-
-            let numerator = info.numerator();
-            let denominator = info.denominator();
-            if numerator == 0 || denominator == 0 {
-                return None;
-            }
-
-            let base_hz = processor_base_freq_hz(cpuid)? as u128;
-            let crystal_hz = base_hz * denominator as u128 / numerator as u128;
-            Some((crystal_hz * numerator as u128 / denominator as u128) as u64)
-        })
+        .and_then(|info| info.tsc_frequency())
         .and_then(valid_tsc_freq_hz)
 }
 
@@ -237,8 +233,63 @@ fn processor_base_freq_hz(cpuid: &CpuId) -> Option<u64> {
         .and_then(valid_tsc_freq_hz)
 }
 
+struct AcpiPmTimer {
+    gas: GenericAddress,
+    mask: u32,
+}
+
+impl AcpiPmTimer {
+    fn detect() -> Option<Self> {
+        let tables = crate::acpi::tables().ok()?;
+        let fadt_mapping = tables.find_tables::<Fadt>().next()?;
+        let fadt = &*fadt_mapping;
+        let gas = fadt.pm_timer_block().ok()??;
+        if gas.bit_offset != 0 {
+            return None;
+        }
+        match gas.address_space {
+            AddressSpace::SystemIo if gas.address <= u16::MAX as u64 => {}
+            AddressSpace::SystemMemory => {}
+            _ => return None,
+        }
+
+        let mask = if { fadt.flags }.pm_timer_is_32_bit() {
+            u32::MAX
+        } else {
+            0x00ff_ffff
+        };
+        Some(Self { gas, mask })
+    }
+
+    fn read(&self) -> Option<u32> {
+        let value = match self.gas.address_space {
+            AddressSpace::SystemIo => unsafe { x86::io::inl(self.gas.address as u16) },
+            AddressSpace::SystemMemory => {
+                let ptr = phys_to_virt(self.gas.address as usize).cast::<u32>();
+                unsafe { ptr.read_volatile() }
+            }
+            _ => return None,
+        };
+        Some(value & self.mask)
+    }
+}
+
+fn acpi_pm_timer_calibrate_tsc_freq_hz() -> Option<u64> {
+    let timer = AcpiPmTimer::detect()?;
+    let target_ticks = (ACPI_PM_TIMER_HZ * TSC_CALIBRATION_MS / 1_000) as u32;
+    calibrated_tsc_freq_hz(|| timer.read(), timer.mask, target_ticks, ACPI_PM_TIMER_HZ)
+}
+
 fn pit_calibrate_tsc_freq_hz() -> Option<u64> {
-    let latch = ((PIT_TICK_RATE_HZ * TSC_PIT_CALIBRATION_MS) / 1_000) as u16;
+    let mut samples = [0u64; TSC_CALIBRATION_ROUNDS];
+    for sample in &mut samples {
+        *sample = pit_calibrate_tsc_freq_sample_hz()?;
+    }
+    select_stable_calibration_sample(&samples)
+}
+
+fn pit_calibrate_tsc_freq_sample_hz() -> Option<u64> {
+    let latch = ((PIT_TICK_RATE_HZ * TSC_CALIBRATION_MS) / 1_000) as u16;
 
     unsafe {
         let control = x86::io::inb(PIT_CONTROL_PORT);
@@ -254,7 +305,7 @@ fn pit_calibrate_tsc_freq_hz() -> Option<u64> {
     let start = ticks_now();
     let mut end = start;
     let mut done = false;
-    for _ in 0..TSC_PIT_MAX_POLL_COUNT {
+    for _ in 0..TSC_CALIBRATION_MAX_POLL_COUNT {
         if unsafe { x86::io::inb(PIT_CONTROL_PORT) } & PIT_CHANNEL2_OUT != 0 {
             end = ticks_now();
             done = true;
@@ -270,8 +321,83 @@ fn pit_calibrate_tsc_freq_hz() -> Option<u64> {
 
     end.wrapping_sub(start)
         .checked_mul(1_000)?
-        .checked_div(TSC_PIT_CALIBRATION_MS)
+        .checked_div(TSC_CALIBRATION_MS)
         .and_then(valid_tsc_freq_hz)
+}
+
+fn calibrated_tsc_freq_hz<F>(
+    mut read_counter: F,
+    counter_mask: u32,
+    target_ticks: u32,
+    counter_freq_hz: u64,
+) -> Option<u64>
+where
+    F: FnMut() -> Option<u32>,
+{
+    let mut samples = [0u64; TSC_CALIBRATION_ROUNDS];
+    for sample in &mut samples {
+        *sample = calibrated_tsc_freq_sample_hz(
+            &mut read_counter,
+            counter_mask,
+            target_ticks,
+            counter_freq_hz,
+        )?;
+    }
+    select_stable_calibration_sample(&samples)
+}
+
+fn calibrated_tsc_freq_sample_hz<F>(
+    read_counter: &mut F,
+    counter_mask: u32,
+    target_ticks: u32,
+    counter_freq_hz: u64,
+) -> Option<u64>
+where
+    F: FnMut() -> Option<u32>,
+{
+    let start_counter = read_counter()?;
+    let start_tsc = ticks_now();
+    let mut end_tsc = start_tsc;
+    let mut elapsed_counter = 0;
+    let mut done = false;
+
+    for _ in 0..TSC_CALIBRATION_MAX_POLL_COUNT {
+        let now_counter = read_counter()?;
+        elapsed_counter = now_counter.wrapping_sub(start_counter) & counter_mask;
+        if elapsed_counter >= target_ticks {
+            end_tsc = ticks_now();
+            done = true;
+            break;
+        }
+        spin_loop();
+    }
+
+    if !done || elapsed_counter == 0 {
+        return None;
+    }
+
+    let elapsed_tsc = end_tsc.wrapping_sub(start_tsc);
+    let freq = (elapsed_tsc as u128)
+        .checked_mul(counter_freq_hz as u128)?
+        .checked_div(elapsed_counter as u128)?;
+    u64::try_from(freq).ok().and_then(valid_tsc_freq_hz)
+}
+
+fn select_stable_calibration_sample(samples: &[u64]) -> Option<u64> {
+    let mut min = u64::MAX;
+    let mut max = 0;
+    for &sample in samples {
+        min = min.min(sample);
+        max = max.max(sample);
+    }
+
+    if min == u64::MAX {
+        return None;
+    }
+    if max.saturating_sub(min) > min / 100 * TSC_CALIBRATION_MAX_JITTER_PCT {
+        return None;
+    }
+    Some(min)
 }
 
 fn init_idt_once() {
