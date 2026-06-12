@@ -16,7 +16,7 @@ pub fn sleep(dur: core::time::Duration) {
 }
 
 /// For single-task situation, we just busy wait until reaching the given
-/// deadline.
+/// monotonic deadline.
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     ax_hal::time::busy_wait_until(deadline);
 }

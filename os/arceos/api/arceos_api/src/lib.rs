@@ -126,7 +126,7 @@ pub mod task {
     }
 
     define_api! {
-        /// Current task is going to sleep, it will be woken up at the given deadline.
+        /// Current task is going to sleep, it will be woken up at the given monotonic deadline.
         ///
         /// If the feature `multitask` is not enabled, it uses busy-wait instead
         pub fn ax_sleep_until(deadline: crate::time::AxTimeValue);
