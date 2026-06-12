@@ -1,4 +1,4 @@
-use super::super::{HelperFn, JitBackend, JitBuffer, bpf_insn::BpfInsn};
+use super::{HelperFn, JitBackend, JitBuffer, bpf_insn::BpfInsn};
 
 pub(crate) struct Aarch64Backend;
 
