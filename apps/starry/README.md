@@ -84,6 +84,16 @@ cargo xtask starry app run -t redis --arch riscv64
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
 
+## Apache
+
+The `apache` case is a QEMU app workflow that runs Apache httpd smoke checks.
+Each Apache test should first be run in Linux Alpine as the behavior oracle, then
+compared with StarryOS before tracker items are marked passed.
+
+```bash
+cargo xtask starry app run -t apache --arch riscv64
+```
+
 ## GDB Smoke
 
 The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
