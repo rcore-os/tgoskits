@@ -273,6 +273,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         init_interrupt();
     }
 
+    #[cfg(all(feature = "irq", feature = "ipi"))]
+    ax_ipi::mark_current_cpu_ready();
+
     devices::probe_all_devices();
 
     #[cfg(feature = "rtc")]
