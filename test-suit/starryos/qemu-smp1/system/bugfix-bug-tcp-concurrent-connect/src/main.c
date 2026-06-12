@@ -12,8 +12,8 @@
 #include <unistd.h>
 
 #define CLIENTS 8
-#define IO_TIMEOUT_MS 30000
-#define TEST_TIMEOUT_SEC 180
+#define IO_TIMEOUT_MS 10000
+#define TEST_TIMEOUT_SEC 60
 
 #define CHECK(cond, fmt, ...)                                                    \
     do {                                                                         \
@@ -156,13 +156,6 @@ int main(void) {
     }
     close(listener);
 
-    for (int i = 0; i < CLIENTS; i++) {
-        int status = 0;
-        CHECK(waitpid(pids[i], &status, 0) == pids[i], "wait client %d", i);
-        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "client %d exited cleanly", i);
-    }
-
     int seen[CLIENTS] = {0};
     for (int i = 0; i < CLIENTS; i++) {
         int idx = -1;
@@ -172,6 +165,13 @@ int main(void) {
         CHECK(idx >= 0 && idx < CLIENTS, "payload client id in range");
         CHECK(!seen[idx], "payload client id %d is unique", idx);
         seen[idx] = 1;
+    }
+
+    for (int i = 0; i < CLIENTS; i++) {
+        int status = 0;
+        CHECK(waitpid(pids[i], &status, 0) == pids[i], "wait client %d", i);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "client %d exited cleanly", i);
     }
 
     printf("bug-tcp-concurrent-connect: OK\n");

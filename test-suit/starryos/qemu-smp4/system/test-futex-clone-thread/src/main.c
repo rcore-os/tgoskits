@@ -20,7 +20,7 @@
  *   4. pthread_mutex    — 8 workers contend on mutex, 250 iters each
  *   5. stress_contention — 8 waiters on same futex, 40 rounds
  *   6. private_flag     — FUTEX_WAIT_PRIVATE / WAKE_PRIVATE, 50 rounds
- *   7. bitset_selective — WAIT_BITSET / WAKE_BITSET disjoint-mask coverage
+ *   7. bitset_selective — WAIT_BITSET / WAKE_BITSET with selective masks
  */
 #define _GNU_SOURCE
 #include "test_framework.h"
@@ -157,6 +157,7 @@ static void test_basic_wait_wake(void)
     long pass = (long)ret;
 
     CHECK(pass == T1_ROUNDS, "T1 waiter completed all 50 rounds");
+    CHECK(total_woken > 0, "T1 at least one FUTEX_WAKE actually woke a waiter");
     printf("  T1 result: waiter %ld/%d rounds, %d successful wakes\n",
            pass, T1_ROUNDS, total_woken);
 }
@@ -505,17 +506,18 @@ static void test_private_flag(void)
     long pass = (long)ret;
 
     CHECK(pass == T6_ROUNDS, "T6 waiter completed all 50 rounds (PRIVATE)");
+    CHECK(total_woken > 0, "T6 at least one WAKE_PRIVATE actually woke a waiter");
     printf("  T6 result: waiter %ld/%d rounds, %d successful private wakes\n",
            pass, T6_ROUNDS, total_woken);
 }
 
 /* ================================================================
- * Test 7 — FUTEX_WAIT_BITSET / WAKE_BITSET mask wake (10 rounds)
+ * Test 7 — FUTEX_WAIT_BITSET / WAKE_BITSET selective wake (10 rounds)
  *
  * Three waiters with bitsets 0x1, 0x2, 0x4.  Verifies:
  *   a) Disjoint mask (0x8) wakes nobody
- *   b) Selective mask (0x2) remains non-fatal wake-count telemetry
- *   c) All waiters are cleaned up by the normal WAKE path
+ *   b) Selective mask (0x2) wakes exactly the 0x2 waiter
+ *   c) Remaining waiters cleaned up by normal WAKE
  * ================================================================ */
 
 #define T7_ROUNDS 10
@@ -600,6 +602,7 @@ static void test_bitset_selective(void)
         }
     }
 
+    CHECK(selective_ok > 0, "T7 selective BITSET wake succeeded at least once");
     printf("  T7 result: %d/%d selective wakes matched (mask 0x2)\n",
            selective_ok, T7_ROUNDS);
 }
