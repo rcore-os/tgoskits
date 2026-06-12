@@ -1,4 +1,5 @@
 use alloc::{
+    format,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -15,13 +16,14 @@ use ax_fs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
+use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_process::Pid;
 use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{FD_TABLE, resolve_at},
+    file::{FD_TABLE, ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{AsThread, rebind_task_tid, zap_thread},
 };
@@ -33,7 +35,8 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    do_execve(uctx, path, argv, envp)
+    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    do_execve(uctx, loc, path, argv, envp)
 }
 
 /// execveat(2) — like execve, but the program is identified by `dirfd` plus
@@ -53,27 +56,38 @@ pub fn sys_execveat(
 
     let path = vm_load_string(path)?;
 
-    // Resolve dirfd + path to an absolute pathname so the shared core can
-    // load it exactly like execve. Anonymous fds without a filesystem path
-    // (e.g. memfd) cannot be loaded by the path-based ELF loader yet; surface
-    // that as a visible warning rather than a silent EACCES, since Linux
-    // succeeds here and bring-up needs to spot the gap.
-    let loc = resolve_at(dirfd, Some(path.as_str()), flags)?
-        .into_file()
-        .ok_or_else(|| {
-            warn!("sys_execveat: exec from anonymous fd (e.g. memfd) is not supported yet");
-            AxError::PermissionDenied
-        })?;
-    let abs_path = loc.absolute_path()?.to_string();
+    // Resolve dirfd + path to the `Location` the loader reads from. A regular
+    // file yields its filesystem path as the display name; an anonymous memfd
+    // has no path but wraps a tmpfs-backed `Location` we can still load — this
+    // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
+    // fds (sockets, eventfd, …) are not executable.
+    let (loc, disp_path) = match resolve_at(dirfd, Some(path.as_str()), flags)? {
+        ResolveAtResult::File(loc) => {
+            let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
+            (loc, disp)
+        }
+        ResolveAtResult::Other(f) => {
+            let memfd = f.downcast_ref::<Memfd>().ok_or_else(|| {
+                warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
+                AxError::PermissionDenied
+            })?;
+            let loc = memfd.inner().inner().location().clone();
+            let disp = format!("/memfd:{} (deleted)", memfd.name());
+            (loc, disp)
+        }
+    };
 
-    do_execve(uctx, abs_path, argv, envp)
+    do_execve(uctx, loc, disp_path, argv, envp)
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
-/// `sys_execve` and `sys_execveat` resolve the program path, then funnel the
-/// raw `argv` / `envp` user pointers here to be loaded once.
+/// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
+/// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
+/// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
+/// the loader's `.sh`/shebang handling), not re-resolved against the FS.
 fn do_execve(
     uctx: &mut UserContext,
+    loc: Location,
     path: String,
     argv: *const *const c_char,
     envp: *const *const c_char,
@@ -148,10 +162,14 @@ fn do_execve(
         yield_now();
     };
 
-    // Resolve the path and collect metadata before touching anything.
-    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    // Collect metadata from the already-resolved location before touching
+    // anything. An anonymous memfd has no filesystem path, so fall back to the
+    // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
     let mut new_name = loc.name().to_string();
-    let mut new_exe_path = loc.absolute_path()?.to_string();
+    let mut new_exe_path = loc
+        .absolute_path()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|_| path.clone());
 
     // Build the new address space entirely before committing.
     // Loading into a fresh aspace (rather than clearing the existing one)

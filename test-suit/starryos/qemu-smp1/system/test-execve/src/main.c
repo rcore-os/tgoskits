@@ -41,6 +41,26 @@ extern char **environ;
 #define AT_EMPTY_PATH 0x1000
 #endif
 
+#ifndef SYS_memfd_create
+#if defined(__x86_64__)
+#define SYS_memfd_create 319
+#elif defined(__aarch64__) || defined(__riscv) || defined(__loongarch__)
+#define SYS_memfd_create 279
+#else
+#error "SYS_memfd_create is unknown for this architecture"
+#endif
+#endif
+
+#ifndef MFD_ALLOW_SEALING
+#define MFD_ALLOW_SEALING 0x0002U
+#endif
+#ifndef F_ADD_SEALS
+#define F_ADD_SEALS 1033
+#endif
+#ifndef F_SEAL_WRITE
+#define F_SEAL_WRITE 0x0008
+#endif
+
 static void check_exited_with(int status, int expected_code, const char *msg)
 {
     CHECK(WIFEXITED(status), msg);
@@ -230,6 +250,55 @@ static void test_execveat_at_empty_path_executes_fd(void)
     close(fd);
 }
 
+/* Copy every byte of `src_path` into the already-open `dst_fd`. */
+static int copy_file_into(int dst_fd, const char *src_path)
+{
+    int src = open(src_path, O_RDONLY);
+    if (src < 0) {
+        return -1;
+    }
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(src, buf, sizeof(buf))) > 0) {
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = write(dst_fd, buf + off, (size_t)(n - off));
+            if (w <= 0) {
+                close(src);
+                return -1;
+            }
+            off += w;
+        }
+    }
+    close(src);
+    return n < 0 ? -1 : 0;
+}
+
+/*
+ * systemd's pattern: stage an executable into an anonymous memfd, seal it
+ * write-only-once, then execveat(fd, "", AT_EMPTY_PATH). Sealing with
+ * F_SEAL_WRITE before exec mirrors systemd and is what Linux's
+ * deny_write_access requires (an unsealed, still-writable memfd would
+ * otherwise exec with ETXTBSY), so this case passes identically on real Linux.
+ */
+static void test_execveat_memfd_sealed_exec(void)
+{
+    int mfd = (int)syscall(SYS_memfd_create, "execve-test", MFD_ALLOW_SEALING);
+    CHECK(mfd >= 0, "memfd_create for execveat");
+    if (mfd < 0) {
+        return;
+    }
+
+    CHECK(copy_file_into(mfd, "/bin/sh") == 0, "stage /bin/sh into the memfd");
+    CHECK(fcntl(mfd, F_ADD_SEALS, F_SEAL_WRITE) == 0,
+          "seal the memfd write access before exec");
+
+    int status = execveat_success_status(mfd, "", AT_EMPTY_PATH);
+    check_execveat_ran(status,
+                       "execveat AT_EMPTY_PATH executes a sealed memfd image");
+    close(mfd);
+}
+
 static void test_execveat_error_returns(void)
 {
     /* 0x4 is outside the accepted AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW set. */
@@ -266,6 +335,7 @@ int main(void)
     test_execveat_absolute_path_ignores_dirfd();
     test_execveat_relative_path_via_fdcwd();
     test_execveat_at_empty_path_executes_fd();
+    test_execveat_memfd_sealed_exec();
     test_execveat_error_returns();
     test_execveat_non_directory_dirfd_enotdir();
 
