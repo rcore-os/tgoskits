@@ -35,8 +35,19 @@ pub struct BootOffer {
 pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
     crate::logln!("serial_control_wait: waiting for AXLOADER BOOT");
     announce_ready();
-    let line = read_boot_line()?;
-    parse_boot_offer(&line)
+    loop {
+        let line = read_boot_line()?;
+        match parse_boot_offer(&line) {
+            Ok(offer) if valid_kernel_url(&offer.kernel_url) => return Ok(offer),
+            Ok(offer) => {
+                crate::logln!(
+                    "serial_control_ignored: invalid kernel_url {}",
+                    offer.kernel_url
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 fn announce_ready() {
@@ -117,6 +128,10 @@ fn parse_boot_offer(input: &str) -> Result<BootOffer, ControlError> {
         arch: arch.into(),
         entry_symbol: json_nullable_string_field(input, "entry_symbol").map(String::from),
     })
+}
+
+fn valid_kernel_url(url: &str) -> bool {
+    url.starts_with("http://") && url.contains("/kernel.elf")
 }
 
 fn json_string_field<'a>(input: &'a str, key: &str) -> Option<&'a str> {
