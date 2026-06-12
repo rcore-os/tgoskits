@@ -63,13 +63,24 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     Ok(Filesystem::new(fs))
 }
 
-pub(crate) fn ensure_copy_up(loc: &Location) -> VfsResult<()> {
+pub(crate) fn visible_target(loc: &Location) -> VfsResult<Location> {
     if let Ok(file) = loc.entry().downcast::<OverlayFile>() {
-        file.ensure_upper()?;
+        file.current()
     } else if let Ok(dir) = loc.entry().downcast::<OverlayDir>() {
-        dir.materialize_upper_dir()?;
+        dir.current_dir()
+    } else {
+        Ok(loc.clone())
     }
-    Ok(())
+}
+
+pub(crate) fn ensure_copy_up_target(loc: &Location) -> VfsResult<Location> {
+    if let Ok(file) = loc.entry().downcast::<OverlayFile>() {
+        file.ensure_upper()
+    } else if let Ok(dir) = loc.entry().downcast::<OverlayDir>() {
+        dir.materialize_upper_dir()
+    } else {
+        Ok(loc.clone())
+    }
 }
 
 struct OverlayFs {

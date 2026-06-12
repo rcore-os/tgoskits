@@ -11,6 +11,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 static char base[PATH_MAX];
@@ -86,6 +87,21 @@ static int dir_contains(const char *dir, const char *name)
     return found;
 }
 
+static int xattr_list_contains(const char *list, ssize_t len, const char *name)
+{
+    ssize_t pos = 0;
+    size_t name_len = strlen(name);
+    while (pos < len) {
+        const char *entry = list + pos;
+        size_t entry_len = strlen(entry);
+        if (entry_len == name_len && strcmp(entry, name) == 0) {
+            return 1;
+        }
+        pos += (ssize_t)entry_len + 1;
+    }
+    return 0;
+}
+
 static void mkdir_checked(const char *path)
 {
     CHECK(mkdir(path, 0755) == 0, "mkdir");
@@ -120,6 +136,9 @@ static void setup_tree(void)
     CHECK(make_path(path, sizeof(path), lower, "write_me"),
           "build lower write path");
     write_file(path, "lower original\n");
+    CHECK(make_path(path, sizeof(path), lower, "xattr_me"),
+          "build lower xattr path");
+    write_file(path, "lower xattr\n");
     CHECK(make_path(path, sizeof(path), lower, "lower_only"),
           "build lower-only path");
     write_file(path, "lower visible\n");
@@ -187,6 +206,36 @@ static void test_copy_up_write(void)
     CHECK(strcmp(buf, "lower original\n") == 0, "copy-up preserves lower file");
 }
 
+static void test_xattr_copy_up(void)
+{
+    char path[PATH_MAX];
+    char buf[64];
+    char list[128];
+    const char *name = "user.overlay";
+    const char *value = "copied";
+
+    CHECK(make_path(path, sizeof(path), merged, "xattr_me"),
+          "build merged xattr path");
+    CHECK(setxattr(path, name, value, strlen(value), 0) == 0,
+          "setxattr lower-backed overlay file");
+
+    memset(buf, 0, sizeof(buf));
+    ssize_t len = getxattr(path, name, buf, sizeof(buf));
+    CHECK(len == (ssize_t)strlen(value), "getxattr after path relookup");
+    CHECK(memcmp(buf, value, strlen(value)) == 0,
+          "getxattr returns copied-up value");
+
+    memset(list, 0, sizeof(list));
+    len = listxattr(path, list, sizeof(list));
+    CHECK(len > 0, "listxattr after path relookup");
+    CHECK(xattr_list_contains(list, len, name), "listxattr includes new xattr");
+
+    CHECK(removexattr(path, name) == 0, "removexattr lower-backed overlay file");
+    errno = 0;
+    CHECK(getxattr(path, name, buf, sizeof(buf)) == -1 && errno == ENODATA,
+          "removed xattr stays absent after path relookup");
+}
+
 static void test_whiteout_lookup(void)
 {
     char path[PATH_MAX];
@@ -233,6 +282,7 @@ int main(void)
     mount_overlay();
     test_read_dir_merge();
     test_copy_up_write();
+    test_xattr_copy_up();
     test_whiteout_lookup();
     test_opaque_lookup();
     CHECK(umount(merged) == 0, "unmount overlay filesystem");

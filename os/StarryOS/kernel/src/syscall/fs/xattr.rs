@@ -40,6 +40,10 @@ fn store_for_update(loc: &Location) -> Arc<XattrStore> {
     loc.user_data().get_or_insert_with(XattrStore::default)
 }
 
+fn existing_attrs(loc: &Location) -> Option<XattrMap> {
+    existing_store(loc).map(|store| store.attrs.lock().clone())
+}
+
 fn read_name(name: *const c_char) -> AxResult<String> {
     let name = vm_load_string(name)?;
     let bytes = name.as_bytes();
@@ -131,6 +135,7 @@ fn get_xattr(
     size: usize,
 ) -> AxResult<isize> {
     let name = read_name(name)?;
+    let loc = overlay::visible_target(&loc)?;
     let value = {
         let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
         store
@@ -144,6 +149,7 @@ fn get_xattr(
 }
 
 fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
+    let loc = overlay::visible_target(&loc)?;
     let names = {
         let Some(store) = existing_store(&loc) else {
             return copy_list_to_user(&[], list, size);
@@ -169,9 +175,9 @@ fn set_xattr(
 
     let name = read_name(name)?;
     let value = read_value(value, size)?;
+    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?);
 
-    if let Some(store) = existing_store(&loc) {
-        let attrs = store.attrs.lock();
+    if let Some(attrs) = &old_attrs {
         let exists = attrs.contains_key(&name);
         if exists && flags & XATTR_CREATE != 0 {
             return Err(AxError::AlreadyExists);
@@ -183,10 +189,14 @@ fn set_xattr(
         return Err(linux_errno(LinuxError::ENODATA));
     }
 
-    overlay::ensure_copy_up(&loc)?;
-
+    let loc = overlay::ensure_copy_up_target(&loc)?;
     let store = store_for_update(&loc);
     let mut attrs = store.attrs.lock();
+    if attrs.is_empty()
+        && let Some(old_attrs) = old_attrs
+    {
+        *attrs = old_attrs;
+    }
     match attrs.entry(name) {
         Entry::Occupied(mut entry) => {
             if flags & XATTR_CREATE != 0 {
@@ -206,17 +216,19 @@ fn set_xattr(
 
 fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
     let name = read_name(name)?;
-    let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
-    {
-        let attrs = store.attrs.lock();
-        if !attrs.contains_key(&name) {
-            return Err(linux_errno(LinuxError::ENODATA));
-        }
+    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
+        .ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+    if !old_attrs.contains_key(&name) {
+        return Err(linux_errno(LinuxError::ENODATA));
     }
 
-    overlay::ensure_copy_up(&loc)?;
-
-    store.attrs.lock().remove(&name);
+    let loc = overlay::ensure_copy_up_target(&loc)?;
+    let store = store_for_update(&loc);
+    let mut attrs = store.attrs.lock();
+    if attrs.is_empty() {
+        *attrs = old_attrs;
+    }
+    attrs.remove(&name);
     Ok(0)
 }
 
