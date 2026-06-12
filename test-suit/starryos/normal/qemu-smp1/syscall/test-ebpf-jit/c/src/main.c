@@ -177,9 +177,10 @@ struct perf_event_attr {
 /* bpf_endian flag constants - upper 4 bits of imm in BPF_END instruction */
 #define BPF_ENDIAN_FLAG_BE 0x08
 
-/* Make a BPF_END instruction: converts value in dst_reg from host to big-endian */
+/* Make a BPF_END instruction: converts value in dst_reg from host to big-endian.
+ * rbpf uses BPF_X for BE (0xdc) and BPF_K for LE (0xd4); imm is the pure bit-size. */
 #define BPF_END_TO_BE(dst, size_bits) \
-    make_insn(BPF_ALU | BPF_END | BPF_K, dst, 0, 0, (size_bits) | 0x08)
+    make_insn(BPF_ALU | BPF_END | BPF_X, dst, 0, 0, (size_bits))
 
 static struct bpf_insn make_insn(uint8_t code, uint8_t dst, uint8_t src, int16_t off, int32_t imm) {
     struct bpf_insn i;
