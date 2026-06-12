@@ -644,6 +644,15 @@ impl<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Cursor
         self.flusher = TlbFlusher::Full;
     }
 
+    /// Clears any pending TLB flush without performing it.
+    ///
+    /// Useful when the cursor has modified a page table that is not the
+    /// currently-loaded one (e.g. a new address space created for fork/exec).
+    /// In that situation a TLB flush would evict valid entries for no benefit.
+    pub fn clear_flush(&mut self) {
+        self.flusher = TlbFlusher::None;
+    }
+
     /// Flushes the TLB according to the recorded flush requests.
     pub fn flush(&mut self) {
         #[cfg(not(docsrs))]

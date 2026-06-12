@@ -55,11 +55,17 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
         // (aarch64: TTBR0_EL1, LoongArch64: PGDL), so there is no need to copy the
         // kernel portion to the user page table.
         let kspace = ax_mm::kernel_aspace().lock();
-        _aspace.page_table_mut().cursor().copy_from(
-            kspace.page_table(),
-            kspace.base(),
-            kspace.size(),
-        );
+        let mut cursor = _aspace.page_table_mut().cursor();
+        cursor.copy_from(kspace.page_table(), kspace.base(), kspace.size());
+        // The cursor sets TlbFlusher::Full inside copy_from, which would flush the
+        // TLB when the cursor is dropped. However, we are modifying a page table
+        // that is NOT currently loaded on this CPU (it belongs to a new address
+        // space created for fork/exec). A full TLB flush here is both unnecessary
+        // and harmful — it evicts valid entries from the current CPU's TLB,
+        // forcing expensive page-table walks on every subsequent memory access
+        // until the TLB repopulates. This is particularly costly under QEMU TCG
+        // emulation. Suppress the flush.
+        cursor.clear_flush();
     }
     Ok(())
 }

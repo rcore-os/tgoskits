@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: ""
+      kvm:
+        description: Pass /dev/kvm into the container (x86_64 KVM acceleration).
+        required: false
+        type: boolean
+        default: false
       apk_region:
         description: APK mirror region passed through to Starry prebuild flows.
         required: false
@@ -116,6 +121,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      options: ${{ inputs.kvm && '--device /dev/kvm' || '' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

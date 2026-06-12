@@ -434,6 +434,7 @@ jobs:
             command: target/debug/tg-xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: base
+            kvm: true
             apk_region: us
             limit_to_owner: ""
             main_pr_only: false
