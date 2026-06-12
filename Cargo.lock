@@ -703,6 +703,7 @@ dependencies = [
  "some-serial",
  "spin 0.12.0",
  "virtio-drivers",
+ "x86",
 ]
 
 [[package]]
