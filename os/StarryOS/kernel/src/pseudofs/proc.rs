@@ -313,11 +313,19 @@ fn render_proc_net_arp() -> String {
 }
 
 fn render_proc_net_dev() -> String {
-    "Inter-|   Receive                                                |  Transmit\n\
-      face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
-        lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n\
-      eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n"
-        .to_string()
+    let mut buf = "Inter-|   Receive                                                |  \
+                   Transmit\nface |bytes    packets errs drop fifo frame compressed \
+                   multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+        .to_string();
+    for iface in ax_net::interfaces() {
+        let _ = writeln!(
+            buf,
+            "{:>8}:       0       0    0    0    0     0          0         0        0       0    \
+             0    0    0     0       0          0",
+            iface.name
+        );
+    }
+    buf
 }
 
 pub fn new_procfs() -> Filesystem {

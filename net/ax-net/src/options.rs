@@ -4,6 +4,8 @@ use core::time::Duration;
 use ax_errno::{AxError, AxResult, LinuxError};
 use enum_dispatch::enum_dispatch;
 
+use crate::InterfaceId;
+
 /// Linux-like TCP connection state reported by TCP_INFO.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
@@ -159,6 +161,7 @@ define_options! {
     SocketType(i32),
     SocketProtocol(i32),
     SocketDomain(i32),
+    BindToDevice(Option<InterfaceId>),
 
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),

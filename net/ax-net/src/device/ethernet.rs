@@ -14,6 +14,7 @@ use smoltcp::{
 };
 
 use crate::{
+    config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
 };
@@ -231,7 +232,8 @@ impl EthernetDevice {
     fn handle_frame(
         &mut self,
         frame: &[u8],
-        buffer: &mut PacketBuffer<()>,
+        interface_id: InterfaceId,
+        buffer: &mut PacketBuffer<InterfaceId>,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
@@ -252,7 +254,7 @@ impl EthernetDevice {
             EthernetProtocol::Ipv4 => {
                 snoop(frame.payload());
                 buffer
-                    .enqueue(frame.payload().len(), ())
+                    .enqueue(frame.payload().len(), interface_id)
                     .unwrap()
                     .copy_from_slice(frame.payload());
                 return true;
@@ -450,7 +452,8 @@ impl Device for EthernetDevice {
 
     fn recv(
         &mut self,
-        buffer: &mut PacketBuffer<()>,
+        interface_id: InterfaceId,
+        buffer: &mut PacketBuffer<InterfaceId>,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
@@ -473,7 +476,7 @@ impl Device for EthernetDevice {
                 rx_buf.packet()
             );
 
-            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
+            let result = self.handle_frame(rx_buf.packet(), interface_id, buffer, timestamp, snoop);
             if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
                 warn!("recycle_rx_buffer failed: {:?}", err);
             }

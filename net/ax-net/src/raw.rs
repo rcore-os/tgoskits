@@ -26,11 +26,12 @@ use spin::RwLock;
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    config::{DeviceBinding, InterfaceId},
     consts::{RAW_RX_BUF_LEN, RAW_TX_BUF_LEN},
     general::GeneralOptions,
-    get_service,
+    get_control, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces,
+    request_poll,
 };
 
 pub(crate) fn new_raw_socket(
@@ -63,7 +64,7 @@ impl RawSocket {
     pub fn new(ip_version: IpVersion, ip_protocol: IpProtocol) -> Self {
         let handle = SOCKET_SET.add(new_raw_socket(ip_version, ip_protocol));
         let general = GeneralOptions::new(3, 2, u8::from(ip_protocol) as i32); // SOCK_RAW
-        general.set_device_mask(u32::MAX);
+        general.set_device_binding(DeviceBinding::default());
         Self {
             handle,
             ip_version,
@@ -75,6 +76,16 @@ impl RawSocket {
             tx_closed: AtomicBool::new(false),
             general,
         }
+    }
+
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
+        if interface_by_id(interface_id).is_none() {
+            return Err(AxError::NoSuchDevice);
+        }
+        self.general.set_device_binding(DeviceBinding {
+            bound_if: Some(interface_id),
+        });
+        Ok(())
     }
 
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
@@ -100,14 +111,14 @@ impl RawSocket {
         }
     }
 
-    fn local_address_for(&self, remote: IpAddress) -> IpAddress {
+    fn local_address_for(&self, remote: IpAddress) -> AxResult<IpAddress> {
         if let Some(local) = *self.local_addr.read() {
-            return local;
+            return Ok(local);
         }
         if is_loopback_address(remote) {
-            return remote;
+            return Ok(remote);
         }
-        get_service().get_source_address(&remote)
+        Ok(get_control().select_route(&remote)?.source)
     }
 
     fn parse_ip_packet<'a>(&self, packet: &'a [u8]) -> AxResult<(IpAddress, &'a [u8])> {
@@ -210,15 +221,15 @@ impl SocketOps for RawSocket {
         let local_addr = local_addr.into_ip()?;
         let local = self.check_ip_version(local_addr.ip().into())?;
         *self.local_addr.write() = Some(local);
-        let device_mask = if local.is_unspecified() {
-            u32::MAX
+        let binding = if local.is_unspecified() {
+            DeviceBinding::default()
         } else {
-            get_service().device_mask_for(&IpListenEndpoint {
+            get_control().local_binding_for(&IpListenEndpoint {
                 addr: Some(local),
                 port: 0,
-            })
+            })?
         };
-        self.general.set_device_mask(device_mask);
+        self.general.set_device_binding(binding);
         Ok(())
     }
 
@@ -226,14 +237,15 @@ impl SocketOps for RawSocket {
         let remote_addr = remote_addr.into_ip()?;
         let remote = self.check_ip_version(remote_addr.ip().into())?;
         if self.local_addr.read().is_none() {
-            *self.local_addr.write() = Some(get_service().get_source_address(&remote));
+            *self.local_addr.write() = Some(get_control().select_route(&remote)?.source);
         }
         *self.peer_addr.write() = Some(remote);
+        let local = (*self.local_addr.read()).expect("raw socket local address");
         self.general
-            .set_device_mask(get_service().device_mask_for(&IpListenEndpoint {
-                addr: Some(remote),
+            .set_device_binding(get_control().local_binding_for(&IpListenEndpoint {
+                addr: Some(local),
                 port: 0,
-            }));
+            })?);
         Ok(())
     }
 
@@ -247,13 +259,13 @@ impl SocketOps for RawSocket {
         }
 
         let remote = self.remote_address(&options)?;
-        let local = self.local_address_for(remote);
+        let local = self.local_address_for(remote)?;
         let payload_len = src.remaining();
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let loopback_ipv4 = self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote);
 
         self.general.send_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             self.with_smol_socket(|socket| {
                 if !socket.can_send() {
                     return Err(AxError::WouldBlock);
@@ -361,7 +373,7 @@ impl SocketOps for RawSocket {
         let mut options = options;
 
         self.general.recv_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             self.with_smol_socket(|socket| {
                 loop {
                     if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
@@ -447,7 +459,7 @@ impl SocketOps for RawSocket {
 
 impl Pollable for RawSocket {
     fn poll(&self) -> IoEvents {
-        poll_interfaces();
+        request_poll();
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| {
             events.set(

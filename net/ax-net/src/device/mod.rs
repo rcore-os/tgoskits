@@ -7,6 +7,8 @@ use smoltcp::{
     wire::{IpAddress, Ipv4Cidr},
 };
 
+use crate::config::InterfaceId;
+
 mod driver;
 mod ethernet;
 mod loopback;
@@ -33,7 +35,8 @@ pub trait Device: Send + Sync {
 
     fn recv(
         &mut self,
-        buffer: &mut PacketBuffer<()>,
+        interface_id: InterfaceId,
+        buffer: &mut PacketBuffer<InterfaceId>,
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool;

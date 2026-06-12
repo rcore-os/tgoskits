@@ -1,6 +1,9 @@
+use alloc::vec;
+
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_net::options::{
-    Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState,
+use ax_net::{
+    InterfaceId,
+    options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
 };
 use linux_raw_sys::net::{
     IPPROTO_IPV6, IPV6_V6ONLY, TCP_INFO, TCPI_OPT_ECN, TCPI_OPT_ECN_SEEN, TCPI_OPT_SACK,
@@ -22,6 +25,47 @@ fn read_int_sockopt(optval: UserConstPtr<u8>, optlen: socklen_t) -> AxResult<i32
         return Err(AxError::InvalidInput);
     }
     Ok(*optval.cast::<i32>().get_as_ref()?)
+}
+
+fn read_bind_to_device(
+    optval: UserConstPtr<u8>,
+    optlen: socklen_t,
+) -> AxResult<Option<InterfaceId>> {
+    if optlen == 0 {
+        return Ok(None);
+    }
+    let buf = optval.get_as_slice(optlen as usize)?;
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if end == 0 {
+        return Ok(None);
+    }
+    let name = core::str::from_utf8(&buf[..end]).map_err(|_| AxError::InvalidInput)?;
+    ax_net::interface_by_name(name)
+        .map(|info| Some(info.id))
+        .ok_or(AxError::NoSuchDevice)
+}
+
+fn write_bind_to_device(
+    socket: &Socket,
+    optval: UserPtr<u8>,
+    optlen: &mut socklen_t,
+) -> AxResult<()> {
+    let mut binding = None;
+    socket.get_option(GetSocketOption::BindToDevice(&mut binding))?;
+    let name = binding
+        .and_then(ax_net::interface_by_id)
+        .map(|info| info.name)
+        .unwrap_or_default();
+    let bytes = name.as_bytes();
+    let write_len = (*optlen as usize).min(bytes.len() + 1);
+    *optlen = write_len as socklen_t;
+    if write_len == 0 {
+        return Ok(());
+    }
+    let mut out = vec![0u8; write_len];
+    let name_len = write_len.saturating_sub(1).min(bytes.len());
+    out[..name_len].copy_from_slice(&bytes[..name_len]);
+    Ok(vm_write_slice(optval.as_ptr(), &out)?)
 }
 
 fn tcp_state_to_linux(state: TcpState) -> u8 {
@@ -265,7 +309,9 @@ pub fn sys_getsockopt(
     // known from the Socket enum variant, not from a per-protocol option.
     {
         use ax_net::Socket as SocketInner;
-        use linux_raw_sys::net::{SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET};
+        use linux_raw_sys::net::{
+            SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET,
+        };
 
         if level == SOL_SOCKET && optname == SO_TYPE {
             if *optlen == 0 {
@@ -280,6 +326,10 @@ pub fn sys_getsockopt(
                 SocketInner::Vsock(_) => SOCK_STREAM,
             };
             *get(optval, optlen)? = so_type as i32;
+            return Ok(0);
+        }
+        if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+            write_bind_to_device(&socket, optval, optlen)?;
             return Ok(0);
         }
     }
@@ -350,10 +400,15 @@ pub fn sys_setsockopt(
     }
 
     {
-        use linux_raw_sys::net::{SO_BROADCAST, SOL_SOCKET};
+        use linux_raw_sys::net::{SO_BINDTODEVICE, SO_BROADCAST, SOL_SOCKET};
 
         if (level, optname) == (SOL_SOCKET, SO_BROADCAST) {
             let _ = read_int_sockopt(optval, optlen)?;
+            return Ok(0);
+        }
+        if (level, optname) == (SOL_SOCKET, SO_BINDTODEVICE) {
+            let binding = read_bind_to_device(optval, optlen)?;
+            Socket::from_fd(fd)?.set_option(SetSocketOption::BindToDevice(&binding))?;
             return Ok(0);
         }
     }

@@ -21,11 +21,13 @@ use spin::LazyLock;
 use crate::{
     LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
     SocketOps,
+    config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    endpoint_from_ip_endpoint,
     general::GeneralOptions,
-    get_service,
+    get_control, get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    poll_interfaces,
+    request_poll,
     state::*,
 };
 
@@ -89,6 +91,16 @@ impl TcpSocket {
         }
     }
 
+    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
+        if interface_by_id(interface_id).is_none() {
+            return Err(AxError::NoSuchDevice);
+        }
+        self.general.set_device_binding(DeviceBinding {
+            bound_if: Some(interface_id),
+        });
+        Ok(())
+    }
+
     /// Creates a new TCP socket that is already connected.
     fn new_connected(
         handle: SocketHandle,
@@ -113,9 +125,11 @@ impl TcpSocket {
         };
         let endpoint = endpoint_from_ip_endpoint(local_endpoint);
         *result.bound_endpoint.lock() = endpoint;
-        result
-            .general
-            .set_device_mask(get_service().device_mask_for(&endpoint));
+        result.general.set_device_binding(
+            get_control()
+                .local_binding_for(&endpoint)
+                .unwrap_or_default(),
+        );
         result
     }
 }
@@ -387,10 +401,10 @@ impl SocketOps for TcpSocket {
                 if self.bound_endpoint.lock().port != 0 {
                     return Err(AxError::InvalidInput);
                 }
+                let binding = get_control().local_binding_for(&endpoint)?;
                 self.register_bound_endpoint(endpoint)?;
                 *self.bound_endpoint.lock() = endpoint;
-                self.general
-                    .set_device_mask(get_service().device_mask_for(&endpoint));
+                self.general.set_device_binding(binding);
                 debug!("TCP socket {}: binding to {}", self.handle, local_addr);
                 Ok(())
             })
@@ -405,7 +419,7 @@ impl SocketOps for TcpSocket {
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
         self.general.send_poller(self, || {
-            poll_interfaces();
+            request_poll();
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
                 Err(AxError::WouldBlock)
@@ -424,6 +438,7 @@ impl SocketOps for TcpSocket {
                 if bound_endpoint.port == 0 {
                     bound_endpoint.port = get_ephemeral_port()?;
                 }
+                let binding = get_control().local_binding_for(&bound_endpoint)?;
                 let register_bound = !self.bound_registered.load(Ordering::Acquire);
                 if register_bound {
                     register_tcp_bound(bound_endpoint)?;
@@ -438,8 +453,7 @@ impl SocketOps for TcpSocket {
                 if register_bound {
                     self.bound_registered.store(true, Ordering::Release);
                 }
-                self.general
-                    .set_device_mask(get_service().device_mask_for(&bound_endpoint));
+                self.general.set_device_binding(binding);
                 debug!("listening on {}", bound_endpoint);
                 Ok(())
             })?;
@@ -456,7 +470,7 @@ impl SocketOps for TcpSocket {
 
         let bound_port = self.bound_endpoint()?.port;
         self.general.recv_poller(self, || {
-            poll_interfaces();
+            request_poll();
             let accepted = {
                 let mut sockets = SOCKET_SET.inner.lock();
                 LISTEN_TABLE.accept(bound_port, &mut sockets)?
@@ -480,7 +494,7 @@ impl SocketOps for TcpSocket {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let result = self.general.send_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
@@ -503,7 +517,7 @@ impl SocketOps for TcpSocket {
         // network stack immediately. For loopback, this causes loopback.send()
         // to run, which wakes any epoll wakers registered on the peer socket.
         if result.is_ok() {
-            poll_interfaces();
+            request_poll();
         }
         result
     }
@@ -517,7 +531,7 @@ impl SocketOps for TcpSocket {
         }
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, || {
-            poll_interfaces();
+            request_poll();
             self.with_smol_socket(|socket| {
                 if socket.recv_queue() > 0 {
                     if options.flags.contains(RecvFlags::PEEK) {
@@ -564,7 +578,7 @@ impl SocketOps for TcpSocket {
         if available > 0 {
             return Ok(available);
         }
-        poll_interfaces();
+        request_poll();
         Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
 
@@ -612,7 +626,7 @@ impl SocketOps for TcpSocket {
                     });
                     self.unregister_bound_endpoint();
                     *self.bound_endpoint.lock() = empty_endpoint();
-                    poll_interfaces();
+                    request_poll();
                     Ok(())
                 })?;
             } else if how.has_write() {
@@ -620,7 +634,7 @@ impl SocketOps for TcpSocket {
                     debug!("TCP socket {}: shutting down write side", self.handle);
                     socket.close();
                 });
-                poll_interfaces();
+                request_poll();
             }
         }
 
@@ -630,7 +644,7 @@ impl SocketOps for TcpSocket {
                 LISTEN_TABLE.unlisten(self.bound_endpoint()?.port);
                 self.unregister_bound_endpoint();
                 *self.bound_endpoint.lock() = empty_endpoint();
-                poll_interfaces();
+                request_poll();
                 Ok(())
             })?;
         }
@@ -642,7 +656,7 @@ impl SocketOps for TcpSocket {
 
 impl Pollable for TcpSocket {
     fn poll(&self) -> IoEvents {
-        poll_interfaces();
+        request_poll();
         let mut events = match self.state() {
             State::Connecting => self.poll_connect(),
             State::Connected | State::Idle | State::Closed => self.poll_stream(),
@@ -671,7 +685,7 @@ impl Drop for TcpSocket {
         self.unregister_bound_endpoint();
         SOCKET_SET.remove(self.handle);
         // This is crucial for the close messages to be sent.
-        poll_interfaces();
+        request_poll();
     }
 }
 
@@ -706,13 +720,6 @@ const fn empty_endpoint() -> IpListenEndpoint {
     }
 }
 
-fn endpoint_from_ip_endpoint(endpoint: IpEndpoint) -> IpListenEndpoint {
-    IpListenEndpoint {
-        addr: Some(endpoint.addr),
-        port: endpoint.port,
-    }
-}
-
 impl TcpSocket {
     fn start_connect(&self, remote_addr: SocketAddr) -> AxResult {
         self.state
@@ -731,9 +738,15 @@ impl TcpSocket {
                 // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
                 let remote_endpoint = IpEndpoint::from(remote_addr);
                 let mut bound_endpoint = *self.bound_endpoint.lock();
-                if bound_endpoint.addr.is_none() {
+
+                // Record original bind state before modifying
+                let was_unbound_or_unspecified =
+                    bound_endpoint.addr.is_none_or(|addr| addr.is_unspecified());
+
+                // Fill source address if unbound or bound to 0.0.0.0
+                if bound_endpoint.addr.is_none_or(|addr| addr.is_unspecified()) {
                     bound_endpoint.addr =
-                        Some(get_service().get_source_address(&remote_endpoint.addr));
+                        Some(get_control().select_route(&remote_endpoint.addr)?.source);
                 }
                 if bound_endpoint.port == 0 {
                     bound_endpoint.port = get_ephemeral_port()?;
@@ -774,9 +787,15 @@ impl TcpSocket {
                 if register_bound {
                     self.bound_registered.store(true, Ordering::Release);
                 }
-                self.general.set_device_mask(
-                    get_service().device_mask_for(&endpoint_from_ip_endpoint(remote_endpoint)),
-                );
+
+                // Only set device binding if was originally unbound or bound to 0.0.0.0
+                // Binding to a specific IP should lock the interface
+                if was_unbound_or_unspecified {
+                    self.general
+                        .set_device_binding(get_control().local_binding_for(&bound_endpoint)?);
+                }
+                // else: bound to specific IP, keep existing interface binding
+
                 Ok(())
             })
     }
@@ -872,8 +891,7 @@ mod tests {
     use crate::{
         options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
         test_support::{
-            LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network,
-            network_test_guard,
+            LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
         },
     };
 
@@ -901,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn connect_uses_peer_route_for_device_mask() {
+    fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
         init_split_route_network();
 
@@ -913,12 +931,57 @@ mod tests {
         socket
             .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
             .unwrap();
-        assert_eq!(socket.general.device_mask(), LOCAL_MASK);
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
+            }
+        );
+
+        // Connect to different network - should NOT change interface binding
+        // because we're bound to a specific local address
+        socket
+            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
+            .unwrap();
+
+        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(LOCAL_IF)
+            }
+        );
+    }
+
+    #[test]
+    fn connect_uses_peer_route_when_unbound() {
+        let _guard = network_test_guard();
+        init_split_route_network();
+
+        let socket = TcpSocket::new();
+        let nonblocking = true;
+        socket
+            .set_option(SetSocketOption::NonBlocking(&nonblocking))
+            .unwrap();
+
+        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                0,
+            )))
+            .unwrap();
 
         socket
             .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
             .unwrap();
 
-        assert_eq!(socket.general.device_mask(), PEER_MASK);
+        // Interface binding should use route decision (PEER_IF)
+        assert_eq!(
+            socket.general.device_binding(),
+            DeviceBinding {
+                bound_if: Some(PEER_IF)
+            }
+        );
     }
 }

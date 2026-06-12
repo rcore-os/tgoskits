@@ -9,7 +9,8 @@ use ax_task::future::{block_on, poll_io, timeout};
 use axpoll::{IoEvents, Pollable};
 
 use crate::{
-    get_service,
+    config::{DeviceBinding, InterfaceId},
+    get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -23,7 +24,7 @@ pub(crate) struct GeneralOptions {
     send_timeout_nanos: AtomicU64,
     recv_timeout_nanos: AtomicU64,
 
-    device_mask: AtomicU32,
+    bound_if: AtomicU32,
 
     /// Socket type: SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3).
     socket_type: AtomicI32,
@@ -45,7 +46,7 @@ impl GeneralOptions {
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
 
-            device_mask: AtomicU32::new(0),
+            bound_if: AtomicU32::new(0),
 
             socket_type: AtomicI32::new(socket_type),
             domain,
@@ -71,16 +72,22 @@ impl GeneralOptions {
         (nanos > 0).then(|| Duration::from_nanos(nanos))
     }
 
-    pub fn set_device_mask(&self, mask: u32) {
-        self.device_mask.store(mask, Ordering::Release);
+    pub fn set_device_binding(&self, binding: DeviceBinding) {
+        self.bound_if.store(
+            binding.bound_if.map_or(0, InterfaceId::get),
+            Ordering::Release,
+        );
     }
 
-    pub fn device_mask(&self) -> u32 {
-        self.device_mask.load(Ordering::Acquire)
+    pub fn device_binding(&self) -> DeviceBinding {
+        let raw = self.bound_if.load(Ordering::Acquire);
+        DeviceBinding {
+            bound_if: (raw != 0).then_some(InterfaceId::new(raw)),
+        }
     }
 
     pub fn register_waker(&self, waker: &Waker) {
-        get_service().register_waker(self.device_mask(), waker);
+        get_service().register_waker(self.device_binding(), waker);
     }
 
     pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
@@ -171,6 +178,9 @@ impl Configurable for GeneralOptions {
             O::SocketDomain(domain) => {
                 **domain = self.domain;
             }
+            O::BindToDevice(binding) => {
+                **binding = self.device_binding().bound_if;
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -196,6 +206,16 @@ impl Configurable for GeneralOptions {
             }
             O::SendBuffer(_) | O::ReceiveBuffer(_) => {
                 // TODO(mivik): implement buffer size options
+            }
+            O::BindToDevice(interface_id) => {
+                if let Some(id) = *interface_id
+                    && interface_by_id(id).is_none()
+                {
+                    return Err(AxError::NoSuchDevice);
+                }
+                self.set_device_binding(DeviceBinding {
+                    bound_if: *interface_id,
+                });
             }
             O::RecvErr(_) => {
                 // TODO: Retrieve ICMP errors via errqueue

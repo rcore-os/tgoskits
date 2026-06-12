@@ -9,6 +9,7 @@ use smoltcp::{
 };
 
 use crate::{
+    config::InterfaceId,
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::Device,
 };
@@ -37,14 +38,15 @@ impl Device for LoopbackDevice {
 
     fn recv(
         &mut self,
-        buffer: &mut PacketBuffer<()>,
+        interface_id: InterfaceId,
+        buffer: &mut PacketBuffer<InterfaceId>,
         _timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
         self.buffer.dequeue().ok().is_some_and(|(_, rx_buf)| {
             snoop(rx_buf);
             buffer
-                .enqueue(rx_buf.len(), ())
+                .enqueue(rx_buf.len(), interface_id)
                 .unwrap()
                 .copy_from_slice(rx_buf);
             true

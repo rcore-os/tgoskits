@@ -1,9 +1,10 @@
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
 use core::{
     pin::Pin,
     task::{Context, Waker},
 };
 
+use ax_errno::{AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
 use ax_task::future::sleep_until;
 use smoltcp::{
@@ -18,24 +19,246 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET, config::Ipv4InterfaceConfig, consts::STANDARD_MTU, device::ArpEntry, router::Router,
+    SOCKET_SET,
+    config::{
+        DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
+        InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
+    },
+    consts::STANDARD_MTU,
+    device::ArpEntry,
+    router::{RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
     Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
 }
 
+use alloc::sync::Arc;
+
+use spin::RwLock;
+
+struct ControlState {
+    interfaces: Vec<NetInterface>,
+    dns: Vec<DnsServerEntry>,
+}
+
+pub struct NetControl {
+    state: RwLock<ControlState>,
+    pub(crate) routes: SharedRouteTable,
+}
+
+impl NetControl {
+    pub(crate) fn new(
+        interfaces: Vec<NetInterface>,
+        routes: SharedRouteTable,
+        dns: Vec<DnsServerEntry>,
+    ) -> Self {
+        Self {
+            state: RwLock::new(ControlState { interfaces, dns }),
+            routes,
+        }
+    }
+
+    pub fn dns_servers(&self) -> Vec<Ipv4Address> {
+        let state = self.state.read();
+        let mut entries = state.dns.clone();
+        entries.sort_by_key(|entry| {
+            (
+                entry.metric,
+                entry.interface_id.get(),
+                entry.server.octets(),
+            )
+        });
+        let mut servers = Vec::new();
+        for entry in entries {
+            if !servers.contains(&entry.server) {
+                servers.push(entry.server);
+            }
+        }
+        servers
+    }
+
+    pub fn interfaces(&self) -> Vec<InterfaceInfo> {
+        let state = self.state.read();
+        state.interfaces.iter().map(NetInterface::to_info).collect()
+    }
+
+    pub fn interface_by_name(&self, name: &str) -> Option<InterfaceInfo> {
+        let state = self.state.read();
+        state
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name)
+            .map(NetInterface::to_info)
+    }
+
+    pub fn interface_by_id(&self, id: InterfaceId) -> Option<InterfaceInfo> {
+        let state = self.state.read();
+        state
+            .interfaces
+            .iter()
+            .find(|interface| interface.id == id)
+            .map(NetInterface::to_info)
+    }
+
+    pub fn ipv4_config(&self, name: &str) -> Option<Ipv4InterfaceConfig> {
+        let state = self.state.read();
+        state
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name)
+            .and_then(|interface| interface.ipv4.map(|address| (interface, address)))
+            .map(|(interface, address)| Ipv4InterfaceConfig {
+                address,
+                gateway: interface.gateway,
+            })
+    }
+
+    pub fn default_routes(&self) -> Vec<RouteInfo> {
+        let _state = self.state.read();
+        self.routes.read().default_routes()
+    }
+
+    pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> AxResult<DeviceBinding> {
+        match endpoint.addr {
+            Some(addr) => {
+                let state = self.state.read();
+                let bound_if = state.interfaces.iter().find_map(|interface| {
+                    (interface
+                        .ipv4
+                        .is_some_and(|ipv4| IpAddress::Ipv4(ipv4.address()) == addr))
+                    .then_some(interface.id)
+                });
+                bound_if
+                    .map(|interface_id| DeviceBinding {
+                        bound_if: Some(interface_id),
+                    })
+                    .ok_or(ax_err_type!(
+                        NoSuchDeviceOrAddress,
+                        "local address is not assigned to any interface"
+                    ))
+            }
+            None => Ok(DeviceBinding::default()),
+        }
+    }
+
+    pub fn select_route(&self, dst_addr: &IpAddress) -> AxResult<RouteDecision> {
+        let state = self.state.read();
+        let routes = self.routes.read();
+        let route = routes
+            .select_route_if(dst_addr, |interface_id| {
+                state
+                    .interfaces
+                    .iter()
+                    .find(|interface| interface.id == interface_id)
+                    .is_some_and(|interface| interface.flags.contains(InterfaceFlags::UP))
+            })
+            .ok_or(ax_err_type!(
+                NoSuchDeviceOrAddress,
+                "no route to destination"
+            ))?;
+        if let Some(interface) = state
+            .interfaces
+            .iter()
+            .find(|interface| interface.id == route.interface_id)
+        {
+            debug_assert!(interface.flags.contains(InterfaceFlags::UP));
+            debug_assert_eq!(interface.metric, route.metric);
+        }
+        Ok(route)
+    }
+
+    fn commit_interface_update(
+        &self,
+        update: &NetworkStateUpdate,
+        routes: Vec<crate::router::Rule>,
+    ) {
+        let mut state = self.state.write();
+        if let Some(interface) = state
+            .interfaces
+            .iter_mut()
+            .find(|interface| interface.id == update.interface_id)
+        {
+            interface.ipv4 = update.ipv4;
+            interface.gateway = update.gateway;
+        }
+        state.dns.retain(|entry| {
+            entry.interface_id != update.interface_id || entry.source != update.dns_source
+        });
+        state.dns.extend(
+            update
+                .dns_servers
+                .iter()
+                .copied()
+                .map(|server| DnsServerEntry {
+                    server,
+                    interface_id: update.interface_id,
+                    metric: update.metric,
+                    source: update.dns_source,
+                }),
+        );
+        self.routes
+            .write()
+            .replace_ipv4_rules_for_interface(update.interface_id, routes);
+    }
+}
+
 pub struct Service {
     pub iface: Interface,
     router: Router,
+    control: Arc<NetControl>,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    dhcp: Option<DhcpState>,
-    static_dns: Vec<Ipv4Address>,
+    dhcp: Vec<DhcpState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NetInterface {
+    pub id: InterfaceId,
+    pub name: String,
+    pub kind: InterfaceKind,
+    pub mac: Option<EthernetAddress>,
+    pub ipv4: Option<Ipv4Cidr>,
+    pub gateway: Option<Ipv4Address>,
+    pub mtu: usize,
+    pub metric: u32,
+    pub flags: InterfaceFlags,
+}
+
+impl NetInterface {
+    fn to_info(&self) -> InterfaceInfo {
+        InterfaceInfo {
+            id: self.id,
+            name: self.name.clone(),
+            kind: self.kind,
+            mac: self.mac,
+            ipv4: self.ipv4.map(|address| Ipv4InterfaceConfig {
+                address,
+                gateway: self.gateway,
+            }),
+            mtu: self.mtu,
+            flags: self.flags,
+            metric: self.metric,
+        }
+    }
+}
+
+struct NetworkStateUpdate {
+    interface_id: InterfaceId,
+    dev: usize,
+    metric: u32,
+    old_ipv4: Option<Ipv4Cidr>,
+    ipv4: Option<Ipv4Cidr>,
+    gateway: Option<Ipv4Address>,
+    dns_source: DnsSource,
+    dns_servers: Vec<Ipv4Address>,
 }
 
 struct DhcpState {
+    interface_id: InterfaceId,
     dev: usize,
+    ifname: String,
     mac: EthernetAddress,
+    metric: u32,
     transaction_id: u32,
     phase: DhcpPhase,
     retry_at: Instant,
@@ -57,10 +280,19 @@ const DHCP_PARAMETER_REQUEST_LIST: &[u8] = &[1, 3, 6, 42];
 const DHCP_MAX_RETRY_SHIFT: usize = 4;
 
 impl DhcpState {
-    fn new(dev: usize, mac: EthernetAddress) -> Self {
+    fn new(
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        mac: EthernetAddress,
+        metric: u32,
+    ) -> Self {
         Self {
+            interface_id,
             dev,
+            ifname,
             mac,
+            metric,
             transaction_id: dhcp_transaction_id(mac),
             phase: DhcpPhase::Discovering,
             retry_at: Instant::from_micros_const(0),
@@ -74,11 +306,11 @@ impl DhcpState {
 
     fn process_packet(
         &mut self,
-        dev: usize,
+        interface_id: InterfaceId,
         packet: &[u8],
         timestamp: Instant,
     ) -> Option<DhcpEvent> {
-        if dev != self.dev {
+        if interface_id != self.interface_id {
             return None;
         }
 
@@ -119,7 +351,8 @@ impl DhcpState {
                 self.retry = 0;
                 self.retry_at = timestamp;
                 info!(
-                    "eth0: DHCP offered address {} from {}",
+                    "{}: DHCP offered address {} from {}",
+                    self.ifname,
                     dhcp_repr.your_ip,
                     self.server_identifier.unwrap_or(ipv4_repr.src_addr)
                 );
@@ -136,6 +369,10 @@ impl DhcpState {
                 self.retry = 0;
                 let address = Ipv4Cidr::new(dhcp_repr.your_ip, prefix_len);
                 Some(DhcpEvent::Configured {
+                    interface_id: self.interface_id,
+                    dev: self.dev,
+                    ifname: self.ifname.clone(),
+                    metric: self.metric,
                     address,
                     router: dhcp_repr.router,
                     dns_servers: dhcp_repr
@@ -148,7 +385,12 @@ impl DhcpState {
             (_, DhcpMessageType::Nak) => {
                 let was_configured = self.address.is_some();
                 self.reset(timestamp);
-                was_configured.then_some(DhcpEvent::Deconfigured)
+                was_configured.then_some(DhcpEvent::Deconfigured {
+                    interface_id: self.interface_id,
+                    dev: self.dev,
+                    ifname: self.ifname.clone(),
+                    metric: self.metric,
+                })
             }
             _ => None,
         }
@@ -198,46 +440,43 @@ impl DhcpState {
     }
 }
 impl Service {
-    pub fn new(mut router: Router, static_dns: Vec<Ipv4Address>) -> Self {
+    pub fn new(mut router: Router, control: Arc<NetControl>) -> Self {
         let config = smoltcp::iface::Config::new(HardwareAddress::Ip);
         let iface = Interface::new(config, &mut router, now());
 
         Self {
             iface,
             router,
+            control,
             timeout: None,
-            dhcp: None,
-            static_dns,
+            dhcp: Vec::new(),
         }
     }
 
-    pub fn enable_dhcp(&mut self, dev: usize, mac: EthernetAddress) {
-        self.dhcp = Some(DhcpState::new(dev, mac));
-        info!("eth0: DHCP enabled");
+    pub fn enable_dhcp(
+        &mut self,
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        mac: EthernetAddress,
+        metric: u32,
+    ) {
+        self.dhcp.push(DhcpState::new(
+            interface_id,
+            dev,
+            ifname.clone(),
+            mac,
+            metric,
+        ));
+        info!("{ifname}: DHCP enabled");
     }
 
     pub fn dhcp_enabled(&self) -> bool {
-        self.dhcp.is_some()
+        !self.dhcp.is_empty()
     }
 
     pub fn dhcp_configured(&self) -> bool {
-        self.dhcp
-            .as_ref()
-            .is_some_and(|state| state.address.is_some())
-    }
-
-    pub fn dns_servers(&self) -> Vec<Ipv4Address> {
-        let dhcp_dns = self
-            .dhcp
-            .as_ref()
-            .map(|state| state.dns_servers.clone())
-            .unwrap_or_default();
-
-        if !dhcp_dns.is_empty() {
-            dhcp_dns
-        } else {
-            self.static_dns.clone()
-        }
+        self.dhcp.iter().all(|state| state.address.is_some())
     }
 
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
@@ -246,14 +485,14 @@ impl Service {
 
         {
             let dhcp = &mut self.dhcp;
-            self.router.poll(timestamp, sockets, |dev, packet| {
-                if let Some(event) = dhcp
-                    .as_mut()
-                    .and_then(|state| state.process_packet(dev, packet, timestamp))
-                {
-                    dhcp_events.push(event);
-                }
-            });
+            self.router
+                .poll(timestamp, sockets, |interface_id, packet| {
+                    for state in dhcp.iter_mut() {
+                        if let Some(event) = state.process_packet(interface_id, packet, timestamp) {
+                            dhcp_events.push(event);
+                        }
+                    }
+                });
         }
         for event in dhcp_events {
             self.handle_dhcp_event(event);
@@ -263,57 +502,112 @@ impl Service {
         self.router.dispatch(timestamp) || dhcp_poll_next
     }
 
-    fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
-        let Some((dev, next_hop, packet)) = self
-            .dhcp
-            .as_mut()
-            .and_then(|state| state.poll_packet(timestamp))
-        else {
-            return false;
-        };
+    pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {
+        self.iface.poll_at(now(), sockets)
+    }
 
-        self.router
-            .send_on_device(dev, next_hop, &packet, timestamp)
+    fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
+        let mut poll_next = false;
+        for state in &mut self.dhcp {
+            if let Some((dev, next_hop, packet)) = state.poll_packet(timestamp) {
+                poll_next |= self
+                    .router
+                    .send_on_device(dev, next_hop, &packet, timestamp);
+            }
+        }
+        poll_next
     }
 
     fn handle_dhcp_event(&mut self, event: DhcpEvent) {
-        match event {
+        let update = match event {
             DhcpEvent::Configured {
+                interface_id,
+                dev,
+                ifname,
+                metric,
                 address,
                 router,
                 dns_servers,
             } => {
-                let Some(state) = &mut self.dhcp else {
-                    return;
-                };
-                warn!("eth0: DHCP acquired address {address}");
+                warn!("{ifname}: DHCP acquired address {address}");
                 match router {
-                    Some(router) => warn!("eth0: DHCP router {router}"),
-                    None => warn!("eth0: DHCP router not provided"),
+                    Some(router) => warn!("{ifname}: DHCP router {router}"),
+                    None => warn!("{ifname}: DHCP router not provided"),
                 }
                 for dns in &dns_servers {
-                    info!("eth0: DHCP DNS {dns}");
+                    info!("{ifname}: DHCP DNS {dns}");
                 }
-
-                Self::set_interface_ipv4(&mut self.iface, state.address, Some(address));
-                state.address = Some(address);
-                state.dns_servers = dns_servers;
-                self.router
-                    .set_ipv4_config(state.dev, Some(address), router.map(IpAddress::Ipv4));
-            }
-            DhcpEvent::Deconfigured => {
-                let Some(state) = &mut self.dhcp else {
-                    return;
+                let old_ipv4 = {
+                    let Some(state) = self
+                        .dhcp
+                        .iter_mut()
+                        .find(|state| state.interface_id == interface_id)
+                    else {
+                        return;
+                    };
+                    let old_ipv4 = state.address;
+                    state.address = Some(address);
+                    state.dns_servers = dns_servers.clone();
+                    old_ipv4
                 };
-                if state.address.is_some() {
-                    info!("eth0: DHCP deconfigured");
+                NetworkStateUpdate {
+                    interface_id,
+                    dev,
+                    metric,
+                    old_ipv4,
+                    ipv4: Some(address),
+                    gateway: router,
+                    dns_source: DnsSource::Dhcp,
+                    dns_servers,
                 }
-                Self::set_interface_ipv4(&mut self.iface, state.address, None);
-                state.address = None;
-                state.dns_servers.clear();
-                self.router.set_ipv4_config(state.dev, None, None);
             }
-        }
+            DhcpEvent::Deconfigured {
+                interface_id,
+                dev,
+                ifname,
+                metric,
+            } => {
+                let old_ipv4 = {
+                    let Some(state) = self
+                        .dhcp
+                        .iter_mut()
+                        .find(|state| state.interface_id == interface_id)
+                    else {
+                        return;
+                    };
+                    if state.address.is_some() {
+                        info!("{ifname}: DHCP deconfigured");
+                    }
+                    let old_ipv4 = state.address;
+                    state.address = None;
+                    state.dns_servers.clear();
+                    old_ipv4
+                };
+                NetworkStateUpdate {
+                    interface_id,
+                    dev,
+                    metric,
+                    old_ipv4,
+                    ipv4: None,
+                    gateway: None,
+                    dns_source: DnsSource::Dhcp,
+                    dns_servers: Vec::new(),
+                }
+            }
+        };
+        self.commit_network_state(update);
+    }
+
+    fn commit_network_state(&mut self, update: NetworkStateUpdate) {
+        Self::set_interface_ipv4(&mut self.iface, update.old_ipv4, update.ipv4);
+        let routes = self.router.ipv4_rules(
+            update.dev,
+            update.interface_id,
+            update.metric,
+            update.ipv4,
+            update.gateway.map(IpAddress::Ipv4),
+        );
+        self.control.commit_interface_update(&update, routes);
     }
 
     fn set_interface_ipv4(
@@ -334,33 +628,11 @@ impl Service {
         });
     }
 
-    pub fn get_source_address(&self, dst_addr: &IpAddress) -> IpAddress {
-        let Some(rule) = self.router.table.lookup(dst_addr) else {
-            panic!("no route to destination: {dst_addr}");
-        };
-        rule.src
-    }
-
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
     }
 
-    pub fn eth0_ipv4_config(&self) -> Option<Ipv4InterfaceConfig> {
-        self.router.ipv4_config_for_dev(1)
-    }
-
-    pub fn device_mask_for(&self, endpoint: &IpListenEndpoint) -> u32 {
-        match endpoint.addr {
-            Some(addr) => self
-                .router
-                .table
-                .lookup(&addr)
-                .map_or(0, |it| 1u32 << it.dev),
-            None => u32::MAX,
-        }
-    }
-
-    pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
+    pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
         let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
 
         if let Some(t) = next {
@@ -380,21 +652,30 @@ impl Service {
             }
         }
 
-        for (i, device) in self.router.devices.iter().enumerate() {
-            if mask & (1 << i) != 0 {
-                device.register_waker(waker);
-            }
-        }
+        self.router.register_waker(binding, waker);
+    }
+
+    pub fn register_device_waker(&mut self, waker: &Waker) {
+        self.router.register_device_waker(waker);
     }
 }
 
 enum DhcpEvent {
     Configured {
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        metric: u32,
         address: Ipv4Cidr,
         router: Option<Ipv4Address>,
         dns_servers: Vec<Ipv4Address>,
     },
-    Deconfigured,
+    Deconfigured {
+        interface_id: InterfaceId,
+        dev: usize,
+        ifname: String,
+        metric: u32,
+    },
 }
 
 fn dhcp_transaction_id(mac: EthernetAddress) -> u32 {
