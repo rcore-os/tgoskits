@@ -6,11 +6,11 @@ use core::{mem, time::Duration};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_task::{
-    WeakAxTaskRef, current,
+    AxTaskRef, WeakAxTaskRef, current,
     future::{block_on, timeout_at_wall},
 };
 use event_listener::{Event, listener};
-use spin::LazyLock;
+use spin::{LazyLock, Once};
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
@@ -54,6 +54,7 @@ impl Ord for Entry {
 static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> =
     LazyLock::new(|| Mutex::new(BinaryHeap::new()));
 static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
+static ALARM_TASK: Once<AxTaskRef> = Once::new();
 
 /// The type of interval timer.
 #[repr(i32)]
@@ -327,9 +328,11 @@ async fn alarm_task() {
 /// Spawns the alarm task.
 pub fn spawn_alarm_task() {
     info!("Initialize alarm...");
-    ax_task::spawn_raw(
-        || block_on(alarm_task()),
-        "alarm_task".to_owned(),
-        ax_task::default_task_stack_size(),
-    );
+    ALARM_TASK.call_once(|| {
+        ax_task::spawn_raw(
+            || block_on(alarm_task()),
+            "alarm_task".to_owned(),
+            ax_task::default_task_stack_size(),
+        )
+    });
 }
