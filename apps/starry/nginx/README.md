@@ -64,3 +64,11 @@ cargo xtask starry app qemu -t nginx --arch loongarch64 --qemu-config apps/starr
 - `/usr/bin/nginx-alpine-mirror.sh`
 
 Mirror helper: `apps/starry/nginx/nginx-alpine-mirror.sh`.
+
+The mirror helper pins `apk` to the Alpine release branch of the running rootfs
+(read from `/etc/alpine-release`, e.g. `v3.23`) instead of the moving
+`latest-stable` alias. This keeps installed packages on the same musl/ABI as the
+rootfs base; `latest-stable` can advance to a newer Alpine release whose binaries
+need a newer musl (for example the `renameat2` symbol) and then fail to relocate
+or crash on the current rootfs. Override the branch with `NGINX_APK_BRANCH` when
+needed.

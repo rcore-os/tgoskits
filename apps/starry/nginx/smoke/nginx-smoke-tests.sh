@@ -86,7 +86,7 @@ finish() {
 trap finish EXIT
 
 prepare_packages() {
-    nginx_apk_add_with_fallback nginx curl busybox-extras coreutils || {
+    nginx_apk_add_with_fallback nginx curl busybox-extras || {
         printf 'NGINX_APP_PREPARE_FAILED: all mirrors failed\n'
         return 1
     }
@@ -211,12 +211,36 @@ test_get_missing() { code=$(curl -sS -o "$OUT/missing.body" -w '%{http_code}' ht
 test_head_small() { code=$(curl -sS -I -o "$OUT/head.headers" -w '%{http_code}' http://127.0.0.1:8080/small.txt || printf 'curl_failed'); [ "$code" = "200" ] && grep -qi '^Content-Length: 18' "$OUT/head.headers"; }
 
 test_keepalive_two_requests() {
-    if command -v nc >/dev/null 2>&1; then NC=nc; elif busybox nc 2>&1 | grep -qi 'usage'; then NC='busybox nc'; else log "SKIP: keepalive test skipped, nc not available"; return 0; fi
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT=timeout; elif busybox timeout 2>&1 | grep -qi 'usage'; then TIMEOUT='busybox timeout'; else log "SKIP: keepalive test skipped, timeout not available"; return 0; fi
-    { printf 'GET /small.txt HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n'; printf 'GET /empty.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'; } | $TIMEOUT 20 sh -c "$NC 127.0.0.1 8080" > "$OUT/keepalive.raw"
-    [ -s "$OUT/keepalive.raw" ] || return 0
-    count=$(tr -d '\r' < "$OUT/keepalive.raw" | grep -c '^HTTP/1.1 200 OK')
-    [ "$count" -eq 2 ]
+    # nginx is configured with keepalive_timeout 5 on :8080. curl reuses a single
+    # TCP connection for multiple URLs given on one command line, so a working
+    # keep-alive path serves both requests with exactly one new connection.
+    # busybox `nc` on this rootfs prints `punt!` and is unusable, so curl (already
+    # a hard smoke dependency) is the reliable way to assert keep-alive here.
+    : > "$OUT/keepalive.raw"
+    if ! curl -sS -o /dev/null \
+        -w 'keepalive_result http_code=%{http_code} num_connects=%{num_connects}\n' \
+        http://127.0.0.1:8080/small.txt http://127.0.0.1:8080/empty.txt \
+        > "$OUT/keepalive.raw" 2>&1; then
+        log "keepalive failed: curl returned an error"
+        dump_file "keepalive raw" "$OUT/keepalive.raw"
+        return 1
+    fi
+    ok_count=$(grep -c 'keepalive_result http_code=200 ' "$OUT/keepalive.raw")
+    if [ "$ok_count" -ne 2 ]; then
+        log "keepalive failed: expected 2 HTTP 200 responses, got $ok_count"
+        dump_file "keepalive raw" "$OUT/keepalive.raw"
+        return 1
+    fi
+    total_connects=0
+    while read -r line; do
+        n=$(printf '%s\n' "$line" | sed -n 's/.*num_connects=\([0-9][0-9]*\).*/\1/p')
+        [ -n "$n" ] && total_connects=$((total_connects + n))
+    done < "$OUT/keepalive.raw"
+    if [ "$total_connects" -ne 1 ]; then
+        log "keepalive failed: expected 1 reused TCP connection, got $total_connects new connects"
+        dump_file "keepalive raw" "$OUT/keepalive.raw"
+        return 1
+    fi
 }
 
 test_logs() { test -s "$LOGDIR/access.log" && test -f "$LOGDIR/error.log"; }
