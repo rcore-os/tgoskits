@@ -19,7 +19,8 @@ use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::{PhysAddr, PhysAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::MappingFlags;
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -250,4 +251,62 @@ pub fn perf_event_output(_ctx: *mut c_void, fd: usize, _flags: u32, data: &[u8])
         .ok_or(AxError::InvalidInput)?;
     bpf_event.write_event(data)?;
     Ok(())
+}
+
+/// Executable kernel mapping used by rbpf JIT programs on x86_64.
+#[allow(unused)]
+struct BPFJitMemory {
+    num_pages: usize,
+    pages: VirtAddr,
+}
+
+#[allow(unused)]
+impl BPFJitMemory {
+    fn new(num_pages: usize) -> AxResult<Self> {
+        let kspace = ax_mm::kernel_aspace();
+        let mut guard = kspace.lock();
+        let virt_start = guard
+            .find_free_area(
+                guard.base(),
+                num_pages * PAGE_SIZE_4K,
+                VirtAddrRange::new(guard.base(), guard.end()),
+            )
+            .ok_or(AxError::NoMemory)?;
+        guard.map_alloc(
+            virt_start,
+            num_pages * PAGE_SIZE_4K,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+            true,
+        )?;
+
+        Ok(BPFJitMemory {
+            num_pages,
+            pages: virt_start,
+        })
+    }
+
+    /// Returns a `'static` mutable slice for rbpf's JIT memory registration.
+    ///
+    /// SAFETY: the caller must keep `self` alive and exclusively owned for at
+    /// least as long as the returned slice may be used. The slice must not be
+    /// used after this `BPFJitMemory` is dropped, because drop unmaps the
+    /// backing pages.
+    unsafe fn as_static_mut_slice(&mut self) -> &'static mut [u8] {
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.pages.as_ptr() as *mut u8,
+                self.num_pages * PAGE_SIZE_4K,
+            )
+        }
+    }
+}
+
+impl Drop for BPFJitMemory {
+    fn drop(&mut self) {
+        let kspace = ax_mm::kernel_aspace();
+        let mut guard = kspace.lock();
+        guard
+            .unmap(self.pages, self.num_pages * PAGE_SIZE_4K)
+            .expect("failed to unmap BPF JIT memory");
+    }
 }
