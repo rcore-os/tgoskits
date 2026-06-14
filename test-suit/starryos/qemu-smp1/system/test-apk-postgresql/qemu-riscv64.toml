@@ -1,0 +1,91 @@
+args = [
+    "-nographic",
+    "-m",
+    "1G",
+    "-cpu",
+    "rv64",
+    "-device",
+    "virtio-blk-device,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device",
+    "virtio-net-device,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+
+
+shell_init_cmd = '''
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+
+echo "APK_POSTGRESQL_STABLE_TEST_BEGIN"
+
+apk_cmd_timeout=600
+
+cleanup() {
+    echo "APK_POSTGRESQL_CLEANUP_BEGIN"
+    pkill postgres || true
+    pkill postmaster || true
+    rm -rf /tmp/pgdata
+    rm -rf /tmp/pg_socket
+    rm -f /tmp/pg.log
+    echo "APK_POSTGRESQL_CLEANUP_END"
+}
+
+cleanup
+
+echo "APK_UPDATE_BEGIN"
+timeout $apk_cmd_timeout apk update
+echo "APK_UPDATE_END"
+
+echo "APK_ADD_POSTGRESQL_BEGIN"
+timeout $apk_cmd_timeout apk add postgresql postgresql-client
+echo "APK_ADD_POSTGRESQL_END"
+
+echo "POSTGRESQL_VERSION_BEGIN"
+postgres --version || true
+psql --version || true
+echo "POSTGRESQL_VERSION_END"
+
+mkdir -p /tmp/pgdata
+mkdir -p /tmp/pg_socket
+chmod 700 /tmp/pgdata
+
+echo "INITDB_BEGIN"
+timeout $apk_cmd_timeout initdb -D /tmp/pgdata
+echo "INITDB_END"
+
+echo "PG_CTL_START_BEGIN"
+timeout $apk_cmd_timeout pg_ctl -D /tmp/pgdata -o "-k /tmp/pg_socket -h 127.0.0.1" -l /tmp/pg.log start
+echo "PG_CTL_START_END"
+
+sleep 3
+
+echo "PSQL_SELECT_BEGIN"
+timeout 60 psql -h /tmp/pg_socket -d postgres -c "SELECT 1;"
+echo "PSQL_SELECT_END"
+
+echo "PSQL_CREATE_TABLE_BEGIN"
+timeout 60 psql -h /tmp/pg_socket -d postgres -c "CREATE TABLE starry_test(id INT PRIMARY KEY, name TEXT);"
+echo "PSQL_CREATE_TABLE_END"
+
+echo "PSQL_INSERT_BEGIN"
+timeout 60 psql -h /tmp/pg_socket -d postgres -c "INSERT INTO starry_test VALUES (1, 'hello_starry');"
+echo "PSQL_INSERT_END"
+
+echo "PSQL_QUERY_BEGIN"
+timeout 60 psql -h /tmp/pg_socket -d postgres -c "SELECT * FROM starry_test;"
+echo "PSQL_QUERY_END"
+
+echo "PG_CTL_STOP_BEGIN"
+timeout 60 pg_ctl -D /tmp/pgdata stop
+echo "PG_CTL_STOP_END"
+
+cleanup
+
+echo "APK_POSTGRESQL_STABLE_TEST_PASS"
+'''
