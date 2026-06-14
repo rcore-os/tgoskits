@@ -21,8 +21,8 @@ pub use config::{
     send_txpwr_ofst_req,
 };
 pub use connection::{
-    send_mm_add_if_req, send_mm_add_if_req_typed, send_sm_connect_req, send_sm_disconnect_req,
-    wait_for_indication,
+    send_mm_add_if_req, send_mm_add_if_req_typed, send_mm_remove_if_req, send_sm_connect_req,
+    send_sm_disconnect_req, wait_for_indication,
 };
 pub use key::{send_key_add_req, send_key_del_req};
 // 显式重导出 lmac_msg 中的协议定义

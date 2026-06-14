@@ -95,6 +95,15 @@ static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 
+/// Registry of wireless control-plane handles, keyed by interface name.
+///
+/// Populated when a wireless device is registered (the runtime captures a
+/// [`rd_net::WifiControlHandle`] before the `Net` is consumed into the data-plane
+/// driver). Lets runtime mode switching (e.g. a StarryOS wireless-extensions
+/// `ioctl`) reach the device's [`WifiControl`] by name.
+static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 /// Signalled by [`notify_oob_rx`] to wake the out-of-band RX poll task, for
 /// devices whose RX arrives outside the ethernet IRQ framework (e.g. SDIO).
 static OOB_RX_SIGNAL: PollSet = PollSet::new();
@@ -317,6 +326,98 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     if config.dedicated_poll {
         start_oob_poll_task(config.name);
     }
+}
+
+/// Registers a wireless control-plane handle under an interface name.
+///
+/// Called by the runtime when adapting a wireless net device, *before* the
+/// `Net` is consumed into the data-plane driver, so the control plane stays
+/// reachable by name for runtime mode switching.
+pub fn register_wifi_control(name: &str, handle: rd_net::WifiControlHandle) {
+    let mut controls = WIFI_CONTROLS.lock();
+    if let Some(entry) = controls.iter_mut().find(|(n, _)| n == name) {
+        entry.1 = handle;
+    } else {
+        controls.push((name.into(), handle));
+    }
+}
+
+/// Target role for a runtime Wi-Fi mode switch.
+pub enum WifiMode<'a> {
+    /// Station: associate to `ssid`/`password`, then use DHCP for addressing.
+    Station { ssid: &'a str, password: &'a str },
+    /// Open SoftAP on `channel`, static `ip`/`prefix_len`, optionally running a
+    /// single-client DHCP server handing out `dhcp_client_ip`.
+    AccessPoint {
+        ssid: &'a [u8],
+        channel: u8,
+        ip: [u8; 4],
+        prefix_len: u8,
+        dhcp_client_ip: Option<[u8; 4]>,
+    },
+}
+
+/// Atomically switches a wireless interface between STA and SoftAP at runtime.
+///
+/// This is the single entry point the OS layer (e.g. a StarryOS wireless-
+/// extensions `SIOCSIWCOMMIT` handler) calls after staging the desired config.
+/// It performs the whole transition in order:
+///
+/// 1. Drive the link-layer switch through the device's `WifiControl` (the chip
+///    driver tears down the old VIF and brings up the new one).
+/// 2. Reconfigure this interface's IPv4 / DHCP role in the protocol stack
+///    (STA → DHCP client, AP → static IP + optional DHCP server).
+///
+/// Both halves run from the caller's task context, never from the RX poll
+/// task, so the blocking firmware command path cannot deadlock the stack.
+///
+/// Returns [`AxError::NoSuchDevice`] if `name` has no registered wireless
+/// control plane, or [`AxError::Unsupported`] if the link-layer switch fails.
+pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
+    // 1. Link-layer switch through the device control plane, plus the device's
+    //    (possibly new) MAC. The registry lock is released before touching the
+    //    stack service to avoid holding two locks across the blocking path.
+    let mac = {
+        let controls = WIFI_CONTROLS.lock();
+        let (_, handle) = controls
+            .iter()
+            .find(|(n, _)| n == name)
+            .ok_or(AxError::NoSuchDevice)?;
+        let ctrl = handle.wifi_control().ok_or(AxError::NoSuchDevice)?;
+        match &mode {
+            WifiMode::Station { ssid, password } => ctrl
+                .connect(ssid, password)
+                .map_err(|_| ax_err_type!(Unsupported, "wifi STA connect failed"))?,
+            WifiMode::AccessPoint { ssid, channel, .. } => ctrl
+                .start_ap_open(ssid, *channel)
+                .map_err(|_| ax_err_type!(Unsupported, "wifi SoftAP start failed"))?,
+        }
+        EthernetAddress(handle.mac_address())
+    };
+
+    // 2. Reconfigure the stack's IPv4 / DHCP role for this interface.
+    {
+        let mut service = get_service();
+        let dev = service.device_index(name).ok_or(AxError::NoSuchDevice)?;
+        match mode {
+            WifiMode::Station { .. } => service.reconfigure_as_sta(dev, mac),
+            WifiMode::AccessPoint {
+                ip,
+                prefix_len,
+                dhcp_client_ip,
+                ..
+            } => {
+                let server_ip = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
+                let client_ip = dhcp_client_ip.map(|c| Ipv4Address::new(c[0], c[1], c[2], c[3]));
+                service.reconfigure_as_ap(dev, server_ip, prefix_len, client_ip);
+            }
+        }
+    }
+
+    // Kick a poll so the new addressing takes effect immediately.
+    poll_interfaces();
+    info!("{name}: wifi mode switch complete");
+    Ok(())
 }
 
 /// Wakes the out-of-band RX poll task; intended as a device RX-data callback.
