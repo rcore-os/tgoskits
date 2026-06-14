@@ -102,9 +102,6 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     let proc = &proc_data.proc;
     let pid = proc.pid();
     let mut proc_table = PROCESS_TABLE.write();
-    if proc_table.contains_key(&pid) {
-        return;
-    }
     proc_table.insert(pid, proc_data);
 
     let pg = proc.group();

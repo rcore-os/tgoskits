@@ -3,7 +3,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::slice;
+use core::{cell::Cell, slice};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FileBackend;
@@ -16,23 +16,19 @@ use ax_runtime::hal::{
 use ax_sync::Mutex;
 
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, alloc_frame, dealloc_frame,
-    pages_in,
+    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
+    PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
 };
 
-struct FrameRefCnt(u8);
+struct FrameRefCnt {
+    count: u8,
+}
 
 impl FrameRefCnt {
-    // This function may lock FRAME_TABLE again, so the caller should drop the lock first.
     fn drop_frame(&mut self, paddr: PhysAddr, page_size: PageSize) {
-        assert!(self.0 > 0, "dropping unreferenced frame");
-        self.0 -= 1;
-        if self.0 == 0 {
-            // Remove the frame from FRAME_TABLE before deallocating it to avoid a race:
-            // if we dealloc the frame first, another thread could allocate the same
-            // physical frame before we remove the table entry. This function assumes
-            // the caller is not holding the FRAME_TABLE lock, so it is safe to lock
-            // FRAME_TABLE here and perform the removal.
+        assert!(self.count > 0, "dropping unreferenced frame");
+        self.count -= 1;
+        if self.count == 0 {
             FRAME_TABLE.lock().remove_frame(paddr);
             dealloc_frame(paddr, page_size);
         }
@@ -63,7 +59,9 @@ impl FrameTableRefCount {
         );
         self.table.insert(
             paddr,
-            Arc::new(SpinNoIrq::new(FrameRefCnt(Self::INITIAL_CNT))),
+            Arc::new(SpinNoIrq::new(FrameRefCnt {
+                count: Self::INITIAL_CNT,
+            })),
         );
     }
 
@@ -81,24 +79,35 @@ static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRef
 /// Copy-on-write mapping backend.
 ///
 /// This corresponds to the `MAP_PRIVATE` flag.
-#[derive(Clone)]
 pub struct CowBackend {
-    // The start address of the memory area.
     start: VirtAddr,
     size: PageSize,
-    // file: (file, file_vaddr_base, file_offset_base, file_offset_end)
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
+    /// True after this address space upgrades the mapping to writable via
+    /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork clones start false).
+    write_upgraded: Cell<bool>,
+}
+
+impl Clone for CowBackend {
+    fn clone(&self) -> Self {
+        Self {
+            start: self.start,
+            size: self.size,
+            file: self.file.clone(),
+            name: self.name.clone(),
+            shared: self.shared,
+            write_upgraded: Cell::new(self.write_upgraded.get()),
+        }
+    }
 }
 
 impl CowBackend {
-    /// Returns `true` if this is an anonymous private mapping (no file backing).
     pub fn is_anonymous(&self) -> bool {
         self.file.is_none()
     }
 
-    /// Returns a clone with a different start address.
     pub fn with_start(&self, new_start: VirtAddr) -> Self {
         Self {
             start: new_start,
@@ -106,7 +115,60 @@ impl CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
+            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
+    }
+
+    fn rss_kind_for_fault(&self, access_flags: MappingFlags) -> RssKind {
+        let is_file = self.file.is_some();
+        let is_read = !access_flags.contains(MappingFlags::WRITE);
+        if is_file && is_read {
+            RssKind::File
+        } else {
+            RssKind::Anon
+        }
+    }
+
+    /// PTE flags applied by [`super::Backend::protect`].
+    ///
+    /// File-backed private mappings keep PTEs read-only after `mprotect(+W)` so
+    /// the first store still faults into [`Self::handle_cow_fault`] for RSS
+    /// reclassify without touching charge at mprotect time (fork sibling case).
+    pub(super) fn pte_flags_for_protect(&self, new_flags: MappingFlags) -> MappingFlags {
+        if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
+            new_flags - MappingFlags::WRITE
+        } else {
+            new_flags
+        }
+    }
+
+    /// True when VMA allows write but the resident PTE is still read-only (Cow
+    /// deferred first-write path after `mprotect(+W)` on a file-backed mapping).
+    fn cow_deferred_file_write(&self, vma_flags: MappingFlags, pte_flags: MappingFlags) -> bool {
+        self.file.is_some()
+            && vma_flags.contains(MappingFlags::WRITE)
+            && !pte_flags.contains(MappingFlags::WRITE)
+    }
+
+    fn deinit_frame(&self, paddr: PhysAddr) {
+        FRAME_TABLE.lock().remove_frame(paddr);
+        dealloc_frame(paddr, self.size);
+    }
+
+    /// File→Anon RSS after a private mapping write fault.
+    fn reclassify_or_adopt_cow_write(&self, acct: &MemoryAccounting, vaddr: VirtAddr) {
+        let page_vaddr = vaddr.align_down(self.size);
+        let pre_kind = acct.charge_kind(page_vaddr);
+        if acct.cow_file_write_to_anon(page_vaddr) {
+            return;
+        }
+        if page_vaddr != vaddr && acct.cow_file_write_to_anon(vaddr) {
+            return;
+        }
+        let post_kind = acct.charge_kind(page_vaddr);
+        warn!(
+            "COW write at {vaddr:?} could not reclassify RSS (pre={pre_kind:?} post={post_kind:?})"
+        );
     }
 
     fn alloc_new_frame(&self, zeroed: bool) -> AxResult<PhysAddr> {
@@ -119,8 +181,11 @@ impl CowBackend {
         &self,
         vaddr: VirtAddr,
         flags: MappingFlags,
+        access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult {
+        let kind = self.rss_kind_for_fault(access_flags);
         let frame = self.alloc_new_frame(true)?;
 
         if let Some((file, file_vaddr_base, file_start, file_end)) = &self.file {
@@ -148,40 +213,43 @@ impl CowBackend {
                 .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
                 .min((buf.len() - start) as u64) as usize;
 
-            file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)?;
+            if let Err(err) = file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)
+            {
+                self.deinit_frame(frame);
+                return Err(err);
+            }
         }
-        pt.map(vaddr, frame, self.size, flags)?;
+        if let Err(err) = pt.map(vaddr, frame, self.size, flags) {
+            self.deinit_frame(frame);
+            return Err(err.into());
+        }
+        if let Some(acct) = acct {
+            acct.record_charge(vaddr, kind)?;
+        }
         Ok(())
     }
 
-    /// Fill a run of consecutive not-mapped FILE-backed pages with a SINGLE
-    /// `read_at` (readahead), then allocate + map each page. Returns the count.
-    ///
-    /// Equivalent to calling [`Self::alloc_new_at`] per page, but it collapses
-    /// the N per-page `read_at` calls (each a full FS-path traversal) into one
-    /// read of `N * page_size` bytes — the dominant cost when demand-paging a
-    /// large file mapping. Pages are page-aligned and consecutive in VA, hence
-    /// consecutive in file offset, so one linear read covers the whole run.
+    /// Fill a run of consecutive not-mapped FILE-backed pages with a single
+    /// `read_at` (readahead), then allocate + map each page.
     fn alloc_file_run(
         &self,
         run: &[VirtAddr],
         flags: MappingFlags,
+        access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult<usize> {
         let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
-            // Caller guarantees file-backed; be defensive anyway.
             for &addr in run {
-                self.alloc_new_at(addr, flags, pt)?;
+                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
             }
             return Ok(run.len());
         };
         let ps = self.size as usize;
         let v0 = run[0];
-        // Non-page-aligned mapping head (vaddr < file_vaddr_base): the per-page
-        // path handles the intra-page write offset; fall back for correctness.
         if v0.as_usize() < file_vaddr_base.as_usize() {
             for &addr in run {
-                self.alloc_new_at(addr, flags, pt)?;
+                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
             }
             return Ok(run.len());
         }
@@ -191,17 +259,22 @@ impl CowBackend {
         let max_read = file_end
             .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
             .min(total as u64) as usize;
-        // Zero-initialized: any bytes past EOF (a partial last page) stay zero,
-        // matching demand-zero semantics of `alloc_new_at` (alloc_new_frame(true)).
         let mut buf = alloc::vec![0u8; total];
         if max_read > 0 {
             file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
         }
+        let kind = self.rss_kind_for_fault(access_flags);
         for (k, &addr) in run.iter().enumerate() {
             let frame = self.alloc_new_frame(false)?;
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
-            pt.map(addr, frame, self.size, flags)?;
+            if let Err(err) = pt.map(addr, frame, self.size, flags) {
+                self.deinit_frame(frame);
+                return Err(err.into());
+            }
+            if let Some(acct) = acct {
+                acct.record_charge(addr, kind)?;
+            }
         }
         Ok(n)
     }
@@ -210,7 +283,9 @@ impl CowBackend {
         &self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
-        flags: MappingFlags,
+        vma_flags: MappingFlags,
+        pte_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult {
         let mut frame_table = FRAME_TABLE.lock();
@@ -219,15 +294,19 @@ impl CowBackend {
             .ok_or(AxError::BadAddress)?;
         drop(frame_table);
         let mut frame = frame.lock();
-        assert!(frame.0 > 0, "invalid frame reference count");
-        match frame.0 {
+        assert!(frame.count > 0, "invalid frame reference count");
+        debug_assert!(frame.count < u8::MAX, "frame reference count near overflow");
+        match frame.count {
             1 => {
-                // Only one reference, just upgrade the permissions.
-                pt.protect(vaddr, flags)?;
+                pt.protect(vaddr, vma_flags)?;
+                let defer_write =
+                    self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
+                if defer_write && let Some(acct) = acct {
+                    self.reclassify_or_adopt_cow_write(acct, vaddr);
+                }
                 return Ok(());
             }
             _ => {
-                // Multiple references, need to copy the frame.
                 let new_frame = self.alloc_new_frame(false)?;
                 unsafe {
                     core::ptr::copy_nonoverlapping(
@@ -236,11 +315,44 @@ impl CowBackend {
                         self.size as _,
                     );
                 }
-                pt.remap(vaddr, new_frame, flags)?;
+                if let Err(err) = pt.remap(vaddr, new_frame, vma_flags) {
+                    self.deinit_frame(new_frame);
+                    return Err(err.into());
+                }
+                if self.file.is_some()
+                    && let Some(acct) = acct
+                {
+                    self.reclassify_or_adopt_cow_write(acct, vaddr);
+                }
                 frame.drop_frame(paddr, self.size);
             }
         }
 
+        Ok(())
+    }
+
+    /// Unmap one resident page and drop its per-VA RSS charge.
+    ///
+    /// Regular munmap / MAP_FIXED / shrink paths only; [`super::AddrSpace::move_pages`]
+    /// migrates PTEs directly and uses [`MemoryAccounting::move_charge`] instead.
+    fn unmap_page(
+        &self,
+        addr: VirtAddr,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
+        if let Ok((frame, _flags, page_size)) = pt.unmap(addr) {
+            assert_eq!(page_size, self.size);
+            if let Some(acct) = acct {
+                acct.remove_charge(addr);
+            }
+            let frame_ref = FRAME_TABLE
+                .lock()
+                .get_frame_ref(frame)
+                .ok_or(AxError::BadAddress)?;
+            let mut frame_ref = frame_ref.lock();
+            frame_ref.drop_frame(frame, self.size);
+        }
         Ok(())
     }
 
@@ -294,26 +406,37 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
+        _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTableCursor,
     ) -> AxResult {
         debug!("Cow::map: {range:?} {flags:?}",);
+        if self.file.is_some() && flags.contains(MappingFlags::WRITE) {
+            self.write_upgraded.set(true);
+        }
         Ok(())
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
+    fn on_protect(
+        &self,
+        _range: VirtAddrRange,
+        new_flags: MappingFlags,
+        _pt: &mut PageTableCursor,
+    ) -> AxResult {
+        if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
+            self.write_upgraded.set(true);
+        }
+        Ok(())
+    }
+
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
         debug!("Cow::unmap: {range:?}");
         for addr in pages_in(range, self.size)? {
-            if let Ok((frame, _flags, page_size)) = pt.unmap(addr) {
-                assert_eq!(page_size, self.size);
-                let frame_ref = FRAME_TABLE
-                    .lock()
-                    .get_frame_ref(frame)
-                    .ok_or(AxError::BadAddress)?;
-                let mut frame_ref = frame_ref.lock();
-                frame_ref.drop_frame(frame, self.size);
-            } else {
-                // Deallocation is needn't if the page is not allocated.
-            }
+            self.unmap_page(addr, acct, pt)?;
         }
         Ok(())
     }
@@ -323,16 +446,11 @@ impl BackendOps for CowBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
-        // Walk the target pages, batching runs of consecutive not-yet-mapped
-        // FILE-backed pages into a single large `read_at` (Linux-style readahead).
-        // This is what makes loading a large `.so` (e.g. a 186 MB libLLVM ≈ 46K
-        // pages) take seconds instead of tens of minutes on StarryOS: without it,
-        // each 4 KiB page faulted one separate `read_at` through the whole
-        // axfs-ng → virtio-blk path. Anonymous and COW-fault pages keep the
-        // correct per-page path below.
+        // Batch consecutive not-mapped FILE-backed pages into one readahead read.
         let addrs: alloc::vec::Vec<VirtAddr> = pages_in(range, self.size)?.collect();
         let mut i = 0;
         while i < addrs.len() {
@@ -343,27 +461,30 @@ impl BackendOps for CowBackend {
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
-                        self.handle_cow_fault(addr, paddr, flags, pt)?;
+                        self.handle_cow_fault(addr, paddr, flags, page_flags, acct, pt)?;
                         pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
                     }
                     i += 1;
                 }
-                // If the page is not mapped, try map it.
                 Err(PagingError::NotMapped) => {
                     if self.file.is_some() {
-                        // Extend the run over consecutive not-mapped pages, then
-                        // fill them with one batched read.
                         let run_start = i;
                         while i < addrs.len()
                             && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
                         {
                             i += 1;
                         }
-                        pages += self.alloc_file_run(&addrs[run_start..i], flags, pt)?;
+                        pages += self.alloc_file_run(
+                            &addrs[run_start..i],
+                            flags,
+                            access_flags,
+                            acct,
+                            pt,
+                        )?;
                     } else {
-                        self.alloc_new_at(addr, flags, pt)?;
+                        self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
                         pages += 1;
                         i += 1;
                     }
@@ -381,38 +502,37 @@ impl BackendOps for CowBackend {
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
+        acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         let cow_flags = flags - MappingFlags::WRITE;
 
         for vaddr in pages_in(range, self.size)? {
-            // Copy data from old memory area to new memory area.
             match old_pt.query(vaddr) {
-                Ok((paddr, _, page_size)) => {
+                Ok((paddr, _pte_flags, page_size)) => {
                     assert_eq!(page_size, self.size);
-                    // If the page is mapped in the old page table:
-                    // - Update its permissions in the old page table using `flags`.
-                    // - Map the same physical page into the new page table at the same
-                    // virtual address, with the same page size and `flags`.
                     let frame = FRAME_TABLE
                         .lock()
                         .get_frame_ref(paddr)
                         .ok_or(AxError::BadAddress)?;
                     let mut frame = frame.lock();
-                    assert!(frame.0 > 0, "referencing unreferenced frame");
-                    frame.0 += 1;
-                    if frame.0 == u8::MAX {
+                    assert!(frame.count > 0, "referencing unreferenced frame");
+                    frame.count += 1;
+                    if frame.count == u8::MAX {
                         warn!("frame reference count overflow");
                         return Err(AxError::BadAddress);
                     }
                     old_pt.protect(vaddr, cow_flags)?;
                     new_pt.map(vaddr, paddr, self.size, cow_flags)?;
+                    if let (Some(parent), Some(child)) = (acct.parent, acct.child)
+                        && let Some(_kind) = parent.charge_kind(vaddr)
+                    {
+                        child.copy_charge_from(parent, vaddr)?;
+                    }
                 }
-                // If the page is not mapped, skip it.
                 Err(PagingError::NotMapped) => {}
                 Err(_) => return Err(AxError::BadAddress),
             };
         }
-
         Ok(Backend::Cow(self.clone()))
     }
 
@@ -449,6 +569,7 @@ impl Backend {
             file: Some((file, start, file_start, file_end)),
             name: None,
             shared,
+            write_upgraded: Cell::new(false),
         })
     }
 
@@ -459,6 +580,7 @@ impl Backend {
             file: None,
             name: Some(name.to_string()),
             shared: false,
+            write_upgraded: Cell::new(false),
         })
     }
 }
