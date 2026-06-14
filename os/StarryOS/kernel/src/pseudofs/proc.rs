@@ -36,8 +36,8 @@ use crate::{
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
-        AsThread, ProcessData, TaskStat, Thread, get_process_data, get_task, processes, tasks,
-        tick_cpu_time,
+        AsThread, Cred, ProcessData, TaskStat, Thread, get_process_data, get_task, processes,
+        tasks, tick_cpu_time,
     },
 };
 
@@ -456,6 +456,11 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         TracerPid:\t{}\n\
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
+        CapInh:\t{:016x}\n\
+        CapPrm:\t{:016x}\n\
+        CapEff:\t{:016x}\n\
+        CapBnd:\t{:016x}\n\
+        CapAmb:\t{:016x}\n\
         Threads:\t{}\n\
         {}\
         Cpus_allowed:\t{}\n\
@@ -472,6 +477,11 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         base.tracer_pid,
         base.cred.uid, base.cred.euid, base.cred.suid, base.cred.fsuid,
         base.cred.gid, base.cred.egid, base.cred.sgid, base.cred.fsgid,
+        base.cred.cap_inheritable,
+        base.cred.cap_permitted,
+        base.cred.cap_effective,
+        base.cred.cap_bounding,
+        base.cred.cap_ambient,
         base.num_threads,
         status.mem.format_status_vm_lines(),
         status.cpus_allowed,
@@ -1065,6 +1075,17 @@ impl SimpleDirOps for ThreadDir {
                             cred.euid = orig;
                             cred.suid = orig;
                             cred.fsuid = orig;
+                            if orig == 0 {
+                                let mask = Cred::cap_mask();
+                                cred.cap_permitted = mask;
+                                cred.cap_effective = mask;
+                                cred.cap_bounding = mask;
+                            } else {
+                                cred.cap_permitted = 0;
+                                cred.cap_effective = 0;
+                                cred.cap_ambient = 0;
+                            }
+                            cred.sanitize_capabilities();
                             Thread::set_cred(thr, cred);
                             thr.set_uid_map_written(true);
                             // Mark the user namespace as UID-mapped so
@@ -1113,6 +1134,7 @@ impl SimpleDirOps for ThreadDir {
                             cred.egid = orig;
                             cred.sgid = orig;
                             cred.fsgid = orig;
+                            cred.sanitize_capabilities();
                             Thread::set_cred(thr, cred);
                             thr.set_gid_map_written(true);
                             let proc_data = &thr.proc_data;

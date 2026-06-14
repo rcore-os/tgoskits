@@ -345,6 +345,7 @@ impl CloneArgs {
         if curr_thread.no_new_privs() {
             thr.set_no_new_privs();
         }
+        thr.set_seccomp_state(curr_thread.seccomp_state());
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
