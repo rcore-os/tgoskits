@@ -33,6 +33,8 @@ Unified local CLI script:
 
 The app provides dedicated phase retest QEMU configs:
 
+These entries are for local verification and are not wired into CI.
+
 ```bash
 cargo xtask starry app qemu -t nginx --arch x86_64 --qemu-config apps/starry/nginx/qemu-x86_64-phase1.toml
 cargo xtask starry app qemu -t nginx --arch riscv64 --qemu-config apps/starry/nginx/qemu-riscv64-phase1.toml
