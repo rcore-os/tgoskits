@@ -1615,7 +1615,7 @@ pub fn handle_exception_sync(
     let ecode = get_exception_code(ctx);
     let esubcode = get_exception_subcode(ctx);
     if SYNC_EXIT_LOGS.fetch_add(1, Ordering::Relaxed) < 32 {
-        log::warn!(
+        log::trace!(
             "LoongArch guest sync exit: ecode={:#x}, esubcode={:#x}, guest_pc={:#x}, \
              host_era={:#x}, gera={:#x}, badv={:#x}, badi={:#x}, guest_is={:#x}, \
              host_estat={:#x}, tlbrbadv={:#x}, tlbrera={:#x}",
@@ -1633,7 +1633,7 @@ pub fn handle_exception_sync(
         );
     }
 
-    log::debug!(
+    log::trace!(
         "LoongArch guest sync exit: ecode={:#x}, esubcode={:#x}, guest_pc={:#x}, host_era={:#x}, \
          gera={:#x}, badv={:#x}, badi={:#x}, host_estat={:#x}, tlbrera={:#x}",
         ecode,
@@ -1655,7 +1655,7 @@ pub fn handle_exception_sync(
         }
         ctx.sepc = get_guest_pc(ctx);
         if NESTED_FAULT_LOGS.fetch_add(1, Ordering::Relaxed) < 8 {
-            log::warn!(
+            log::trace!(
                 "LoongArch nested fault from host refill: badv={:#x}, gpa={:#x}, pc={:#x}, \
                  crmd={:#x}, eentry={:#x}, tlbrentry={:#x}, tlbrera={:#x}, host_estat={:#x}",
                 badv,
@@ -1708,7 +1708,7 @@ pub fn handle_exception_sync(
                 access_flags |= MappingFlags::READ;
             }
             if NESTED_FAULT_LOGS.fetch_add(1, Ordering::Relaxed) < 8 {
-                log::warn!(
+                log::trace!(
                     "LoongArch nested fault from regular exception: ecode={:#x}, badv={:#x}, \
                      gpa={:#x}, pc={:#x}, crmd={:#x}, eentry={:#x}, tlbrentry={:#x}, \
                      host_estat={:#x}",
