@@ -291,7 +291,9 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo fmt --all -- --check
+            command: |
+              cargo fmt --all -- --check
+              cargo publish --workspace --dry-run --no-verify
             cache_key: ""
             container_image: base
             fetch_depth: "1"
@@ -328,7 +330,17 @@ jobs:
           && format('{0}:latest', needs.detect_changes.outputs.base_container_image)
           || matrix.container_image
         }}
-      fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      fetch_depth: >-
+        ${{
+          contains(matrix.runs_on, 'self-hosted')
+          && !(
+            matrix.self_hosted_owner != ''
+            && github.repository_owner != matrix.self_hosted_owner
+          )
+          && matrix.fetch_depth == 'full'
+          && '2'
+          || (matrix.fetch_depth == 'full' && '0' || '1')
+        }}
       upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
       xtask_bin_artifact_name: tg-xtask-bin
 
@@ -690,7 +702,17 @@ jobs:
       apk_region: ${{ matrix.apk_region || 'china' }}
       limit_to_owner: ${{ matrix.limit_to_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
-      fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      fetch_depth: >-
+        ${{
+          contains(matrix.runs_on, 'self-hosted')
+          && !(
+            matrix.self_hosted_owner != ''
+            && github.repository_owner != matrix.self_hosted_owner
+          )
+          && matrix.fetch_depth == 'full'
+          && '2'
+          || (matrix.fetch_depth == 'full' && '0' || '1')
+        }}
       timeout_minutes: ${{ matrix.timeout_minutes || 360 }}
       download_xtask_bin_artifact: >-
         ${{

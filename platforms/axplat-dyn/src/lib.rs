@@ -20,10 +20,6 @@ mod irq;
 mod mem;
 mod power;
 
-#[cfg(not(feature = "irq"))]
-#[somehal::irq_handler]
-fn somehal_handle_irq(_irq: somehal::irq::IrqId) {}
-
 pub use boot::boot_stack_bounds;
 pub use generic_timer::try_init_epoch_offset;
 #[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]

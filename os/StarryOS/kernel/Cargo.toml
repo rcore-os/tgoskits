@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.6.1"
+version = "0.6.2"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -61,7 +61,7 @@ ax-alloc = { workspace = true }
 ax-config.workspace = true
 ax-crate-interface.workspace = true
 ax-display.workspace = true
-ax-fs = { version = "0.5.18", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-fs = { version = "0.5.19", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
@@ -138,8 +138,8 @@ ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
 kprobe = "0.6"
-kmod = { version = "0.2", package = "kmod-tools" }
-kmod-loader = "0.2.1"
+kmod = { version = "0.3", package = "kmod-tools" }
+kmod-loader = "0.3"
 lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true }

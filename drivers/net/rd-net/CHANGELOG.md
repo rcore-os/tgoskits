@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.3...rd-net-v0.1.4) - 2026-06-12
+
+### Added
+
+- *(axruntime)* add runtime IRQ registration adapters
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.2...rd-net-v0.1.3) - 2026-06-09
 
 ### Other

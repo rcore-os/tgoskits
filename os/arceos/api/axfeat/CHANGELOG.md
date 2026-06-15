@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.19...ax-feat-v0.5.20) - 2026-06-12
+
+### Added
+
+- *(axruntime)* add runtime IRQ registration adapters
+
+### Other
+
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.18...ax-feat-v0.5.19) - 2026-06-11
 
 ### Other

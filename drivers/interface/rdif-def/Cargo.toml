@@ -1,6 +1,6 @@
 [package]
 name = "rdif-def"
-version = "0.2.4"
+version = "0.3.0"
 edition.workspace = true
 repository.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]

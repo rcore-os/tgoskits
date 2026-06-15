@@ -421,11 +421,9 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
     }
 
     ax_hal::irq::cpu_online(cpu_id).expect("failed to mark CPU online for IRQ framework");
+    ax_hal::irq::init_common_irq_handler();
 
     if ax_hal::percpu::this_cpu_is_bsp() {
-        #[cfg(target_arch = "loongarch64")]
-        ax_hal::irq::init_common_irq_handler();
-
         let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
         ax_hal::irq::request_percpu_irq(
             ax_hal::time::irq_num(),
@@ -440,7 +438,7 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
             .expect("failed to register IPI IRQ handler");
     }
 
-    update_timer(ax_hal::time::irq_num());
+    init_timer();
 }
 
 #[cfg(all(feature = "irq", feature = "ipi"))]
@@ -457,18 +455,58 @@ const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TI
 
 #[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
-static NEXT_DEADLINE: u64 = 0;
+static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
 #[cfg(feature = "irq")]
-fn update_timer(_irq_num: usize) {
+fn init_timer() {
     let now_ns = ax_hal::time::monotonic_time_nanos();
-    // Safety: we have disabled preemption in IRQ handler.
-    let mut deadline = unsafe { NEXT_DEADLINE.read_current_raw() };
-    if now_ns >= deadline {
-        deadline = now_ns + PERIODIC_INTERVAL_NANOS;
+    unsafe {
+        NEXT_PERIODIC_DEADLINE_NANOS
+            .write_current_raw(now_ns.saturating_add(PERIODIC_INTERVAL_NANOS));
     }
-    unsafe { NEXT_DEADLINE.write_current_raw(deadline + PERIODIC_INTERVAL_NANOS) };
+    program_next_timer();
+}
+
+#[cfg(feature = "irq")]
+fn advance_periodic_timer(now_ns: u64) -> bool {
+    let mut deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
+    if deadline == 0 {
+        unsafe {
+            NEXT_PERIODIC_DEADLINE_NANOS
+                .write_current_raw(now_ns.saturating_add(PERIODIC_INTERVAL_NANOS));
+        }
+        return false;
+    }
+    if now_ns < deadline {
+        return false;
+    }
+
+    while deadline <= now_ns {
+        deadline = deadline.saturating_add(PERIODIC_INTERVAL_NANOS);
+        if deadline == u64::MAX {
+            break;
+        }
+    }
+    unsafe { NEXT_PERIODIC_DEADLINE_NANOS.write_current_raw(deadline) };
+    true
+}
+
+#[cfg(feature = "irq")]
+fn program_next_timer() {
+    let mut deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
+    if deadline == 0 {
+        let now_ns = ax_hal::time::monotonic_time_nanos();
+        deadline = now_ns.saturating_add(PERIODIC_INTERVAL_NANOS);
+        unsafe { NEXT_PERIODIC_DEADLINE_NANOS.write_current_raw(deadline) };
+    }
+    #[cfg(feature = "multitask")]
+    if let Some(task_deadline) = ax_task::next_timer_deadline_nanos() {
+        deadline = core::cmp::min(deadline, task_deadline);
+    }
+
     ax_hal::time::set_oneshot_timer(deadline);
+    #[cfg(feature = "multitask")]
+    ax_task::note_programmed_timer_deadline_nanos(deadline);
 }
 
 #[cfg(feature = "irq")]
@@ -476,9 +514,14 @@ unsafe fn timer_irq_handler(
     ctx: ax_hal::irq::IrqContext,
     _data: core::ptr::NonNull<()>,
 ) -> ax_hal::irq::IrqReturn {
-    update_timer(ctx.irq.0);
+    let _ = ctx;
     #[cfg(feature = "multitask")]
-    ax_task::on_timer_tick();
+    let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
+    #[cfg(not(feature = "multitask"))]
+    let _ = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
+    #[cfg(feature = "multitask")]
+    ax_task::on_timer_irq(scheduler_tick);
+    program_next_timer();
     ax_hal::irq::IrqReturn::Handled
 }
 

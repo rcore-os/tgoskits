@@ -352,6 +352,7 @@ impl Starry {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
+        self.ensure_default_build_config_for_request(&request, "build")?;
         self.run_build_request(request).await
     }
 
@@ -362,17 +363,7 @@ impl Starry {
             None,
             SnapshotPersistence::Store,
         )?;
-        if let Some(board) = config::ensure_default_build_config_for_target(
-            self.app.workspace_root(),
-            &request.target,
-            &request.build_info_path,
-        )? {
-            println!(
-                "generated missing Starry qemu build config {} from board {}",
-                request.build_info_path.display(),
-                board.name
-            );
-        }
+        self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
@@ -697,6 +688,25 @@ impl Starry {
             self.app.store_starry_snapshot(&snapshot)?;
         }
         Ok(request)
+    }
+
+    pub(super) fn ensure_default_build_config_for_request(
+        &self,
+        request: &ResolvedStarryRequest,
+        command: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(board) = config::ensure_default_build_config_for_target(
+            self.app.workspace_root(),
+            &request.target,
+            &request.build_info_path,
+        )? {
+            println!(
+                "generated missing Starry {command} build config {} from board {}",
+                request.build_info_path.display(),
+                board.name
+            );
+        }
+        Ok(())
     }
 
     fn quick_start_build_args(arch: &str, config: PathBuf) -> StarryCliArgs {

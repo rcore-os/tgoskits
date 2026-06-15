@@ -1,9 +1,20 @@
+pub use rdif_intc;
 use rdif_intc::Intc;
-pub use rdif_intc::{self, IrqId};
+pub type IrqId = rdif_intc::IrqId;
 use rdrive::DeviceId;
-pub use someboot::irq::*;
 
 use crate::{arch::Plat, common::PlatOp};
+
+#[must_use = "dropping ActiveIrq completes the interrupt in the interrupt controller"]
+pub struct ActiveIrq {
+    inner: <Plat as PlatOp>::ActiveIrq,
+}
+
+impl ActiveIrq {
+    pub fn id(&self) -> IrqId {
+        Plat::active_irq_id(&self.inner)
+    }
+}
 
 /// Target specification for inter-processor interrupts.
 #[derive(Clone, Copy, Debug)]
@@ -47,31 +58,8 @@ pub fn systick_irq() -> IrqId {
     Plat::systick_irq()
 }
 
-pub(crate) fn _handle_irq(hwirq: IrqId) {
-    unsafe extern "Rust" {
-        fn _someboot_handle_irq(hwirq: IrqId);
-    }
-    unsafe {
-        _someboot_handle_irq(hwirq);
-    }
-}
-
-pub fn irq_handler_raw() -> IrqId {
-    Plat::irq_handler().raw().into()
-}
-
-pub fn irq_handler_with_raw(raw: usize) -> Option<IrqId> {
-    Plat::irq_handler_with_raw(raw).map(|irq| irq.raw().into())
-}
-
-#[cfg(target_arch = "riscv64")]
-pub fn claim_external_irq() -> Option<IrqId> {
-    crate::arch::claim_external_irq().map(|irq| irq.raw().into())
-}
-
-#[cfg(target_arch = "riscv64")]
-pub fn complete_external_irq(irq: IrqId) {
-    crate::arch::complete_external_irq(someboot::irq::IrqId::new(irq.raw()));
+pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
+    Plat::begin_irq(raw).map(|inner| ActiveIrq { inner })
 }
 
 pub fn send_ipi_to_cpu(cpu_id: usize) {
