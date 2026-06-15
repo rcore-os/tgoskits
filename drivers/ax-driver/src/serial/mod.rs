@@ -53,6 +53,7 @@ pub struct SerialDeviceInfo {
     pub mapped_base: usize,
     pub baudrate: u32,
     pub irq_num: Option<usize>,
+    pub rx_polling_required: bool,
     pub binding_info: BindingInfo,
 }
 
@@ -381,6 +382,7 @@ fn probe_rockchip_fiq(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             mapped_base: base,
             baudrate: serial.baudrate(),
             irq_num: binding_info.irq_num(),
+            rx_polling_required: true,
             binding_info,
         },
         serial,
@@ -404,6 +406,7 @@ fn serial_device_info(
         mapped_base,
         baudrate,
         irq_num: binding_info.irq_num(),
+        rx_polling_required: false,
         binding_info,
     }
 }

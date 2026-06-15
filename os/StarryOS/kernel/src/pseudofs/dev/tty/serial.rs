@@ -180,6 +180,7 @@ fn new_serial_tty(
     let name = runtime.name().into();
     let info = runtime.info().clone();
     let irq_num = runtime.irq_num();
+    let rx_polling_required = info.rx_polling_required;
     let (control, tx, rx, irq_handler) = runtime.split();
     let backend = Arc::new(SerialBackend {
         name,
@@ -198,13 +199,14 @@ fn new_serial_tty(
         irq_wq: WaitQueue::new(),
         rx_dropped: AtomicUsize::new(0),
     });
-    let process_mode = serial_process_mode(&backend, is_boot_console).unwrap_or_else(|| {
-        if is_boot_console {
-            ProcessMode::Manual
-        } else {
-            ProcessMode::Inactive
-        }
-    });
+    let process_mode = serial_process_mode(&backend, is_boot_console, rx_polling_required)
+        .unwrap_or_else(|| {
+            if is_boot_console {
+                ProcessMode::Manual
+            } else {
+                ProcessMode::Inactive
+            }
+        });
     let mode_name = process_mode_name(&process_mode);
     let terminal = Arc::new(Terminal::default());
     let entry_backend = backend.clone();
@@ -229,9 +231,20 @@ fn new_serial_tty(
     })
 }
 
-fn serial_process_mode(backend: &Arc<SerialBackend>, is_boot_console: bool) -> Option<ProcessMode> {
+fn serial_process_mode(
+    backend: &Arc<SerialBackend>,
+    is_boot_console: bool,
+    rx_polling_required: bool,
+) -> Option<ProcessMode> {
     let irq_num = backend.irq_num?;
     if !is_boot_console {
+        return None;
+    }
+    if rx_polling_required {
+        info!(
+            "{} requires polling RX despite irq {irq_num}; using polling mode",
+            backend.tty_name
+        );
         return None;
     }
     if backend.irq_handler.is_none() {
