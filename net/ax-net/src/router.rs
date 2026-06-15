@@ -121,12 +121,39 @@ impl<T> BoundedPacketQueue<T> {
 
 struct TxPacket {
     next_hop: IpAddress,
-    bytes: Box<[u8]>,
+    bytes: QueuedPacket,
 }
 
 struct RxPacket {
     interface_id: InterfaceId,
-    bytes: Box<[u8]>,
+    bytes: QueuedPacket,
+}
+
+/// Fixed-size packet storage for bounded router queues.
+///
+/// Keeping packets inline avoids per-packet heap allocation while preserving a
+/// predictable memory ceiling from the queue capacity constants.
+struct QueuedPacket {
+    bytes: [u8; STANDARD_MTU],
+    len: usize,
+}
+
+impl QueuedPacket {
+    fn new(packet: &[u8]) -> Option<Self> {
+        if packet.len() > STANDARD_MTU {
+            return None;
+        }
+        let mut bytes = [0; STANDARD_MTU];
+        bytes[..packet.len()].copy_from_slice(packet);
+        Some(Self {
+            bytes,
+            len: packet.len(),
+        })
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
 }
 
 struct RouterQueues {
@@ -166,10 +193,16 @@ impl DeviceHandle {
     }
 
     fn enqueue_tx(&self, next_hop: IpAddress, packet: &[u8]) -> bool {
-        let tx = TxPacket {
-            next_hop,
-            bytes: packet.to_vec().into_boxed_slice(),
+        let Some(bytes) = QueuedPacket::new(packet) else {
+            warn!(
+                "{}: packet to {} exceeds MTU ({} bytes), dropping",
+                self.name,
+                next_hop,
+                packet.len()
+            );
+            return false;
         };
+        let tx = TxPacket { next_hop, bytes };
         if self.tx_queue.push(tx).is_err() {
             warn!(
                 "{}: TX queue is full, dropping packet to {}",
@@ -464,16 +497,14 @@ impl Router {
             let Some(packet) = self.queues.rx.pop() else {
                 break;
             };
-            snoop_tcp_packet(&packet.bytes, sockets);
-            snoop(packet.interface_id, &packet.bytes);
-            let Ok(dst) = self
-                .rx_buffer
-                .enqueue(packet.bytes.len(), packet.interface_id)
-            else {
+            let bytes = packet.bytes.as_slice();
+            snoop_tcp_packet(bytes, sockets);
+            snoop(packet.interface_id, bytes);
+            let Ok(dst) = self.rx_buffer.enqueue(bytes.len(), packet.interface_id) else {
                 warn!("Router RX buffer is full, dropping packet");
                 break;
             };
-            dst.copy_from_slice(&packet.bytes);
+            dst.copy_from_slice(bytes);
         }
     }
 
@@ -630,9 +661,17 @@ fn inject_loopback_rx(
     dst_addr: IpAddress,
     packet: &[u8],
 ) -> bool {
+    let Some(bytes) = QueuedPacket::new(packet) else {
+        warn!(
+            "Loopback: packet to {} exceeds MTU ({} bytes), dropping",
+            dst_addr,
+            packet.len()
+        );
+        return false;
+    };
     let rx = RxPacket {
         interface_id: InterfaceId::LOOPBACK,
-        bytes: packet.to_vec().into_boxed_slice(),
+        bytes,
     };
     if rx_queue.push(rx).is_err() {
         warn!("Loopback: RX queue full, dropping packet to {}", dst_addr);
@@ -644,10 +683,11 @@ fn inject_loopback_rx(
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
         if let Some(packet) = device.tx_queue.pop() {
-            let poll_next = device
-                .inner
-                .lock()
-                .send(packet.next_hop, &packet.bytes, now());
+            let poll_next =
+                device
+                    .inner
+                    .lock()
+                    .send(packet.next_hop, packet.bytes.as_slice(), now());
             if poll_next {
                 crate::request_poll();
             }
@@ -675,7 +715,17 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
             let rx = RxPacket {
                 interface_id,
-                bytes: packet.to_vec().into_boxed_slice(),
+                bytes: match QueuedPacket::new(packet) {
+                    Some(bytes) => bytes,
+                    None => {
+                        warn!(
+                            "{}: RX packet exceeds MTU ({} bytes), dropping",
+                            device.name,
+                            packet.len()
+                        );
+                        continue;
+                    }
+                },
             };
             if device.rx_queue.push(rx).is_err() {
                 warn!("{}: RX queue is full, dropping packet", device.name);
