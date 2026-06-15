@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.6.2"
+version = "0.7.0"
 
 [features]
 default = []
@@ -23,7 +23,7 @@ irq = [
 ]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
-rtc = []
+rtc = ["ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]

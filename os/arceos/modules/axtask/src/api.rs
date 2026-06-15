@@ -166,11 +166,32 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
 #[cfg(feature = "irq")]
 #[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
+    on_timer_irq(true);
+}
+
+/// Handles a hardware timer interrupt.
+#[cfg(feature = "irq")]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
+pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
-    crate::timers::check_events();
-    // Since irq and preemption are both disabled here,
-    // we can get current run queue with the default `ax_kernel_guard::NoOp`.
-    current_run_queue::<NoOp>().scheduler_timer_tick();
+    crate::timers::check_events(scheduler_tick);
+    if scheduler_tick {
+        // Since irq and preemption are both disabled here,
+        // we can get current run queue with the default `ax_kernel_guard::NoOp`.
+        current_run_queue::<NoOp>().scheduler_timer_tick();
+    }
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn next_timer_deadline_nanos() -> Option<u64> {
+    crate::timers::next_deadline_nanos()
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
+    crate::timers::note_programmed_deadline_nanos(deadline_nanos);
 }
 
 /// Adds the given task to the run queue, returns the task reference.
@@ -231,6 +252,7 @@ pub fn set_priority(prio: isize) -> bool {
 /// Returns `true` if the affinity is set successfully.
 ///
 /// TODO: support set the affinity for other tasks.
+#[track_caller]
 pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
     might_sleep();
 
@@ -282,6 +304,7 @@ pub(crate) fn yield_now_unchecked() {
 /// Current task is going to sleep for the given duration.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep(dur: core::time::Duration) {
     sleep_until(ax_hal::time::monotonic_time() + dur);
 }
@@ -290,6 +313,7 @@ pub fn sleep(dur: core::time::Duration) {
 /// The deadline is measured against the monotonic clock.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
     might_sleep();
@@ -300,6 +324,7 @@ pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
 }
 
 /// Exits the current task.
+#[track_caller]
 pub fn exit(exit_code: i32) -> ! {
     might_sleep();
 
@@ -315,6 +340,10 @@ fn current_preempt_count() -> usize {
     {
         0
     }
+}
+
+fn current_task_id() -> Option<u64> {
+    current_may_uninit().map(|curr| curr.id().as_u64())
 }
 
 /// Returns whether the current context is atomic, meaning sleeping or
@@ -344,9 +373,11 @@ pub fn might_sleep() {
     if in_atomic_context() {
         panic!(
             "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
-             preempt_count={}",
+             preempt_count={}, cpu_id={}, task_id={:?}",
             ax_hal::asm::irqs_enabled(),
-            current_preempt_count()
+            current_preempt_count(),
+            ax_hal::percpu::this_cpu_id(),
+            current_task_id()
         );
     }
 }

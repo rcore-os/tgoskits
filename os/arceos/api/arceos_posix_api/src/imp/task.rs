@@ -4,6 +4,7 @@ use core::ffi::c_int;
 ///
 /// For single-threaded configuration (`multitask` feature is disabled), we just
 /// relax the CPU and wait for incoming interrupts.
+#[track_caller]
 pub fn sys_sched_yield() -> c_int {
     #[cfg(feature = "multitask")]
     ax_task::yield_now();
@@ -31,6 +32,7 @@ pub fn sys_getpid() -> c_int {
 }
 
 /// Exit current task
+#[track_caller]
 pub fn sys_exit(exit_code: c_int) -> ! {
     debug!("sys_exit <= {exit_code}");
     #[cfg(feature = "multitask")]

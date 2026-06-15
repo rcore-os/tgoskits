@@ -202,6 +202,7 @@ impl TaskInner {
     /// Wait for the task to exit, and return the exit code.
     ///
     /// It will return immediately if the task has already exited (but not dropped).
+    #[track_caller]
     pub fn join(&self) -> i32 {
         crate::api::might_sleep();
         self.wait_for_exit

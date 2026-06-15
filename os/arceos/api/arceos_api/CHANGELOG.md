@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.19...ax-api-v0.6.0) - 2026-06-12
+
+### Fixed
+
+- *(axtask)* improve might_sleep diagnostics and coverage ([#1235](https://github.com/rcore-os/tgoskits/pull/1235))
+- *(axtask)* use monotonic deadlines for sleeps ([#1240](https://github.com/rcore-os/tgoskits/pull/1240))
+
+### Other
+
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.5.18...ax-api-v0.5.19) - 2026-06-11
 
 ### Other

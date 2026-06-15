@@ -186,18 +186,10 @@ fn configure_exception_vector(verbose: bool) {
 
 /// 处理向量中断
 fn do_vint(_tf: &mut TrapFrame) {
-    let mut estat = estat::read().is();
-
-    while estat != 0 {
-        let hwirq = estat.trailing_zeros() + 1;
-        estat &= !(1 << (hwirq - 1));
-
-        unsafe extern "Rust" {
-            fn _someboot_handle_irq(hwirq: usize);
-        }
-
-        unsafe { _someboot_handle_irq((hwirq - 1) as _) };
-    }
+    panic!(
+        "unexpected LoongArch interrupt in someboot before runtime trap setup: pending={:#x}",
+        estat::read().is()
+    );
 }
 
 /// Page Fault 处理函数 (普通 TLB 异常: TLBL, TLBS, TLBI, TLBM, TLBNR, TLBNX, TLBPE)

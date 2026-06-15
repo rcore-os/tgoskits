@@ -12,8 +12,9 @@ pub use uefi::Status;
 #[cfg(target_arch = "loongarch64")]
 pub use uefi::runtime::ResetType;
 use uefi::{
-    Result,
+    Guid, Result,
     boot::{self, MemoryDescriptor, MemoryType},
+    guid,
     prelude::*,
     proto::loaded_image::LoadedImage,
     runtime::{self, set_virtual_address_map},
@@ -32,6 +33,7 @@ const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
 const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
 const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize = 1024;
 const EXIT_BOOT_MEMORY_MAP_RETRIES: usize = 3;
+const FDT_TABLE_GUID: Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 
 #[repr(align(8))]
 struct AlignedBytes<const N: usize>([u8; N]);
@@ -50,6 +52,7 @@ pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
     }
     setup_console();
     println!("UEFI console ok.");
+    find_fdt();
     find_acpi_rsdp();
 }
 
@@ -269,6 +272,7 @@ pub(crate) fn setup_console() {
 
 #[allow(dead_code)]
 fn efi_main() -> Result {
+    find_fdt();
     find_acpi_rsdp();
 
     println!("Page size: {:#x} bytes", crate::mem::page_size());
@@ -303,6 +307,26 @@ impl crate::console::Con for UefiPrinter {
     }
 }
 
+fn find_fdt() {
+    with_config_table(|config_table| {
+        if let Some(addr) = find_fdt_address(config_table) {
+            println!("Found FDT at address: {:p}", addr);
+            unsafe {
+                crate::fdt::FDT_ADDR = addr as usize;
+            }
+        } else {
+            println!("No FDT found in UEFI config tables.");
+        }
+    })
+}
+
+fn find_fdt_address(config_table: &[ConfigTableEntry]) -> Option<*const c_void> {
+    config_table
+        .iter()
+        .find(|entry| entry.guid == FDT_TABLE_GUID)
+        .map(|entry| entry.address)
+}
+
 fn find_acpi_rsdp() {
     with_config_table(|config_table| {
         let mut version = 0;
@@ -334,6 +358,29 @@ fn find_acpi_rsdp() {
             println!("No ACPI RSDP found in UEFI config tables.");
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_fdt_table_address_by_uefi_guid() {
+        let fdt_addr = 0x1234_0000usize as *const c_void;
+        let acpi_addr = 0x5678_0000usize as *const c_void;
+        let tables = [
+            ConfigTableEntry {
+                guid: ConfigTableEntry::ACPI2_GUID,
+                address: acpi_addr,
+            },
+            ConfigTableEntry {
+                guid: FDT_TABLE_GUID,
+                address: fdt_addr,
+            },
+        ];
+
+        assert_eq!(find_fdt_address(&tables), Some(fdt_addr));
+    }
 }
 
 #[cfg(target_arch = "loongarch64")]

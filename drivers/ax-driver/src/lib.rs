@@ -81,7 +81,7 @@ pub mod serial;
     feature = "rockchip-dwmmc"
 ))]
 pub mod soc;
-#[cfg(all(any(target_arch = "aarch64", target_arch = "riscv64"), plat_dyn))]
+#[cfg(all(feature = "rtc", plat_dyn))]
 pub mod time;
 #[cfg(feature = "usb")]
 pub mod usb;
