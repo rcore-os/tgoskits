@@ -1308,6 +1308,7 @@ dependencies = [
  "addr2line 0.26.1",
  "anyhow",
  "ax-config-gen",
+ "axloader",
  "axvmconfig",
  "cargo_metadata",
  "chrono",
